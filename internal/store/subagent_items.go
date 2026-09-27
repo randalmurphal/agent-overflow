@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1180,7 +1181,7 @@ func latestDirectSubagentToolSelection(rootID string) timelineSelection {
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
 		KeyFirst:  true,
-		Where:     "items.parent_id = ? AND items.parent_id <> '' AND " + aggToolableSQL("items."),
+		Where:     "items.parent_id = " + boundText + " AND items.parent_id <> '' AND " + aggToolableSQL("items."),
 		WhereArgs: []any{rootID},
 		OrderBy:   "turn_index DESC, item_index DESC",
 		Limit:     1,
@@ -1305,7 +1306,7 @@ func subagentExecutionToolCalls(q sqlQueryer, threadID, launchID string, turnInd
 	source, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "items.item_index AS item_index" },
 		KeyFirst: true,
-		Where: `items.parent_id <> '' AND items.parent_id = ? AND items.turn_index = ?
+		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ?
 		   AND items.item_index > ? AND items.item_index <= ? AND items.kind = 'tool_call'`,
 		WhereArgs: []any{launchID, turnIndex, afterIndex, throughIndex},
 	})
@@ -1346,7 +1347,7 @@ func (s *Store) SubagentToolCallsSinceCompletion(threadID, launchID string, comp
 		calls, args, err := timelineArms(q, threadID, timelineSelection{
 			Columns:  func(string, string) string { return "1 AS one" },
 			KeyFirst: true,
-			Where: `items.parent_id <> '' AND items.parent_id = ? AND items.kind = 'tool_call'
+			Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.kind = 'tool_call'
 			   AND items.created_at > ? AND items.created_at <= ?`,
 			WhereArgs: []any{launchID, after, completedAt},
 		})
@@ -1402,8 +1403,9 @@ func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) strin
 // their children, so a single call hydrates the whole group subtree, up
 // to maxSubagentDescendants rows (newest win; see the const for why).
 // Proposed-plan decoration applies the same way it does on window loads.
+// The walk grows with the agent's history, so it takes a history read slot.
 func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, error) {
-	return readSnapshot(s.reader(), "subagent descendants", func(q sqlQueryer) ([]Item, error) {
+	return historyReadSnapshot(context.Background(), s, "subagent descendants", func(q sqlQueryer) ([]Item, error) {
 		return s.listSubagentDescendants(q, threadID, rootItemID)
 	})
 }

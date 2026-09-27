@@ -2,10 +2,15 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 )
 
@@ -19,7 +24,7 @@ type BrowserCompanionAction struct {
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
-	thread, err := a.store.GetThread(strings.TrimSpace(threadID))
+	thread, err := a.browserThread(strings.TrimSpace(threadID))
 	if err != nil {
 		return appbrowser.Access{}, err
 	}
@@ -68,7 +73,7 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 		return appbrowser.CompanionSubscription{}, err
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.RegisterCleanup(func() { a.browser.manager.DetachPane(result.ID) }) {
+		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(result.ID) }) {
 			a.browser.manager.DetachPane(result.ID)
 			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
 		}
@@ -78,12 +83,15 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 
 //ao:scope host
 //ao:route home
-func (a *App) BrowserCompanionPaneDetach(paneID string) error {
+func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) error {
+	transport.ConnStateFromContext(ctx).UnbindCleanup(companionPaneCleanupKey(paneID))
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(paneID)
 	}
 	return nil
 }
+
+func companionPaneCleanupKey(id string) string { return "companion-pane:" + id }
 
 // BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
 // coalesced to one call per changed frame by the frontend.
@@ -112,7 +120,11 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if err != nil {
 		return err
 	}
-	return a.browser.manager.RevealPageFile(ctx, access, pageID)
+	err = a.browser.manager.RevealPageFile(ctx, access, pageID)
+	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
+		return deletedErr
+	}
+	return err
 }
 
 //ao:scope host
@@ -149,8 +161,37 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}
+	// An action on a thread with no page opens one, and a failed action can
+	// still have opened it.
+	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
+		return appbrowser.CompanionEvent{}, deletedErr
+	}
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
 	return a.browser.manager.CompanionState(access), nil
+}
+
+// closeBrowserPagesIfThreadDeleted closes the pages of a thread deleted while
+// a companion action ran. A delete closes the thread's pages again
+// after its row drops or becomes a holder, so a row read after the open that
+// still finds the thread leaves the page to that close.
+func (a *App) closeBrowserPagesIfThreadDeleted(threadID string) error {
+	_, err := a.browserThread(threadID)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return errors.Join(err, a.browser.manager.CloseThread(ctx, threadID))
+}
+
+// browserThread reads a thread that can hold browser pages. A deleted thread
+// kept as the holder its forks read reads as missing.
+func (a *App) browserThread(threadID string) (store.Thread, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err == nil && thread.Mode == threadmode.ModeHolder {
+		return store.Thread{}, fmt.Errorf("browser: thread %s was deleted: %w", threadID, sql.ErrNoRows)
+	}
+	return thread, err
 }

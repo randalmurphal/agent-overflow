@@ -223,6 +223,70 @@ describe('ThreadTerminalState', () => {
   });
 });
 
+describe('syncTabs', () => {
+  function deferredList() {
+    let resolve!: (list: TerminalSessionSummary[] | null) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<TerminalSessionSummary[] | null>((res, rej) => { resolve = res; reject = rej; });
+    return { read: () => promise, resolve, reject };
+  }
+  const ids = (s: ReturnType<typeof createThreadTerminalState>) => s.tabs.map((tab) => tab.terminalID);
+
+  it('drops the tabs the list lacks and adds the ones it names without taking the active tab', async () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'dead' }));
+    s.addTab(makeSummary({ terminalID: 'live' }));
+    s.setActive('live');
+
+    const gone = await s.syncTabs(
+      async () => [makeSummary({ terminalID: 'live' }), makeSummary({ terminalID: 'new' })],
+      { activate: false, current: () => true },
+    );
+
+    expect(gone).toEqual(['dead']);
+    expect(ids(s)).toEqual(['live', 'new']);
+    expect(s.activeTerminalID).toBe('live');
+  });
+
+  it('keeps a live exit or open that lands while the list is in flight', async () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'exits' }));
+    const list = deferredList();
+    const sync = s.syncTabs(list.read, { activate: false, current: () => true });
+
+    s.removeTab('exits');
+    s.addTab(makeSummary({ terminalID: 'opens' }), { activate: false });
+    list.resolve([makeSummary({ terminalID: 'exits' })]);
+
+    expect(await sync).toEqual([]);
+    expect(ids(s)).toEqual(['opens']);
+  });
+
+  it('keeps an exit for a terminal it has no tab for, so the list cannot resurrect it', async () => {
+    const s = createThreadTerminalState();
+    const list = deferredList();
+    const sync = s.syncTabs(list.read, { activate: false, current: () => true });
+
+    s.removeTab('exits');
+    list.resolve([makeSummary({ terminalID: 'exits' })]);
+    await sync;
+
+    expect(ids(s)).toEqual([]);
+  });
+
+  it('changes nothing when the read fails or no longer applies', async () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'a' }));
+    const failed = deferredList();
+    const sync = s.syncTabs(failed.read, { activate: false, current: () => true });
+    failed.reject(new Error('offline'));
+    await expect(sync).rejects.toThrow('offline');
+
+    expect(await s.syncTabs(async () => [], { activate: false, current: () => false })).toEqual([]);
+    expect(ids(s)).toEqual(['a']);
+  });
+});
+
 // --- Bug D5 regression: terminalFocus registry (pane-scoped) ---
 describe('terminal focus registry', () => {
   const PANE = 'pane-a';

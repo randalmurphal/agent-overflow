@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // EditDiffItem is one tool call whose persisted payload carries a
 // unified diff — an Edit/Write/apply_patch or captured command inline
@@ -20,9 +23,16 @@ type EditDiffItem struct {
 
 // ListEditDiffItems returns every edit-diff tool call of a thread in
 // timeline order, including subagent children — a subagent's edit is
-// as real as the parent's.
+// as real as the parent's. It reads the whole thread, so it takes a
+// history read slot.
 func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
-	rows, err := s.reader().Query(`
+	return historyReadSnapshot(context.Background(), s, "edit diff items", func(q sqlQueryer) ([]EditDiffItem, error) {
+		return listEditDiffItems(q, threadID)
+	})
+}
+
+func listEditDiffItems(q sqlQueryer, threadID string) ([]EditDiffItem, error) {
+	rows, err := q.Query(`
 		WITH edit_items AS (
 			SELECT items.id, items.payload_id, items.turn_index, items.item_index,
 			       items.created_at, payloads.kind, payloads.meta, length(payloads.data) AS data_length
@@ -202,10 +212,16 @@ type TurnUserSummary struct {
 // otherwise label the edit selector with what an agent was told rather
 // than what the reader asked for.
 func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error) {
+	return historyReadSnapshot(context.Background(), s, "turn user summaries", func(q sqlQueryer) ([]TurnUserSummary, error) {
+		return listTurnUserSummaries(q, threadID)
+	})
+}
+
+func listTurnUserSummaries(q sqlQueryer, threadID string) ([]TurnUserSummary, error) {
 	// SQLite resolves the bare summary column against the row that
 	// carries MIN(item_index) — the first prompt of the turn (a steer
 	// or queued flush lands later in the same turn).
-	rows, err := s.reader().Query(`
+	rows, err := q.Query(`
 		SELECT turn_index, summary, MIN(item_index)
 		  FROM timeline_items
 		 WHERE thread_id = ?

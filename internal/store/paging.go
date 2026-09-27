@@ -34,12 +34,14 @@ func topLevelItemsFilterFor(alias string) string {
 
 var topLevelItemsFilter = topLevelItemsFilterFor("")
 
-// windowedTimelineFilter is the predicate pair every history window,
-// budget, and probe shares — visible rows, top-level only — qualified
-// for the physical timeline arms (timeline_arms.go), which always alias
-// the row source `items`.
-var windowedTimelineFilter = visibleItemsFilterFor("items.") + `
-		   AND ` + topLevelItemsFilterFor("items.")
+// mainTimelineFilterFor is the main timeline's predicate: the visible
+// top-level rows every main-timeline window, budget and probe selects.
+// idx_items_top_level and idx_import_history_items_top_level (v136) hold
+// exactly these rows, and an arm walks them only when it states both
+// terms.
+func mainTimelineFilterFor(alias string) string {
+	return visibleItemsFilterFor(alias) + " AND " + topLevelItemsFilterFor(alias)
+}
 
 // TimelineCursor is a stable position in a thread timeline. The item id is
 // carried for diagnostics/snapshot readability; ordering is by
@@ -220,7 +222,7 @@ func pageEdgeCursor(edge Item, runs []ActivityRunStub, oldestSide bool) Timeline
 // to a run that continues past it. Those rows are counted by the run's
 // stub, never re-shipped.
 func (s *Store) ListItemsBeforeCursor(ctx context.Context, threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshotContext(ctx, s.reader(), "before cursor page", func(q sqlQueryer) (PagedItems, error) {
+	return historyReadSnapshot(ctx, s, "before cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
@@ -256,7 +258,7 @@ func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before Time
 // selected. It is the forward pager companion to ListItemsBeforeCursor
 // and expands its oldest unit whole for the same reason.
 func (s *Store) ListItemsAfterCursor(ctx context.Context, threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshotContext(ctx, s.reader(), "after cursor page", func(q sqlQueryer) (PagedItems, error) {
+	return historyReadSnapshot(ctx, s, "after cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
@@ -375,24 +377,46 @@ func cursorIsValid(cursor TimelineCursor) bool {
 }
 
 func hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope) (bool, error) {
-	return hasItemsBeyond(q, threadID, cursor, scope, "<")
+	return hasItemsBeyond(q, threadID, cursor, scope, false)
 }
 func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope) (bool, error) {
-	return hasItemsBeyond(q, threadID, cursor, scope, ">")
+	return hasItemsBeyond(q, threadID, cursor, scope, true)
 }
-func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope, comparison string) (bool, error) {
+
+// beyondCursor selects scope's rows strictly older than cursor, or newer
+// with newer set.
+func beyondCursor(scope timelineScope, cursor TimelineCursor, newer bool) timelineSelection {
 	filter, args := scope.filter("items.")
-	sel := timelineSelection{
-		Columns:   func(string, string) string { return "1" },
-		Where:     filter + " AND (items.turn_index, items.item_index) " + comparison + " (?, ?)",
-		WhereArgs: append(args, cursor.TurnIndex, cursor.ItemIndex),
+	sel := cursorBound(cursor, newer)
+	sel.Where, sel.WhereArgs = filter+" AND "+sel.Where, append(args, sel.WhereArgs...)
+	return sel
+}
+
+// cursorBound selects every row strictly older than cursor, or newer with
+// newer set. The (turn_index, item_index) comparison keys each arm's index
+// walk at the cursor. Written as an OR of turn and item terms it is no
+// index range, and a walk would first read the rows between the cursor and
+// the start of its turn or the edge of the thread. A newer row is in the
+// cursor's turn or a later one, so only the chunks that reach that turn can
+// hold it: at the tail of a thread that is none of them.
+func cursorBound(cursor TimelineCursor, newer bool) timelineSelection {
+	comparison := "<"
+	if newer {
+		comparison = ">"
 	}
-	if comparison == ">" {
-		// A newer row is in the cursor's turn or a later one, so only the
-		// chunks that reach that turn can hold it. At the tail of a thread
-		// that is none of them.
+	sel := timelineSelection{
+		Where:     "(items.turn_index, items.item_index) " + comparison + " (?, ?)",
+		WhereArgs: []any{cursor.TurnIndex, cursor.ItemIndex},
+	}
+	if newer {
 		sel.Turn, sel.TurnArgs, sel.FromTurn = "?", []any{cursor.TurnIndex}, true
 	}
+	return sel
+}
+
+func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope, newer bool) (bool, error) {
+	sel := beyondCursor(scope, cursor, newer)
+	sel.Columns = func(string, string) string { return "1" }
 	probe, probeArgs, err := timelineArms(q, threadID, sel)
 	if err != nil {
 		return false, fmt.Errorf("probe timeline edge: %w", err)
@@ -421,7 +445,7 @@ func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope 
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail window.
 func (s *Store) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshotContext(ctx, s.reader(), "thread slice", func(q sqlQueryer) (PagedItems, error) {
+	return historyReadSnapshot(ctx, s, "thread slice", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err

@@ -107,9 +107,16 @@ func targetCommandContext(ctx context.Context) context.Context {
 // with `-32000 no browser is open` (a WebView2 target exists only as a
 // launcher-created controller, 2026-08-31) and which real Chromium answers
 // with a throwaway tab nobody owns — a whole renderer process per profile,
-// paid for forever. Discovery is what feeds ListenBrowser the target
-// lifecycle events both engines re-key into the seam's vocabulary.
-func dialCDPBrowser(browserCtx context.Context, logf func(string, ...any)) error {
+// paid for forever. Discovery is what feeds listen the target lifecycle
+// events both engines re-key into the seam's vocabulary.
+//
+// listen receives every browser-level event. It is registered here, after
+// the browser exists and before discovery is enabled, so it sees every
+// target discovery reports, a popup opened during the handshake included.
+// chromedp.ListenBrowser called before the dial would store the listener
+// where only chromedp.Run's own allocation reads it, and this dial bypasses
+// Run, so that listener would never be called.
+func dialCDPBrowser(browserCtx context.Context, listen func(ev any), logf func(string, ...any)) error {
 	c := chromedp.FromContext(browserCtx)
 	if c == nil || c.Allocator == nil {
 		return errors.New("not a chromedp context")
@@ -121,23 +128,29 @@ func dialCDPBrowser(browserCtx context.Context, logf func(string, ...any)) error
 		return err
 	}
 	c.Browser = browser
+	chromedp.ListenBrowser(browserCtx, listen)
 	return target.SetDiscoverTargets(true).Do(cdp.WithExecutor(browserCtx, browser))
 }
 
 // cdpDownloadEvent translates the two browser-level download events into the
-// seam's vocabulary, reporting whether it recognised the event.
+// seam's vocabulary, reporting whether it recognised the event. A download
+// the Manager refuses is cancelled through cancel, on its own goroutine
+// because the cancel is a CDP round trip the listener goroutine would have
+// to deliver.
 //
 // Shared for the same reason as the dial: downloads are a browser-level CDP
 // fact with no engine-specific identity in them — the GUID IS the handle on
 // both engines — so a second copy could only drift. Frames, targets and
 // page ids are the caller's business, which is why nothing here re-keys.
-func cdpDownloadEvent(ev any, events engineEvents) bool {
+func cdpDownloadEvent(ev any, events engineEvents, cancel func(id string)) bool {
 	switch event := ev.(type) {
 	case *cdpbrowser.EventDownloadWillBegin:
-		events.DownloadStarted(downloadStart{
+		if !events.DownloadStarted(downloadStart{
 			Frame: string(event.FrameID), ID: event.GUID,
 			URL: event.URL, SuggestedName: event.SuggestedFilename,
-		})
+		}) {
+			go cancel(event.GUID)
+		}
 		return true
 	case *cdpbrowser.EventDownloadProgress:
 		state := downloadInProgress
@@ -159,7 +172,13 @@ func (p *cdpPage) Lifetime() context.Context { return p.ctx }
 func (p *cdpPage) Handle() string            { return p.handle }
 func (p *cdpPage) Close()                    { p.cancel() }
 
+// OwnsFrame answers from the frames the page has reported, and for its
+// main frame, whose id is the target id, before it has reported any: a
+// download can begin in a navigation that never commits.
 func (p *cdpPage) OwnsFrame(frame string) bool {
+	if frame == p.handle {
+		return true
+	}
 	p.frameMu.RLock()
 	defer p.frameMu.RUnlock()
 	_, ok := p.frames[cdp.FrameID(frame)]
@@ -177,19 +196,7 @@ func (p *cdpPage) installHandlers() error {
 				_ = page.HandleJavaScriptDialog(accept).Do(targetCommandContext(ctx))
 			}()
 		case *fetch.EventRequestPaused:
-			if event.Request == nil {
-				return
-			}
-			requestID, rawURL := event.RequestID, event.Request.URL
-			go func() {
-				ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
-				defer cancel()
-				if p.hooks.Allow(rawURL) {
-					_ = fetch.ContinueRequest(requestID).Do(targetCommandContext(ctx))
-				} else {
-					_ = fetch.FailRequest(requestID, network.ErrorReasonBlockedByClient).Do(targetCommandContext(ctx))
-				}
-			}()
+			answerPausedRequest(p.ctx, targetCommandContext, event, p.hooks.Allow)
 		case *page.EventFrameAttached:
 			p.frameMu.Lock()
 			p.frames[event.FrameID] = struct{}{}
@@ -227,14 +234,7 @@ func (p *cdpPage) installHandlers() error {
 			p.networkMu.Unlock()
 		}
 	})
-	patterns := []*fetch.RequestPattern{
-		{ResourceType: network.ResourceTypeDocument, RequestStage: fetch.RequestStageRequest},
-		// Document-only interception still lets a workspace HTML page embed an
-		// outside-workspace file as an image/script. Intercept every local-file
-		// request so the same authority check covers subresources too.
-		{URLPattern: "file://*", RequestStage: fetch.RequestStageRequest},
-	}
-	if err := fetch.Enable().WithPatterns(patterns).Do(targetCommandContext(p.ctx)); err != nil {
+	if err := fetch.Enable().WithPatterns(navigationPolicyPatterns).Do(targetCommandContext(p.ctx)); err != nil {
 		return fmt.Errorf("browser: install navigation policy: %w", err)
 	}
 	if err := cdplog.Enable().Do(targetCommandContext(p.ctx)); err != nil {
@@ -247,6 +247,36 @@ func (p *cdpPage) installHandlers() error {
 		return fmt.Errorf("browser: enable network lifecycle: %w", err)
 	}
 	return nil
+}
+
+// navigationPolicyPatterns are the requests the navigation policy decides.
+// Document-only interception would still let a workspace HTML page embed an
+// outside-workspace file as an image or script, so every local-file request
+// is intercepted too.
+var navigationPolicyPatterns = []*fetch.RequestPattern{
+	{ResourceType: network.ResourceTypeDocument, RequestStage: fetch.RequestStageRequest},
+	{URLPattern: "file://*", RequestStage: fetch.RequestStageRequest},
+}
+
+// answerPausedRequest continues a request the navigation policy paused when
+// allow permits its URL and fails it otherwise. address directs the answer
+// at the session that paused it. The answer is a CDP round trip that the
+// listener goroutine delivering the event would have to read, so it runs on
+// its own goroutine, bounded by lifetime.
+func answerPausedRequest(lifetime context.Context, address func(context.Context) context.Context, event *fetch.EventRequestPaused, allow func(url string) bool) {
+	if event.Request == nil {
+		return
+	}
+	requestID, rawURL := event.RequestID, event.Request.URL
+	go func() {
+		ctx, cancel := operationContext(context.Background(), lifetime, 5*time.Second)
+		defer cancel()
+		if allow(rawURL) {
+			_ = fetch.ContinueRequest(requestID).Do(address(ctx))
+		} else {
+			_ = fetch.FailRequest(requestID, network.ErrorReasonBlockedByClient).Do(address(ctx))
+		}
+	}()
 }
 
 // consoleAPIEntry decodes a Runtime.consoleAPICalled event. Chrome does not

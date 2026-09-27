@@ -37,9 +37,10 @@ type ClaudeLiveSession struct {
 
 // Deps supplies root-owned lifecycle, session, credential, and event seams.
 type Deps struct {
-	Context              func() context.Context
-	IsShuttingDown       func() bool
-	StartSession         func(threadID string) error
+	Context        func() context.Context
+	IsShuttingDown func() bool
+	// EnsureSession starts the thread's session when none is live.
+	EnsureSession        func(threadID string) error
 	Session              func(threadID string) (Session, bool)
 	CodexSessions        func() []CodexLiveSession
 	ClaudeSessions       func(workspacePath string) []ClaudeLiveSession
@@ -138,16 +139,11 @@ func (a *Service) isShuttingDown() bool {
 	return a != nil && a.deps.IsShuttingDown != nil && a.deps.IsShuttingDown()
 }
 
-func (a *Service) hasActiveSession(threadID string) bool {
-	_, active := a.session(threadID)
-	return active
-}
-
-func (a *Service) startSession(threadID string) error {
-	if a == nil || a.deps.StartSession == nil {
+func (a *Service) ensureSession(threadID string) error {
+	if a == nil || a.deps.EnsureSession == nil {
 		return ErrMCPSessionUnavailable
 	}
-	return a.deps.StartSession(threadID)
+	return a.deps.EnsureSession(threadID)
 }
 
 func (a *Service) emitErrorToThread(threadID, message string) {

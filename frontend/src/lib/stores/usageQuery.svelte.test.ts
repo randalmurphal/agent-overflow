@@ -151,3 +151,20 @@ it('shows a starting computer as pending, not unavailable, and asks it once it c
   expect(asked).toEqual(['gpu']);
   expect(stats.buckets?.[0].outputTokens).toBe(7);
 });
+
+// Routing refuses an action on a thread two computers claim; its usage stays
+// on the first claimant, as its other read-only surfaces do.
+it('keeps a thread\'s usage on its first claimant once a second computer claims it', async () => {
+  stageBackend({ id: 'gpu', name: 'GPU' });
+  noteThread('contested-thread', 'gpu', 0);
+  const targets: unknown[] = [];
+  setBindingMock('GetUsageStats', async () => { targets.push(takePinnedBackend()); return [new UsageBucket({ outputTokens: 5 })]; });
+  let stats!: ReturnType<typeof createUsageStats>;
+  release = $effect.root(() => { stats = createUsageStats(() => new UsageQuery({ threadId: 'contested-thread' })); });
+  await flush();
+  noteThread('contested-thread', '' as BackendKey, 0);
+  await flush();
+  expect(stats.error).toBeNull();
+  expect(stats.buckets?.[0].outputTokens).toBe(5);
+  expect(targets[0]).toBe('gpu');
+});

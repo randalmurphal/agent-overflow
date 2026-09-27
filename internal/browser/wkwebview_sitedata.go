@@ -22,9 +22,9 @@ const wkClearFailureLimit = 3
 // half joined with newlines into one error, or nil when nothing failed.
 //
 // Blank is SUCCESS, and that covers the two cases that are not failures at all:
-// every store removed, and WebKit reporting no data stores to remove (a macOS
-// 11-13 Mac, which only ever had non-persistent stores, or one that has not
-// persisted any site data yet).
+// every store removed, and WebKit reporting no data stores to remove (a macOS 13
+// Mac, which only ever had non-persistent stores, or one that has not persisted
+// any site data yet).
 func wkClearSiteDataFailure(reported string) error {
 	if strings.TrimSpace(reported) == "" {
 		return nil

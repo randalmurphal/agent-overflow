@@ -4,13 +4,16 @@
 // and the server's stub for the rest.
 import { describe, expect, it } from 'vitest';
 import {
-  applyMembersStub,
+  extendOverTailAppend,
   foldPageStub,
   foldedStub,
   heldRunsFold,
+  invalidateActivityRun,
   mergeRunStubs,
+  noteRefusedRow,
   noteSpanMoved,
   physicalCount,
+  settleRefusedRows,
   shedOlderMembers,
   shedRowOf,
   stubFacts,
@@ -113,29 +116,85 @@ describe('foldPageStub', () => {
     expect(record).toMatchObject({ loadedFirstItemId: '', loadedLastItemId: '', dirty: false });
     expect(physicalCount(record)).toBe(5);
   });
-});
 
-describe('applyMembersStub', () => {
-  it('supersedes everything the record carried', () => {
+  it('goes dirty for a stub that names a newer edge but no older one, when the pane holds none of the run', () => {
+    const records: ActivityRunRecords = new Map();
+    const malformed = stub({ lastItemId: 'd', loadedFirstItemId: '', loadedLastItemId: 'd', unshippedAfter: 0 });
+    expect(foldPageStub(records, malformed, null)).toMatchObject({ loadedLastItemId: '', dirty: true });
+  });
+
+  it('supersedes everything a dirty record carried when a members answer describes the pane', () => {
     const records: ActivityRunRecords = new Map();
     const record = foldPageStub(records, stub({ loadedFirstItemId: 'a' }), span([row('a', 0), ...loaded]));
     shedOlderMembers(record, [row('a', 0)], 'b', 'd');
     record.dirty = true;
+    const stubVersion = record.stubVersion;
 
-    const applied = applyMembersStub(records, stub({ loadedFirstItemId: 'a', loadedLastItemId: 'e', unshippedBefore: 0, unshippedAfter: 0 }));
+    // The answer mounted a and e around the loaded span.
+    const answer = stub({ loadedFirstItemId: 'a', loadedLastItemId: 'e', unshippedBefore: 0, unshippedAfter: 0 });
+    const applied = foldPageStub(records, answer, span([row('a', 0), ...loaded, row('e', 4)]));
     expect(applied).toBe(record);
-    expect(applied).toMatchObject({
-      loadedFirstItemId: 'a',
-      loadedLastItemId: 'e',
-      dirty: false,
-    });
+    expect(applied).toMatchObject({ stub: answer, loadedFirstItemId: 'a', loadedLastItemId: 'e', dirty: false });
     expect(applied.shed).toEqual([]);
+    expect(applied.stubVersion).toBe(stubVersion + 1);
   });
 
-  it('creates a record for a run the pane had none for', () => {
+  // The pane holds b..d of a..d, and its stub ends at the run's newest member.
+  const tailStub = () => stub({
+    lastItemId: 'd', lastItemIndex: 3, memberCount: 4, unshippedAfter: 0,
+    unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]),
+  });
+
+  it('describes the span up to members appended after the stub was read', () => {
     const records: ActivityRunRecords = new Map();
-    applyMembersStub(records, stub());
-    expect(records.get('a')?.loadedFirstItemId).toBe('b');
+    const record = foldPageStub(records, stub({ loadedFirstItemId: 'a' }), span([row('a', 0), ...loaded]));
+    shedOlderMembers(record, [row('a', 0)], 'b', 'd');
+    const grown = span([...loaded, row('e', 4), row('f', 5)]);
+
+    foldPageStub(records, tailStub(), grown);
+    expect(record).toMatchObject({ loadedFirstItemId: 'b', loadedLastItemId: 'd', dirty: false, shed: [] });
+    expect(extendOverTailAppend(record, grown)).toBe(true);
+    expect(record.stub).toEqual({ ...tailStub(), lastItemId: 'f', lastItemIndex: 5, memberCount: 6, loadedLastItemId: 'f' });
+  });
+
+  it.each([
+    ['whose run continued past its span', () => stub(), [...loaded, row('f', 6)]],
+    ['that counts members after its span', () => ({ ...tailStub(), unshippedAfter: 1 }), [...loaded, row('e', 4)]],
+    ['whose last member the pane no longer holds', tailStub, [loaded[0], loaded[1], row('e', 4)]],
+    ['for a different older edge', tailStub, [row('a0', 0), ...loaded, row('e', 4)]],
+  ] as const)('leaves the pane\'s span dirty for a stub %s', (_name, makeStub, items) => {
+    const records: ActivityRunRecords = new Map();
+    const held = span([...items]);
+    const record = foldPageStub(records, makeStub(), held);
+    expect(record).toMatchObject({ loadedFirstItemId: held.firstItemId, loadedLastItemId: held.lastItemId, dirty: true });
+  });
+});
+
+// The stub places the run's last edge at e (5).
+describe('refused rows', () => {
+  it('keep the record dirty through a stub that describes its span', () => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, stub(), span(loaded));
+    noteRefusedRow(record, row('f', 7));
+    noteRefusedRow(record, row('e', 5));
+    expect(record).toMatchObject({ dirty: true, invalidationVersion: 2, refusedThrough: { turnIndex: 0, itemIndex: 7 } });
+    foldPageStub(records, stub(), span(loaded));
+    expect(record).toMatchObject({ dirty: true, refusedThrough: { turnIndex: 0, itemIndex: 7 } });
+  });
+
+  it.each([
+    ['at the run\'s last edge', 5, false],
+    ['before it', 4, false],
+    ['past it', 6, true],
+  ] as const)('settle on an answer for a refusal %s', (_name, index, missed) => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, stub(), span(loaded));
+    noteRefusedRow(record, row('x', index));
+    expect(settleRefusedRows(record, stub())).toBe(missed);
+    expect(record.refusedThrough).toBeNull();
+    expect(settleRefusedRows(record, stub())).toBe(false);
+    foldPageStub(records, stub(), span(loaded));
+    expect(record.dirty).toBe(false);
   });
 });
 
@@ -143,8 +202,17 @@ describe('noteSpanMoved', () => {
   it('re-points the record and marks it dirty', () => {
     const records: ActivityRunRecords = new Map();
     const record = foldPageStub(records, stub(), span(loaded));
+    expect(noteSpanMoved(record, span([row('a0', 0), ...loaded]))).toBe(true);
+    expect(record).toMatchObject({ loadedFirstItemId: 'a0', dirty: true, invalidationVersion: 1, appendVersion: 0 });
+  });
+
+  it('counts members gained after the newer end as an append', () => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, stub(), span(loaded));
     expect(noteSpanMoved(record, span([...loaded, row('e', 4)]))).toBe(true);
-    expect(record).toMatchObject({ loadedLastItemId: 'e', dirty: true });
+    expect(record).toMatchObject({ loadedLastItemId: 'e', dirty: true, invalidationVersion: 0, appendVersion: 1 });
+    expect(noteSpanMoved(record, span([loaded[0], loaded[1]]))).toBe(true);
+    expect(record).toMatchObject({ loadedLastItemId: 'c', invalidationVersion: 1, appendVersion: 1 });
   });
 
   it('is a no-op when the span did not move', () => {
@@ -152,6 +220,81 @@ describe('noteSpanMoved', () => {
     const record = foldPageStub(records, stub(), span(loaded));
     expect(noteSpanMoved(record, span(loaded))).toBe(false);
     expect(record.dirty).toBe(false);
+  });
+});
+
+describe('extendOverTailAppend', () => {
+  // The pane holds b..d of a..d: the stub ends at the run's newest member.
+  const tailStub = () => stub({
+    lastItemId: 'd', lastItemIndex: 3, memberCount: 4, unshippedAfter: 0,
+    unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]),
+    unshippedGroups: [{ kind: 'tool_call', toolName: 'Bash', mcp: '', rows: 1 }],
+  });
+
+  it('moves the stub\'s newer edge over appended members and keeps its aggregates', () => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, tailStub(), span(loaded));
+    const before = { ...record.stub };
+    const contribution = windowDigestContribution(record);
+
+    expect(extendOverTailAppend(record, span([...loaded, row('e', 4), row('f', 6)]))).toBe(true);
+
+    // The stub a limit-0 refresh returns for b..f of a..f.
+    expect(record.stub).toEqual({
+      ...before,
+      lastItemId: 'f', lastItemIndex: 6, memberCount: 6, loadedLastItemId: 'f',
+    });
+    expect(record).toMatchObject({ loadedFirstItemId: 'b', loadedLastItemId: 'f', dirty: false, appendVersion: 1, invalidationVersion: 0 });
+    expect(windowDigestContribution(record)).toEqual(contribution);
+    expect(physicalCount(record)).toBe(1);
+  });
+
+  it('keeps shed rows and moves only the newer edge after a cut', () => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, tailStub(), span(loaded));
+    shedOlderMembers(record, [loaded[0]], 'c', 'd');
+
+    expect(extendOverTailAppend(record, span([loaded[1], loaded[2], row('e', 4)]))).toBe(true);
+    expect(record).toMatchObject({ loadedFirstItemId: 'c', loadedLastItemId: 'e', dirty: false });
+    expect(record.shed.map(shed => shed.id)).toEqual(['b']);
+    expect(record.stub.loadedFirstItemId).toBe('b');
+  });
+
+  it('folds a completion of a launch the pane holds', () => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, tailStub(), span(loaded));
+    const completion = row('e', 4, { kind: 'tool_completion', completionOf: 'c' });
+    expect(extendOverTailAppend(record, span([...loaded, completion]))).toBe(true);
+    expect(record.stub.memberCount).toBe(5);
+  });
+
+  it.each([
+    ['unshipped', 'a', false],
+    ['shed', 'b', true],
+  ] as const)('refuses a completion of a launch outside the run\'s loaded span: one %s', (_name, launch, shed) => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, tailStub(), span(loaded));
+    if (shed) shedOlderMembers(record, [loaded[0]], 'c', 'd');
+    const kept = shed ? loaded.slice(1) : loaded;
+    const before = { ...record, stub: record.stub, shed: [...record.shed] };
+    const completion = row('e', 4, { kind: 'tool_completion', completionOf: launch });
+    expect(extendOverTailAppend(record, span([...kept, completion]))).toBe(false);
+    expect(record).toEqual(before);
+  });
+
+  it.each([
+    ['members after the stub\'s span', () => stub(), [...loaded, row('f', 6)], false],
+    ['a dirty record', tailStub, [...loaded, row('e', 4)], true],
+    ['a moved older edge', tailStub, [row('a0', 0), ...loaded, row('e', 4)], false],
+    ['a span without the previous last member', tailStub, [loaded[0], loaded[1], row('e', 4)], false],
+    ['an unmoved span', tailStub, loaded, false],
+  ] as const)('refuses %s', (_name, makeStub, items, dirty) => {
+    const records: ActivityRunRecords = new Map();
+    const record = foldPageStub(records, makeStub(), span(loaded));
+    if (dirty) invalidateActivityRun(record);
+    const before = { ...record, stub: record.stub };
+    expect(extendOverTailAppend(record, span([...items]))).toBe(false);
+    expect(record).toEqual(before);
   });
 });
 
@@ -224,7 +367,8 @@ describe('windowDigestContribution', () => {
     const dirty = foldPageStub(records, stub({ loadedLastItemId: 'c' }), span(loaded));
     expect(windowDigestContribution(dirty)).toBeNull();
 
-    const bad = applyMembersStub(new Map(), stub({ unshippedDigest: 'not-a-digest' }));
+    const bad = foldPageStub(new Map(), stub({ unshippedDigest: 'not-a-digest' }), span(loaded));
+    expect(bad.dirty).toBe(false);
     expect(windowDigestContribution(bad)).toBeNull();
   });
 
@@ -426,7 +570,7 @@ describe('foldedStub', () => {
     shedOlderMembers(record, [withA[0]], 'b', 'd');
     const before = windowDigestContribution(record)!;
 
-    const restored = applyMembersStub(new Map(), foldedStub(record, loaded)!);
+    const restored = foldPageStub(new Map(), foldedStub(record, loaded)!, span(loaded));
     expect(formatFnv1a64(windowDigestContribution(restored)!)).toBe(formatFnv1a64(before));
     expect(physicalCount(restored)).toBe(physicalCount(record));
   });

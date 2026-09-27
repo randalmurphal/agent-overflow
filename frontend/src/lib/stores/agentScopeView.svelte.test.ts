@@ -288,6 +288,34 @@ describe('independent agent timeline', () => {
     expect(fetch.mock.calls[0][1]).toMatchObject({ runFirstItemId: first.id, limit: 0 });
   });
 
+  it('refuses a live member a scoped snapshot leaves past a gap in its run', async () => {
+    const pane = await setup([root]);
+    const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map((id, index) => row(id, index + 1, { kind: 'tool_call', toolName: 'Bash' }));
+    const runStub = (last: Item, loaded: Item, unshippedBefore: number, unshippedAfter: number) => new ActivityRunStub({
+      firstItemId: a.id, lastItemId: last.id,
+      firstTurnIndex: a.turnIndex, firstItemIndex: a.itemIndex,
+      lastTurnIndex: last.turnIndex, lastItemIndex: last.itemIndex,
+      memberCount: unshippedBefore + 1 + unshippedAfter, loadedFirstItemId: loaded.id, loadedLastItemId: loaded.id,
+      unshippedBefore, unshippedAfter, unshippedDigest: '0000000000000000',
+    });
+    const whole = { ...page([a, b, c, d]), runs: [new ActivityRunStub({ ...runStub(d, a, 0, 0), loadedLastItemId: d.id })] };
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: whole }));
+    const view = await open(pane);
+    const fetch = setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: runStub(e, b, 1, 3) }));
+    let finish: ((value: unknown) => void) | undefined;
+    setBindingMock('SyncThreadWindow', () => new Promise(resolve => { finish = resolve; }));
+    const read = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    push(e);
+    expect(view.items.map(item => item.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    // Read before e, the snapshot ships b alone of the run.
+    finish!({ status: 'stale', page: { ...page([b]), runs: [runStub(d, b, 1, 2)] } });
+    await read;
+    expect(view.items.map(item => item.id)).toEqual(['b']);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(fetch.mock.calls[0][1]).toMatchObject({ runFirstItemId: a.id, loadedFirstItemId: b.id, loadedLastItemId: b.id, limit: 0 });
+  });
+
   it('does not resurrect a removed row from an in-flight snapshot', async () => {
     const pane = await setup([root, row('child', 1)]); const view = await open(pane);
     let resolve!: (value: unknown) => void;

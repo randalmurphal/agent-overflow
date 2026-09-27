@@ -2241,3 +2241,57 @@ describe('threadTimelineWindow', () => {
     });
   });
 });
+
+describe('activity-run tail growth after a jump', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  it('refuses a live member past a jump into the tail run and refreshes the run', async () => {
+    // The window holds b..d of a run a..d; a jump to `a` leaves the pane
+    // holding a alone, with b..d counted after it. A live `e` continues
+    // the run past b..d, so it is refused and the run refreshes.
+    const pane = createThreadPane();
+    const member = (id: string, itemIndex: number) =>
+      makeItem({ id, threadId: 't', turnIndex: 0, itemIndex, kind: 'tool_call', toolName: 'Bash', rev: 1 });
+    const stub = (last: string, lastIndex: number, count: number, loadedFirst: string, loadedLast: string,
+      before: number, after: number) => ({
+      firstItemId: 'a', lastItemId: last, memberCount: count,
+      firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: lastIndex,
+      loadedFirstItemId: loadedFirst, loadedLastItemId: loadedLast,
+      unshippedBefore: before, unshippedAfter: after, unshippedDigest: '0000000000000000',
+      unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
+      unshippedFailed: false, runningBefore: null, runningAfter: null,
+    });
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [
+        makeItem({ id: 'p0', threadId: 't', turnIndex: 0, itemIndex: 0, kind: 'assistant_text' }),
+        member('b', 2), member('c', 3), member('d', 4),
+      ],
+      oldestTurnIndex: 0, newestTurnIndex: 0,
+      hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+      runs: [stub('d', 4, 4, 'b', 'd', 1, 0)],
+    }));
+    setBindingMock('GetThreadItem', async () => member('a', 1));
+    const members = vi.fn(async (_threadId: unknown, request: unknown) => {
+      const req = request as { direction: string; limit: number };
+      if (req.direction === 'around') return { items: [member('a', 1)], stub: stub('d', 4, 4, 'a', 'a', 0, 3) };
+      return { items: [], stub: stub('e', 5, 5, 'a', 'a', 0, 4) };
+    });
+    setBindingMock('ListActivityRunMembers', members);
+    await pane.switchThread(makeThread({ id: 't' }));
+    expect(await pane.loadUntilItem('a')).toBe('loaded');
+    expect(pane.items.map((it) => it.id)).toEqual(['p0', 'a']);
+
+    pane.applyProviderItemUpserts([member('e', 5)]);
+    expect(pane.items.map((it) => it.id)).toEqual(['p0', 'a']);
+    await vi.waitFor(() => expect(members).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(members.mock.calls[1]?.[1]).toMatchObject({ limit: 0, loadedFirstItemId: 'a', loadedLastItemId: 'a' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pane.items.map((it) => it.id)).toEqual(['p0', 'a']);
+
+    // Prose past the run appends and ends it.
+    pane.applyProviderItemUpserts([
+      makeItem({ id: 'reply', threadId: 't', turnIndex: 0, itemIndex: 6, kind: 'assistant_text' }),
+    ]);
+    expect(pane.items.map((it) => it.id)).toEqual(['p0', 'a', 'reply']);
+  });
+});

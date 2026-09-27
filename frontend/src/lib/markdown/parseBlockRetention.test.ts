@@ -64,7 +64,9 @@ for (let index = 0; index < 800; index++) {
 }
 globalThis.__aoParseBlockRetention = { cache, source };
 for (let index = 0; index < 4; index++) globalThis.gc();
-process.stdout.write(String(process.memoryUsage().heapUsed - before));
+// Read before touching process.stdout, whose first use builds the stream.
+const retained = process.memoryUsage().heapUsed - before;
+process.stdout.write(String(retained));
 `;
 
 function retainedHeapBytes(detach: boolean, chainedSource = false, fullWindow = false): number {

@@ -240,11 +240,21 @@ func (c *Cache) get(ctx context.Context, key string, fetch Fetch, bypass bool) (
 
 	c.mu.Lock()
 	if c.generation == startedAt {
+		now := c.now()
+		// An expired entry is never served, so dropping it only releases a
+		// workspace's list that nothing has asked for since. Expired entries
+		// are swept when a fetch stores its result; a skill list is small,
+		// so keeping one until the next fetch costs little.
+		for k, e := range c.entries {
+			if !now.Before(e.expiresAt) {
+				delete(c.entries, k)
+			}
+		}
 		ttl := c.ttl
 		if err != nil {
 			ttl = c.errorTTL
 		}
-		c.entries[key] = entry{skills: skills.Clone(), err: err, expiresAt: c.now().Add(ttl)}
+		c.entries[key] = entry{skills: skills.Clone(), err: err, expiresAt: now.Add(ttl)}
 	}
 	l.skills = skills
 	l.err = err

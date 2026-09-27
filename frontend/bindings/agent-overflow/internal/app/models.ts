@@ -59,6 +59,9 @@ import * as workspacefiles$0 from "../workspacefiles/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as json$0 from "../../../encoding/json/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as jsontext$0 from "../../../encoding/json/jsontext/models.js";
 
 /**
  * AccessAuditEntry is one row of the credential log.

@@ -433,11 +433,12 @@ func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriv
 	return nil, errors.New("browser: the pane host does not report engine-opened popups")
 }
 
-// CancelDownload keeps the CDP path. Browser.cancelDownload's support in
-// WebView2 is unverified; a refusal costs one download that finishes
-// anyway, which the Manager's own byte caps still bound.
-func (p *hostedProfile) CancelDownload(id string) {
-	browserCtx, ok := p.engine.browser()
+func (p *hostedProfile) CancelDownload(id string) { p.engine.cancelDownload(id) }
+
+// cancelDownload keeps the CDP path. Browser.cancelDownload's support in
+// WebView2 is unverified; a refusal leaves the download running.
+func (e *hostedEngine) cancelDownload(id string) {
+	browserCtx, ok := e.browser()
 	if !ok {
 		return
 	}
@@ -552,7 +553,7 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// tears the connection down rather than leaving a half-built browser
 	// behind.
 	attached := make(chan error, 1)
-	go func() { attached <- dialCDPBrowser(browserCtx, e.logf) }()
+	go func() { attached <- dialCDPBrowser(browserCtx, e.dispatchEvent, e.logf) }()
 	select {
 	case err := <-attached:
 		if err != nil {
@@ -565,7 +566,6 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 		allocCancel()
 		return nil, fmt.Errorf("browser: attach to the pane browser: %w", attachCtx.Err())
 	}
-	chromedp.ListenBrowser(browserCtx, e.dispatchEvent)
 	e.mu.Lock()
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
 	e.mu.Unlock()
@@ -594,7 +594,7 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 func (e *hostedEngine) dispatchEvent(ev any) {
 	// Downloads carry no engine identity — the GUID is the handle on every
 	// CDP engine — so they are translated by the shared helper.
-	if cdpDownloadEvent(ev, e.events) {
+	if cdpDownloadEvent(ev, e.events, e.cancelDownload) {
 		return
 	}
 	switch event := ev.(type) {

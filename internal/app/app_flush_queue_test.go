@@ -61,9 +61,9 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 		},
 	})
 
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, item := range items {
 		if item.Kind == "user_text" && strings.HasPrefix(item.ID, "user:3:flush:") {
@@ -189,9 +189,9 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 		t.Fatalf("EventUserText: %v", err)
 	}
 
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	if len(items) != 2 {
 		t.Fatalf("items = %+v, want assistant + queued user", items)
@@ -385,9 +385,9 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	// fallback succeeded, so this isn't a failure case from the user's
 	// POV.
 	for _, turn := range []int{2, 3} {
-		items, err := app.store.ListItemsForTurn(thread.ID, turn)
+		items, err := app.store.ListTurnItems(thread.ID, turn)
 		if err != nil {
-			t.Fatalf("ListItemsForTurn turn=%d: %v", turn, err)
+			t.Fatalf("ListTurnItems turn=%d: %v", turn, err)
 		}
 		for _, it := range items {
 			if it.Kind == "error" {
@@ -535,9 +535,9 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	// The attempted item registers a deferred pending marker before
 	// dispatch, but the failed provider write clears it and persists
 	// only the error row. Items 2 and 3 are not attempted.
-	items, err := app.store.ListItemsForTurn(thread.ID, 4)
+	items, err := app.store.ListTurnItems(thread.ID, 4)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	flushRows := 0
 	errorRows := 0
@@ -658,9 +658,9 @@ func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
 	if !app.triage.HasPendingSendForThread(thread.ID) {
 		t.Fatalf("pending-send marker cleared on ambiguous Codex steer timeout")
 	}
-	items, err := app.store.ListItemsForTurn(thread.ID, 0)
+	items, err := app.store.ListTurnItems(thread.ID, 0)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, it := range items {
 		if it.Kind == "error" {
@@ -993,9 +993,9 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 		},
 	})
 
-	items, err := app.store.ListItemsForTurn(thread.ID, 1)
+	items, err := app.store.ListTurnItems(thread.ID, 1)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, item := range items {
 		if strings.HasPrefix(item.ID, "user:1:flush:") {
@@ -1289,9 +1289,9 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	})
 
 	// The user_text row must be persisted immediately at turn 3 (the active turn).
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var flushRow *store.Item
 	for i, it := range items {
@@ -1371,9 +1371,9 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	// test, so the move is degenerate — but the row must still end up last
 	// at its turn. The behavioral guard with intervening content lives in
 	// TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho.
-	afterEcho, err := app.store.ListItemsForTurn(thread.ID, 3)
+	afterEcho, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn after echo: %v", err)
+		t.Fatalf("ListTurnItems after echo: %v", err)
 	}
 	for _, it := range afterEcho {
 		if it.ID != stamped.ID && it.ItemIndex >= stamped.ItemIndex {
@@ -1512,9 +1512,9 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	// After echo, the queued row must sort AFTER every row that arrived
 	// before the echo — the whole point of the fix.
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn after echo: %v", err)
+		t.Fatalf("ListTurnItems after echo: %v", err)
 	}
 	indexByID := map[string]int{}
 	var flushRow store.Item
@@ -1604,9 +1604,9 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 	})
 
 	// Both flush rows are quietly persisted at turn 3.
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var flushIndices []int
 	for _, it := range items {
@@ -1661,9 +1661,9 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	// Re-read and verify ordering: both flush rows should now be after
 	// "Stopped by user".
-	items, err = app.store.ListItemsForTurn(thread.ID, 3)
+	items, err = app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn after promote: %v", err)
+		t.Fatalf("ListTurnItems after promote: %v", err)
 	}
 	for _, it := range items {
 		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
@@ -1725,9 +1725,9 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 	})
 
 	// No user_text row should exist yet — deferred until echo.
-	items, err := app.store.ListItemsForTurn(thread.ID, 1)
+	items, err := app.store.ListTurnItems(thread.ID, 1)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, it := range items {
 		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
@@ -3299,9 +3299,9 @@ func TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation(t *testing.
 		t.Fatalf("requeued items = %+v, want none on ambiguous timeout", requeued)
 	}
 	for _, turnIndex := range []int{0, 1} {
-		items, err := app.store.ListItemsForTurn(thread.ID, turnIndex)
+		items, err := app.store.ListTurnItems(thread.ID, turnIndex)
 		if err != nil {
-			t.Fatalf("ListItemsForTurn(%d): %v", turnIndex, err)
+			t.Fatalf("ListTurnItems(%d): %v", turnIndex, err)
 		}
 		for _, it := range items {
 			if it.Kind == "error" {

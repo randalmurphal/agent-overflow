@@ -343,16 +343,13 @@ func (r *Router) NextFlushSequence(threadID string, turnIndex int) (int, error) 
 	defer anchor.Unlock()
 	maxSeq := 0
 	if r.store != nil {
-		items, err := r.store.ListItemsForTurn(threadID, turnIndex)
+		prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
+		ids, err := r.store.TurnItemIDsWithPrefix(threadID, turnIndex, prefix)
 		if err != nil {
 			return 0, err
 		}
-		prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
-		for _, it := range items {
-			if !strings.HasPrefix(it.ID, prefix) {
-				continue
-			}
-			seq, err := strconv.Atoi(strings.TrimPrefix(it.ID, prefix))
+		for _, id := range ids {
+			seq, err := strconv.Atoi(strings.TrimPrefix(id, prefix))
 			if err == nil && seq > maxSeq {
 				maxSeq = seq
 			}

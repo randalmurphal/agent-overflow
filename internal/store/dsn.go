@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -63,20 +64,40 @@ func (p connPragma) dsnToken() string {
 //     rows it just invalidated (history_rev_triggers.go), and only the OFF setting
 //     stops that statement re-entering the trigger that issued it. Turning
 //     it on would make an insert recurse through its own parent stamp.
+//   - wal_autocheckpoint is walCheckpointBoundPages: the checkpointer
+//     copies the WAL off the writer, and the writer checkpoints only when
+//     the WAL reaches the bound.
 var writerConnPragmas = []connPragma{
 	{name: "busy_timeout", dsnValue: "5000", want: 5000},
 	{name: "foreign_keys", dsnValue: "1", want: 1},
 	{name: "synchronous", dsnValue: "NORMAL", want: 1},
 	{name: "recursive_triggers", dsnValue: "0", want: 0},
+	{name: "wal_autocheckpoint", dsnValue: strconv.Itoa(walCheckpointBoundPages), want: walCheckpointBoundPages},
 }
 
 // readerConnPragmas are the settings every read-pool connection must
-// carry. query_only(1) makes a mis-routed write fail loudly instead of
-// contending with the writer.
+// carry.
+//
+//   - query_only(1) makes a mis-routed write fail loudly instead of
+//     contending with the writer.
+//   - cache_size gives each reader readerCacheKiB of page cache instead of
+//     SQLite's 2000 KiB default. modernc.org/sqlite builds SQLite with
+//     SQLITE_ENABLE_MEMORY_MANAGEMENT, so the pages of every connection
+//     share one budget, the sum of their limits, which any one connection
+//     can fill, and its allocator holds each 4 KiB page in an 8 KiB slot.
+//     With four long threads open the store kept 18 MB of pages in 39 MiB
+//     of SQLite memory at the default, and 9 MB in 22 MiB at 500 KiB. A
+//     reader drops its cached pages when it begins a read after any
+//     commit, and page, window and thread list reads measured no slower
+//     at 500 or 128 KiB.
 var readerConnPragmas = []connPragma{
 	{name: "busy_timeout", dsnValue: "5000", want: 5000},
 	{name: "query_only", dsnValue: "1", want: 1},
+	{name: "cache_size", dsnValue: strconv.Itoa(-readerCacheKiB), want: -readerCacheKiB},
 }
+
+// readerCacheKiB is each read connection's page cache, in KiB.
+const readerCacheKiB = 500
 
 // dsnEscaper %-escapes the three characters that can cut a path short or
 // corrupt the query string when it is spliced into a SQLite URI. Spaces

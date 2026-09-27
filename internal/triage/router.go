@@ -123,21 +123,24 @@ type Router struct {
 	// the top of Handle and decremented via defer so a panic still
 	// releases the wait.
 	inflight sync.WaitGroup
-	// settleWG tracks every fire-and-forget streaming-settle goroutine in
-	// flight. Block-stop and stream-item settle hot paths spawn settle
-	// work on its own goroutine so the provider read-loop doesn't pay
-	// the SQLite-write latency mid-turn (the freeze hot path between a
-	// thinking block ending and the next agent output streaming in).
-	// settleTurnStreaming uses a per-turn local WaitGroup AND this one,
-	// so the turn-row commit still sequences after every streaming-item
-	// commit on the same logical turn. The router blocks shutdown on
-	// this counter (see WaitForPendingSettles) so SQLite isn't closed
-	// underneath an in-flight settle.
+	// settleWG counts every settle goroutine in flight (goSettle).
+	// Block-stop and stream-item settles run on their own goroutine so
+	// the provider read-loop doesn't pay the SQLite-write latency
+	// mid-turn (the freeze hot path between a thinking block ending and
+	// the next agent output streaming in). It is the shutdown drain
+	// (Wait, WaitForPendingSettles), so SQLite isn't closed underneath an
+	// in-flight settle; in-turn paths wait on their own thread's settles
+	// (settles below).
 	settleWG sync.WaitGroup
+	// settles counts each thread's settle goroutines in flight
+	// (goSettle), so a thread's in-turn barrier (waitThreadSettles) waits
+	// on its own settles and not on every thread's. Guarded by settleMu;
+	// an entry exists only while its count is positive.
+	settleMu sync.Mutex
+	settles  map[string]*threadSettles
 	// refreshWG tracks the armed anchor refresh timers and their running
-	// flushes (wire_items.go). Separate from settleWG because the settle
-	// drain runs on in-turn paths and must not wait out a quiet period;
-	// DrainWireItemRefresh is its drain.
+	// flushes; DrainWireItemRefresh is its drain. wire_items.go says why
+	// it is not settleWG.
 	refreshWG sync.WaitGroup
 	// wireRefresh holds each thread's pending anchor refresh: the rows
 	// pushed since the last one and the timer that will run it. Guarded
@@ -164,8 +167,11 @@ type Router struct {
 	// assistant_text row's full accumulated text: called with
 	// final=false at each persistence flush window (the same cadence
 	// as the live pathRefs enrichment, possibly on the provider read
-	// loop — implementations must not block) and once with final=true
-	// from the settle path with the row's final model text. Wired via
+	// loop; implementations must not block) and with final=true when
+	// the row leaves streaming: from the settle path with the row's
+	// final model text, from an error flip with its text before the
+	// stopped/interrupted suffix, and with empty text from a settle that
+	// finds no streaming row, which only ends the stream. Wired via
 	// SetAssistantTextStreamObserver at router construction; nil
 	// disables it. Backs the highlight seed push.
 	assistantTextStream func(threadID, itemID, text string, final bool)
@@ -256,6 +262,7 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 		threads:                    make(map[string]*threadState),
 		identities:                 make(map[string]*threadIdentity),
 		wireRefresh:                make(map[string]*wireItemRefresh),
+		settles:                    make(map[string]*threadSettles),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		flushStampApplied:          make(map[uint64]struct{}),
 	}

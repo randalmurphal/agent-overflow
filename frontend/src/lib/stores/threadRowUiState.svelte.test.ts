@@ -6,6 +6,7 @@ import {
   readPayloadCache,
   writePayloadCache,
 } from '../utils/payloadDataCache';
+import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
@@ -32,6 +33,11 @@ const NO_ROWS_LOADED = {
 async function seedCollapseDiffPreviews(collapseDiffPreviews: boolean): Promise<void> {
   setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews }));
   await loadSettings();
+}
+
+// A live reveal stream whose revealed text is `text`.
+function liveStream(text: string): LiveRevealStream {
+  return { revealedText: (end) => text.slice(0, end) };
 }
 
 describe('createThreadRowUiState', () => {
@@ -202,7 +208,9 @@ describe('createThreadRowUiState', () => {
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
       THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      liveStream(' ignored'),
       ' ignored',
+      8,
       2,
     );
 
@@ -219,7 +227,9 @@ describe('createThreadRowUiState', () => {
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
       THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      liveStream(' live'),
       ' live',
+      5,
       updated.updatedAt,
     );
 
@@ -789,7 +799,9 @@ describe('createThreadRowUiState', () => {
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
       THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      liveStream(' live'),
       ' live',
+      5,
       2,
     );
 
@@ -800,7 +812,9 @@ describe('createThreadRowUiState', () => {
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
       THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      liveStream(' ignored'),
       ' ignored',
+      8,
       3,
     );
     expect(lease.handle.displayData).toBe('seed live');

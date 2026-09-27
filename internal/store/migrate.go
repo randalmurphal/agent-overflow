@@ -1722,6 +1722,10 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 131, Name: "shown_history_fix", SQL: shownHistoryFixV131SQL},
 	{Version: 132, Name: "fork_walked_anchors", SQL: forkWalkedAnchorsV132SQL},
 	{Version: 133, Name: "settled_launches", SQL: settledLaunchesV133SQL},
+	{Version: providerItemIndexMigrationVersion, Name: "provider_item_index", SQL: providerItemIndexV134SQL},
+	{Version: summaryOnlyDiffIndexMigrationVersion, Name: "summary_only_diff_index", SQL: summaryOnlyDiffIndexV135SQL},
+	{Version: topLevelTimelineIndexMigrationVersion, Name: "top_level_timeline_index", SQL: topLevelTimelineIndexV136SQL},
+	{Version: newestChunkRefsIndexMigrationVersion, Name: "newest_chunk_refs_index", SQL: newestChunkRefsIndexV137SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

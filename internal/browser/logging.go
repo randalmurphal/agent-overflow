@@ -20,9 +20,8 @@ func normalizeConsoleLevel(level string) string {
 }
 
 func (p *managedPage) appendLog(entry ConsoleLog) {
-	if len(entry.Message) > maxConsoleMessageBytes {
-		entry.Message = entry.Message[:maxConsoleMessageBytes]
-	}
+	entry.Message = truncateUTF8(entry.Message, maxConsoleMessageBytes)
+	entry.URL = truncateUTF8(entry.URL, maxBrowserURLBytes)
 	p.logMu.Lock()
 	defer p.logMu.Unlock()
 	if len(p.logs) == maxConsoleEntries {

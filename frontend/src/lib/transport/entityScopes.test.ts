@@ -3,6 +3,7 @@ import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteAutomation, noteProject, noteThread, noteWorkflowItem } from './entityIndex';
 import { __resetScopesForTest, setCarriedSessionScopes } from './scopes';
 import { automationHasScope, projectHasScope, threadHasScope, workflowItemHasScope } from './entityScopes';
+import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
 beforeEach(() => {
   __resetEntityIndexForTest();
@@ -43,4 +44,25 @@ it('changes grants with a moved conversation rather than retaining the source’
   expect(threadHasScope('attachments:write', 'moving')).toBe(false);
   noteThread('moving', 'writable', 2);
   expect(threadHasScope('attachments:write', 'moving')).toBe(true);
+});
+
+it('checks a draft placeholder against the computer of the project its id names', () => {
+  stageBackend({ id: 'readonly' });
+  noteProject('project-writable', 'writable');
+  noteProject('project-readonly', 'readonly');
+  expect(threadHasScope('threads:operate', draftPlaceholderId('main', 'project-writable', 'chat'))).toBe(true);
+  expect(threadHasScope('threads:operate', draftPlaceholderId('main', 'project-readonly', 'chat'))).toBe(false);
+  expect(threadHasScope('threads:operate', draftPlaceholderId('main', 'project-unknown', 'chat'))).toBe(false);
+});
+
+// Routing refuses the call itself; the controls stay as the first claimant's
+// grants have them.
+it('judges a conversation two computers claim by its first claimant', () => {
+  stageBackend({ id: 'readonly' });
+  noteThread('writable-first', 'writable', 1);
+  noteThread('writable-first', 'readonly', 1);
+  noteThread('readonly-first', 'readonly', 1);
+  noteThread('readonly-first', 'writable', 1);
+  expect(threadHasScope('threads:operate', 'writable-first')).toBe(true);
+  expect(threadHasScope('threads:operate', 'readonly-first')).toBe(false);
 });

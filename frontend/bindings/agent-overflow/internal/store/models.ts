@@ -8,6 +8,9 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as json$0 from "../../../encoding/json/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as jsontext$0 from "../../../encoding/json/jsontext/models.js";
 
 /**
  * ActivityRunGroup is one group's contribution to a run header.

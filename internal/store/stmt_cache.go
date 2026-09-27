@@ -14,6 +14,27 @@ import (
 // stmtCacheSize bounds the statements one connection keeps compiled.
 const stmtCacheSize = 64
 
+// textParam is the text parameter param ("?" or "?N") as an expression
+// the planner cannot read, for a comparison with a column that a partial
+// index pins to a literal. See docs/architecture/sqlite-store.md#connections.
+func textParam(param string) string {
+	return "CAST(" + param + " AS TEXT)"
+}
+
+// boundText is the positional text parameter the planner cannot read.
+var boundText = textParam("?")
+
+// sqlTextLiteral is value as an SQL string literal, for a code constant
+// the planner must read to choose a partial index.
+func sqlTextLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// cachedStmtRan, when set, sees each cached statement after each of its
+// runs. Only the package's tests set it (sql_rebind_test.go), to fail
+// a statement whose plan reads a bound value.
+var cachedStmtRan func(stmt driver.Stmt, query string)
+
 // sqliteConn is the driver connection surface database/sql uses on a
 // modernc.org/sqlite connection. The statement cache forwards all of it.
 type sqliteConn interface {
@@ -58,6 +79,9 @@ type stmtCacheConn struct {
 	entries map[string]*list.Element
 	// order holds *cachedStmt, most recently used first.
 	order list.List
+	// beforeClose, when set, releases what the connector attached to the
+	// connection (the writer's commit hook) before it closes.
+	beforeClose func()
 }
 
 type cachedStmt struct {
@@ -137,6 +161,9 @@ func (c *stmtCacheConn) acquire(ctx context.Context, query string) (*cachedStmt,
 }
 
 func (c *stmtCacheConn) release(entry *cachedStmt) {
+	if cachedStmtRan != nil {
+		cachedStmtRan(entry.stmt, entry.query)
+	}
 	c.mu.Lock()
 	entry.busy = false
 	c.mu.Unlock()
@@ -164,6 +191,9 @@ func (c *stmtCacheConn) evictLocked(keep int) {
 // database/sql closes a connection only after every Rows on it has closed, so
 // no cached statement is running.
 func (c *stmtCacheConn) Close() error {
+	if c.beforeClose != nil {
+		c.beforeClose()
+	}
 	c.mu.Lock()
 	var errs []error
 	for el := c.order.Front(); el != nil; el = el.Next() {

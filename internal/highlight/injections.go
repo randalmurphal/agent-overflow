@@ -58,7 +58,7 @@ func compileInjections(lang *tree_sitter.Language, source string) (*injectionQue
 	}
 	query, err := tree_sitter.NewQuery(lang, source)
 	if err != nil {
-		return nil, err
+		return nil, *err
 	}
 	contentIdx, ok := query.CaptureIndexForName("injection.content")
 	if !ok {

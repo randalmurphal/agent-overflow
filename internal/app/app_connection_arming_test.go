@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/transport"
 )
 
 // A bound method that ARMS something on behalf of one client owes that client's
@@ -50,10 +53,7 @@ var armingVocabulary = []string{
 // is not per connection, and a wrong one is exactly the leak this guard exists
 // to catch.
 var connStateExemptMethods = map[string]string{
-	"AttachThreadWorktree":       "attaches a git worktree to a thread row; the resource is a directory on disk that outlives every connection, and detaching it is a deliberate act, not a teardown",
-	"GitStatusUnsubscribe":       "releases a subscription BY ID; GitStatusSubscribe owns the connection tie and this is the client's own idempotent release of a handle it was given",
-	"UnsubscribePRUpdates":       "releases a PR-update reference BY ID, on the same terms as GitStatusUnsubscribe; SubscribePRUpdates owns the connection tie",
-	"BrowserCompanionPaneDetach": "releases a companion pane BY ID, on the same terms; BrowserCompanionPaneAttach owns the connection tie",
+	"AttachThreadWorktree": "attaches a git worktree to a thread row; the resource is a directory on disk that outlives every connection, and detaching it is a deliberate act, not a teardown",
 }
 
 func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
@@ -200,4 +200,48 @@ func readsConnState(fn *ast.FuncDecl, bodies map[string]*ast.FuncDecl, visited m
 		return true
 	})
 	return found
+}
+
+// byIDTie is a subscription the client can also end by id.
+type byIDTie struct {
+	subscribe   func(context.Context) (id string, err error)
+	unsubscribe func(ctx context.Context, id string) error
+	key         func(id string) string
+	live        func(id string) bool
+}
+
+// checkByIDTie proves that the subscribe binds its release to the connection
+// under the subscription's key and that the unsubscribe removes what is bound
+// there, so a long-lived connection keeps no cleanup per subscription it ever
+// made.
+func checkByIDTie(t *testing.T, tie byIDTie) {
+	t.Helper()
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	id, err := tie.subscribe(ctx)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	state.UnbindCleanup(tie.key(id))
+	state.RunCleanups()
+	if !tie.live(id) {
+		t.Fatal("the connection's end released a subscription whose key was unbound: its tie is bound elsewhere")
+	}
+	if err := tie.unsubscribe(ctx, id); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+
+	ctx, state = transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	if id, err = tie.subscribe(ctx); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if !state.BindCleanup(tie.key(id), func() { t.Error("the unsubscribe left a cleanup bound under its key") }) {
+		t.Fatal("bind refused on an open connection")
+	}
+	if err := tie.unsubscribe(ctx, id); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	if tie.live(id) {
+		t.Fatal("the unsubscribe did not release the subscription")
+	}
+	state.RunCleanups()
 }

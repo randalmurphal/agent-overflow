@@ -2323,6 +2323,7 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
                 input: { file_path: notePath, content: 'hello' },
                 toolUseId: 'tu-write',
                 onAllow: [
+                  { gate: 'hold-write' },
                   {
                     emitLines: [
                       JSON.stringify({
@@ -2421,14 +2422,28 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
   await asked;
 
   // Answering the prompt lets the turn finish, and the caller's own watch
-  // is what picks the settlement up.
+  // is what picks the settlement up. The watch starts only after the
+  // answer: one that finds the prompt still open ends as blocked, which is
+  // the wait above. The target holds after the allow until the watch is
+  // running, so the settlement lands on the watch.
   const pending = await approval;
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'watch it until it is done', null);
   await harness.rpc('RespondToApproval', target, {
     requestId: pending.request!.requestId,
     decision: 'allow',
   });
+  const held = await awaitGate(harness, 'hold-write', targetPath);
+  await harness.rpc('SendMessage', caller, 'watch it until it is done', null);
+  await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'step_started' &&
+      ev.report.detail === 'mcpCall' &&
+      ev.report.turn === 2 &&
+      ev.cwd === callerPath,
+    60_000,
+  );
+  await advanceGate(harness, held.mockId, 'hold-write');
 
   interface StatusAnswer {
     requests?: Array<{ token: string; state: string; answer_kind?: string; answer?: string }>;

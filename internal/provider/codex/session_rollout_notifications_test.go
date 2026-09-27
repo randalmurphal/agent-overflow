@@ -444,6 +444,23 @@ func TestRetainRolloutPartialLineShedsOversizedCapacity(t *testing.T) {
 		t.Fatalf("completed long line kept a %d-byte buffer, want it dropped", cap(shed))
 	}
 
+	// The long line completing mid-chunk carries the start of the next
+	// record; that short tail must not keep the long line's capacity.
+	grown := append(make([]byte, 0, rolloutSubagentNotificationPartialKeepBytes*4), `{"type":"long"}`+"\n"+`{"type":"ne`...)
+	tail := retainRolloutPartialLine(grown, grown[len(`{"type":"long"}`+"\n"):])
+	if string(tail) != `{"type":"ne` {
+		t.Fatalf("tail after a long line = %q", string(tail))
+	}
+	if cap(tail) > rolloutSubagentNotificationPartialKeepBytes {
+		t.Fatalf("a short tail kept the long line's %d-byte buffer", cap(tail))
+	}
+
+	// The steady state, a carried tail plus one read chunk, keeps its buffer.
+	steady := append(make([]byte, 0, 2*rolloutSubagentNotificationReadChunk), `{"type":"a"}`+"\n"+`{"type":"b`...)
+	if kept := retainRolloutPartialLine(steady, steady[len(`{"type":"a"}`+"\n"):]); cap(kept) != cap(steady) {
+		t.Fatalf("a steady-state buffer was reallocated: cap %d, want %d", cap(kept), cap(steady))
+	}
+
 	small := make([]byte, 0, rolloutSubagentNotificationPartialKeepBytes)
 	if kept := retainRolloutPartialLine(small, nil); kept == nil || cap(kept) != cap(small) {
 		t.Fatalf("an at-bound buffer was dropped instead of reused")

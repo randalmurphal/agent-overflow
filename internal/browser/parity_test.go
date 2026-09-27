@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestToolDefinitionsCoverBrowserSurfaceAndCodexParity(t *testing.T) {
@@ -200,6 +201,40 @@ func TestConsoleRingIsBounded(t *testing.T) {
 	defer p.logMu.Unlock()
 	if len(p.logs) != maxConsoleEntries {
 		t.Fatalf("logs=%d", len(p.logs))
+	}
+}
+
+func TestConsoleRingKeepsOnlyTruncatedBytes(t *testing.T) {
+	message := strings.Repeat("m", 4*maxConsoleMessageBytes)
+	url := "data:text/javascript," + strings.Repeat("u", 4*maxBrowserURLBytes)
+	p := &managedPage{}
+	p.appendLog(ConsoleLog{Level: "log", Message: message, URL: url})
+	p.logMu.Lock()
+	defer p.logMu.Unlock()
+	got := p.logs[0]
+	if got.Message != message[:maxConsoleMessageBytes] || got.URL != url[:maxBrowserURLBytes] {
+		t.Fatalf("message %d bytes, url %d bytes; want the leading %d and %d", len(got.Message), len(got.URL), maxConsoleMessageBytes, maxBrowserURLBytes)
+	}
+	if unsafe.StringData(got.Message) == unsafe.StringData(message) || unsafe.StringData(got.URL) == unsafe.StringData(url) {
+		t.Fatal("a truncated console field still shares the engine's full value")
+	}
+}
+
+// A truncated value is a copy, so keeping it does not keep the engine's whole
+// string alive. A value within the limit is returned as is.
+func TestTruncateUTF8CopiesWhatItKeeps(t *testing.T) {
+	value := strings.Repeat("é", 1000)
+	start := uintptr(unsafe.Pointer(unsafe.StringData(value)))
+	end := start + uintptr(len(value))
+	got := truncateUTF8(value, 101)
+	if got != value[:100] {
+		t.Fatalf("truncated to %d bytes, want the 100 before the split rune", len(got))
+	}
+	if at := uintptr(unsafe.Pointer(unsafe.StringData(got))); at >= start && at < end {
+		t.Fatal("the truncated value points into the engine's string")
+	}
+	if kept := truncateUTF8(value, len(value)); unsafe.StringData(kept) != unsafe.StringData(value) {
+		t.Fatal("a value within the limit was copied")
 	}
 }
 

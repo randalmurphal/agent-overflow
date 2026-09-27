@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -149,11 +150,12 @@ func (r *Router) decStreamingCounts(threadID, scope string) {
 	}
 }
 
-// settleTurnStreaming collects every active streaming scope in
-// (threadID, turnIndex) and settles them in parallel before returning.
-// Used by handleTurnComplete; the synchronous wait barrier ensures the
-// turns row UPDATE (which follows this call) sequences after every
-// streaming-item commit on the same logical turn.
+// settleTurnStreaming waits for the thread's settles already in flight
+// (a block stop settles on its own goroutine), then collects every
+// active streaming scope in (threadID, turnIndex) and settles them in
+// parallel before returning. The turns row UPDATE and the
+// turn_completed announcement that follow it therefore see every
+// streaming row of the turn settled.
 //
 // The scan runs against activeTextBlockRefs / activeThinkingBlockRefs so
 // provider-keyed streams and legacy scope-keyed streams share the same
@@ -168,14 +170,16 @@ func (r *Router) decStreamingCounts(threadID, scope string) {
 // multi-scope turns (e.g. an interrupted turn with two text blocks
 // and a thinking block all in flight) the total settle latency drops
 // from O(N × per-block SQLite time) to ~O(per-block SQLite time).
-// Each goroutine is tracked by BOTH the per-turn local WaitGroup
-// (sequencing barrier for the caller) and r.settleWG (shutdown drain).
+// The per-turn local WaitGroup is the caller's barrier for these
+// goroutines; goSettle counts them for shutdown and the thread's
+// barrier like any other settle.
 //
 // A stream in one of agentScopes is an agent's, not the turn's: a turn's
 // end leaves it open for the agent's end to settle (agentOwnedOpenScopes).
 // A nil agentScopes settles every scope, which only a boundary inside a
 // live turn asks for.
 func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string, agentScopes map[string]bool) error {
+	r.waitThreadSettles(threadID)
 	r.mu.Lock()
 	textKeys := make([]string, 0)
 	thinkingKeys := make([]string, 0)
@@ -210,12 +214,10 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 			continue
 		}
 		turnWG.Add(1)
-		r.settleWG.Add(1)
-		go func(scope, itemID string) {
+		r.goSettle(threadID, func() {
 			defer turnWG.Done()
-			defer r.settleWG.Done()
-			captureErr(r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil))
-		}(ref.scope, ref.itemID)
+			captureErr(r.doSettleStreamingText(threadID, ref.scope, ref.itemID, status, "", false, nil))
+		})
 	}
 	for _, key := range thinkingKeys {
 		ref, active := r.takeActiveThinkingBlockByKey(threadID, key)
@@ -223,12 +225,10 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 			continue
 		}
 		turnWG.Add(1)
-		r.settleWG.Add(1)
-		go func(scope, itemID string) {
+		r.goSettle(threadID, func() {
 			defer turnWG.Done()
-			defer r.settleWG.Done()
-			captureErr(r.doSettleStreamingThinking(threadID, scope, itemID, status, "", false))
-		}(ref.scope, ref.itemID)
+			captureErr(r.doSettleStreamingThinking(threadID, ref.scope, ref.itemID, status, "", false))
+		})
 	}
 	turnWG.Wait()
 	return firstErr
@@ -361,6 +361,15 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 	// flush would force a redundant action:meta emit and UpdateItemMeta
 	// for every settled text row with paths.
 	defer r.clearStreamingPathRefs(threadID, itemID)
+	// Every settle ends the row's observer stream once, including the
+	// returns below that find no streaming row, so no observer state
+	// outlives the stream. A release carries no text to seed.
+	ended := false
+	defer func() {
+		if !ended && r.assistantTextStream != nil {
+			r.assistantTextStream(threadID, itemID, "", true)
+		}
+	}()
 
 	if err := r.flushStreamingItem(threadID, itemID); err != nil {
 		return err
@@ -386,6 +395,7 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 	// observer pushes final highlight seeds and drops its per-row
 	// state.
 	if r.assistantTextStream != nil {
+		ended = true
 		r.assistantTextStream(threadID, itemID, pathRefSource, true)
 	}
 	if status == statusErrored {
@@ -419,7 +429,21 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 	if summaryChanged {
 		update.Summary = &item.Summary
 	}
-	return r.persistItemFieldsAndPatch(item, update)
+	return r.persistSettle(item, update)
+}
+
+// persistSettle writes a streaming row's settle while the row is still
+// streaming. Another write can settle the row between a settle's read of
+// it and its write: a Stop's flip of the turn's rows, an agent's end, or
+// the other of two settles of one row (a block stop's and its agent's
+// end's). The settle then leaves the row as that write left it.
+func (r *Router) persistSettle(item store.Item, update store.ItemPartialUpdate) error {
+	update.IfStreaming = true
+	err := r.persistItemFieldsAndPatch(item, update)
+	if errors.Is(err, store.ErrItemSettled) {
+		return nil
+	}
+	return err
 }
 
 // settleStreamingTextAsync is the fire-and-forget text-block settle.
@@ -428,8 +452,8 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 // provider event (the freeze hot path). The sync prelude runs in the
 // calling goroutine so the activeTextBlocks slot is cleared
 // immediately (duplicate settle calls no-op without spawning a second
-// goroutine). The heavy body runs on a goroutine tracked by
-// r.settleWG so app shutdown can drain.
+// goroutine). The heavy body runs on a settle goroutine (goSettle), so
+// app shutdown can drain it.
 func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage, at time.Time) {
 	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
@@ -440,13 +464,11 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 		}
 		return
 	}
-	r.settleWG.Add(1)
-	go func() {
-		defer r.settleWG.Done()
+	r.goSettle(threadID, func() {
 		if err := r.doSettleStreamingText(threadID, scope, itemID, status, finalContent, finalContentPresent, blockMeta); err != nil {
 			r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, itemID), err)
 		}
-	}()
+	})
 }
 
 func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, scope string, status string) {
@@ -456,13 +478,11 @@ func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, s
 		if !active {
 			continue
 		}
-		r.settleWG.Add(1)
-		go func(itemID string) {
-			defer r.settleWG.Done()
-			if err := r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil); err != nil {
-				r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, itemID), err)
+		r.goSettle(threadID, func() {
+			if err := r.doSettleStreamingText(threadID, scope, ref.itemID, status, "", false, nil); err != nil {
+				r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, ref.itemID), err)
 			}
-		}(ref.itemID)
+		})
 	}
 }
 
@@ -484,7 +504,7 @@ func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope st
 
 func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage, at time.Time) error {
 	if providerItemID != "" {
-		r.WaitForPendingSettles()
+		r.waitThreadSettles(threadID)
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindAssistantText, scope, providerItemID); err != nil {
 			return err
 		} else if found {
@@ -493,24 +513,16 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			}
 			if item.Status == statusCompleted && item.Summary == content {
 				// Idempotent re-assert (duplicate content-present stop):
-				// the row already holds exactly this settled content.
-				// Re-emitting the completed upsert would dispose a
-				// frontend smoother mid-drain (terminal upserts dispose
-				// without snap), turning the rest of a still-revealing
-				// row into a wholesale jump.
+				// the row already holds exactly this settled content, so
+				// a write and an emit would change nothing.
 				return nil
 			}
 			if item.Status == statusCompleted {
 				return fmt.Errorf("provider attempted to replace completed text item %s", item.ID)
 			}
-			item.Summary = content
-			item.Status = statusCompleted
-			item.UpdatedAt = rowClockMillis(at)
-			item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
-			r.enrichPathRefsFromTexts(threadID, &item, content)
-			r.enrichCodeSpans(&item)
-			payload := assistantTextPayload(item.ID, content, item.UpdatedAt)
-			return r.persistItem(item, &payload)
+			// A streaming row whose stream the router no longer holds
+			// settles as that stream's stop would, with this content.
+			return r.settleStreamingTextRow(threadID, item.ID, statusCompleted, interruptedSummary, content, true, blockMeta)
 		}
 	}
 	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content, blockMeta, at)
@@ -904,7 +916,7 @@ func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, sum
 		summary := summarise(item.Summary)
 		update.Summary = &summary
 	}
-	return r.persistItemFieldsAndPatch(item, update)
+	return r.persistSettle(item, update)
 }
 
 func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, at time.Time) {
@@ -917,13 +929,11 @@ func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, sc
 		}
 		return
 	}
-	r.settleWG.Add(1)
-	go func() {
-		defer r.settleWG.Done()
+	r.goSettle(threadID, func() {
 		if err := r.doSettleStreamingThinking(threadID, scope, itemID, status, finalContent, finalContentPresent); err != nil {
 			r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, itemID), err)
 		}
-	}()
+	})
 }
 
 func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex int, scope string, status string) {
@@ -933,13 +943,11 @@ func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex in
 		if !active {
 			continue
 		}
-		r.settleWG.Add(1)
-		go func(itemID string) {
-			defer r.settleWG.Done()
-			if err := r.doSettleStreamingThinking(threadID, scope, itemID, status, "", false); err != nil {
-				r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, itemID), err)
+		r.goSettle(threadID, func() {
+			if err := r.doSettleStreamingThinking(threadID, scope, ref.itemID, status, "", false); err != nil {
+				r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, ref.itemID), err)
 			}
-		}(ref.itemID)
+		})
 	}
 }
 
@@ -961,7 +969,7 @@ func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scop
 
 func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, at time.Time) error {
 	if providerItemID != "" {
-		r.WaitForPendingSettles()
+		r.waitThreadSettles(threadID)
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindThinking, scope, providerItemID); err != nil {
 			return err
 		} else if found {
@@ -969,25 +977,19 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 				return nil
 			}
 			if item.Status == statusCompleted && item.Summary == ThinkingSummaryPreview(content) {
-				// Idempotent re-assert (duplicate content-present stop):
-				// same rationale as the text branch above. The preview is
-				// the trailing 400 runes, so for a same-provider-item-id
-				// re-assert a matching tail means the same content — skip
-				// the payload rewrite along with the upsert.
+				// Idempotent re-assert (duplicate content-present stop),
+				// as in the text branch above. The preview is the
+				// trailing 400 runes, so for a same-provider-item-id
+				// re-assert a matching tail means the same content: the
+				// payload rewrite is skipped with the row write.
 				return nil
 			}
 			if item.Status == statusCompleted {
 				return fmt.Errorf("provider attempted to replace completed thinking item %s", item.ID)
 			}
-			item.Summary = ThinkingSummaryPreview(content)
-			item.Status = statusCompleted
-			item.UpdatedAt = rowClockMillis(at)
-			if item.PayloadID != "" {
-				if err := r.store.ReplacePayloadData(threadID, item.PayloadID, []byte(content), item.PayloadMeta, item.UpdatedAt); err != nil {
-					return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
-				}
-			}
-			return r.persistItem(item, nil)
+			// A streaming row whose stream the router no longer holds
+			// settles as that stream's stop would, with this content.
+			return r.settleStreamingThinkingRow(threadID, item.ID, statusCompleted, interruptedSummary, content, true)
 		}
 	}
 	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content, at)

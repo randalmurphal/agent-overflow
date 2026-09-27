@@ -1,34 +1,39 @@
-import { describe, expect, it } from 'vitest';
-import { reasoningBodyText } from './reasoningTailSource';
+import { describe, expect, it, vi } from 'vitest';
+import { reasoningBodyText, type ReasoningBodyTextInput } from './reasoningTailSource';
 
 // reasoningBodyText is the shared body-text selector for the two reasoning-tail
-// rows (ThinkingBlock + CompactionReasoning). These cover the three branches and
-// the containment-aware merge that the components themselves don't exercise
-// directly — the case most likely to duplicate or drop text if it regresses.
+// rows (ThinkingBlock + CompactionReasoning). These cover the three branches,
+// including which ones read the whole live text.
+function input(overrides: Partial<ReasoningBodyTextInput>): ReasoningBodyTextInput {
+  return {
+    summary: 'trimmed summary',
+    liveWindow: null,
+    liveText: () => null,
+    persisted: '',
+    expanded: false,
+    isStreaming: true,
+    ...overrides,
+  };
+}
+
 describe('reasoningBodyText', () => {
   describe('collapsed', () => {
-    it('returns the live smoother tail when present', () => {
+    it('returns the live window without reading the whole live text', () => {
+      const liveText = vi.fn(() => 'whole live text');
       expect(
-        reasoningBodyText({
-          summary: 'trimmed summary',
-          liveTail: 'live tail text',
+        reasoningBodyText(input({
+          liveWindow: { text: 'live text', start: 6 },
+          liveText,
           persisted: 'loaded payload',
-          expanded: false,
-          isStreaming: true,
-        }),
-      ).toBe('live tail text');
+        })),
+      ).toEqual({ text: 'live text', start: 6 });
+      expect(liveText).not.toHaveBeenCalled();
     });
 
-    it('falls back to the trimmed summary once the smoother disposes (liveTail null)', () => {
+    it('falls back to the trimmed summary once the smoother disposes (window null)', () => {
       expect(
-        reasoningBodyText({
-          summary: 'trimmed summary',
-          liveTail: null,
-          persisted: 'loaded payload',
-          expanded: false,
-          isStreaming: false,
-        }),
-      ).toBe('trimmed summary');
+        reasoningBodyText(input({ persisted: 'loaded payload', isStreaming: false })),
+      ).toEqual({ text: 'trimmed summary', start: 0 });
     });
   });
 
@@ -36,66 +41,56 @@ describe('reasoningBodyText', () => {
     it('appends only the continuation tail when the snapshot is behind the reveal', () => {
       // persisted leads with "A"; the reveal "ABC" continues it → append "BC".
       expect(
-        reasoningBodyText({
-          summary: '',
-          liveTail: 'ABC',
-          persisted: 'A',
-          expanded: true,
-          isStreaming: true,
-        }),
-      ).toBe('ABC');
+        reasoningBodyText(input({ liveText: () => 'ABC', persisted: 'A', expanded: true })),
+      ).toEqual({ text: 'ABC', start: 0 });
     });
 
-    it('returns the live reveal verbatim when nothing is loaded yet (persisted empty)', () => {
+    it('returns the whole live text, not its window, when nothing is loaded yet', () => {
       expect(
-        reasoningBodyText({
-          summary: '',
-          liveTail: 'reveal so far',
-          persisted: '',
+        reasoningBodyText(input({
+          liveWindow: { text: 'so far', start: 7 },
+          liveText: () => 'reveal so far',
           expanded: true,
-          isStreaming: true,
-        }),
-      ).toBe('reveal so far');
+        })),
+      ).toEqual({ text: 'reveal so far', start: 0 });
     });
 
     it('appends nothing when the loaded snapshot already leads the reveal (snapshot ahead)', () => {
       // GetPayloadData flushes the live buffer before reading, so the fetched
       // body can lead the smoother reveal; the merge must not duplicate it.
       expect(
-        reasoningBodyText({
-          summary: '',
-          liveTail: 'AB',
-          persisted: 'ABC',
-          expanded: true,
-          isStreaming: true,
-        }),
-      ).toBe('ABC');
+        reasoningBodyText(input({ liveText: () => 'AB', persisted: 'ABC', expanded: true })),
+      ).toEqual({ text: 'ABC', start: 0 });
+    });
+
+    it('appends the summary to a stale snapshot when no live text is held', () => {
+      expect(
+        reasoningBodyText(input({ summary: 'live tail', persisted: 'full before ', expanded: true })),
+      ).toEqual({ text: 'full before live tail', start: 0 });
     });
   });
 
   describe('expanded + settled', () => {
     it('keeps the longer loaded payload over a shorter live remnant', () => {
       expect(
-        reasoningBodyText({
-          summary: '',
-          liveTail: 'short',
+        reasoningBodyText(input({
+          liveText: () => 'short',
           persisted: 'the full loaded payload body',
           expanded: true,
           isStreaming: false,
-        }),
-      ).toBe('the full loaded payload body');
+        })),
+      ).toEqual({ text: 'the full loaded payload body', start: 0 });
     });
 
-    it('keeps the live tail when it is longer than the loaded payload', () => {
+    it('keeps the live text when it is longer than the loaded payload', () => {
       expect(
-        reasoningBodyText({
-          summary: '',
-          liveTail: 'the longer live tail body',
+        reasoningBodyText(input({
+          liveText: () => 'the longer live tail body',
           persisted: 'short',
           expanded: true,
           isStreaming: false,
-        }),
-      ).toBe('the longer live tail body');
+        })),
+      ).toEqual({ text: 'the longer live tail body', start: 0 });
     });
   });
 });

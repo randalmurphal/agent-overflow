@@ -94,12 +94,6 @@ type timelineSelection struct {
 	// temp b-tree this helper exists to avoid.
 	Columns func(threadIDExpr, revExpr string) string
 
-	// LocalJoin, when non-empty, is a join the own local arm's projection
-	// reads, rendered after its items row: servedItemJoin for a
-	// projection that serves meta. The imported and lineage arms have no
-	// stamps: their rows read revision -1, which serves stored meta.
-	LocalJoin string
-
 	// Source, when non-empty, is a row source CROSS JOINed AHEAD of the
 	// timeline table in every arm (`rel` for the subagent descendant
 	// walk). CROSS JOIN is a planner directive: it pins the caller's
@@ -116,14 +110,28 @@ type timelineSelection struct {
 	// without one the arm reads every imported row in the database.
 	KeyFirst bool
 
+	// FilterCut makes a lineage arm filter the ancestor's rows by the
+	// fork's cut instead of ranging over the cut, for a selection whose
+	// Where pins a key or a partial index's predicate that a local index
+	// finds (materializedIDSelection, ListUnsettledTurnItems). KeyFirst and
+	// Source imply it.
+	FilterCut bool
+
 	// Turn, when non-empty, pins the selection to one turn, or with
 	// FromTurn to that turn and every later one. It is an SQL
 	// expression, "?" or an outer query's column, and TurnArgs are its
 	// bind values, emitted at each place the expression is rendered. The
 	// imported arms read only the chunk references whose turn range can
-	// hold such a turn (idx_thread_import_chunks_turns), so a turn past
+	// hold such a turn (importedTurnRange), so a turn past
 	// the thread's imported history reads no chunk at all, and a lineage
 	// arm whose cut precedes the turn reads nothing.
+	//
+	// FromTurn renders its row bound inside likely(). Without statistics
+	// SQLite prices a turn bound as selective as a (turn_index,
+	// item_index) bound in Where and picks the turn bound, which starts
+	// the arm's walk at the turn's first row: a cursor deep in a long turn
+	// would walk the turn up to the cursor. likely() makes Where's bound
+	// the key, and the turn bound the key only when Where has none.
 	Turn     string
 	TurnArgs []any
 	FromTurn bool
@@ -145,9 +153,11 @@ type timelineSelection struct {
 
 	// OrderBy is the compound's ordering, written in the projection's
 	// OUTPUT column names ("turn_index DESC, item_index DESC"). Empty
-	// renders no ORDER BY — the shape a caller whose own window
-	// functions do the ordering wants (the subagent aggregates), and the
-	// only one that may leave it out.
+	// renders no ORDER BY. Leave it empty when the reader needs no order
+	// or orders or aggregates the rows itself, as the hydrator
+	// (queryHydratedTimelineItems) and a subagent aggregate's window
+	// functions do: an ORDER BY with no Limit then only makes the compound
+	// merge its arms and sort the imported arm's rows.
 	OrderBy string
 
 	// Limit caps the compound, rendered as a literal. Zero renders no
@@ -155,6 +165,15 @@ type timelineSelection struct {
 	// whose budget is caller-supplied must reject zero before it gets
 	// here.
 	Limit int
+
+	// RowIDs adds each row's locator to the projection: own_rowid, the
+	// rowid of the thread's own `items` row, inherited_rowid, of an
+	// ancestor's `items` row a fork shows, and imported_rowid, of an
+	// `import_history_items` row; the other two are NULL. Every index
+	// holds the rowid, so an arm that selects off a covering index stays
+	// on it, and the reader reads the columns the index lacks by rowid,
+	// for only the rows the limit keeps (locatedRowsSQL).
+	RowIDs bool
 }
 
 // everyLineageLevel renders a fork's lineage as one pair of arms that reads
@@ -274,21 +293,26 @@ func newArmRenderer(threadID string, sel timelineSelection) *armRenderer {
 	if sel.Source != "" {
 		r.source = sel.Source + "\n		  CROSS JOIN "
 	}
-	r.importedSource = r.source + "thread_import_chunks refs\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
-	r.lineageImportedSource = r.source + "thread_fork_lineage l\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.thread_id = l.ancestor_id\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+	refs := "thread_import_chunks refs"
+	if index := chunkRefsIndex(sel); index != "" {
+		refs += " INDEXED BY " + index
+	}
 	switch {
 	case sel.Source != "" || sel.KeyFirst:
 		r.importedSource = r.source + "import_history_items items\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id"
 		r.lineageImportedSource = r.source + "thread_fork_lineage l\n\t\t  CROSS JOIN import_history_items items\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id AND refs.thread_id = l.ancestor_id"
 	case sel.Turn != "":
-		r.importedSource = "thread_import_chunks refs\n\t\t  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
-		r.lineageImportedSource = "thread_fork_lineage l\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.thread_id = l.ancestor_id\n\t\t  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+		r.importedSource = refs + "\n\t\t  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+		r.lineageImportedSource = "thread_fork_lineage l\n\t\t  CROSS JOIN " + refs + " ON refs.thread_id = l.ancestor_id\n\t\t  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+	default:
+		r.importedSource = refs + "\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+		r.lineageImportedSource = "thread_fork_lineage l\n\t\t  CROSS JOIN " + refs + " ON refs.thread_id = l.ancestor_id\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
 	}
 	switch {
 	case sel.Turn != "" && sel.FromTurn:
-		r.localTurn = "\n		   AND items.turn_index >= " + sel.Turn
+		r.localTurn = "\n		   AND likely(items.turn_index >= " + sel.Turn + ")"
 		r.importedTurn = "\n		   AND refs.max_turn_index >= " + sel.Turn +
-			"\n		   AND items.turn_index >= " + sel.Turn
+			"\n		   AND likely(items.turn_index >= " + sel.Turn + ")"
 		r.localTurnRenders, r.importedTurnRenders = 1, 2
 	case sel.Turn != "":
 		r.localTurn = "\n		   AND items.turn_index = " + sel.Turn
@@ -308,11 +332,11 @@ func newArmRenderer(threadID string, sel timelineSelection) *armRenderer {
 // ownArms renders the thread's own local and imported arms.
 func (r *armRenderer) ownArms() {
 	sel := r.sel
-	r.b.arm(`SELECT `+sel.Columns("items.thread_id", "items.rev")+`
-		  FROM `+r.source+`items`+sel.LocalJoin+`
+	r.b.arm(`SELECT `+sel.Columns("items.thread_id", "items.rev")+r.rowIDs(ownRowIDs)+`
+		  FROM `+r.source+`items
 		 WHERE items.thread_id = `+r.thread+r.localTurn+r.where,
 		r.threadArgs, repeatArgs(r.localTurnRenders, r.turnArgs), sel.WhereArgs)
-	r.b.arm(`SELECT `+sel.Columns("refs.thread_id", importedItemRevExpr)+`
+	r.b.arm(`SELECT `+sel.Columns("refs.thread_id", importedItemRevExpr)+r.rowIDs(importedRowIDs)+`
 		  FROM `+r.importedSource+`
 		 WHERE refs.thread_id = `+r.thread+r.importedTurn+r.where+`
 		   AND `+importedNotOverridden,
@@ -320,27 +344,95 @@ func (r *armRenderer) ownArms() {
 }
 
 // lineageArms renders the local and imported arms of the lineage levels
-// level selects. A lookup (KeyFirst, or rows from Source) finds the
+// level selects. A lookup (KeyFirst, FilterCut or rows from Source) finds the
 // ancestor's rows by its key and filters them by the cut; any other
 // selection walks the ancestor's timeline index up to the cut.
 func (r *armRenderer) lineageArms(level string) {
 	sel := r.sel
 	visible := inheritedItemVisibleSQL
-	if sel.KeyFirst || sel.Source != "" {
+	if sel.KeyFirst || sel.Source != "" || sel.FilterCut {
 		visible = inheritedKeyedItemVisibleSQL
 	}
-	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+`
+	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+r.rowIDs(inheritedRowIDs)+`
 		  FROM `+r.source+`thread_fork_lineage l
 		  CROSS JOIN items ON items.thread_id = l.ancestor_id
 		 WHERE l.thread_id = `+r.thread+level+r.lineageCut+r.localTurn+r.where+`
 		   AND `+visible,
 		r.threadArgs, repeatArgs(1+r.localTurnRenders, r.turnArgs), sel.WhereArgs)
-	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+`
+	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+r.rowIDs(importedRowIDs)+`
 		  FROM `+r.lineageImportedSource+`
 		 WHERE l.thread_id = `+r.thread+level+r.lineageCut+r.importedTurn+r.where+`
 		   AND `+importedNotOverridden+`
 		   AND `+visible,
 		r.threadArgs, repeatArgs(1+r.importedTurnRenders, r.turnArgs), sel.WhereArgs)
+}
+
+// The row locators of each kind of arm (RowIDs).
+const (
+	ownRowIDs       = ", items.rowid AS own_rowid, NULL AS inherited_rowid, NULL AS imported_rowid"
+	inheritedRowIDs = ", NULL AS own_rowid, items.rowid AS inherited_rowid, NULL AS imported_rowid"
+	importedRowIDs  = ", NULL AS own_rowid, NULL AS inherited_rowid, items.rowid AS imported_rowid"
+)
+
+// rowIDs is locators when the selection asks for them (RowIDs).
+func (r *armRenderer) rowIDs(locators string) string {
+	if !r.sel.RowIDs {
+		return ""
+	}
+	return locators
+}
+
+// locatedRowsSQL reads columns for each row walk selects, in walk's
+// order. walk is a selection rendered with RowIDs and ordered by
+// (turn_index, item_index) in direction, ASC or DESC; SQLite takes the
+// order from walk rather than sorting again. columns are written against
+// w, walk's projection, and the row w locates: `local`, its `items` row,
+// or `imported`, its `import_history_items` row, read as NULL when w
+// locates the other (locatedColumn, locatedRevSQL).
+func locatedRowsSQL(columns, walk, direction string) string {
+	return `SELECT ` + columns + `
+		  FROM (
+` + walk + `
+) w
+		  LEFT JOIN items local ON local.rowid = COALESCE(w.own_rowid, w.inherited_rowid)
+		  LEFT JOIN import_history_items imported ON imported.rowid = w.imported_rowid
+		 ORDER BY w.turn_index ` + direction + `, w.item_index ` + direction
+}
+
+// locatedColumn is column of the row a locatedRowsSQL row locates.
+func locatedColumn(column string) string {
+	return "COALESCE(local." + column + ", imported." + column + ")"
+}
+
+// locatedRevSQL is a locatedRowsSQL row's revision: its own row's `rev`,
+// importedItemRevExpr for an inherited or imported row.
+const locatedRevSQL = `CASE WHEN w.own_rowid IS NULL THEN ` + importedItemRevExpr + ` ELSE local.rev END`
+
+// chunkRefsIndex is the index a limited imported arm walks its thread's
+// chunk references through when they drive the arm. SQLite sorts an
+// imported arm's rows, and once its sorter holds the limit it stops
+// reading a chunk at the first selected row that sorts after them. An arm
+// that visits the chunks in its read's order therefore reads the chunks
+// its rows come from, and each other chunk only up to its first selected
+// row, where visited in the other order it would read every row. A
+// newest-first read walks them newest first
+// (idx_thread_import_chunks_newest), any other read, including a turn's,
+// oldest first. Without statistics the planner prices both indexes alike,
+// so the arm names its index.
+//
+// A read with no limit reads every row in any chunk order and names no
+// index (""): a named index would also bind an arm the planner drives
+// from an imported key, such as a scope's parent or a completion, and
+// make it read all of the thread's chunk references per row instead of
+// probing the row's own by chunk id.
+func chunkRefsIndex(sel timelineSelection) string {
+	if sel.Limit == 0 {
+		return ""
+	}
+	if strings.HasPrefix(sel.OrderBy, "turn_index DESC") && (sel.Turn == "" || sel.FromTurn) {
+		return "idx_thread_import_chunks_newest"
+	}
+	return "idx_thread_import_chunks_turns"
 }
 
 // finish applies the compound's ordering and limit.
@@ -435,31 +527,50 @@ func turnIDSelection(q sqlQueryer, threadID string, turnIndex int) (string, []an
 // afterwards: ordering the arms themselves would invite the local arm to
 // walk its ordering index and test the key per row instead.
 func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where string, whereArgs []any, orderBy string, limit int) (string, []any, error) {
-	if limit <= 0 {
-		return "", nil, fmt.Errorf("store: keyed timeline selection limit %d for %s is not positive", limit, threadID)
-	}
-	sql, args, err := timelineArms(q, threadID, timelineSelection{
+	return materializedIDSelection(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.id AS id, " + project },
 		KeyFirst:  true,
 		Where:     where,
 		WhereArgs: whereArgs,
-	})
+	}, orderBy, limit)
+}
+
+// materializedIDSelection renders sel's arms without an ordering,
+// materializes the few rows they select, and orders and cuts those. It is
+// the shape for a key an index finds on every arm but that does not order
+// the arm: ordering the arms would let the local arm walk its ordering
+// index and test the key per row. sel's projection names id and every
+// orderBy column; sel carries no ordering or limit of its own.
+func materializedIDSelection(q sqlQueryer, threadID string, sel timelineSelection, orderBy string, limit int) (string, []any, error) {
+	if limit <= 0 {
+		return "", nil, fmt.Errorf("store: materialized timeline selection limit %d for %s is not positive", limit, threadID)
+	}
+	if sel.OrderBy != "" || sel.Limit != 0 {
+		return "", nil, fmt.Errorf("store: materialized timeline selection for %s orders its arms", threadID)
+	}
+	sel.FilterCut = true
+	sql, args, err := timelineArms(q, threadID, sel)
 	if err != nil {
 		return "", nil, err
 	}
 	return "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT " + strconv.Itoa(limit), args, nil
 }
 
-// turnAggregateQuery renders aggregate(column) over one turn's logical
-// rows, such as MAX(item_index); NULL when the turn has none.
-func turnAggregateQuery(q sqlQueryer, threadID string, turnIndex int, aggregate, column string) (string, []any, error) {
+// turnItemIndexQuery renders the MIN or MAX item_index of one turn's
+// logical rows; NULL when the turn has none. Each arm takes its own bound
+// and the compound the bound of those, so the local arm reads one entry
+// of its turn index instead of every row of the turn.
+func turnItemIndexQuery(q sqlQueryer, threadID string, turnIndex int, aggregate string) (string, []any, error) {
+	if aggregate != "MIN" && aggregate != "MAX" {
+		return "", nil, fmt.Errorf("store: turn item index aggregate %q for %s is not MIN or MAX", aggregate, threadID)
+	}
 	sql, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:  func(string, string) string { return "items." + column + " AS " + column },
+		Columns:  func(string, string) string { return aggregate + "(items.item_index) AS item_index" },
 		Turn:     "?",
 		TurnArgs: []any{turnIndex},
 	})
 	if err != nil {
 		return "", nil, err
 	}
-	return "SELECT " + aggregate + "(" + column + ") FROM (\n" + sql + "\n)", args, nil
+	return "SELECT " + aggregate + "(item_index) FROM (\n" + sql + "\n)", args, nil
 }

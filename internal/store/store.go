@@ -56,6 +56,12 @@ type Store struct {
 	// reads counts the read statements accessors have issued; see
 	// ReadCount.
 	reads atomic.Uint64
+	// historyReads bounds the read pool connections history reads and
+	// background checkpoints hold; see historyReadSnapshot.
+	historyReads readSlots
+	// checkpoints is the loop that copies the WAL into the database file
+	// while the store is open; see checkpointer.
+	checkpoints checkpointer
 	// convertHooks are test-only seams inside the conversion swap.
 	convertHooks convertHooks
 	// reclaimUnavailableOnce keeps ReclaimFreeSpace's "this database
@@ -72,6 +78,9 @@ type Store struct {
 	// cards holds the subagent card accumulators between flushes
 	// (subagent_card.go).
 	cards subagentCards
+	// groups queues the writes that may share a transaction
+	// (group_commit.go).
+	groups groupCommit
 	// holdersReleased is the function OnHoldersReleased set, or nil.
 	holdersReleased atomic.Pointer[func()]
 }
@@ -90,6 +99,9 @@ type Options struct {
 	// first (docs/specs/app-update.md, the no-live-migration rule). A new
 	// database has nothing to protect and is created as usual.
 	RefusePendingMigrations bool
+	// checkpointInterval overrides the checkpointer's interval in tests.
+	// Zero means the checkpointInterval constant.
+	checkpointInterval time.Duration
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -108,7 +120,8 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	gate := &connGate{}
-	db, err := openPool(dbPath, writerConnPragmas, gate)
+	commits := newCommitSignal()
+	db, err := openPool(dbPath, writerConnPragmas, gate, commits)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -154,6 +167,18 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	} else {
 		s.read = read
 	}
+	if s.read != nil {
+		// The boot checkpoint copied every commit the migrations made.
+		select {
+		case <-commits:
+		default:
+		}
+		interval := opts.checkpointInterval
+		if interval == 0 {
+			interval = checkpointInterval
+		}
+		s.startCheckpointer(commits, interval)
+	}
 	return s, nil
 }
 
@@ -179,7 +204,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(dbPath, readerConnPragmas, gate)
+	read, err := openPool(dbPath, readerConnPragmas, gate, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -286,9 +311,10 @@ func (s *Store) quiesceReads(fn func() error) error {
 // Close closes the database connections, truncating the WAL on the way
 // out.
 //
-// Order is load-bearing. The read pool closes first because TRUNCATE
-// cannot reset a WAL any connection still holds a read mark on, and the
-// checkpoint has to run on the writer, which therefore closes last. A
+// Order is load-bearing. The checkpointer stops before the read pool it
+// runs on closes. The read pool closes before the truncation because
+// TRUNCATE cannot reset a WAL any connection still holds a read mark on,
+// and the checkpoint has to run on the writer, which therefore closes last. A
 // failed or blocked checkpoint is logged and shutdown continues: quitting
 // must not depend on reclaiming disk space, and the next boot's
 // checkpoint picks up whatever this one left behind.
@@ -299,6 +325,7 @@ func (s *Store) Close() error {
 	if err := s.FlushAllSubagentCards(); err != nil {
 		errs = append(errs, fmt.Errorf("store: flush subagent cards: %w", err))
 	}
+	s.stopCheckpointer()
 	if s.read != nil {
 		if err := s.read.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
@@ -310,45 +337,6 @@ func (s *Store) Close() error {
 		errs = append(errs, fmt.Errorf("store: close writer: %w", err))
 	}
 	return errors.Join(errs...)
-}
-
-// PassiveCheckpoint triggers a non-blocking WAL checkpoint. PASSIVE
-// returns immediately without waiting for readers; any pages it can't
-// reclaim stay in the WAL and the next call catches up. Safe to call
-// from any goroutine. Returns the underlying error from SQLite —
-// callers typically log and continue (the checkpoint is opportunistic;
-// the autocheckpoint and the next idle-boundary call will retry).
-//
-// Why we need this on top of wal_autocheckpoint: the writer keeps SQLite's
-// default of 1000 pages, and the automatic checkpoint runs inside the commit
-// that grows the WAL past it, on the writer, so that commit pays for copying
-// whatever the WAL holds. Calling PassiveCheckpoint at idle boundaries (turn
-// completion, retention sweeps, after each history repair transaction) copies
-// frames before a commit has to.
-//
-// It runs on a read-pool connection. A WAL checkpoint takes the
-// checkpointer lock, not the write lock, so a writer commits while it
-// copies; issued on the single writer connection it would hold every write
-// for the length of the copy. With no read pool, or while reads are
-// quiesced for an operation that needs the database to itself, it runs on
-// the writer.
-func (s *Store) PassiveCheckpoint() error {
-	_, err := s.passiveCheckpoint()
-	return err
-}
-
-func (s *Store) passiveCheckpoint() (CheckpointResult, error) {
-	db := s.db
-	if s.read != nil && !s.readsQuiesced.Load() {
-		db = s.read
-	}
-	var res CheckpointResult
-	var busy int64
-	if err := db.QueryRow("PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &res.WALFrames, &res.Checkpointed); err != nil {
-		return CheckpointResult{}, fmt.Errorf("store: passive checkpoint: %w", err)
-	}
-	res.Busy = busy != 0
-	return res, nil
 }
 
 // CheckpointResult is the three-column answer PRAGMA wal_checkpoint
@@ -369,11 +357,10 @@ type CheckpointResult struct {
 // TruncateCheckpoint moves the whole WAL into the main database and
 // truncates the WAL file to zero bytes.
 //
-// This is the only checkpoint mode that shrinks the file. PASSIVE
-// recycles WAL pages so the file stops GROWING, which is why the hot
-// paths use it, but the file itself keeps whatever high-water mark a
-// burst pushed it to — a WAL that hit 300MB during a large backfill
-// stays a 300MB file until something truncates it.
+// This is the only checkpoint mode that shrinks the file. PASSIVE, which
+// the checkpointer runs, lets SQLite reuse the WAL from its start so the
+// file stops GROWING, but the file itself keeps whatever high-water mark
+// a burst pushed it to.
 //
 // The cost is exclusivity: TRUNCATE waits for every reader to finish
 // (measured: an open read transaction costs the full busy_timeout and

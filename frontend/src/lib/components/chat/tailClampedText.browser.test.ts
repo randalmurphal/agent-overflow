@@ -40,14 +40,14 @@ afterEach(() => {
 
 // Mount the real component as a flex child of a fixed-width row, mirroring its
 // production parent (ReasoningTailRow lays it out with `flex-1 min-w-0`).
-function mountTail(text: string, widthPx: number, expanded = false) {
+function mountTail(text: string, widthPx: number, expanded = false, textStart = 0) {
   const host = document.createElement('div');
   host.style.cssText = `display:flex; width:${widthPx}px; align-items:flex-start;`;
   document.body.appendChild(host);
   hosts.push(host);
   const utils = render(TailClampedText, {
     target: host,
-    props: { text, expanded, testId: 'tail-body' },
+    props: { text, textStart, expanded, testId: 'tail-body' },
   });
   const body = host.querySelector<HTMLElement>('[data-testid="tail-body"]');
   if (!body) throw new Error('tail body did not mount');
@@ -108,6 +108,14 @@ function topClipPx(body: HTMLElement): number {
 // neutral check that a re-wrap actually changed the layout.
 function contentSpanPx(body: HTMLElement): number {
   return lastCharRect(body).bottom - firstCharRect(body).top;
+}
+
+// The text node the body renders: the windowed text while collapsed.
+function bodyTextNode(body: HTMLElement): Text {
+  let node: Node = body;
+  while (node.firstChild) node = node.firstChild;
+  if (node.nodeType !== Node.TEXT_NODE) throw new Error('tail body has no text node');
+  return node as Text;
 }
 
 // Six long logical lines. Each one is wide enough to wrap, so the total
@@ -240,8 +248,8 @@ describe('TailClampedText line-slide', () => {
     }
   }
 
-  async function mountCalibrated(text: string, widthPx = 400) {
-    const mounted = mountTail(text, widthPx);
+  async function mountCalibrated(text: string, widthPx = 400, textStart = 0) {
+    const mounted = mountTail(text, widthPx, false, textStart);
     await tick();
     await raf();
     await raf(); // initial RO calibration
@@ -297,6 +305,44 @@ describe('TailClampedText line-slide', () => {
     await raf();
     expect(contentSpanPx(body)).toBeGreaterThan(spanBefore); // the re-wrap happened
     await expectNoSlide(inner);
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps sliding when the source drops text above the cut', async () => {
+    // A live window (utils/liveText.ts) moves its start at a line start far
+    // above the rendered cut. That is an append, not a replacement: the line
+    // it adds still slides.
+    const stream = Array.from({ length: 200 }, (_, i) => `windowed reasoning line ${i} ${'x'.repeat(40)}`)
+      .join('\n');
+    expect(stream.length).toBeGreaterThan(TAIL_WINDOW_CAP_CHARS);
+    const { body, inner, rerender } = await mountCalibrated(stream);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    const start = stream.indexOf('\n', 1000) + 1;
+    expect(stream.length - bodyTextNode(body).length).toBeGreaterThan(start);
+
+    await rerender({ text: `${stream.slice(start)}\nwindowed reasoning line 200`, textStart: start });
+    flushSync();
+
+    const peak = await slideRanAndSettled(inner);
+    expect(peak).toBeLessThanOrEqual(lh + 1);
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps sliding after text replacing the source starts at the rendered cut', async () => {
+    // The cut sits at the source's start. A replacement starting there is
+    // no append, and the line appended to it next is: it still slides.
+    const { body, inner, rerender } = await mountCalibrated(FIVE_LINES, 400, 5000);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    const swapped = Array.from({ length: 7 }, (_, i) => `swap ${i}`).join('\n');
+    expect(swapped.length).toBeLessThan(FIVE_LINES.length);
+    await rerender({ text: swapped, textStart: 5000 });
+    flushSync();
+    await expectNoSlide(inner);
+
+    await rerender({ text: `${swapped}\nswap 7`, textStart: 5000 });
+    flushSync();
+    const peak = await slideRanAndSettled(inner);
+    expect(peak).toBeLessThanOrEqual(lh + 1);
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 
@@ -410,13 +456,6 @@ describe('TailClampedText line-slide', () => {
 // real geometry: after a cut, previously-rendered characters keep their exact
 // (x, y-relative) positions.
 describe('TailClampedText wrap-stable window', () => {
-  function bodyTextNode(body: HTMLElement): Text {
-    let node: Node = body;
-    while (node.firstChild) node = node.firstChild;
-    if (node.nodeType !== Node.TEXT_NODE) throw new Error('tail body has no text node');
-    return node as Text;
-  }
-
   // Rect of the character at an index into the FULL (untrimmed) text,
   // translated through the currently applied cut. Throws when the index has
   // been cut away — tests sample only indices that must remain visible-window
@@ -529,6 +568,185 @@ describe('TailClampedText wrap-stable window', () => {
     expect(contentSpanPx(body)).toBeLessThanOrEqual((TAIL_WINDOW_KEEP_LINES + 2) * lh);
 
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps every rendered character in place when the source window moves', async () => {
+    const lines = Array.from({ length: 120 }, (_, i) => `${i} ${'w'.repeat(100)}`);
+    const stream = lines.join('\n');
+    const { body, rerender } = mountTail(stream, 600);
+    await tick();
+    flushSync();
+    await raf();
+    const cut = appliedCut(body, stream);
+    expect(cut).toBeGreaterThan(0);
+    const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => stream.length - k * 40);
+    const relBefore = sampleRelative(body, stream, samples);
+    const renderedBefore = bodyTextNode(body).data;
+
+    // The source drops text above the rendered cut: nothing rendered moves.
+    const above = stream.lastIndexOf('\n', cut - 2) + 1;
+    await rerender({ text: stream.slice(above), textStart: above });
+    flushSync();
+    await raf();
+    expect(bodyTextNode(body).data).toBe(renderedBefore);
+
+    // The source moves past the cut to a later line start: the window renders
+    // from there, and the lines below keep their places.
+    const past = stream.indexOf('\n', cut + 10) + 1;
+    await rerender({ text: stream.slice(past), textStart: past });
+    flushSync();
+    await raf();
+    expect(bodyTextNode(body).data).toBe(stream.slice(past));
+    expectSamplesEqual(relBefore, sampleRelative(body, stream, samples));
+
+    // Swapping the window for the whole text (the settle) renders the same.
+    await rerender({ text: stream, textStart: 0 });
+    flushSync();
+    await raf();
+    expect(bodyTextNode(body).data).toBe(stream.slice(past));
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('windows a source that starts past 0 from its first render and as it grows', async () => {
+    const lines = Array.from({ length: 480 }, (_, i) => `${i} ${'m'.repeat(100)}`);
+    const streamTo = (count: number): string => lines.slice(0, count).join('\n');
+    // The source dropped the text above a line start, and what remains is
+    // over the cap.
+    const start = streamTo(300).length + 1;
+    const mounted = streamTo(400);
+    expect(mounted.length - start).toBeGreaterThan(TAIL_WINDOW_CAP_CHARS);
+
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => records.push(...batch));
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    const { body, rerender } = mountTail(mounted.slice(start), 600, false, start);
+    await tick();
+    flushSync();
+    await raf();
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+    // The first render is already windowed: the text node is never
+    // rewritten, so the whole source is never laid out.
+    expect(records.length).toBeGreaterThan(0);
+    const rewrites = records.filter((record) => body.contains(record.target));
+    expect(rewrites.map((record) => record.type)).toEqual([]);
+    const cut = appliedCut(body, mounted);
+    expect(cut).toBeGreaterThan(start);
+    expect(mounted[cut - 1]).toBe('\n');
+
+    // Grow to the cap, then one line past it: the window moves to a later
+    // newline and every rendered character keeps its place.
+    let count = 400;
+    while (streamTo(count + 1).length - cut <= TAIL_WINDOW_CAP_CHARS) count += 1;
+    const atCap = streamTo(count);
+    await rerender({ text: atCap.slice(start), textStart: start });
+    flushSync();
+    await raf();
+    expect(appliedCut(body, atCap)).toBe(cut);
+    const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => atCap.length - k * 40);
+    const relBefore = sampleRelative(body, atCap, samples);
+
+    const past = streamTo(count + 1);
+    await rerender({ text: past.slice(start), textStart: start });
+    flushSync();
+    await raf();
+    const moved = appliedCut(body, past);
+    expect(moved).toBeGreaterThan(cut);
+    expect(past[moved - 1]).toBe('\n');
+    expect(past.length - moved).toBeLessThanOrEqual(TAIL_WINDOW_CAP_CHARS);
+    expectSamplesEqual(relBefore, sampleRelative(body, past, samples));
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended line slid into view');
+  });
+
+  it('renders a paragraph replacing a moved source whole, then cuts it on append', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `${i} ${'r'.repeat(100)}`);
+    const stream = lines.join('\n');
+    const start = stream.indexOf('\n', 20_000) + 1;
+    const { body, rerender } = mountTail(stream.slice(start), 600, false, start);
+    await tick();
+    flushSync();
+    await raf();
+    expect(appliedCut(body, stream)).toBeGreaterThan(start);
+
+    // A shorter replacement from 0: one paragraph over the cap. It has no
+    // newline to cut at, and its layout is not rendered yet to measure.
+    const WORDS = ['replacing', 'paragraph', 'with', 'no', 'newline', 'at', 'all'];
+    let para = '';
+    for (let w = 0; para.length < TAIL_WINDOW_CAP_CHARS + 500; w++) para += `${WORDS[w % WORDS.length]} `;
+    para = para.trimEnd();
+    expect(para.length).toBeLessThan(stream.length);
+    await rerender({ text: para, textStart: 0 });
+    flushSync();
+    await raf();
+    expect(bodyTextNode(body).data).toBe(para);
+
+    // The next append measures a rendered line start.
+    const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => para.length - k * 40);
+    const relBefore = sampleRelative(body, para, samples);
+    const after = `${para} and the paragraph keeps running`;
+    await rerender({ text: after, textStart: 0 });
+    flushSync();
+    await raf();
+    expect(appliedCut(body, after)).toBeGreaterThan(0);
+    expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  // One paragraph with no newline, over the cap.
+  function paragraphOver(chars: number): string {
+    const WORDS = ['measured', 'paragraph', 'keeps', 'running', 'without', 'a', 'break'];
+    let para = '';
+    for (let w = 0; para.length < chars; w++) para += `${WORDS[w % WORDS.length]} `;
+    return para.trimEnd();
+  }
+
+  it('measures a cut on collapse when the source moved past the old cut to one paragraph', async () => {
+    const lines = Array.from({ length: 120 }, (_, i) => `${i} ${'c'.repeat(100)}`).join('\n');
+    const { body, rerender } = mountTail(lines, 600);
+    await tick();
+    flushSync();
+    await raf();
+    const oldCut = appliedCut(body, lines);
+    expect(oldCut).toBeGreaterThan(0);
+
+    // Expanded, the stream grows by one paragraph past the cap.
+    const stream = `${lines}\n${paragraphOver(TAIL_WINDOW_CAP_CHARS + 500)}`;
+    await rerender({ text: stream, expanded: true });
+    flushSync();
+    await raf();
+    const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => stream.length - k * 40);
+    const relExpanded = sampleRelative(body, stream, samples);
+
+    // Collapsed, the source is a live window that starts at that paragraph.
+    const start = lines.length + 1;
+    await rerender({ text: stream.slice(start), textStart: start, expanded: false });
+    flushSync();
+    await raf();
+    expect(appliedCut(body, stream)).toBeGreaterThan(start);
+    expectSamplesEqual(relExpanded, sampleRelative(body, stream, samples));
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+  });
+
+  it('measures a cut when a paragraph replaces the source past its rendered cut', async () => {
+    const para = paragraphOver(TAIL_WINDOW_CAP_CHARS + 500);
+    const reference = mountTail(para, 600, true);
+    await tick();
+    await raf();
+    const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => para.length - k * 40);
+    const relWhole = sampleRelative(reference.body, para, samples);
+
+    // The rendered cut is 0. The paragraph starts past the text it replaces,
+    // so it is no append, and the window renders it from its start.
+    const { body, rerender } = mountTail('short reasoning', 600);
+    await tick();
+    flushSync();
+    await raf();
+    await rerender({ text: para, textStart: 5000 });
+    flushSync();
+    await raf();
+    expect(appliedCut(body, para)).toBeGreaterThan(0);
+    expectSamplesEqual(relWhole, sampleRelative(body, para, samples));
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 

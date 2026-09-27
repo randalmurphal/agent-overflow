@@ -16,12 +16,15 @@ import {
 } from './worktreeIntent.svelte';
 import type { CreateThreadOptions } from './bindings';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
-import { type Project } from '../types/models';
+import { type Project, type Thread } from '../types/models';
+import { hydrateWorktreeSetupForThread } from './eventsWorktreeSetup';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { noteProject, forgetProject } from '../transport/entityIndex';
+import { draftPlaceholderProjectId } from './draftPlaceholderId';
 import { takePinnedBackend } from '../transport/backends';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
@@ -44,6 +47,18 @@ describe('threadDraftPlaceholder', () => {
       expect(await pane.ensureMaterializedThread()).toBe('created-remote');
       expect(target).toBe('remote-mac');
     } finally { pane.clear(); forgetProject(project.id); }
+  });
+
+  it('refuses to create a draft whose project no computer is known to own', async () => {
+    stageBackend();
+    const pane = createThreadPane();
+    const create = setBindingMock('CreateThread', async () => makeThread({ id: 'created-home' }));
+    try {
+      pane.startDraftPlaceholder({ id: 'unowned-project', path: '/repo', name: 'Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, 'chat');
+      expect(await pane.ensureMaterializedThread()).toBeNull();
+      expect(create).not.toHaveBeenCalled();
+      expect(pane.generalError).toContain('computer that owns');
+    } finally { pane.clear(); resetStagedBackends(); }
   });
 
   it('drops stale placeholder worktree intent when "+ New" replaces an unsent draft', () => {
@@ -74,7 +89,7 @@ describe('threadDraftPlaceholder', () => {
       pane.startDraftPlaceholder(projectA, 'chat');
       const firstPlaceholder = pane.thread;
       expect(firstPlaceholder).not.toBeNull();
-      expect(firstPlaceholder!.id.startsWith('draft:')).toBe(true);
+      expect(draftPlaceholderProjectId(firstPlaceholder!.id)).toBe(projectA.id);
 
       setThreadEnvMode(firstPlaceholder!, 'new-worktree');
       setAttachBranch(firstPlaceholder!, 'feature/x');
@@ -417,7 +432,7 @@ describe('threadDraftPlaceholder', () => {
       const oldThread = pane.thread!;
       expect(pane.dematerializeEmptyDraftThread()).toBe(true);
       expect(pane.thread?.id).not.toBe(oldThread.id);
-      expect(pane.thread?.id.startsWith('draft:')).toBe(true);
+      expect(draftPlaceholderProjectId(pane.thread!.id)).toBe('p-1');
       expect(worktreeIntentForThread(oldThread).mode).toBe('local');
       expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe(
         'feature/x',
@@ -425,6 +440,50 @@ describe('threadDraftPlaceholder', () => {
     } finally {
       resetWorktreeIntent();
     }
+  });
+});
+
+// Returning an empty materialized draft to a placeholder leaves its row
+// behind: nothing scheduled for that row may reach the backend under the
+// placeholder's id.
+describe('dematerializing an empty draft', () => {
+  beforeEach(installThreadPaneTestEnv);
+  const emptyDraft = (overrides: Partial<Thread> = {}): Thread => makeThread({
+    id: 'materialized-draft', projectId: 'p-1', projectPath: '/tmp/project',
+    workspacePath: '/tmp/project', mode: 'chat', isDraft: true, ...overrides,
+  });
+
+  it('drops a history refresh queued for the row it left', async () => {
+    const pane = await buildPane(emptyDraft());
+    const read: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    setBindingMock('ListThreadSliceAround', async (threadId: string) => {
+      read.push(threadId);
+      if (read.length === 1) await held;
+      return { items: [], oldestTurnIndex: -1, hasMore: false };
+    });
+
+    const running = pane.refreshFromBackend();
+    await vi.waitFor(() => expect(read).toHaveLength(1));
+    const queued = pane.refreshFromBackend();
+    expect(pane.dematerializeEmptyDraftThread()).toBe(true);
+    release();
+    await Promise.all([running, queued]);
+
+    expect(read).toEqual(['materialized-draft']);
+  });
+
+  it('does not carry the row\'s worktree setup into the placeholder', async () => {
+    const pane = await buildPane(emptyDraft({ worktreeSetupState: 'failed' }));
+    const setup = setBindingMock('GetThreadWorktreeSetup', async () => ({ threadId: 'materialized-draft', state: 'failed' }));
+
+    expect(pane.dematerializeEmptyDraftThread()).toBe(true);
+    // What ChatView hydrates for the pane's row.
+    hydrateWorktreeSetupForThread(pane.thread);
+
+    expect(setup).not.toHaveBeenCalled();
+    expect(pane.thread?.worktreeSetupState).toBeUndefined();
   });
 });
 

@@ -192,13 +192,13 @@ export function createThreadItemStreamApply(
         newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
         hasMoreHistory: timelineWindow.hasMoreHistory,
         hasMoreNewer: timelineWindow.hasMoreNewer,
-        runCoveringUnshipped: (item) => activityRuns.runCoveringUnshipped(item),
+        runCoveringUnshipped: (item, batch) => activityRuns.runCoveringUnshipped(item, batch),
     });
     if (!next) return null;
     // Refused because the row belongs to a part of a held run the pane
-    // does not hold: the record is marked dirty and the debounced stub
-    // refresh restates the run (see `ApplyItemUpsertsToWindowOptions`).
-    for (const runKey of next.dirtiedRunKeys) activityRuns.markRunDirty(runKey);
+    // does not hold: the debounced stub refresh restates the run (see
+    // `ApplyItemUpsertsToWindowOptions`).
+    activityRuns.noteRefusals(next.refusals);
     if (next.droppedOlderItems) timelineWindow.noteDroppedOlderItems();
     if (next.droppedNewerItems) {
       timelineWindow.noteDroppedNewerItems();

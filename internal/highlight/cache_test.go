@@ -2,6 +2,7 @@ package highlight
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -166,6 +167,71 @@ func TestCacheEvictsByBytes(t *testing.T) {
 	}
 }
 
+// TestCacheRetainsWhatItCounts fills a cache with one-line blocks and with
+// whole source files and requires the heap it retains to stay within its
+// byte budget: the budget bounds real memory only if an entry retains what
+// resultBytes counts.
+func TestCacheRetainsWhatItCounts(t *testing.T) {
+	// A fixed file, so an edit to the package does not move the size
+	// classes the ratio is measured at.
+	var file strings.Builder
+	file.WriteString("package p\n\nimport \"fmt\"\n\n")
+	for i := 0; file.Len() < 7<<10; i++ {
+		fmt.Fprintf(&file, "// f%d scales a by %d.\nfunc f%d(a, b int) (int, error) {\n\tif a > b {\n\t\treturn 0, fmt.Errorf(\"a %%d over b %%d\", a, b)\n\t}\n\treturn a * %d, nil\n}\n\n", i, i, i, i)
+	}
+	corpora := map[string]func(i int) (Lang, string){
+		"one-line blocks": func(i int) (Lang, string) {
+			return LangPython, fmt.Sprintf("value_%d = call(a, %d)  # note\n", i, i)
+		},
+		"source files": func(i int) (Lang, string) {
+			return LangGo, fmt.Sprintf("%s\n// copy %d\n", file.String(), i)
+		},
+	}
+	// The first parse of a language builds state that outlives the cache.
+	NewCache().Code(LangPython, "x = 1\n")
+	NewCache().Code(LangGo, "package x\n")
+	for name, source := range corpora {
+		t.Run(name, func(t *testing.T) {
+			c := NewCache()
+			c.maxBytes = 1 << 20
+			var before, after runtime.MemStats
+			// Two collections: the first moves sync.Pool contents (fmt's
+			// printers) to the victim cache, the second frees them.
+			runtime.GC()
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			for i := 0; c.bytes < c.maxBytes*3/4 || i < 64; i++ {
+				c.Code(source(i))
+			}
+			runtime.GC()
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+			if limit := int64(c.bytes) * 6 / 5; retained > limit {
+				t.Errorf("cache of %d counted bytes (budget %d) retains %d heap bytes, over %d", c.bytes, c.maxBytes, retained, limit)
+			}
+			runtime.KeepAlive(c)
+		})
+	}
+}
+
+// Callers of one flight each insert its result; only the first copies it,
+// and a result without lines keeps its nil Lines.
+func TestCacheInsertCompactsOnce(t *testing.T) {
+	c := NewCache()
+	key := cacheKey("code", LangGo, "x := 1\n")
+	res := Result{Lines: []EncodedLine{{Runs: []uint16{1, 2}}}}
+	c.insert(key, res)
+	if allocs := testing.AllocsPerRun(10, func() { c.insert(key, res) }); allocs != 0 {
+		t.Fatalf("inserting a cached key allocated %.0f times", allocs)
+	}
+	plain := cacheKey("code", LangGo, "plain")
+	c.insert(plain, Result{})
+	if got, ok := c.lookup(plain); !ok || got.Lines != nil {
+		t.Fatalf("result without lines came back as %+v (cached %v), want nil Lines", got, ok)
+	}
+}
+
 func TestCachePatchVariantsKeyApart(t *testing.T) {
 	c := NewCache()
 	plain := c.Patch(LangPython, pythonDocstringPatch)
@@ -233,5 +299,37 @@ func TestHighlightPatchTextPrimedMidDocstring(t *testing.T) {
 	}
 	if !leaked {
 		t.Log("note: unprimed path already string-classed everything; priming redundant for this fixture")
+	}
+}
+
+// A computation that panics returns its slot: the RPC dispatcher recovers the
+// panic, and highlighting must keep working after it.
+func TestCacheReturnsTheSlotOfAPanickingComputation(t *testing.T) {
+	c := NewCache()
+	for i := range computeConcurrency {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("the computation's panic did not reach its caller")
+				}
+			}()
+			c.get(cacheKey("panic", LangPython, fmt.Sprint(i)), func() Result { panic("parser failure") })
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		c.Code(LangPython, "x = 1\n")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("highlighting blocked after panicking computations")
+	}
+	c.heap.mu.Lock()
+	active := c.heap.active
+	c.heap.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("%d computations still counted in flight", active)
 	}
 }

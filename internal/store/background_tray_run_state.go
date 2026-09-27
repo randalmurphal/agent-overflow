@@ -108,7 +108,7 @@ var countParkingCommandsSQL = func() string {
 	}
 	return `SELECT COUNT(*) FROM items w
 		  WHERE w.thread_id = ?
-		    AND w.parent_id = ?
+		    AND w.parent_id = ` + boundText + `
 		    AND w.parent_id <> ''
 		    AND w.kind = 'tool_call'
 		    AND w.status = 'running'

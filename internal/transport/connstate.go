@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"log"
+	"slices"
 	"sync"
 )
 
@@ -26,13 +27,20 @@ import (
 // ConnStateFromContext.
 type ConnState struct {
 	mu       sync.Mutex
-	cleanups []func()
+	cleanups []connCleanup
 	closed   bool
 
 	// principal is read at upgrade time and never written again, so it
 	// needs no lock: a connection cannot change which session admitted it
 	// or which screen it belongs to.
 	principal ConnPrincipal
+}
+
+// connCleanup is one callback registered to run when the connection ends.
+// key is empty unless BindCleanup registered it.
+type connCleanup struct {
+	key string
+	fn  func()
 }
 
 // ConnPrincipal is who a connection is, resolved at upgrade time and fixed
@@ -155,6 +163,29 @@ func ConnStateFromContext(ctx context.Context) *ConnState {
 //
 // fn must not block — connection teardown waits for it.
 func (c *ConnState) RegisterCleanup(fn func()) bool {
+	return c.register("", fn)
+}
+
+// BindCleanup is RegisterCleanup for a resource the client can also release
+// by id before the connection ends. key names the resource; its release
+// method passes the same key to UnbindCleanup on its call's connection, so a
+// long-lived connection does not keep a callback per resource it ever held.
+func (c *ConnState) BindCleanup(key string, fn func()) bool {
+	return c.register(key, fn)
+}
+
+// UnbindCleanup removes the callbacks BindCleanup registered under key. It
+// does nothing without a connection or once the cleanup pass has begun.
+func (c *ConnState) UnbindCleanup(key string) {
+	if c == nil || key == "" {
+		return
+	}
+	c.mu.Lock()
+	c.cleanups = slices.DeleteFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key })
+	c.mu.Unlock()
+}
+
+func (c *ConnState) register(key string, fn func()) bool {
 	if fn == nil {
 		return false
 	}
@@ -163,7 +194,7 @@ func (c *ConnState) RegisterCleanup(fn func()) bool {
 	if c.closed {
 		return false
 	}
-	c.cleanups = append(c.cleanups, fn)
+	c.cleanups = append(c.cleanups, connCleanup{key: key, fn: fn})
 	return true
 }
 
@@ -184,7 +215,7 @@ func (c *ConnState) RunCleanups() {
 	c.mu.Unlock()
 
 	for i := len(fns) - 1; i >= 0; i-- {
-		fn := fns[i]
+		fn := fns[i].fn
 		func() {
 			defer func() {
 				if r := recover(); r != nil {

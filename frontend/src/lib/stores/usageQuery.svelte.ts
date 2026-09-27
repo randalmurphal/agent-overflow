@@ -5,7 +5,8 @@ import { untrack } from 'svelte';
 import { errString } from '../utils/errors';
 import { GetUsageStats, type UsageBucket, type UsageQuery } from './bindings';
 import { selectedTelemetryComputers, missingTelemetrySelection } from './telemetryComputers.svelte';
-import { resolveThreadBackend, projectBackend } from '../transport/entityIndex';
+import { projectBackend } from '../transport/entityIndex';
+import { threadClaimant } from '../transport/threadOwner';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { combineUsageBuckets } from '../utils/usageBuckets';
@@ -71,7 +72,7 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
   $effect(() => {
     const requested = getQuery();
     const projectOwner = requested?.projectId ? projectBackend(requested.projectId) : undefined;
-    const owner = requested?.threadId ? resolveThreadBackend(requested.threadId) : undefined;
+    const owner = requested?.threadId ? threadClaimant(requested.threadId) : undefined;
     const computers = requested && !requested.threadId
       ? selectedTelemetryComputers('usage').filter((computer) => projectOwner === undefined || computer.key === projectOwner)
       : null;

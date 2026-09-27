@@ -15,7 +15,6 @@ type fakeController struct {
 	openedURL      string
 	openOptions    OpenOptions
 	access         Access
-	closeThreads   []string
 	readExpression string
 }
 
@@ -99,13 +98,6 @@ func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string,
 	f.readExpression = expression
 	return nil, "", nil
 }
-func (f *fakeController) CloseThread(_ context.Context, id string) error {
-	f.closeThreads = append(f.closeThreads, id)
-	return nil
-}
-func (f *fakeController) Close() error                        { return nil }
-func (f *fakeController) ClearSiteData(context.Context) error { return nil }
-func (f *fakeController) Reconfigure(Config) error            { return nil }
 
 func TestMCPServerDisabledIsConnectedButAdvertisesNoTools(t *testing.T) {
 	fake := &fakeController{}
@@ -140,7 +132,7 @@ func TestMCPInitializeExplainsSafeParallelPageUsage(t *testing.T) {
 func TestMCPServerThreadToggleIsScopedAndDefaultsOn(t *testing.T) {
 	server := NewMCPServer(&fakeController{}, true)
 	first := registerTestThread(t, server)
-	secondConfig, err := server.RegisterThread(Access{ThreadID: "second", Workspace: "/repo"})
+	secondConfig, err := server.RegisterThread(Access{ThreadID: "second", Workspace: "/repo"}, "session-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,9 +164,6 @@ func TestMCPServerRoutesCapabilityScopedCalls(t *testing.T) {
 		t.Fatalf("open without page_id unexpectedly targeted %q", fake.openOptions.PageID)
 	}
 	server.UnregisterThread("thread")
-	if len(fake.closeThreads) != 1 || fake.closeThreads[0] != "thread" {
-		t.Fatalf("closed = %v", fake.closeThreads)
-	}
 	resp, err := http.Post(url, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +171,48 @@ func TestMCPServerRoutesCapabilityScopedCalls(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("revoked capability status = %d", resp.StatusCode)
+	}
+}
+
+func TestMCPRevokeThreadRetiresOnlyThatSessionsURL(t *testing.T) {
+	server := NewMCPServer(&fakeController{}, true)
+	t.Cleanup(func() { _ = server.Close() })
+	register := func(session string) string {
+		t.Helper()
+		config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo"}, session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return config[ServerName].(map[string]any)["url"].(string)
+	}
+	status := func(url string) int {
+		t.Helper()
+		resp, err := http.Post(url, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	server.SetThreadEnabled("thread", false)
+	old := register("old")
+	replacement := register("new")
+	server.RevokeThread("thread", "old")
+	if got := status(old); got != http.StatusNotFound {
+		t.Fatalf("old session URL status = %d, want 404", got)
+	}
+	if got := status(replacement); got != http.StatusOK {
+		t.Fatalf("a late teardown of the old session revoked its replacement: status %d", got)
+	}
+	server.RevokeThread("thread", "new")
+	if got := status(replacement); got != http.StatusNotFound {
+		t.Fatalf("ended session URL status = %d, want 404", got)
+	}
+	if server.ThreadEnabled("thread") {
+		t.Fatal("revoking a session forgot the thread's browser toggle")
+	}
+	if got := status(register("next")); got != http.StatusOK {
+		t.Fatalf("a restarted session's URL status = %d, want 200", got)
 	}
 }
 
@@ -262,7 +293,7 @@ func TestReadOnlyExpressionLeavesInvokedFunctionsAlone(t *testing.T) {
 
 func registerTestThread(t *testing.T, server *MCPServer) string {
 	t.Helper()
-	config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"})
+	config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"}, "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}

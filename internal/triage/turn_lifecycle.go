@@ -595,28 +595,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
 	r.FlushUsageEmitThrottle(evt.ThreadID)
 
-	// Opportunistic WAL passive checkpoint at the idle boundary. PASSIVE
-	// is non-blocking: it reclaims whatever pages the WAL can free
-	// without stalling readers, and skips the rest. We only fire it
-	// when this thread has no remaining streaming items — the counter
-	// is the freshest signal that "the stream burst just ended" — and
-	// we run the actual PRAGMA on a goroutine so we never block the
-	// provider read-loop on its syscall. The autocheckpoint at 1000
-	// pages is still the steady-state mechanism; this is an extra
-	// nudge at the natural quiet point.
-	r.mu.Lock()
-	idleState := r.threadStateIfPresent(evt.ThreadID)
-	thisThreadIdle := idleState == nil || idleState.streamingItemCount == 0
-	r.mu.Unlock()
-	if thisThreadIdle {
-		threadID := evt.ThreadID
-		go func() {
-			if cpErr := r.store.PassiveCheckpoint(); cpErr != nil {
-				log.Printf("triage: passive checkpoint after turn complete (%s): %v", threadID, cpErr)
-			}
-		}()
-	}
-
 	return persistErr
 }
 
@@ -1445,16 +1423,21 @@ func (r *Router) markTurnItemsErrored(threadID string, turnIndex int, now int64)
 // settles. Mirrors the exemption in forceCloseOrphanToolCalls. So is
 // every row a background agent owns: the agent's end settles it
 // (agent_end.go).
+//
+// The flip reads the turn's rows after the thread's settles in flight, so
+// a block whose stop arrived before the Stop settles completed, with its
+// final text and meta, instead of racing the flip.
 func (r *Router) flipTurnItemsErrored(
 	threadID string,
 	turnIndex int,
 	now int64,
 	summaryFn func(string) string,
 ) error {
+	r.waitThreadSettles(threadID)
 	if err := r.flushStreamingThread(threadID); err != nil {
 		return fmt.Errorf("error flip flush streaming buffers: %w", err)
 	}
-	items, err := r.store.ListTurnItems(threadID, turnIndex)
+	items, err := r.store.ListUnsettledTurnItems(threadID, turnIndex)
 	if err != nil {
 		return fmt.Errorf("error flip list turn items: %w", err)
 	}
@@ -1487,6 +1470,12 @@ func (r *Router) flipTurnItemsErrored(
 				return fmt.Errorf("error flip item %s: %w", item.ID, err)
 			}
 			if changed {
+				if item.Kind == itemKindAssistantText && item.Status == statusStreaming && r.assistantTextStream != nil {
+					// The flip ends the row's stream as a settle does: the
+					// observer's final tick, with the model's text before
+					// the stopped or interrupted suffix.
+					r.assistantTextStream(threadID, item.ID, item.Summary, true)
+				}
 				r.emitItemUpsert(persisted)
 				r.emitErrorNotice(persisted)
 				r.metrics.ItemsPersisted.Add(context.Background(), 1, metric.WithAttributes(attribute.String("kind", persisted.Kind)))
@@ -1639,10 +1628,55 @@ func (r *Router) Wait(ctx context.Context) error {
 	}
 }
 
-// WaitForPendingSettles blocks until every fire-and-forget settle
-// goroutine spawned by settleStreamingTextAsync /
-// settleStreamingThinkingAsync (and the per-scope goroutines inside
-// settleTurnStreaming) has completed. Used by app shutdown so SQLite
+// threadSettles is one thread's settle goroutines in flight. idle closes
+// when the count returns to zero.
+type threadSettles struct {
+	n    int
+	idle chan struct{}
+}
+
+// goSettle runs settle on a settle goroutine of threadID, counted by
+// settleWG for shutdown and by the thread's entry for its in-turn barrier.
+func (r *Router) goSettle(threadID string, settle func()) {
+	r.settleWG.Add(1)
+	r.settleMu.Lock()
+	ts := r.settles[threadID]
+	if ts == nil {
+		ts = &threadSettles{idle: make(chan struct{})}
+		r.settles[threadID] = ts
+	}
+	ts.n++
+	r.settleMu.Unlock()
+	go func() {
+		defer r.settleWG.Done()
+		defer func() {
+			r.settleMu.Lock()
+			defer r.settleMu.Unlock()
+			if ts.n--; ts.n == 0 {
+				close(ts.idle)
+				delete(r.settles, threadID)
+			}
+		}()
+		settle()
+	}()
+}
+
+// waitThreadSettles blocks until threadID has no settle goroutine in
+// flight: a read of the thread's streamed rows after it sees every settle
+// the thread's earlier events started. Other threads' settles do not hold
+// it. It must not run on a settle goroutine or under the thread's drain
+// lock, which a settle takes to finish (finishSettle).
+func (r *Router) waitThreadSettles(threadID string) {
+	r.settleMu.Lock()
+	ts := r.settles[threadID]
+	r.settleMu.Unlock()
+	if ts != nil {
+		<-ts.idle
+	}
+}
+
+// WaitForPendingSettles blocks until every settle goroutine of every
+// thread (goSettle) has completed. Used by app shutdown so SQLite
 // isn't closed underneath an in-flight settle. Unlike Wait, this does
 // NOT drain in-flight Handle calls — call Wait for the full shutdown
 // drain.

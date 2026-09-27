@@ -140,7 +140,7 @@ type SettledRow struct {
 // thread.
 func agentSubtreeSQL(cols, statuses string) string {
 	return `WITH RECURSIVE owned(id) AS (
-  SELECT id FROM items WHERE thread_id = ?1 AND parent_id = ?2 AND parent_id <> '' AND NOT (` + agentOwnerSQL("") + `)
+  SELECT id FROM items WHERE thread_id = ?1 AND parent_id = ` + textParam("?2") + ` AND parent_id <> '' AND NOT (` + agentOwnerSQL("") + `)
   UNION ALL
   SELECT c.id FROM owned CROSS JOIN items c ON c.thread_id = ?1 AND c.parent_id = owned.id AND c.parent_id <> ''
    WHERE NOT (` + agentOwnerSQL("c.") + `)

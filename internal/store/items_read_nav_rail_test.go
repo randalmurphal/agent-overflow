@@ -1,6 +1,10 @@
 package store
 
 import (
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -271,5 +275,94 @@ func TestThreadTurnPreviewUsesChildTranscript(t *testing.T) {
 	}
 	if _, found, err := s.ThreadTurnPreview("another-thread", "prompt"); err != nil || found {
 		t.Fatalf("cross-thread preview found=%v err=%v", found, err)
+	}
+}
+
+// The turn preview reads the text rows the timeline_items view holds after
+// a position, in order, with their summaries and wire-only flags: the walk
+// selects them and turnPreviewRowsSQL reads each one's row. It does so on
+// the main timeline and in agent transcripts, from every row's position of
+// a thread with imported, overridden and local rows and of its pointer
+// forks, one cut inside a turn with rows of its own past the cut.
+func TestTurnPreviewWalkMatchesTheView(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	walk := func(query string, args ...any) []string {
+		t.Helper()
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			t.Fatalf("walk: %v\n%s", err, query)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var kind, summary string
+			var wireOnly, turnIndex, itemIndex int
+			if err := rows.Scan(&kind, &summary, &wireOnly, &turnIndex, &itemIndex); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, fmt.Sprintf("%d/%d %s %q wire=%d", turnIndex, itemIndex, kind, summary, wireOnly))
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	walked := map[string]int{}
+	for _, threadID := range seedTimelineParityForks(t, s) {
+		type filter struct {
+			name string
+			sql  string
+			args []any
+		}
+		filters := []filter{{"main", mainTimelineFilterFor("items."), nil}}
+		for _, root := range []string{"imp-child-0", "loc-child-2"} {
+			scope, err := s.resolveTimelineScope(s.reader(), threadID, TimelineSelection{ScopeRootID: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sql, args := scope.filter("items.")
+			filters = append(filters, filter{root, sql, args})
+		}
+		rows, err := s.db.Query(`SELECT turn_index, item_index FROM timeline_items WHERE thread_id = ? ORDER BY turn_index, item_index`, threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		positions := []TimelineCursor{{TurnIndex: -1, ItemIndex: -1}}
+		for rows.Next() {
+			var at TimelineCursor
+			if err := rows.Scan(&at.TurnIndex, &at.ItemIndex); err != nil {
+				t.Fatal(err)
+			}
+			positions = append(positions, at)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range filters {
+			for _, at := range positions {
+				query, args := mustTimelineArms(t, s, threadID, turnPreviewWalk(f.sql, slices.Clone(f.args), at))
+				got := walk(turnPreviewRowsSQL(query), args...)
+				want := walk(`SELECT items.kind, items.summary,
+				        COALESCE(CASE WHEN json_valid(items.meta) THEN json_extract(items.meta, '$.wire_only') END, 0),
+				        items.turn_index, items.item_index
+				   FROM timeline_items AS items
+				  WHERE items.thread_id = ? AND `+f.sql+`
+				    AND items.kind IN ('user_text', 'assistant_text')
+				    AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))
+				  ORDER BY items.turn_index, items.item_index LIMIT `+strconv.Itoa(turnPreviewScanLimit),
+					slices.Concat([]any{threadID}, f.args, []any{at.TurnIndex, at.TurnIndex, at.ItemIndex})...)
+				if !slices.Equal(got, want) {
+					t.Errorf("%s %s walk after %d/%d:\n arms: %q\n view: %q", threadID, f.name, at.TurnIndex, at.ItemIndex, got, want)
+				}
+				walked[threadID+" "+f.name] += len(got)
+			}
+		}
+	}
+	for _, key := range []string{"tl-arms main", "tl-arms-cut main", "tl-arms imp-child-0", "tl-arms-whole loc-child-2", "tl-arms-cut loc-child-2"} {
+		if walked[key] == 0 {
+			t.Errorf("%s walks no row from any position; the check proves nothing there (%v)", key, walked)
+		}
 	}
 }

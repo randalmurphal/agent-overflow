@@ -220,8 +220,7 @@ describe('TerminalView', () => {
     const pane = makePane();
     const { findByTestId } = render(TerminalView, { pane: pane as never });
     // onMount: ListTerminals([]) then auto OpenTerminal → tab t1.
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(callLog.some((c) => c.fn === 'OpenTerminal')).toBe(true));
     await tick();
 
     const listCalls = callLog.filter((c) => c.fn === 'ListTerminals');

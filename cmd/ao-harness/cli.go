@@ -78,6 +78,9 @@ type env struct {
 	// registryDir overrides where discovery rows are read and written.
 	// Tests set it; a human never needs to.
 	registryDir string
+	// governorDir overrides where memory reservations are read and
+	// written. Tests set it; a human never needs to.
+	governorDir string
 	// format is "text" (default) or "json".
 	format string
 	// pageID selects one registered frontend when an instance has multiple

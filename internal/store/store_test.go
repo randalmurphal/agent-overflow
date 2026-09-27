@@ -48,6 +48,12 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+	if report := recompilingReport(recompilingStatements()); report != "" {
+		fmt.Fprint(os.Stderr, report)
+		if code == 0 {
+			code = 1
+		}
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
 		if code == 0 {
@@ -163,29 +169,9 @@ func TestNewCreatesTablesSuccessfully(t *testing.T) {
 	}
 }
 
-func TestPassiveCheckpoint(t *testing.T) {
-	s := newTestStore(t)
-
-	// Empty WAL — should still succeed.
-	if err := s.PassiveCheckpoint(); err != nil {
-		t.Fatalf("passive checkpoint on empty wal: %v", err)
-	}
-
-	// Generate WAL activity, then checkpoint. The call must succeed
-	// regardless of how many pages it actually reclaims (PASSIVE bails
-	// on reader contention by design).
-	thr := makeThread("t-checkpoint", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	if err := s.PassiveCheckpoint(); err != nil {
-		t.Fatalf("passive checkpoint after write: %v", err)
-	}
-}
-
-// A passive checkpoint copies committed frames while a write transaction
-// holds the writer connection, so a checkpoint never makes a write wait.
-func TestPassiveCheckpointDoesNotWaitForTheWriter(t *testing.T) {
+// A checkpoint copies committed frames while a write transaction holds the
+// writer connection, so a checkpoint never makes a write wait.
+func TestCheckpointDoesNotWaitForTheWriter(t *testing.T) {
 	s := openStoreAt(t)
 	t.Cleanup(func() { _ = s.Close() })
 	if s.read == nil {
@@ -211,7 +197,7 @@ func TestPassiveCheckpointDoesNotWaitForTheWriter(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := s.passiveCheckpoint()
+		res, err := s.checkpointWAL(context.Background())
 		done <- outcome{res, err}
 	}()
 	select {
@@ -223,7 +209,7 @@ func TestPassiveCheckpointDoesNotWaitForTheWriter(t *testing.T) {
 			t.Fatalf("checkpoint beside an open write = %+v, want every committed frame copied", got.res)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("the passive checkpoint waited for the writer connection")
+		t.Fatal("the checkpoint waited for the writer connection")
 	}
 }
 
@@ -503,7 +489,7 @@ func TestReclaimFreeSpaceHonorsThresholdsAndDrainsFreelist(t *testing.T) {
 	// still only in the WAL has not grown the file yet, so without this
 	// the before/after comparison would be against a file that never
 	// held the payload.
-	if err := s.PassiveCheckpoint(); err != nil {
+	if _, err := s.checkpointWAL(ctx); err != nil {
 		t.Fatalf("checkpoint before delete: %v", err)
 	}
 	sizeBefore, err := fileSize(s.path)
@@ -536,9 +522,8 @@ func TestReclaimFreeSpaceHonorsThresholdsAndDrainsFreelist(t *testing.T) {
 		t.Fatalf("expected empty freelist after reclaim, got %d pages", freed)
 	}
 	// Under WAL the truncation lands in the WAL; the main file shrinks
-	// when a checkpoint moves it back, which is why the sweep
-	// checkpoints after reclaiming.
-	if err := s.PassiveCheckpoint(); err != nil {
+	// when a checkpoint moves it back.
+	if _, err := s.checkpointWAL(ctx); err != nil {
 		t.Fatalf("checkpoint after reclaim: %v", err)
 	}
 	sizeAfter, err := fileSize(s.path)
@@ -1645,10 +1630,10 @@ func TestDraftDefaultReadsFailFastOnABlockedReadPool(t *testing.T) {
 		t.Fatal("test store has no read pool; the blocked-pool case cannot be reproduced")
 	}
 
-	// Hold every read connection in an open transaction. MaxOpenConns is 4,
-	// so the next acquisition blocks inside database/sql until one is
-	// returned or the caller's context expires.
-	for i := 0; i < 4; i++ {
+	// Hold every read connection in an open transaction, so the next
+	// acquisition blocks inside database/sql until one is returned or the
+	// caller's context expires.
+	for i := 0; i < readPoolConns; i++ {
 		tx, err := s.read.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			t.Fatalf("occupy read connection %d: %v", i, err)

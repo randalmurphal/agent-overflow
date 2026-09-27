@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -52,22 +53,25 @@ type ThreadMessageHit struct {
 // Deleted threads are naturally excluded: the item query inner-joins threads,
 // and the FK cascade removes a thread's items when it is deleted, so no orphan
 // hits can surface.
+//
+// It reads every thread's history, so it takes a history read slot.
 func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHit, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return nil, nil
 	}
 	pattern := likePattern(trimmed)
-
-	titleHits, err := s.searchTitleHits(pattern, limit)
-	if err != nil {
-		return nil, err
-	}
-	itemHits, err := s.searchGlobalItemHits(pattern, limit)
-	if err != nil {
-		return nil, err
-	}
-	return mergeTitleFirst(titleHits, itemHits, limit), nil
+	return historyReadSnapshot(context.Background(), s, "search threads", func(q sqlQueryer) ([]ThreadMessageHit, error) {
+		titleHits, err := searchTitleHits(q, pattern, limit)
+		if err != nil {
+			return nil, err
+		}
+		itemHits, err := searchGlobalItemHits(q, pattern, limit)
+		if err != nil {
+			return nil, err
+		}
+		return mergeTitleFirst(titleHits, itemHits, limit), nil
+	})
 }
 
 // SearchThreadItems returns item-summary hits within a SINGLE thread, in
@@ -80,7 +84,8 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 // which is why in-thread find does not need the FTS5 work the global search
 // will eventually want.
 //
-// limit caps the number of hits; zero or negative means unbounded.
+// limit caps the number of hits; zero or negative means unbounded. It
+// reads the whole thread, so it takes a history read slot.
 func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMessageHit, error) {
 	if err := s.CheckForkReady(threadID); err != nil {
 		return nil, err
@@ -90,34 +95,35 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 		return nil, nil
 	}
 	pattern := likePattern(trimmed)
-
-	rows, err := s.reader().Query(`
+	return historyReadSnapshot(context.Background(), s, "search thread items", func(q sqlQueryer) ([]ThreadMessageHit, error) {
+		rows, err := q.Query(`
 		SELECT t.id, t.title, t.provider, t.ownership_epoch,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
 		WHERE i.thread_id = ?
-			AND LOWER(i.summary) LIKE ? ESCAPE '\'
+			AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\'
 		ORDER BY i.turn_index ASC, i.item_index ASC
 		`+limitSuffix(limit),
-		threadID, pattern,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: search thread items: %w", err)
-	}
-	defer rows.Close()
-	return scanItemHits(rows)
+			threadID, pattern,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store: search thread items: %w", err)
+		}
+		defer rows.Close()
+		return scanItemHits(rows)
+	})
 }
 
 // searchTitleHits returns one hit per thread whose title matches — no per-item
 // fan-out. Most-recently-active threads first.
-func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, error) {
+func searchTitleHits(q sqlQueryer, pattern string, limit int) ([]ThreadMessageHit, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{pattern}, hiddenArgs...)
-	rows, err := s.reader().Query(`
+	rows, err := q.Query(`
 		SELECT id, title, provider, ownership_epoch
 		FROM owned_threads
-		WHERE fork_preparing = 0 AND LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
+		WHERE fork_preparing = 0 AND LOWER(title) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
 		args...,
@@ -166,15 +172,15 @@ func mergeTitleFirst(titleHits, itemHits []ThreadMessageHit, limit int) []Thread
 // searchGlobalItemHits returns one hit per item (any thread) whose summary
 // matches, newest-first. Item summaries only — title matches come from
 // searchTitleHits and are merged in by SearchThreadMessages.
-func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessageHit, error) {
+func searchGlobalItemHits(q sqlQueryer, pattern string, limit int) ([]ThreadMessageHit, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	args := append([]any{pattern}, hiddenArgs...)
-	rows, err := s.reader().Query(`
+	rows, err := q.Query(`
 		SELECT t.id, t.title, t.provider, t.ownership_epoch,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
+		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
 		args...,

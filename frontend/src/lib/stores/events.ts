@@ -59,11 +59,16 @@ import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel, type TransportGap } from '../transport/wsClient';
 import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
+import { onBackendHelloChange } from './transportStatus.svelte';
 import {
+  forgetBackendTerminals,
   forgetProject,
+  forgetTerminal,
   forgetThread,
   forgetThreadGroup,
   noteProject,
+  noteTerminal,
   noteThread,
   noteThreadGroup,
 } from '../transport/entityIndex';
@@ -128,7 +133,8 @@ import {
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
-import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened } from './eventsTerminal';
+import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened, reconcileTerminalSurfaces } from './eventsTerminal';
+import { onBackendRecovery } from './transportRecovery';
 import {
   applyQueueStateChanged,
   applyQueueFlushed,
@@ -425,17 +431,43 @@ export function setupEventListeners(): () => void {
   );
   const cancelTerminalExit = wailsEventOn<TerminalExitEventPayload>(
     'terminal:exit',
-    applyTerminalExit,
+    (evt, origin) => {
+      if (evt?.terminalID) forgetTerminal(evt.terminalID, backendKeyForOrigin(origin.backendId));
+      void applyTerminalExit(evt);
+    },
   );
-  // terminal:opened — the other half of terminal:exit. The surface reads the
-  // set once at mount, so a terminal opened on another client was invisible
+  // terminal:opened is the other half of terminal:exit. The surface reads the
+  // set at mount, so a terminal opened on another client was invisible
   // here and its output frames were dropped as belonging to an unknown id.
+  // Its backend is learned here too, so this client's calls to it route.
   // Closing needs no counterpart: it kills the process, and the exit carries
   // it.
   const cancelTerminalOpened = wailsEventOn<TerminalHandle>(
     'terminal:opened',
-    applyTerminalOpened,
+    (evt, origin) => {
+      if (evt?.terminalID) noteTerminal(evt.terminalID, backendKeyForOrigin(origin.backendId));
+      applyTerminalOpened(evt);
+    },
   );
+  // A computer's shutdown reports no exits, so a new launch is what ends the
+  // terminals it was running.
+  const terminalLaunches = new Map<BackendKey, string>();
+  const cancelTerminalLaunches = onBackendHelloChange((backend, hello) => {
+    if (hello === null) {
+      terminalLaunches.delete(backend);
+      return;
+    }
+    const launch = hello.launchId;
+    if (!launch) return;
+    const previous = terminalLaunches.get(backend);
+    terminalLaunches.set(backend, launch);
+    if (previous !== undefined && previous !== launch) forgetBackendTerminals(backend);
+  });
+  // A computer's list is the authority on its terminals once its replay has
+  // applied. A gap on the terminal channels re-reads it too (eventsTransportGap.ts).
+  const cancelTerminalRecovery = onBackendRecovery((backend, phase) => {
+    if (phase === 'complete') reconcileTerminalSurfaces(backend);
+  });
 
   // provider:queue_state_changed — backend per-thread queue snapshot.
   // Authoritative replacement of the frontend's Zone 1 mirror;
@@ -761,6 +793,8 @@ export function setupEventListeners(): () => void {
     cancelTerminalOutput();
     cancelTerminalExit();
     cancelTerminalOpened();
+    cancelTerminalLaunches();
+    cancelTerminalRecovery();
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();

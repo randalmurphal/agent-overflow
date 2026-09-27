@@ -116,7 +116,7 @@ const maxActivityRunMemberLimit = 500
 // the caller claims to hold is a member. Nothing the caller sends is
 // trusted as a description of the run.
 func (s *Store) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
-	return readSnapshotContext(ctx, s.reader(), "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
+	return historyReadSnapshot(ctx, s, "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
 		return s.listActivityRunMembers(q, threadID, req)
 	})
 }

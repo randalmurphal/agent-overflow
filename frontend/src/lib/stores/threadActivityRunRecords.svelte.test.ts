@@ -180,35 +180,99 @@ describe('runCoveringUnshipped', () => {
   // coordinates say whether a given row is on it.
   it('claims a row between the run\'s first edge and its loaded span', () => {
     const f = held();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 1))).toBe('a');
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 1), [])).toBe('a');
   });
 
   it('claims a row between its loaded span and the run\'s last edge', () => {
     const f = held();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 5))).toBe('a');
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 5), [])).toBe('a');
   });
 
   it('claims nothing inside the loaded span, or outside the run', () => {
     const f = held();
     // Between two loaded members there is nothing unshipped to belong to.
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 3))).toBeNull();
-    // Past an edge is outside the run, whether or not the window holds
-    // anything there: 6 sits between e and the prose at 8, 9 past it.
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 6))).toBeNull();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 9))).toBeNull();
-    expect(f.runs.runCoveringUnshipped(activityRunProse('older', 0))).toBeNull();
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 3), [])).toBeNull();
+    // Past the prose at 8, which ends the run, and older than its first
+    // edge are outside it.
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 9), [])).toBeNull();
+    expect(f.runs.runCoveringUnshipped(activityRunProse('older', 0), [])).toBeNull();
   });
 
   it('claims nothing on a side the stub says is empty', () => {
     const f = fixture(items);
     f.runs.syncRunSpans(items, [activityRunStub({ unshippedAfter: 0, unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]) })]);
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 5))).toBeNull();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 1))).toBe('a');
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 5), [])).toBeNull();
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 1), [])).toBe('a');
   });
 
   it('claims nothing for a row a page would not return', () => {
     const f = held();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('child', 6, { parentId: 'b' }))).toBeNull();
+    expect(f.runs.runCoveringUnshipped(activityRunRow('child', 6, { parentId: 'b' }), [])).toBeNull();
+  });
+
+  // A run grows past the newer edge its stub read. The pane holds a of the
+  // run a..d, and the stub counts b..d after it: a pushed row past d is a
+  // member the run gained unless a row that ends the run lies between.
+  describe('past the newer edge, for a pushed row', () => {
+    const headOnly = [activityRunProse('p0', 0), activityRunRow('a', 1)];
+    function headHeld(extra: Item[] = []) {
+      const items = [...headOnly, ...extra];
+      const f = fixture(items);
+      f.runs.syncRunSpans(items, [activityRunStub({
+        lastItemId: 'd', lastItemIndex: 4, memberCount: 4,
+        loadedFirstItemId: 'a', loadedLastItemId: 'a', unshippedBefore: 0, unshippedAfter: 3,
+        unshippedDigest: windowDigest([{ id: 'b', rev: 3 }, { id: 'c', rev: 4 }, { id: 'd', rev: 5 }]),
+      })]);
+      return f;
+    }
+    const bell = (id: string, index: number, overrides: Partial<Item> = {}) =>
+      activityRunRow(id, index, { kind: 'notification', toolName: '', ...overrides });
+
+    it('claims a rail row or a bell, and nothing else', () => {
+      const f = headHeld();
+      expect(f.runs.runCoveringUnshipped(activityRunRow('e', 5), [])).toBe('a');
+      expect(f.runs.runCoveringUnshipped(bell('e', 5), [])).toBe('a');
+      expect(f.runs.runCoveringUnshipped(activityRunProse('e', 5), [])).toBeNull();
+      // Older than the run is not past its newer edge, and a subagent's
+      // row is not this timeline's.
+      expect(f.runs.runCoveringUnshipped(activityRunRow('old', -1), [])).toBeNull();
+      expect(f.runs.runCoveringUnshipped(activityRunRow('child', 5, { parentId: 'agent' }), [])).toBeNull();
+    });
+
+    it('claims nothing past a row that ends the run, held or arriving with it', () => {
+      const reply = activityRunProse('reply', 5);
+      expect(headHeld([reply]).runs.runCoveringUnshipped(activityRunRow('f', 6), [])).toBeNull();
+      const f = headHeld();
+      const next = activityRunRow('f', 6);
+      expect(f.runs.runCoveringUnshipped(next, [next, reply])).toBeNull();
+      // Prose after the row, or older than the edge, does not end the run
+      // before it.
+      expect(f.runs.runCoveringUnshipped(activityRunRow('e', 5), [activityRunProse('later', 7)])).toBe('a');
+      expect(f.runs.runCoveringUnshipped(activityRunRow('e', 5), [activityRunProse('p0', 0)])).toBe('a');
+    });
+
+    it('claims past rows that do not split a run', () => {
+      // A plan update and a subagent's reply never enter this timeline's
+      // pages, so they separate nothing; a row of another thread is not
+      // this timeline's at all.
+      const plan = bell('plan', 5, { toolName: 'plan_update' });
+      expect(headHeld([plan]).runs.runCoveringUnshipped(activityRunRow('f', 6), [])).toBe('a');
+      const f = headHeld();
+      const child = { ...activityRunProse('child', 5), parentId: 'agent' };
+      const elsewhere = { ...activityRunProse('elsewhere', 5), threadId: 'other' };
+      expect(f.runs.runCoveringUnshipped(activityRunRow('f', 6), [plan, child, elsewhere])).toBe('a');
+    });
+
+    it('claims nothing past the edge of a run whose span ends at its newest member', () => {
+      const items = [activityRunProse('p0', 0), activityRunRow('a', 1)];
+      const f = fixture(items);
+      f.runs.syncRunSpans(items, [activityRunStub({
+        lastItemId: 'a', lastItemIndex: 1, memberCount: 1,
+        loadedFirstItemId: 'a', loadedLastItemId: 'a', unshippedBefore: 0, unshippedAfter: 0,
+        unshippedDigest: windowDigest([]),
+      })]);
+      expect(f.runs.runCoveringUnshipped(activityRunRow('b', 2), [])).toBeNull();
+    });
   });
 });
 
@@ -467,7 +531,7 @@ describe('clear', () => {
     f.runs.syncRunSpans(items, [activityRunStub()]);
     f.runs.clear();
     expect(f.runs.snapshotStubs()).toEqual([]);
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 0))).toBeNull();
+    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 0), [])).toBeNull();
   });
 });
 
@@ -504,6 +568,250 @@ it('does not overwrite a live append with the span of an older refresh response'
   await request;
   expect(f.runs.heldRunFold()).toBeNull();
   expect(f.runs.summaryFacts(runId)?.loadedLastItemId).toBe('e');
+});
+
+// The pane holds b..d of a..d: its stub ends at the run's newest member.
+const tailStub = () => activityRunStub({
+  lastItemId: 'd', lastItemIndex: 3, memberCount: 4, unshippedAfter: 0,
+  unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]),
+});
+
+it('extends a held tail run over live appends without asking the server', async () => {
+  vi.useFakeTimers();
+  const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
+  const f = fixture(items);
+  try {
+    const rpc = vi.fn();
+    setBindingMock('ListActivityRunMembers', rpc);
+    f.runs.syncRunSpans(items, [tailStub()]);
+    const revision = f.runs.revision;
+    for (const [id, index] of [['e', 4], ['f', 5]] as const) {
+      const grown = [...f.items, activityRunRow(id, index)];
+      f.setItems(grown);
+      f.runs.syncRunSpans(grown);
+    }
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(f.runs.revision).toBe(revision + 2);
+    expect(f.runs.heldRunFold()).toEqual({ count: 1, digest: expect.anything() });
+    expect(formatFnv1a64(f.runs.heldRunFold()!.digest)).toBe(windowDigest([{ id: 'a', rev: 1 }]));
+    expect(f.runs.snapshotStubs()).toEqual([{
+      ...tailStub(), lastItemId: 'f', lastItemIndex: 5, memberCount: 6, loadedLastItemId: 'f',
+    }]);
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
+});
+
+it('extends a members answer read before an append over the append', async () => {
+  vi.useFakeTimers();
+  const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
+  const f = fixture(items);
+  try {
+    f.runs.syncRunSpans(items, [tailStub()]);
+    f.runs.beginPass();
+    const { runId } = f.runs.resolve([['b'], ['c'], ['d']], 't');
+    f.runs.endPass();
+    let answer!: (value: unknown) => void;
+    const rpc = vi.fn(() => new Promise(resolve => { answer = resolve; }));
+    setBindingMock('ListActivityRunMembers', rpc);
+    const request = f.runs.fetchMembers(runId, { direction: 'before', limit: 0 });
+    const next = [...f.items, activityRunRow('e', 4)];
+    f.setItems(next);
+    f.runs.syncRunSpans(next);
+    expect(f.runs.heldRunFold()).not.toBeNull();
+    answer({ items: [], stub: tailStub() });
+    await request;
+    expect(f.runs.heldRunFold()).not.toBeNull();
+    expect(f.runs.snapshotStubs()).toEqual([{
+      ...tailStub(), lastItemId: 'e', lastItemIndex: 4, memberCount: 5, loadedLastItemId: 'e',
+    }]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(rpc).toHaveBeenCalledOnce();
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
+});
+
+// A remote client's refresh of a dirty tail run takes a round trip, and a
+// busy run appends a member during each one.
+it.each([
+  ['clean', () => {}, 1],
+  ['refreshed again after another invalidation', (f: ReturnType<typeof fixture>) => f.runs.markRunDirty('a'), 2],
+] as const)('leaves a dirty tail run %s when an append lands during its refresh', async (_name, alsoDuringRead, reads) => {
+  vi.useFakeTimers();
+  const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
+  const f = fixture(items);
+  try {
+    const answers: ((value: unknown) => void)[] = [];
+    const rpc = vi.fn((_threadId: string, _request: { loadedLastItemId: string }) =>
+      new Promise(resolve => { answers.push(resolve); }));
+    setBindingMock('ListActivityRunMembers', rpc);
+    f.runs.syncRunSpans(items, [tailStub()]);
+    // A completion of the unshipped launch a changes what the stub counts.
+    const completed = [...f.items, activityRunRow('e', 4, { kind: 'tool_completion', completionOf: 'a' })];
+    f.setItems(completed);
+    f.runs.syncRunSpans(completed);
+    expect(f.runs.heldRunFold()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc.mock.calls[0][1]).toMatchObject({ limit: 0, loadedLastItemId: 'e' });
+
+    const appended = [...f.items, activityRunRow('m', 5)];
+    f.setItems(appended);
+    f.runs.syncRunSpans(appended);
+    alsoDuringRead(f);
+    // The server read the run before m landed: it ends at e and pairs a.
+    const answer = activityRunStub({
+      lastItemId: 'e', lastItemIndex: 4, memberCount: 5, unshippedAfter: 0, loadedLastItemId: 'e',
+      unshippedDigest: windowDigest([{ id: 'a', rev: 1 }]), unshippedPairedLaunchIds: ['a'],
+    });
+    answers[0]({ items: [], stub: answer });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(rpc).toHaveBeenCalledTimes(reads);
+    if (reads === 1) {
+      expect(f.runs.snapshotStubs()).toEqual([{
+        ...answer, lastItemId: 'm', lastItemIndex: 5, memberCount: 6, loadedLastItemId: 'm',
+      }]);
+    } else {
+      expect(f.runs.heldRunFold()).toBeNull();
+      expect(rpc.mock.calls[1][1]).toMatchObject({ limit: 0, loadedLastItemId: 'm' });
+    }
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
+});
+
+it('mounts an around answer read before an append it folded, then refreshes the run', async () => {
+  vi.useFakeTimers();
+  const items = [activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('c', 3), activityRunRow('d', 4)];
+  const f = fixture(items);
+  try {
+    // The pane holds b..d of a..d.
+    f.runs.syncRunSpans(items, [activityRunStub({
+      lastItemId: 'd', lastItemIndex: 4, memberCount: 4, unshippedAfter: 0,
+      unshippedDigest: windowDigest([{ id: 'a', rev: 2 }]),
+    })]);
+    f.runs.beginPass();
+    const { runId } = f.runs.resolve([['b'], ['c'], ['d']], 't');
+    f.runs.endPass();
+    let answer!: (value: unknown) => void;
+    const rpc = vi.fn()
+      .mockReturnValueOnce(new Promise(resolve => { answer = resolve; }))
+      .mockResolvedValue({ items: [], stub: activityRunStub({ loadedFirstItemId: 'a', loadedLastItemId: 'a' }) });
+    setBindingMock('ListActivityRunMembers', rpc);
+    const request = f.runs.fetchMembers(runId, { direction: 'around', limit: 3, aroundItemId: 'a' });
+    const next = [...f.items, activityRunRow('e', 5)];
+    f.setItems(next);
+    f.runs.syncRunSpans(next);
+    // The server read the run before e landed.
+    answer({ items: [activityRunRow('a', 1)], stub: activityRunStub({
+      lastItemId: 'd', lastItemIndex: 4, memberCount: 4,
+      loadedFirstItemId: 'a', loadedLastItemId: 'a', unshippedBefore: 0, unshippedAfter: 3,
+      unshippedDigest: windowDigest([{ id: 'b', rev: 3 }, { id: 'c', rev: 4 }, { id: 'd', rev: 5 }]),
+    }) });
+
+    expect(await request).toEqual(['a']);
+    expect(f.mounted.map(mount => mount.dropIds.sort())).toEqual([['b', 'c', 'd', 'e']]);
+    // Its stub does not count e, so the run describes no held window until
+    // a refresh restates it.
+    expect(f.runs.heldRunFold()).toBeNull();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls[1][1]).toMatchObject({ limit: 0, loadedFirstItemId: 'a', loadedLastItemId: 'a' });
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ['older', true],
+  ['newer', false],
+] as const)('refreshes the earlier of two held runs merged when the prose between them left, the %s recorded first', async (_name, olderFirst) => {
+  vi.useFakeTimers();
+  // Runs a..d and f..j, the pane holding b..d and g..i.
+  const items = [
+    activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('c', 3), activityRunRow('d', 4),
+    activityRunProse('p1', 5), activityRunRow('g', 7), activityRunRow('h', 8), activityRunRow('i', 9),
+    activityRunProse('p2', 11),
+  ];
+  const f = fixture(items);
+  try {
+    const rpc = vi.fn().mockReturnValue(new Promise(() => {}));
+    setBindingMock('ListActivityRunMembers', rpc);
+    const older = activityRunStub({
+      lastItemId: 'd', lastItemIndex: 4, memberCount: 4, unshippedAfter: 0,
+      unshippedDigest: windowDigest([{ id: 'a', rev: 2 }]),
+    });
+    const newer = activityRunStub({
+      firstItemId: 'f', firstItemIndex: 6, lastItemId: 'j', lastItemIndex: 10, memberCount: 5,
+      loadedFirstItemId: 'g', loadedLastItemId: 'i',
+      unshippedDigest: windowDigest([{ id: 'f', rev: 7 }, { id: 'j', rev: 11 }]),
+    });
+    for (const stub of olderFirst ? [older, newer] : [newer, older]) f.runs.syncRunSpans(items, [stub]);
+    expect(f.runs.heldRunFold()?.count).toBe(3);
+
+    const merged = items.filter(item => item.id !== 'p1');
+    f.setItems(merged);
+    f.runs.syncRunSpans(merged);
+
+    // One record now describes b..i, and its stub counts neither f nor j.
+    expect(f.runs.heldRunFold()).toBeNull();
+    expect(f.runs.snapshotStubs()).toBeNull();
+    // It keeps that stub rather than extending it over g..i as appends.
+    f.runs.beginPass();
+    const { runId } = f.runs.resolve([['b'], ['c'], ['d'], ['g'], ['h'], ['i']], 't');
+    f.runs.endPass();
+    expect(f.runs.summaryFacts(runId)).toMatchObject({ memberCount: 4, loadedFirstItemId: 'b', loadedLastItemId: 'i' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc.mock.calls[0][1]).toMatchObject({ runFirstItemId: 'a', limit: 0, loadedFirstItemId: 'b', loadedLastItemId: 'i' });
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
+});
+
+it('keeps a refusal on the merged run when the run it was noted on merges into an earlier one', async () => {
+  vi.useFakeTimers();
+  // Runs a..d and f..j, the pane holding b..d and g..i, and a row at 12
+  // refused as a member of f..j.
+  const items = [
+    activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('c', 3), activityRunRow('d', 4),
+    activityRunProse('p1', 5), activityRunRow('g', 7), activityRunRow('h', 8), activityRunRow('i', 9),
+    activityRunProse('p2', 11),
+  ];
+  const f = fixture(items);
+  try {
+    const merged = activityRunStub({ lastItemId: 'j', lastItemIndex: 10, memberCount: 9, loadedLastItemId: 'i' });
+    const rpc = vi.fn(async () => ({ items: [], stub: merged }));
+    setBindingMock('ListActivityRunMembers', rpc);
+    f.runs.syncRunSpans(items, [
+      activityRunStub({ lastItemId: 'd', lastItemIndex: 4, memberCount: 4, unshippedAfter: 0 }),
+      activityRunStub({
+        firstItemId: 'f', firstItemIndex: 6, lastItemId: 'j', lastItemIndex: 10, memberCount: 5,
+        loadedFirstItemId: 'g', loadedLastItemId: 'i',
+      }),
+    ]);
+    f.runs.noteRefusals([{ runKey: 'f', item: activityRunRow('x', 12) }]);
+    const next = items.filter(item => item.id !== 'p1');
+    f.setItems(next);
+    f.runs.syncRunSpans(next);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // The merged run ends at j, before the refused row.
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc.mock.calls[0]).toMatchObject(['t', { runFirstItemId: 'a', limit: 0 }]);
+    expect(f.reloads).toHaveBeenCalledOnce();
+    expect(f.failures).toEqual([{ message: 'Activity changed; refreshing history', silent: true }]);
+  } finally {
+    f.runs.clear();
+    vi.useRealTimers();
+  }
 });
 
 it('does not count retained launch context inside an unshipped interval as loaded history', () => {

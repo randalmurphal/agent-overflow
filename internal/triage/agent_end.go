@@ -27,7 +27,8 @@ type agentEnd struct {
 	// rootID is the agent's transcript root, where every round's rows
 	// are parented.
 	rootID string
-	// streamStatus is what a stream the router still holds settles to.
+	// streamStatus is what the agent's streaming rows settle to
+	// (settleAgentStreams).
 	streamStatus string
 	rule         store.AgentEndRule
 }
@@ -60,13 +61,12 @@ func newAgentEnd(rootID, status, source string) agentEnd {
 }
 
 // persistAgentEndLocked writes an agent's completion sibling and ends the
-// agent; the caller holds the thread's drain lock. The streams the router
-// still holds for the agent's rows settle first, the way a turn's end
-// settles its own; the rows queued behind them persist next, since they
-// precede the end; then the sibling is written with every row still open
-// under the agent settled in its transaction. The prompts the agent left
-// open end with it. A failed stream settle does not hold the sibling back:
-// the store settles that row with it.
+// agent; the caller holds the thread's drain lock. The agent's streaming
+// rows settle first (settleAgentStreams); the rows queued behind them
+// persist next, since they precede the end; then the sibling is written
+// with every row still open under the agent settled in its transaction.
+// The prompts the agent left open end with it. A failed stream settle
+// does not hold the sibling back: the store settles that row with it.
 func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, end agentEnd) error {
 	threadID := item.ThreadID
 	streamErr := r.settleAgentStreams(threadID, end)
@@ -100,10 +100,13 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 	return errors.Join(streamErr, queueErr, requestErr)
 }
 
-// settleAgentStreams settles the streams the router holds for the rows
-// end's agent owns, through the same row settle a turn's end uses, and
-// releases their counts without draining: the caller drains. A thread
-// with no open stream asks the store nothing.
+// settleAgentStreams settles every streaming row end's agent owns through
+// the same row settle a turn's end uses, and releases the counts of the
+// streams the router holds, without draining: the caller drains. A row
+// the router no longer holds can be one a block stop's settle took and
+// has not written yet; the first of the two settles to write settles
+// the row (persistSettle), with its whole text, spans and path refs. A
+// thread with no open stream asks the store nothing.
 func (r *Router) settleAgentStreams(threadID string, end agentEnd) error {
 	if !r.hasActiveStreamingItem(threadID) {
 		return nil
@@ -115,18 +118,17 @@ func (r *Router) settleAgentStreams(threadID string, end agentEnd) error {
 	var errs []error
 	for _, stream := range streams {
 		ref, held := r.takeAgentStream(threadID, stream)
-		if !held {
-			continue
-		}
 		switch stream.Kind {
 		case itemKindThinking:
 			err = r.settleStreamingThinkingRow(threadID, stream.ID, end.streamStatus, end.rule.Summarise, "", false)
 		default:
 			err = r.settleStreamingTextRow(threadID, stream.ID, end.streamStatus, end.rule.Summarise, "", false, nil)
 		}
-		r.mu.Lock()
-		r.decStreamingCounts(threadID, ref.scope)
-		r.mu.Unlock()
+		if held {
+			r.mu.Lock()
+			r.decStreamingCounts(threadID, ref.scope)
+			r.mu.Unlock()
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("settle agent stream %s/%s: %w", threadID, stream.ID, err))
 		}

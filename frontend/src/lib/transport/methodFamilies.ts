@@ -8,7 +8,6 @@ import type { BackendKey } from './backendKey';
 import {
   automationBackend,
   projectBackend,
-  subscriptionBackend,
   terminalBackend,
   resolveThreadBackend,
   threadGroupBackend,
@@ -85,7 +84,8 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2702963191: 'terminal', // CloseTerminal
   4152403588: 'terminal', // RestartTerminal
   // Subscription ids, which are meaningful ONLY on the connection that
-  // minted them. Recorded at subscribe time.
+  // minted them. Every caller pins that computer (withBackendTarget); an
+  // unpinned call resolves no owner.
   1078249699: 'subscription', // SetPRUpdatesActive
   2888550814: 'subscription', // UnsubscribePRUpdates
   3263989430: 'subscription', // GitStatusUnsubscribe
@@ -108,7 +108,7 @@ const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefine
   project: projectBackend,
   workflowAutomation: automationBackend,
   terminal: terminalBackend,
-  subscription: subscriptionBackend,
+  subscription: () => undefined,
   threadGroup: threadGroupBackend,
   threadList: resolveThreadBackend,
 };

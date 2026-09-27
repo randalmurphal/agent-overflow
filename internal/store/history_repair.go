@@ -28,7 +28,7 @@ import (
 // transaction, so no thread lock is needed. This is the same contract the
 // removed sealing loop ran under.
 //
-// Every repair transaction is followed by a passive checkpoint
+// Every repair transaction is followed by a checkpoint
 // (checkpointHistoryRepair).
 
 // sealedChunkLow and sealedChunkHigh bound the sealed chunk ids as a range,
@@ -73,14 +73,13 @@ var defaultHistoryRepairBudget = historyRepairBudget{
 const orphanPayloadPage = 1000
 
 // checkpointHistoryRepair copies the frames a repair transaction appended to
-// the WAL into the database file, outside any transaction and on a read-pool
-// connection, so the writer is not held while it copies. Left in the WAL,
-// several transactions' frames are copied by SQLite's automatic checkpoint
-// inside whichever commit next passes 1,000 frames, possibly a live write's;
-// on the measured database such commits took up to 99 ms. Run after every
-// transaction, one checkpoint copies one transaction's frames.
-func (s *Store) checkpointHistoryRepair() error {
-	if err := s.PassiveCheckpoint(); err != nil {
+// the WAL into the database file before the next transaction starts, so that
+// transaction restarts the WAL from its first frame instead of growing it
+// toward walCheckpointBoundPages, where the writer copies the rest inside a
+// commit, possibly a live write's. Cancelling ctx is not an error: the
+// checkpointer copies what is left.
+func (s *Store) checkpointHistoryRepair(ctx context.Context) error {
+	if _, err := s.checkpointWAL(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("store: checkpoint history repair: %w", err)
 	}
 	return nil
@@ -219,7 +218,7 @@ func (s *Store) UnsealThreadHistory(ctx context.Context, threadID string, pause 
 			return total, err
 		}
 		if batch != (UnsealStats{}) {
-			if err := s.checkpointHistoryRepair(); err != nil {
+			if err := s.checkpointHistoryRepair(ctx); err != nil {
 				return total, err
 			}
 		}
@@ -600,7 +599,7 @@ func (s *Store) pruneOrphanPayloads(ctx context.Context, pause ChunkPause, skip 
 			stats.payloads += batch.payloads
 			stats.bytes += batch.bytes
 			if batch.payloads > 0 {
-				if err := s.checkpointHistoryRepair(); err != nil {
+				if err := s.checkpointHistoryRepair(ctx); err != nil {
 					return err
 				}
 			}

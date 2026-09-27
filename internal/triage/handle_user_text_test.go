@@ -691,7 +691,7 @@ func TestHandleUserText_NoPending_DedupsRepeatedProviderItemID(t *testing.T) {
 		t.Fatalf("second Handle: %v", err)
 	}
 
-	rows, err := st.ListItemsForTurn("t1", 0)
+	rows, err := st.ListTurnItems("t1", 0)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestHandleUserText_NoPending_NoProviderItemID_NoOp(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	rows, err := st.ListItemsForTurn("t1", 0)
+	rows, err := st.ListTurnItems("t1", 0)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
@@ -1171,7 +1171,7 @@ func TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst(t *testi
 	}
 
 	// Build an index -> id map for a readable failure message.
-	rows, err := st.ListItemsForTurn("t1", 0)
+	rows, err := st.ListTurnItems("t1", 0)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
@@ -1288,7 +1288,7 @@ func TestHandleUserText_DeferredFlush_TurnBoundaryHonorsDispatchTurn(t *testing.
 	}
 
 	// Turn 1 must be untouched.
-	turn1, err := st.ListItemsForTurn("t1", 1)
+	turn1, err := st.ListTurnItems("t1", 1)
 	if err != nil {
 		t.Fatalf("list turn 1: %v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestHandleUserText_DeferredFlush_BatchOrderingFIFO(t *testing.T) {
 		t.Fatalf("second queued row missing: found=%v err=%v", found, err)
 	}
 
-	rows, err := st.ListItemsForTurn("t1", 0)
+	rows, err := st.ListTurnItems("t1", 0)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}

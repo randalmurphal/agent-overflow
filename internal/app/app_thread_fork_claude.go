@@ -286,13 +286,13 @@ func (a *App) writeMessageForkedClaudeSession(srcPath string, anchor store.Messa
 // stable id. Used by the fork-slice helpers to pick the UUID-keyed
 // branch when available.
 func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string {
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
+	items, err := a.store.ListTurnItemsOfKind(threadID, turnIndex, "user_text")
 	if err != nil {
 		log.Printf("fork thread: load turn %d items for anchor lookup: %v", turnIndex, err)
 		return ""
 	}
 	for _, it := range items {
-		if it.Kind != "user_text" || it.Role != "user" {
+		if it.Role != "user" {
 			continue
 		}
 		if store.IsWireOnlyUserItem(it) {

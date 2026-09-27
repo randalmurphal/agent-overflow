@@ -59,8 +59,8 @@ per-platform no-op.
 - One isolated profile per canonical workspace with at least one active browser
   page. Threads on that workspace intentionally share login state; pages remain
   owned by the registering thread.
-- A thread gets an opaque MCP URL capability at provider-session start. Its
-  registration does not create a profile or page.
+- A thread gets an opaque MCP URL capability at provider-session start, and
+  session end revokes it. Its registration does not create a profile or page.
 - The first page operation creates the workspace profile and a page. Page
   operations serialize per page; unrelated pages run concurrently.
 - The companion presents a page's real view only while a pane is mounted with a
@@ -109,7 +109,8 @@ so AO's chords have to be taken back at the engine:
   keydown, so `when` gates, rebinds and the palette all behave as if the SPA
   had been focused. A bound chord whose `when` fails there is a no-op — the
   page never gets it back, which is the price of answering synchronously.
-- Session teardown closes that thread's pages. A workspace profile with no
+- A thread's pages outlive its provider session, so a restarted session finds
+  the same tabs. Deleting the thread closes them. A workspace profile with no
   pages is disposed. An engine with no profiles is stopped after a bounded idle
   delay.
 - App shutdown cancels calls, disposes profiles, stops the engine, then closes
@@ -199,7 +200,8 @@ blocks dangerous navigation schemes, and never exposes a debugging
 endpoint outside the local controller process. Downloads and asset bundles go
 only to AO-owned directories with file/count/byte caps; download filenames are
 sanitized across macOS, Linux, and Windows and never target the user's normal
-Downloads directory. Downloads are capped at 512 MiB each and 2 GiB reserved
+Downloads directory. A download that begins outside every AO page is
+cancelled. Downloads are capped at 512 MiB each and 2 GiB reserved
 per live workspace; downloads and asset bundles share a 4 GiB per-process
 artifact quota. Files older than seven days are pruned on the next artifact
 use, while newer files are never silently evicted to make quota room.
@@ -254,15 +256,14 @@ so the differences are only where the platform itself differs:
 - **Site data is WebKit's directory, not AO's.** macOS exposes no documented
   way to place a `WKWebsiteDataStore` in a chosen path. On macOS 14+ each
   workspace gets its own persistent store keyed by a digest of the workspace
-  root; on macOS 11–13 there is no per-workspace persistent store at all, so
+  root; on macOS 13 there is no per-workspace persistent store at all, so
   the site-data setting has no effect there and every workspace is
-  in-memory-only. A macOS too old for `-callAsyncJavaScript:` has no engine
-  at all, and therefore no browser tools.
+  in-memory-only.
 - **Clearing site data is WebKit's removal, not a directory delete.** Because
   WebKit owns where those stores live, Clear site data asks it to remove every
   data store AO created — all of them, and only them: the app's own SPA webview
   uses the unidentified default store, which is never one of them. A Mac with
-  no persistent stores to remove, including every macOS 11–13 one, clears
+  no persistent stores to remove, including every macOS 13 one, clears
   successfully with nothing to do.
 - **Devtools are Safari's.** Views are marked inspectable, and inspection
   happens from Safari's Develop menu rather than an in-app inspector.

@@ -150,6 +150,7 @@ export function createAgentScopeView(
     retryHistoryLoad: () => owner.refresh().catch(error => reportFrontendDiagnostic('Scoped history retry failed', errString(error))),
     armStructuralSpring: scroll.armStructuralSpring,
     liveThinkingTailForItem: reveal.liveThinkingTailFor,
+    liveThinkingWindowForItem: reveal.liveThinkingWindowFor,
     isItemSmoothing: reveal.isSmoothing,
     get assistantRevealRegistrationGeneration() { return reveal.assistantRevealRegistrationGeneration; },
     registerAssistantRevealSink: reveal.registerAssistantRevealSink,

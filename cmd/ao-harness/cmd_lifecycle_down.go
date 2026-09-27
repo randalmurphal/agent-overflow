@@ -86,7 +86,7 @@ func runDown(e *env, args []string) error {
 			err = stopVictim(context.Background(), v.pid, v.bootstrap, v.hasBootstrap)
 		}
 		if err == nil {
-			if leaseErr := releaseDetachedHarnessLease(v.dataRoot); leaseErr != nil {
+			if leaseErr := e.releaseDetachedHarnessLease(v.dataRoot); leaseErr != nil {
 				err = leaseErr
 			}
 		}

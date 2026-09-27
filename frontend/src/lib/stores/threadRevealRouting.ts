@@ -33,6 +33,8 @@ import {
   thinkingPayloadVersionForItem,
 } from '../utils/payloadVersion';
 import type { ProvenAppend } from '../markdown';
+import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
+import { LiveTextWindow } from '../utils/liveText';
 import type { RevealGate } from './threadRevealGate.svelte';
 import {
   isSnapStatus,
@@ -65,10 +67,32 @@ export interface RevealRoutingOptions {
   appendLivePayloadDeltaForItem(
     itemId: string,
     stateKey: string,
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     payloadVersion?: unknown,
-    previousLiveTail?: string,
   ): void;
+}
+
+/**
+ * A reasoning-tail smoother's revealed text, for the payload of an expanded
+ * row. The payload keeps the stream past the smoother's disposal, so the
+ * stream holds the smoother only until then.
+ */
+class SmootherRevealStream implements LiveRevealStream {
+  private smoother: PerItemSmoother | null;
+
+  constructor(smoother: PerItemSmoother) {
+    this.smoother = smoother;
+  }
+
+  revealedText(end: number): string | null {
+    return this.smoother?.getRevealed(end) ?? null;
+  }
+
+  release(): void {
+    this.smoother = null;
+  }
 }
 
 export interface RevealRouting {
@@ -138,11 +162,19 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     // and read inside `onReveal` so the row's `updatedAt` stays close
     // to wire time even as the smoother lags.
     let latestUpdatedAt = 0;
-    // Full previous revealed text. Appending each emitted delta here keeps a
-    // canonical cons string without asking the smoother to join its whole
-    // received buffer. Reasoning also passes the previous value into its live
-    // payload expansion so that view stays on the same cursor.
+    // Full previous revealed text of an assistant row. Appending each
+    // emitted delta here keeps a canonical cons string without asking the
+    // smoother to join its whole received buffer.
     let previousRevealed = seeded;
+    // A reasoning-tail row's reveal state, created by its first reveal. The
+    // row keeps a trimmed summary and the collapsed clamp a window of the
+    // text, which is bounded while the text keeps containing newlines
+    // (LiveTextWindow). The whole text stays in the smoother.
+    let reasoning: {
+      summary: string;
+      window: LiveTextWindow;
+      stream: SmootherRevealStream;
+    } | null = null;
 
     const smoother = new PerItemSmoother({
       initialReceived: seeded,
@@ -168,7 +200,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       revealImmediately: () =>
         getSettings().lowPowerMode || !getSettings().streamingEnabled,
       clock: getSmoothingClockForTest(),
-      onReveal: (delta, _revealedEnd, previousCodeUnit) => runRevealTransaction(itemId, () => {
+      onReveal: (delta, revealedEnd, previousCodeUnit) => runRevealTransaction(itemId, () => {
         const idx = options.getItemIndex(itemId);
         if (idx === undefined) {
           gate.disposeSmootherFor(itemId);
@@ -248,29 +280,44 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
                 });
               },
             );
-          } else {
-            const revealed = prevRevealed + delta;
-            previousRevealed = revealed;
-            if (!isReasoningTail) assistantReveal.discardItem(itemId);
-            const nextSummary = isReasoningTail
-              ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
-              : revealed;
+          } else if (isReasoningTail) {
+            if (reasoning === null) {
+              reasoning = {
+                summary: trimToTailRunes(prevRevealed, THINKING_TAIL_RUNES),
+                window: new LiveTextWindow(prevRevealed),
+                stream: new SmootherRevealStream(smoother),
+              };
+              // The window and the smoother hold the text from here on.
+              previousRevealed = '';
+            }
+            // Trimming the previous summary plus the delta equals trimming
+            // the whole revealed text: the trim walks back from the end and
+            // never starts inside a surrogate pair.
+            reasoning.summary = trimToTailRunes(reasoning.summary + delta, THINKING_TAIL_RUNES);
             const nextItem = {
               ...current,
-              summary: nextSummary,
+              summary: reasoning.summary,
               updatedAt,
             };
             options.setItemAt(idx, nextItem);
-            if (isReasoningTail) {
-              registry.recordLiveTail(itemId, revealed);
-              options.appendLivePayloadDeltaForItem(
-                nextItem.id,
-                reasoningExpansionStateKey(nextItem.kind),
-                delta,
-                thinkingPayloadVersionForItem(nextItem),
-                prevRevealed,
-              );
-            }
+            registry.recordLiveTail(itemId, reasoning.window.append(delta));
+            options.appendLivePayloadDeltaForItem(
+              nextItem.id,
+              reasoningExpansionStateKey(nextItem.kind),
+              reasoning.stream,
+              delta,
+              revealedEnd,
+              thinkingPayloadVersionForItem(nextItem),
+            );
+          } else {
+            const revealed = prevRevealed + delta;
+            previousRevealed = revealed;
+            assistantReveal.discardItem(itemId);
+            options.setItemAt(idx, {
+              ...current,
+              summary: revealed,
+              updatedAt,
+            });
           }
         }
         // Auto-cleanup once the stream has settled AND the smoother has
@@ -303,6 +350,13 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       smoother,
       setLatestUpdatedAt(at) {
         latestUpdatedAt = at;
+      },
+      dispose() {
+        try {
+          smoother.dispose();
+        } finally {
+          reasoning?.stream.release();
+        }
       },
     };
     itemSmoothers.set(itemId, entry);

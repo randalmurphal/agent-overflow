@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -59,10 +60,12 @@ func (r *statementRecorder) capture(fn func()) []recordedStatement {
 	return r.stmts
 }
 
-// recordStatements reopens both of s's pools through a recorder.
+// recordStatements reopens both of s's pools through a recorder. It stops
+// s's checkpointer first, which reads the pool it replaces.
 func recordStatements(t *testing.T, s *Store) *statementRecorder {
 	t.Helper()
 	rec := &statementRecorder{}
+	s.stopCheckpointer()
 	if err := s.db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +223,8 @@ func seedKeyedLookupThread(t *testing.T, s *Store) {
 
 type keyedLookup struct {
 	name string
-	// turn marks a lookup pinned to a turn: its plan must range over
-	// idx_thread_import_chunks_turns.
+	// turn marks a lookup pinned to a turn: its plan must range the
+	// thread's chunk references by turn (chunkTurnRange).
 	turn bool
 	run  func(t *testing.T, s *Store)
 }
@@ -265,11 +268,25 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "FindStreamItemByProviderItemID", turn: true, run: func(t *testing.T, s *Store) {
 			mustFind[Item](t, "stream item")(s.FindStreamItemByProviderItemID(th, 1, "assistant_text", "", "prov-1"))
 		}},
-		{name: "ListItemsForTurn", turn: true, run: func(t *testing.T, s *Store) {
-			must[[]Item](t, "list for turn")(s.ListItemsForTurn(th, 1))
+		{name: "TurnItemIDsWithPrefix", turn: true, run: func(t *testing.T, s *Store) {
+			if ids, err := s.TurnItemIDsWithPrefix(th, 1, "answer-"); err != nil || len(ids) != 1 {
+				t.Errorf("ids with prefix = %v, %v", ids, err)
+			}
 		}},
-		{name: "ListTurnItemsSansPayload", turn: true, run: func(t *testing.T, s *Store) {
-			must[[]Item](t, "sans payload")(s.ListTurnItemsSansPayload(th, 1))
+		{name: "ListUnsettledTurnItems", turn: true, run: func(t *testing.T, s *Store) {
+			must[[]Item](t, "unsettled")(s.ListUnsettledTurnItems(th, 1))
+		}},
+		{name: "LastTopLevelTurnItem", turn: true, run: func(t *testing.T, s *Store) {
+			mustFind[Item](t, "last answer")(s.LastTopLevelTurnItem(th, 1, "assistant_text"))
+		}},
+		{name: "ListTurnItemsOfKind", turn: true, run: func(t *testing.T, s *Store) {
+			must[[]Item](t, "rows of kind")(s.ListTurnItemsOfKind(th, 1, "assistant_text"))
+		}},
+		{name: "ListTurnSummaryOnlyDiffItems", run: func(t *testing.T, s *Store) {
+			must[[]Item](t, "summary-only diffs")(s.ListTurnSummaryOnlyDiffItems(th, 1))
+		}},
+		{name: "ListTurnItems", turn: true, run: func(t *testing.T, s *Store) {
+			must[[]Item](t, "list for turn")(s.ListTurnItems(th, 1))
 		}},
 		{name: "FindTurnItem", turn: true, run: func(t *testing.T, s *Store) {
 			mustFind[Item](t, "turn item")(s.FindTurnItem(th, 1, "notification"))
@@ -358,6 +375,25 @@ func keyedLookups(th string) []keyedLookup {
 		}},
 		{name: "resolveTimelineScope digest", run: func(t *testing.T, s *Store) {
 			must[timelineScope](t, "digest scope")(s.resolveTimelineScope(s.reader(), th, TimelineSelection{ScopeRootID: "launch-1", DigestItemID: "done-1"}))
+		}},
+		{name: "ListThreadUserMessageTicks scope", run: func(t *testing.T, s *Store) {
+			// launch-1's only child is a tool call: the plan is what this
+			// pins, and a tick would be wrong.
+			if ticks, err := s.ListThreadUserMessageTicks(th, TimelineSelection{ScopeRootID: "launch-1"}); err != nil || len(ticks) != 0 {
+				t.Errorf("ticks under launch-1 = %+v, %v; want none", ticks, err)
+			}
+		}},
+		{name: "forkHiddenClosureTx", run: func(t *testing.T, s *Store) {
+			tx, err := s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			ids, err := forkHiddenClosureTx(tx, th, []string{"launch-1"})
+			slices.Sort(ids)
+			if want := []string{"child-1", "done-1", "launch-1"}; err != nil || !slices.Equal(ids, want) {
+				t.Errorf("closure of launch-1 = %v, %v; want %v", ids, err, want)
+			}
 		}},
 		{name: "has newer items", run: func(t *testing.T, s *Store) {
 			must[bool](t, "newer")(hasNewerItems(s.reader(), th, TimelineCursor{TurnIndex: 4, ItemIndex: 0}, timelineScope{}))
@@ -448,6 +484,10 @@ func keyedLookups(th string) []keyedLookup {
 	}
 }
 
+// chunkTurnRange matches a plan node that ranges a thread's chunk
+// references by turn, through either index v116 and v137 give them.
+var chunkTurnRange = regexp.MustCompile(`idx_thread_import_chunks_(turns|newest) \(thread_id=\? AND max_turn_index>\?`)
+
 func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
@@ -466,7 +506,7 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 			read, enumerations := chunkRefNodes(plan, chunkRefNames(stmt.query, views))
 			reads += len(read)
 			for _, node := range read {
-				turnRanged = turnRanged || strings.Contains(node, "idx_thread_import_chunks_turns")
+				turnRanged = turnRanged || chunkTurnRange.MatchString(node)
 			}
 			for _, node := range enumerations {
 				t.Errorf("%s: %q enumerates the thread's chunks\n%s\n%s", lookup.name, node, stmt.query, planText(plan))
@@ -476,7 +516,7 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 			t.Errorf("%s: no statement read the imported arm; the check proved nothing", lookup.name)
 		}
 		if lookup.turn && !turnRanged {
-			t.Errorf("%s: no chunk reference read ranged over idx_thread_import_chunks_turns", lookup.name)
+			t.Errorf("%s: no chunk reference read ranged over a turn index", lookup.name)
 		}
 	}
 }
@@ -502,6 +542,24 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for i, id := range []string{"streamed-1", "streamed-2"} {
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: keyedThreadID, TurnIndex: 4, ItemIndex: 6 + i, Kind: "assistant_text", Role: "assistant",
+			Status: "completed", Summary: id, Meta: `{"provider_item_id":"prov-local"}`, CreatedAt: at + int64(6+i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summaryEdit := Item{
+		ID: "summary-edit", ThreadID: keyedThreadID, TurnIndex: 4, ItemIndex: 8, Kind: "tool_call", ToolName: "file_change",
+		Role: "assistant", Status: "completed", Meta: "{}", PayloadID: "tool-result:summary-edit", CreatedAt: at + 8,
+	}
+	if err := insertWithPayloadCarded(s, summaryEdit, Payload{
+		ID: summaryEdit.PayloadID, Kind: "tool_result", CreatedAt: at + 8, Data: []byte("d"),
+		Meta: `{"itemType":"file_change","inlineDiff":{"availability":"summary_only","files":[{"path":"a.go"}]}}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rec := recordStatements(t, s)
 	for _, tc := range []struct {
 		name      string
@@ -509,6 +567,18 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 		want      string
 		forbidden []string
 	}{
+		{
+			// A Codex turn diff reads the rows it can upgrade through their
+			// payloads' index, not the turn's rows.
+			name: "summary-only diff items",
+			run: func() {
+				if items, err := s.ListTurnSummaryOnlyDiffItems(keyedThreadID, 4); err != nil || len(items) != 1 || items[0].ID != "summary-edit" {
+					t.Errorf("summary-only diff items = %v, %v; want summary-edit", itemIDs(items), err)
+				}
+			},
+			want:      "idx_payloads_summary_only_diff (thread_id=?)",
+			forbidden: []string{"AUTOMATIC", "idx_items_thread_turn_item_unique", "SCAN items", "SCAN payloads"},
+		},
 		{
 			name: "latest turn edit snapshot",
 			run: func() {
@@ -541,6 +611,42 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			},
 			want:      "idx_items_parent (thread_id=? AND parent_id=? AND turn_index=? AND item_index>? AND item_index<?)",
 			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_thread_turn_item_unique"},
+		},
+		{
+			// A settled block that never streamed finds its row by the
+			// provider's item id, not by reading the turn's rows.
+			name: "stream item by provider item id",
+			run: func() {
+				item, found, err := s.FindStreamItemByProviderItemID(keyedThreadID, 4, "assistant_text", "", "prov-local")
+				if err != nil || !found || item.ID != "streamed-1" {
+					t.Errorf("stream item = %q, %v, %v; want streamed-1", item.ID, found, err)
+				}
+			},
+			want:      "idx_items_provider_item (thread_id=? AND <expr>=? AND turn_index=?)",
+			forbidden: []string{"AUTOMATIC", "idx_items_thread_turn_item_unique"},
+		},
+		{
+			// A queued send numbers its row from the turn's sequenced
+			// ids, not from the turn's rows.
+			name: "turn item ids with prefix",
+			run: func() {
+				if ids, err := s.TurnItemIDsWithPrefix(keyedThreadID, 4, "streamed-"); err != nil || len(ids) != 2 {
+					t.Errorf("ids with prefix = %v, %v", ids, err)
+				}
+			},
+			want:      "sqlite_autoindex_items_1 (thread_id=? AND id>? AND id<?)",
+			forbidden: []string{"AUTOMATIC", "idx_items_thread_turn_item_unique"},
+		},
+		{
+			// A stop flips the turn's running rows, read by their index.
+			name: "unsettled turn items",
+			run: func() {
+				if _, err := s.ListUnsettledTurnItems(keyedThreadID, 4); err != nil {
+					t.Error(err)
+				}
+			},
+			want:      "idx_items_unsettled (thread_id=? AND turn_index=?)",
+			forbidden: []string{"AUTOMATIC", "idx_items_thread_turn_item_unique"},
 		},
 		{
 			name: "tool calls since completion",
@@ -594,6 +700,7 @@ func TestImportTriggersProbeKnownChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	triggers := map[string]string{}
 	for rows.Next() {
 		var name, text string
@@ -790,7 +897,9 @@ func TestMigrationV116ImportedKeyLookups(t *testing.T) {
 		t.Errorf("attached reference range = %v", got)
 	}
 
-	assertPlanUses(t, db, "idx_thread_import_chunks_turns", `EXPLAIN QUERY PLAN SELECT chunk_id FROM thread_import_chunks WHERE thread_id=? AND max_turn_index>=? AND min_turn_index<=?`, "t", 5, 5)
+	if plan := queryPlanText(t, db, `EXPLAIN QUERY PLAN SELECT chunk_id FROM thread_import_chunks WHERE thread_id=? AND max_turn_index>=? AND min_turn_index<=?`, "t", 5, 5); !chunkTurnRange.MatchString(plan) {
+		t.Errorf("turn lookup does not range the references by turn:\n%s", plan)
+	}
 	assertPlanUses(t, db, "idx_import_history_items_completion_lookup", `EXPLAIN QUERY PLAN SELECT chunk_id FROM import_history_items WHERE completion_of<>'' AND completion_of=?`, "launch")
 	assertPlanUses(t, db, "idx_import_history_items_task_lookup", `EXPLAIN QUERY PLAN SELECT chunk_id FROM import_history_items WHERE json_extract(meta,'$.task_id')=?`, "task")
 	assertPlanUses(t, db, "idx_import_history_items_scope_root_lookup", `EXPLAIN QUERY PLAN SELECT chunk_id FROM import_history_items WHERE kind='tool_call' AND CASE WHEN json_valid(meta) THEN json_extract(meta, '$.transcript_root_id') END=?`, "root")

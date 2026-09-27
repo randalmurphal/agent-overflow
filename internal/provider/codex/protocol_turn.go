@@ -26,17 +26,27 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 	case "turn/diff/updated":
 		// Codex uses this as an aggregate turn-level diff snapshot. The
 		// transcript edit row is the structured fileChange item; this snapshot is
-		// only available to fill summary-only expanded diff content.
-		diff := readNestedString(params, "diff")
-		if strings.TrimSpace(diff) == "" {
+		// only available to fill summary-only expanded diff content. The
+		// snapshot is the whole turn's diff and arrives after every file
+		// change, so the params decode once and the meta is only the marker.
+		var p struct {
+			Diff   string `json:"diff"`
+			TurnID string `json:"turnId"`
+			Turn   struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		// A field of the wrong type stays empty; the others still decode.
+		_ = json.Unmarshal(params, &p)
+		if strings.TrimSpace(p.Diff) == "" {
 			return nil, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventDiff,
 			ThreadID:  threadID,
-			TurnID:    firstNonEmptyString(readNestedString(params, "turnId"), readNestedString(params, "turn", "id")),
-			Content:   diff,
-			Meta:      mergeMetaKeys(params, map[string]any{"upgrade_only": true, "source": "turn/diff/updated"}),
+			TurnID:    firstNonEmptyString(p.TurnID, p.Turn.ID),
+			Content:   p.Diff,
+			Meta:      json.RawMessage(`{"source":"turn/diff/updated","upgrade_only":true}`),
 			Timestamp: now,
 			Replace:   true,
 		}}, true

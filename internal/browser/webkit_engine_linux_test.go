@@ -132,3 +132,53 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
 	}
 }
+
+// A popup loads the moment WebKit creates it, before the Manager adopts it,
+// so its first navigations reach Go with no page id. What answers them is the
+// file boundary: the workspace's policy until adoption, the page's own after,
+// and a refusal once either is gone.
+func TestWebKitNavigationPolicyCoversAPopupBeforeAdoption(t *testing.T) {
+	const (
+		inside   = "file:///home/dev/repo/index.html"
+		outside  = "file:///home/dev/secret.txt"
+		pageOnly = "https://page.test/"
+	)
+	profile := &webkitProfile{id: webkitProfileSeq.Add(1), allow: func(url string) bool { return url == inside }}
+	webkitProfileByID.Store(profile.id, profile)
+	t.Cleanup(func() { webkitProfileByID.Delete(profile.id) })
+	page := &webkitPage{id: webkitPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == pageOnly }}}
+	webkitPageByID.Store(page.id, page)
+	t.Cleanup(func() { webkitPageByID.Delete(page.id) })
+	closedPage, disposedProfile := webkitPageSeq.Add(1), webkitProfileSeq.Add(1)
+
+	for _, tc := range []struct {
+		name              string
+		pageID, profileID uint64
+		url               string
+		want              bool
+	}{
+		{"an unadopted popup loads a workspace file", 0, profile.id, inside, true},
+		{"an unadopted popup is refused a file outside the workspace", 0, profile.id, outside, false},
+		{"an adopted page answers with its own policy", page.id, profile.id, pageOnly, true},
+		{"an adopted page does not fall back to the workspace's policy", page.id, profile.id, inside, false},
+		{"a closed page refuses", closedPage, profile.id, inside, false},
+		{"a popup of a disposed profile refuses", 0, disposedProfile, inside, false},
+	} {
+		if got := webkitNavigationAllowed(tc.pageID, tc.profileID, tc.url); got != tc.want {
+			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The workspace policy is what answers for a popup before adoption, so a
+// profile without one must not exist.
+func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
+	engine := newNativeEngine(t.TempDir(), ManagerOptions{
+		NativeWindow: func() unsafe.Pointer { return nil },
+	}, engineEvents{}).(*webkitEngine)
+	engine.started = true
+	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
+		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
+	}
+}

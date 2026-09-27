@@ -4,6 +4,7 @@ import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
 import { adoptRevIfEqual, compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, isItemStatusRegression, type TimelineCursorLike } from './threadItems';
+import type { RunRefusal } from './activityRunStubs';
 
 export interface ApplyItemUpsertsToWindowOptions {
   current: readonly Item[];
@@ -19,23 +20,24 @@ export interface ApplyItemUpsertsToWindowOptions {
   hasMoreHistory?: boolean;
   hasMoreNewer: boolean;
   /**
-   * The activity run whose UNSHIPPED region covers a pushed row's
-   * coordinate, or null — `threadActivityRuns.runCoveringUnshipped`.
+   * The activity run a pushed row belongs to without the window holding
+   * it, or null: `threadActivityRuns.runCoveringUnshipped`, given the
+   * batch the row arrives in.
    *
    * A history page ships only a window of each run's members
-   * (docs/architecture/timeline-window-pages.md §6), so a row can land
-   * inside the loaded window's coordinate range and still belong to a
-   * part of a run the pane does not hold. Inserting it would put a row
-   * next to members it is not adjacent to and make the run's loaded span
-   * discontiguous, which every count on the record is stated against.
-   * Such a row is refused and its run marked dirty instead; the debounced
-   * stub refresh restates the run and the reader sees the new member in
-   * the boundary's count.
+   * (docs/architecture/timeline-window-pages.md §6), so a row can belong
+   * to a part of a run the pane does not hold: inside the run's edges, or
+   * past its newer edge while the members before it are unshipped.
+   * Inserting it would put a row next to members it is not adjacent to
+   * and make the run's loaded span discontiguous, which every count on
+   * the record is stated against. Such a row is refused and reported in
+   * `refusals`; the run's stub refresh restates the run and the reader
+   * sees the new member in the boundary's count.
    *
-   * Omitted by callers with no registry (tests, the agent-scope view),
-   * which reads as "no run covers anything".
+   * Omitted by tests with no registry, which reads as "no run covers
+   * anything".
    */
-  runCoveringUnshipped?: (item: Item) => string | null;
+  runCoveringUnshipped?: (item: Item, batch: readonly Item[]) => string | null;
 }
 
 /** The batch's last write to a row the window already held. */
@@ -88,18 +90,19 @@ export interface ApplyItemUpsertsToWindowResult {
    */
   summaryFieldsChangedIds: readonly string[];
   /**
-   * Run record keys of rows refused because they fell inside a held run's
-   * unshipped region. The caller marks each dirty
-   * (`threadActivityRuns.markRunDirty`), which schedules the stub
-   * refresh that restates the run.
+   * Rows refused because they belong to a part of a held run the window
+   * does not hold (`runCoveringUnshipped`). The caller notes them
+   * (`threadActivityRuns.noteRefusals`), which schedules the stub refresh
+   * that restates each run.
    */
-  dirtiedRunKeys: readonly string[];
+  refusals: readonly RunRefusal[];
 }
 
 /** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
 const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 const NO_ROW_WRITES: readonly ItemRowWrite[] = Object.freeze([]);
+const NO_REFUSALS: readonly RunRefusal[] = Object.freeze([]);
 
 /** First index whose row sorts after `item`; rows at its position stay ahead of it. */
 function positionUpperBound(rows: readonly Item[], item: Item): number {
@@ -195,7 +198,7 @@ export function applyItemUpsertsToWindow({
   let droppedOlderItems = false;
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
-  let dirtiedRunKeys: Set<string> | null = null;
+  let refusals: RunRefusal[] | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
   // would misclassify those rows as below the loaded window (mirror of
@@ -288,15 +291,15 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
-    // A new row inside a held run's unshipped region is not a row this
-    // window can hold: see `runCoveringUnshipped`. Checked after the
-    // floor/ceiling filters, so a row those already refused costs no
-    // lookup. Rows at or past the newest edge are outside every run's
-    // range and append exactly as before.
+    // A new row in a part of a held run the pane does not hold is not a
+    // row this window can hold: see `runCoveringUnshipped`. Checked after
+    // the floor/ceiling filters, so a row those already refused costs no
+    // lookup. The whole batch goes along: none of its rows is in the
+    // window yet, and one of them can end the run before this row.
     if (runCoveringUnshipped) {
-      const runKey = runCoveringUnshipped(item);
+      const runKey = runCoveringUnshipped(item, incoming);
       if (runKey !== null) {
-        (dirtiedRunKeys ??= new Set()).add(runKey);
+        (refusals ??= []).push({ runKey, item });
         continue;
       }
     }
@@ -315,7 +318,7 @@ export function applyItemUpsertsToWindow({
     !changed
     && !droppedNewerItems
     && !droppedOlderItems
-    && dirtiedRunKeys === null
+    && refusals === null
   ) {
     return null;
   }
@@ -351,6 +354,6 @@ export function applyItemUpsertsToWindow({
     droppedOlderItems,
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
-    dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
+    refusals: refusals ?? NO_REFUSALS,
   };
 }

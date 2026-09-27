@@ -11,7 +11,7 @@
 extern void aoWebKitEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
                                  int height, int stride, char *err);
-extern void aoWebKitAllow(uint64_t page_id, void *decision, char *uri);
+extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri);
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitPageClosed(uint64_t page_id);
@@ -39,6 +39,15 @@ extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int met
 
 static uint64_t ao_view_page_id(gpointer view) {
   return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_PAGE_KEY));
+}
+
+// ao_view_profile_id reads the profile off the view's network session. A popup
+// shares its opener's session through "related-view", so it answers the
+// opener's profile before the Manager adopts it.
+static uint64_t ao_view_profile_id(WebKitWebView *view) {
+  WebKitNetworkSession *session = webkit_web_view_get_network_session(view);
+  return session ? (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(session), AO_PROFILE_KEY))
+                 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -524,9 +533,11 @@ static gboolean ao_decide_policy(WebKitWebView *view, WebKitPolicyDecision *deci
   // The decision is DEFERRED, not answered here: navigation authority is the
   // Manager's, and asking it takes Manager locks. Blocking the GTK thread on a
   // Go lock is how the whole UI freezes behind one browser operation, so the
-  // decision is held with a reference and finished from a goroutine.
+  // decision is held with a reference and finished from a goroutine. A popup
+  // the Manager has not adopted has no page id yet; its profile's workspace
+  // policy answers for it.
   g_object_ref(decision);
-  aoWebKitAllow(ao_view_page_id(view), decision, g_strdup(uri));
+  aoWebKitAllow(ao_view_page_id(view), ao_view_profile_id(view), decision, g_strdup(uri));
   return TRUE;
 }
 
@@ -628,12 +639,13 @@ static GtkWidget *ao_create_view(WebKitWebView *view, WebKitNavigationAction *ac
       WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", view, NULL));
   // Hold the popup until the Manager adopts or discards it.
   g_object_ref_sink(popup);
+  // The popup starts loading as soon as this returns, before the Manager can
+  // adopt it, so every navigation in it is checked from the first one.
+  g_signal_connect(popup, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  WebKitNetworkSession *session = webkit_web_view_get_network_session(view);
-  uint64_t profile_id =
-      session ? (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(session), AO_PROFILE_KEY)) : 0;
-  aoWebKitPopup(ao_view_page_id(view), profile_id, popup, uri ? g_strdup(uri) : NULL);
+  aoWebKitPopup(ao_view_page_id(view), ao_view_profile_id(view), popup,
+                uri ? g_strdup(uri) : NULL);
   return GTK_WIDGET(popup);
 }
 
@@ -737,7 +749,6 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
     webkit_user_script_unref(script);
   }
 
-  g_signal_connect(view, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
   g_signal_connect(view, "notify::title", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "notify::uri", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "load-changed", G_CALLBACK(ao_load_changed), NULL);
@@ -759,6 +770,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
     return NULL;
   }
   g_object_ref_sink(view);
+  // The policy is connected where each view is created, never in
+  // ao_connect_view: a popup needs it before adoption (ao_create_view).
+  g_signal_connect(view, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
   ao_connect_view(view, page_id, user_script, console_handler);
   return view;
 }

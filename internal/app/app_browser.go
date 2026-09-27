@@ -48,7 +48,7 @@ func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 	}
 }
 
-func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, error) {
+func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
 	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
 		return nil, nil
 	}
@@ -62,7 +62,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, er
 		ThreadID:    thread.ID,
 		Workspace:   thread.WorkspacePath,
 		ProjectRoot: thread.ProjectPath,
-	})
+	}, sessionToken)
 }
 
 func isAppManagedMCPServer(name string) bool {
@@ -135,10 +135,20 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 	return nil
 }
 
-func (a *App) teardownBrowserThread(threadID string) {
-	if a.browser.mcp != nil {
-		a.browser.mcp.UnregisterThread(threadID)
+// closeThreadBrowserPages closes the pages a deleted conversation owns. Its
+// browser tools calls finish first, so none opens a page after the close;
+// the delete's thread lock keeps a session start from registering the thread
+// again meanwhile.
+func (a *App) closeThreadBrowserPages(threadID string) error {
+	if a.browser.manager == nil {
+		return nil
 	}
+	if a.browser.mcp != nil {
+		a.browser.mcp.Retire(threadID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return a.browser.manager.CloseThread(ctx, threadID)
 }
 
 // ClearBrowserSiteData closes active browser contexts before deleting their

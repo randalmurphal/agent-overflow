@@ -5,8 +5,16 @@ import "encoding/json"
 // readIntAtAnyKey returns the first integer-valued field in `data` matching
 // one of `keys`. Works on both plain objects and objects nested inside an
 // array (returning the first hit).
+//
+// Only an object or an array can hold one, so any other value, such as a
+// tool result's output text, is answered from its first byte rather than
+// decoded.
 func readIntAtAnyKey(data json.RawMessage, keys ...string) (int, bool) {
-	if len(data) == 0 {
+	start := 0
+	for start < len(data) && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r') {
+		start++
+	}
+	if start == len(data) || (data[start] != '{' && data[start] != '[') {
 		return 0, false
 	}
 

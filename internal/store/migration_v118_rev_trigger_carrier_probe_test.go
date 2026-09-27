@@ -33,6 +33,7 @@ func revTriggerCarrierProbes(t *testing.T, db *sql.DB) []string {
 			if err != nil {
 				t.Fatalf("explain %s: %v\n%s", name, err, statement)
 			}
+			defer rows.Close()
 			for rows.Next() {
 				var id, parent, notUsed int
 				var detail string

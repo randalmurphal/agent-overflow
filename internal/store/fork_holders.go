@@ -79,6 +79,11 @@ func (sp forkSplit) moveSel(cut timelineRow) (string, []any) {
 // readers do not show stay for the caller to remove. w is threadID's
 // write: the rows leave its cards. It returns how many rows it took.
 func splitShownRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit) (int, error) {
+	if w.grouped {
+		// The split is unbounded and defers foreign keys to the commit,
+		// which a group shares.
+		return 0, fmt.Errorf("store: %s splits shown rows in a grouped write", threadID)
+	}
 	first, found, err := firstOwnRowTx(tx, threadID, sp)
 	if err != nil {
 		return 0, err

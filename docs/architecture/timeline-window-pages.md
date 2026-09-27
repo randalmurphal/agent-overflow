@@ -295,9 +295,10 @@ count  = loaded + shed + Σ (UnshippedBefore + UnshippedAfter)
 The server still re-derives the range from the database and compares
 `(count, digest, edges, has-more)`; nothing the client sends is trusted.
 `MaxHeldWindowItems` counts physical rows and is 8,000: the verification
-read is `(id, rev)` only, so a large range costs less than one page. A
-client holding a row with `rev < 0` sends no held window (an unstamped row
-cannot verify; sending one would only cost the same page).
+read walks the range's top-level rows from the oldest edge and reads
+`(id, rev)` alone, less per row than the scan the pages that described the
+range ran. A client holding a row with `rev < 0` sends no held window (an
+unstamped row cannot verify; sending one would only cost the same page).
 
 ## 6. The client run record
 
@@ -323,10 +324,34 @@ Rules:
 - **Upserts.** A pushed row whose coordinates fall inside a held run but
   outside its loaded span is not inserted; it marks the stub dirty, and
   the pane refreshes it (`ListActivityRunMembers` with `Limit` 0,
-  debounced per run). A page stub for a run the pane already holds whose
+  debounced per run). A run also grows past the newer edge its stub read:
+  while the stub counts members after the loaded span, a pushed rail row
+  or bell past that edge is a new member unless a row that ends a run
+  lies between the edge and it, among the rows the pane holds and the
+  rows of the same batch. It is refused the same way; prose there ends
+  the run and appends. A page stub for a run the pane already holds whose
   loaded span differs from the pane's (a cursor page that crossed into a
-  held run) merges the shipped rows and marks the stub dirty the same way. Rows at or past the newest edge append as today and
-  extend the live run's span. `threadItemUpserts.ts` owns this routing.
+  held run) merges the shipped rows and marks the stub dirty the same
+  way. `threadActivityRuns.runCoveringUnshipped` decides, and
+  `threadItemUpserts.ts` routes on it.
+  A page install (the switch sync, a gap refresh, a scoped snapshot) keeps
+  the rows touched during its read that the page does not hold. Each one
+  passes the same rule against the page's stubs and rows before the
+  install (`admitCarriedRows`); a refused one is left out, and its run
+  notes the refusal once the page's stubs are folded.
+  A refusal rests on the rows the pane has seen, and the row that ends a
+  run can arrive after a row it refused. The record keeps the newest
+  refused position and stays dirty until a members answer read after the
+  refusal settles it. When that answer's run ends before the
+  position, a refused row lies past the run, where the pane holds nothing
+  for it, and the pane reloads its window as for a stale refusal. A page
+  stub does not settle a refusal, because the page may predate the row.
+  When the stub's span ends at the run's newest member, members appended
+  after it change nothing the stub counts: they append, and the record
+  moves the stub's newer edge, `MemberCount` and loaded span in place
+  without a refresh (`extendOverTailAppend`). A completion whose launch
+  is outside the run's loaded span may pair with an unshipped member, so
+  it still marks the stub dirty.
 - **Boundaries.** "N earlier" is `UnshippedBefore + len(shed) +` unmounted
   loaded rows; "N later" is unmounted loaded rows `+ UnshippedAfter`.
   Mounting past the loaded span fetches `ACTIVITY_RUN_CHUNK_ROWS` members

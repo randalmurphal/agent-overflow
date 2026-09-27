@@ -20,9 +20,8 @@ import type { Project, Thread } from '../types/models';
 import type { ContextWindow } from '../types/events';
 import { asProviderID } from '../types/providers';
 import { CreateThread } from './bindings';
-import { withBackendTarget } from '../transport/backends';
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { projectBackend } from '../transport/entityIndex';
-import { HOME_BACKEND } from '../transport/backendKey';
 import { prependThread, removeThread } from './threads.svelte';
 import {
   clearWorktreeIntent,
@@ -31,7 +30,7 @@ import {
 } from './worktreeIntent.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { adoptDiffSpanOwner } from '../utils/diffSpanCache.svelte';
-import { randomId } from '../utils/randomId';
+import { draftPlaceholderId } from './draftPlaceholderId';
 import { errString } from '../utils/errors';
 import { sameNormalizedPath } from '../utils/path';
 import { seedContextWindow } from './threadContextWindow';
@@ -151,7 +150,7 @@ export function createThreadDraftPlaceholder(
     const now = Date.now();
     const mode = current.mode as DraftPlaceholderMode;
     const placeholder: DraftThreadPlaceholder = {
-      id: `draft:${paneId}:${current.projectId}:${mode}:${randomId()}`,
+      id: draftPlaceholderId(paneId, current.projectId, mode),
       projectId: current.projectId,
       projectName: '',
       projectPath: current.projectPath,
@@ -167,6 +166,8 @@ export function createThreadDraftPlaceholder(
       createdAt: now,
       updatedAt: now,
       isDraft: true,
+      // A setup run belongs to the row being removed; the placeholder has none.
+      worktreeSetupState: undefined,
     });
     removeThread(current.id);
     options.bumpSwitchGeneration();
@@ -188,7 +189,7 @@ export function createThreadDraftPlaceholder(
     options.clearPane();
     const now = Date.now();
     const placeholder: DraftThreadPlaceholder = {
-      id: `draft:${paneId}:${project.id}:${mode}:${randomId()}`,
+      id: draftPlaceholderId(paneId, project.id, mode),
       projectId: project.id,
       projectName: project.name,
       projectPath: project.path,
@@ -234,7 +235,7 @@ export function createThreadDraftPlaceholder(
     const placeholder = draftPlaceholder;
     if (!placeholder) return options.getThread();
     const current = options.getThread();
-    const backend = projectBackend(placeholder.projectId) ?? HOME_BACKEND;
+    const backend = requireEntityBackend(projectBackend(placeholder.projectId));
     // An un-seeded placeholder carries the provider fallback
     // startDraftPlaceholder needs to satisfy the Thread type, not a user
     // choice: defaults always arrive with a model, so an empty model is what

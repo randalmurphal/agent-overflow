@@ -83,15 +83,9 @@ GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 VERSION ?= $(shell grep '^  version:' build/config.yml | sed 's/.*"\(.*\)".*/\1/')
 
 ifeq ($(shell uname -s),Darwin)
-HOST_ARCH := $(shell uname -m)
-# Apple Silicon macOS binaries cannot target earlier than 11.0. Keep
-# Intel at 10.15 so local `make check` / `make test` stay warning-free
-# without dropping older x86_64 support.
-ifeq ($(HOST_ARCH),arm64)
-MACOSX_DEPLOYMENT_TARGET := 11.0
-else
-MACOSX_DEPLOYMENT_TARGET := 10.15
-endif
+# The Go runtime requires macOS 13 Ventura (Go 1.27), on both
+# architectures.
+MACOSX_DEPLOYMENT_TARGET := 13.0
 export MACOSX_DEPLOYMENT_TARGET
 export CGO_CFLAGS := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 export CGO_CXXFLAGS := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)

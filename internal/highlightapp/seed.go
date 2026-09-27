@@ -63,10 +63,17 @@ func (s *Service) ObserveAssistantText(threadID, itemID, text string, final bool
 	seed.mu.Lock()
 	defer seed.mu.Unlock()
 	state := seed.states[key]
-	if !hasRemote {
-		if state != nil && final {
+	if final && (text == "" || !hasRemote) {
+		// The row's stream ended with nothing to seed: release its state.
+		// A final tick already queued keeps it; that tick's worker releases
+		// it once the row's last seed is out.
+		if state != nil && !(state.hasPending && state.pending.final) {
 			delete(seed.states, key)
+			state.pending, state.hasPending = seedTick{}, false
 		}
+		return
+	}
+	if !hasRemote {
 		return
 	}
 	ephemeral := false
@@ -111,7 +118,7 @@ func (s *Service) runSeedWorker(key string, state *seedState) {
 			return
 		}
 		tick := state.pending
-		state.hasPending = false
+		state.pending, state.hasPending = seedTick{}, false
 		if tick.final {
 			if seed.states[key] == state {
 				delete(seed.states, key)

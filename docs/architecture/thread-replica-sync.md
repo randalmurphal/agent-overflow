@@ -695,10 +695,10 @@ Step 2 exists because a turn on the open thread moves the thread's rev,
 which makes the caller's attested stamp worthless on the next open even
 though every row it holds is still current. Verification is a read, not a
 counter: both edge ids must resolve to visible top-level rows
-(`windowedTimelineFilter`: `parent_id = ''` and not a `plan_update`
+(`mainTimelineFilterFor`: `parent_id = ''` and not a `plan_update`
 notification), oldest must not sit after newest, the rows in
 `[oldest, newest]` under that filter ordered by `(turn_index, item_index)`
-must number exactly `Count` (capped at `MaxHeldWindowItems`, 2000) and
+must number exactly `Count` (capped at `MaxHeldWindowItems`, 8000) and
 hash to `Digest`, no row in the range may carry `rev < 0` (imported
 history, §3.1), and an `EXISTS` probe on either side must agree with
 `HasMoreOlder` / `HasMoreNewer`. The digest query selects `(id, rev)`

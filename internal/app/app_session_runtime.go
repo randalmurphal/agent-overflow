@@ -121,8 +121,19 @@ func (a *App) runSessionStart(ctx context.Context, threadID string, start func()
 	return startState.Err
 }
 
+// revokeSessionMCP retires the AO tool URLs one provider session was issued.
+// Each server matches the session, so a late teardown of an old session
+// leaves its replacement's URLs working.
+func (a *App) revokeSessionMCP(threadID, token string) {
+	a.revokeRemoteMCP(threadID, token)
+	a.revokeThreadMCP(threadID, token)
+	if a.browser.mcp != nil {
+		a.browser.mcp.RevokeThread(threadID, token)
+	}
+}
+
 func (a *App) closeProviderSession(threadID string, sess session) error {
-	a.revokeRemoteMCP(threadID, sess.Token)
+	a.revokeSessionMCP(threadID, sess.Token)
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		return nil

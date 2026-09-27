@@ -1,10 +1,6 @@
 package store
 
-import (
-	"strings"
-
-	"agent-overflow/internal/settings"
-)
+import "agent-overflow/internal/settings"
 
 // Page assembly (docs/architecture/timeline-window-pages.md §2.1 steps
 // 4-5): the units a pager walked become the rows it ships, the stubs that
@@ -87,24 +83,21 @@ func (s *Store) hydratePageItems(q sqlQueryer, threadID string, ids []string) ([
 	if len(ids) == 0 {
 		return []Item{}, nil
 	}
-	selectedSQL, selectedArgs := idListSelection(ids)
+	selectedSQL, selectedArgs, err := idListSelection(ids)
+	if err != nil {
+		return nil, err
+	}
 	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 }
 
 // idListSelection renders an explicit id list as the single-column
-// selection the hydrators consume. `VALUES` rather than a `UNION ALL`
-// chain: SQLite's compound-select limit does not apply to it, and a page
-// can name a couple of thousand rows.
-func idListSelection(ids []string) (string, []any) {
-	var sql strings.Builder
-	sql.Grow(6 * len(ids))
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		if i > 0 {
-			sql.WriteString(", ")
-		}
-		sql.WriteString("(?)")
-		args = append(args, id)
+// selection the hydrators consume. The ids bind as one JSON array, so a page
+// of any length runs one statement text, which each connection keeps
+// compiled (stmt_cache.go), and a page can name a couple of thousand rows.
+func idListSelection(ids []string) (string, []any, error) {
+	list, err := jsonList(ids)
+	if err != nil {
+		return "", nil, err
 	}
-	return "VALUES " + sql.String(), args
+	return "SELECT value FROM json_each(?)", []any{list}, nil
 }

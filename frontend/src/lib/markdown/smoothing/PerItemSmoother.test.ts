@@ -222,6 +222,17 @@ describe('PerItemSmoother', () => {
     expect(reveals.at(-1)).toEqual({ revealed: 'hello ', delta: 'hello ' });
   });
 
+  it('reads revealed text through a reached cursor and refuses one past it', () => {
+    const { clock, smoother } = makeSmoother('seed ');
+    smoother.appendDelta('hello world');
+    for (let frame = 0; frame < 3; frame++) clock.tickFrame(16);
+    expect(smoother.getRevealed()).toBe('seed hello ');
+    expect(smoother.getRevealed(4)).toBe('seed');
+    expect(smoother.getRevealed(0)).toBe('');
+    expect(() => smoother.getRevealed(12)).toThrow(RangeError);
+    expect(() => smoother.getRevealed(-1)).toThrow(RangeError);
+  });
+
   it('produces a steady stream of word reveals at base rate', () => {
     const { clock, reveals, smoother } = makeSmoother();
     smoother.appendDelta('one two three four five six seven');

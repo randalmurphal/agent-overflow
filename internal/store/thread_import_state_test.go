@@ -245,6 +245,59 @@ func TestHasItemsAfterCursorComparesThePair(t *testing.T) {
 	}
 }
 
+// HasItemsAfterCursor answers what the timeline_items view answers for
+// every position of a thread with imported, overridden and local rows and
+// of its pointer forks, one cut inside a turn with rows of its own past the
+// cut: each row's position, the positions beside it, the position before
+// the first row and one past the last turn.
+func TestHasItemsAfterCursorMatchesTheView(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	for _, threadID := range seedTimelineParityForks(t, s) {
+		rows, err := s.db.Query(`SELECT turn_index, item_index FROM timeline_items WHERE thread_id = ? ORDER BY turn_index, item_index`, threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		positions := []TimelineCursor{{TurnIndex: -1, ItemIndex: -1}}
+		last := 0
+		for rows.Next() {
+			var at TimelineCursor
+			if err := rows.Scan(&at.TurnIndex, &at.ItemIndex); err != nil {
+				t.Fatal(err)
+			}
+			for delta := -1; delta <= 1; delta++ {
+				positions = append(positions, TimelineCursor{TurnIndex: at.TurnIndex, ItemIndex: at.ItemIndex + delta})
+			}
+			last = at.TurnIndex
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, TimelineCursor{TurnIndex: last + 1, ItemIndex: -1})
+		answers := map[bool]int{}
+		for _, at := range positions {
+			got, err := s.HasItemsAfterCursor(threadID, at.TurnIndex, at.ItemIndex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want bool
+			if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM timeline_items WHERE thread_id = ?
+			     AND (turn_index > ? OR (turn_index = ? AND item_index > ?)))`,
+				threadID, at.TurnIndex, at.TurnIndex, at.ItemIndex).Scan(&want); err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Errorf("%s: HasItemsAfterCursor(%d, %d) = %v, the view says %v", threadID, at.TurnIndex, at.ItemIndex, got, want)
+			}
+			answers[got]++
+		}
+		if answers[true] < 10 || answers[false] < 3 {
+			t.Errorf("%s: answers %v; the fixture must reach both outcomes", threadID, answers)
+		}
+	}
+}
+
 func TestSetThreadImportStateRefusesBadInput(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(importedThread("t-state-bad", "claude")); err != nil {

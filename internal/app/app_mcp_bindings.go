@@ -98,8 +98,19 @@ func (a *App) mcpDeps() mcpapp.Deps {
 	return mcpapp.Deps{
 		Context:        a.lifeCtx,
 		IsShuttingDown: a.shuttingDown.Load,
-		StartSession: func(threadID string) error {
-			return a.startSession(context.Background(), threadID)
+		// Under the thread's action lock, as a send starts one, so the
+		// start cannot race a delete or replace a session another caller
+		// just started.
+		EnsureSession: func(threadID string) error {
+			unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			if a.hasActiveSession(threadID) {
+				return nil
+			}
+			return a.startSession(a.lifeCtx(), threadID)
 		},
 		Session: func(threadID string) (mcpapp.Session, bool) {
 			sess, ok := a.sessionManager().get(threadID)

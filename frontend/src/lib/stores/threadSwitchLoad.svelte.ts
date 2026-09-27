@@ -988,11 +988,16 @@ export function createThreadSwitchLoad(
       // Same merge the gap-refresh path does; tracked as bets so the
       // stamped tiers keep stripping them.
       trackDeferredBets(deferredItems, options.getItems());
-      const next = reconcileSnapshotPage(
-        mergeMissingItemsById(deferredItems, incoming),
-        options.getItems(),
-        liveTouchedDuringSync ?? EMPTY_ID_SET,
-        liveRemovedDuringSync ?? EMPTY_ID_SET,
+      const pageItems = mergeMissingItemsById(deferredItems, incoming);
+      const { items: next, refusals } = options.activityRuns.admitCarriedRows(
+        reconcileSnapshotPage(
+          pageItems,
+          options.getItems(),
+          liveTouchedDuringSync ?? EMPTY_ID_SET,
+          liveRemovedDuringSync ?? EMPTY_ID_SET,
+        ),
+        pageItems,
+        page.runs,
       );
       options.installTimelineItems(next, {
         disposeDropped: true,
@@ -1001,6 +1006,7 @@ export function createThreadSwitchLoad(
             () => {
               for (const item of incoming) options.optimisticItemIds.delete(item.id);
               options.timelineWindow.applyWindowMetadataFromPaged(page);
+              options.activityRuns.noteRefusals(refusals);
             },
             () => {
               // A page over an existing attested paint is a reconcile, not a
@@ -1587,7 +1593,9 @@ export function createThreadSwitchLoad(
    */
   async function runBackendRefresh(token: RefreshToken, requireItems: boolean): Promise<RefreshRunOutcome> {
     const currentThread = options.getThread();
-    if (!currentThread) return REFRESH_SETTLED;
+    // A draft placeholder has no row: a refresh queued for the row it
+    // replaced has nothing left to read.
+    if (!currentThread || options.getDraftPlaceholder()) return REFRESH_SETTLED;
     const gen = options.getSwitchGeneration();
     const backend = requireEntityBackend(threadBackend(currentThread.id));
     const refreshIsCurrent = (): boolean =>
@@ -1683,11 +1691,15 @@ export function createThreadSwitchLoad(
       trackDeferredBets(liveState.deferredItems, currentItems);
       const changedDuringFetch =
         refreshMutations.ids.size > 0 || refreshMutations.removedIds.size > 0;
-      const next = reconcileSnapshotPage(
+      const { items: next, refusals } = options.activityRuns.admitCarriedRows(
+        reconcileSnapshotPage(
+          merged,
+          currentItems,
+          refreshMutations.ids,
+          refreshMutations.removedIds,
+        ),
         merged,
-        currentItems,
-        refreshMutations.ids,
-        refreshMutations.removedIds,
+        paged.runs,
       );
       options.installTimelineItems(next, {
         disposeDropped: true,
@@ -1696,6 +1708,7 @@ export function createThreadSwitchLoad(
             () => {
               for (const item of snapshot) options.optimisticItemIds.delete(item.id);
               options.timelineWindow.applyWindowMetadataFromPaged(paged);
+              options.activityRuns.noteRefusals(refusals);
             },
             () => {
               if (changedDuringFetch) {

@@ -5,6 +5,7 @@ package containment
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -68,22 +69,37 @@ func (g *windowsGroup) Configure(cmd *exec.Cmd) error {
 	return nil
 }
 
+// assignProcessToJob is indirected so a test can act out an assignment
+// failure, which a real job and process do not produce on demand.
+var assignProcessToJob = windows.AssignProcessToJobObject
+
+// Adopt assigns the suspended process to the job and resumes it. The process
+// never runs outside the job: if adoption fails, Adopt terminates it, so the
+// caller's Wait returns instead of blocking on a suspended process.
 func (g *windowsGroup) Adopt(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("harness containment: cannot adopt nil process")
 	}
-	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
+	err := g.adopt(uint32(cmd.Process.Pid))
+	if err == nil {
+		return nil
+	}
+	if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		return errors.Join(err, fmt.Errorf("terminate unadopted process: %w", killErr))
+	}
+	return err
+}
+
+func (g *windowsGroup) adopt(pid uint32) error {
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, pid)
 	if err != nil {
-		return fmt.Errorf("OpenProcess pid=%d: %w", cmd.Process.Pid, err)
+		return fmt.Errorf("OpenProcess pid=%d: %w", pid, err)
 	}
 	defer windows.CloseHandle(proc)
-	if err := windows.AssignProcessToJobObject(g.handle, proc); err != nil {
+	if err := assignProcessToJob(g.handle, proc); err != nil {
 		return fmt.Errorf("AssignProcessToJobObject: %w", err)
 	}
-	if err := resumeProcess(proc); err != nil {
-		return err
-	}
-	return nil
+	return resumeProcess(proc)
 }
 
 func (g *windowsGroup) Close() error {

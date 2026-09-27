@@ -168,7 +168,7 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 		t.Fatalf("event Status.HasChanges = false, want true")
 	}
 
-	if err := app.GitStatusUnsubscribe(res.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
 		t.Fatalf("GitStatusUnsubscribe: %v", err)
 	}
 	if _, tracked := gitWatchPumpRefs(app, res.Cwd); tracked {
@@ -186,13 +186,13 @@ func TestGitStatusUnsubscribeIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := app.GitStatusUnsubscribe(res.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
 		t.Fatalf("first Unsubscribe: %v", err)
 	}
-	if err := app.GitStatusUnsubscribe(res.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
 		t.Fatalf("second Unsubscribe must be a no-op, got %v", err)
 	}
-	if err := app.GitStatusUnsubscribe("does-not-exist"); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), "does-not-exist"); err != nil {
 		t.Fatalf("Unsubscribe with unknown id must be a no-op, got %v", err)
 	}
 }
@@ -225,9 +225,31 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 
 	// Cleanup is idempotent: a follow-up explicit Unsubscribe is a
 	// no-op rather than an error or panic.
-	if err := app.GitStatusUnsubscribe(res.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
 		t.Fatalf("Unsubscribe after connection cleanup: %v", err)
 	}
+}
+
+// TestGitStatusUnsubscribeUnbindsItsConnectionTie: see checkByIDTie.
+func TestGitStatusUnsubscribeUnbindsItsConnectionTie(t *testing.T) {
+	app := newTestAppWithStore(t)
+	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
+	installGitWatchForTest(t, app, stub)
+	thread := makeWorkspaceThread(t, app, "thread-sub-tie")
+	var cwd string
+	checkByIDTie(t, byIDTie{
+		subscribe: func(ctx context.Context) (string, error) {
+			res, err := app.GitStatusSubscribe(ctx, workspaceRefForThread(thread))
+			cwd = res.Cwd
+			return res.ID, err
+		},
+		unsubscribe: app.GitStatusUnsubscribe,
+		key:         gitStatusCleanupKey,
+		live: func(string) bool {
+			_, present := gitWatchPumpRefs(app, cwd)
+			return present
+		},
+	})
 }
 
 func TestGitStatusSubscribeFailsOnUnknownProject(t *testing.T) {
@@ -299,7 +321,7 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 	}
 
 	// Releasing one caller leaves the pump running for the other.
-	if err := app.GitStatusUnsubscribe(resA.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), resA.ID); err != nil {
 		t.Fatalf("unsubscribe A: %v", err)
 	}
 	if refs, ok := gitWatchPumpRefs(app, resA.Cwd); !ok || refs != 1 {
@@ -323,7 +345,7 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 		}
 	}
 
-	if err := app.GitStatusUnsubscribe(resB.ID); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), resB.ID); err != nil {
 		t.Fatalf("unsubscribe B: %v", err)
 	}
 	if _, ok := gitWatchPumpRefs(app, resA.Cwd); ok {
@@ -345,7 +367,7 @@ func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	defer app.GitStatusUnsubscribe(res.ID)
+	defer app.GitStatusUnsubscribe(context.Background(), res.ID)
 
 	events, mu := captureGitStatusEmissions(app)
 	// The watcher's StatusFn now reports a change no filesystem event
@@ -421,7 +443,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 	}
 
 	// Releasing one makes room again.
-	if err := app.GitStatusUnsubscribe(ids[0]); err != nil {
+	if err := app.GitStatusUnsubscribe(context.Background(), ids[0]); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 	res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
@@ -430,7 +452,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 	}
 	ids = append(ids[1:], res.ID)
 	for _, id := range ids {
-		if err := app.GitStatusUnsubscribe(id); err != nil {
+		if err := app.GitStatusUnsubscribe(context.Background(), id); err != nil {
 			t.Fatalf("teardown unsubscribe: %v", err)
 		}
 	}

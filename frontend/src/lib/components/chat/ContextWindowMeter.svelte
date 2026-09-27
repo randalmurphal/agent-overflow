@@ -11,7 +11,9 @@
   import Popover from '../primitives/Popover.svelte';
   import ContextBreakdown from './ContextBreakdown.svelte';
 
-  let { data, thread }: { data: ContextWindow; thread?: Thread | null } = $props();
+  // `threadId` is the materialized row's id: null while the pane holds a draft
+  // placeholder, which has no session to break down.
+  let { data, thread, threadId = null }: { data: ContextWindow; thread?: Thread | null; threadId?: string | null } = $props();
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
   // Expanding the breakdown is a click, not a hover: it costs a control
@@ -119,9 +121,9 @@
           </p>
         {/if}
       </div>
-      {#if canReadBreakdown && thread}
+      {#if canReadBreakdown && threadId}
         {#if breakdownOpen}
-          <ContextBreakdown threadId={thread.id} />
+          <ContextBreakdown {threadId} />
         {:else}
           <button
             type="button"

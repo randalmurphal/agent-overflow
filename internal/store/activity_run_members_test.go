@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -308,4 +310,81 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	if got.Page == nil {
 		t.Fatal("the refused window got no page")
 	}
+}
+
+// TestStubRefreshAfterTailAppendMovesOnlyTheNewerEdge pins what the client
+// relies on to extend a held run over a live append without a refresh
+// (`extendOverTailAppend`): when the caller's span ends at the run's newest
+// member, members appended after it change only the run's newer edge, its
+// member count and the span's last member. A completion of a launch outside
+// the span is the one append that changes the rest, so the client refuses it.
+func TestStubRefreshAfterTailAppendMovesOnlyTheNewerEdge(t *testing.T) {
+	refresh := func(t *testing.T, s *Store, run, first, last string) ActivityRunStub {
+		t.Helper()
+		answer, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
+			RunFirstItemID: run, LoadedFirstItemID: first, LoadedLastItemID: last,
+			Direction: ActivityRunMembersBefore,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return answer.Stub
+	}
+	appendRow := func(t *testing.T, s *Store, index int, kind, toolName, status, completionOf string) string {
+		t.Helper()
+		id := kind + "-appended-" + strconv.Itoa(index)
+		item := Item{
+			ID: id, ThreadID: "t", ItemIndex: index, Role: "assistant", Kind: kind, ToolName: toolName,
+			Status: status, CompletionOf: completionOf, Summary: id, CreatedAt: int64(index + 1),
+		}
+		if err := insertCarded(s, item); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	// A run of mixed members with running launches before the held span.
+	seed := func(t *testing.T) (*Store, []string) {
+		s := newTestStore(t)
+		return s, seedRunThread(t, s, "t", "ptrtcktnrt")
+	}
+
+	t.Run("launches, completions of held launches and thinking", func(t *testing.T) {
+		s, ids := seed(t)
+		before := refresh(t, s, ids[1], ids[5], ids[9])
+		if before.UnshippedAfter != 0 || before.LastItemID != ids[9] {
+			t.Fatalf("held span does not end at the run's newest member: %+v", before)
+		}
+		launch := appendRow(t, s, 10, "tool_call", "Bash", "completed", "")
+		appendRow(t, s, 11, "thinking", "", "completed", "")
+		appendRow(t, s, 12, "tool_completion", "Bash", "completed", launch)
+		appendRow(t, s, 13, "tool_call", "Grep", "running", "")
+		last := appendRow(t, s, 14, "notification", "task_notification", "completed", "")
+
+		want := before
+		want.LastItemID, want.LastItemIndex = last, 14
+		want.MemberCount += 5
+		want.LoadedLastItemID = last
+		// The client receives the stub's wire form.
+		got, err := json.Marshal(refresh(t, s, ids[1], ids[5], last))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantJSON, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(wantJSON) {
+			t.Fatalf("refresh after a tail append changed more than the newer edge\n got: %s\nwant: %s", got, wantJSON)
+		}
+	})
+
+	t.Run("completion of a launch outside the span", func(t *testing.T) {
+		s, ids := seed(t)
+		before := refresh(t, s, ids[1], ids[5], ids[9])
+		last := appendRow(t, s, 10, "tool_completion", "Run2", "completed", ids[2])
+		got := refresh(t, s, ids[1], ids[5], last)
+		if reflect.DeepEqual(got.UnshippedPairedLaunchIDs, before.UnshippedPairedLaunchIDs) {
+			t.Fatalf("completion of unshipped launch %s left the paired list unchanged: %+v", ids[2], got)
+		}
+	})
 }

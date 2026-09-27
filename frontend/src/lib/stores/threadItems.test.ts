@@ -794,16 +794,16 @@ describe('applyItemUpsertsToWindow activity-run routing', () => {
     expect(next.items.map((item) => item.id)).toEqual(['p0', 'b']);
     expect(next.appendedItems).toEqual([]);
     expect(next.structureChanged).toBe(false);
-    expect(next.dirtiedRunKeys).toEqual(['run-a']);
+    expect(next.refusals).toEqual([{ runKey: 'run-a', item: incoming[0] }]);
   });
 
-  it('reports each run once for a burst', () => {
+  it('reports every refused row of a burst', () => {
     const incoming = [
       makeItem({ id: 'n1', turnIndex: 0, itemIndex: 2, kind: 'tool_call' }),
       makeItem({ id: 'n2', turnIndex: 0, itemIndex: 3, kind: 'tool_call' }),
     ];
     const next = applyWindowUpserts({ ...base, incoming, runCoveringUnshipped: () => 'run-a' })!;
-    expect(next.dirtiedRunKeys).toEqual(['run-a']);
+    expect(next.refusals).toEqual(incoming.map(item => ({ runKey: 'run-a', item })));
   });
 
   it('appends a row no run claims, and updates a loaded row', () => {
@@ -813,7 +813,24 @@ describe('applyItemUpsertsToWindow activity-run routing', () => {
     ];
     const next = applyWindowUpserts({ ...base, incoming, runCoveringUnshipped: () => null })!;
     expect(next.items.map((item) => item.id)).toEqual(['p0', 'b', 'tail']);
-    expect(next.dirtiedRunKeys).toEqual([]);
+    expect(next.refusals).toEqual([]);
+  });
+
+  it('hands the router the batch each row arrives in', () => {
+    const incoming = [
+      makeItem({ id: 'n1', turnIndex: 0, itemIndex: 5, kind: 'assistant_text' }),
+      makeItem({ id: 'n2', turnIndex: 0, itemIndex: 6, kind: 'tool_call' }),
+    ];
+    const seen: [string, string[]][] = [];
+    applyWindowUpserts({
+      ...base,
+      incoming,
+      runCoveringUnshipped: (item, batch) => {
+        seen.push([item.id, batch.map((row) => row.id)]);
+        return null;
+      },
+    });
+    expect(seen).toEqual([['n1', ['n1', 'n2']], ['n2', ['n1', 'n2']]]);
   });
 
   it('never routes a subagent child', () => {

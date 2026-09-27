@@ -79,7 +79,7 @@ import (
 // a write that can end or start an agent (a completion sibling, a change
 // to a tool call row, a teardown) makes the cards it concerns resolve
 // again (subagentCards.relive). A write that can stop an agent holds the
-// lock of the thread's cards (writeItems, bulkWriteItems).
+// lock of the thread's cards (writeItems, groupWriteItems, bulkWriteItems).
 
 // ErrSubagentAnchor reports a write whose subagent card the store cannot
 // accept: a visible row with a parent written without a card outside a
@@ -276,6 +276,15 @@ func (s *Store) cardTxLocked(t *cardThread, label string, fn func(tx *sql.Tx) (f
 		apply()
 	}
 	return nil
+}
+
+// cardGroupTxLocked is cardTxLocked for a grouped write, whose transaction
+// may commit with other grouped writes (groupCommit).
+func (s *Store) cardGroupTxLocked(t *cardThread, label string, fn func(tx *sql.Tx) (func(), error)) error {
+	return s.groupTx(t.id, label, func(tx *sql.Tx) (func(), error) {
+		s.cards.drain(t)
+		return fn(tx)
+	})
 }
 
 // subagentChainRow is one row on a parent chain, read over every arm.

@@ -16,7 +16,7 @@ type EncodedLine struct {
 // nil (plain) — nil is the common case and keeps the wire payload
 // proportional to *styled* content.
 func encodeLines(src []byte, classes []uint16) []EncodedLine {
-	lines := make([]EncodedLine, 0, 64)
+	lines := make([]EncodedLine, 0, countLines(src))
 	start := 0
 	for i := 0; i <= len(src); i++ {
 		if i != len(src) && src[i] != '\n' {

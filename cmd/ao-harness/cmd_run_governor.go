@@ -71,7 +71,7 @@ func startRunGovernor(ctx context.Context, plan harnessrun.RunPlan, ownerPID int
 		return &runGovernor{}, nil
 	}
 	worktree, _ := os.Getwd()
-	mgr, err := governor.New(governor.Options{})
+	mgr, err := openGovernor("")
 	if err != nil {
 		return nil, err
 	}

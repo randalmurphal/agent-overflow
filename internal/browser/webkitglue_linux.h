@@ -77,7 +77,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
                      const char *console_handler);
 
 // ao_wk_view_adopt connects the delegates to a view the engine created itself
-// (a popup) once the Manager has decided to keep it.
+// (a popup) once the Manager has decided to keep it. The popup's navigation
+// policy is connected when WebKit creates it, and answers with its
+// workspace's policy until this stamps the page id.
 void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler);
 

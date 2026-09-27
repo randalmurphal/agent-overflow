@@ -395,8 +395,4 @@ type Controller interface {
 	History(context.Context, Access, string, string) (PageInfo, error)
 	Evaluate(context.Context, Access, string, string) (any, error)
 	EvaluateReadOnly(context.Context, Access, string, string) (any, string, error)
-	CloseThread(context.Context, string) error
-	Close() error
-	ClearSiteData(context.Context) error
-	Reconfigure(Config) error
 }

@@ -27,9 +27,10 @@ const UnstampedItemRev int64 = -1
 // (docs/architecture/timeline-window-pages.md §5). It is far larger than
 // a page's shipped-row budget because a page no longer ships every row in
 // its range: a window holding a handful of long runs is described by
-// their stubs, and the verification read is `(id, rev)` off the ordering
-// index, so a large range still costs less than one page. Beyond the cap
-// the answer is a page.
+// their stubs. The verification read (windowDigestRowsTx) walks the
+// range's top-level rows from the oldest edge and reads `(id, rev)`
+// alone, less per row than the scan the pages that described the range
+// ran over the same rows. Beyond the cap the answer is a page.
 const MaxHeldWindowItems = 8000
 
 // HeldWindow is the caller's description of the rows it already holds for
@@ -278,15 +279,25 @@ func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineSco
 // windowDigestRowsTx selects the (id, rev) pairs inside an inclusive
 // coordinate range, under the same filter and ordering a page uses, so the
 // digest describes the rows a page WOULD contain. `limit` is the caller's
-// claimed count plus one: one extra row is enough to prove the count wrong
-// and stops a lying request from scanning the thread.
+// claimed count plus one: one extra row is enough to prove the count wrong.
 //
-// It selects two narrow columns off the ordering index and never joins
-// payloads: this runs on a cold open where the point is to ship no rows at
-// all.
+// Every arm starts its index walk at the oldest edge: the range is a
+// (turn_index, item_index) key on each arm, and the imported and lineage
+// arms read only the import chunks and ancestor levels that reach the
+// oldest edge's turn. A request's cost grows with the rows it claims and
+// the chunks from its oldest edge on, not with the history before the
+// edge; a window past the thread's imported history reaches no chunk.
+//
+// It never joins payloads: this runs on a cold open where the point is to
+// ship no rows at all. `rev` is in no top-level index, so an arm that
+// selected it would walk the ordering index and read every row in the
+// range, subagent children included. The arms select each row's id and
+// locator from the covering top-level indexes (RowIDs), and the outer
+// query reads `rev` by rowid for the thread's own rows. Imported and
+// inherited rows read importedItemRevExpr without a read.
 //
 // The limit is validated HERE rather than trusted from the caller: it is
-// the only bound on how much of a thread this statement may walk, and
+// the only bound on how many rows this statement may walk, and
 // timelineArms renders a zero limit as no LIMIT clause at all.
 func windowDigestRowsTx(
 	q sqlQueryer,
@@ -302,24 +313,29 @@ func windowDigestRowsTx(
 	}
 	filter, filterArgs := scope.filter("items.")
 	selection, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns: func(_, revExpr string) string {
-			return `items.id AS id, ` + revExpr + ` AS rev,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
+		Columns: func(string, string) string {
+			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 		},
+		RowIDs:   true,
+		Turn:     "?",
+		TurnArgs: []any{oldest.TurnIndex},
+		FromTurn: true,
 		Where: filter + `
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index >= ?))
-		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index <= ?))`,
-		WhereArgs: append(filterArgs,
-			oldest.TurnIndex, oldest.TurnIndex, oldest.ItemIndex,
-			newest.TurnIndex, newest.TurnIndex, newest.ItemIndex,
-		),
-		OrderBy: "turn_index ASC, item_index ASC",
-		Limit:   limit,
+		   AND (items.turn_index, items.item_index) >= (?, ?)
+		   AND (items.turn_index, items.item_index) <= (?, ?)`,
+		WhereArgs: append(filterArgs, oldest.TurnIndex, oldest.ItemIndex, newest.TurnIndex, newest.ItemIndex),
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     limit,
 	})
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query("SELECT id, rev FROM (\n"+selection+"\n)", args...)
+	rows, err := q.Query(`SELECT w.id, COALESCE(own.rev, `+importedItemRevExpr+`)
+		  FROM (
+`+selection+`
+) w
+		  LEFT JOIN items own ON own.rowid = w.own_rowid
+		 ORDER BY w.turn_index, w.item_index`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: read held window rows for %s: %w", threadID, err)
 	}

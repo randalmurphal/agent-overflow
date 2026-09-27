@@ -31,11 +31,34 @@ func terminateProcessTree(command *exec.Cmd, _ containment.Group) error {
 	return nil
 }
 
-func terminateProcessTreeVerified(command *exec.Cmd, group containment.Group, identity instanceinfo.ProcessIdentity) error {
-	_ = group
+// terminateProcessTreeVerified stops the launched tree. Its root is a launcher
+// chain (pnpm is a `#!/usr/bin/env node` script), so the root's executable
+// changes after Start while its kernel start time and PID namespace do not.
+// Each attempt verifies the root under its current executable, and an exec
+// during an attempt starts another one against the new executable.
+func terminateProcessTreeVerified(command *exec.Cmd, _ containment.Group, launched instanceinfo.ProcessIdentity) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	return harnessclient.TerminateProcessTreeVerified(ctx, command.Process.Pid, identity, 2*time.Second)
+	pid := command.Process.Pid
+	for {
+		root := launchedRootIdentity(pid, launched)
+		err := harnessclient.TerminateProcessTreeVerified(ctx, pid, root, 2*time.Second)
+		if err == nil || ctx.Err() != nil || launchedRootIdentity(pid, launched) == root {
+			return err
+		}
+	}
+}
+
+// launchedRootIdentity returns pid's current identity while it is still the
+// launched root: same start time and PID namespace, whatever it has exec'd
+// since. Otherwise it returns the launch record, which the verified teardown
+// treats as gone or refuses as a recycled PID.
+func launchedRootIdentity(pid int, launched instanceinfo.ProcessIdentity) instanceinfo.ProcessIdentity {
+	current, err := instanceinfo.CaptureProcessIdentity(pid)
+	if err != nil || current.StartTime != launched.StartTime || current.Namespace != launched.Namespace {
+		return launched
+	}
+	return current
 }
 
 func waitForProcessTree(command *exec.Cmd, _ containment.Group, timeout time.Duration) bool {

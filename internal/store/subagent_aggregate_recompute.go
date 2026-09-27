@@ -676,37 +676,37 @@ func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string
 	if limit <= 0 {
 		return SubagentRecompute{}, fmt.Errorf("store: recompute subagent aggregates for %s: limit %d is not positive", threadID, limit)
 	}
-	var seeds []string
-	var listed bool
-	var writes []subagentStampWrite
-	err := func() error {
-		rtx, err := s.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return fmt.Errorf("store: begin subagent recompute read for %s: %w", threadID, err)
+	type recomputeRead struct {
+		seeds  []string
+		listed bool
+		writes []subagentStampWrite
+	}
+	read, err := historyReadSnapshot(ctx, s, "subagent recompute read", func(q sqlQueryer) (recomputeRead, error) {
+		var read recomputeRead
+		var err error
+		if read.seeds, err = subagentAnchorIDs(q, subagentDirtyAnchorsSQL(limit), threadID); err != nil {
+			return read, fmt.Errorf("store: select dirty subagent anchors for %s: %w", threadID, err)
 		}
-		defer rtx.Rollback()
-		if seeds, err = subagentAnchorIDs(rtx, subagentDirtyAnchorsSQL(limit), threadID); err != nil {
-			return fmt.Errorf("store: select dirty subagent anchors for %s: %w", threadID, err)
+		if read.listed, err = subagentBackfillListed(q, threadID); err != nil {
+			return read, err
 		}
-		if listed, err = subagentBackfillListed(rtx, threadID); err != nil {
-			return err
-		}
-		if listed && len(seeds) < limit {
-			legacy, err := subagentAnchorIDs(rtx, subagentLegacyAnchorsLimitSQL(limit-len(seeds)), threadID)
+		if read.listed && len(read.seeds) < limit {
+			legacy, err := subagentAnchorIDs(q, subagentLegacyAnchorsLimitSQL(limit-len(read.seeds)), threadID)
 			if err != nil {
-				return fmt.Errorf("store: select legacy subagent anchors for %s: %w", threadID, err)
+				return read, fmt.Errorf("store: select legacy subagent anchors for %s: %w", threadID, err)
 			}
-			seeds = append(seeds, legacy...)
+			read.seeds = append(read.seeds, legacy...)
 		}
-		if len(seeds) == 0 {
-			return nil
+		if len(read.seeds) == 0 {
+			return read, nil
 		}
-		writes, err = computeSubagentStamps(rtx, threadID, seeds)
-		return err
-	}()
+		read.writes, err = computeSubagentStamps(q, threadID, read.seeds)
+		return read, err
+	})
 	if err != nil {
 		return SubagentRecompute{}, err
 	}
+	seeds, listed, writes := read.seeds, read.listed, read.writes
 	if len(seeds) == 0 && !listed {
 		return SubagentRecompute{}, nil
 	}

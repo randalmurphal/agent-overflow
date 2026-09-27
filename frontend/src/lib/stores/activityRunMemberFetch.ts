@@ -24,6 +24,7 @@ import {
   type ActivityRunMembersDirection,
 } from './bindings';
 import {
+  settleRefusedRows,
   type ActivityRunRecord,
   type ActivityRunRecords,
 } from './activityRunStubs';
@@ -199,8 +200,9 @@ export function createActivityRunMemberFetch(
     const ownership = threadBackend(threadId);
     const claim = { ...completionSignal(), silent };
     const gen = generation;
-    const stub = record.stub;
+    const stubVersion = record.stubVersion;
     const invalidationVersion = record.invalidationVersion;
+    const appendVersion = record.appendVersion;
     const cutVersion = record.cutVersion;
     const loadedFirstItemId = record.loadedFirstItemId;
     const loadedLastItemId = record.loadedLastItemId;
@@ -210,7 +212,7 @@ export function createActivityRunMemberFetch(
     const current = (): boolean => !disposed && generation === gen
       && options.threadId() === threadId && threadBackend(threadId) === ownership
       && options.records().get(runKey) === record
-      && (record.stub === stub || (!silent && sameRequestedEdge()))
+      && (record.stubVersion === stubVersion || (!silent && sameRequestedEdge()))
       && record.cutVersion === cutVersion;
     inFlight.set(runKey, claim);
     try {
@@ -227,13 +229,25 @@ export function createActivityRunMemberFetch(
       if (!current() || recovery) return [];
       const rows = (answer.items ?? []) as Item[];
       if (rows.length > 0) options.mountMembers(record, rows, request.direction === 'around');
-      // Reconcile against the actual loaded span. A live append during the
-      // request must remain loaded and leave this older answer dirty.
-      const invalidated = record.invalidationVersion !== invalidationVersion;
+      // Reconcile against the actual loaded span. Folding the answer
+      // extends it over members appended during the request, except an
+      // around answer, which dropped them with the span it replaced. No
+      // answer describes any other local invalidation made during it.
+      const invalidated = record.invalidationVersion !== invalidationVersion
+        || (request.direction === 'around' && record.appendVersion !== appendVersion);
+      // Every refusal bumps `invalidationVersion`, so an answer that is not
+      // invalidated was read after the last one and can settle them.
+      const refusedPastRun = !invalidated && settleRefusedRows(record, answer.stub);
       const held = options.onStubApplied(answer.stub);
       if (invalidated && options.records().get(runKey) === record) {
         record.dirty = true;
         scheduler.request();
+      }
+      if (refusedPastRun) {
+        // A row refused as this run's member belongs after the run, where
+        // the window holds nothing for it: the window reload restores it.
+        await recover(new Error(`activity run ${runKey} ends before a row refused as its member`));
+        return [];
       }
       return held;
     } catch (err) {

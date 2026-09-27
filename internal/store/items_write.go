@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-// appendStreamingItemSummaryAndPayload runs the summary append and — when
-// payloadID is non-empty — the flush window's payload chunk append in the
-// SAME transaction. The read-back happens before the payload write so the
-// chunk carries the row's current joined payload meta, exactly the value
-// the former two-transaction sequence passed to AppendPayloadData.
+// appendStreamingItemSummaryAndPayload runs the summary append and, when
+// payloadID is non-empty, the flush window's payload chunk append in one
+// transaction, which may commit with other grouped writes (groupCommit).
+// The row is read back before the payload write so the chunk carries the
+// row's current joined payload meta.
 func (s *Store) appendStreamingItemSummaryAndPayload(
 	threadID string,
 	id string,
@@ -22,43 +22,41 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 	payloadDelta []byte,
 	payloadCreatedAt int64,
 ) (Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin %s tx: %w", operation, err)
-	}
-	defer tx.Rollback()
-
-	result, err := runUpdate(tx)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: %s %s/%s: %w", operation, threadID, id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: rows affected %s %s/%s: %w", operation, threadID, id, err)
-	}
-	if affected == 0 {
-		if err := classifyStreamingUpdateMissTx(tx, threadID, id, operation); err != nil {
-			return Item{}, err
+	var updated Item
+	err := s.groupTx(threadID, operation, func(tx *sql.Tx) (func(), error) {
+		result, err := runUpdate(tx)
+		if err != nil {
+			return nil, fmt.Errorf("store: %s %s/%s: %w", operation, threadID, id, err)
 		}
-	}
-
-	updated, err := readBackItemTx(tx, threadID, id)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
-	}
-	// A streaming append carries no card: it is for text a card does not
-	// preview (assistant text, thinking).
-	if row := subagentRowOf(updated); row.counts() && previewKind(row.kind) {
-		return Item{}, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
-			ErrSubagentAnchor, threadID, id, row.parentID)
-	}
-	if payloadID != "" {
-		if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
-			return Item{}, err
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("store: rows affected %s %s/%s: %w", operation, threadID, id, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit %s tx: %w", operation, err)
+		if affected == 0 {
+			if err := classifyStreamingUpdateMissTx(tx, threadID, id, operation); err != nil {
+				return nil, err
+			}
+		}
+
+		updated, err = readBackItemTx(tx, threadID, id)
+		if err != nil {
+			return nil, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
+		}
+		// A streaming append carries no card: it is for text a card does not
+		// preview (assistant text, thinking).
+		if row := subagentRowOf(updated); row.counts() && previewKind(row.kind) {
+			return nil, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
+				ErrSubagentAnchor, threadID, id, row.parentID)
+		}
+		if payloadID != "" {
+			if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return Item{}, err
 	}
 	return updated, nil
 }
@@ -119,7 +117,7 @@ func (s *Store) InsertItem(item Item) error {
 	// the triage paths that count as a meaningful interaction (user_text
 	// persist, turn settle, approval / user-input request creation). Item
 	// inserts on their own do not advance the sidebar timestamp.
-	return s.writeItems(item.ThreadID, item.SubagentCard, "insert item", func(tx *sql.Tx, w *cardWrite) error {
+	return s.groupWriteItems(item.ThreadID, item.SubagentCard, "insert item", func(tx *sql.Tx, w *cardWrite) error {
 		return insertItemTx(tx, w, item, "store: insert item")
 	})
 }
@@ -139,7 +137,7 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	applyItemDefaults(&item)
 	// Thread activity is bumped explicitly by triage interaction paths,
 	// not on every appended item. See InsertItem and MarkThreadActivity.
-	err := s.writeItems(item.ThreadID, item.SubagentCard, "append item", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(item.ThreadID, item.SubagentCard, "append item", func(tx *sql.Tx, w *cardWrite) error {
 		next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item next index")
 		if err != nil {
 			return err
@@ -296,7 +294,7 @@ func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payl
 func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {
 	applyItemDefaults(&item)
 	var persisted Item
-	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item", func(tx *sql.Tx, w *cardWrite) error {
 		if preserveTerminal {
 			existing, found, err := s.getThreadItem(tx, item.ThreadID, item.ID)
 			if err != nil {
@@ -333,7 +331,7 @@ func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayloa
 func (s *Store) UpsertItemWithPayloadAppend(item Item, payloadID string, delta []byte, payloadMeta string, createdAt int64) (Item, error) {
 	applyItemDefaults(&item)
 	var persisted Item
-	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item with payload append", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item with payload append", func(tx *sql.Tx, w *cardWrite) error {
 		if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, createdAt); err != nil {
 			return err
 		}
@@ -494,7 +492,7 @@ func insertNewItem(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sql.Tx, s
 func (s *Store) UpsertItemAtTurnHead(item Item) (Item, error) {
 	applyItemDefaults(&item)
 	var persisted Item
-	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item at head", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item at head", func(tx *sql.Tx, w *cardWrite) error {
 		var err error
 		persisted, err = writeItemAndReadBack(tx, w, &item, headItemIndexTx)
 		return err
@@ -529,7 +527,7 @@ func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
 // with stale ordering metadata. updatedAt stamps the mutation time.
 func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(string) (string, error), updatedAt int64) (Item, error) {
 	var item Item
-	err := s.writeItems(threadID, nil, "bump item index", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(threadID, nil, "bump item index", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, itemID, "store: bump item index")
 		if err != nil {
 			return err
@@ -587,7 +585,7 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(st
 func (s *Store) UpdateItemMetaMerge(threadID, id string, transform func(string) (string, error), updatedAt int64) (Item, bool, error) {
 	var item Item
 	var changed bool
-	err := s.writeItems(threadID, nil, "meta merge", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(threadID, nil, "meta merge", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: meta merge")
 		if err != nil {
 			return err
@@ -654,7 +652,7 @@ func updateItemMetaTx(tx *sql.Tx, w *cardWrite, old subagentRow, meta string, up
 // Returns sql.ErrNoRows-wrapped error when (threadID, id) does not
 // match any row.
 func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
-	return s.writeItems(threadID, nil, "update item meta "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
+	return s.groupWriteItems(threadID, nil, "update item meta "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item meta")
 		if err != nil {
 			return err
@@ -671,6 +669,10 @@ type ItemPartialUpdate struct {
 	Meta      *string
 	Decision  *string
 	UpdatedAt *int64
+	// IfStreaming applies the update only while the row is streaming, and
+	// otherwise returns ErrItemSettled. A settle sets it so it never
+	// overwrites a row an interrupt ended after the settle read it.
+	IfStreaming bool
 	// SubagentCard is the card of the row's parent, as Item.SubagentCard:
 	// a changed summary of a row a card previews needs it.
 	SubagentCard *SubagentCard
@@ -720,13 +722,16 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 	args = append(args, threadID, id)
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
 	var item Item
-	err := s.writeItems(threadID, update.SubagentCard, "update item fields "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(threadID, update.SubagentCard, "update item fields "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
 		// A summary or a meta can change what the cards read, and a
 		// status whether an agent runs.
-		if update.Status != nil || update.Summary != nil || update.Meta != nil {
+		if update.IfStreaming || update.Status != nil || update.Summary != nil || update.Meta != nil {
 			old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item fields")
 			if err != nil {
 				return err
+			}
+			if update.IfStreaming && old.status != "streaming" {
+				return ErrItemSettled
 			}
 			row := old
 			if update.Status != nil {
@@ -801,7 +806,7 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 	// Background-task completion rows are siblings to a running tool_call;
 	// they do not represent a fresh interaction. Activity is bumped by
 	// the turn-settle path through MarkThreadActivity.
-	err := s.writeItems(completion.ThreadID, completion.SubagentCard, "append completion item", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.groupWriteItems(completion.ThreadID, completion.SubagentCard, "append completion item", func(tx *sql.Tx, w *cardWrite) error {
 		next, err := nextItemIndexTx(tx, completion.ThreadID, completion.TurnIndex, "store: append completion next index")
 		if err != nil {
 			return err

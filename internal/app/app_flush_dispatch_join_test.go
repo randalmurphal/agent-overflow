@@ -213,9 +213,9 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 	}
 
 	// ONE row, holding the three texts separated by the visible rule.
-	items3, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items3, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var flushRow *store.Item
 	for i, it := range items3 {
@@ -355,9 +355,9 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 			t.Fatalf("rollback removed %s from the shared turn (found=%v err=%v)", kept, found, err)
 		}
 	}
-	remaining, err := app.store.ListItemsForTurn(thread.ID, 3)
+	remaining, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn after rollback: %v", err)
+		t.Fatalf("ListTurnItems after rollback: %v", err)
 	}
 	for _, it := range remaining {
 		if strings.Contains(it.Summary, messages[1]) || strings.Contains(it.Summary, messages[2]) {
@@ -425,9 +425,9 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 	if envelopes := recordedUserEnvelopes(t, stdinLog); len(envelopes) != 0 {
 		t.Fatalf("a member failed to resolve but %d envelope(s) reached the provider: %+v", len(envelopes), envelopes)
 	}
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, it := range items {
 		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
@@ -514,9 +514,9 @@ func TestDispatchFlush_Claude_RedispatchKeepsInheritedSendIDs(t *testing.T) {
 	if envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1); len(envelopes) != 1 {
 		t.Fatalf("stdin envelopes: got %d, want 1", len(envelopes))
 	}
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var row *store.Item
 	for i, it := range items {

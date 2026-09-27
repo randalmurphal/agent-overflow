@@ -26,6 +26,8 @@ import {
   createThreadAssistantReveal,
   type ThreadAssistantReveal,
 } from './threadAssistantReveal.svelte';
+import type { TextWindow } from '../utils/liveText';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 /**
  * Per-item smoothing handle stored in the `itemSmoothers` map. Holds the
@@ -36,6 +38,11 @@ import {
 export interface ItemSmoothing {
   smoother: PerItemSmoother;
   setLatestUpdatedAt(at: number): void;
+  /**
+   * Dispose the smoother and release its text from the live stream an
+   * expanded row's payload may keep.
+   */
+  dispose(): void;
 }
 
 /** Statuses whose patch is the documented authoritative-summary handover. */
@@ -88,10 +95,19 @@ export interface RevealSmootherRegistry {
    * tail-trimmed summary — but only while the tail still describes the row.
    */
   seedFromRetainedTail(itemId: string, initialReceived: string): string;
-  /** Record the full revealed text of a live reasoning-tail row. */
-  recordLiveTail(itemId: string, revealed: string): void;
-  /** Full revealed text for a reasoning-tail row, or null. */
+  /** Record the window of a live reasoning-tail row's revealed text. */
+  recordLiveTail(itemId: string, window: TextWindow): void;
+  /**
+   * Full revealed text for a reasoning-tail row, or null. Null for a settled
+   * row whose text is over the retention budget.
+   */
   liveThinkingTailFor(itemId: string): string | null;
+  /**
+   * The end of a reasoning-tail row's revealed text that the collapsed clamp
+   * renders, or null. A settled row's window is its whole text when that
+   * fits the retention budget, and its last live window otherwise.
+   */
+  liveThinkingWindowFor(itemId: string): TextWindow | null;
   /** Row-UI prune hook: drop retained settled tails outside the retention set. */
   pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void;
   smootherCount(): number;
@@ -125,49 +141,69 @@ export function createRevealSmootherRegistry(
     setItemAt: options.setItemAt,
     hasSmoother: (itemId) => itemSmoothers.has(itemId),
   });
-  // Live full revealed text for streaming thinking rows, keyed by item
-  // id. Written from every onReveal. Decouples the collapsed
-  // ThinkingBlock render from `items[].summary` (which is trimmed to
-  // THINKING_TAIL_RUNES for memory and persistence). The trimmed summary
-  // sliding-window forces the collapsed `<span>{bodyText}</span>` to
-  // re-wrap its full string on every reveal — `whitespace-pre-wrap`
-  // + `max-h-[3lh] overflow-hidden` + `scrollTop = scrollHeight` then
-  // shifts the visible 3 lines wholesale whenever a char drop near the
-  // start lets a word cross a wrap boundary, producing the user-visible
-  // "5 words appear at once past 400 runes" symptom. Reading the live
-  // tail instead gives the span monotonically-growing content so wrap
-  // layout never reshuffles older text — only the bottom 3 lines scroll
-  // up as content arrives. SvelteMap so Map.get inside a $derived
-  // re-runs on Map.set.
+  // Revealed text for streaming thinking rows, keyed by item id: while the
+  // row streams, the end the collapsed clamp renders (LiveTextWindow, written
+  // from every onReveal); once it settles, the whole text, or the last
+  // window when the whole text is over the budget below. Decouples
+  // the collapsed ThinkingBlock render from `items[].summary` (which is
+  // trimmed to THINKING_TAIL_RUNES for memory and persistence). The trimmed
+  // summary sliding-window forces the collapsed `<span>{bodyText}</span>` to
+  // re-wrap its full string on every reveal: `whitespace-pre-wrap` +
+  // `max-h-[3lh] overflow-hidden` + `scrollTop = scrollHeight` then shifts
+  // the visible 3 lines wholesale whenever a char drop near the start lets a
+  // word cross a wrap boundary, producing the user-visible "5 words appear
+  // at once past 400 runes" symptom. Reading the live tail instead gives the
+  // span text that only grows at its end (a window starts only where
+  // wrapping restarts), so wrap layout never reshuffles older text; only the
+  // bottom 3 lines scroll up as content arrives.
   //
   // Lifetime: an entry OUTLIVES its smoother across a settle
-  // (settleSmootherRetainingTail) — falling back to the trimmed summary
+  // (settleSmootherRetainingTail). Falling back to the trimmed summary
   // at settle re-wraps the clamp's visible lines in front of the reader,
   // because wrap depends on where the string starts and the trim starts
   // mid-sentence. Consistency is enforced at READ time, not by writer
   // discipline: a settled entry is served only while the row's current
   // summary still equals the summary recorded at settle
   // (`settledTailSummaries` below), so any later authoritative summary
-  // write — a correction patch, a terminal re-upsert, a whole-window
-  // replace — silently invalidates the tail without every write path
+  // write (a correction patch, a terminal re-upsert, a whole-window
+  // replace) silently invalidates the tail without every write path
   // needing to know it exists. Removal paths drop the entry
   // (disposeSmootherState), the offscreen row-UI prune reclaims settled
   // entries once the row leaves retention (pruneSettledThinkingTails),
   // a store-side char budget bounds panes whose timeline is unmounted
-  // (evictSettledTailsOverBudget — the prune is a MessageTimeline quiet
+  // (evictSettledTailsOverBudget; the prune is a MessageTimeline quiet
   // pass and never runs there, e.g. while Settings replaces the pane
   // strip), and disposeEverything clears everything on thread switch.
-  const itemLiveThinkingTail: SvelteMap<string, string> = new SvelteMap();
+  //
+  // Plain Map: the budget, the prune and the stats iterate it. Row readers
+  // read `liveTailSignals`, the same entries as one box per row
+  // (keyedSignalRegistry.svelte.ts). A reveal frame writes one entry; in a
+  // SvelteMap that write would also wake every row whose read found none.
+  // `setLiveTail` and `deleteLiveTail` keep the two in step, and
+  // disposeEverything clears both.
+  const itemLiveThinkingTail: Map<string, TextWindow> = new Map();
+  const liveTailSignals = createKeyedSignalRegistry<TextWindow | null>(null);
   // For each SETTLED retained tail: the row summary recorded at settle
-  // (always `trimToTailRunes(tail)` — the settle paths wrote or verified
-  // it). `liveThinkingTailFor` compares it against the row's CURRENT
+  // (always `trimToTailRunes` of the whole text; the settle paths wrote or
+  // verified it). `liveThinkingTailFor` compares it against the row's CURRENT
   // summary to decide whether the retained text still describes the row.
   // Plain Map on purpose: reads happen inside row `$derived`s that
-  // already track `item.summary` (the prop) and the SvelteMap entry, so
+  // already track `item.summary` (the prop) and the row's tail box, so
   // every mutation that matters re-runs them without this map being
-  // reactive itself. Entries pair 1:1 with settled tail entries; every
-  // path that deletes from `itemLiveThinkingTail` deletes here too.
+  // reactive itself. Entries pair 1:1 with settled tail entries;
+  // `deleteLiveTail` deletes both.
   const settledTailSummaries: Map<string, string> = new Map();
+
+  function setLiveTail(itemId: string, tail: TextWindow): void {
+    itemLiveThinkingTail.set(itemId, tail);
+    liveTailSignals.set(itemId, tail);
+  }
+
+  function deleteLiveTail(itemId: string): void {
+    itemLiveThinkingTail.delete(itemId);
+    settledTailSummaries.delete(itemId);
+    liveTailSignals.drop(itemId);
+  }
 
   // Dispose a smoother and DROP the row's live tail. Correct for every
   // removal/overwrite caller: the row is gone, or its summary no longer
@@ -182,12 +218,11 @@ export function createRevealSmootherRegistry(
     } catch (error) {
       errors.push(error);
     }
-    itemLiveThinkingTail.delete(itemId);
-    settledTailSummaries.delete(itemId);
+    deleteLiveTail(itemId);
     const entry = itemSmoothers.get(itemId);
     if (entry) {
       try {
-        entry.smoother.dispose();
+        entry.dispose();
       } catch (error) {
         errors.push(error);
       } finally {
@@ -213,19 +248,18 @@ export function createRevealSmootherRegistry(
 
   function evictSettledTailsOverBudget(): void {
     let totalChars = 0;
-    for (const [id, text] of itemLiveThinkingTail) {
-      if (!itemSmoothers.has(id)) totalChars += text.length;
+    for (const [id, tail] of itemLiveThinkingTail) {
+      if (!itemSmoothers.has(id)) totalChars += tail.text.length;
     }
     if (totalChars <= SETTLED_TAIL_BUDGET_CHARS) return;
     // Map iteration order is insertion order, which for settled entries
     // is stream order — evict oldest first. Live entries are never
     // evicted; their reveal owns them.
-    for (const [id, text] of itemLiveThinkingTail) {
+    for (const [id, tail] of itemLiveThinkingTail) {
       if (totalChars <= SETTLED_TAIL_BUDGET_CHARS) break;
       if (itemSmoothers.has(id)) continue;
-      itemLiveThinkingTail.delete(id);
-      settledTailSummaries.delete(id);
-      totalChars -= text.length;
+      deleteLiveTail(id);
+      totalChars -= tail.text.length;
     }
   }
 
@@ -233,15 +267,28 @@ export function createRevealSmootherRegistry(
   // only for reasoning-tail rows) and recording the summary it settled
   // with. The collapsed clamp is already rendering exactly that string;
   // swapping to the tail-trimmed summary at settle re-wraps the visible
-  // lines — the "think text shifts right as the response mounts" flicker
-  // — because wrap layout depends on where the string starts and the
+  // lines (the "think text shifts right as the response mounts" flicker),
+  // because wrap layout depends on where the string starts and the
   // trim starts mid-sentence. The recorded summary is what makes the
   // retention safe WITHOUT trusting callers: `liveThinkingTailFor`
   // serves the tail only while the row's current summary still equals
   // it, so a later summary rewrite invalidates the tail at read time.
+  //
+  // The retained entry is the whole revealed text when it fits the budget:
+  // an expand before the payload loads shows it, and a smoother re-created
+  // after the settle resumes from it (seedFromRetainedTail). A longer text
+  // keeps its live window, which the budget would otherwise evict at once.
+  // The collapsed clamp renders the same characters from either.
   function settleSmootherRetainingTail(itemId: string): void {
     const entry = itemSmoothers.get(itemId);
     if (!entry) return;
+    // Read before disposal: a live window's whole text is in the smoother,
+    // and the window ends where the caught-up reveal does.
+    const tail = itemLiveThinkingTail.get(itemId);
+    const settled = tail !== undefined && tail.start > 0
+      && tail.start + tail.text.length <= SETTLED_TAIL_BUDGET_CHARS
+      ? { text: entry.smoother.getRevealed(), start: 0 }
+      : tail;
     const errors: unknown[] = [];
     try {
       assistantReveal.clearPresentation(itemId);
@@ -249,15 +296,15 @@ export function createRevealSmootherRegistry(
       errors.push(error);
     }
     try {
-      entry.smoother.dispose();
+      entry.dispose();
     } catch (error) {
       errors.push(error);
     } finally {
       itemSmoothers.delete(itemId);
     }
-    const tail = itemLiveThinkingTail.get(itemId);
-    if (tail !== undefined) {
-      settledTailSummaries.set(itemId, trimToTailRunes(tail, THINKING_TAIL_RUNES));
+    if (settled !== undefined) {
+      if (settled !== tail) setLiveTail(itemId, settled);
+      settledTailSummaries.set(itemId, trimToTailRunes(settled.text, THINKING_TAIL_RUNES));
       evictSettledTailsOverBudget();
     }
     if (errors.length > 0) {
@@ -287,12 +334,13 @@ export function createRevealSmootherRegistry(
     const errors: unknown[] = [];
     for (const entry of itemSmoothers.values()) {
       try {
-        entry.smoother.dispose();
+        entry.dispose();
       } catch (error) {
         errors.push(error);
       }
     }
     itemSmoothers.clear();
+    for (const itemId of itemLiveThinkingTail.keys()) liveTailSignals.drop(itemId);
     itemLiveThinkingTail.clear();
     settledTailSummaries.clear();
     try {
@@ -309,29 +357,41 @@ export function createRevealSmootherRegistry(
     // A retained settled tail is the full text the row is still
     // rendering; a smoother re-created after that settle (a replay
     // upsert flipping the row back to streaming, then a delta) must
-    // seed from it — seeding from the tail-trimmed summary would shrink
+    // seed from it: seeding from the tail-trimmed summary would shrink
     // the rendered string and re-wrap the clamp. Only when consistent:
     // the summary recorded at settle must still be the current summary,
     // else the row was overwritten since and the stale tail is dropped
-    // here rather than left to shadow the resumed reveal for a frame.
+    // here rather than left to shadow the resumed reveal for a frame. A
+    // retained window (a text over the budget) is not the whole text, so
+    // the smoother cannot resume from it and starts from the summary.
     const retainedTail = itemLiveThinkingTail.get(itemId);
     if (retainedTail === undefined) return initialReceived;
-    if (settledTailSummaries.get(itemId) === initialReceived) return retainedTail;
-    itemLiveThinkingTail.delete(itemId);
-    settledTailSummaries.delete(itemId);
+    if (retainedTail.start === 0 && settledTailSummaries.get(itemId) === initialReceived) {
+      return retainedTail.text;
+    }
+    deleteLiveTail(itemId);
     return initialReceived;
   }
 
-  function recordLiveTail(itemId: string, revealed: string): void {
-    itemLiveThinkingTail.set(itemId, revealed);
+  function recordLiveTail(itemId: string, window: TextWindow): void {
+    setLiveTail(itemId, window);
   }
 
   function liveThinkingTailFor(itemId: string): string | null {
-    const tail = itemLiveThinkingTail.get(itemId);
-    if (tail === undefined) return null;
+    const tail = liveThinkingWindowFor(itemId);
+    if (tail === null || tail.start === 0) return tail?.text ?? null;
+    // A live window's smoother holds the whole text; a settled window's
+    // text was over the budget and is not kept.
+    const entry = itemSmoothers.get(itemId);
+    return entry ? entry.smoother.getRevealed() : null;
+  }
+
+  function liveThinkingWindowFor(itemId: string): TextWindow | null {
+    const tail = liveTailSignals.get(itemId);
+    if (tail === null) return null;
     // Live entry: the reveal that writes the tail also writes the
-    // summary as its trimmed view every frame — consistent by
-    // construction, no validation needed.
+    // summary as its trimmed view every frame, so the two are consistent
+    // by construction and need no validation.
     if (itemSmoothers.has(itemId)) return tail;
     // Settled entry: serve it only while the row's current summary is
     // still the one recorded at settle. This is the whole consistency
@@ -364,8 +424,7 @@ export function createRevealSmootherRegistry(
     for (const itemId of itemLiveThinkingTail.keys()) {
       if (retainedItemIds.has(itemId)) continue;
       if (itemSmoothers.has(itemId)) continue;
-      itemLiveThinkingTail.delete(itemId);
-      settledTailSummaries.delete(itemId);
+      deleteLiveTail(itemId);
     }
     assistantReveal.pruneRecords(retainedItemIds);
   }
@@ -382,8 +441,8 @@ export function createRevealSmootherRegistry(
     // Chars, not just count: entries now hold full reasoning texts past
     // settle, so the count alone hides the memory that matters.
     let liveThinkingTailChars = 0;
-    for (const text of itemLiveThinkingTail.values()) {
-      liveThinkingTailChars += text.length;
+    for (const tail of itemLiveThinkingTail.values()) {
+      liveThinkingTailChars += tail.text.length;
     }
     return {
       itemSmoothers: itemSmoothers.size,
@@ -402,6 +461,7 @@ export function createRevealSmootherRegistry(
     seedFromRetainedTail,
     recordLiveTail,
     liveThinkingTailFor,
+    liveThinkingWindowFor,
     pruneSettledThinkingTails,
     smootherCount,
     debugStats,

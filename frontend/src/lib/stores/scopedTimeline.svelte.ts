@@ -245,9 +245,13 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       if (item && includes(item)) next.set(id, item);
       else next.delete(id);
     }
-    installTimelineItems([...next.values()].sort(compareItemsByTimelinePosition), {
+    const { items, refusals } = runs.admitCarriedRows(
+      [...next.values()].sort(compareItemsByTimelinePosition), page.items as Item[], page.runs);
+    for (const { item } of refusals) next.delete(item.id);
+    installTimelineItems(items, {
       disposeDropped: true, afterCommit: () => {
         window.applyWindowMetadataFromPaged({ ...page, scope: undefined });
+        runs.noteRefusals(refusals);
         const changed = [...observation.touched].flatMap(id => next.get(id) ?? []);
         window.refreshCursorsAfterUpserts(changed, true, page.items as Item[]);
       },

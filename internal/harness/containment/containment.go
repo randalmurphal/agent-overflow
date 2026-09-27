@@ -11,9 +11,13 @@ import (
 var ErrUnsupported = errors.New("harness containment is unsupported on this platform")
 
 // Group owns the kernel resource boundary for one launch. Configure must be
-// called before cmd.Start. Adopt is called immediately after Start on
-// platforms whose process creation API requires it. Close is safe to call
-// after the process has exited and must be checked by the caller.
+// called before cmd.Start. Adopt must be called immediately after Start,
+// before the process is waited on. It returns once the process runs the
+// configured command inside the boundary, so a process identity recorded
+// after Adopt names that command. When Adopt fails, the caller tears the
+// process down and waits for it; a process held suspended for adoption has
+// already been terminated, so that wait returns. Close is safe to call after
+// the process has exited and must be checked by the caller.
 type Group interface {
 	Configure(*exec.Cmd) error
 	Adopt(*exec.Cmd) error

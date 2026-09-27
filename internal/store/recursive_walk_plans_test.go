@@ -161,6 +161,7 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		triggers := map[string]string{}
 		for rows.Next() {
 			var name, text string

@@ -17,7 +17,7 @@ func latestSubagentReportSelection(rootID string, since int64) timelineSelection
 			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 		},
 		KeyFirst: true,
-		Where: "items.parent_id = ? AND items.parent_id <> '' AND items.kind = 'assistant_text' AND trim(items.summary, " +
+		Where: "items.parent_id = " + boundText + " AND items.parent_id <> '' AND items.kind = 'assistant_text' AND trim(items.summary, " +
 			aggBlankSQL + ") <> '' AND items.created_at >= ?",
 		WhereArgs: []any{rootID, since},
 		OrderBy:   "turn_index DESC, item_index DESC",

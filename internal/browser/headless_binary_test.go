@@ -158,15 +158,3 @@ func TestValidateChromiumBinaryNamesTheSettingWhenTheBrowserIsGone(t *testing.T)
 		t.Fatalf("error %v drops the lookup's own reason", err)
 	}
 }
-
-// A failed launch's diagnosis is its LAST lines. Keeping the head would keep
-// the startup chatter and drop the abort.
-func TestTailOfKeepsTheEnd(t *testing.T) {
-	if got := tailOf("short", 16); got != "short" {
-		t.Fatalf("tailOf(short) = %q", got)
-	}
-	got := tailOf("noise-noise-noise-FATAL", 5)
-	if got != "...FATAL" {
-		t.Fatalf("tailOf = %q, want the tail and an ellipsis", got)
-	}
-}

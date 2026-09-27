@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,32 +138,8 @@ func run(args []string, stdout, stderr *os.File) int {
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessGroup(command)
-	if err := group.Configure(command); err != nil {
-		fmt.Fprintln(stderr, "ao-harness-e2e: configure memory containment:", err)
-		return 1
-	}
-	if err := command.Start(); err != nil {
-		fmt.Fprintln(stderr, "ao-harness-e2e: start Playwright:", err)
-		return 1
-	}
-	identity, err := instanceinfo.CaptureProcessIdentity(command.Process.Pid)
-	if err != nil {
-		if killErr := terminateProcessTree(command, group); killErr != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e: clean up after identity failure:", killErr)
-		}
-		_ = command.Wait()
-		if !waitForProcessTree(command, group, 5*time.Second) {
-			fmt.Fprintln(stderr, "ao-harness-e2e: descendants survived identity failure cleanup")
-		}
-		fmt.Fprintln(stderr, "ao-harness-e2e: capture Playwright identity:", err)
-		return 1
-	}
-	if err := group.Adopt(command); err != nil {
-		if killErr := terminateProcessTree(command, group); killErr != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e: clean up after containment adoption failure:", killErr)
-		}
-		_ = command.Wait()
-		fmt.Fprintln(stderr, "ao-harness-e2e: adopt Playwright into memory containment:", err)
+	identity, ok := startContained(command, group, stderr)
+	if !ok {
 		return 1
 	}
 
@@ -224,6 +201,42 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 	return 0
+}
+
+// startContained starts command inside group and records its identity after
+// Adopt, once the command runs inside the boundary rather than a containment
+// launcher. A failure is reported to stderr after the started tree is torn
+// down.
+func startContained(command *exec.Cmd, group containment.Group, stderr io.Writer) (instanceinfo.ProcessIdentity, bool) {
+	if err := group.Configure(command); err != nil {
+		fmt.Fprintln(stderr, "ao-harness-e2e: configure memory containment:", err)
+		return instanceinfo.ProcessIdentity{}, false
+	}
+	if err := command.Start(); err != nil {
+		fmt.Fprintln(stderr, "ao-harness-e2e: start Playwright:", err)
+		return instanceinfo.ProcessIdentity{}, false
+	}
+	if err := group.Adopt(command); err != nil {
+		if killErr := terminateProcessTree(command, group); killErr != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e: clean up after containment adoption failure:", killErr)
+		}
+		_ = command.Wait()
+		fmt.Fprintln(stderr, "ao-harness-e2e: adopt Playwright into memory containment:", err)
+		return instanceinfo.ProcessIdentity{}, false
+	}
+	identity, err := instanceinfo.CaptureProcessIdentity(command.Process.Pid)
+	if err != nil {
+		if killErr := terminateProcessTree(command, group); killErr != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e: clean up after identity failure:", killErr)
+		}
+		_ = command.Wait()
+		if !waitForProcessTree(command, group, 5*time.Second) {
+			fmt.Fprintln(stderr, "ao-harness-e2e: descendants survived identity failure cleanup")
+		}
+		fmt.Fprintln(stderr, "ao-harness-e2e: capture Playwright identity:", err)
+		return instanceinfo.ProcessIdentity{}, false
+	}
+	return identity, true
 }
 
 func containedEnvironment() []string {

@@ -228,7 +228,13 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		a.triage.MarkThreadActive(threadID)
 	}
 
-	browserServers, err := a.browserMCPConfigForThread(t)
+	registeredTools := false
+	defer func() {
+		if !registeredTools {
+			a.revokeSessionMCP(threadID, sessionToken)
+		}
+	}()
+	browserServers, err := a.browserMCPConfigForThread(t, sessionToken)
 	if err != nil {
 		return fmt.Errorf("start session: register browser tools: %w", err)
 	}
@@ -238,22 +244,10 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: register remote tools: %w", err)
 	}
-	registeredRemote := false
-	defer func() {
-		if !registeredRemote {
-			a.revokeRemoteMCP(threadID, sessionToken)
-		}
-	}()
 	threadServers, err := a.threadMCPConfigForThread(t, sessionToken)
 	if err != nil {
 		return fmt.Errorf("start session: register thread tools: %w", err)
 	}
-	registeredThread := false
-	defer func() {
-		if !registeredThread {
-			a.revokeThreadMCP(threadID, sessionToken)
-		}
-	}()
 	if browserServers == nil {
 		browserServers = map[string]any{}
 	}
@@ -296,8 +290,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	}
 
 	a.sessionManager().put(threadID, newSess)
-	registeredRemote = true
-	registeredThread = true
+	registeredTools = true
 	// Codex reports its thread in an EventInit emitted before NewSession
 	// returns, and callers act on the started session as soon as this
 	// returns (a send, a fork reading the session ref). Handle what the

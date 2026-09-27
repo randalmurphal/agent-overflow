@@ -58,7 +58,8 @@ func buildEngine(lang Lang) (*engine, error) {
 	}
 	query, err := tree_sitter.NewQuery(g.Language, g.Highlights)
 	if err != nil {
-		return nil, fmt.Errorf("compile %s highlights query: %w", lang, err)
+		// QueryError implements error on its value.
+		return nil, fmt.Errorf("compile %s highlights query: %w", lang, *err)
 	}
 	names := query.CaptureNames()
 	captureClass := make([]uint16, len(names))

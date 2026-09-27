@@ -210,6 +210,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			}
 			return a.terminals.CloseThread(threadID)
 		},
+		CloseBrowserPages:  a.closeThreadBrowserPages,
 		ClearSystemPrompt:  a.clearThreadSystemPrompt,
 		RemoveDiscussion:   a.removeDeliberation,
 		ClearAutoReconnect: a.clearAutoReconnectAttempted,
@@ -220,6 +221,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			}
 			return a.replay.RemoveThreadLog(threadID)
 		},
+		Forget:  a.forgetThreadMCP,
 		Deleted: func(thread store.Thread) { a.broadcastThreadDeleted(thread.ID) },
 	}
 }

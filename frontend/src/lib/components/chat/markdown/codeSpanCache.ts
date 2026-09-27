@@ -2,15 +2,24 @@
 // the KaTeX HTML / Mermaid SVG caches in the vendor patch): the
 // committed-prefix / volatile-tail split in ChatMarkdown remounts each
 // settled block once, and the synchronous `getCachedBlockSpans` hit
-// makes that migration flash-free — the remounted instance paints
+// makes that migration flash-free: the remounted instance paints
 // highlighted on its first render instead of flashing plain.
 //
 // Keys are content-addressed `(lang, fnv1a(source))`; spans are
 // theme-independent, so a theme toggle costs nothing. Success is
-// cached — including all-plain results for unknown languages, which
-// are the backend's authoritative answer — while rejections and
-// incomplete results (transient parse degradation) are never cached,
-// so a transient failure retries on the next request.
+// cached, including all-plain results for unknown languages, which
+// are the backend's authoritative answer. Rejections and incomplete
+// results (transient parse degradation) are never cached, so a
+// transient failure retries on the next request.
+//
+// A block that is still streaming requests spans for each prefix it passes
+// through, and nothing reads most of those prefixes again. It passes itself
+// as `owner`, and each of its results replaces its previous one, so a long
+// open fence holds one entry. The latest stays because the block usually
+// completes with that text, and its committed remount renders from it. An
+// entry a complete block reads, requests or seeds is never replaced; that
+// release is what keeps it, because the streaming tail reuses its code host
+// for the next fence.
 
 import { HighlightCode } from '../../../stores/bindings';
 import { addToast } from '../../../stores/toast.svelte';
@@ -25,8 +34,23 @@ import { isPassiveConnectionFailure } from '../../../transport/passiveReadFailur
  * remount window. LRU by Map insertion order. */
 export const CODE_SPAN_CACHE_MAX_ENTRIES = 300;
 
-const cache = new Map<string, EncodedLine[]>();
-const inFlight = new Map<string, Promise<EncodedLine[] | null>>();
+interface CacheEntry {
+  readonly spans: EncodedLine[];
+  /** The streaming block whose latest result this is, if no complete block
+   * has used it. */
+  owner: object | undefined;
+}
+
+interface PendingRequest {
+  readonly spans: Promise<EncodedLine[] | null>;
+  /** Caches the result as complete instead of for its streaming owner. */
+  readonly disown: () => void;
+}
+
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, PendingRequest>();
+// Key of each streaming block's latest cached result.
+const ownedKeys = new WeakMap<object, string>();
 
 // Once-per-language guard for the degraded-highlight toast.
 const warnedLanguages = new Set<string>();
@@ -88,13 +112,22 @@ function keyOf(lang: string, source: string): string {
   return keyFor(lang, contentKey(source));
 }
 
-function touch(key: string, spans: EncodedLine[]): void {
+function touch(key: string, entry: CacheEntry): void {
   cache.delete(key);
-  cache.set(key, spans);
+  cache.set(key, entry);
 }
 
-function insert(key: string, spans: EncodedLine[]): void {
-  touch(key, spans);
+function insert(key: string, spans: EncodedLine[], owner: object | undefined): void {
+  const existing = cache.get(key);
+  if (existing && !existing.owner) owner = undefined;
+  touch(key, { spans, owner });
+  if (owner) {
+    const previous = ownedKeys.get(owner);
+    ownedKeys.set(owner, key);
+    if (previous !== undefined && previous !== key && cache.get(previous)?.owner === owner) {
+      cache.delete(previous);
+    }
+  }
   while (cache.size > CODE_SPAN_CACHE_MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
@@ -116,7 +149,7 @@ export function seedFinalBlockSpans(
   spans: EncodedLine[],
 ): void {
   if (!lang || !sourceContentKey) return;
-  insert(keyFor(lang, sourceContentKey), spans);
+  insert(keyFor(lang, sourceContentKey), spans, undefined);
 }
 
 /**
@@ -125,23 +158,26 @@ export function seedFinalBlockSpans(
  * spans on its first paint, no async gap.
  */
 export function getCachedBlockSpans(lang: string, source: string): EncodedLine[] | null {
-  const key = keyOf(lang, source);
-  return getCachedByKey(key);
+  return getCachedByKey(keyOf(lang, source), undefined);
 }
 
+/** `owner` identifies a block that is still streaming; omit it for a
+ * complete block. */
 export function getCachedBlockSpansByIdentity(
   lang: string,
   identity: CodeSourceIdentity,
+  owner?: object,
 ): EncodedLine[] | null {
   const source = requireCodeSourceIdentity(identity);
-  return getCachedByKey(keyFor(lang, source.contentKey));
+  return getCachedByKey(keyFor(lang, source.contentKey), owner);
 }
 
-function getCachedByKey(key: string): EncodedLine[] | null {
+function getCachedByKey(key: string, owner: object | undefined): EncodedLine[] | null {
   const hit = cache.get(key);
   if (!hit) return null;
+  if (!owner) hit.owner = undefined;
   touch(key, hit);
-  return hit;
+  return hit.spans;
 }
 
 /**
@@ -152,30 +188,35 @@ function getCachedByKey(key: string): EncodedLine[] | null {
  * language — and never caches it.
  */
 export function requestBlockSpans(lang: string, source: string): Promise<EncodedLine[] | null> {
-  return requestBlockSpansByKey(lang, source, keyOf(lang, source));
+  return requestBlockSpansByKey(lang, source, keyOf(lang, source), undefined);
 }
 
+/** `owner` identifies a block that is still streaming; omit it for a
+ * complete block. */
 export function requestBlockSpansByIdentity(
   lang: string,
   identity: CodeSourceIdentity,
+  owner?: object,
 ): Promise<EncodedLine[] | null> {
   const source = requireCodeSourceIdentity(identity);
-  return requestBlockSpansByKey(lang, source.source, keyFor(lang, source.contentKey));
+  return requestBlockSpansByKey(lang, source.source, keyFor(lang, source.contentKey), owner);
 }
 
 function requestBlockSpansByKey(
   lang: string,
   source: string,
   key: string,
+  owner: object | undefined,
 ): Promise<EncodedLine[] | null> {
-  const hit = cache.get(key);
-  if (hit) {
-    touch(key, hit);
-    return Promise.resolve(hit);
-  }
+  const hit = getCachedByKey(key, owner);
+  if (hit) return Promise.resolve(hit);
   const pending = inFlight.get(key);
-  if (pending) return pending;
+  if (pending) {
+    if (!owner) pending.disown();
+    return pending.spans;
+  }
 
+  let resultOwner = owner;
   const request = (async (): Promise<EncodedLine[] | null> => {
     try {
       const result = await withHighlightService(() => HighlightCode({ lang, source }));
@@ -190,7 +231,7 @@ function requestBlockSpansByKey(
       // mount of this content re-requests instead of pinning the
       // partial result for the page lifetime.
       if (!result.incomplete) {
-        insert(key, spans);
+        insert(key, spans, resultOwner);
       }
       return spans;
     } catch (err) {
@@ -205,7 +246,12 @@ function requestBlockSpansByKey(
       inFlight.delete(key);
     }
   })();
-  inFlight.set(key, request);
+  inFlight.set(key, {
+    spans: request,
+    disown: () => {
+      resultOwner = undefined;
+    },
+  });
   return request;
 }
 

@@ -207,23 +207,14 @@ func (s *Store) GetThreadImportState(threadID string) (ThreadImportState, bool, 
 // timeline read sorts by. A true answer means the thread was resumed inside AO
 // after it was imported, and appending the source's tail would interleave
 // duplicate history under indices the live session already claimed.
-//
-// The predicate is written as the two-branch comparison rather than a tuple
-// compare so idx_items_thread_turn_item_unique(thread_id, turn_index,
-// item_index) serves it as a range scan.
 func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (bool, error) {
 	if threadID == "" {
 		return false, fmt.Errorf("store: has items after cursor: thread id is required")
 	}
 	q := s.reader()
-	probe, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:   func(string, string) string { return "1" },
-		Turn:      "?",
-		TurnArgs:  []any{turnIndex},
-		FromTurn:  true,
-		Where:     "(items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))",
-		WhereArgs: []any{turnIndex, turnIndex, itemIndex},
-	})
+	sel := cursorBound(TimelineCursor{TurnIndex: turnIndex, ItemIndex: itemIndex}, true)
+	sel.Columns = func(string, string) string { return "1" }
+	probe, args, err := timelineArms(q, threadID, sel)
 	if err != nil {
 		return false, fmt.Errorf("store: has items after cursor for %s: %w", threadID, err)
 	}

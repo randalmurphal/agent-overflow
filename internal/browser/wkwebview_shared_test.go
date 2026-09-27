@@ -59,7 +59,7 @@ func TestClampDocumentCaptureGrowsToATallDocument(t *testing.T) {
 }
 
 // Nothing removed and nothing TO remove are both success. The second is the
-// macOS 11-13 answer and the answer of any Mac that never persisted site data,
+// macOS 13 answer and the answer of any Mac that never persisted site data,
 // and reporting it as a failure would tell the user the button did not work.
 func TestClearSiteDataFailureTreatsNothingRemovedAsSuccess(t *testing.T) {
 	for _, reported := range []string{"", "\n", "  \n \n"} {

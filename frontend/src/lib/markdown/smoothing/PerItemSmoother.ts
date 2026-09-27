@@ -194,8 +194,6 @@ export class PerItemSmoother {
   private receivedLength: number;
   private receivedCache: string | null;
   private revealedEnd: number;
-  private revealedCache: string;
-  private revealedCacheEnd: number;
   private revealedLastCodeUnit: number;
   private readonly onReveal: (
     delta: string,
@@ -237,8 +235,6 @@ export class PerItemSmoother {
     this.receivedLength = initial.length;
     this.receivedCache = initial;
     this.revealedEnd = initial.length;
-    this.revealedCache = initial;
-    this.revealedCacheEnd = initial.length;
     this.revealedLastCodeUnit = initial.length > 0
       ? initial.charCodeAt(initial.length - 1)
       : -1;
@@ -307,21 +303,18 @@ export class PerItemSmoother {
     return this.revealedEnd >= this.receivedLength;
   }
 
-  getRevealed(): string {
-    if (this.revealedEnd === this.receivedLength) {
-      const received = this.getReceived();
-      this.revealedCache = received;
-      this.revealedCacheEnd = this.revealedEnd;
-      return received;
-    }
-    if (this.revealedCacheEnd < this.revealedEnd) {
-      this.revealedCache += this.sliceReceived(
-        this.revealedCacheEnd,
-        this.revealedEnd,
+  /**
+   * The revealed text through `end`, a cursor this smoother has reached:
+   * all of it by default. A view of the received text, so the smoother
+   * keeps no second copy of what it revealed.
+   */
+  getRevealed(end = this.revealedEnd): string {
+    if (end < 0 || end > this.revealedEnd) {
+      throw new RangeError(
+        `streaming smoother revealed text requested through ${end}, revealed through ${this.revealedEnd}`,
       );
-      this.revealedCacheEnd = this.revealedEnd;
     }
-    return this.revealedCache;
+    return this.getReceived().slice(0, end);
   }
 
   getReceived(): string {

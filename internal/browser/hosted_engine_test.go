@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -678,10 +679,14 @@ func TestManagerWithoutAWindowHasNoEngineAtAll(t *testing.T) {
 // The browser-level dial
 // ---------------------------------------------------------------------
 
-// fakeCDPCall is one command a fake endpoint answered.
+// fakeCDPCall is one command a fake endpoint answered, the session it was
+// sent on (empty for the browser), and the path of the connection it
+// arrived on.
 type fakeCDPCall struct {
-	Method string
-	Params json.RawMessage
+	Method    string
+	Params    json.RawMessage
+	SessionID string
+	Path      string
 }
 
 // newFakeCDPServer is a loopback websocket endpoint speaking just enough CDP
@@ -699,8 +704,35 @@ type fakeCDPCall struct {
 // No browser is started by any of this, on either engine's tests.
 func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL string, calls func() []fakeCDPCall) {
 	t.Helper()
+	endpoint := startFakeCDPEndpoint(t, respond, nil)
+	return endpoint.wsURL, endpoint.calls
+}
+
+// fakeCDPEndpoint is a started fake CDP server. announce, when set, returns
+// the events to send before the reply to one command, as {method, params}
+// maps, the order Chromium uses: the targets Target.setDiscoverTargets
+// reports arrive before its reply. send writes one event to every open
+// connection. hangUp closes every open connection, which is what a browser
+// that died looks like to its client.
+type fakeCDPEndpoint struct {
+	wsURL  string
+	calls  func() []fakeCDPCall
+	send   func(event map[string]any)
+	hangUp func()
+}
+
+func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, announce func(call fakeCDPCall) []map[string]any) *fakeCDPEndpoint {
+	t.Helper()
 	var mu sync.Mutex
 	var seen []fakeCDPCall
+	// Each open connection with the lock its writers share.
+	open := make(map[net.Conn]*sync.Mutex)
+	write := func(conn net.Conn, lock *sync.Mutex, frame any) error {
+		body, _ := json.Marshal(frame)
+		lock.Lock()
+		defer lock.Unlock()
+		return wsutil.WriteServerText(conn, body)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Local discovery may probe any listening port. Only CDP WebSocket
 		// handshakes belong to this fixture; unrelated HTTP is not a test failure.
@@ -714,7 +746,16 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		defer conn.Close()
+		lock := &sync.Mutex{}
+		mu.Lock()
+		open[conn] = lock
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			delete(open, conn)
+			mu.Unlock()
+			conn.Close()
+		}()
 		for {
 			payload, err := wsutil.ReadClientText(conn)
 			if err != nil {
@@ -730,10 +771,17 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 				t.Errorf("bad CDP frame %q: %v", payload, err)
 				return
 			}
-			call := fakeCDPCall{Method: msg.Method, Params: msg.Params}
+			call := fakeCDPCall{Method: msg.Method, Params: msg.Params, SessionID: msg.SessionID, Path: r.URL.Path}
 			mu.Lock()
 			seen = append(seen, call)
 			mu.Unlock()
+			if announce != nil {
+				for _, event := range announce(call) {
+					if err := write(conn, lock, event); err != nil {
+						return
+					}
+				}
+			}
 			var result any = map[string]any{}
 			if respond != nil {
 				if answer := respond(call); answer != nil {
@@ -744,17 +792,35 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 			if msg.SessionID != "" {
 				frame["sessionId"] = msg.SessionID
 			}
-			reply, _ := json.Marshal(frame)
-			if err := wsutil.WriteServerText(conn, reply); err != nil {
+			if err := write(conn, lock, frame); err != nil {
 				return
 			}
 		}
 	}))
 	t.Cleanup(server.Close)
-	return "ws" + strings.TrimPrefix(server.URL, "http"), func() []fakeCDPCall {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]fakeCDPCall(nil), seen...)
+	return &fakeCDPEndpoint{
+		wsURL: "ws" + strings.TrimPrefix(server.URL, "http"),
+		calls: func() []fakeCDPCall {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]fakeCDPCall(nil), seen...)
+		},
+		send: func(event map[string]any) {
+			mu.Lock()
+			defer mu.Unlock()
+			for conn, lock := range open {
+				if err := write(conn, lock, event); err != nil {
+					t.Errorf("send %v: %v", event["method"], err)
+				}
+			}
+		},
+		hangUp: func() {
+			mu.Lock()
+			defer mu.Unlock()
+			for conn := range open {
+				conn.Close()
+			}
+		},
 	}
 }
 
@@ -802,6 +868,77 @@ func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T)
 	}
 	if !sawDiscovery {
 		t.Fatal("the dial never enabled target discovery; the targetDestroyed backstop would hear nothing")
+	}
+}
+
+// The browser connection's events reach the Manager only through the
+// listener the dial registers: a page's title and its target's destruction
+// arrive on that connection and nowhere else.
+func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
+	endpoint := startFakeCDPEndpoint(t, nil, nil)
+	infos := make(chan string, 1)
+	closed := make(chan string, 1)
+	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
+		PageInfoChanged: func(handle, url, title string) { infos <- handle + " " + url + " " + title },
+		PageClosed:      func(handle string) { closed <- handle },
+	})
+	engine.attachTimeout = 5 * time.Second
+	engine.bind("page1", "TARGET-1")
+	if _, err := engine.ensureBrowser(); err != nil {
+		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
+	}
+	defer engine.Interrupt()
+
+	endpoint.send(map[string]any{"method": "Target.targetInfoChanged", "params": map[string]any{"targetInfo": map[string]any{
+		"targetId": "TARGET-1", "type": "page", "title": "Example", "url": "https://example.test/",
+		"attached": true, "canAccessOpener": false,
+	}}})
+	select {
+	case got := <-infos:
+		if got != "page1 https://example.test/ Example" {
+			t.Fatalf("PageInfoChanged saw %q", got)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("targetInfoChanged on the browser connection never reached the Manager")
+	}
+	endpoint.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "TARGET-1"}})
+	select {
+	case got := <-closed:
+		if got != "page1" {
+			t.Fatalf("PageClosed saw %q", got)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("targetDestroyed on the browser connection never retired the page")
+	}
+}
+
+// A download the Manager refuses is cancelled on the browser connection
+// that reported it.
+func TestHostedEngineCancelsADownloadTheManagerRefuses(t *testing.T) {
+	endpoint := startFakeCDPEndpoint(t, nil, nil)
+	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
+		DownloadStarted: func(downloadStart) bool { return false },
+	})
+	engine.attachTimeout = 5 * time.Second
+	if _, err := engine.ensureBrowser(); err != nil {
+		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
+	}
+	defer engine.Interrupt()
+
+	endpoint.send(map[string]any{"method": "Browser.downloadWillBegin", "params": map[string]any{
+		"frameId": "F-1", "guid": "G-refused", "url": "https://example.test/file.bin", "suggestedFilename": "file.bin",
+	}})
+	deadline := time.Now().Add(hostedTestDeadline)
+	for {
+		for _, call := range endpoint.calls() {
+			if call.Method == "Browser.cancelDownload" && call.SessionID == "" && strings.Contains(string(call.Params), `"G-refused"`) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the refused download was never cancelled")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

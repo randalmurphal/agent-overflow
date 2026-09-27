@@ -156,19 +156,23 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 
 	s.mu.Lock()
 	s.indices[root] = built
-	// Sweep expired siblings so an idle or closed workspace's index (up to
-	// maxEntries entries, several MB for a large repo) doesn't stay resident
-	// for the process lifetime. Observationally free: an index past the TTL
-	// is never served — getIndex always rebuilds — so dropping it only
-	// releases memory.
-	now := time.Now()
-	for key, idx := range s.indices {
-		if key != root && now.Sub(idx.scannedAt) >= s.ttl {
-			delete(s.indices, key)
-		}
-	}
 	s.mu.Unlock()
+	// Release the index when it expires, so an idle workspace's index (up
+	// to maxEntries entries, several MB for a large repo) does not stay
+	// resident until some later search. An expired index is never served,
+	// so dropping it only releases memory.
+	time.AfterFunc(s.ttl, func() { s.releaseExpired(root) })
 	return built, nil
+}
+
+// releaseExpired drops root's index once it has expired. A newer build may
+// hold the slot by then; it is not expired, so it stays.
+func (s *Searcher) releaseExpired(root string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx := s.indices[root]; idx != nil && time.Since(idx.scannedAt) >= s.ttl {
+		delete(s.indices, root)
+	}
 }
 
 // buildIndex validates the root and picks the best indexing strategy: git
@@ -215,8 +219,13 @@ func buildIndexFromGit(root string, maxEntries int) (*workspaceIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workspacefiles: git ls-files in %s: %w", root, err)
 	}
+	return indexGitPaths(string(out), maxEntries), nil
+}
 
-	rawPaths := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+// indexGitPaths indexes the NUL-separated paths git ls-files printed. Each
+// kept entry copies its path, so the index does not pin the whole listing.
+func indexGitPaths(listing string, maxEntries int) *workspaceIndex {
+	rawPaths := strings.Split(strings.TrimRight(listing, "\x00"), "\x00")
 	sort.Strings(rawPaths)
 
 	// Sets so a directory isn't emitted twice when multiple files share a
@@ -243,13 +252,13 @@ func buildIndexFromGit(root string, maxEntries int) (*workspaceIndex, error) {
 	}
 	sort.Strings(dirs)
 
-	var entries []searchableEntry
+	entries := make([]searchableEntry, 0, min(len(dirs)+len(files), maxEntries))
 	truncated := false
 
 	// Emit directories first so short queries (e.g. "src") still surface
 	// directory results even when file entries would fill the cap.
 	for _, d := range dirs {
-		entries = append(entries, makeEntry(d, "directory"))
+		entries = append(entries, makeEntry(strings.Clone(d), "directory"))
 		if len(entries) >= maxEntries {
 			truncated = true
 			break
@@ -257,7 +266,7 @@ func buildIndexFromGit(root string, maxEntries int) (*workspaceIndex, error) {
 	}
 	if !truncated {
 		for _, f := range files {
-			entries = append(entries, makeEntry(f, "file"))
+			entries = append(entries, makeEntry(strings.Clone(f), "file"))
 			if len(entries) >= maxEntries {
 				truncated = true
 				break
@@ -269,7 +278,7 @@ func buildIndexFromGit(root string, maxEntries int) (*workspaceIndex, error) {
 		scannedAt: time.Now(),
 		entries:   entries,
 		truncated: truncated,
-	}, nil
+	}
 }
 
 // pathContainsIgnoredDir returns true when any segment of the path is in the

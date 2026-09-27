@@ -155,9 +155,9 @@ func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.
 	}
 
 	// User row must land at the active turn's index, NOT at +1.
-	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	items, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var steerRow *store.Item
 	for i := range items {
@@ -294,9 +294,9 @@ func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *
 	}
 
 	// Sibling error row persisted at the same turn index.
-	items, err := app.store.ListItemsForTurn(thread.ID, 2)
+	items, err := app.store.ListTurnItems(thread.ID, 2)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	var errorRow *store.Item
 	for i := range items {

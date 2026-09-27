@@ -875,7 +875,7 @@ describe('cold-open window sync', () => {
       const requests = installSync(() => answer());
       await pane.switchThread(makeThread({ id: THREAD_ID }));
       // A plan_update notification reaches the pane over the wire but is
-      // never in a page (`windowedTimelineFilter`), so counting it would
+      // never in a page (`mainTimelineFilterFor`), so counting it would
       // refuse every window the pane holds one in.
       pane.applyProviderItemUpserts([
         row('plan', { itemIndex: 1, rev: 6, kind: 'notification', toolName: 'plan_update' }),

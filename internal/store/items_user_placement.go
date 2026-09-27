@@ -115,7 +115,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 	}
 	if park {
 		var minimum int
-		query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MIN", "item_index")
+		query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MIN")
 		if err != nil {
 			return nil, err
 		}

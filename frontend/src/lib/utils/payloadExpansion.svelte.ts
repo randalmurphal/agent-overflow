@@ -2,11 +2,27 @@ import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bi
 import { seedPayloadPatchSpans } from './diffSpanCache.svelte';
 import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
 import { boundedPayloadVersionString } from './payloadVersion';
-import { revealedSuffix } from './textOverlap';
+import { appendCopied } from './liveText';
+import { alignRevealed } from './textOverlap';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
 export const DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS = 35_000;
+
+/**
+ * The live reveal of a streaming payload's text. Offsets are into the
+ * stream's own revealed text, whose start need not be the payload's (a
+ * reveal resumed mid-stream starts inside it); the handle aligns them with
+ * the loaded payload once per stream. A new stream is a new object.
+ */
+export interface LiveRevealStream {
+  /**
+   * The stream's revealed text from its start through `end`, or null once
+   * the stream has ended and released its text. The payload loaded after
+   * the end is the whole body.
+   */
+  revealedText(end: number): string | null;
+}
 
 export interface PayloadExpansionHandle {
   readonly expanded: boolean;
@@ -24,14 +40,19 @@ export interface PayloadExpansionHandle {
    */
   readonly displayData: string | null;
   /**
-   * Append a provider delta into an already-expanded full payload.
-   * The delta is ignored while collapsed, queued while the initial full
-   * load is still pending, and applied only to the currently loaded
-   * payload id. Preview-only handles do not accept live appends.
-   * `previousLiveTail` lets a newly-expanded streaming payload repair a
-   * stale initial snapshot using only the already-bounded row summary.
+   * Append a live reveal into an already-expanded full payload: `delta` is
+   * the text of `stream` that ends at `end`. The reveal is ignored while
+   * collapsed, held while the initial full load is still pending, and
+   * applied only to the currently loaded payload id. Preview-only handles
+   * do not accept live appends. Only the part of the reveal the loaded
+   * payload does not already hold is appended.
    */
-  appendLiveDelta(delta: string, payloadVersion?: unknown, previousLiveTail?: string): void;
+  appendLiveDelta(
+    stream: LiveRevealStream,
+    delta: string,
+    end: number,
+    payloadVersion?: unknown,
+  ): void;
   toggle(): Promise<void>;
   expand(): Promise<void>;
   ensureLoaded(): Promise<boolean>;
@@ -115,12 +136,22 @@ export function createPayloadExpansion(
   let activeFullLoad: Promise<void> | null = null;
   let loadedPayloadID: string | null = null;
   let loadedPayloadVersion: unknown;
-  let pendingLiveDeltas: Array<{
+  // Live text appended past the loaded chunks, as one string: a reveal adds
+  // a few characters per frame, and a chunk per reveal would copy the chunk
+  // list and rejoin the whole body on every frame.
+  let liveSuffix = $state('');
+  // The live stream aligned with the loaded body, and the body offset of
+  // that stream's offset 0.
+  let liveStream: LiveRevealStream | null = null;
+  let liveOffset = 0;
+  // The latest reveal that arrived while the body was loading. Its text
+  // through `end` covers every earlier one of the same stream.
+  let pendingLiveReveal: {
     payloadID: string;
-    delta: string;
+    stream: LiveRevealStream;
+    end: number;
     payloadVersion: unknown;
-    previousLiveTail?: string;
-  }> = [];
+  } | null = null;
   let overridePayloadVersion = $state<unknown>(undefined);
   let hasOverridePayloadVersion = $state(false);
 
@@ -169,11 +200,14 @@ export function createPayloadExpansion(
 
   // $derived caches the join — re-runs only when `chunks` actually
   // changes (Svelte 5's reactivity, not on every read).
-  const displayData = $derived.by<string | null>(() => {
+  const loadedData = $derived.by<string | null>(() => {
     if (chunks.length === 0) return null;
     if (chunks.length === 1) return chunks[0] ?? null;
     return chunks.join('');
   });
+  const displayData = $derived(
+    loadedData === null || liveSuffix === '' ? loadedData : loadedData + liveSuffix,
+  );
 
   function currentPayloadID(): string | undefined {
     return typeof payloadID === 'function' ? payloadID() : payloadID;
@@ -221,7 +255,16 @@ export function createPayloadExpansion(
     loadedBytes = 0;
     loadedPayloadID = null;
     loadedPayloadVersion = undefined;
-    pendingLiveDeltas = [];
+    pendingLiveReveal = null;
+    clearLiveText();
+  }
+
+  // Loaded chunks replaced: live text appended to the previous body is not
+  // part of the new one, and a stream must be aligned with it again.
+  function clearLiveText(): void {
+    liveSuffix = '';
+    liveStream = null;
+    liveOffset = 0;
   }
 
   function hydrateFromCache(opts: { expandOnHit: boolean }): boolean {
@@ -233,6 +276,7 @@ export function createPayloadExpansion(
     const cached = readPayloadCache(tid, id, version);
     if (!cached) return false;
     chunks = cached.chunks;
+    clearLiveText();
     hasFullChunks = cached.hasFullChunks;
     totalSize = cached.totalSize;
     isComplete = cached.isComplete;
@@ -280,14 +324,15 @@ export function createPayloadExpansion(
           || !Object.is(currentPayloadVersion(), version)
         ) return false;
         chunks = [result.data];
+        clearLiveText();
         hasFullChunks = loadMode === 'full';
         totalSize = result.totalSize;
         isComplete = result.isComplete;
         loadedBytes = result.nextOffset;
         loadedPayloadID = id;
         loadedPayloadVersion = version;
-        replayPendingLiveDeltas();
         writeLoadedPayloadCache(ownerThreadID, id, version);
+        replayPendingLiveReveal();
         return true;
       } catch (err) {
         if (generation !== requestGeneration || !expanded) return false;
@@ -370,68 +415,77 @@ export function createPayloadExpansion(
     });
   }
 
-  function appendLoadedLiveDelta(delta: string, nextPayloadVersion: unknown): void {
-    if (!delta) {
-      loadedPayloadVersion = nextPayloadVersion;
-      return;
-    }
-    chunks = [...chunks, delta];
-    totalSize += delta.length;
-    loadedBytes += delta.length;
-    isComplete = true;
+  function appendLiveText(text: string, nextPayloadVersion: unknown): void {
     loadedPayloadVersion = nextPayloadVersion;
+    if (!text) return;
+    liveSuffix = appendCopied(liveSuffix, text);
+    totalSize += text.length;
+    loadedBytes += text.length;
+    isComplete = true;
   }
 
-  // Merge the smoother's freshly-revealed text into the loaded body.
-  // `previousLiveTail + delta` is everything the smoother has revealed through
-  // this delta; `displayData` is what we already hold (the flushed
-  // GetPayloadData snapshot plus prior live appends). Both are prefixes of the
-  // SAME canonical payload — a streaming thinking row is seeded with an empty
-  // summary and fed full provider deltas (stream_items.go blanks the
-  // block-start summary and ships evt.Content per delta), so each revealed
-  // window is untrimmed text from offset 0. revealedSuffix (textOverlap.ts)
-  // owns the containment-aware merge and documents why the prefix guard is
-  // load-bearing here (flush-before-read leaves the snapshot ahead of the
-  // reveal) and where it stops being exact (reconnect interior windows).
-  function appendRevealedSuffix(
-    previousLiveTail: string | undefined,
+  // Align a stream with the loaded body from its revealed text: the body
+  // is the flushed GetPayloadData snapshot plus earlier live appends, and
+  // the revealed text is a prefix or interior slice of the same payload
+  // (a reveal resumed mid-stream starts at the trimmed row summary).
+  // alignRevealed (textOverlap.ts) owns the containment-aware merge: the
+  // snapshot usually leads the reveal (flush before read), so the reveal
+  // is contained and nothing is appended.
+  function alignLiveStream(stream: LiveRevealStream, end: number, nextPayloadVersion: unknown): void {
+    const revealed = stream.revealedText(end);
+    if (revealed === null) return;
+    const { offset, suffix } = alignRevealed(displayData ?? '', revealed);
+    appendLiveText(suffix, nextPayloadVersion);
+    liveStream = stream;
+    liveOffset = offset;
+  }
+
+  // Append the part of an aligned stream's delta the body does not hold.
+  // The held part must match the body; a stream that no longer lines up
+  // with it is aligned again from its text.
+  function appendLiveReveal(
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     nextPayloadVersion: unknown,
   ): void {
-    const revealed = (previousLiveTail ?? '') + delta;
-    appendLoadedLiveDelta(revealedSuffix(displayData ?? '', revealed), nextPayloadVersion);
+    if (stream !== liveStream) {
+      alignLiveStream(stream, end, nextPayloadVersion);
+      return;
+    }
+    const body = displayData ?? '';
+    const deltaStart = liveOffset + end - delta.length;
+    const held = Math.min(delta.length, body.length - deltaStart);
+    if (held < 0 || (held > 0 && !body.startsWith(delta.slice(0, held), deltaStart))) {
+      alignLiveStream(stream, end, nextPayloadVersion);
+      return;
+    }
+    appendLiveText(held === 0 ? delta : delta.slice(held), nextPayloadVersion);
   }
 
-  function replayPendingLiveDeltas(): void {
-    if (pendingLiveDeltas.length === 0) return;
-    const pending = pendingLiveDeltas;
-    pendingLiveDeltas = [];
-    for (const live of pending) {
-      if (live.payloadID !== loadedPayloadID) continue;
-      appendRevealedSuffix(live.previousLiveTail, live.delta, live.payloadVersion);
-    }
+  function replayPendingLiveReveal(): void {
+    const pending = pendingLiveReveal;
+    pendingLiveReveal = null;
+    if (pending === null || pending.payloadID !== loadedPayloadID) return;
+    alignLiveStream(pending.stream, pending.end, pending.payloadVersion);
   }
 
   function appendLiveDelta(
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     nextPayloadVersion: unknown = currentPayloadVersion(),
-    previousLiveTail?: string,
   ): void {
     if (!delta || !expanded || error !== null) return;
     const id = currentPayloadID();
     if (!id) return;
     if (chunks.length === 0 || loadingPreview || loadingFull) {
-      pendingLiveDeltas.push({
-        payloadID: id,
-        delta,
-        payloadVersion: nextPayloadVersion,
-        previousLiveTail,
-      });
+      pendingLiveReveal = { payloadID: id, stream, end, payloadVersion: nextPayloadVersion };
       return;
     }
     if (loadedPayloadID !== id) return;
     if (!hasFullChunks) return;
-    appendRevealedSuffix(previousLiveTail, delta, nextPayloadVersion);
+    appendLiveReveal(stream, delta, end, nextPayloadVersion);
   }
 
   function collapse(): void {

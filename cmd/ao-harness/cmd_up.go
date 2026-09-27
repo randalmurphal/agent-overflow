@@ -129,7 +129,7 @@ func runUp(e *env, args []string) error {
 
 	bs := launched.Bootstrap
 	id := instanceinfo.ID(dataRoot)
-	lease, err := reserveDetachedHarness(dataRoot, bs, *memoryLimit)
+	lease, err := e.reserveDetachedHarness(dataRoot, bs, *memoryLimit)
 	if err != nil {
 		cleanupErr := launchedCleanup(launched)(context.Background())
 		if cleanupErr != nil {
@@ -138,7 +138,7 @@ func runUp(e *env, args []string) error {
 		return err
 	}
 	if err := launchDetachedWatchdog(dataRoot, stderrPath, lease); err != nil {
-		if releaseErr := releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
+		if releaseErr := e.releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
 			err = errors.Join(err, fmt.Errorf("release memory reservation after watchdog failure: %w", releaseErr))
 		}
 		cleanupErr := launchedCleanup(launched)(context.Background())
@@ -148,7 +148,7 @@ func runUp(e *env, args []string) error {
 		return err
 	}
 	if err := writeDetachedWatchdogState(dataRoot, bs, *memoryLimit); err != nil {
-		if releaseErr := releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
+		if releaseErr := e.releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
 			err = errors.Join(err, fmt.Errorf("release memory reservation after watchdog state failure: %w", releaseErr))
 		}
 		cleanupErr := launchedCleanup(launched)(context.Background())

@@ -30,13 +30,12 @@ and protocol extensions. Tool arguments are decoded by `internal/mcpargs`
 fields such as `_meta`. Exercise realistic metadata in adapter wire tests, not
 just name/arguments envelopes.
 
-Registering rotates the thread capability. RevokeThread compares the expected
-access value so a late old-session teardown cannot revoke its replacement, and
-retains the thread toggle across a session restart. UnregisterThread also
-forgets that toggle. Close cannot be followed by another listener start.
-Callbacks run outside the registry mutex; they must independently recheck live
-execution authority and resource ownership. A tool-list omission is not an
-execution permission check. Empty tool lists serialize as arrays, never null.
+Capability lifetime is documented on RegisterThread, RevokeThread,
+UnregisterThread and Retire. Close cannot be followed by another listener
+start. Tool handlers run outside the registry mutex; they must independently
+recheck live execution authority and resource ownership. A tool-list omission
+is not an execution permission check. Empty tool lists serialize as arrays,
+never null.
 
 Browser protocol/security tests exercise this transport through its real
 adapter. Remote application tests additionally cross it and a real paired TLS

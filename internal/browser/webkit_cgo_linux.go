@@ -141,22 +141,35 @@ func aoWebKitSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, heigh
 }
 
 //export aoWebKitAllow
-func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
+func aoWebKitAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 	target := webkitTakeString(uri)
-	page := webkitLookupPage(uint64(pageID))
+	page, profile := uint64(pageID), uint64(profileID)
 	// Answered OFF the GTK thread: navigation authority is the Manager's, and
 	// asking it takes Manager locks — blocking the GTK thread on a Go lock is
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a reference held for exactly this.
 	go func() {
 		allow := C.int(0)
-		if page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target)) {
+		if webkitNavigationAllowed(page, profile, target) {
 			allow = 1
 		}
 		// A loop that is gone takes the page with it, so an unanswered
 		// decision dies with the process rather than blocking anything.
 		gtkDo(func() { C.ao_wk_policy_finish(decision, allow) })
 	}()
+}
+
+// webkitNavigationAllowed answers one navigation in a view. A page answers
+// with its own policy. A view with no page is a popup the Manager has not
+// adopted yet: it loads from creation, so its workspace's policy answers
+// until adoption stamps the page. A page or profile that is gone refuses.
+func webkitNavigationAllowed(pageID, profileID uint64, target string) bool {
+	if pageID == 0 {
+		profile := webkitLookupProfile(profileID)
+		return profile != nil && profile.allow(target)
+	}
+	page := webkitLookupPage(pageID)
+	return page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target))
 }
 
 //export aoWebKitConsole
@@ -257,9 +270,13 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 	if name == "" {
 		name = handle
 	}
-	go profile.engine.events.DownloadStarted(downloadStart{
-		Frame: frame, ID: handle, URL: target, SuggestedName: name,
-	})
+	go func() {
+		if !profile.engine.events.DownloadStarted(downloadStart{
+			Frame: frame, ID: handle, URL: target, SuggestedName: name,
+		}) {
+			profile.CancelDownload(handle)
+		}
+	}()
 }
 
 //export aoWebKitDownloadProgress

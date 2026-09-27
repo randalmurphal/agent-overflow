@@ -88,6 +88,7 @@ func TestMigrationV120PointerForks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {

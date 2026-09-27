@@ -85,6 +85,31 @@ func TestCacheKeysOnCwd(t *testing.T) {
 	}
 }
 
+func TestCacheDropsExpiredEntriesOnStore(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := NewWith(time.Minute, time.Second, fixedClock(&now))
+	fetchFor := func(cwd string) Fetch {
+		return func(context.Context) (CwdSkills, error) { return sample(cwd, "skill"), nil }
+	}
+	for _, cwd := range []string{"/a", "/b"} {
+		if _, err := c.Get(context.Background(), Key("codex", cwd), fetchFor(cwd)); err != nil {
+			t.Fatalf("Get %s: %v", cwd, err)
+		}
+		now = now.Add(40 * time.Second)
+	}
+	// /a expired at 60s; /b lives until 100s.
+	if _, err := c.Get(context.Background(), Key("codex", "/c"), fetchFor("/c")); err != nil {
+		t.Fatalf("Get /c: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, hasA := c.entries[Key("codex", "/a")]
+	_, hasB := c.entries[Key("codex", "/b")]
+	if hasA || !hasB || len(c.entries) != 2 {
+		t.Fatalf("entries after store: a=%v b=%v len=%d, want only /b and /c", hasA, hasB, len(c.entries))
+	}
+}
+
 func TestCacheSharesErrorsRatherThanEmptyLists(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := NewWith(time.Minute, 30*time.Second, fixedClock(&now))

@@ -6,12 +6,11 @@ import (
 	"fmt"
 )
 
-// ErrItemSettled is returned by AppendItemSummary
-// when the target row exists but is no longer streaming — i.e. an
-// interrupt or settle has already transitioned it to a terminal status
-// on a different goroutine. Callers in the streaming hot path treat this
-// as "drop the late delta", distinct from sql.ErrNoRows which still
-// means the row is genuinely absent.
+// ErrItemSettled is returned by the AppendItemSummary family, and by
+// UpdateItemFields with IfStreaming, when the target row exists but is no
+// longer streaming: an interrupt or settle has already ended it on a
+// different goroutine. Callers drop the late write, distinct from
+// sql.ErrNoRows, which means the row is absent.
 var ErrItemSettled = errors.New("store: item is no longer streaming")
 
 // itemColumns is the canonical physical-local SELECT projection for
@@ -118,7 +117,7 @@ func applyItemDefaults(item *Item) {
 
 func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var maxIndex sql.NullInt64
-	query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MAX", "item_index")
+	query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MAX")
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
@@ -140,7 +139,7 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 // row as turn-initial.
 func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var minIndex sql.NullInt64
-	query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MIN", "item_index")
+	query, args, err := turnItemIndexQuery(tx, threadID, turnIndex, "MIN")
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
@@ -198,24 +197,18 @@ func insertItemWithIDTx(tx *sql.Tx, w *cardWrite, item Item, label string) error
 	return insertItemTx(tx, w, item, label+" "+item.ID)
 }
 
-// itemColumnsSansPayload mirrors itemColumns but without the
-// payloads.kind / payloads.meta projection. Used on the narrow paths
-// that only need status/summary/kind/role (force-close safety net, the
-// turn-complete flip loop) so we skip the LEFT JOIN and the two string
-// scans. Column order in scanItemRowSansPayload must match exactly.
-var itemColumnsSansPayload = itemColumnsSansPayloadFor("items.thread_id", "items.rev")
-
-// itemColumnsSansPayloadFor is itemColumnsSansPayload as a timelineArms
-// projection: the arm supplies the thread id and revision expressions,
-// and the ordering keys carry their names for the compound's ORDER BY.
-func itemColumnsSansPayloadFor(threadIDExpr, revExpr string) string {
-	return `items.id, ` + threadIDExpr + ` AS thread_id, items.turn_index AS turn_index, items.item_index AS item_index,
+// itemColumnsSansPayload is itemColumns without the joined payload
+// columns (kind, meta, preview spans) and the input payload id, for a
+// local read that needs none of them and so joins no payloads: the
+// force-close of a turn's running tool calls and the Codex background
+// runtime retire. It reads through servedItemJoin like itemColumns.
+// Column order in scanItemRowSansPayload must match exactly.
+var itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, ` + servedItemMetaFor(revExpr) + `, items.created_at, items.updated_at,
-    ` + revExpr
-}
+    items.tool_name, items.decision, ` + servedItemMetaFor("items.rev") + `, items.created_at, items.updated_at,
+    items.rev`
 
 // scanItemRowSansPayload hydrates an Item without the joined payload
 // kind / meta columns. PayloadKind and PayloadMeta are left empty on

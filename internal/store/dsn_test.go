@@ -3,11 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 // The connection-scoped PRAGMAs ride the DSN precisely so a recycled
@@ -76,13 +79,83 @@ func TestReaderPragmasSurviveConnectionRecycling(t *testing.T) {
 	s.read.SetConnMaxLifetime(0)
 }
 
+// TestPageCachesStayWithinTheirBudget reads a table larger than every page
+// cache on each read connection. The driver pools the pages of all
+// connections in one budget, the sum of their cache_size limits, and any
+// connection may fill it, so the bound holds for the store's total.
+func TestPageCachesStayWithinTheirBudget(t *testing.T) {
+	s := newTestStore(t)
+	if s.read == nil {
+		t.Fatal("file-backed WAL store must open a read pool")
+	}
+	if _, err := s.db.Exec(`CREATE TABLE zz_pages (b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	// 6 MB, three times SQLite's default cache.
+	if _, err := s.db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1500)
+		INSERT INTO zz_pages (b) SELECT randomblob(4000) FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	writer, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	conns := []*sql.Conn{writer}
+	for range readPoolConns {
+		conn, err := s.read.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT sum(length(b)) FROM zz_pages`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, conn)
+	}
+	total := 0
+	for _, conn := range conns {
+		used, err := connCacheUsed(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += used
+	}
+	// The writer keeps SQLite's default of 2000 KiB. Page headers add
+	// about 5% to a cache's configured size.
+	budget := (2000 + readPoolConns*readerCacheKiB) << 10
+	if limit := budget * 11 / 10; total > limit {
+		t.Fatalf("page caches hold %d KiB after each reader read a 6 MB table, want at most %d KiB", total>>10, limit>>10)
+	}
+}
+
+func connCacheUsed(conn *sql.Conn) (int, error) {
+	used := 0
+	err := conn.Raw(func(driverConn any) error {
+		cache, ok := driverConn.(*stmtCacheConn)
+		if !ok {
+			return fmt.Errorf("read connection is %T, not the statement cache", driverConn)
+		}
+		status, ok := cache.sqliteConn.(sqlite.DBStatus)
+		if !ok {
+			return fmt.Errorf("driver connection %T reports no status", cache.sqliteConn)
+		}
+		current, _, err := status.Status(sqlite.DBStatusCacheUsed, false)
+		used = current
+		return err
+	})
+	return used, err
+}
+
 func TestPoolDSNRendersPragmasAndMemoryPaths(t *testing.T) {
 	got := poolDSN("/data/agent overflow.db", writerConnPragmas)
-	want := "file:/data/agent overflow.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=recursive_triggers(0)"
+	want := "file:/data/agent overflow.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=recursive_triggers(0)&_pragma=wal_autocheckpoint(16384)"
 	if got != want {
 		t.Fatalf("poolDSN = %q, want %q", got, want)
 	}
-	if got := poolDSN(":memory:", readerConnPragmas); got != "file::memory:?_pragma=busy_timeout(5000)&_pragma=query_only(1)" {
+	if got := poolDSN(":memory:", readerConnPragmas); got != "file::memory:?_pragma=busy_timeout(5000)&_pragma=query_only(1)&_pragma=cache_size(-500)" {
 		t.Fatalf("poolDSN(:memory:) = %q", got)
 	}
 	// '?' and '#' would otherwise cut the path short or open a fragment.
@@ -113,8 +186,8 @@ func TestVerifyConnPragmasRejectsAPragmaThatDidNotApply(t *testing.T) {
 	}
 }
 
-// growWAL writes rows until the -wal file is comfortably larger than the
-// 4MB autocheckpoint threshold, then returns its size.
+// growWAL writes about 2,000 frames to the WAL, more than SQLite's default
+// autocheckpoint threshold of 1,000, then returns the file's size.
 func growWAL(t *testing.T, s *Store, dbPath string) int64 {
 	t.Helper()
 	blob := strings.Repeat("x", 4096)
@@ -155,10 +228,10 @@ func TestTruncateCheckpointShrinksTheWALFile(t *testing.T) {
 		t.Fatal("WAL did not grow — the fixture proves nothing")
 	}
 
-	// PASSIVE is what the hot paths run: it recycles WAL pages so the
+	// PASSIVE is what the checkpointer runs: it recycles WAL pages so the
 	// file stops growing, but it never shrinks it. Pinning that here is
 	// the reason TruncateCheckpoint has to exist at all.
-	if err := s.PassiveCheckpoint(); err != nil {
+	if _, err := s.checkpointWAL(context.Background()); err != nil {
 		t.Fatalf("passive checkpoint: %v", err)
 	}
 	afterPassive := walSize(t, dbPath)

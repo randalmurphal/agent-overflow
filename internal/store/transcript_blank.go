@@ -93,7 +93,7 @@ func blankLegacyTranscriptCopies(ctx context.Context, s *Store, run *deferredRun
 		blanked += count
 		freed += batchBytes
 		if count > 0 {
-			if err := s.checkpointHistoryRepair(); err != nil {
+			if err := s.checkpointHistoryRepair(ctx); err != nil {
 				return err
 			}
 		}

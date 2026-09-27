@@ -257,7 +257,7 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // what keeps a reopen after a turn on the same thread free, where a stamp
 // the turn invalidated cannot.
 func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
-	return readSnapshotContext(ctx, s.reader(), "sync thread window", func(q sqlQueryer) (ThreadWindowSync, error) {
+	return historyReadSnapshot(ctx, s, "sync thread window", func(q sqlQueryer) (ThreadWindowSync, error) {
 		return s.syncThreadWindow(q, threadID, anchorItemID, itemBudget, runWindowRows, have, held, selection)
 	})
 }

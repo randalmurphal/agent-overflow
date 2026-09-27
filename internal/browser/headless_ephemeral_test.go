@@ -3,7 +3,9 @@ package browser
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"testing"
 )
 
@@ -113,22 +115,62 @@ func TestTheEphemeralOwnerMarkerRoundTrips(t *testing.T) {
 	}
 }
 
-// A profile created ephemerally is marked, so the run that follows a crash
-// can attribute it. Without this the sweep has nothing to act on and the
-// whole mechanism is inert.
-func TestAnEphemeralProfileMarksItsRoot(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+// A removal that fails partway leaves the owner marker in place, so the
+// root is one a later sweep still reclaims rather than an unmarked one it
+// must leave forever. Both Dispose's removal and the sweep's own.
+func TestARemovalThatFailsPartwayKeepsTheRootSweepable(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory its owner cannot empty, which needs POSIX permissions and no root")
+	}
+	const deadOwner = 4242
+	for _, tc := range []struct {
+		name   string
+		remove func(root string) error
+		// reports is whether the failure reaches the caller. The sweep
+		// logs it.
+		reports bool
+	}{
+		{name: "dispose", remove: func(root string) error {
+			return (&headlessProfile{ephemeralRoot: root}).removeEphemeralRoot()
+		}, reports: true},
+		{name: "sweep", remove: func(root string) error {
+			sweepEphemeralRoots(filepath.Dir(root), func(int) bool { return false }, func(string, ...any) {})
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), ephemeralDirPrefix+"stuck")
+			locked := filepath.Join(root, "chromium", "Default")
+			if err := os.MkdirAll(locked, 0o700); err != nil {
+				t.Fatalf("lay out the root: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(locked, "Cookies"), []byte("x"), 0o600); err != nil {
+				t.Fatalf("write a file into the profile: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ephemeralOwnerFile), []byte(strconv.Itoa(deadOwner)), 0o600); err != nil {
+				t.Fatalf("mark the root: %v", err)
+			}
+			if err := os.Chmod(locked, 0o500); err != nil {
+				t.Fatalf("lock the profile: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
 
-	if profile.ephemeralRoot == "" {
-		t.Fatal("an ephemeral profile got no root of its own")
-	}
-	if filepath.Dir(profile.ephemeralRoot) != engine.tempRoot {
-		t.Fatalf("the ephemeral root %q is not under the engine's temp root %q", profile.ephemeralRoot, engine.tempRoot)
-	}
-	pid, ok := readEphemeralOwner(profile.ephemeralRoot)
-	if !ok || pid != os.Getpid() {
-		t.Fatalf("the root's owner marker reads %d/%v, want this process %d", pid, ok, os.Getpid())
+			if err := tc.remove(root); tc.reports && err == nil {
+				t.Fatal("a removal that failed reported success")
+			}
+			if pid, ok := readEphemeralOwner(root); !ok || pid != deadOwner {
+				t.Fatalf("after a failed removal the marker reads %d/%v, want %d", pid, ok, deadOwner)
+			}
+
+			if err := os.Chmod(locked, 0o700); err != nil {
+				t.Fatalf("unlock the profile: %v", err)
+			}
+			if err := tc.remove(root); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Fatalf("the root survives a removal that could finish: %v", err)
+			}
+		})
 	}
 }

@@ -299,9 +299,8 @@ describe('<ThinkingBlock>', () => {
     // AHEAD of the smoother's revealed tail, so the live tail is a strict PREFIX
     // of the persisted snapshot. The render-time merge must recognise prefix
     // containment and append nothing — not re-append the whole revealed prefix.
-    // Regression for the containment-blind `nonOverlappingSuffix` merge, which
-    // rendered 'The quick brown fox The quick '. The sibling tests above use
-    // disjoint strings and never exercised this path.
+    // A containment-blind merge renders 'The quick brown fox The quick '. The
+    // sibling tests above use disjoint strings and never exercise this path.
     const thinking = makeItem({
       id: 'think:0:0',
       kind: 'thinking',

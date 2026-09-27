@@ -262,7 +262,7 @@ func (s *Store) EnsureOwnerUser(displayName string) (User, error) {
 
 func (s *Store) ownerUser() (User, error) {
 	return scanUser(s.reader().QueryRow(
-		`SELECT `+userColumns+` FROM users WHERE role = ?`, UserRoleOwner))
+		`SELECT ` + userColumns + ` FROM users WHERE role = '` + UserRoleOwner + `'`))
 }
 
 // CreateUser adds a member account. Team sharing mints these; nothing

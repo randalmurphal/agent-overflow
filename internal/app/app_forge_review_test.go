@@ -181,7 +181,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 		t.Fatalf("subscription PRKey = %q, want %q", sub.PRKey, prUpdateKey(testPR))
 	}
 	defer func() {
-		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
 		app.prUpdates.wg.Wait()
@@ -245,7 +245,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	expectNoPRUpdate(t, events, "duplicate emit for the second subscriber")
 
 	// Releasing one caller leaves the pump running for the other.
-	if err := app.UnsubscribePRUpdates(subA.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), subA.ID); err != nil {
 		t.Fatalf("unsubscribe A: %v", err)
 	}
 	if refs, active, _, present := prPumpState(app, subA.PRKey); !present || refs != 1 || active != 1 {
@@ -254,7 +254,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	app.prUpdates.mu.Lock()
 	pump := app.prUpdates.pumps[subA.PRKey]
 	app.prUpdates.mu.Unlock()
-	if err := app.UnsubscribePRUpdates(subB.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), subB.ID); err != nil {
 		t.Fatalf("unsubscribe B: %v", err)
 	}
 	if _, _, _, present := prPumpState(app, subA.PRKey); present {
@@ -310,7 +310,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 	}
 
 	for _, id := range []string{first.ID, second.ID} {
-		if err := app.UnsubscribePRUpdates(id); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), id); err != nil {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
@@ -359,7 +359,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	}
 
 	for _, handle := range []string{ref.id, winner.ID} {
-		if err := app.UnsubscribePRUpdates(handle); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), handle); err != nil {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
@@ -389,9 +389,33 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 		t.Fatalf("connection cleanup did not release subscription %q", sub.ID)
 	}
 	// Idempotent: an explicit unsubscribe afterwards is a no-op.
-	if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
 		t.Fatalf("Unsubscribe after connection cleanup: %v", err)
 	}
+	app.prUpdates.wg.Wait()
+}
+
+// TestUnsubscribePRUpdatesUnbindsItsConnectionTie: see checkByIDTie.
+func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
+	app := NewApp()
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
+	}
+	var prKey string
+	checkByIDTie(t, byIDTie{
+		subscribe: func(ctx context.Context) (string, error) {
+			sub, err := app.SubscribePRUpdates(ctx, testPR)
+			prKey = sub.PRKey
+			return sub.ID, err
+		},
+		unsubscribe: app.UnsubscribePRUpdates,
+		key:         prUpdatesCleanupKey,
+		live: func(string) bool {
+			_, _, _, present := prPumpState(app, prKey)
+			return present
+		},
+	})
 	app.prUpdates.wg.Wait()
 }
 
@@ -417,7 +441,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
 	defer func() {
-		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
 		app.prUpdates.wg.Wait()
@@ -473,8 +497,8 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 		t.Fatalf("subscribe B: %v", err)
 	}
 	defer func() {
-		_ = app.UnsubscribePRUpdates(subA.ID)
-		_ = app.UnsubscribePRUpdates(subB.ID)
+		_ = app.UnsubscribePRUpdates(context.Background(), subA.ID)
+		_ = app.UnsubscribePRUpdates(context.Background(), subB.ID)
 		app.prUpdates.wg.Wait()
 	}()
 
@@ -522,7 +546,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 
 	// A subscriber that leaves while ACTIVE releases its vote: the pump
 	// pauses because the only one left is hidden.
-	if err := app.UnsubscribePRUpdates(subA.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), subA.ID); err != nil {
 		t.Fatalf("unsubscribe A: %v", err)
 	}
 	if _, active, paused, present := prPumpState(app, subB.PRKey); !present || active != 0 || !paused {
@@ -569,8 +593,8 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 		t.Fatalf("subscribe B onto a paused pump: %v", err)
 	}
 	defer func() {
-		_ = app.UnsubscribePRUpdates(subA.ID)
-		_ = app.UnsubscribePRUpdates(subB.ID)
+		_ = app.UnsubscribePRUpdates(context.Background(), subA.ID)
+		_ = app.UnsubscribePRUpdates(context.Background(), subB.ID)
 		app.prUpdates.wg.Wait()
 	}()
 
@@ -645,7 +669,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 		t.Fatalf("the dying pump's own handle survived its drop")
 	}
 
-	if err := app.UnsubscribePRUpdates(second.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), second.ID); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 	if _, _, _, present := prPumpState(app, first.PRKey); present {
@@ -730,7 +754,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	}
 	assertUnstamped("error path")
 
-	if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 	app.prUpdates.wg.Wait()
@@ -751,7 +775,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	ids := make([]string, 0, maxPRUpdateHandles)
 	defer func() {
 		for _, id := range ids {
-			_ = app.UnsubscribePRUpdates(id)
+			_ = app.UnsubscribePRUpdates(context.Background(), id)
 		}
 		app.prUpdates.wg.Wait()
 	}()
@@ -782,7 +806,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 
 	// Releasing one makes room again — the cap bounds what is HELD, not how
 	// many subscriptions a session may make over its lifetime.
-	if err := app.UnsubscribePRUpdates(ids[0]); err != nil {
+	if err := app.UnsubscribePRUpdates(context.Background(), ids[0]); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 	ids = ids[1:]
@@ -809,7 +833,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
 	defer func() {
-		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
 		app.prUpdates.wg.Wait()
@@ -852,7 +876,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
 	defer func() {
-		_ = app.UnsubscribePRUpdates(sub.ID)
+		_ = app.UnsubscribePRUpdates(context.Background(), sub.ID)
 		app.prUpdates.wg.Wait()
 	}()
 
@@ -940,7 +964,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	}
 
 	for _, id := range []string{first.ID, joined.ID, third.ID} {
-		if err := app.UnsubscribePRUpdates(id); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), id); err != nil {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
@@ -1002,7 +1026,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	}
 
 	for _, id := range []string{first.ID, joined.ID} {
-		if err := app.UnsubscribePRUpdates(id); err != nil {
+		if err := app.UnsubscribePRUpdates(context.Background(), id); err != nil {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}

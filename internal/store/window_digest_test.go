@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -669,5 +670,149 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 	}
 	if got.Status != SyncFresh || got.Page != nil {
 		t.Fatalf("status = %q page=%v, want a page-less fresh over the local tail", got.Status, got.Page != nil)
+	}
+}
+
+// The held-window read returns the (id, rev) of exactly the rows a page
+// ships, the revision included: a thread's own rows read their stamp,
+// imported and inherited rows read -1. The thread holds imported rows, an
+// overridden one, children and plan_update notifications, and the fork
+// reads all of it through its lineage.
+func TestHeldWindowRowsAreThePagesRows(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	const forkID = timelineParityThreadID + "-fork"
+	if err := s.CreatePointerFork(makeThread(forkID, "claude"), timelineParityThreadID, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendCarded(s, Item{ID: "fork-own", ThreadID: forkID, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "fork", Meta: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, threadID := range []string{timelineParityThreadID, forkID} {
+		page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 200, testRunWindowRows, TimelineSelection{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stub := range page.Runs {
+			if stub.UnshippedBefore+stub.UnshippedAfter != 0 {
+				t.Fatalf("%s: run %s has unshipped members; the page must ship every row", threadID, stub.FirstItemID)
+			}
+		}
+		want := make(map[string]int64, len(page.Items))
+		local, unstamped := 0, 0
+		for _, item := range page.Items {
+			want[item.ID] = item.Rev
+			if item.Rev < 0 {
+				unstamped++
+			} else {
+				local++
+			}
+		}
+		if local == 0 || unstamped == 0 {
+			t.Fatalf("%s: page has %d stamped and %d unstamped rows; the fixture must have both", threadID, local, unstamped)
+		}
+		rows, err := windowDigestRowsTx(s.reader(), threadID, page.OldestCursor, page.NewestCursor, len(page.Items)+1, timelineScope{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]int64, len(rows))
+		for _, row := range rows {
+			got[row.ID] = row.Rev
+		}
+		if len(rows) != len(want) || len(got) != len(want) {
+			t.Fatalf("%s: held-window read has %d rows, the page %d\ngot  %v\nwant %v", threadID, len(rows), len(want), got, want)
+		}
+		for id, rev := range want {
+			if gotRev, ok := got[id]; !ok || gotRev != rev {
+				t.Errorf("%s: row %s reads rev %d (present %v), the page serves %d", threadID, id, gotRev, ok, rev)
+			}
+		}
+	}
+}
+
+// The held-window read returns the (id, rev) of exactly the visible
+// top-level rows the timeline_items view holds between two edges, in its
+// order, and the has-more probes agree with the view on both sides of
+// them. Every pair of edges is checked, most of them inside a turn, on a
+// thread with imported, overridden and local rows and on two pointer forks
+// of it: one of all its history, and one cut inside a turn with rows of
+// its own past the cut, with the thread writing more rows after both.
+func TestHeldWindowRowsMatchTheView(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	const wholeFork, cutFork = timelineParityThreadID + "-whole", timelineParityThreadID + "-cut"
+	if err := s.CreatePointerFork(makeThread(wholeFork, "claude"), timelineParityThreadID, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreatePointerFork(makeThread(cutFork, "claude"), timelineParityThreadID, ForkCut{BeforeItemID: "loc-answer-2"}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []Item{
+		{ID: "cut-answer-2", ThreadID: cutFork, TurnIndex: 2},
+		{ID: "cut-more-2", ThreadID: cutFork, TurnIndex: 2},
+		{ID: "late-answer-3", ThreadID: timelineParityThreadID, TurnIndex: 3},
+	} {
+		item.Kind, item.Role, item.Status, item.Summary, item.Meta = "assistant_text", "assistant", "completed", item.ID, "{}"
+		if _, err := appendCarded(s, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, threadID := range []string{timelineParityThreadID, wholeFork, cutFork} {
+		rows, err := s.db.Query(`SELECT id, rev, turn_index, item_index FROM timeline_items
+		  WHERE thread_id = ? AND `+legacyWindowFilter+`
+		  ORDER BY turn_index, item_index`, threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var view []WindowDigestRow
+		var at []TimelineCursor
+		for rows.Next() {
+			var row WindowDigestRow
+			var cursor TimelineCursor
+			if err := rows.Scan(&row.ID, &row.Rev, &cursor.TurnIndex, &cursor.ItemIndex); err != nil {
+				t.Fatal(err)
+			}
+			view, at = append(view, row), append(at, cursor)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if len(view) < 8 {
+			t.Fatalf("%s: the view holds %d rows; the fixture must give the edges room", threadID, len(view))
+		}
+		for i := range view {
+			older, err := hasOlderItems(s.reader(), threadID, at[i], timelineScope{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newer, err := hasNewerItems(s.reader(), threadID, at[i], timelineScope{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if older != (i > 0) || newer != (i < len(view)-1) {
+				t.Errorf("%s: at %s has older %v newer %v, want %v %v", threadID, view[i].ID, older, newer, i > 0, i < len(view)-1)
+			}
+			for j := i; j < len(view); j++ {
+				want := view[i : j+1]
+				got, err := windowDigestRowsTx(s.reader(), threadID, at[i], at[j], len(want)+1, timelineScope{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("%s: window %s..%s reads %v, the view holds %v", threadID, view[i].ID, view[j].ID, got, want)
+				}
+				// A claimed count below the range reads only that many rows.
+				if len(want) > 1 {
+					got, err := windowDigestRowsTx(s.reader(), threadID, at[i], at[j], len(want)-1, timelineScope{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !slices.Equal(got, want[:len(want)-1]) {
+						t.Errorf("%s: window %s..%s cut to %d reads %v, want %v", threadID, view[i].ID, view[j].ID, len(want)-1, got, want[:len(want)-1])
+					}
+				}
+			}
+		}
 	}
 }

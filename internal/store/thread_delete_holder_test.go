@@ -303,6 +303,7 @@ func TestRetireToHolderClassifiesEveryThreadReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	var refs []string
 	for rows.Next() {
 		var table, column string

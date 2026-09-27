@@ -258,9 +258,9 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 			t.Fatalf("rollback removed %s from the shared turn (found=%v err=%v)", kept, found, err)
 		}
 	}
-	remaining, err := app.store.ListItemsForTurn(thread.ID, 3)
+	remaining, err := app.store.ListTurnItems(thread.ID, 3)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn after rollback: %v", err)
+		t.Fatalf("ListTurnItems after rollback: %v", err)
 	}
 	for _, it := range remaining {
 		for _, message := range messages {
@@ -295,9 +295,9 @@ func turnsAbove(t *testing.T, app *App, threadID string, turnIndex int) []store.
 // flushRowsForTurn lists the turn's flush-shaped user rows in timeline order.
 func flushRowsForTurn(t *testing.T, app *App, threadID string, turnIndex int) []store.Item {
 	t.Helper()
-	items, err := app.store.ListItemsForTurn(threadID, turnIndex)
+	items, err := app.store.ListTurnItems(threadID, turnIndex)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn(%d): %v", turnIndex, err)
+		t.Fatalf("ListTurnItems(%d): %v", turnIndex, err)
 	}
 	var rows []store.Item
 	for _, item := range items {

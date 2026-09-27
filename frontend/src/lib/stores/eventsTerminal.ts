@@ -1,7 +1,8 @@
 // Backgrounded-terminal event domain: streaming terminal output into the
-// per-pane terminal state and handling terminal-exit teardown (tab
-// removal, active-pane refocus, and last-tab thread cleanup). Fan-in
-// target of events.ts's setupEventListeners.
+// per-pane terminal state, handling terminal-exit teardown (tab
+// removal, active-pane refocus, and last-tab thread cleanup), and
+// re-reading mounted surfaces' lists after a reconnect or a lost frame.
+// Fan-in target of events.ts's setupEventListeners.
 import type {
   TerminalExitEventPayload,
   TerminalHandle,
@@ -14,11 +15,14 @@ import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import {
   getExistingThreadTerminalState,
+  getMountedTerminalSurfaces,
   getTerminalFocused,
   getThreadTerminalStateForTerminalEvent,
 } from '../components/terminal/terminalStore.svelte';
 import { DeleteThread } from './bindings';
 import type { ThreadPane } from './thread.svelte';
+import type { BackendKey } from '../transport/backendKey';
+import { threadMachine } from './attachedBackends.svelte';
 
 // Deliberately NOT ThreadPaneIngest (see threadPaneRoles.ts): the two
 // members this module touches are a focus request, not event ingest.
@@ -33,8 +37,8 @@ function terminalFocusPanes(threadID: string): TerminalFocusPane[] {
 /**
  * A PTY this backend just started, opened from any client.
  *
- * The surface reads the set once at mount (`ListTerminals`) and nothing told
- * it about a terminal opened afterwards, so a second device dropped that
+ * The surface reads the set at mount (`ListTerminals`) and nothing told it
+ * about a terminal opened afterwards, so a second device dropped that
  * terminal's output as belonging to an id it had never seen — and, if its own
  * list had come back empty, auto-opened a second shell beside it.
  *
@@ -52,6 +56,19 @@ export function applyTerminalOpened(payload: TerminalHandle): void {
   const summary = payload?.summary;
   if (!threadID || !summary?.terminalID) return;
   getExistingThreadTerminalState(threadID)?.addTab(summary, { activate: false });
+}
+
+/**
+ * Re-read the terminal list of every mounted surface whose thread is on
+ * `backend`, once it reconnects or loses terminal events. Its channels replay
+ * independently, so a terminal that opened and exited while this client was
+ * away can replay its exit before its open and leave a dead tab; an exit lost
+ * to a gap leaves one too, and a lost open hides a running terminal.
+ */
+export function reconcileTerminalSurfaces(backend: BackendKey): void {
+  for (const surface of getMountedTerminalSurfaces()) {
+    if (threadMachine(surface.threadID, null) === backend) void surface.relist();
+  }
 }
 
 export function applyTerminalOutput(payload: TerminalOutputEventPayload): void {

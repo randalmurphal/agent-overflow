@@ -13,10 +13,10 @@
 #   docker run --rm -v $(pwd):/app wails-cross windows amd64
 #   docker run --rm -v $(pwd):/app wails-cross windows arm64
 
-# Track the go.mod floor. The module needs 1.26.6 (pinned by tailscale.com),
-# and an older base image would silently spend a toolchain download on every
-# build — or fail outright where the build has no network.
-FROM golang:1.26.6-trixie
+# Track the go.mod floor. The module needs 1.27.1, and an older base image
+# would silently spend a toolchain download on every build, or fail outright
+# where the build has no network.
+FROM golang:1.27.1-trixie
 
 ARG TARGETARCH
 
@@ -95,7 +95,7 @@ for arg in "$@"; do
         *) ARGS="$ARGS $arg" ;;
     esac
 done
-exec zig cc -fno-sanitize=all -target aarch64-macos.11.0 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
+exec zig cc -fno-sanitize=all -target aarch64-macos.13.0 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
 ZIGWRAP
 RUN chmod +x /usr/local/bin/zcc-darwin-arm64
 
@@ -115,7 +115,7 @@ for arg in "$@"; do
         *) ARGS="$ARGS $arg" ;;
     esac
 done
-exec zig cc -fno-sanitize=all -target x86_64-macos.10.15 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
+exec zig cc -fno-sanitize=all -target x86_64-macos.13.0 -isysroot /opt/macos-sdk -I/opt/macos-sdk/usr/include -L/opt/macos-sdk/usr/lib -F/opt/macos-sdk/System/Library/Frameworks -w $ARGS
 ZIGWRAP
 RUN chmod +x /usr/local/bin/zcc-darwin-amd64
 

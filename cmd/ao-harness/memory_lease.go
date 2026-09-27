@@ -13,8 +13,24 @@ import (
 
 const detachedHarnessLeaseTTL = 24 * time.Hour
 
-func reserveDetachedHarness(dataRoot string, bs harnessclient.Bootstrap, limit uint64) (governor.Lease, error) {
-	mgr, err := governor.New(governor.Options{})
+// hostGovernorDir resolves the host-wide reservation directory. Package tests
+// replace it so that no test can reach host-wide state.
+var hostGovernorDir = governor.DefaultDir
+
+// openGovernor opens the reservation store in dir, or the host-wide store
+// when dir is empty.
+func openGovernor(dir string) (*governor.Manager, error) {
+	if dir == "" {
+		var err error
+		if dir, err = hostGovernorDir(); err != nil {
+			return nil, err
+		}
+	}
+	return governor.New(governor.Options{Dir: dir})
+}
+
+func (e *env) reserveDetachedHarness(dataRoot string, bs harnessclient.Bootstrap, limit uint64) (governor.Lease, error) {
+	mgr, err := openGovernor(e.governorDir)
 	if err != nil {
 		return governor.Lease{}, err
 	}
@@ -37,8 +53,8 @@ func reserveDetachedHarness(dataRoot string, bs harnessclient.Bootstrap, limit u
 	return lease, nil
 }
 
-func releaseDetachedHarnessLease(dataRoot string) error {
-	mgr, err := governor.New(governor.Options{})
+func (e *env) releaseDetachedHarnessLease(dataRoot string) error {
+	mgr, err := openGovernor(e.governorDir)
 	if err != nil {
 		return err
 	}
@@ -61,8 +77,8 @@ func releaseDetachedHarnessLease(dataRoot string) error {
 	return nil
 }
 
-func releaseDetachedHarnessLeaseByID(lease governor.Lease) error {
-	mgr, err := governor.New(governor.Options{})
+func (e *env) releaseDetachedHarnessLeaseByID(lease governor.Lease) error {
+	mgr, err := openGovernor(e.governorDir)
 	if err != nil {
 		return err
 	}

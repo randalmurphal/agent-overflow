@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createActivityRunMemberFetch } from './activityRunMemberFetch';
-import { foldPageStub } from './activityRunStubs';
+import { foldPageStub, noteRefusedRow } from './activityRunStubs';
 import type { ActivityRunRecords } from './activityRunStubs';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
@@ -288,5 +288,45 @@ it('re-reads the current run description after queued maintenance finishes', asy
   await pending;
   expect(rpc).toHaveBeenCalledTimes(2);
   expect(rpc.mock.calls[1][1]).toMatchObject({ loadedFirstItemId: 'new-first', loadedLastItemId: 'new-last', limit: 25 });
+  f.fetcher.dispose();
+});
+
+// A refused row is at (0, 5); an answer's run ends at its last edge.
+it.each([
+  ['ends before the refused row', 4, 1],
+  ['reaches the refused row', 5, 0],
+] as const)('settles a refusal with a refresh that %s', async (_name, lastItemIndex, reloads) => {
+  const f = fixture();
+  noteRefusedRow(f.record, { turnIndex: 0, itemIndex: 5 });
+  const answer = { ...f.stub, lastTurnIndex: 0, lastItemIndex };
+  const rpc = setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: answer }));
+  f.fetcher.scheduleRefresh();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(rpc).toHaveBeenCalledOnce();
+  expect(f.onStubApplied).toHaveBeenCalledExactlyOnceWith(answer);
+  expect(f.record.refusedThrough).toBeNull();
+  expect(f.reloadWindow).toHaveBeenCalledTimes(reloads);
+  expect(f.reportFailure.mock.calls.map(call => [call[0], call[2]]))
+    .toEqual(reloads ? [['Activity changed; refreshing history', true]] : []);
+  f.fetcher.dispose();
+});
+
+it('leaves a refusal made during a read for the next read', async () => {
+  const f = fixture();
+  const first = deferred<unknown>();
+  const answer = { ...f.stub, lastTurnIndex: 0, lastItemIndex: 4 };
+  const rpc = vi.fn().mockReturnValueOnce(first.promise)
+    .mockResolvedValue({ items: [], stub: { ...answer, lastItemIndex: 5 } });
+  setBindingMock('ListActivityRunMembers', rpc);
+  f.record.dirty = true;
+  f.fetcher.scheduleRefresh();
+  await vi.advanceTimersByTimeAsync(200);
+  expect(rpc).toHaveBeenCalledOnce();
+  noteRefusedRow(f.record, { turnIndex: 0, itemIndex: 5 });
+  first.resolve({ items: [], stub: answer });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(rpc).toHaveBeenCalledTimes(2);
+  expect(f.record.refusedThrough).toBeNull();
+  expect(f.reloadWindow).not.toHaveBeenCalled();
   f.fetcher.dispose();
 });

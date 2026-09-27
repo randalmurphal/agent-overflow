@@ -124,9 +124,9 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 
 	// 4. Chat-history rows are still absent; they should not render
 	// until the provider confirms the message is in context.
-	items, err := app.store.ListItemsForTurn(thread.ID, 0)
+	items, err := app.store.ListTurnItems(thread.ID, 0)
 	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
+		t.Fatalf("ListTurnItems: %v", err)
 	}
 	for _, item := range items {
 		if item.Kind == "user_text" && strings.HasPrefix(item.ID, "user:0:flush:") {

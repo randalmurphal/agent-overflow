@@ -1072,17 +1072,14 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 // this counter.
 func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string) (int, error) {
 	prefix := fmt.Sprintf("user:%d:%s:", turnIndex, scope)
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
+	ids, err := a.store.TurnItemIDsWithPrefix(threadID, turnIndex, prefix)
 	if err != nil {
 		return 0, err
 	}
 	highest := 0
-	for _, it := range items {
-		if !strings.HasPrefix(it.ID, prefix) {
-			continue
-		}
+	for _, id := range ids {
 		var n int
-		if _, scanErr := fmt.Sscanf(it.ID[len(prefix):], "%d", &n); scanErr != nil {
+		if _, scanErr := fmt.Sscanf(id[len(prefix):], "%d", &n); scanErr != nil {
 			continue
 		}
 		if n > highest {

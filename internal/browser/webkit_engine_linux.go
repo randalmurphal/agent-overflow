@@ -160,6 +160,9 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	if !e.Running() {
 		return nil, fmt.Errorf("browser: engine unavailable")
 	}
+	if opts.Allow == nil {
+		return nil, fmt.Errorf("browser: a navigation policy is required for a browser profile")
+	}
 	id := webkitProfileSeq.Add(1)
 	// The workspace digest, not its path: a workspace root can be long, can
 	// hold characters a directory name cannot, and must not be readable from
@@ -187,7 +190,7 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		return nil, err
 	}
 	profile := &webkitProfile{
-		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session,
+		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session, allow: opts.Allow,
 		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
@@ -208,6 +211,9 @@ type webkitProfile struct {
 	id      uint64
 	handle  string
 	session unsafe.Pointer
+	// allow is the workspace's navigation policy. It answers for a popup
+	// until the Manager adopts it (webkitNavigationAllowed).
+	allow func(url string) bool
 
 	mu        sync.Mutex
 	disposed  bool

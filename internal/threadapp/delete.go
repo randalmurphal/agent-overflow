@@ -22,11 +22,19 @@ type DeletePorts struct {
 	StopSession             func(threadID string) error
 	CancelWorktreeSetup     func(threadID string)
 	CloseTerminals          func(threadID string) error
-	ClearSystemPrompt       func(threadID string)
-	RemoveDiscussion        func(store.Thread)
-	ClearAutoReconnect      func(threadID string)
-	CleanupAttachments      func(threadID string) error
-	CleanupReplayLog        func(threadID string) error
+	// CloseBrowserPages runs before the row drops, so a failure keeps the
+	// thread for a retry, and again after, for a page a companion action
+	// opened meanwhile (the action leaves it to the delete while the row
+	// is present).
+	CloseBrowserPages  func(threadID string) error
+	ClearSystemPrompt  func(threadID string)
+	RemoveDiscussion   func(store.Thread)
+	ClearAutoReconnect func(threadID string)
+	CleanupAttachments func(threadID string) error
+	CleanupReplayLog   func(threadID string) error
+	// Forget drops the conversation's in-memory settings after its row is
+	// gone, so a delete that fails earlier keeps them.
+	Forget func(threadID string)
 	// Deleted fires once per row actually dropped from SQLite, children
 	// included, after the row is gone. Root broadcasts it on
 	// `thread:updated` so a second attached client drops the same rows
@@ -101,6 +109,11 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 			errs = append(errs, fmt.Errorf("close terminals: %w", err))
 		}
 	}
+	if ports.CloseBrowserPages != nil {
+		if err := ports.CloseBrowserPages(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("close browser pages: %w", err))
+		}
+	}
 	if ports.ClearSystemPrompt != nil {
 		ports.ClearSystemPrompt(threadID)
 	}
@@ -153,10 +166,19 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
+	var closeErr error
+	if ports.CloseBrowserPages != nil {
+		if err := ports.CloseBrowserPages(threadID); err != nil {
+			closeErr = fmt.Errorf("delete thread %s: close browser pages opened during the delete: %w", threadID, err)
+		}
+	}
+	if ports.Forget != nil {
+		ports.Forget(threadID)
+	}
 	// No client lists a holder: its source's delete reported the thread
 	// gone, and a revert's holder was never shown.
 	if ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
 		ports.Deleted(thread)
 	}
-	return nil
+	return closeErr
 }

@@ -1878,7 +1878,7 @@ func TestCommandExecutionOutputDelta(t *testing.T) {
 }
 
 func TestTurnDiffUpdated(t *testing.T) {
-	params := json.RawMessage(`{"diff":"--- a/main.go\n+++ b/main.go\n"}`)
+	params := json.RawMessage(`{"threadId":"thr","turnId":"turn-7","diff":"--- a/main.go\n+++ b/main.go\n"}`)
 	events := ClassifyNotification(testThread, "turn/diff/updated", params)
 
 	if len(events) != 1 {
@@ -1899,6 +1899,37 @@ func TestTurnDiffUpdated(t *testing.T) {
 	}
 	if !meta.UpgradeOnly || meta.Source != "turn/diff/updated" {
 		t.Fatalf("meta = %+v, want upgrade-only turn diff marker", meta)
+	}
+	if events[0].TurnID != "turn-7" {
+		t.Fatalf("turn id = %q, want turn-7", events[0].TurnID)
+	}
+	// The snapshot is the turn's whole diff, sent after every file change:
+	// the meta must not carry a second copy of it.
+	if strings.Contains(string(events[0].Meta), "main.go") {
+		t.Fatalf("meta copies the diff: %s", events[0].Meta)
+	}
+}
+
+// A turn diff names its turn at the top level or inside a turn object, and a
+// field of the wrong type does not cost the diff.
+func TestTurnDiffUpdatedTurnID(t *testing.T) {
+	for _, tc := range []struct {
+		params string
+		turnID string
+	}{
+		{`{"turn":{"id":"nested"},"diff":"d"}`, "nested"},
+		{`{"turnId":"top","turn":{"id":"nested"},"diff":"d"}`, "top"},
+		{`{"turnId":7,"turn":"x","diff":"d"}`, ""},
+	} {
+		events := ClassifyNotification(testThread, "turn/diff/updated", json.RawMessage(tc.params))
+		if len(events) != 1 || events[0].Content != "d" || events[0].TurnID != tc.turnID {
+			t.Errorf("%s: events = %+v, want diff d on turn %q", tc.params, events, tc.turnID)
+		}
+	}
+	for _, params := range []string{`{"diff":7}`, `{"diff":"  "}`, `not json`} {
+		if events := ClassifyNotification(testThread, "turn/diff/updated", json.RawMessage(params)); len(events) != 0 {
+			t.Errorf("%s: events = %+v, want none", params, events)
+		}
 	}
 }
 

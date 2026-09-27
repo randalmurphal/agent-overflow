@@ -738,6 +738,50 @@ func TestAppendItemSummaryTailKeepsLatestRunes(t *testing.T) {
 	}
 }
 
+// An IfStreaming update writes a streaming row and refuses one an
+// interrupt already ended, leaving it as the interrupt wrote it.
+func TestUpdateItemFieldsIfStreamingRefusesAnEndedRow(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for _, id := range []string{"live", "stopped"} {
+		if err := insertCarded(s, Item{
+			ID: id, ThreadID: "t", TurnIndex: 0, ItemIndex: len(id),
+			Kind: "assistant_text", Role: "assistant", Status: "streaming",
+			Summary: "partial", CreatedAt: 2000, UpdatedAt: 2000,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	stopped, _, err := s.GetThreadItem("t", "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := s.ErrorActiveItemIfRevision("t", "stopped", stopped.Rev, "partial - stopped", 2500, nil); err != nil || !changed {
+		t.Fatalf("interrupt: changed=%v err=%v", changed, err)
+	}
+
+	completed, summary, at := "completed", "the whole answer", int64(3000)
+	settle := ItemPartialUpdate{Status: &completed, Summary: &summary, UpdatedAt: &at, IfStreaming: true}
+	if got, err := s.UpdateItemFields("t", "live", settle); err != nil || got.Status != completed || got.Summary != summary {
+		t.Fatalf("settle of a streaming row = %+v, %v; want it completed", got, err)
+	}
+	if _, err := s.UpdateItemFields("t", "stopped", settle); !errors.Is(err, ErrItemSettled) {
+		t.Fatalf("settle of an interrupted row returned %v, want ErrItemSettled", err)
+	}
+	got, _, err := s.GetThreadItem("t", "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "errored" || got.Summary != "partial - stopped" || got.UpdatedAt != 2500 {
+		t.Fatalf("interrupted row after a refused settle = %s %q at %d, want it as the interrupt wrote it", got.Status, got.Summary, got.UpdatedAt)
+	}
+}
+
 func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(Thread{
@@ -1773,61 +1817,6 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
-	}
-}
-
-// TestListTurnItemsSansPayloadSkipsPayloadJoin verifies the narrow
-// sibling of ListTurnItems returns items with PayloadKind / PayloadMeta
-// left empty even when payload rows exist — the caller explicitly
-// opted out of the JOIN. Status/summary/is_background/kind are all
-// hydrated so the force-close path has what it needs.
-func TestListTurnItemsSansPayloadSkipsPayloadJoin(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1)
-	if err := s.CreateThread(Thread{
-		ID: "t-sp", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	payload := Payload{ID: "pl-1", Kind: "tool_call_result", Meta: `{"exitCode":0}`, Data: []byte("done"), CreatedAt: now}
-	if _, err := upsertCarded(s, Item{
-		ID: "it-with-payload", ThreadID: "t-sp", TurnIndex: 0, Kind: "tool_call",
-		Role: "assistant", Status: "completed", Summary: "echo",
-		PayloadID: "pl-1", CreatedAt: now, UpdatedAt: now,
-	}, &payload); err != nil {
-		t.Fatalf("upsert item with payload: %v", err)
-	}
-
-	bare, err := s.ListTurnItemsSansPayload("t-sp", 0)
-	if err != nil {
-		t.Fatalf("ListTurnItemsSansPayload: %v", err)
-	}
-	if len(bare) != 1 {
-		t.Fatalf("len=%d, want 1", len(bare))
-	}
-	if bare[0].PayloadID != "pl-1" {
-		t.Errorf("PayloadID = %q, want pl-1 (items column survives)", bare[0].PayloadID)
-	}
-	if bare[0].PayloadKind != "" {
-		t.Errorf("PayloadKind = %q, want empty (JOIN skipped)", bare[0].PayloadKind)
-	}
-	if bare[0].PayloadMeta != "" {
-		t.Errorf("PayloadMeta = %q, want empty (JOIN skipped)", bare[0].PayloadMeta)
-	}
-	if bare[0].Status != "completed" {
-		t.Errorf("Status = %q, want completed", bare[0].Status)
-	}
-
-	// Confirm the full-JOIN sibling still hydrates payload metadata —
-	// other callers rely on it.
-	full, err := s.ListTurnItems("t-sp", 0)
-	if err != nil {
-		t.Fatalf("ListTurnItems: %v", err)
-	}
-	if full[0].PayloadKind != "tool_call_result" {
-		t.Errorf("full.PayloadKind = %q, want tool_call_result (sibling still joins)", full[0].PayloadKind)
 	}
 }
 

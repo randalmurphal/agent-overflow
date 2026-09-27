@@ -124,7 +124,7 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 	}
 	bounds, values := d.filter("items.")
 	pick := func(kind, order string) (string, error) {
-		where := "items.parent_id <> '' AND items.parent_id=? AND items.kind=? AND " + bounds
+		where := "items.parent_id <> '' AND items.parent_id=" + boundText + " AND items.kind=" + boundText + " AND " + bounds
 		args := append([]any{root, kind}, values...)
 		query, args, err := timelineArms(q, threadID, timelineSelection{Columns: timelineIDColumns, KeyFirst: true, Where: where, WhereArgs: args, OrderBy: order, Limit: 1})
 		if err != nil {

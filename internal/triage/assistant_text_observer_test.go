@@ -118,3 +118,96 @@ func TestAssistantTextStreamObserver(t *testing.T) {
 		t.Fatalf("final tick must be the last observation: %#v", ticks)
 	}
 }
+
+// TestAssistantTextStreamEndsOnErrorFlip streams a text row past the flush
+// threshold, then ends its turn by a user Stop and by a fatal truncation:
+// the flip delivers the observer's final tick with the text before the
+// suffix, and the settle that follows adds no seedable text.
+func TestAssistantTextStreamEndsOnErrorFlip(t *testing.T) {
+	for _, end := range []struct {
+		name string
+		run  func(router *Router) error
+	}{
+		{"user stop", func(router *Router) error {
+			_, err := markUserInterruptForTest(router, "t1")
+			return err
+		}},
+		{"fatal", func(router *Router) error {
+			return router.markTurnItemsErrored("t1", router.OpenTurnIndex("t1"), time.Now().UnixMilli())
+		}},
+	} {
+		t.Run(end.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			var mu sync.Mutex
+			var ticks []observedTextTick
+			router.SetAssistantTextStreamObserver(func(threadID, itemID, text string, final bool) {
+				mu.Lock()
+				ticks = append(ticks, observedTextTick{threadID, itemID, text, final})
+				mu.Unlock()
+			})
+			createTestThread(t, st, "t1")
+			seedOpenTurn(t, router, st, "t1", 0)
+			first := "```go\nx := 1\n"
+			padding := "// " + strings.Repeat("x", streamPersistByteThreshold)
+			for _, delta := range []string{first, padding} {
+				if err := router.Handle(provider.ProviderEvent{
+					Kind: provider.EventTextDelta, ThreadID: "t1", Content: delta, Timestamp: time.Now(),
+				}); err != nil {
+					t.Fatalf("delta: %v", err)
+				}
+			}
+			mu.Lock()
+			if len(ticks) != 1 || ticks[0].final {
+				t.Fatalf("want one flush tick before the end, got %#v", ticks)
+			}
+			itemID := ticks[0].itemID
+			mu.Unlock()
+
+			if err := end.run(router); err != nil {
+				t.Fatalf("end turn: %v", err)
+			}
+			if err := router.settleTurnStreaming("t1", router.OpenTurnIndex("t1"), statusErrored, nil); err != nil {
+				t.Fatalf("settle: %v", err)
+			}
+			router.WaitForPendingSettles()
+
+			mu.Lock()
+			defer mu.Unlock()
+			var finals []observedTextTick
+			for _, tick := range ticks {
+				if tick.itemID == itemID && tick.final {
+					finals = append(finals, tick)
+				}
+			}
+			if len(finals) == 0 || finals[0].text != first+padding {
+				t.Fatalf("flip did not end the stream with the model text: %#v", finals)
+			}
+			for _, tick := range finals[1:] {
+				if tick.text != "" {
+					t.Fatalf("a later final tick carried text to seed again: %#v", tick)
+				}
+			}
+			if last := ticks[len(ticks)-1]; last.itemID == itemID && !last.final {
+				t.Fatalf("the row's last observation is not final: %#v", last)
+			}
+		})
+	}
+}
+
+// TestSettleWithoutStreamingRowEndsTheStream settles a row the store no
+// longer holds: the settle still ends the row's observer stream, with no
+// text to seed.
+func TestSettleWithoutStreamingRowEndsTheStream(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	var ticks []observedTextTick
+	router.SetAssistantTextStreamObserver(func(threadID, itemID, text string, final bool) {
+		ticks = append(ticks, observedTextTick{threadID, itemID, text, final})
+	})
+	createTestThread(t, st, "t1")
+	if err := router.settleStreamingTextRow("t1", "gone", statusCompleted, interruptedSummary, "", false, nil); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if len(ticks) != 1 || ticks[0] != (observedTextTick{"t1", "gone", "", true}) {
+		t.Fatalf("observations = %#v, want one empty final tick", ticks)
+	}
+}

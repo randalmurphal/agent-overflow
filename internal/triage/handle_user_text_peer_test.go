@@ -130,7 +130,7 @@ func TestHandleUserText_PeerMessage_IsIdempotentAcrossReplay(t *testing.T) {
 		}
 	}
 
-	rows, err := st.ListItemsForTurn("t1", 1)
+	rows, err := st.ListTurnItems("t1", 1)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}

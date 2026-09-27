@@ -1,6 +1,10 @@
 module agent-overflow
 
-go 1.26.6
+go 1.27.1
+
+// macOS and Windows verify certificates with the system trust store even
+// when SSL_CERT_FILE or SSL_CERT_DIR is set.
+godebug x509sslcertoverrideplatform=0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -17,6 +21,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/mdns v1.0.7
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
+	github.com/klauspost/compress v1.19.1
 	github.com/miekg/dns v1.1.72
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
@@ -57,8 +62,8 @@ require (
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/libc v1.74.4
-	modernc.org/sqlite v1.56.0
+	modernc.org/libc v1.75.7
+	modernc.org/sqlite v1.59.0
 	tailscale.com v1.102.3
 )
 
@@ -189,7 +194,6 @@ require (
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
-	github.com/klauspost/compress v1.19.1
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/konoui/go-qsort v0.1.0 // indirect
@@ -292,7 +296,7 @@ require (
 	honnef.co/go/tools v0.7.0 // indirect
 	howett.net/plist v1.0.2-0.20250314012144-ee69052608d9 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 	mvdan.cc/sh/v3 v3.12.0 // indirect
 )
 

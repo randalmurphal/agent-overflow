@@ -57,7 +57,7 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 	if err != nil {
 		return TurnPreview{}, false, fmt.Errorf("store: turn preview anchor %s on thread %s: %w", itemID, threadID, err)
 	}
-	filter := topLevelItemsFilterFor("items.")
+	filter := mainTimelineFilterFor("items.")
 	var filterArgs []any
 	if parentID != "" {
 		scope, err := s.resolveTimelineScope(q, threadID, TimelineSelection{ScopeRootID: parentID})
@@ -66,29 +66,12 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 		}
 		filter, filterArgs = scope.filter("items.")
 	}
-	// The ordering keys ride the projection because the compound needs
-	// them (timeline_arms.go); the scan drops them.
-	walkSQL, walkArgs, err := timelineArms(q, threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.kind AS kind, items.summary AS summary,
-			        COALESCE(CASE WHEN json_valid(items.meta)
-			                      THEN json_extract(items.meta, '$.wire_only') END, 0) AS wire_only,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Turn:     "?",
-		TurnArgs: []any{turnIndex},
-		FromTurn: true,
-		Where: filter + `
-		   AND items.kind IN ('user_text', 'assistant_text')
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
-		WhereArgs: append(filterArgs, turnIndex, turnIndex, itemIndex),
-		OrderBy:   "turn_index ASC, item_index ASC",
-		Limit:     turnPreviewScanLimit,
-	})
+	walk := turnPreviewWalk(filter, filterArgs, TimelineCursor{TurnIndex: turnIndex, ItemIndex: itemIndex})
+	walkSQL, walkArgs, err := timelineArms(q, threadID, walk)
 	if err != nil {
 		return TurnPreview{}, false, err
 	}
-	rows, err := q.Query(walkSQL, walkArgs...)
+	rows, err := q.Query(turnPreviewRowsSQL(walkSQL), walkArgs...)
 	if err != nil {
 		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
 	}
@@ -119,6 +102,33 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 		UserText:      capRunes(userText, turnPreviewMaxRunes),
 		AssistantText: capRunes(assistantText, turnPreviewMaxRunes),
 	}, true, nil
+}
+
+// turnPreviewWalk selects the text rows filter keeps that follow anchor,
+// in order, by kind and position alone: on the main timeline every arm
+// then walks a covering top-level index, and turnPreviewRowsSQL reads the
+// summary and meta of only the rows the walk keeps.
+func turnPreviewWalk(filter string, filterArgs []any, anchor TimelineCursor) timelineSelection {
+	sel := cursorBound(anchor, true)
+	sel.Columns = func(string, string) string {
+		return `items.kind AS kind, items.turn_index AS turn_index, items.item_index AS item_index`
+	}
+	sel.RowIDs = true
+	sel.Where = filter + `
+		   AND items.kind IN ('user_text', 'assistant_text')
+		   AND ` + sel.Where
+	sel.WhereArgs = append(filterArgs, sel.WhereArgs...)
+	sel.OrderBy, sel.Limit = "turn_index ASC, item_index ASC", turnPreviewScanLimit
+	return sel
+}
+
+// turnPreviewRowsSQL reads the kind, summary, wire_only flag and position
+// of each row walk, a rendered turnPreviewWalk, selects.
+func turnPreviewRowsSQL(walk string) string {
+	meta := locatedColumn("meta")
+	return locatedRowsSQL(`w.kind, `+locatedColumn("summary")+`,
+		       COALESCE(CASE WHEN json_valid(`+meta+`) THEN json_extract(`+meta+`, '$.wire_only') END, 0),
+		       w.turn_index, w.item_index`, walk, "ASC")
 }
 
 // capRunes truncates on a rune boundary with an ellipsis marker. Wire

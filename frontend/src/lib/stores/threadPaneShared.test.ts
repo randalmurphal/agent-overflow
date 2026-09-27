@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { stubScrollController } from '../../test/helpers/chat';
-import { withViewportBottomHeld, type PaneScrollController } from './threadPaneShared';
+import {
+  trimToTailRunes,
+  withViewportBottomHeld,
+  type PaneScrollController,
+} from './threadPaneShared';
 
 describe('withViewportBottomHeld', () => {
   it('hands the change to a controller that can hold the bottom edge', () => {
@@ -45,5 +49,38 @@ describe('withViewportBottomHeld', () => {
     withViewportBottomHeld(ctrl, () => {});
 
     expect(self).toBe(ctrl);
+  });
+});
+
+describe('trimToTailRunes', () => {
+  it('keeps the last runes without splitting a surrogate pair', () => {
+    expect(trimToTailRunes('ab😀c', 2)).toBe('😀c');
+    expect(trimToTailRunes('ab😀c', 3)).toBe('b😀c');
+    expect(trimToTailRunes('abc', 5)).toBe('abc');
+  });
+
+  // The reasoning reveal trims its previous summary plus each delta rather
+  // than the whole text (threadRevealRouting.ts).
+  it('trims incrementally to the same text as trimming the whole', () => {
+    let state = 7;
+    const random = (bound: number): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state % bound;
+    };
+    const pieces = ['word ', '😀', '𝑥', 'é', '\n', 'ab'];
+    for (let run = 0; run < 40; run++) {
+      const parts: string[] = [];
+      for (let index = 0; index < 400; index++) parts.push(pieces[random(pieces.length)]);
+      const text = parts.join('');
+      const maxRunes = 1 + random(120);
+      let trimmed = '';
+      // Split at any code unit, including between the halves of a pair.
+      for (let end = 0; end < text.length; ) {
+        const next = Math.min(text.length, end + 1 + random(9));
+        trimmed = trimToTailRunes(trimmed + text.slice(end, next), maxRunes);
+        end = next;
+        expect(trimmed).toBe(trimToTailRunes(text.slice(0, end), maxRunes));
+      }
+    }
   });
 });

@@ -12,11 +12,13 @@ import (
 
 // downloadStarted is the quota decision. The engine reports that a download
 // began; whether it is allowed to consume workspace and artifact bytes is
-// policy, and so is the sanitized name it will eventually be renamed to.
-func (m *Manager) downloadStarted(event downloadStart) {
+// policy, and so is the sanitized name it will eventually be renamed to. It
+// answers false, and the engine cancels the download, when the download is
+// over quota or no managed page owns the frame it began in.
+func (m *Manager) downloadStarted(event downloadStart) bool {
 	p, scope := m.pageForFrame(event.Frame)
 	if p == nil {
-		return
+		return false
 	}
 	p.downloadMu.Lock()
 	p.downloadSeq++
@@ -44,9 +46,7 @@ func (m *Manager) downloadStarted(event downloadStart) {
 	}
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
-	if entry.State == "canceled" && scope != nil {
-		go scope.profile.CancelDownload(event.ID)
-	}
+	return entry.State != "canceled"
 }
 
 func (m *Manager) downloadProgress(event downloadProgress) {

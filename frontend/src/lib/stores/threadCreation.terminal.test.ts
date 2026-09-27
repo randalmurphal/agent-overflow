@@ -82,6 +82,9 @@ import { openTerminalThread } from './threadCreation.svelte';
 // ./threads.svelte is intentionally NOT mocked — openTerminalThread prepends
 // into the real store, and these tests assert the row actually lands there.
 import { getThreadById, getThreads } from './threads.svelte';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { takePinnedBackend } from '../transport/backends';
+import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
 
 let errorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -143,14 +146,45 @@ describe('openTerminalThread', () => {
   });
 
   it('skips the project reveal when no projectId is given', async () => {
-    // No live entry point omits projectId anymore (the standalone Terminals
-    // group is gone), but the option stays wire-optional — a project-less
-    // create must not expand anything.
+    // A project-less create must not expand anything.
     await openTerminalThread();
 
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: undefined, cwd: undefined });
     expect(h.expandProject).not.toHaveBeenCalled();
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
+  });
+
+  // A project names its computer. Beside a thread with no project, the call
+  // is left to StartTerminal's `selected` route: the focused pane's thread.
+  it('pins a project\'s computer and leaves a project-less terminal to the selected route', async () => {
+    const pinned: Array<string | null> = [];
+    const start = async () => {
+      pinned.push(takePinnedBackend());
+      return h.terminalThread;
+    };
+    h.startTerminal.mockImplementationOnce(start).mockImplementationOnce(start);
+    stageBackend();
+    noteProject('proj-remote', 'laptop');
+    try {
+      await openTerminalThread({ projectId: 'proj-remote', cwd: '/work' });
+      await openTerminalThread({ cwd: '/home/me' });
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
+    expect(pinned).toEqual(['laptop', null]);
+  });
+
+  it('refuses a project no computer is known to own while several are attached', async () => {
+    stageBackend();
+    try {
+      expect(await openTerminalThread({ projectId: 'proj-1' })).toBeNull();
+    } finally { resetStagedBackends(); }
+
+    expect(h.startTerminal).not.toHaveBeenCalled();
+    expect(h.addToast).toHaveBeenCalledTimes(1);
+    expect(h.addToast.mock.calls[0]![1]).toContain('computer that owns');
+    expect(h.openEmptyPane).not.toHaveBeenCalled();
   });
 
   it('toasts an error and returns null without opening a pane when StartTerminal fails', async () => {

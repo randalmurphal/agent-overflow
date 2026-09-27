@@ -8,42 +8,66 @@ chain. See [schema.md](schema.md) for table ownership.
 
 The store uses one writer connection for writes, migrations, restore, and
 truncating checkpoints. A small `query_only` pool serves ordinary reads from
-WAL snapshots and passive checkpoints. In-memory and non-WAL databases use the
-writer for both.
+WAL snapshots and the passive checkpoints of
+[WAL maintenance](#wal-maintenance). In-memory and non-WAL databases use the
+writer for reads and have no WAL to checkpoint.
 
 Connection-scoped PRAGMAs belong in the DSN assembled by `dsn.go`. Applying
 them once with `Exec` is unsafe because `database/sql` may replace a pooled
 connection. `verifyConnPragmas` checks the required values at startup because
 SQLite accepts unknown PRAGMA names without reporting a typo.
 
+Read connections keep a smaller page cache than the writer
+(`readerCacheKiB`). The driver pools the pages of every connection in one
+budget, the sum of their `cache_size` limits, and any connection can fill it,
+so the limits bound the store's total rather than each connection's cache
+(`TestPageCachesStayWithinTheirBudget`).
+
 Both pools open through `conngate.go`, which interposes on the driver's
 `Connect`. The conversion swap holds that gate so no replacement connection can
 attach to a file it is about to rename away.
 
 The writer pool holds one connection (`SetMaxOpenConns(1)`) and the read pool
-four (`readPoolConns`). `modernc.org/sqlite` compiles every `Exec` and `Query` that is
-not a prepared statement and finalizes it after the call, and SQLite compiles
-every trigger a write can fire and every view a read names into the
-statement. The gate therefore opens each connection behind a statement cache
-(`stmt_cache.go`): the connection keeps its `stmtCacheSize` most recently used
-statements that read or write rows compiled, keyed by SQL text, and runs them
-again with new bindings. DDL, PRAGMA and transaction control compile per call.
-SQLite recompiles a cached statement on its next run after a schema change
-from any connection, such as a migration, a deferred phase or a replaced view,
-and after a pragma that changes code generation, so a cached statement never
-runs against an old schema. A statement whose rows are still open is busy, and
-the same text run meanwhile on that connection compiles for the call.
+`readPoolConns`; `historyReadSlots` (`conngate.go`) bounds how many of them
+long reads and checkpoints hold. `modernc.org/sqlite` compiles every `Exec` and
+`Query` that is not a prepared statement and finalizes it after the call, and
+SQLite compiles every trigger a write can fire and every view a read names into
+the statement. The gate therefore opens each connection behind a statement
+cache (`stmt_cache.go`): the connection keeps its `stmtCacheSize` most recently
+used statements that read or write rows compiled, keyed by SQL text, and runs
+them again with new bindings. DDL, PRAGMA and transaction control compile per
+call. SQLite recompiles a cached statement on its next run after a schema
+change from any connection, such as a migration, a deferred phase or a replaced
+view, and after a pragma that changes code generation, so a cached statement
+never runs against an old schema. A statement whose rows are still open is
+busy, and the same text run meanwhile on that connection compiles for the call.
 `Conn.Raw` callbacks receive the cache, not the modernc connection.
+
+Live item writes (`groupWriteItems` and the streaming appends) share commits
+with the writes queued behind them; the `groupCommit` comment in
+`group_commit.go` describes the grouping and how a failure in a group is
+contained. Deletes, user-message placement, bulk writers and card flushes
+keep their own transactions.
 
 A statement repeated with a different number of placeholders is a different
 cache entry. Where a hot or bulk path repeats one with lists of varying
 length, bind the list as one JSON array and read it with `json_each`, as the
-history repair's unseal statements do. A LIMIT is a literal in the SQL text,
+history repair's unseal statements and the timeline page hydration do
+(`TestPagesOfAnyLengthShareStatements`). A LIMIT is a literal in the SQL text,
 rendered with `strconv.Itoa`, because the planner reads a bound LIMIT when it
 compiles the statement, so each rebind would expire the cached statement and
-its next run would compile it again; OFFSET may bind. A compiled `items`
-insert holds about 165 KB because it carries the table's triggers; other
-statements hold 1 to 65 KB.
+its next run would compile it again; OFFSET may bind. The planner also reads
+a bare `?` compared with a column that a partial index's WHERE pins to a
+literal, such as `items.kind` or `items.parent_id`, and the pattern of a
+`LIKE ?`, so such a parameter binds through `boundText` (`CAST(? AS TEXT)`),
+or `textParam` for a positional `?N`, and a code constant the planner must
+match is a literal (`sqlTextLiteral`). The package's tests check each cached
+statement after each run and fail on a statement of the package whose next
+run would compile it again (`sql_rebind_test.go`). Statements that write `items`
+or `subagent_aggregates` carry those tables' triggers: a compiled `items`
+write holds 200 to 245 KB and the other writes 80 to 175 KB. Thread row and
+timeline reads hold 40 to 100 KB; about half the statements hold under
+20 KB.
 
 Reads that depend on connection-local state, including attached restore
 databases and PRAGMA probes, use `s.db`. Helpers that may run either directly or
@@ -194,10 +218,21 @@ through them probes every chunk the thread references. Lookups by id, by
 another indexed key, or by turn render the arms instead. `KeyFirst` starts the
 imported arm from an index that leads with the key and ends with `chunk_id`,
 then checks the chunk's membership in the thread. `Turn` reads only the
-references whose copied turn range can hold the turn
-(`idx_thread_import_chunks_turns`); `FromTurn` does the same for a turn and
-every later one. `TestImportedLookupsDoNotEnumerateChunks` pins these plans,
-including the item and chunk-admission trigger probes.
+references whose copied turn range can hold the turn; `FromTurn` does the
+same for a turn and every later one. `TestImportedLookupsDoNotEnumerateChunks`
+pins these plans, including the item and chunk-admission trigger probes.
+
+An ordered imported arm sorts its rows, since no index orders a thread's
+imported rows. Once its sorter holds the limit, SQLite leaves a chunk at its
+first selected row that sorts after them, so an arm that visits the chunks
+in its read's order reads the chunks its rows come from, and each other
+chunk only up to its first selected row. A limited arm names the reference
+index it walks (`chunkRefsIndex`): `idx_thread_import_chunks_newest` for a
+newest-first read, `idx_thread_import_chunks_turns` for any other. Without
+statistics the planner prices the two alike and may pick either
+(`TestImportedPagesReadTheirOwnChunks`). A read with no limit names none, so
+an arm the planner drives from an imported key probes each row's chunk
+reference by chunk id.
 
 Payload keys are `(thread_id, id)`. Provider item IDs can repeat between
 branches and threads. Payload accessors and joins always use both columns.
@@ -502,11 +537,9 @@ phase runs after the whole chain, where v120 has already deleted every chunk
 no thread references. `pruneOrphanPayloads` deletes payload rows that no
 logical timeline row names, at most 256 rows and 4 MiB per transaction,
 re-checking the references inside each one. Every repair transaction is
-followed by a passive checkpoint on a read-pool connection, which does not
-hold the writer. The writer keeps SQLite's default `wal_autocheckpoint` of
-1000 pages: the commit that grows the WAL past it checkpoints inside that
-commit, whichever write it is. The repair's own checkpoints keep its frames
-from becoming that backlog.
+followed by a checkpoint (`checkpointHistoryRepair`), which copies its frames
+off the writer before the next transaction starts, so that transaction
+restarts the WAL instead of growing it toward the writer's bound.
 
 Measured on a 5.86 GB copy with 178,267 sealed rows in 15,204 chunks: 9,730
 transactions, p50 15 ms, p99 27 ms, max 74 ms; with the processors
@@ -529,8 +562,8 @@ command output, payloads only a notification names, and foreground results
 keep their data. The step empties every copy, a payload a pointer fork shows
 and a holder's included, through `fixShownHistoryTx`
 ([Ownership](#ownership)). A batch is at most 64 payloads and 4 MiB, re-checks
-the selection inside its transaction, and is followed by a passive checkpoint
-when it emptied anything.
+the selection inside its transaction, and is followed by a checkpoint when it
+emptied anything.
 On the measured copy this is 1,041 `Agent` payloads (1.19 GB) and 141
 `SendMessage` payloads (551 MB). The freed pages go to the freelist, and
 `ReclaimFreeSpace` returns them to the filesystem.
@@ -640,10 +673,18 @@ include a negative control when practical.
 
 ## WAL maintenance
 
-Passive checkpoints recycle WAL pages but do not shrink the file.
-`PassiveCheckpoint` runs on a read-pool connection: a checkpoint takes the
-checkpointer lock, not the write lock, so commits continue while it copies. It
-uses the writer when there is no read pool or reads are quiesced.
+While the store is open, the checkpointer (`checkpointer.go`) copies commits
+into the database file off the writer; its comments state when it runs and on
+which connection. The only other checkpoints are:
+
+- `TruncateCheckpoint` at boot and `Close`;
+- the conversion swap's truncate;
+- `checkpointWAL` between the transactions of a bulk writer whose next
+  transaction should restart the WAL, as the history repair does;
+- the writer's own at `walCheckpointBoundPages`, whose comment states why
+  that bound stays.
+
+Passive checkpoints let SQLite reuse the WAL but do not shrink the file.
 `TruncateCheckpoint` needs every reader gone, so it quiesces the read pool and
 routes reads onto the writer for its duration. That makes one stalled reader a
 stall for every reader, so it runs only where quiescence is structurally free:

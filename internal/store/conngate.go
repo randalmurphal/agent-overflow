@@ -4,16 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"sync"
 
 	sqlite "modernc.org/sqlite"
 )
 
-// readPoolConns bounds the read-only pool. Four is enough for the
-// concurrent UI reads one screen issues, and small enough that the file
-// swap can prove the pool is empty quickly.
-const readPoolConns = 4
+// readPoolConns bounds the read-only pool: historyReadSlots and one more.
+// Small enough that the file swap can prove the pool is empty quickly.
+const readPoolConns = 5
+
+// historyReadSlots bounds the read-pool connections held by reads whose
+// duration grows with a thread's history (historyReadSnapshot) and by
+// checkpoints, and fits the history reads one screen issues at once. A
+// page read over a long activity run holds its connection for hundreds of
+// milliseconds; without the bound a few panes opening at once hold the
+// whole pool, and provider event handling, whose per-event reads are
+// single index lookups, queues behind them while the live stream stalls.
+const historyReadSlots = readPoolConns - 1
 
 // connGate holds new physical connections off the database file.
 //
@@ -79,6 +88,14 @@ func (g *connGate) wait(ctx context.Context) error {
 type gatedConnector struct {
 	driver.Connector
 	gate *connGate
+	// commits, when set, is signalled by every commit on the connections
+	// this connector opens: the writer's, for the checkpointer.
+	commits commitSignal
+}
+
+// commitHooker is the modernc.org/sqlite connection's commit hook surface.
+type commitHooker interface {
+	RegisterCommitHook(sqlite.CommitHookFn)
 }
 
 func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
@@ -95,20 +112,32 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.commits != nil {
+		hooked, ok := conn.(commitHooker)
+		if !ok {
+			return nil, errors.Join(fmt.Errorf("store: driver connection %T has no commit hook", conn), cached.Close())
+		}
+		hooked.RegisterCommitHook(c.commits.hook)
+		// The driver keeps each registered hook in a process-wide map
+		// until it is unregistered, so a closed connection would
+		// otherwise leave its entry behind.
+		cached.beforeClose = func() { hooked.RegisterCommitHook(nil) }
+	}
 	return cached, nil
 }
 
 // openPool opens one pool against dbPath with the given connection
-// pragmas, routed through gate.
+// pragmas, routed through gate. A non-nil commits is signalled by every
+// commit on the pool's connections.
 //
 // sql.OpenDB rather than sql.Open: the gate has to sit in front of the
 // physical open, and interposing on Connect is the supported way to do
 // that (modernc.org/sqlite documents NewConnector for exactly this).
 // The DSN is unchanged, so the pragmas still ride every connection.
-func openPool(dbPath string, pragmas []connPragma, gate *connGate) (*sql.DB, error) {
+func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal) (*sql.DB, error) {
 	base, err := sqlite.NewConnector(poolDSN(dbPath, pragmas))
 	if err != nil {
 		return nil, fmt.Errorf("store: connector for %s: %w", dbPath, err)
 	}
-	return sql.OpenDB(gatedConnector{Connector: base, gate: gate}), nil
+	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits}), nil
 }

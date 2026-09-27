@@ -107,11 +107,10 @@ func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection Ti
 }
 
 func (scope timelineScope) filter(alias string) (string, []any) {
-	filter := visibleItemsFilterFor(alias)
 	if scope.selection.ScopeRootID == "" {
-		return filter + " AND " + topLevelItemsFilterFor(alias), nil
+		return mainTimelineFilterFor(alias), nil
 	}
-	filter += " AND " + alias + "parent_id <> '' AND " + alias + "parent_id = ?"
+	filter := visibleItemsFilterFor(alias) + " AND " + alias + "parent_id <> '' AND " + alias + "parent_id = " + boundText
 	if scope.selection.Tools {
 		filter += " AND " + alias + "kind IN ('tool_call','tool_completion','terminal_interaction')"
 	}

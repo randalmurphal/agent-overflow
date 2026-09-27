@@ -71,7 +71,9 @@ applicable. Entity state changes remain broadcasts.
 
 A method that arms a connection-owned resource registers its release with
 `transport.ConnState.RegisterCleanup`. If registration reports that teardown
-already began, release immediately. Update
+already began, release immediately. A resource the client can also release
+by id registers with `BindCleanup` instead, and its release method unbinds
+the same key on its call's connection. Update
 `TestArmingMethodsAreTiedToTheirConnection` only when a method truly does not
 own a per-connection resource.
 

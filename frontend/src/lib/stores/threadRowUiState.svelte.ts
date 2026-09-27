@@ -2,6 +2,7 @@ import type { Item } from '../types/models';
 import { payloadVersionForItem } from '../utils/payloadVersion';
 import {
   createPayloadExpansion,
+  type LiveRevealStream,
   type PayloadExpansionHandle,
   type PayloadExpansionOptions,
 } from '../utils/payloadExpansion.svelte';
@@ -63,9 +64,10 @@ export interface ThreadRowUiState {
   appendLivePayloadDeltaForItem(
     itemId: string,
     stateKey: string,
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     payloadVersion?: unknown,
-    previousLiveTail?: string,
   ): void;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
@@ -498,15 +500,16 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   function appendLivePayloadDeltaForItem(
     itemId: string,
     stateKey: string,
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     payloadVersion?: unknown,
-    previousLiveTail?: string,
   ): void {
     const keys = itemExpansionKeysByState.get(itemId)?.get(stateKey);
     if (!keys || keys.size === 0) return;
     for (const key of keys) {
       const entry = expansionStates.get(key) ?? leasedPrunedExpansionStates.get(key);
-      entry?.handle.appendLiveDelta(delta, payloadVersion, previousLiveTail);
+      entry?.handle.appendLiveDelta(stream, delta, end, payloadVersion);
     }
   }
 

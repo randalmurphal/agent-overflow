@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +108,46 @@ func seedTimelineParityThread(t *testing.T, s *Store) {
 			t.Fatalf("insert local item %s: %v", item.ID, err)
 		}
 	}
+}
+
+// seedTimelineParityForks gives the parity thread an agent ask and reply
+// under loc-child-2 in turn 3 and two pointer forks: one of all its
+// history, and one cut inside turn 2 with rows of its own past the cut,
+// top-level and under loc-child-2. The thread then writes the same two
+// kinds of row past both cuts. It returns the thread and both forks.
+func seedTimelineParityForks(t *testing.T, s *Store) []string {
+	t.Helper()
+	const wholeFork, cutFork = timelineParityThreadID + "-whole", timelineParityThreadID + "-cut"
+	appendRows := func(rows ...Item) {
+		t.Helper()
+		for _, item := range rows {
+			item.Role, item.Status, item.Summary, item.Meta = "assistant", "completed", item.ID, "{}"
+			if item.Kind == "user_text" {
+				item.Role = "user"
+			}
+			if _, err := appendCarded(s, item); err != nil {
+				t.Fatalf("append %s/%s: %v", item.ThreadID, item.ID, err)
+			}
+		}
+	}
+	appendRows(
+		Item{ID: "loc-agent-ask-3", ThreadID: timelineParityThreadID, TurnIndex: 3, Kind: "user_text", ParentID: "loc-child-2"},
+		Item{ID: "loc-agent-reply-3", ThreadID: timelineParityThreadID, TurnIndex: 3, Kind: "assistant_text", ParentID: "loc-child-2"},
+	)
+	if err := s.CreatePointerFork(makeThread(wholeFork, "claude"), timelineParityThreadID, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreatePointerFork(makeThread(cutFork, "claude"), timelineParityThreadID, ForkCut{BeforeItemID: "loc-answer-2"}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	appendRows(
+		Item{ID: "cut-agent-2", ThreadID: cutFork, TurnIndex: 2, Kind: "assistant_text", ParentID: "loc-child-2"},
+		Item{ID: "cut-answer-2", ThreadID: cutFork, TurnIndex: 2, Kind: "assistant_text"},
+		Item{ID: "cut-more-2", ThreadID: cutFork, TurnIndex: 2, Kind: "assistant_text"},
+		Item{ID: "late-agent-3", ThreadID: timelineParityThreadID, TurnIndex: 3, Kind: "assistant_text", ParentID: "loc-child-2"},
+		Item{ID: "late-answer-3", ThreadID: timelineParityThreadID, TurnIndex: 3, Kind: "assistant_text"},
+	)
+	return []string{timelineParityThreadID, wholeFork, cutFork}
 }
 
 // assertTimelineParityFixtureIsRepresentative fails if the seed stopped
@@ -426,11 +468,12 @@ func TestTimelineArmsMatchTheViewForSubagentReads(t *testing.T) {
 // --- plan tripwires ---
 
 // planRow is one EXPLAIN QUERY PLAN node. The tree matters, not just the
-// text: the imported arm legitimately sorts (import_history_items has no
-// (turn_index, item_index) index and the rows are few), so a raw text
-// match for "USE TEMP B-TREE FOR ORDER BY" would either pass vacuously
-// or fail on a plan that is correct. The rule is about the LOCAL arm's
-// subtree, which is the one that scales with thread length.
+// text: the imported arm legitimately sorts (import_history_items is keyed
+// by chunk, so no index orders a thread's imported rows; the arm visits
+// the chunks in the read's order, chunkRefsIndex, which bounds what its
+// sorter reads), so a raw text match for "USE TEMP B-TREE FOR ORDER BY"
+// would either pass vacuously or fail on a plan that is correct. The rule
+// is about the LOCAL arm's subtree.
 type planRow struct {
 	id     int
 	parent int
@@ -540,8 +583,7 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	cursorWhere := windowedTimelineFilter + `
-		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index < ?))`
+	mainFilter := mainTimelineFilterFor("items.")
 
 	// Each case is the SELECTION one production read builds. They are
 	// re-stated here rather than reached through the store methods
@@ -555,29 +597,26 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 		{
 			name: "tail slice (listTailSlice)",
 			sel: timelineSelection{
-				Where:   windowedTimelineFilter,
+				Where:   mainFilter,
 				OrderBy: "turn_index DESC, item_index DESC",
 				Limit:   50,
 			},
 		},
 		{
 			name: "older page (ListItemsBeforeCursor)",
-			sel: timelineSelection{
-				Where:     cursorWhere,
-				WhereArgs: []any{2, 2, 5},
-				OrderBy:   "turn_index DESC, item_index DESC",
-				Limit:     50,
-			},
+			sel: func() timelineSelection {
+				sel := beyondCursor(timelineScope{}, TimelineCursor{TurnIndex: 2, ItemIndex: 5}, false)
+				sel.OrderBy, sel.Limit = "turn_index DESC, item_index DESC", 50
+				return sel
+			}(),
 		},
 		{
 			name: "newer page (ListItemsAfterCursor)",
-			sel: timelineSelection{
-				Where: windowedTimelineFilter + `
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
-				WhereArgs: []any{0, 0, 1},
-				OrderBy:   "turn_index ASC, item_index ASC",
-				Limit:     50,
-			},
+			sel: func() timelineSelection {
+				sel := beyondCursor(timelineScope{}, TimelineCursor{TurnIndex: 0, ItemIndex: 1}, true)
+				sel.OrderBy, sel.Limit = "turn_index ASC, item_index ASC", 50
+				return sel
+			}(),
 		},
 		{
 			name: "nav rail ticks (ListThreadUserMessageTicks)",
@@ -596,19 +635,13 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 		},
 		{
 			name: "turn preview walk (ThreadTurnPreview)",
-			sel: timelineSelection{
-				Where: topLevelItemsFilterFor("items.") + `
-		   AND items.kind IN ('user_text', 'assistant_text')
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
-				WhereArgs: []any{0, 0, 0},
-				OrderBy:   "turn_index ASC, item_index ASC",
-				Limit:     turnPreviewScanLimit,
-			},
+			sel:  turnPreviewWalk(mainFilter, nil, TimelineCursor{}),
 		},
 		{
 			name: "title context window (ThreadTitleContextItems)",
 			sel: timelineSelection{
-				Where: topLevelItemsFilterFor("items.") + `
+				RowIDs: true,
+				Where: mainFilter + `
 		   AND items.kind IN ('user_text', 'assistant_text')`,
 				OrderBy: "turn_index DESC, item_index DESC",
 				Limit:   201,
@@ -621,10 +654,11 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 			// must reach both edges through the ordering index.
 			name: "held window digest rows (windowDigestRowsTx)",
 			sel: timelineSelection{
-				Where: windowedTimelineFilter + `
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index >= ?))
-		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index <= ?))`,
-				WhereArgs: []any{0, 0, 1, 2, 2, 5},
+				Turn: "?", TurnArgs: []any{0}, FromTurn: true,
+				Where: mainFilter + `
+		   AND (items.turn_index, items.item_index) >= (?, ?)
+		   AND (items.turn_index, items.item_index) <= (?, ?)`,
+				WhereArgs: []any{0, 1, 2, 5},
 				OrderBy:   "turn_index ASC, item_index ASC",
 				Limit:     51,
 			},
@@ -665,6 +699,195 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 				scans, sorts, planText(plan))
 		}
 	})
+}
+
+// A main-timeline read keeps only top-level rows. Every arm of the
+// statements a page, a cursor page, a run expansion, a held-window check
+// and a turn preview run, a pointer fork's lineage arms included, walks the
+// top-level index of
+// its source and reads no table row to select a row: through the ordering
+// index it would read every subagent child row between two top-level rows.
+// Each such walk is keyed by a (turn_index, item_index) bound, so it starts
+// at the read's cursor or window edge rather than at the thread's, the
+// chunk's or the turn's first row. The statements are the ones the
+// production calls run, on threads with children, so a projection the index
+// does not cover fails here.
+func TestMainTimelineArmsWalkTopLevelIndexes(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	runIDs := seedRunThread(t, s, "runs", "pttptkp")
+	for i := range 3 {
+		child := Item{
+			ID: fmt.Sprintf("child-%d", i), ThreadID: "runs", TurnIndex: 0, ItemIndex: 100 + i,
+			Kind: "tool_call", ToolName: "Grep", Role: "assistant", Status: "completed",
+			ParentID: runIDs[1], Summary: "child", Meta: "{}", CreatedAt: int64(100 + i),
+		}
+		if err := insertCarded(s, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	threads := []string{timelineParityThreadID, "runs"}
+	for _, source := range threads {
+		if err := s.CreatePointerFork(makeThread(source+"-fork", "claude"), source, ForkCut{}, testInterruptedSummary, 1); err != nil {
+			t.Fatal(err)
+		}
+		threads = append(threads, source+"-fork")
+	}
+	held := make(map[string]HeldWindow, len(threads))
+	stale := make(map[string]HistoryStamp, len(threads))
+	for _, threadID := range threads {
+		held[threadID] = heldWindowFromStore(t, s, threadID)
+		stamp := historyStampOf(t, s, threadID)
+		stamp.Rev--
+		stale[threadID] = stamp
+	}
+	mainFilter, _ := timelineScope{}.filter("items.")
+	ctx := context.Background()
+	type mainRead struct {
+		name string
+		read func(t *testing.T)
+	}
+	rec := recordStatements(t, s)
+	for _, threadID := range threads {
+		reads := []mainRead{
+			{"held window check", func(t *testing.T) {
+				window := held[threadID]
+				got, err := s.SyncThreadWindow(ctx, threadID, "", 200, testRunWindowRows, stale[threadID], &window, TimelineSelection{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The local thread's window verifies, so every check ran.
+				if threadID == "runs" && (got.Status != SyncFresh || got.Page != nil) {
+					t.Fatalf("held window status = %q page=%v, want a page-less fresh", got.Status, got.Page != nil)
+				}
+			}},
+			{"slice", func(t *testing.T) {
+				if _, err := s.ListThreadSliceAround(ctx, threadID, "", 3, testRunWindowRows, TimelineSelection{}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"older page", func(t *testing.T) {
+				last := held[threadID].NewestItemID
+				page, err := s.ListThreadSliceAround(ctx, threadID, last, 1, testRunWindowRows, TimelineSelection{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.ListItemsBeforeCursor(ctx, threadID, page.OldestCursor, 3, testRunWindowRows, TimelineSelection{}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"newer page", func(t *testing.T) {
+				if _, err := s.ListItemsAfterCursor(ctx, threadID, TimelineCursor{TurnIndex: 0, ItemIndex: 0}, 3, testRunWindowRows, TimelineSelection{}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		}
+		if strings.HasPrefix(threadID, timelineParityThreadID) {
+			reads = append(reads, mainRead{"turn preview", func(t *testing.T) {
+				if _, found, err := s.ThreadTurnPreview(threadID, "loc-user-2"); err != nil || !found {
+					t.Fatalf("preview: found=%v err=%v", found, err)
+				}
+			}})
+		}
+		if strings.HasPrefix(threadID, "runs") {
+			reads = append(reads, mainRead{"run members", func(t *testing.T) {
+				if _, err := s.ListActivityRunMembers(ctx, threadID, ActivityRunMembersRequest{
+					RunFirstItemID: runIDs[1], Direction: ActivityRunMembersAfter, Limit: 2,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}})
+		}
+		for _, tc := range reads {
+			t.Run(threadID+"/"+tc.name, func(t *testing.T) {
+				stmts := rec.capture(func() { tc.read(t) })
+				topLevel := 0
+				for _, stmt := range stmts {
+					if !strings.Contains(stmt.query, mainFilter) {
+						continue
+					}
+					plan := explainPlan(t, s, stmt.query, stmt.args...)
+					for _, r := range plan {
+						switch {
+						case strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_items_top_level "),
+							strings.HasPrefix(r.detail, "SEARCH items USING COVERING INDEX idx_import_history_items_top_level "):
+							topLevel++
+							if !strings.Contains(r.detail, "(turn_index,item_index)>(?,?)") && !strings.Contains(r.detail, "(turn_index,item_index)<(?,?)") {
+								t.Errorf("a main-timeline arm does not start its walk at the read's cursor: %q\n%s\n%s", r.detail, stmt.query, planText(plan))
+							}
+						case strings.Contains(r.detail, "idx_items_thread_turn_item_unique"),
+							strings.Contains(r.detail, "idx_import_history_items_timeline"),
+							strings.HasPrefix(r.detail, "SCAN items"):
+							t.Errorf("a main-timeline arm reads items off the top-level index: %q\n%s\n%s", r.detail, stmt.query, planText(plan))
+						}
+					}
+				}
+				if topLevel == 0 {
+					t.Errorf("recorded no main-timeline arm on a top-level index in %d statements; the check proved nothing", len(stmts))
+				}
+			})
+		}
+	}
+}
+
+// A read that follows a position (cursorBound) starts every arm's index
+// walk at it: each search of an items source, a pointer fork's lineage
+// arms included, is keyed by the (turn_index, item_index) bound, so no arm
+// reads the rows of the position's turn that precede it. The statements
+// are the ones the turn preview, on the main timeline and in an agent's
+// transcript, and the import divergence probe run on the parity thread and
+// its forks.
+func TestCursorBoundReadsStartAtTheCursor(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	threads := seedTimelineParityForks(t, s)
+	bound := cursorBound(TimelineCursor{}, true).Where
+	preview := func(threadID, anchorID string) func(t *testing.T) {
+		return func(t *testing.T) {
+			if _, found, err := s.ThreadTurnPreview(threadID, anchorID); err != nil || !found {
+				t.Fatalf("preview of %s: found=%v err=%v", anchorID, found, err)
+			}
+		}
+	}
+	rec := recordStatements(t, s)
+	for _, threadID := range threads {
+		reads := map[string]func(t *testing.T){
+			"turn preview": preview(threadID, "loc-user-2"),
+			"divergence probe": func(t *testing.T) {
+				if _, err := s.HasItemsAfterCursor(threadID, 2, 1); err != nil {
+					t.Fatal(err)
+				}
+			},
+		}
+		// The cut fork does not show the agent's ask.
+		if threadID != timelineParityThreadID+"-cut" {
+			reads["agent turn preview"] = preview(threadID, "loc-agent-ask-3")
+		}
+		for name, read := range reads {
+			t.Run(threadID+"/"+name, func(t *testing.T) {
+				stmts := rec.capture(func() { read(t) })
+				searches := 0
+				for _, stmt := range stmts {
+					if !strings.Contains(stmt.query, bound) {
+						continue
+					}
+					plan := explainPlan(t, s, stmt.query, stmt.args...)
+					for _, r := range plan {
+						if !strings.HasPrefix(r.detail, "SEARCH items ") {
+							continue
+						}
+						searches++
+						if !strings.Contains(r.detail, "(turn_index,item_index)>(?,?)") {
+							t.Errorf("an arm does not start its walk at the cursor: %q\n%s\n%s", r.detail, stmt.query, planText(plan))
+						}
+					}
+				}
+				if searches == 0 {
+					t.Errorf("recorded no items search keyed by a cursor in %d statements; the check proved nothing", len(stmts))
+				}
+			})
+		}
+	}
 }
 
 // TestSubagentWalksDoNotMaterializeTheView is the descendant half of the
@@ -759,7 +982,7 @@ func TestOrderedTimelineReadsGoThroughTheArms(t *testing.T) {
 			why:    "FindNotificationItemByTaskID resolves ONE row through a partial expression index on meta.task_id; the ORDER BY only breaks ties among that task's rows",
 		},
 		{
-			marker: "LOWER(i.summary) LIKE ?",
+			marker: "LOWER(i.summary) LIKE",
 			why:    "SearchThreadItems returns every match rather than a page, so it scans the thread either way",
 		},
 		{
@@ -883,5 +1106,78 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// A turn's item index bound is taken per arm: every arm's bound, and so
+// the compound's, agrees with the view, and the local arm stops at the
+// first row of its turn index instead of reading the turn.
+func TestTurnItemIndexQueryTakesEachArmsBound(t *testing.T) {
+	s := newTestStore(t)
+	seedKeyedLookupThread(t, s)
+	if err := s.CreatePointerFork(makeThread(keyedForkID, "claude"), keyedThreadID, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendCarded(s, Item{ID: "fork-appended", ThreadID: keyedForkID, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, threadID := range []string{keyedThreadID, keyedForkID} {
+		for turn := range 6 {
+			for _, aggregate := range []string{"MIN", "MAX"} {
+				query, args, err := turnItemIndexQuery(s.db, threadID, turn, aggregate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got, want sql.NullInt64
+				if err := s.db.QueryRow(query, args...).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.db.QueryRow(`SELECT `+aggregate+`(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turn).Scan(&want); err != nil {
+					t.Fatal(err)
+				}
+				if got != want {
+					t.Errorf("%s turn %d %s = %v, view says %v", threadID, turn, aggregate, got, want)
+				}
+			}
+		}
+	}
+	if _, _, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "COUNT"); err == nil {
+		t.Error("turnItemIndexQuery rendered COUNT")
+	}
+
+	query, args, err := turnItemIndexQuery(s.db, keyedThreadID, 4, "MAX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.db.Query("EXPLAIN "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type op struct {
+		code string
+		p2   int64
+		p4   string
+	}
+	var program []op
+	for rows.Next() {
+		var addr, p1, p2, p3 int64
+		var code string
+		var p4, p5, comment sql.NullString
+		if err := rows.Scan(&addr, &code, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+			t.Fatal(err)
+		}
+		program = append(program, op{code: code, p2: p2, p4: p4.String})
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	earlyOut := false
+	for addr := 0; addr+1 < len(program); addr++ {
+		next := program[addr+1]
+		earlyOut = earlyOut || (program[addr].code == "AggStep" && strings.HasPrefix(program[addr].p4, "max(") && next.code == "Goto" && next.p2 > int64(addr+1))
+	}
+	if !earlyOut {
+		t.Errorf("no arm's MAX stops at its first row:\n%s", query)
 	}
 }

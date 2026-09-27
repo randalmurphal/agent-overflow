@@ -157,4 +157,81 @@ describe('codeSpanCache', () => {
     expect(getCachedBlockSpans('python', 'source-0')).toBeNull();
     expect(getCachedBlockSpans('python', 'source-1')).not.toBeNull();
   });
+
+  describe('a streaming block', () => {
+    // Identities for successive prefixes of one growing fence.
+    function prefixes(count: number) {
+      let identity = createCodeSourceIdentity('let x');
+      const all = [identity];
+      for (let i = 1; i < count; i += 1) {
+        identity = appendCodeSourceIdentity(identity, createProvenAppend(identity.source, ` + ${i}`));
+        all.push(identity);
+      }
+      return all;
+    }
+
+    it('keeps only its latest result', async () => {
+      setBindingMock('HighlightCode', async () => result([3, 1]));
+      const owner = {};
+      const otherPane = {};
+      const all = prefixes(40);
+      for (const identity of all) {
+        await requestBlockSpansByIdentity('python', identity, owner);
+        // The same block streaming in another pane reads it.
+        expect(getCachedBlockSpansByIdentity('python', identity, otherPane)).not.toBeNull();
+      }
+
+      expect(__codeSpanCacheStatsForTest().entries).toBe(1);
+      expect(getCachedBlockSpansByIdentity('python', all[39])).not.toBeNull();
+    });
+
+    it('keeps a result a complete block read', async () => {
+      setBindingMock('HighlightCode', async () => result([3, 1]));
+      const owner = {};
+      const [first, second] = prefixes(2);
+      await requestBlockSpansByIdentity('python', first, owner);
+      expect(getCachedBlockSpans('python', first.source)).not.toBeNull();
+
+      await requestBlockSpansByIdentity('python', second, owner);
+      expect(getCachedBlockSpans('python', first.source)).not.toBeNull();
+      expect(__codeSpanCacheStatsForTest().entries).toBe(2);
+    });
+
+    it('keeps a result a complete block also requested', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      setBindingMock('HighlightCode', async () => {
+        await gate;
+        return result([3, 1]);
+      });
+      const owner = {};
+      const [first, second] = prefixes(2);
+      const streaming = requestBlockSpansByIdentity('python', first, owner);
+      const complete = requestBlockSpansByIdentity('python', first);
+      release();
+      expect(await complete).toBe(await streaming);
+
+      await requestBlockSpansByIdentity('python', second, owner);
+      expect(getCachedBlockSpans('python', first.source)).not.toBeNull();
+    });
+
+    it('keeps a final seed that lands while its request is pending', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      setBindingMock('HighlightCode', async () => {
+        await gate;
+        return result([3, 1]);
+      });
+      const owner = {};
+      const [first, second] = prefixes(2);
+      const streaming = requestBlockSpansByIdentity('python', first, owner);
+      seedFinalBlockSpans('python', first.contentKey, [{ r: [3, 1] }]);
+      release();
+      await streaming;
+
+      setBindingMock('HighlightCode', async () => result([3, 1]));
+      await requestBlockSpansByIdentity('python', second, owner);
+      expect(getCachedBlockSpans('python', first.source)).not.toBeNull();
+    });
+  });
 });

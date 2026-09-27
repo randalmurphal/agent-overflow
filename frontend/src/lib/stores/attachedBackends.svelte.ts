@@ -19,7 +19,8 @@ import {
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { getBackendIdentity, onBackendIdentity } from '../transport/backendIdentity';
 import { rememberedIdentity } from '../transport/rememberedIdentity';
-import { projectBackend, threadBackend } from '../transport/entityIndex';
+import { projectBackend } from '../transport/entityIndex';
+import { threadClaimant } from '../transport/threadOwner';
 import { hasScope } from '../transport/scopes';
 import { relativeTime } from '../utils/format';
 import { getTransportStatusFor } from './transportStatus.svelte';
@@ -149,13 +150,12 @@ export function backendOfflineLabel(key: BackendKey, lastReachedMs = 0): string 
 }
 
 /**
- * The machine a thread lives on, by the row's own id first and its
- * project's second — a draft placeholder has no indexed thread id yet, but
- * its project is on exactly one machine (wave 7d merges entries; until
- * then a project IS a machine choice).
+ * The machine a thread lives on: its own claimant (a draft placeholder
+ * resolves through the project its id names), else its project's machine,
+ * else home.
  */
 export function threadMachine(threadId: string, projectId: string | null | undefined): BackendKey {
-  return threadBackend(threadId) ?? (projectId ? projectBackend(projectId) : undefined) ?? HOME_BACKEND;
+  return threadClaimant(threadId) ?? (projectId ? projectBackend(projectId) : undefined) ?? HOME_BACKEND;
 }
 
 /**

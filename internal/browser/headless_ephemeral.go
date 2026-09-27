@@ -2,6 +2,7 @@ package browser
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,12 +94,33 @@ func sweepEphemeralRoots(tempRoot string, alive func(pid int) bool, logf func(st
 		if !marked || alive(pid) {
 			continue
 		}
-		if err := os.RemoveAll(root); err != nil {
+		if err := removeEphemeral(root); err != nil {
 			logf("browser: remove abandoned ephemeral profile %s: %v", root, err)
 			continue
 		}
 		logf("browser: removed the ephemeral profile left by pid %d", pid)
 	}
+}
+
+// removeEphemeral removes an ephemeral root with its owner marker last, so
+// a removal that fails partway leaves a root the sweep still reclaims.
+func removeEphemeral(root string) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == ephemeralOwnerFile {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(root)
 }
 
 // ownerAlive reports whether a pid still names a running process, erring

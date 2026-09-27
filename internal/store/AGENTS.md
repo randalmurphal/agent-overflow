@@ -73,6 +73,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   one transaction when partial success would create an invalid state.
 - Use `sqlExecutor` and `sqlQueryer` for helpers that must work on a pool or a
   caller transaction. Reads of connection-local state stay on `s.db`.
+- A grouped write (`groupWriteItems`, `groupTx`) may share its transaction
+  and commit with other writes, its own thread's included (`groupCommit`).
+  Leave no transaction state: no PRAGMA, temp objects or shown-row split
+  (`splitShownRowsTx` refuses one). A write whose cost has no bound takes
+  its own transaction
+  ([Connections](../../docs/architecture/sqlite-store.md#connections)).
 - Return whether a row actually changed when callers emit update events.
   SQLite rows-affected proves that a row matched, not that its value changed.
   Put a null-safe `IS NOT` change predicate in the update and distinguish a
@@ -150,8 +156,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   reaches, in its own transaction (`cardWrite.settle`), so no row the boot
   pass would not recover waits for a flush. Flushes are chain-scoped: the
   cards of agents a write did not stop keep their accumulators for their
-  own flush (`FlushSubagentChain`, `SubagentCard.Close`). A write that can stop an agent holds the lock of the
-  thread's cards (`writeItems`, `bulkWriteItems`); a bulk writer without
+  own flush (`FlushSubagentChain`, `SubagentCard.Close`). A write that can
+  stop an agent holds the lock of the thread's cards (`writeItems`,
+  `groupWriteItems`, `bulkWriteItems`); a bulk writer without
   it (`bulkItemWrites`) fails if it stops one while the thread's cards
   hold anything, and the boot sweeps over every thread flush every card
   first (`sweepItemWrites`). The lock of a thread's cards is taken before
@@ -195,6 +202,12 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Window sizes, run members and has-more probes use the same timeline
   selection: top-level rows for the main thread, direct children for an agent
   scope. Keep selection separate from wire page shape.
+- A read whose duration grows with a thread's history (pages, run members,
+  recomputes, whole-thread lists and searches) runs through
+  `historyReadSnapshot`, and other long work on the read pool, such as a
+  checkpoint, takes a history read slot before its connection. That keeps
+  one read connection free for single-statement reads such as provider
+  event handling's lookups (`historyReadSlots`).
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
 - Each pooled connection keeps its recent statements compiled
@@ -203,8 +216,17 @@ an atomic persistence decision; they must not become a business-logic layer.
   rather than building placeholders per length. Write a LIMIT as a literal
   in the text (`strconv.Itoa`): the planner reads a bound LIMIT, so every
   rebind expires the cached statement. OFFSET may bind;
-  `TestStoreSQLNeverBindsLimit` enforces this. See
+  `TestStoreSQLNeverBindsLimit` enforces this. For the same reason, bind a
+  LIKE pattern, or a value compared with a column that a partial index pins
+  to a literal (`items.kind`, `items.parent_id`), with `boundText`, or
+  `textParam` for a positional `?N`, not a bare parameter, and write a code
+  constant the planner must match with `sqlTextLiteral`. The package's tests
+  fail on any cached statement of the package that compiles again on its
+  next run (`sql_rebind_test.go`, `TestStatementsCompileOnce`). See
   [Connections](../../docs/architecture/sqlite-store.md#connections).
+- Add no checkpoint calls outside the cases
+  [WAL maintenance](../../docs/architecture/sqlite-store.md#wal-maintenance)
+  names. The checkpointer owns WAL checkpoints while the store is open.
 - `TruncateCheckpoint` quiesces readers and reports contention through
   `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing
   stalls every read, so it stays at boot and `Close`, never on a sweep.

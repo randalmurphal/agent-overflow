@@ -24,9 +24,9 @@ import (
 // pair with them. A write that can remove a counted row recomputes it: one
 // idx_items_thread_error probe, plus one idx_import_history_items_error
 // probe per attached chunk whose turn range reaches the newest turn, found
-// through idx_thread_import_chunks_turns, and the same probes on each
-// ancestor a pointer fork reads through (one thread_fork_lineage probe for
-// a thread without lineage). That happens only when a counted row leaves
+// through a turn index of the chunk references, and the same probes on
+// each ancestor a pointer fork reads through (one thread_fork_lineage
+// probe for a thread without lineage). That happens only when a counted row leaves
 // the set or the newest turn moves back: an error row's delete or key
 // change, a turn delete, a counted imported row hidden by an override, a
 // chunk with a counted row detached. A new newest turn recomputes only

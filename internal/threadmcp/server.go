@@ -25,7 +25,7 @@ const mcpProtocolVersion = "2025-03-26"
 // Tool argument validation still enforces the smaller decoded limits.
 const maxMCPRequestBytes = 8 << 20
 
-type Server[T comparable] struct {
+type Server[T any] struct {
 	name         string
 	instructions string
 	// instructionsFunc, when set, replaces the fixed instructions string on
@@ -47,13 +47,25 @@ type Server[T comparable] struct {
 	listener      net.Listener
 	baseURL       string
 	threadToToken map[string]string
-	tokenToThread map[string]string
-	tokenToAccess map[string]T
+	capabilities  map[string]capability[T]
 	threadEnabled map[string]bool
+	// requests counts each thread's admitted requests still running; an
+	// entry exists only while its count is positive. requestsDone is
+	// broadcast on mu when a count reaches zero.
+	requests     map[string]int
+	requestsDone sync.Cond
 }
 
-func New[T comparable](name, instructions string, tools func(T) []map[string]any, call func(http.ResponseWriter, context.Context, Request, T)) *Server[T] {
-	s := &Server[T]{name: name, instructions: instructions, tools: tools, call: call, threadToToken: make(map[string]string), tokenToThread: make(map[string]string), tokenToAccess: make(map[string]T), threadEnabled: make(map[string]bool)}
+// capability is what one token grants: the thread it acts for, the provider
+// session it was issued to, and the caller's access value.
+type capability[T any] struct {
+	threadID, session string
+	access            T
+}
+
+func New[T any](name, instructions string, tools func(T) []map[string]any, call func(http.ResponseWriter, context.Context, Request, T)) *Server[T] {
+	s := &Server[T]{name: name, instructions: instructions, tools: tools, call: call, threadToToken: make(map[string]string), capabilities: make(map[string]capability[T]), threadEnabled: make(map[string]bool), requests: make(map[string]int)}
+	s.requestsDone.L = &s.mu
 	s.enabled.Store(true)
 	return s
 }
@@ -70,56 +82,66 @@ func (s *Server[T]) SetInstructionsFunc(fn func(T) string) { s.instructionsFunc 
 // instead of the generic message. Call it before the first registration.
 func (s *Server[T]) SetDisabledError(err error) { s.disabledErr = err }
 
-func (s *Server[T]) RegisterThread(threadID string, access T) (map[string]any, error) {
-	if strings.TrimSpace(threadID) == "" {
-		return nil, fmt.Errorf("MCP: thread is required")
+// RegisterThread issues the thread a capability URL for one provider
+// session, replacing the URL any earlier session held.
+func (s *Server[T]) RegisterThread(threadID, session string, access T) (map[string]any, error) {
+	if strings.TrimSpace(threadID) == "" || session == "" {
+		return nil, fmt.Errorf("MCP: thread and session are required")
 	}
 	if err := s.ensureStarted(); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old := s.threadToToken[threadID]
-	delete(s.tokenToAccess, old)
-	delete(s.tokenToThread, old)
+	s.dropLocked(threadID)
 	if s.closed {
 		return nil, fmt.Errorf("MCP server is closed")
 	}
 	token := uuid.NewString()
 	s.threadToToken[threadID] = token
-	s.tokenToAccess[token] = access
-	s.tokenToThread[token] = threadID
-	if _, ok := s.threadEnabled[threadID]; !ok {
-		s.threadEnabled[threadID] = true
-	}
+	s.capabilities[token] = capability[T]{threadID: threadID, session: session, access: access}
 	return map[string]any{s.name: map[string]any{"url": s.baseURL + "/mcp/" + token}}, nil
 }
 
+// UnregisterThread revokes the thread's capability, whichever session holds
+// it, and forgets the thread's toggle. Requests already admitted keep
+// running; Retire is the revocation that waits for them.
 func (s *Server[T]) UnregisterThread(threadID string) {
 	s.mu.Lock()
-	token := s.threadToToken[threadID]
-	delete(s.threadToToken, threadID)
+	s.dropLocked(threadID)
 	delete(s.threadEnabled, threadID)
-	if token != "" {
-		delete(s.tokenToAccess, token)
-		delete(s.tokenToThread, token)
-	}
 	s.mu.Unlock()
-
 }
 
-// RevokeThread retires only the named registration, never a replacement. The
-// thread toggle survives a provider restart; UnregisterThread also forgets it.
-func (s *Server[T]) RevokeThread(threadID string, expected T) {
+// RevokeThread retires the thread's capability if session holds it, so a
+// late teardown of an old session never revokes its replacement. The thread
+// toggle survives a provider restart; UnregisterThread also forgets it.
+func (s *Server[T]) RevokeThread(threadID, session string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	token := s.threadToToken[threadID]
-	if access, ok := s.tokenToAccess[token]; !ok || access != expected {
-		return
+	if granted, ok := s.capabilities[s.threadToToken[threadID]]; ok && granted.session == session {
+		s.dropLocked(threadID)
 	}
+}
+
+// Retire revokes the thread's capability, whichever session holds it, and
+// returns once no request admitted under any of the thread's capabilities
+// is still running. The caller keeps the thread from registering again
+// until it has released what those requests used; a new capability would
+// admit requests Retire does not refuse. The thread toggle is kept.
+func (s *Server[T]) Retire(threadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropLocked(threadID)
+	for s.requests[threadID] > 0 {
+		s.requestsDone.Wait()
+	}
+}
+
+// dropLocked removes the thread's capability and keeps its toggle.
+func (s *Server[T]) dropLocked(threadID string) {
+	delete(s.capabilities, s.threadToToken[threadID])
 	delete(s.threadToToken, threadID)
-	delete(s.tokenToAccess, token)
-	delete(s.tokenToThread, token)
 }
 
 func (s *Server[T]) SetThreadEnabled(threadID string, enabled bool) {
@@ -147,8 +169,7 @@ func (s *Server[T]) Close() error {
 	server, listener := s.server, s.listener
 	s.server, s.listener, s.baseURL = nil, nil, ""
 	s.threadToToken = make(map[string]string)
-	s.tokenToThread = make(map[string]string)
-	s.tokenToAccess = make(map[string]T)
+	s.capabilities = make(map[string]capability[T])
 	s.threadEnabled = make(map[string]bool)
 	s.mu.Unlock()
 	if server != nil {
@@ -197,11 +218,12 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !validMCPRequest(w, r) {
 		return
 	}
-	threadID, access, ok := s.accessForPath(r.URL.Path)
+	threadID, access, done, ok := s.admit(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	defer done()
 	r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
 	defer r.Body.Close()
 	var req Request
@@ -521,16 +543,29 @@ func jsonContentType(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(mediaType), "application/json")
 }
 
-func (s *Server[T]) accessForPath(path string) (string, T, bool) {
-	var zero T
-	token, ok := strings.CutPrefix(path, "/mcp/")
-	if !ok || token == "" || strings.Contains(token, "/") {
-		return "", zero, false
+// admit resolves a capability path and counts the request as running on its
+// thread until done is called; Retire waits for that count.
+func (s *Server[T]) admit(path string) (threadID string, access T, done func(), ok bool) {
+	token, found := strings.CutPrefix(path, "/mcp/")
+	if !found || token == "" || strings.Contains(token, "/") {
+		return "", access, nil, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	access, ok := s.tokenToAccess[token]
-	return s.tokenToThread[token], access, ok
+	granted, ok := s.capabilities[token]
+	if !ok {
+		return "", access, nil, false
+	}
+	threadID, access = granted.threadID, granted.access
+	s.requests[threadID]++
+	return threadID, access, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.requests[threadID]--; s.requests[threadID] == 0 {
+			delete(s.requests, threadID)
+			s.requestsDone.Broadcast()
+		}
+	}, true
 }
 
 type Request struct {

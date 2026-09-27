@@ -29,12 +29,7 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 		NativeWindow: func() unsafe.Pointer { return nil },
 	}, engineEvents{})
 	if engine == nil {
-		// An older macOS has no callAsyncJavaScript and therefore no engine
-		// at all, which is a legitimate answer rather than a failure.
-		if wkSupported() {
-			t.Fatal("a window provider must select the native engine")
-		}
-		return
+		t.Fatal("a window provider must select the native engine")
 	}
 	err := engine.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "not ready") {
@@ -85,5 +80,55 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	}
 	if _, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
+	}
+}
+
+// A popup loads the moment WebKit creates it, before the Manager adopts it,
+// so its first navigations reach Go with no page id. What answers them is the
+// file boundary: the workspace's policy until adoption, the page's own after,
+// and a refusal once either is gone.
+func TestWKNavigationPolicyCoversAPopupBeforeAdoption(t *testing.T) {
+	const (
+		inside   = "file:///Users/dev/repo/index.html"
+		outside  = "file:///Users/dev/secret.txt"
+		pageOnly = "https://page.test/"
+	)
+	profile := &wkProfile{id: wkProfileSeq.Add(1), allow: func(url string) bool { return url == inside }}
+	wkProfileByID.Store(profile.id, profile)
+	t.Cleanup(func() { wkProfileByID.Delete(profile.id) })
+	page := &wkPage{id: wkPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == pageOnly }}}
+	wkPageByID.Store(page.id, page)
+	t.Cleanup(func() { wkPageByID.Delete(page.id) })
+	closedPage, disposedProfile := wkPageSeq.Add(1), wkProfileSeq.Add(1)
+
+	for _, tc := range []struct {
+		name              string
+		pageID, profileID uint64
+		url               string
+		want              bool
+	}{
+		{"an unadopted popup loads a workspace file", 0, profile.id, inside, true},
+		{"an unadopted popup is refused a file outside the workspace", 0, profile.id, outside, false},
+		{"an adopted page answers with its own policy", page.id, profile.id, pageOnly, true},
+		{"an adopted page does not fall back to the workspace's policy", page.id, profile.id, inside, false},
+		{"a closed page refuses", closedPage, profile.id, inside, false},
+		{"a popup of a disposed profile refuses", 0, disposedProfile, inside, false},
+	} {
+		if got := wkNavigationAllowed(tc.pageID, tc.profileID, tc.url); got != tc.want {
+			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The workspace policy is what answers for a popup before adoption, so a
+// profile without one must not exist.
+func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
+	engine := newNativeEngine(t.TempDir(), ManagerOptions{
+		NativeWindow: func() unsafe.Pointer { return nil },
+	}, engineEvents{}).(*wkEngine)
+	engine.started = true
+	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
+		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
 	}
 }

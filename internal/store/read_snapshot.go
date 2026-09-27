@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // readSnapshot keeps selection, hydration, and decoration on one WAL snapshot.
@@ -31,4 +32,38 @@ func readSnapshotContext[T any](ctx context.Context, db *sql.DB, label string, r
 		}
 	}()
 	return read(contextReadTx{Tx: tx, ctx: ctx})
+}
+
+// historyReadSnapshot is readSnapshotContext on the read pool for a read
+// whose duration grows with a thread's history. It waits for one of
+// historyReadSlots before it takes a connection, and picks the pool after
+// the wait, which keeps the wait out of the window quiesceReads cannot
+// see.
+func historyReadSnapshot[T any](ctx context.Context, s *Store, label string, read func(sqlQueryer) (T, error)) (value T, err error) {
+	if ctx == nil {
+		return value, fmt.Errorf("store: %s requires a context", label)
+	}
+	release, err := s.historyReads.acquire(ctx)
+	if err != nil {
+		return value, fmt.Errorf("store: wait for a history read slot for %s: %w", label, err)
+	}
+	defer release()
+	return readSnapshotContext(ctx, s.reader(), label, read)
+}
+
+// readSlots is a counting semaphore of historyReadSlots slots. The zero
+// value is ready to use.
+type readSlots struct {
+	once  sync.Once
+	slots chan struct{}
+}
+
+func (r *readSlots) acquire(ctx context.Context) (func(), error) {
+	r.once.Do(func() { r.slots = make(chan struct{}, historyReadSlots) })
+	select {
+	case r.slots <- struct{}{}:
+		return func() { <-r.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

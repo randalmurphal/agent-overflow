@@ -94,3 +94,69 @@ func seedStateCount(service *Service) int {
 	defer service.seeder.mu.Unlock()
 	return len(service.seeder.states)
 }
+
+// TestSeedStateHoldsNoTextAndEmptyFinalReleases streams a row to a remote
+// client: once its tick is processed the row's state holds no text, and an
+// empty final tick releases the state without seeding anything.
+func TestSeedStateHoldsNoTextAndEmptyFinalReleases(t *testing.T) {
+	var mu sync.Mutex
+	var events []SeedEvent
+	service := New(Config{HasRemoteClient: func() bool { return true }, EmitSeed: func(event SeedEvent) { mu.Lock(); events = append(events, event); mu.Unlock() }})
+	service.ObserveAssistantText("t1", "i1", "```go\nx := 1", false)
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(events) == 1 })
+	waitFor(t, func() bool {
+		service.seeder.mu.Lock()
+		defer service.seeder.mu.Unlock()
+		state := service.seeder.states["t1|i1"]
+		return state != nil && !state.busy
+	})
+	service.seeder.mu.Lock()
+	held := service.seeder.states["t1|i1"].pending.text
+	service.seeder.mu.Unlock()
+	if held != "" {
+		t.Fatalf("idle state holds %d bytes of text", len(held))
+	}
+	service.ObserveAssistantText("t1", "i1", "", true)
+	if got := seedStateCount(service); got != 0 {
+		t.Fatalf("states after an empty final = %d, want 0", got)
+	}
+	if n := service.seeder.ephemeralWorkers.Load(); n != 0 {
+		t.Fatalf("an empty final started %d workers", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("an empty final seeded: %+v", events)
+	}
+}
+
+// TestEmptyFinalKeepsAQueuedFinalTick ends a row twice, as a stop does: a
+// final tick with the row's text, then the settle's empty final. The
+// second must not drop the first while it waits behind a busy worker.
+func TestEmptyFinalKeepsAQueuedFinalTick(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var events []SeedEvent
+	service := New(Config{HasRemoteClient: func() bool { return true }, EmitSeed: func(event SeedEvent) {
+		mu.Lock()
+		events = append(events, event)
+		first := len(events) == 1
+		mu.Unlock()
+		if first {
+			<-release
+		}
+	}})
+	service.ObserveAssistantText("t1", "i1", "```go\nx := 1", false)
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(events) == 1 })
+	service.ObserveAssistantText("t1", "i1", "```go\nx := 1\n", true)
+	service.ObserveAssistantText("t1", "i1", "", true)
+	close(release)
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(events) == 2 })
+	mu.Lock()
+	final := events[1]
+	mu.Unlock()
+	if !final.Final || final.ContentKey == "" {
+		t.Fatalf("second seed = %+v, want the row's final seed", final)
+	}
+	waitFor(t, func() bool { return seedStateCount(service) == 0 })
+}

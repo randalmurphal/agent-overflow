@@ -51,7 +51,8 @@ import {
 
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
-import { holdBackendRecovery } from './transportRecovery';
+import { holdBackendRecovery, isBackendRecovering } from './transportRecovery';
+import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
@@ -392,6 +393,14 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Latest-only invalidation: the following retained event re-reads the
       // open settings page. Its mount/reconnect also reads the whole table.
       return;
+    case 'terminal:opened':
+    case 'terminal:exit': {
+      // A lost open hides a running terminal and a lost exit leaves a dead
+      // tab. During a replay the completion re-reads the lists (events.ts).
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      if (!isBackendRecovering(backend)) reconcileTerminalSurfaces(backend);
+      return;
+    }
     case 'system:stats':
     case 'highlight:seed':
     case 'highlight:diff_seed': {

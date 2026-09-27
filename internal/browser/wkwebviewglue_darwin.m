@@ -13,7 +13,8 @@
 extern void aoWKVEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWKVSnapshotDone(uint64_t call_id, void *pixels, int width, int height,
                               int stride, char *err);
-extern void aoWKVAllow(uint64_t page_id, void *decision, char *uri, int download);
+extern void aoWKVAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri,
+                       int download);
 extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVPageClosed(uint64_t page_id);
@@ -279,13 +280,6 @@ static void ao_place(NSView *view, NSRect frame) {
 
 int ao_wkv_on_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
 
-int ao_wkv_supported(void) {
-  @autoreleasepool {
-    NSOperatingSystemVersion floor = {11, 0, 0};
-    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:floor] ? 1 : 0;
-  }
-}
-
 int ao_wkv_host_attach(void *ns_window) {
   @autoreleasepool {
     if (ao_host != nil) {
@@ -414,7 +408,7 @@ static NSColor *ao_bg_color(int bg) {
 // ao_apply_background paints the pane's resolved colour where the page has not
 // presented yet, so a strip exposed by a resize matches the pane instead of
 // flashing the engine default. Three surfaces need it: WKWebView's own
-// under-page colour (macOS 12, what WebKit paints outside the drawn content)
+// under-page colour (what WebKit paints outside the drawn content)
 // and both layers, because the web content arrives on a remote layer that can
 // lag the view's own frame by a frame or two — the clip container is the thing
 // behind that gap.
@@ -433,9 +427,7 @@ static void ao_apply_background(WKWebView *view, NSView *clip, int bg) {
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   NSColor *color = ao_bg_color(bg);
   CGColorRef cg = color == nil ? NULL : [color CGColor];
-  if (@available(macOS 12.0, *)) {
-    [view setUnderPageBackgroundColor:color];
-  }
+  [view setUnderPageBackgroundColor:color];
   if ([view layer] != nil) {
     [[view layer] setBackgroundColor:cg];
   }
@@ -560,7 +552,6 @@ int ao_wkv_host_presented(void *view) {
     : NSObject <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
 @end
 
-API_AVAILABLE(macos(11.3))
 @interface AODownloadDelegate : NSObject <WKDownloadDelegate>
 @end
 
@@ -573,7 +564,6 @@ static AOWebViewDelegate *ao_delegate(void) {
   return shared;
 }
 
-API_AVAILABLE(macos(11.3))
 static id ao_download_delegate(void) {
   static AODownloadDelegate *shared = nil;
   static dispatch_once_t once;
@@ -588,7 +578,6 @@ static uint64_t ao_download_seq = 0;
 // ao_attach_download stamps the four facts the download delegate needs onto the
 // download itself: WKDownload exposes no route back to the store or the page,
 // and its -webView is nil for a resumed one.
-API_AVAILABLE(macos(11.3))
 static void ao_attach_download(WKWebView *view, WKDownload *download) {
   uint64_t identifier = ++ao_download_seq;
   objc_setAssociatedObject(download, &kAODownloadIDKey, @(identifier),
@@ -626,35 +615,33 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // navigation: WebKit only turns it into a WKDownload when the answer is
   // WKNavigationActionPolicyDownload, so the flag rides along with the
   // deferred decision and the Go side answers 2 for an allowed download.
-  int download = 0;
-  if (@available(macOS 11.3, *)) {
-    download = [navigationAction shouldPerformDownload] ? 1 : 0;
-  }
+  // A popup the Manager has not adopted has no page id yet; its profile's
+  // workspace policy answers for it.
+  int download = [navigationAction shouldPerformDownload] ? 1 : 0;
   void (^held)(WKNavigationActionPolicy) = Block_copy(decisionHandler);
-  aoWKVAllow(ao_view_page_id(webView), (void *)held, ao_dup([url absoluteString]), download);
+  aoWKVAllow(ao_view_page_id(webView), ao_view_profile_id(webView), (void *)held,
+             ao_dup([url absoluteString]), download);
 }
 
 - (void)webView:(WKWebView *)webView
     decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
                       decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
-  if (@available(macOS 11.3, *)) {
-    if (![navigationResponse canShowMIMEType]) {
-      decisionHandler(WKNavigationResponsePolicyDownload);
-      return;
-    }
+  if (![navigationResponse canShowMIMEType]) {
+    decisionHandler(WKNavigationResponsePolicyDownload);
+    return;
   }
   decisionHandler(WKNavigationResponsePolicyAllow);
 }
 
 - (void)webView:(WKWebView *)webView
       navigationAction:(WKNavigationAction *)navigationAction
-     didBecomeDownload:(WKDownload *)download API_AVAILABLE(macos(11.3)) {
+     didBecomeDownload:(WKDownload *)download {
   ao_attach_download(webView, download);
 }
 
 - (void)webView:(WKWebView *)webView
       navigationResponse:(WKNavigationResponse *)navigationResponse
-       didBecomeDownload:(WKDownload *)download API_AVAILABLE(macos(11.3)) {
+       didBecomeDownload:(WKDownload *)download {
   ao_attach_download(webView, download);
 }
 
@@ -683,6 +670,18 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // It is never replaced.
   WKWebView *popup = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                         configuration:configuration];
+  // The popup starts loading as soon as this returns, before the Manager can
+  // adopt it, so every navigation in it is checked from the first one. It
+  // carries the opener's profile and download directory: the profile's
+  // workspace policy answers until adoption, and a download it starts before
+  // then reaches the Go side, which refuses one outside every page. The UI
+  // delegate waits for adoption.
+  objc_setAssociatedObject(popup, &kAOProfileIDKey, @(ao_view_profile_id(webView)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(popup, &kAODownloadDirKey,
+                           objc_getAssociatedObject(webView, &kAODownloadDirKey),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  [popup setNavigationDelegate:ao_delegate()];
   NSURL *url = [[navigationAction request] URL];
   // Held (the +1 from -alloc) until the Manager adopts or discards it. WebKit
   // does not retain the view it is handed back.
@@ -896,11 +895,7 @@ void ao_wkv_policy_finish(void *decision, int verdict) {
     if (verdict == AO_POLICY_ALLOW) {
       policy = WKNavigationActionPolicyAllow;
     } else if (verdict == AO_POLICY_DOWNLOAD) {
-      if (@available(macOS 11.3, *)) {
-        policy = WKNavigationActionPolicyDownload;
-      } else {
-        policy = WKNavigationActionPolicyAllow;
-      }
+      policy = WKNavigationActionPolicyDownload;
     }
     held(policy);
     Block_release(held);
@@ -944,10 +939,10 @@ void ao_wkv_store_free(void *store) {
 }
 
 // ao_clear_all_data_stores is the macOS 14+ body of ao_wkv_clear_data. It is a
-// separate API_AVAILABLE function for the same reason ao_attach_download is:
-// the work happens inside nested block literals, and annotating the function is
-// how the whole nested body inherits the availability context rather than
-// depending on how far an `if (@available)` reaches into a block.
+// separate API_AVAILABLE function because the work happens inside nested block
+// literals: annotating the function is how the whole nested body inherits the
+// availability context rather than depending on how far an `if (@available)`
+// reaches into a block.
 //
 // The Manager calls this only after closeBrowser, so no page, profile, or live
 // store exists — which matters, because a data store still in use is the one
@@ -1245,55 +1240,51 @@ void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id) {
       aoWKVEvalDone(call_id, NULL, strdup("browser: the page is gone"));
       return;
     }
-    if (@available(macOS 11.0, *)) {
-      // -callAsyncJavaScript: takes an async FUNCTION BODY and awaits its
-      // return value, which is exactly what WebKitGTK's
-      // webkit_web_view_call_async_javascript_function does. -evaluateJavaScript
-      // would hand back an unresolved promise instead.
-      [(WKWebView *)view callAsyncJavaScript:[NSString stringWithUTF8String:body]
-                                   arguments:nil
-                                     inFrame:nil
-                              inContentWorld:[WKContentWorld pageWorld]
-                           completionHandler:^(id result, NSError *error) {
-                             if (error != nil) {
-                               // localizedDescription is the same sentence for
-                               // every throw ("A JavaScript exception occurred");
-                               // the page's own "Name: message" rides userInfo,
-                               // and it is what the caller — and the Go side's
-                               // SyntaxError retry — needs to see.
-                               NSString *message = [[error userInfo]
-                                   objectForKey:@"WKJavaScriptExceptionMessage"];
-                               if (![message isKindOfClass:[NSString class]] ||
-                                   [message length] == 0) {
-                                 message = [error localizedDescription];
-                               }
-                               aoWKVEvalDone(call_id, NULL, ao_dup(message));
-                               return;
+    // -callAsyncJavaScript: takes an async FUNCTION BODY and awaits its
+    // return value, which is exactly what WebKitGTK's
+    // webkit_web_view_call_async_javascript_function does. -evaluateJavaScript
+    // would hand back an unresolved promise instead.
+    [(WKWebView *)view callAsyncJavaScript:[NSString stringWithUTF8String:body]
+                                 arguments:nil
+                                   inFrame:nil
+                            inContentWorld:[WKContentWorld pageWorld]
+                         completionHandler:^(id result, NSError *error) {
+                           if (error != nil) {
+                             // localizedDescription is the same sentence for
+                             // every throw ("A JavaScript exception occurred");
+                             // the page's own "Name: message" rides userInfo,
+                             // and it is what the caller, including the Go
+                             // side's SyntaxError retry, needs to see.
+                             NSString *message = [[error userInfo]
+                                 objectForKey:@"WKJavaScriptExceptionMessage"];
+                             if (![message isKindOfClass:[NSString class]] ||
+                                 [message length] == 0) {
+                               message = [error localizedDescription];
                              }
-                             if (result == nil) {
-                               // undefined: an absent result, the same thing CDP
-                               // reports for a void expression.
-                               aoWKVEvalDone(call_id, NULL, NULL);
-                               return;
-                             }
-                             NSError *encodeError = nil;
-                             NSData *data = [NSJSONSerialization
-                                 dataWithJSONObject:result
-                                            options:NSJSONWritingFragmentsAllowed
-                                              error:&encodeError];
-                             if (data == nil) {
-                               aoWKVEvalDone(call_id, NULL,
-                                             strdup("browser: result is not JSON-encodable"));
-                               return;
-                             }
-                             NSString *json = [[[NSString alloc]
-                                 initWithData:data
-                                     encoding:NSUTF8StringEncoding] autorelease];
-                             aoWKVEvalDone(call_id, ao_dup(json), NULL);
-                           }];
-      return;
-    }
-    aoWKVEvalDone(call_id, NULL, strdup("browser: this engine needs macOS 11 or newer"));
+                             aoWKVEvalDone(call_id, NULL, ao_dup(message));
+                             return;
+                           }
+                           if (result == nil) {
+                             // undefined: an absent result, the same thing CDP
+                             // reports for a void expression.
+                             aoWKVEvalDone(call_id, NULL, NULL);
+                             return;
+                           }
+                           NSError *encodeError = nil;
+                           NSData *data = [NSJSONSerialization
+                               dataWithJSONObject:result
+                                          options:NSJSONWritingFragmentsAllowed
+                                            error:&encodeError];
+                           if (data == nil) {
+                             aoWKVEvalDone(call_id, NULL,
+                                           strdup("browser: result is not JSON-encodable"));
+                             return;
+                           }
+                           NSString *json = [[[NSString alloc]
+                               initWithData:data
+                                   encoding:NSUTF8StringEncoding] autorelease];
+                           aoWKVEvalDone(call_id, ao_dup(json), NULL);
+                         }];
   }
 }
 
@@ -1371,9 +1362,7 @@ void ao_wkv_download_cancel(void *download) {
     if (download == NULL) {
       return;
     }
-    if (@available(macOS 11.3, *)) {
-      [(WKDownload *)download cancel:nil];
-    }
+    [(WKDownload *)download cancel:nil];
   }
 }
 
@@ -1390,9 +1379,6 @@ double ao_wkv_download_received(void *download) {
     if (download == NULL) {
       return 0;
     }
-    if (@available(macOS 11.3, *)) {
-      return (double)[[(WKDownload *)download progress] completedUnitCount];
-    }
-    return 0;
+    return (double)[[(WKDownload *)download progress] completedUnitCount];
   }
 }

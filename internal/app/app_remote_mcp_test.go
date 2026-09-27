@@ -276,7 +276,7 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, token := remoteMCPThread(t, a, string(provider.Codex))
-	configs, err := a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, token})
+	configs, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{thread.ID, token})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 			a.appCtx = ctx
 			t.Cleanup(func() { cancel(); a.remoteMCP.wg.Wait(); _ = a.remoteMCPServer().Close() })
 			thread, token := remoteMCPThread(t, a, name)
-			if _, err := a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, token}); err != nil {
+			if _, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{thread.ID, token}); err != nil {
 				t.Fatal(err)
 			}
 			capture := t.TempDir()

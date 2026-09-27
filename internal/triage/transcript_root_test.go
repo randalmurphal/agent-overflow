@@ -99,7 +99,7 @@ func itemMetaField(t *testing.T, item store.Item, key string) any {
 
 func allTurnItems(t *testing.T, st *store.Store, threadID string, turnIndex int) []store.Item {
 	t.Helper()
-	items, err := st.ListTurnItemsSansPayload(threadID, turnIndex)
+	items, err := st.ListTurnItems(threadID, turnIndex)
 	if err != nil {
 		t.Fatalf("list turn %d of %s: %v", turnIndex, threadID, err)
 	}

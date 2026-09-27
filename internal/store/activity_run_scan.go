@@ -288,21 +288,12 @@ func (w *activityScanWalk) take(n int) {
 }
 
 func (w *activityScanWalk) fill() error {
-	order := "turn_index DESC, item_index DESC"
-	comparison := `
-		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index < ?))`
+	sel := beyondCursor(w.scope, w.from, w.newer)
+	sel.OrderBy, sel.Limit = "turn_index DESC, item_index DESC", w.chunkRows
 	if w.newer {
-		order = "turn_index ASC, item_index ASC"
-		comparison = `
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`
+		sel.OrderBy = "turn_index ASC, item_index ASC"
 	}
-	filter, args := w.scope.filter("items.")
-	selectedSQL, selectedArgs, err := timelineIDSelection(w.q, w.threadID, timelineSelection{
-		Where:     filter + comparison,
-		WhereArgs: append(args, w.from.TurnIndex, w.from.TurnIndex, w.from.ItemIndex),
-		OrderBy:   order,
-		Limit:     w.chunkRows,
-	})
+	selectedSQL, selectedArgs, err := timelineIDSelection(w.q, w.threadID, sel)
 	if err != nil {
 		return err
 	}

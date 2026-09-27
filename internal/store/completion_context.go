@@ -19,7 +19,10 @@ func (s *Store) decorateCompletionLaunches(q sqlQueryer, threadID string, items 
 	if len(ids) == 0 {
 		return items, nil
 	}
-	selection, args := idListSelection(ids)
+	selection, args, err := idListSelection(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: read completion context for %s: %w", threadID, err)
+	}
 	launches, err := queryHydratedTimelineItems(q, threadID, selection, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: read completion context for %s: %w", threadID, err)

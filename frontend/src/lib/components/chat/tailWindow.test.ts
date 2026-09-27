@@ -51,17 +51,21 @@ describe('newlineCutOffset', () => {
 });
 
 describe('isMonotonicAppend', () => {
-  const sentinels = (text: string, cutOffset = 0) => ({
-    prevLen: text.length,
-    prevLastCharCode: text.length > 0 ? text.charCodeAt(text.length - 1) : 0,
+  // Texts are windows of one stream: `prev` starts at `prevStart`, `next`
+  // at `nextStart`, and `cutOffset` is a stream offset inside `prev`.
+  const check = (
+    next: string,
+    prev: string,
+    cutOffset = 0,
+    { prevStart = 0, nextStart = 0 } = {},
+  ): boolean => isMonotonicAppend(
+    next,
+    nextStart,
+    prevStart + prev.length,
+    prev.length > 0 ? prev.charCodeAt(prev.length - 1) : 0,
     cutOffset,
-    cutFirstCharCode: cutOffset > 0 ? text.charCodeAt(cutOffset) : 0,
-  });
-
-  const check = (next: string, prev: string, cutOffset = 0): boolean => {
-    const s = sentinels(prev, cutOffset);
-    return isMonotonicAppend(next, s.prevLen, s.prevLastCharCode, s.cutOffset, s.cutFirstCharCode);
-  };
+    cutOffset > 0 ? prev.charCodeAt(cutOffset - prevStart) : 0,
+  );
 
   it('accepts a pure append', () => {
     expect(check('hello world', 'hello')).toBe(true);
@@ -87,6 +91,36 @@ describe('isMonotonicAppend', () => {
     const prev = 'abcdef\nghijkl';
     const next = 'abcdef\nXhijkl-and-more';
     expect(check(next, prev, 7)).toBe(false);
+  });
+
+  it('accepts an append whose source dropped text above the cut', () => {
+    const stream = 'one\ntwo\nthree\nfour';
+    // The clamp cut at 'three'; the source now starts at 'two'.
+    expect(check(`${stream.slice(4)} five`, stream, 8, { nextStart: 4 })).toBe(true);
+  });
+
+  it('accepts an append whose source moved past the cut', () => {
+    const stream = 'one\ntwo\nthree\nfour';
+    // The clamp cut at 'two'; the source now starts at 'three'.
+    expect(check(`${stream.slice(8)} five`, stream, 4, { nextStart: 8 })).toBe(true);
+  });
+
+  it('accepts the whole text replacing a window of it', () => {
+    const stream = 'one\ntwo\nthree\nfour';
+    expect(check(stream, stream.slice(8), 14, { prevStart: 8 })).toBe(true);
+  });
+
+  it('rejects text that starts at or past the previous end', () => {
+    const stream = 'one\ntwo\nthree\nfour';
+    expect(check(stream.slice(8), stream.slice(0, 8), 0, { nextStart: 8 })).toBe(false);
+  });
+
+  it('checks the cut and the previous end at their stream offsets', () => {
+    const stream = 'one\ntwo\nthree\nfour';
+    const changedEnd = `${stream.slice(4, -1)}X more`;
+    expect(check(changedEnd, stream, 8, { nextStart: 4 })).toBe(false);
+    const changedCut = `two\nXhree\nfour more`;
+    expect(check(changedCut, stream, 8, { nextStart: 4 })).toBe(false);
   });
 
   it('is a heuristic: a replacement preserving both probed chars passes', () => {

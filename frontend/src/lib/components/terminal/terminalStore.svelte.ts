@@ -122,48 +122,80 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
   // The mounted xterm per tab, registered by TerminalBody while it lives.
   // Plain Map, not $state: nothing renders from it, commands just call into it.
   const xtermByTerminal = new Map<string, TerminalXtermActions>();
+  // Per list read in flight, the tabs added or removed since it left.
+  const listReadsInFlight = new Set<Set<string>>();
+
+  function noteTabChange(terminalID: string): void {
+    for (const changed of listReadsInFlight) changed.add(terminalID);
+  }
+
+  function addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void {
+    noteTabChange(summary.terminalID);
+    // A tab this client opened, restarted or moved becomes the active one;
+    // a tab another client opened (`terminal:opened`) lands beside the
+    // active tab without taking focus from whatever this person is typing
+    // into, and takes it only when there was nothing active.
+    const activate = options?.activate ?? true;
+    const existing = tabs.find((t) => t.terminalID === summary.terminalID);
+    if (existing) {
+      tabs = tabs.map((t) =>
+        t.terminalID === summary.terminalID ? { ...t, summary } : t,
+      );
+      if (activate) activeTerminalID = summary.terminalID;
+      return;
+    }
+    tabs = [
+      ...tabs,
+      {
+        terminalID: summary.terminalID,
+        summary,
+        pendingOutput: [],
+      },
+    ];
+    pendingSequencesByTerminal.set(summary.terminalID, []);
+    replayWatermarkByTerminal.set(summary.terminalID, 0);
+    if (activate || activeTerminalID === null) activeTerminalID = summary.terminalID;
+  }
+
+  function removeTab(terminalID: string): void {
+    noteTabChange(terminalID);
+    const nextTabs = tabs.filter((t) => t.terminalID !== terminalID);
+    tabs = nextTabs;
+    pendingSequencesByTerminal.delete(terminalID);
+    replayWatermarkByTerminal.delete(terminalID);
+    xtermByTerminal.delete(terminalID);
+    if (activeTerminalID === terminalID) {
+      activeTerminalID = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.terminalID : null;
+    }
+  }
 
   return {
     get tabs() { return tabs; },
     get activeTerminalID() { return activeTerminalID; },
     get drawerHeight() { return drawerHeight; },
 
-    addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void {
-      // A tab this client opened, restarted or moved becomes the active one;
-      // a tab another client opened (`terminal:opened`) lands beside the
-      // active tab without taking focus from whatever this person is typing
-      // into, and takes it only when there was nothing active.
-      const activate = options?.activate ?? true;
-      const existing = tabs.find((t) => t.terminalID === summary.terminalID);
-      if (existing) {
-        tabs = tabs.map((t) =>
-          t.terminalID === summary.terminalID ? { ...t, summary } : t,
-        );
-        if (activate) activeTerminalID = summary.terminalID;
-        return;
-      }
-      tabs = [
-        ...tabs,
-        {
-          terminalID: summary.terminalID,
-          summary,
-          pendingOutput: [],
-        },
-      ];
-      pendingSequencesByTerminal.set(summary.terminalID, []);
-      replayWatermarkByTerminal.set(summary.terminalID, 0);
-      if (activate || activeTerminalID === null) activeTerminalID = summary.terminalID;
-    },
+    addTab,
+    removeTab,
 
-    removeTab(terminalID: string): void {
-      const nextTabs = tabs.filter((t) => t.terminalID !== terminalID);
-      tabs = nextTabs;
-      pendingSequencesByTerminal.delete(terminalID);
-      replayWatermarkByTerminal.delete(terminalID);
-      xtermByTerminal.delete(terminalID);
-      if (activeTerminalID === terminalID) {
-        activeTerminalID = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.terminalID : null;
+    async syncTabs(read, options) {
+      const changed = new Set<string>();
+      listReadsInFlight.add(changed);
+      let list: TerminalSessionSummary[] | null;
+      try {
+        list = await read();
+      } finally {
+        listReadsInFlight.delete(changed);
       }
+      if (!list || !options.current()) return [];
+      const listed = new Set(list.map((summary) => summary.terminalID));
+      const gone = tabs
+        .map((tab) => tab.terminalID)
+        .filter((terminalID) => !listed.has(terminalID) && !changed.has(terminalID));
+      for (const terminalID of gone) removeTab(terminalID);
+      for (const summary of list) {
+        if (!changed.has(summary.terminalID)) addTab(summary, { activate: options.activate });
+      }
+      return gone;
     },
 
     setActive(terminalID: string): void {
@@ -267,6 +299,18 @@ export interface ThreadTerminalStateHandle {
   /** Add or refresh a tab. `activate: false` leaves the active tab alone unless there was none. */
   addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void;
   removeTab(terminalID: string): void;
+  /**
+   * Make the tabs match `read`'s list of the thread's terminals: drop the
+   * tabs it lacks and add or refresh the ones it names. A tab added or
+   * removed while the read was in flight keeps that change, which is newer
+   * than the list. Returns the dropped ids; nothing changes when the read
+   * answers null or `current` says its answer no longer applies. A failed
+   * read rejects and changes nothing.
+   */
+  syncTabs(
+    read: () => Promise<TerminalSessionSummary[] | null>,
+    options: { activate: boolean; current(): boolean },
+  ): Promise<string[]>;
   setActive(terminalID: string): void;
   appendOutput(terminalID: string, data: Uint8Array, sequence?: number): void;
   drainOutput(terminalID: string): Uint8Array[];
@@ -397,6 +441,31 @@ export function migrateThreadTerminalState(
 
 export function releaseThreadTerminalState(threadID: string): void {
   terminalStatesByThread.delete(terminalStateKey(threadID));
+}
+
+/** A mounted surface: its thread and its re-read of that thread's terminal list. */
+export interface MountedTerminalSurface {
+  readonly threadID: string;
+  relist(): Promise<void>;
+}
+
+const mountedTerminalSurfaces = new Set<MountedTerminalSurface>();
+
+/**
+ * Register a mounted surface so a computer that reconnects or loses terminal
+ * events can re-read its list (../../stores/eventsTerminal.ts). Returns the
+ * unregister.
+ */
+export function registerTerminalSurface(threadID: string, relist: () => Promise<void>): () => void {
+  const surface: MountedTerminalSurface = { threadID, relist };
+  mountedTerminalSurfaces.add(surface);
+  return () => {
+    mountedTerminalSurfaces.delete(surface);
+  };
+}
+
+export function getMountedTerminalSurfaces(): MountedTerminalSurface[] {
+  return [...mountedTerminalSurfaces];
 }
 
 export function resetThreadTerminalStatesForTest(): void {

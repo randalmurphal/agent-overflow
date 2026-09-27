@@ -30,12 +30,13 @@ processes.
 
 An in-process MCP server, `ao-thread-tools`, built on the shared
 `internal/threadmcp` transport like `ao-browser-tools` and
-`ao-remote-tools`: loopback HTTP, a per-thread capability URL, wired
-into Claude via `--mcp-config` and Codex via `mcp_servers` at session
-start, with the decision guide in the server's `instructions` string
-for Claude and, because Codex never shows the model that string, as
-Codex developer instructions on thread start (see Server
-instructions). Handlers resolve the capability to the calling thread and call the app
+`ao-remote-tools`: loopback HTTP and a per-thread capability URL that
+session start issues and session end revokes. Session start wires it
+into Claude via `--mcp-config` and Codex via `mcp_servers`, with the
+decision guide in the server's `instructions` string for Claude and,
+because Codex never shows the model that string, as Codex developer
+instructions on thread start (see Server instructions). Handlers
+resolve the capability to the calling thread and call the app
 in-process. Claude and Codex get the tools identically; Claude TUI is not
 supported, as with the other two servers.
 

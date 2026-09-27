@@ -10,6 +10,10 @@ import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { refreshThreads } from './threads.svelte';
 import type { TerminalSessionSummary } from '../types/terminal';
+import { __resetEntityIndexForTest, terminalBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
+import type { TransportHello } from '../transport/wsClient';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 
 // `terminal:opened` is the convergence half of the terminal surface. Before it,
 // OpenTerminal answered its caller and told nobody: a second device had read
@@ -106,5 +110,51 @@ describe('applyTerminalOpened', () => {
     emitWailsEvent('terminal:opened', { terminalID: '', threadID: 'term-1', summary: null });
 
     expect(handle.tabs).toHaveLength(0);
+  });
+});
+
+// A terminal opened on another client is in no list this client fetched, and
+// this client's calls to it route by the backend it was learned from.
+describe('terminal routing', () => {
+  it('learns an opened terminal\'s backend and forgets it once the terminal exits', () => {
+    __resetEntityIndexForTest();
+    fireOpened('term-2', 't7');
+    expect(terminalBackend('t7')).toBe(HOME_BACKEND);
+
+    emitWailsEvent('terminal:exit', { terminalID: 't7', threadID: 'term-2', code: 0 });
+
+    expect(terminalBackend('t7')).toBeUndefined();
+  });
+
+  it('routes a terminal opened on a second computer to that computer', () => {
+    __resetEntityIndexForTest();
+    stageBackend();
+    try {
+      emitWailsEvent('terminal:opened', { terminalID: 'r1', threadID: 'term-9', summary: summary('r1', 'term-9') }, REMOTE_BACKEND_UUID);
+      expect(terminalBackend('r1')).toBe('laptop');
+      emitWailsEvent('terminal:exit', { terminalID: 'r1', threadID: 'term-9', code: 0 }, REMOTE_BACKEND_UUID);
+      expect(terminalBackend('r1')).toBeUndefined();
+    } finally { resetStagedBackends(); }
+  });
+
+  // A restarting computer reports no exits for the terminals its shutdown ends.
+  it('forgets a computer\'s terminals once it reports a new launch', () => {
+    __resetEntityIndexForTest();
+    const hello: TransportHello = {
+      launchId: 'launch-1', backendId: REMOTE_BACKEND_UUID, backendName: 'Laptop', capabilities: [],
+      protocolVersion: 1, serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    };
+    const laptop = stageBackend({ hello });
+    try {
+      fireOpened('term-2', 'home-terminal');
+      emitWailsEvent('terminal:opened', { terminalID: 'r1', threadID: 'term-9', summary: summary('r1', 'term-9') }, REMOTE_BACKEND_UUID);
+
+      laptop.setHello({ ...hello, backendName: 'Renamed laptop' });
+      expect(terminalBackend('r1')).toBe('laptop');
+
+      laptop.setHello({ ...hello, launchId: 'launch-2' });
+      expect(terminalBackend('r1')).toBeUndefined();
+      expect(terminalBackend('home-terminal')).toBe(HOME_BACKEND);
+    } finally { resetStagedBackends(); }
   });
 });

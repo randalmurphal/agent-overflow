@@ -196,7 +196,7 @@ func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !a.threadMCPServer().ThreadEnabled(thread.ID) {
 		return nil, nil
 	}
-	return a.threadMCPServer().RegisterThread(thread.ID, threadMCPAccess{thread.ID, sessionToken})
+	return a.threadMCPServer().RegisterThread(thread.ID, sessionToken, threadMCPAccess{thread.ID, sessionToken})
 }
 
 // threadMCPServerConfig decorates the shared entry with what each provider
@@ -232,7 +232,7 @@ func threadMCPServerConfig(providerName string, config any) any {
 const ThreadToolsAllowedTool = "mcp__" + threadMCPName + "__*"
 
 func (a *App) revokeThreadMCP(threadID, token string) {
-	a.threadMCPServer().RevokeThread(threadID, threadMCPAccess{threadID, token})
+	a.threadMCPServer().RevokeThread(threadID, token)
 }
 
 // callThreadMCP runs one tool. Argument validation, rendering and refusal

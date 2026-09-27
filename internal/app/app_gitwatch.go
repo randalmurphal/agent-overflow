@@ -77,7 +77,7 @@ func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatu
 		return GitStatusSubscriptionResult{}, err
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.RegisterCleanup(func() { a.gitApplication().Unsubscribe(result.ID) }) {
+		if !state.BindCleanup(gitStatusCleanupKey(result.ID), func() { a.gitApplication().Unsubscribe(result.ID) }) {
 			a.gitApplication().Unsubscribe(result.ID)
 			return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch: connection closing")
 		}
@@ -92,7 +92,10 @@ func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatu
 //
 //ao:scope git:operate
 //ao:route home
-func (a *App) GitStatusUnsubscribe(subscriptionID string) error {
+func (a *App) GitStatusUnsubscribe(ctx context.Context, subscriptionID string) error {
+	transport.ConnStateFromContext(ctx).UnbindCleanup(gitStatusCleanupKey(subscriptionID))
 	a.gitApplication().Unsubscribe(subscriptionID)
 	return nil
 }
+
+func gitStatusCleanupKey(id string) string { return "git-status:" + id }

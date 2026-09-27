@@ -42,6 +42,7 @@ import type {
 } from '../utils/activityRunGrouping';
 import {
   groupActivityRunSpans,
+  isActivityRailRow,
   type ActivityRunSpan,
 } from '../utils/activityRunSpans';
 import {
@@ -49,9 +50,12 @@ import {
   type HeldRunFold,
 } from './threadWindowDigest';
 import {
+  compareCoordinates,
   foldedStub,
   foldPageStub,
   heldRunsFold,
+  extendOverTailAppend,
+  noteRefusedRow,
   noteSpanMoved,
   invalidateActivityRun,
   shedOlderMembers,
@@ -59,6 +63,8 @@ import {
   type ActivityRunStubFacts,
   type ActivityRunRecord,
   type ActivityRunRecords,
+  type RunCoordinate,
+  type RunRefusal,
 } from './activityRunStubs';
 import {
   createActivityRunMemberFetch,
@@ -74,24 +80,101 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { withViewportBottomHeld } from './threadPaneShared';
 import type { PaneScrollController } from './threadPaneShared';
 
-/**
- * A timeline coordinate, the only thing a jump holds for a row the window
- * does not contain.
- */
-export interface RunCoordinate {
-  turnIndex: number;
-  itemIndex: number;
+/** The first index of `rows`, in timeline order, whose row sorts after `cursor`. */
+function firstIndexAfter(rows: readonly Item[], cursor: RunCoordinate): number {
+  let lo = 0;
+  let hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (compareCoordinates(rows[mid], cursor) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
-function compareCoordinates(a: RunCoordinate, b: RunCoordinate): number {
-  if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
-  return a.itemIndex - b.itemIndex;
+/**
+ * Whether a windowed row continues a run it follows: a rail row, or a
+ * bell the run absorbs (`groupActivityRunSpans`). Any other row ends it.
+ */
+function continuesRun(item: Item): boolean {
+  return isActivityRailRow(item) || item.kind === 'notification';
+}
+
+/** Where a record's run starts: its stub's first member. */
+function runStart(record: ActivityRunRecord): RunCoordinate {
+  return { turnIndex: record.stub.firstTurnIndex, itemIndex: record.stub.firstItemIndex };
 }
 
 /** Where one run's loaded members sit in the pane's window. */
 interface RunBounds {
   first: RunCoordinate;
   last: RunCoordinate;
+}
+
+/**
+ * Whether `cursor` is a member of a run that the pane does not hold, as
+ * `stub` read the run, given where its loaded span sits and how many
+ * members were shed from the span's older side. A run is contiguous over
+ * top-level rows, so membership is exactly "between the run's edges",
+ * which the stub states as coordinates; the side counts only say whether
+ * that side has anything left to fetch. A row older than the run's first
+ * member is older history, whatever the window holds above the run, and
+ * is not this run's to fetch.
+ */
+function coversUnshipped(
+  stub: ActivityRunStub,
+  shedCount: number,
+  bounds: RunBounds,
+  cursor: RunCoordinate,
+): boolean {
+  if (compareCoordinates(cursor, bounds.first) < 0) {
+    if (stub.unshippedBefore + shedCount === 0) return false;
+    return compareCoordinates(cursor, {
+      turnIndex: stub.firstTurnIndex,
+      itemIndex: stub.firstItemIndex,
+    }) >= 0;
+  }
+  if (compareCoordinates(cursor, bounds.last) > 0) {
+    if (stub.unshippedAfter === 0) return false;
+    return compareCoordinates(cursor, {
+      turnIndex: stub.lastTurnIndex,
+      itemIndex: stub.lastItemIndex,
+    }) <= 0;
+  }
+  return false;
+}
+
+/**
+ * Whether a row past the newer edge `stub` read is a member the run
+ * gained since, while the stub counts members after the pane's span. The
+ * pane holds none of the members between that span and the row, so
+ * admitting it would place it next to members it does not follow. A run
+ * grows through rail rows and the bells it absorbs, and any other row
+ * ends it, so the row is a member unless a row that ends the run lies
+ * between the edge and it: in `held`, the window in timeline order, or
+ * anywhere in `batch`, rows the window has not admitted yet.
+ */
+function continuesUnshippedEnd(
+  stub: ActivityRunStub,
+  item: Item,
+  held: readonly Item[],
+  batch: readonly Item[],
+  selection: TimelineSelection | undefined,
+): boolean {
+  if (stub.unshippedAfter === 0 || !continuesRun(item)) return false;
+  const edge = { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex };
+  if (compareCoordinates(item, edge) <= 0) return false;
+  const endsRunBefore = (row: Item) => row.threadId === item.threadId
+    && compareCoordinates(row, edge) > 0
+    && compareCoordinates(row, item) < 0
+    && isWindowedTimelineRow(row, selection)
+    && !continuesRun(row);
+  if (batch.some(endsRunBefore)) return false;
+  for (let index = firstIndexAfter(held, edge); index < held.length; index += 1) {
+    if (compareCoordinates(held[index], item) >= 0) break;
+    if (endsRunBefore(held[index])) return false;
+  }
+  return true;
 }
 
 export interface ActivityRunScrollSnapshot {
@@ -305,22 +388,6 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    */
   containsMember(runId: string, itemId: string): boolean;
   /**
-   * Whether `cursor` falls inside the run's COORDINATE range but outside
-   * the members the pane holds — the unshipped region of
-   * docs/architecture/timeline-window-pages.md §6.
-   *
-   * Deliberately not part of `containsMember`, which answers about loaded
-   * members and is what every anchor writer needs. A jump asks this one:
-   * its target resolved to a coordinate the window does not hold, and the
-   * answer decides between fetching the run's members around it and
-   * reloading the whole window.
-   *
-   * The range is bounded by the loaded rows adjacent to the run rather
-   * than by the stub, because a page never splits a run: whatever sits
-   * next to a run in the pane's window is a row outside it.
-   */
-  spansItem(runId: string, itemId: string, cursor: RunCoordinate): boolean;
-  /**
    * Fetch members of a run and mount them, returning the ids the pane
    * holds for it afterwards (empty when the fetch failed, which it has
    * already reported).
@@ -334,8 +401,8 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   fetchMembers(runId: string, request: FetchMembersRequest): Promise<string[]>;
   /**
    * Bring a member the pane does not hold into the window, for a jump
-   * whose target resolved to a row inside a held run's unshipped region
-   * (`runCoveringUnshipped`). The run's loaded span is REPLACED by one
+   * whose target resolved to a row between a held run's edges, on a side
+   * the pane does not hold. The run's loaded span is REPLACED by one
    * centered on the row (`around`, a window's worth). Resolves whether the
    * pane holds the row afterwards; false when no held run covers it, and
    * when the fetch failed (already reported).
@@ -376,13 +443,39 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    */
   heldRunFold(): HeldRunFold | null;
   /**
-   * The run whose unshipped region covers a pushed row's coordinate, or
-   * null. `threadItemUpserts.ts` routes on it: such a row is not inserted
-   * (it would leave a hole in the run's span) and instead marks the record
-   * dirty, which the debounced stub refresh answers.
+   * The run a pushed row belongs to without the pane holding it, or null.
+   * `threadItemUpserts.ts` routes pushed rows on it: such a row is not
+   * inserted (it would leave a hole in the run's span), and the caller
+   * notes the refusal (`noteRefusals`).
+   *
+   * A row between the run's edges, on a side the pane does not hold, is
+   * covered. `batch` is the rows a pushed row arrives with: a run also
+   * grows past the newer edge its stub read, and whether a pushed row past
+   * that edge is one of the new members depends on the rows between, some
+   * of which may arrive in the same batch.
    */
-  runCoveringUnshipped(item: Item): string | null;
-  /** Mark a record dirty by the key `runCoveringUnshipped` returned. */
+  runCoveringUnshipped(item: Item, batch: readonly Item[]): string | null;
+  /**
+   * Apply the rule of `runCoveringUnshipped` to the rows a page install
+   * carries over from the window it replaces. `rows` is the window to
+   * install, in timeline order; its rows not in `page` are carried (rows
+   * the wire touched during the read). A carried row in a part of one of
+   * the page's runs (`stubs`) the page does not ship is left out. Returns
+   * the rows to install and the refusals, which the caller notes once the
+   * page's stubs are folded.
+   */
+  admitCarriedRows(
+    rows: Item[],
+    page: readonly Item[],
+    stubs: readonly ActivityRunStub[] | null | undefined,
+  ): { items: Item[]; refusals: readonly RunRefusal[] };
+  /**
+   * Account for refused rows: each run goes dirty and keeps the newest
+   * refused position, which its stub refresh checks (`settleRefusedRows`).
+   * A refusal for a run the pane holds no record of is dropped.
+   */
+  noteRefusals(refusals: readonly RunRefusal[]): void;
+  /** Mark a record dirty by its key and schedule its stub refresh. */
   markRunDirty(runKey: string): void;
   /**
    * The stubs describing the runs the pane holds part of, for the caches
@@ -654,6 +747,8 @@ function rowIndexOfMember(
 /** No rows leave the window: an append-only members mount. */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 const NO_RUN_SPANS: ReadonlyMap<string, ActivityRunSpan> = new Map();
+const NO_ITEMS: readonly Item[] = Object.freeze([]);
+const NO_REFUSALS: readonly RunRefusal[] = Object.freeze([]);
 
 const reportedAnchorRuns = new Set<string>();
 const MAX_REPORTED_ANCHOR_RUNS = 100;
@@ -818,8 +913,10 @@ export function createThreadActivityRuns(
    * Order matters: the stubs are folded against the spans the pane holds
    * AFTER the page merged, so a stub that describes a different span (a
    * cursor page that crossed into a held run, a live append the server has
-   * not seen) leaves the pane's span standing and the record dirty.
-   * Records whose run left the window are dropped with their shed rows —
+   * not seen) leaves the pane's span standing and the record dirty. An
+   * append after the run's newest member moves the stub's newer edge in
+   * place instead (`extendOverTailAppend`): nothing the stub counts changed.
+   * Records whose run left the window are dropped with their shed rows:
    * the run is no longer in the held window at all, and the has-more flag
    * on that edge covers it.
    *
@@ -853,10 +950,13 @@ export function createThreadActivityRuns(
     };
 
     // Claimed so two records cannot describe one span: a run whose first
-    // member changed identity would otherwise be counted twice in the held
-    // window. The first claim wins and the loser is dropped, which costs
-    // one stub refresh rather than a wrong digest.
-    const claimed = new Map<string, string>();
+    // member changed identity, or two runs merged by a removed row between
+    // them, would otherwise be counted twice in the held window. The record
+    // whose run starts first wins, since its first member is the merged
+    // run's, and the others are dropped. The winner's stub does not count
+    // the losers' members, so it goes dirty before its span is moved: one
+    // stub refresh rather than a wrong digest.
+    const claimed = new Map<string, { key: string; record: ActivityRunRecord; span: ActivityRunSpan }>();
     const resolvedSpans = new Map<string, ActivityRunSpan | null>();
 
     for (const stub of stubs ?? []) {
@@ -878,13 +978,25 @@ export function createThreadActivityRuns(
         dropRecord(key);
         continue;
       }
+      const claim = { key, record, span };
       const owner = claimed.get(span.firstItemId);
-      if (owner !== undefined && owner !== key) {
-        dropRecord(key);
+      if (!owner) {
+        claimed.set(span.firstItemId, claim);
         continue;
       }
-      claimed.set(span.firstItemId, key);
-      if (noteSpanMoved(record, span)) changed = true;
+      const [winner, loser] = compareCoordinates(runStart(record), runStart(owner.record)) < 0
+        ? [claim, owner]
+        : [owner, claim];
+      claimed.set(span.firstItemId, winner);
+      invalidateActivityRun(winner.record);
+      // The winner's run holds the loser's, so its refresh settles the
+      // loser's refused rows too.
+      if (loser.record.refusedThrough) noteRefusedRow(winner.record, loser.record.refusedThrough);
+      dropRecord(loser.key);
+    }
+
+    for (const { key, record, span } of claimed.values()) {
+      if (extendOverTailAppend(record, span) || noteSpanMoved(record, span)) changed = true;
       const first = positionById.get(span.firstItemId);
       const last = positionById.get(span.lastItemId);
       if (first === undefined || last === undefined) {
@@ -1011,54 +1123,66 @@ export function createThreadActivityRuns(
   }
 
   /**
-   * The run whose unshipped region covers `item`'s coordinate, or null.
-   *
-   * "Inside the run" is a claim about coordinates bounded by the loaded
-   * rows next to the run, and it requires the stub to say members exist on
-   * that side: a live row appended past the tail run's newest member is
-   * NOT inside it — the run has nothing unshipped after the span — so it
-   * appends as it always did.
+   * The run `item` belongs to without the pane holding it, or null (see
+   * the interface). Both rules require the stub to count members on the
+   * row's side of the loaded span: a live row appended past the newest
+   * member of a run whose span ends there is not covered, and appends and
+   * extends the span (`extendOverTailAppend`).
    */
-  function runCoveringUnshipped(item: Item): string | null {
-    if (!isWindowedTimelineRow(item, options.selection?.())) return null;
-    const cursor = coordinateOf(item);
+  function runCoveringUnshipped(item: Item, batch: readonly Item[]): string | null {
+    const selection = options.selection?.();
+    if (!isWindowedTimelineRow(item, selection)) return null;
+    const held = options.items();
     for (const [key, record] of records) {
       const bounds = recordBounds.get(key);
       if (!bounds) continue;
-      if (coversUnshipped(record, bounds, cursor)) return key;
+      if (coversUnshipped(record.stub, record.shed.length, bounds, item)
+        || continuesUnshippedEnd(record.stub, item, held, batch, selection)) return key;
     }
     return null;
   }
 
   /**
-   * Whether `cursor` is a member of this run that the pane does not hold.
-   * A run is contiguous over top-level rows, so membership is exactly
-   * "between the run's edges", which the stub states as coordinates; the
-   * side counts only say whether that side has anything left to fetch. A
-   * row older than the run's first member is older history, whatever the
-   * window holds above the run, and is not this run's to fetch.
+   * The run a jump target lies in without the pane holding it: between the
+   * run's edges, on a side the pane does not hold. A target past the newer
+   * edge could be anywhere after the window, and is the window slice's.
    */
-  function coversUnshipped(
-    record: ActivityRunRecord,
-    bounds: RunBounds,
-    cursor: RunCoordinate,
-  ): boolean {
-    const { stub } = record;
-    if (compareCoordinates(cursor, bounds.first) < 0) {
-      if (stub.unshippedBefore + record.shed.length === 0) return false;
-      return compareCoordinates(cursor, {
-        turnIndex: stub.firstTurnIndex,
-        itemIndex: stub.firstItemIndex,
-      }) >= 0;
+  function runHoldingUnshipped(item: Item): string | null {
+    if (!isWindowedTimelineRow(item, options.selection?.())) return null;
+    for (const [key, record] of records) {
+      const bounds = recordBounds.get(key);
+      if (bounds && coversUnshipped(record.stub, record.shed.length, bounds, item)) return key;
     }
-    if (compareCoordinates(cursor, bounds.last) > 0) {
-      if (stub.unshippedAfter === 0) return false;
-      return compareCoordinates(cursor, {
-        turnIndex: stub.lastTurnIndex,
-        itemIndex: stub.lastItemIndex,
-      }) <= 0;
+    return null;
+  }
+
+  function admitCarriedRows(
+    rows: Item[],
+    page: readonly Item[],
+    stubs: readonly ActivityRunStub[] | null | undefined,
+  ): { items: Item[]; refusals: readonly RunRefusal[] } {
+    if (!stubs?.length) return { items: rows, refusals: NO_REFUSALS };
+    const pageById = new Map(page.map(item => [item.id, item]));
+    const selection = options.selection?.();
+    const carried = rows.filter(item => !pageById.has(item.id) && isWindowedTimelineRow(item, selection));
+    if (carried.length === 0) return { items: rows, refusals: NO_REFUSALS };
+    // A page's stub describes the span the page shipped, which is where
+    // the run's record sits once the page is folded.
+    const runs: { key: string; stub: ActivityRunStub; bounds: RunBounds }[] = [];
+    for (const stub of stubs) {
+      const first = pageById.get(stub.loadedFirstItemId);
+      const last = pageById.get(stub.loadedLastItemId);
+      if (first && last) runs.push({ key: stub.firstItemId, stub, bounds: { first, last } });
     }
-    return false;
+    const refusals: RunRefusal[] = [];
+    for (const item of carried) {
+      const run = runs.find(({ stub, bounds }) => coversUnshipped(stub, 0, bounds, item)
+        || continuesUnshippedEnd(stub, item, rows, NO_ITEMS, selection));
+      if (run) refusals.push({ runKey: run.key, item });
+    }
+    if (refusals.length === 0) return { items: rows, refusals: NO_REFUSALS };
+    const refused = new Set(refusals.map(refusal => refusal.item.id));
+    return { items: rows.filter(item => !refused.has(item.id)), refusals };
   }
 
   // Collapse state and the mount window both ride on the projected node, so
@@ -1713,23 +1837,13 @@ export function createThreadActivityRuns(
       return Boolean(archived && (archived.windowStartItemId !== null || archived.scroll?.escaped));
     },
     containsMember: (runId, itemId) => entries.get(runId)?.members.has(itemId) ?? false,
-    spansItem: (runId, itemId, cursor) => {
-      const entry = entries.get(runId);
-      if (!entry || entry.members.has(itemId)) return false;
-      const key = entry.runFirstItemId;
-      if (key === null) return false;
-      const record = records.get(key);
-      const bounds = recordBounds.get(key);
-      if (!record || !bounds) return false;
-      return coversUnshipped(record, bounds, cursor);
-    },
     fetchMembers: (runId, request) => {
       const key = entries.get(runId)?.runFirstItemId;
       if (key === null || key === undefined) return Promise.resolve([]);
       return memberFetch.fetch(key, request);
     },
     loadUnshippedMember: async (item) => {
-      const key = runCoveringUnshipped(item);
+      const key = runHoldingUnshipped(item);
       if (key === null) return false;
       const held = await memberFetch.fetch(key, {
         direction: 'around',
@@ -1749,6 +1863,17 @@ export function createThreadActivityRuns(
     applyWindowCut,
     heldRunFold: () => heldRunsFold(records),
     runCoveringUnshipped,
+    admitCarriedRows,
+    noteRefusals: (refusals) => {
+      let noted = false;
+      for (const { runKey, item } of refusals) {
+        const record = records.get(runKey);
+        if (!record) continue;
+        noteRefusedRow(record, item);
+        noted = true;
+      }
+      if (noted) memberFetch.scheduleRefresh();
+    },
     markRunDirty: (runKey) => {
       const record = records.get(runKey);
       if (!record) return;

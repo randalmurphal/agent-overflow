@@ -187,6 +187,7 @@ func triggerPrograms(t *testing.T, s *Store, query string, args ...any) []string
 	if err != nil {
 		t.Fatalf("explain: %v\n%s", err, query)
 	}
+	defer rows.Close()
 	var programs []string
 	for rows.Next() {
 		var addr, p1, p2, p3, p5, comment any
@@ -413,6 +414,7 @@ func TestPointerForkRowTriggersProbeTheLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	triggers := map[string]string{}
 	for rows.Next() {
 		var name, text string

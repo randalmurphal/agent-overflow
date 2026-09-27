@@ -249,12 +249,14 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 // before its ledger entry did is still found here, so re-entering the phase
 // surfaces the original rather than starting a second one. Absence is the
 // ordinary first-run answer and is reported as found=false, not as an error.
+// The source is a literal in the text: the source-ref indexes are partial on
+// a source, and the planner matches a bound one only by reading it.
 func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
 	item, err := scanWorkItem(s.reader().QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items
-		 WHERE source = ? AND source_ref = ? AND source_ref <> ''
+		 WHERE source = `+sqlTextLiteral(source)+` AND source_ref = ? AND source_ref <> ''
 		 ORDER BY created_at ASC, id ASC LIMIT 1`,
-		source, sourceRef,
+		sourceRef,
 	), false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkItem{}, false, nil

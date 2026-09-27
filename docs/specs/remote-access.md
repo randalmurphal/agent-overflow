@@ -1397,16 +1397,28 @@ means `unavailableEngine`, no `browser` capability, one boot log line
 naming the setting. Lifecycle mirrors the hosted engine's policy: one
 Chromium process per profile started on first page, `--headless=new`,
 `--user-data-dir` under `browser-profiles/<hash>/chromium` (temp dir
-removed on Dispose when site data does not persist), downloads pinned
-to the profile's `DownloadDir` via `Browser.setDownloadBehavior`, the
-existing idle close after two minutes, page and profile caps
-unchanged. An ephemeral directory carries a marker naming the process
-that made it, and engine start removes every `ao-browser-ephemeral-*`
+removed on Dispose when site data does not persist), Chromium in a
+process group of its own that Dispose kills whole, waiting for every
+member to exit before an ephemeral directory is removed, its owner
+marker last; a persisted profile's browser is first asked to exit over
+CDP (`Browser.close`, bounded), because Chromium writes recent cookies
+only on the way out; downloads pinned
+to the profile's `DownloadDir` via `Browser.setDownloadBehavior`; the
+workspace's navigation policy enabled on the browser session as well as
+on each page (`Fetch.enable`), because a popup runs before the Manager
+can adopt it; Chromium's crash handler pointed into the user-data
+directory (`BREAKPAD_DUMP_LOCATION`); the existing idle close after two
+minutes, page and profile caps unchanged. An ephemeral directory
+carries a marker naming the process that made it, and engine start
+removes every `ao-browser-ephemeral-*`
 root whose owner is no longer alive and no unmarked directory at all,
 which is what reclaims a profile left by a backend that was killed; a
 per-profile watcher on the chromedp browser context reports every
 bound page closed and disposes the profile when the browser dies, so a
-dead Chromium leaves no pages a tool call could still address. Strictly no `--no-sandbox`: a launch that fails for lack of
+dead Chromium leaves no pages a tool call could still address; a page
+creation that finds the browser dead before the watcher runs retires it
+instead, reaping it and reporting its pages closed, then relaunches, and
+each page is reported once whichever runs first. Strictly no `--no-sandbox`: a launch that fails for lack of
 a sandbox surfaces the engine's error and serve-mode.md says to run
 the service as a non-root user. `cdp_page.go` is reused whole. The
 pane host, DevTools, and site-data listing are not implemented
@@ -1469,8 +1481,8 @@ paint. `previewRouted` is that predicate's negation, stated once in
 `attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
 as a sentence ("Shared while vite runs it") with no control, because
 `DisallowPreviewPort` edits only the persisted set. **Headless engine**
-(`internal/browser`): as specified; `no-sandbox` is asserted PRESENT
-and false in the launch flags, `browserChromiumPath` is a host-tier
+(`internal/browser`): as specified; the launch argv never contains
+`--no-sandbox`, `browserChromiumPath` is a host-tier
 setting with a Settings input, and the hello advertises `browser` only
 when the engine is available. **Only live use proves**: a real tsnet
 `ListenTLSOn` on a joined node, a real Vite HMR session through the
@@ -3225,9 +3237,10 @@ Classes to enumerate:
 - **Listeners**: loopback, LAN, tsnet, plus the auxiliary
   loopback servers (browser MCP, harness control, claudetui gateway +
   hook relay, pprof, the `--connect` client stub)
-  and the **implicit** ones our own child processes open — chromedp
-  gives every managed Chrome a loopback DevTools port, which no
-  inventory named until this audit. Each declares what capability it
+  and the **implicit** ones our own child processes open: every
+  Chromium the headless engine launches gets a loopback DevTools port
+  (`--remote-debugging-port=0`), which no inventory named until this
+  audit. Each declares what capability it
   carries and how it authenticates, not merely that it holds no
   session credential: the browser MCP endpoint carries page
   evaluation and workspace file reads behind an unguessable path
@@ -3261,8 +3274,8 @@ WebView2 / WebKitGTK child view clipped into the pane):
   plus the launch credential. Declared in the Listener rows.
 - **WebView2 debug-port reservation** (`webview2host.freeLoopbackPort`):
   the host binds a free loopback port so the page view's DevTools port
-  is ours before Chromium takes it. Implicit, listed the way chromedp's
-  port was.
+  is ours before Chromium takes it. Implicit, listed the way the
+  headless Chromium's port is.
 - **`/browser-cdp` route** (`transport.CDPTunnelPath`): a byte-stream
   mux the scope gate never sees, so it is enumerated as a route with
   its own posture. Loopback `Host` guard, launch credential, and

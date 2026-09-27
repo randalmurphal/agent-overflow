@@ -17,7 +17,8 @@ import type { Thread } from '../types/models';
 import { composeWorkspaceKey, workspaceKeyForThread } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../transport/entityIndex';
-import { __attachBackendForTest, detachBackend } from '../transport/backends';
+import { __attachBackendForTest, detachBackend, takePinnedBackend } from '../transport/backends';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
@@ -443,6 +444,47 @@ describe('gitStatusStore — transport edges', () => {
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     await flush();
     a.release();
+  });
+
+  // A subscription id is meaningful only on the connection that minted it,
+  // so the release must name that computer rather than rely on a route.
+  it('pins each unsubscribe to the computer that minted the subscription, even when ids collide', async () => {
+    localStorage.setItem(
+      'agent-overflow:deviceSession:laptop',
+      JSON.stringify({ sessionId: 's-laptop', credential: 'c', expiresAtMs: Date.now() + 60_000, scopes: ['git:operate'] }),
+    );
+    const remote = stageBackend();
+    buildPane();
+    const issued: Array<string | null> = [];
+    const released: Array<string | null> = [];
+    setBindingMock('GitStatusSubscribe', async () => {
+      issued.push(takePinnedBackend());
+      return { id: 'same-subscription-id', cwd: CWD, status: status() };
+    });
+    setBindingMock('GitStatusUnsubscribe', async () => { released.push(takePinnedBackend()); });
+    const home = attachGitStatus(WORKSPACE, { workspace: ref(WORKSPACE_PATH) });
+    const laptop = attachGitStatus(composeWorkspaceKey('laptop', WORKSPACE_PATH), {
+      workspace: { projectId: 'project-remote', workspacePath: WORKSPACE_PATH },
+    });
+    try {
+      await flush();
+      expect(issued).toEqual([HOME_BACKEND, 'laptop']);
+      remote.setStatus('disconnected');
+      await flush();
+      expect(released).toEqual(['laptop']);
+      remote.setStatus('connected');
+      await flush();
+      expect(issued).toEqual([HOME_BACKEND, 'laptop', 'laptop']);
+      laptop.release();
+      home.release();
+      await flush();
+      expect(released).toEqual(['laptop', 'laptop', HOME_BACKEND]);
+    } finally {
+      home.release();
+      laptop.release();
+      resetStagedBackends();
+      localStorage.removeItem('agent-overflow:deviceSession:laptop');
+    }
   });
 });
 

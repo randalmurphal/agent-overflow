@@ -156,6 +156,7 @@ func legacyCopyForkForTest(t *testing.T, s *Store, src, fork string, throughTurn
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	var run []Item
 	var runShared bool
 	index := func() {

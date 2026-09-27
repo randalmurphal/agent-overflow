@@ -17,9 +17,8 @@ import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 import type { Project, Thread } from '../types/models';
 import { getThreadGroupById } from './threadGroups.svelte';
 import { preferredProjectTarget } from './projectTargets';
-import { withBackendTarget } from '../transport/backends';
-import { noteThread, projectBackend } from '../transport/entityIndex';
-import { HOME_BACKEND } from '../transport/backendKey';
+import { requireEntityBackend, withBackendTarget } from '../transport/backends';
+import { projectBackend } from '../transport/entityIndex';
 import { moveDraftProject } from './draftProjectMove';
 
 interface DraftDefaultsRequest {
@@ -113,7 +112,7 @@ async function loadAndStartDraftPlaceholder(
   const request = beginDraftDefaultsRequest(pane);
   let defaults: DraftPlaceholderDefaults | undefined;
   try {
-    defaults = await withBackendTarget(projectBackend(project.id) ?? HOME_BACKEND,
+    defaults = await withBackendTarget(requireEntityBackend(projectBackend(project.id)),
       () => GetThreadDefaults({ projectId: project.id, mode: 'chat' }));
   } catch (err) {
     reportFrontendDiagnostic('thread defaults fetch failed', errString(err));
@@ -129,12 +128,16 @@ async function loadAndStartDraftPlaceholder(
   return true;
 }
 
-/** Change the draft's project, carrying its content and selected settings. */
+/**
+ * Change the draft's project, carrying its content and selected settings. A
+ * project no computer is known to own is refused and the draft stays put.
+ */
 export async function switchDraftProject(
   pane: ThreadPane,
   project: Project,
 ): Promise<boolean> {
   return moveDraftProject(pane, project, async () => {
+    const backend = requireEntityBackend(projectBackend(project.id));
     const source = pane.thread!;
     const selected: DraftPlaceholderDefaults = {
       provider: source.provider, model: source.model, reasoningEffort: source.reasoningEffort,
@@ -145,7 +148,7 @@ export async function switchDraftProject(
     pane.startDraftPlaceholder(project, source.mode === 'plan' ? 'plan' : 'chat', selected);
     const request = beginDraftDefaultsRequest(pane);
     try {
-      const defaults = await withBackendTarget(projectBackend(project.id) ?? HOME_BACKEND,
+      const defaults = await withBackendTarget(backend,
         () => GetThreadDefaults({ projectId: project.id, mode: source.mode }));
       if (!draftDefaultsRequestIsCurrent(pane, request)) return false;
       pane.applyDraftPlaceholderDefaults({ ...defaults, ...(source.model ? selected : {}) });
@@ -227,8 +230,7 @@ export async function openDraftThreadForProject(
 }
 
 export interface OpenTerminalThreadOptions {
-  /** Project to root the terminal in. Every live entry point passes one — a
-   *  project-less terminal would have no sidebar surface. */
+  /** Project to root the terminal in; absent beside a thread that has none. */
   projectId?: string;
   /** Explicit working directory. Omitted → backend resolves (project root or home). */
   cwd?: string;
@@ -268,9 +270,10 @@ export async function openTerminalThread(
   const { projectId, cwd } = options;
   let thread: Thread;
   try {
-    const backend = projectId ? projectBackend(projectId) ?? HOME_BACKEND : HOME_BACKEND;
-    thread = await withBackendTarget(backend, () => StartTerminal({ projectId, cwd }));
-    noteThread(thread.id, backend, thread.ownershipEpoch ?? 0);
+    // A project names its computer. Without one, the terminal opens beside the
+    // focused pane's thread, which is where StartTerminal's `selected` route goes.
+    const start = () => StartTerminal({ projectId, cwd });
+    thread = await (projectId ? withBackendTarget(requireEntityBackend(projectBackend(projectId)), start) : start());
   } catch (err) {
     console.error('StartTerminal failed', err);
     addToast('error', `Could not start terminal: ${errString(err)}`);

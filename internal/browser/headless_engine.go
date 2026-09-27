@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/chromedp/chromedp"
 )
 
 // The headless Chromium engine: the SERVE-mode implementation of the
@@ -46,16 +44,18 @@ import (
 const (
 	// headlessLaunchTimeout bounds one profile's launch end to end:
 	// spawning the binary, waiting for its "DevTools listening on" line,
-	// and the browser-level handshake. A cold Chromium on a loaded serve
-	// host is seconds; past this the process is wedged and the tool call
-	// must fail rather than hang.
+	// the browser-level handshake and the download setup. A cold Chromium
+	// on a loaded serve host is seconds; past this the process is wedged
+	// and the tool call must fail rather than hang.
 	headlessLaunchTimeout = 45 * time.Second
-	// headlessOutputTail bounds how much of a failed launch's output an
-	// error carries. The diagnosis is the last lines — the sandbox
-	// refusal, the missing shared library — and the process chose how much
-	// noise came before them, so it must not also choose how much memory
-	// the error costs.
+	// headlessOutputTail bounds how much of a launch's output is kept for
+	// its error.
 	headlessOutputTail = 4 << 10
+	// chromiumCloseTimeout bounds how long a persisted profile's Chromium is
+	// given to exit when asked (headlessProfile.closeBrowser). It exits in
+	// about a tenth of a second; one that takes this long is wedged, and it
+	// is killed.
+	chromiumCloseTimeout = 5 * time.Second
 )
 
 // HeadlessChromiumOptions selects this engine. It is an explicit POSITIVE
@@ -76,6 +76,8 @@ type headlessEngine struct {
 	binary string
 	events engineEvents
 	logf   func(string, ...any)
+	// closeTimeout is chromiumCloseTimeout, shorter in a unit test.
+	closeTimeout time.Duration
 
 	// tempRoot is where an ephemeral profile's directory is created and
 	// the only directory Start sweeps. Empty in a unit test's engine,
@@ -101,13 +103,14 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 		return nil, err
 	}
 	return &headlessEngine{
-		configDir:   configDir,
-		tempRoot:    os.TempDir(),
-		binary:      binary,
-		events:      events,
-		logf:        log.Printf,
-		profiles:    make(map[*headlessProfile]struct{}),
-		pageProfile: make(map[string]*headlessProfile),
+		configDir:    configDir,
+		tempRoot:     os.TempDir(),
+		binary:       binary,
+		events:       events,
+		logf:         log.Printf,
+		closeTimeout: chromiumCloseTimeout,
+		profiles:     make(map[*headlessProfile]struct{}),
+		pageProfile:  make(map[string]*headlessProfile),
 	}, nil
 }
 
@@ -190,8 +193,11 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if strings.TrimSpace(opts.Workspace) == "" {
 		return nil, errors.New("browser: workspace is required for a browser profile")
 	}
+	if opts.Allow == nil {
+		return nil, errors.New("browser: a navigation policy is required for a browser profile")
+	}
 	digest := sha256.Sum256([]byte(opts.Workspace))
-	p := &headlessProfile{engine: e, handle: fmt.Sprintf("%x", digest[:12]), downloadDir: opts.DownloadDir}
+	p := &headlessProfile{engine: e, handle: fmt.Sprintf("%x", digest[:12]), downloadDir: opts.DownloadDir, allow: opts.Allow}
 	if opts.Persist {
 		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, p.handle, "chromium")
 	} else {
@@ -289,55 +295,43 @@ func (e *headlessEngine) forgetProfile(p *headlessProfile) {
 	e.mu.Unlock()
 }
 
-// chromiumFlag is one command-line flag in chromedp's own vocabulary: a
-// string value becomes --name=value, true becomes --name, and FALSE is a
-// flag deliberately WITHHELD — which is not the same as absent, and the
-// difference is the sandbox (see chromiumLaunchFlags).
-type chromiumFlag struct {
-	name  string
-	value any
-}
-
-// chromiumLaunchFlags is the entire command line this engine builds, kept
-// pure so a test can read it without a browser on the machine.
+// chromiumArgs is the entire command line this engine gives Chromium, kept
+// pure so a test can read it without a browser on the machine. It is this
+// fixed list and nothing else: chromedp's DefaultExecAllocatorOptions are
+// two dozen flags tuned for scraping.
 //
-// chromedp's DefaultExecAllocatorOptions are deliberately NOT used: they
-// are two dozen flags tuned for scraping, and a serve host's browser
-// should be exactly what this list says and nothing else. chromedp still
-// appends --remote-debugging-port=0 and an about:blank argument of its own.
-func chromiumLaunchFlags(userDataDir string) []chromiumFlag {
-	return []chromiumFlag{
+// The renderer sandbox stays on for every user: there is no --no-sandbox,
+// and nothing adds one when the backend runs as root. Chromium refuses to
+// start as root with the sandbox on, so a serve backend under a root service
+// unit fails to launch and says why; docs/architecture/serve-mode.md tells
+// operators to run the service as a non-root user.
+func chromiumArgs(userDataDir string) []string {
+	return []string{
 		// The modern headless mode: a real Chromium with no window, rather
 		// than the old separate headless shell that shipped different
 		// behavior from the browser users actually run.
-		{"headless", "new"},
+		"--headless=new",
 		// One process per profile is one user-data directory per profile,
 		// and that directory is the whole of a workspace's isolation here.
-		{"user-data-dir", userDataDir},
+		"--user-data-dir=" + userDataDir,
 		// No compositor on a serve host, and a GPU process that cannot
 		// reach a display is a crash loop rather than an optimisation.
-		{"disable-gpu", true},
-		{"no-first-run", true},
-		{"no-default-browser-check", true},
-		// NEVER --no-sandbox, and PRESENT-AND-FALSE rather than absent:
-		// chromedp adds --no-sandbox by itself when the process runs as
-		// root unless the flag is already in its map (allocate.go). So an
-		// absent flag would silently drop the renderer sandbox on exactly
-		// the deployment most likely to be misconfigured — a serve backend
-		// started by a root service unit. docs/architecture/serve-mode.md
-		// says to run the service as a non-root user; this line is what
-		// makes that instruction load-bearing instead of advisory, because
-		// a root install now FAILS to launch and says so.
-		{"no-sandbox", false},
+		"--disable-gpu",
+		"--no-first-run",
+		"--no-default-browser-check",
+		// The kernel picks a free loopback port, and Chromium prints the
+		// browser websocket URL on it (startChromium reads that line).
+		"--remote-debugging-port=0",
+		// The first page is blank rather than the welcome page, which
+		// --no-first-run alone does not ensure.
+		"about:blank",
 	}
 }
 
-func (e *headlessEngine) execOptions(userDataDir string) []chromedp.ExecAllocatorOption {
-	flags := chromiumLaunchFlags(userDataDir)
-	opts := make([]chromedp.ExecAllocatorOption, 0, len(flags)+2)
-	opts = append(opts, chromedp.ExecPath(e.binary), chromedp.WSURLReadTimeout(headlessLaunchTimeout))
-	for _, flag := range flags {
-		opts = append(opts, chromedp.Flag(flag.name, flag.value))
-	}
-	return opts
+// chromiumEnv is what the launch adds to the inherited environment. It
+// points Chromium's crash handler at the profile's own directory, so its
+// database and minidumps go with the profile rather than into the user's
+// Chrome directory.
+func chromiumEnv(userDataDir string) []string {
+	return []string{"BREAKPAD_DUMP_LOCATION=" + filepath.Join(userDataDir, "Crash Reports")}
 }

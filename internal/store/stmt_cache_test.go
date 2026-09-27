@@ -456,6 +456,7 @@ func TestStatementCacheBusyStatementRunsUncached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer outer.Close()
 	var outerIDs []string
 	for outer.Next() {
 		var id string
@@ -490,6 +491,45 @@ func TestStatementCacheBusyStatementRunsUncached(t *testing.T) {
 	}
 	if prepared, runs := counts.total(sqlPrepared, query), counts.total(sqlStmtRun, query); prepared != 1 || runs != 2 {
 		t.Fatalf("query compiled %d times and ran prepared %d times, want 1 and 2", prepared, runs)
+	}
+}
+
+// TestPagesOfAnyLengthShareStatements reads timeline pages of several
+// lengths and requires the later pages to compile no statement text the
+// first did not: a page's id list must not be rendered into its SQL.
+func TestPagesOfAnyLengthShareStatements(t *testing.T) {
+	s, counts := openObservedStore(t)
+	const thread = "paged"
+	localHistoryFixture(t, s, thread, 60)
+	compiledTexts := func() map[string]bool {
+		texts := map[string]bool{}
+		for key := range counts.snapshot() {
+			if key.use == sqlPrepared {
+				texts[key.query] = true
+			}
+		}
+		return texts
+	}
+	lengths := map[int]bool{}
+	page := func(target int) {
+		got, err := s.ListThreadSliceAround(context.Background(), thread, "row-030", target, testRunWindowRows, TimelineSelection{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lengths[len(got.Items)] = true
+	}
+	page(4)
+	first := compiledTexts()
+	for _, target := range []int{9, 17, 26} {
+		page(target)
+	}
+	if len(lengths) != 4 {
+		t.Fatalf("pages shipped %v rows; the check needs four lengths", lengths)
+	}
+	for text := range compiledTexts() {
+		if !first[text] {
+			t.Errorf("a longer page compiled a statement the first page did not:\n%s", text)
+		}
 	}
 }
 

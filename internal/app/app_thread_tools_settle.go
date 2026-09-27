@@ -173,20 +173,12 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 // settled text, and the preview a wake carries is applied where the wake is
 // rendered, not here.
 func (a *App) lastAssistantText(threadID string, turnIndex int) (string, error) {
-	items, err := a.store.ListTurnItems(threadID, turnIndex)
-	if err != nil {
+	row, found, err := a.store.LastTopLevelTurnItem(threadID, turnIndex, "assistant_text")
+	if err != nil || !found {
 		return "", err
 	}
-	adapter := a.threadTools()
-	for index := len(items) - 1; index >= 0; index-- {
-		row := items[index]
-		if row.Kind != "assistant_text" || row.ParentID != "" {
-			continue
-		}
-		text, _, err := adapter.itemBody(row, threadItemWholeBody)
-		return text, err
-	}
-	return "", nil
+	text, _, err := a.threadTools().itemBody(row, threadItemWholeBody)
+	return text, err
 }
 
 // threadSettlementWork is what one settlement owes once the token's settle

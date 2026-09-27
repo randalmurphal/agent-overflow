@@ -10,20 +10,23 @@ import (
 	"strings"
 )
 
-// FindStreamItemByProviderItemID resolves a streamed assistant row from the
-// provider's item id stored in items.meta. It is intentionally a narrow
-// fallback lookup for late completion events; the hot delta path keeps the
-// in-memory item id and never pays this JSON predicate.
+// FindStreamItemByProviderItemID resolves a turn's assistant text or
+// thinking row from the provider's item id stored in items.meta. A settled
+// block with no stream in memory finds its row this way: every block of a
+// background agent, which never streams, a transcript snapshot and a
+// repeated stop. idx_items_provider_item keeps the lookup off the turn's
+// other rows.
 func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
-	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
-		Turn: "?", TurnArgs: []any{turnIndex},
-		Where: `items.kind = ?
-		    AND items.parent_id = ?
+	// idx_items_provider_item finds the id on the local and lineage arms;
+	// the turn keeps the imported arms on the chunks that hold it.
+	selection, args, err := materializedIDSelection(s.reader(), threadID, timelineSelection{
+		Columns: timelineIDColumns,
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		Where: `items.kind = ` + boundText + `
+		    AND items.parent_id = ` + boundText + `
 		    AND json_extract(items.meta, '$.provider_item_id') = ?`,
 		WhereArgs: []any{kind, parentID, providerItemID},
-		OrderBy:   "item_index ASC",
-		Limit:     1,
-	})
+	}, "item_index ASC", 1)
 	if err != nil {
 		return Item{}, false, err
 	}
@@ -34,26 +37,136 @@ func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, k
 	return item, found, nil
 }
 
-func (s *Store) ListItems(threadID string) ([]Item, error) {
-	items, err := queryHydratedTimelineItems(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items WHERE thread_id = ?`,
-		threadID,
-	)
+// TurnItemIDsWithPrefix returns the ids of turnIndex's logical rows that
+// start with prefix, in no order: the sequenced user rows of a turn
+// (`user:<turn>:<scope>:`) without reading the turn's other rows.
+func (s *Store) TurnItemIDsWithPrefix(threadID string, turnIndex int, prefix string) ([]string, error) {
+	if prefix == "" || prefix[len(prefix)-1] == 0xff {
+		return nil, fmt.Errorf("store: turn item id prefix %q has no upper bound", prefix)
+	}
+	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.id AS id" },
+		Turn:      "?",
+		TurnArgs:  []any{turnIndex},
+		Where:     `items.id >= ? AND items.id < ?`,
+		WhereArgs: []any{prefix, prefix[:len(prefix)-1] + string([]byte{prefix[len(prefix)-1] + 1})},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("store: list items for thread %s: %w", threadID, err)
+		return nil, err
+	}
+	ids, err := queryIDs(s.reader(), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: turn item ids with prefix %q for %s/%d: %w", prefix, threadID, turnIndex, err)
+	}
+	return ids, nil
+}
+
+// ListUnsettledTurnItems returns turnIndex's running and streaming rows in
+// timeline order, read through idx_items_unsettled rather than the turn.
+// FilterCut keeps a fork's lineage arms on that index: ranging over the cut
+// would walk the ancestor's history below it.
+func (s *Store) ListUnsettledTurnItems(threadID string, turnIndex int) ([]Item, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Turn: "?", TurnArgs: []any{turnIndex},
+		FilterCut: true,
+		Where:     `items.status IN ('running', 'streaming')`,
+	})
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list unsettled items for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
 	return items, nil
 }
 
-func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
+// LastTopLevelTurnItem returns turnIndex's last visible top-level row of
+// kind. The main-timeline predicate puts every arm on the covering
+// top-level indexes (v136), so the read passes over no subagent child row.
+func (s *Store) LastTopLevelTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Turn: "?", TurnArgs: []any{turnIndex},
+		Where:     mainTimelineFilterFor("items.") + ` AND items.kind = ` + boundText,
+		WhereArgs: []any{kind},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     1,
+	})
+	if err != nil {
+		return Item{}, false, err
+	}
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: last top-level %s of thread %s turn %d: %w", kind, threadID, turnIndex, err)
+	}
+	return item, found, nil
+}
+
+// ListTurnItemsOfKind returns turnIndex's rows of kind in timeline order,
+// hydrating only those rows.
+func (s *Store) ListTurnItemsOfKind(threadID string, turnIndex int, kind string) ([]Item, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Turn: "?", TurnArgs: []any{turnIndex},
+		Where:     `items.kind = ` + boundText,
+		WhereArgs: []any{kind},
+	})
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list %s items for thread %s turn %d: %w", kind, threadID, turnIndex, err)
+	}
+	return items, nil
+}
+
+// ListTurnSummaryOnlyDiffItems returns the thread's own rows of turnIndex
+// whose tool_result payload carries a summary-only inline diff, in timeline
+// order: the rows a Codex turn diff can upgrade. A turn diff belongs to the
+// live turn, which holds no inherited or imported rows. The rows are found
+// through idx_payloads_summary_only_diff, so a read costs every
+// summary-only payload of the thread rather than the turn's rows. That
+// includes the payloads of earlier turns no diff upgraded: two changes to
+// one path in a turn, a change the diff has no section for, a row that is
+// not a file change, a turn that sent no diff.
+func (s *Store) ListTurnSummaryOnlyDiffItems(threadID string, turnIndex int) ([]Item, error) {
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, `
+		SELECT items.id
+		  FROM payloads INDEXED BY idx_payloads_summary_only_diff
+		  CROSS JOIN items
+		    ON items.thread_id = payloads.thread_id AND items.payload_id = payloads.id
+		 WHERE payloads.thread_id = ?
+		   AND `+summaryOnlyDiffPayloadSQL+`
+		   AND items.turn_index = ?`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list summary-only diff items for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	return items, nil
+}
+
+// ListItems returns every logical row of the thread. It reads the whole
+// history, so it takes a history read slot.
+func (s *Store) ListItems(threadID string) ([]Item, error) {
+	return historyReadSnapshot(context.Background(), s, "list items", func(q sqlQueryer) ([]Item, error) {
+		items, err := queryHydratedTimelineItems(q, threadID, `SELECT id FROM timeline_items WHERE thread_id = ?`, threadID)
+		if err != nil {
+			return nil, fmt.Errorf("store: list items for thread %s: %w", threadID, err)
+		}
+		return items, nil
+	})
+}
+
+// ListTurnItems returns turnIndex's logical rows in timeline order.
+func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	selection, args, err := turnIDSelection(s.reader(), threadID, turnIndex)
 	if err != nil {
 		return nil, err
 	}
 	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list items for thread %s turn %d: %w", threadID, turnIndex, err)
+		return nil, fmt.Errorf("store: list turn items for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
 	return items, nil
 }
@@ -105,7 +218,7 @@ func (s *Store) lastTurnIndex(threadID string) (sql.NullInt64, error) {
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Turn: "?", TurnArgs: []any{turnIndex},
-		Where: "items.kind = ?", WhereArgs: []any{kind},
+		Where: "items.kind = " + boundText, WhereArgs: []any{kind},
 		OrderBy: "item_index DESC", Limit: 1,
 	})
 	if err != nil {
@@ -289,7 +402,7 @@ func (s *Store) FindProvisionalSubagentPrompt(threadID, parentID, content string
 		s.reader(), threadID,
 		`SELECT id FROM items
 		  WHERE thread_id = ?
-		    AND parent_id = ?
+		    AND parent_id = `+boundText+`
 		    AND parent_id <> ''
 		    AND kind = 'user_text'
 		    AND summary = ?
@@ -380,9 +493,10 @@ type UserMessageTick struct {
 // It runs on every thread switch, so it walks the partial index
 // idx_items_user_text (v73) through the physical timeline arms rather
 // than sorting the thread's whole row set behind the view: 17,816 pages
-// / 17 ms became 736 / 1-3 ms on a 67k-item thread.
+// / 17 ms became 736 / 1-3 ms on a 67k-item thread. Its cost still grows
+// with the thread, so it takes a history read slot.
 func (s *Store) ListThreadUserMessageTicks(threadID string, selection TimelineSelection) ([]UserMessageTick, error) {
-	return readSnapshot(s.reader(), "user message ticks", func(q sqlQueryer) ([]UserMessageTick, error) {
+	return historyReadSnapshot(context.Background(), s, "user message ticks", func(q sqlQueryer) ([]UserMessageTick, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return nil, err
@@ -442,42 +556,46 @@ type UserMessageHistoryEntry struct {
 // rune-capped. Wire-only injections and subagent child prompts are
 // excluded by the shared predicate. Like the ticks read it walks
 // idx_items_user_text through the physical timeline arms, so the LIMIT
-// stops the read instead of trimming a fully sorted thread.
+// stops the local read instead of trimming a fully sorted thread. An
+// imported arm reads each chunk back to its newest user message, so the
+// read takes a history read slot.
 //
 // A non-positive limit returns no rows.
 func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]UserMessageHistoryEntry, error) {
 	if limit <= 0 {
 		return []UserMessageHistoryEntry{}, nil
 	}
-	sql, args, err := timelineArms(s.reader(), threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.id AS id, items.turn_index AS turn_index,
-			        items.item_index AS item_index, items.summary AS summary`
-		},
-		Where:   readerAuthoredUserTextFilterFor("items."),
-		OrderBy: "turn_index DESC, item_index DESC",
-		Limit:   limit,
-	})
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.reader().Query(sql, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
-	}
-	defer rows.Close()
-	entries := []UserMessageHistoryEntry{}
-	for rows.Next() {
-		var e UserMessageHistoryEntry
-		if err := rows.Scan(&e.ID, &e.TurnIndex, &e.ItemIndex, &e.Summary); err != nil {
-			return nil, fmt.Errorf("store: scan user message history row on thread %s: %w", threadID, err)
+	return historyReadSnapshot(context.Background(), s, "user message history", func(q sqlQueryer) ([]UserMessageHistoryEntry, error) {
+		sql, args, err := timelineArms(q, threadID, timelineSelection{
+			Columns: func(string, string) string {
+				return `items.id AS id, items.turn_index AS turn_index,
+				        items.item_index AS item_index, items.summary AS summary`
+			},
+			Where:   readerAuthoredUserTextFilterFor("items."),
+			OrderBy: "turn_index DESC, item_index DESC",
+			Limit:   limit,
+		})
+		if err != nil {
+			return nil, err
 		}
-		entries = append(entries, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
-	}
-	return entries, nil
+		rows, err := q.Query(sql, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
+		}
+		defer rows.Close()
+		entries := []UserMessageHistoryEntry{}
+		for rows.Next() {
+			var e UserMessageHistoryEntry
+			if err := rows.Scan(&e.ID, &e.TurnIndex, &e.ItemIndex, &e.Summary); err != nil {
+				return nil, fmt.Errorf("store: scan user message history row on thread %s: %w", threadID, err)
+			}
+			entries = append(entries, e)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
+		}
+		return entries, nil
+	})
 }
 
 // LatestHumanUserText returns the newest user message of a thread that no
@@ -488,30 +606,39 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 // for. Rows an agent wrote are excluded by `meta.origin`, the same key the
 // attribution chip renders from, so a chain of agent-to-agent messages
 // never quotes another agent back at itself. Wire-only injections and
-// subagent prompts are already excluded by the shared predicate.
+// subagent prompts are already excluded by the shared predicate. Like
+// the composer recall, an imported arm reads each chunk back to its
+// newest such message, so the read takes a history read slot.
 func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
-	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.summary AS summary, items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where: readerAuthoredUserTextFilterFor("items.") +
-			` AND COALESCE(CASE WHEN json_valid(items.meta) THEN json_extract(items.meta, '$.origin') END, '') = ''`,
-		OrderBy: "turn_index DESC, item_index DESC",
-		Limit:   1,
+	type latest struct {
+		summary string
+		found   bool
+	}
+	value, err := historyReadSnapshot(context.Background(), s, "latest human user text", func(q sqlQueryer) (latest, error) {
+		query, args, err := timelineArms(q, threadID, timelineSelection{
+			Columns: func(string, string) string {
+				return `items.summary AS summary, items.turn_index AS turn_index, items.item_index AS item_index`
+			},
+			Where: readerAuthoredUserTextFilterFor("items.") +
+				` AND COALESCE(CASE WHEN json_valid(items.meta) THEN json_extract(items.meta, '$.origin') END, '') = ''`,
+			OrderBy: "turn_index DESC, item_index DESC",
+			Limit:   1,
+		})
+		if err != nil {
+			return latest{}, err
+		}
+		var summary string
+		var turnIndex, itemIndex int
+		err = q.QueryRow(query, args...).Scan(&summary, &turnIndex, &itemIndex)
+		if errors.Is(err, sql.ErrNoRows) {
+			return latest{}, nil
+		}
+		if err != nil {
+			return latest{}, fmt.Errorf("store: latest human user text on thread %s: %w", threadID, err)
+		}
+		return latest{summary, true}, nil
 	})
-	if err != nil {
-		return "", false, err
-	}
-	var summary string
-	var turnIndex, itemIndex int
-	err = s.reader().QueryRow(query, args...).Scan(&summary, &turnIndex, &itemIndex)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("store: latest human user text on thread %s: %w", threadID, err)
-	}
-	return summary, true, nil
+	return value.summary, value.found, err
 }
 
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
@@ -556,52 +683,6 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 		return Item{}, false, fmt.Errorf("store: find notification by task_id %s: %w", taskID, err)
 	}
 	return item, found, nil
-}
-
-func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
-	selection, args, err := turnIDSelection(s.reader(), threadID, turnIndex)
-	if err != nil {
-		return nil, err
-	}
-	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list turn items for thread %s turn %d: %w", threadID, turnIndex, err)
-	}
-	return items, nil
-}
-
-// ListTurnItemsSansPayload is a lighter sibling of ListTurnItems that
-// skips the payloads LEFT JOIN. Use it on paths that read only the
-// item-table columns (status, summary, kind, role, is_background) —
-// the force-close safety net and the truncated-turn flip loop both
-// qualify. For any caller that inspects PayloadKind / PayloadMeta
-// (e.g. tool_result_diff_upgrade.loadSummaryOnlyToolResultCandidate)
-// keep ListTurnItems, which hydrates them.
-func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
-	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
-		Columns:   itemColumnsSansPayloadFor,
-		LocalJoin: servedItemJoin,
-		Turn:      "?", TurnArgs: []any{turnIndex},
-		OrderBy: "item_index",
-	})
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.reader().Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list turn items (sans payload) for thread %s turn %d: %w", threadID, turnIndex, err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		it, err := scanItemRowSansPayload(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan turn item row (sans payload): %w", err)
-		}
-		items = append(items, it)
-	}
-	return items, rows.Err()
 }
 
 // threadTitleContextSummaryTail / threadTitleContextSummaryHead bound
@@ -649,38 +730,35 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	if limit <= 0 {
 		return nil, false, nil
 	}
-	// One read-pool transaction for both statements: under WAL a read
-	// transaction pins its snapshot at the first statement, so the window
-	// and the earliest-user row describe one instant. Two reads could
-	// otherwise disagree about which rows exist.
-	tx, err := s.reader().BeginTx(context.Background(), nil)
-	if err != nil {
-		return nil, false, fmt.Errorf("store: begin thread title context for %s: %w", threadID, err)
+	// One read snapshot for both statements, so the window and the
+	// earliest-user row describe one instant.
+	type titleContext struct {
+		items   []Item
+		dropped bool
 	}
-	// Read-only: the read pool's connections carry query_only(1), and
-	// nothing here writes. Rollback is the whole cleanup.
-	defer tx.Rollback()
+	value, err := historyReadSnapshot(context.Background(), s, "thread title context", func(q sqlQueryer) (titleContext, error) {
+		items, dropped, err := threadTitleContextItems(q, threadID, limit)
+		return titleContext{items, dropped}, err
+	})
+	return value.items, value.dropped, err
+}
 
-	// The select lists below follow itemColumnsSansPayload's column ORDER
-	// because scanItemRowSansPayload scans positionally — a column added
-	// there must be added here too, in the same place.
+func threadTitleContextItems(q sqlQueryer, threadID string, limit int) ([]Item, bool, error) {
+	// The window walks the covering top-level indexes by kind and position
+	// and reads the rest of each row it keeps by rowid. The select lists
+	// below follow itemColumnsSansPayload's column ORDER because
+	// scanItemRowSansPayload scans positionally: a column added there must
+	// be added here too, in the same place.
 	//
 	// One row past the window: its arrival is what proves rows were
 	// dropped, and it is discarded immediately after.
-	windowSQL, windowArgs, err := timelineArms(tx, threadID, timelineSelection{
-		Columns: func(threadIDExpr, revExpr string) string {
-			return `items.id, ` + threadIDExpr + ` AS thread_id,
-			        items.turn_index AS turn_index, items.item_index AS item_index,
-			        items.kind, items.role, items.status,
-			        substr(items.summary, -` + strconv.Itoa(threadTitleContextSummaryTail) + `),
-			        COALESCE(items.payload_id, ''),
-			        items.parent_id, items.is_background, items.completion_of,
-			        items.tool_name, items.decision,
-			        CASE WHEN items.kind = 'user_text' THEN items.meta ELSE '' END,
-			        items.created_at, items.updated_at,
-			        ` + revExpr
+	windowSQL, windowArgs, err := timelineArms(q, threadID, timelineSelection{
+		Columns: func(threadIDExpr, _ string) string {
+			return `items.id AS id, ` + threadIDExpr + ` AS thread_id, items.kind AS kind,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
-		Where: topLevelItemsFilterFor("items.") + `
+		RowIDs: true,
+		Where: mainTimelineFilterFor("items.") + `
 		   AND items.kind IN ('user_text', 'assistant_text')`,
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   limit + 1,
@@ -688,7 +766,15 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	if err != nil {
 		return nil, false, err
 	}
-	windowRows, err := tx.Query(windowSQL, windowArgs...)
+	windowRows, err := q.Query(locatedRowsSQL(`w.id, w.thread_id, w.turn_index, w.item_index,
+		       w.kind, `+locatedColumn("role")+`, `+locatedColumn("status")+`,
+		       substr(`+locatedColumn("summary")+`, -`+strconv.Itoa(threadTitleContextSummaryTail)+`),
+		       COALESCE(`+locatedColumn("payload_id")+`, ''),
+		       `+locatedColumn("parent_id")+`, `+locatedColumn("is_background")+`, `+locatedColumn("completion_of")+`,
+		       `+locatedColumn("tool_name")+`, `+locatedColumn("decision")+`,
+		       CASE WHEN w.kind = 'user_text' THEN `+locatedColumn("meta")+` ELSE '' END,
+		       `+locatedColumn("created_at")+`, `+locatedColumn("updated_at")+`,
+		       `+locatedRevSQL, windowSQL, "DESC"), windowArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: thread title context items for %s: %w", threadID, err)
 	}
@@ -709,7 +795,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// itself once it overruns, so the pin is the only place the
 	// difference could show, and it only shows for a thread whose opening
 	// message is both enormous and still in the newest-N rows.
-	earliestSQL, earliestArgs, err := timelineArms(tx, threadID, timelineSelection{
+	earliestSQL, earliestArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(threadIDExpr, revExpr string) string {
 			return `items.id, ` + threadIDExpr + ` AS thread_id,
 			        items.turn_index AS turn_index, items.item_index AS item_index,
@@ -731,7 +817,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	if err != nil {
 		return nil, false, err
 	}
-	earliestRows, err := tx.Query(earliestSQL, earliestArgs...)
+	earliestRows, err := q.Query(earliestSQL, earliestArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: earliest thread title context item for %s: %w", threadID, err)
 	}
@@ -782,9 +868,9 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: func(string, string) string { return "1" },
 		Turn:    "?", TurnArgs: []any{turnIndex},
-		Where: `items.kind = ?
+		Where: `items.kind = ` + boundText + `
 			   AND items.role = 'system'
-			   AND items.parent_id = ?
+			   AND items.parent_id = ` + boundText + `
 			   AND items.summary = ?`,
 		WhereArgs: []any{kind, parentID, summary},
 	})
@@ -805,7 +891,7 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 // it precedes the queued message in the provider transcript.
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
 	var maxIndex sql.NullInt64
-	query, args, err := turnAggregateQuery(s.reader(), threadID, turnIndex, "MAX", "item_index")
+	query, args, err := turnItemIndexQuery(s.reader(), threadID, turnIndex, "MAX")
 	if err != nil {
 		return 0, false, err
 	}

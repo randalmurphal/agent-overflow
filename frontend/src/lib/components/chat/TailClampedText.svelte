@@ -24,22 +24,26 @@
   // falls back to exactly the un-animated anchor, so correctness never
   // depends on it.
   //
-  // Callers feed a MONOTONICALLY-GROWING live tail (the per-pane smoother
-  // tail) — never a pre-trimmed sliding window, whose moving start offset
-  // would re-wrap (and visibly jump) the visible lines on every delta. The
-  // component bounds its own layout cost instead: clipping bounds what is
+  // Callers feed a live tail that grows only at its end (the per-pane
+  // smoother tail). The source may drop text from its start only at a
+  // wrap-stable offset, and says where `text` starts in the stream
+  // (`textStart`: 0, or just after a '\n'); every offset below is a stream
+  // offset. A start at any other offset would re-wrap (and visibly jump) the
+  // visible lines on every delta.
+  //
+  // The component bounds its own layout cost: clipping bounds what is
   // painted, not what is laid out, so an unbounded tail re-line-breaks the
   // ENTIRE thinking text on every ~50Hz reveal tick. While collapsed, the
   // rendered text is windowed at WRAP-STABLE offsets only (hard newlines, or
-  // a measured rendered line start for a monster single paragraph — see
+  // a measured rendered line start for a monster single paragraph; see
   // tailWindow.ts), which keeps the visible lines pixel-identical while
   // capping per-tick layout at the window cap (~8k chars) instead of the
-  // whole accumulated tail. Append-detection
-  // sentinels reset the window on the non-append transitions — the swap to
-  // the rune-trimmed summary when the retained tail is dropped (offscreen
-  // prune, budget eviction, post-settle summary overwrite; see
-  // threadStreamingReveal.svelte.ts). When expanded the clamp, anchor, and
-  // window are all dropped (plain `block`; full text flows to full height).
+  // whole accumulated tail. Append-detection sentinels reset the window on
+  // the non-append transitions, such as the swap to the rune-trimmed summary
+  // when the retained tail is dropped (offscreen prune, budget eviction,
+  // post-settle summary overwrite; see threadStreamingReveal.svelte.ts).
+  // When expanded the clamp, anchor, and window are all dropped (plain
+  // `block`; full text flows to full height).
   import { untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
   import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
@@ -56,12 +60,15 @@
 
   let {
     text,
+    textStart = 0,
     expanded,
     id,
     testId,
     class: extraClass = '',
   }: {
     text: string;
+    /** Stream offset of `text`: 0, or just after a '\n'. */
+    textStart?: number;
     expanded: boolean;
     id?: string;
     testId?: string;
@@ -74,14 +81,14 @@
   let el: HTMLSpanElement | undefined = $state();
   let innerEl: HTMLSpanElement | undefined = $state();
 
-  /** Start of the wrap-stable window into `displayText` while collapsed. */
+  /** Stream offset where the wrap-stable window starts while collapsed. */
   let cutOffset = $state(0);
 
   // Non-reactive bookkeeping for isMonotonicAppend (which detects the
-  // non-append transitions — the swap to the shorter rune-trimmed
-  // summary when the retained tail is dropped — and resets the window)
-  // and for throttling failed measurements.
-  let prevLen = 0;
+  // non-append transitions, such as the swap to the shorter rune-trimmed
+  // summary when the retained tail is dropped, and resets the window)
+  // and for throttling failed measurements. Stream offsets.
+  let prevEnd = 0;
   let prevLastCharCode = 0;
   let cutFirstCharCode = 0;
   let measureFloor = 0;
@@ -206,57 +213,66 @@
   if (!untrack(() => expanded) && initialText.length > TAIL_WINDOW_CAP_CHARS) {
     const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS);
     if (initialCut !== null) {
-      cutOffset = initialCut;
+      cutOffset = untrack(() => textStart) + initialCut;
       cutFirstCharCode = initialText.charCodeAt(initialCut);
     }
   }
 
-  const rendered = $derived(expanded || cutOffset === 0 ? displayText : displayText.slice(cutOffset));
+  // A cut the source has moved past renders from the source's start, which
+  // is also wrap-stable; the effect below adopts it.
+  const renderedFrom = $derived(Math.max(0, cutOffset - textStart));
+  const rendered = $derived(expanded || renderedFrom === 0 ? displayText : displayText.slice(renderedFrom));
 
-  // Depends on `displayText` and `expanded` only — `cutOffset` reads go through
-  // `untrack` so the effect's own cut writes can't re-trigger it.
+  // Depends on `displayText`, `textStart` and `expanded`. `cutOffset` reads go
+  // through `untrack` so the effect's own cut writes can't re-trigger it.
   $effect(() => {
     const t = displayText;
+    const start = textStart;
+    const end = start + t.length;
     const renderedCut = untrack(() => cutOffset);
     let cut = renderedCut;
 
-    if (!isMonotonicAppend(t, prevLen, prevLastCharCode, cut, cutFirstCharCode)) {
-      cut = 0;
+    const appended = isMonotonicAppend(t, start, prevEnd, prevLastCharCode, cut, cutFirstCharCode);
+    if (!appended) {
+      cut = start;
       measureFloor = 0;
       // The content was REPLACED (retained-tail drop → trimmed summary).
-      // Any clip change is a swap, not a slide — recalibrate, and drop an
+      // Any clip change is a swap, not a slide: recalibrate, and drop an
       // in-flight slide even if the swap lands height-identical (the one
       // swap shape the RO cannot see). The expanded flip needs no arm
       // here: it moves the clamp box, and the RO watches the box.
       slideMemory = null;
       clearSlide();
+    } else if (cut < start) {
+      cut = start;
     }
-    prevLen = t.length;
+    prevEnd = end;
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
 
-    if (!expanded && t.length - cut > TAIL_WINDOW_CAP_CHARS) {
-      const nlCut = newlineCutOffset(t, cut, TAIL_WINDOW_MIN_KEEP_CHARS);
+    if (!expanded && end - cut > TAIL_WINDOW_CAP_CHARS) {
+      const nlCut = newlineCutOffset(t, cut - start, TAIL_WINDOW_MIN_KEEP_CHARS);
       if (nlCut !== null) {
-        cut = nlCut;
-      } else if (cut === renderedCut && t.length >= measureFloor) {
-        // The whole advanceable region is one giant paragraph — cut at
+        cut = start + nlCut;
+      } else if (cut === Math.max(renderedCut, start) && end >= measureFloor) {
+        // The whole advanceable region is one giant paragraph, so cut at
         // a measured rendered line start instead. Effects run after DOM
-        // flush, so the text node currently renders t.slice(renderedCut)
-        // and the measured offset is relative to it — which is why a
-        // run that just reset the cut must not measure (the DOM still
-        // shows the pre-reset window until the next flush).
+        // flush, so the text node renders the stream from
+        // max(renderedCut, start), and a measured offset is relative to
+        // it. A replacement that reset the cut below that offset measures
+        // on a later update, once the text node renders from the cut.
         const node = innerEl?.firstChild;
         if (el && node instanceof Text) {
           const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
           const rel = measuredLineStartOffset(node, TAIL_WINDOW_KEEP_LINES, lineHeight);
-          if (rel === null) measureFloor = t.length + TAIL_WINDOW_MEASURE_RETRY_CHARS;
+          if (rel === null) measureFloor = end + TAIL_WINDOW_MEASURE_RETRY_CHARS;
           else cut += rel;
         }
       }
     }
 
-    if (cut !== renderedCut) {
-      cutFirstCharCode = cut > 0 ? t.charCodeAt(cut) : 0;
+    // A replacement can leave the cut where it was, over different text.
+    if (cut !== renderedCut || !appended) {
+      cutFirstCharCode = cut > 0 ? t.charCodeAt(cut - start) : 0;
       cutOffset = cut;
     }
   });

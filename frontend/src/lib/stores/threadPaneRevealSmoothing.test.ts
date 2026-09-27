@@ -12,6 +12,9 @@ import {
   MAX_ADVANCE_PER_TICK_CHARS,
 } from '../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { LIVE_WINDOW_RECUT_CHARS } from '../utils/liveText';
+import { getSettings } from './settings.svelte';
+import { trimToTailRunes } from './threadPaneShared';
 import {
   FakeSmoothingClock,
   installThreadPaneTestEnv,
@@ -1522,6 +1525,152 @@ describe('reveal smoothing', () => {
         expect(pane.liveThinkingTailForItem('think:0:2')).toBe(tailFor(2));
         expect(pane.debugMemoryStats().liveThinkingTailChars).toBe(tailFor(1).length * 2);
       } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps the live window of a settled text over the retained-char budget', async () => {
+      // The whole text would be evicted as soon as it settled, dropping the
+      // clamp onto the trimmed summary. Its live window renders the same
+      // lines, fits the budget, and costs older tails only the room it needs.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      getSettings().lowPowerMode = true;
+      try {
+        const threadId = 'thread-long-settle';
+        const pane = await buildPane(makeThread({ id: threadId }));
+        const thinking = (itemIndex: number) => makeItem({
+          id: `think:0:${itemIndex}`, threadId, turnIndex: 0, itemIndex, kind: 'thinking',
+          role: 'assistant', status: 'streaming', summary: '', payloadId: `thinking:think:0:${itemIndex}`, updatedAt: 1,
+        });
+        const settle = (id: string, updatedAt: number) => pane.applyItemPatch({
+          threadId, itemId: id, kind: 'thinking', patch: { rev: 0, status: 'completed', updatedAt },
+        });
+        const earlier = thinking(0);
+        pane.upsertItem(earlier);
+        pane.applyItemDelta({ threadId, itemId: earlier.id, kind: 'thinking', delta: 'earlier reasoning\n', updatedAt: 2 });
+        clock.tickFrame(16);
+        settle(earlier.id, 3);
+
+        const long = thinking(1);
+        pane.upsertItem(long);
+        const line = 'weighing the next option carefully before acting on it\n';
+        const text = line.repeat(Math.ceil(140_000 / line.length));
+        for (let sent = 0, chunk = 0; sent < text.length; chunk++) {
+          const next = Math.min(text.length, sent + 4_000);
+          pane.applyItemDelta({ threadId, itemId: long.id, kind: 'thinking', delta: text.slice(sent, next), updatedAt: 4 + chunk });
+          sent = next;
+          clock.tickFrame(16);
+        }
+        const window = pane.liveThinkingWindowForItem(long.id)!;
+        expect(window.start).toBeGreaterThan(0);
+        expect(pane.liveThinkingTailForItem(long.id)).toBe(text);
+
+        settle(long.id, 1_000);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingWindowForItem(long.id)).toBe(window);
+        // No whole text is retained, so an expand before the payload loads
+        // shows the trimmed summary.
+        expect(pane.liveThinkingTailForItem(long.id)).toBeNull();
+        expect(pane.liveThinkingTailForItem(earlier.id)).toBe('earlier reasoning\n');
+        expect(pane.debugMemoryStats().liveThinkingTailChars).toBe('earlier reasoning\n'.length + window.text.length);
+
+        // A resumed stream starts from the summary: the window cannot seed it.
+        const summary = pane.items[1].summary;
+        expect(summary).toBe(trimToTailRunes(text, 400));
+        pane.upsertItem({ ...pane.items[1], status: 'streaming', updatedAt: 1_001 });
+        pane.applyItemDelta({ threadId, itemId: long.id, kind: 'thinking', delta: 'resumed\n', updatedAt: 1_002 });
+        clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem(long.id)).toBe(`${summary}resumed\n`);
+        expect(pane.liveThinkingWindowForItem(long.id)).toEqual({ text: `${summary}resumed\n`, start: 0 });
+      } finally {
+        getSettings().lowPowerMode = false;
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('renders a long streaming row through a bounded window of its revealed text', async () => {
+      // The collapsed clamp reads the window, the expanded view and the
+      // settle read the whole text, and the row keeps the trimmed summary.
+      // Low power reveals each wire chunk whole, so every frame's revealed
+      // text is what has been sent.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      getSettings().lowPowerMode = true;
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-window' }));
+        const id = 'think:0:0';
+        pane.upsertItem(
+          makeItem({
+            id,
+            threadId: 'thread-window',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: `thinking:${id}`,
+            updatedAt: 1,
+          }),
+        );
+        const lines: string[] = [];
+        for (let line = 0; line < 2_400; line++) {
+          lines.push(`🧠 step ${line} weighs 𝑥 against the next option\n`);
+        }
+        const text = lines.join('');
+        const expectConsistent = (revealed: string): void => {
+          const window = pane.liveThinkingWindowForItem(id);
+          expect(window).not.toBeNull();
+          expect(window!.start === 0 || revealed[window!.start - 1] === '\n').toBe(true);
+          expect(window!.text).toBe(revealed.slice(window!.start));
+          expect(pane.liveThinkingTailForItem(id)).toBe(revealed);
+          expect(pane.items[0].summary).toBe(trimToTailRunes(revealed, 400));
+        };
+        let sent = 0;
+        let longest = 0;
+        for (let chunk = 0; sent < text.length; chunk++) {
+          // Chunk ends fall anywhere, including inside a surrogate pair.
+          const next = Math.min(text.length, sent + 1 + ((chunk * 7919) % 173));
+          pane.applyItemDelta({
+            threadId: 'thread-window',
+            itemId: id,
+            kind: 'thinking',
+            delta: text.slice(sent, next),
+            updatedAt: 2 + chunk,
+          });
+          sent = next;
+          clock.tickFrame(16);
+          longest = Math.max(longest, pane.liveThinkingWindowForItem(id)!.text.length);
+          if (chunk % 50 === 0) expectConsistent(text.slice(0, sent));
+        }
+        expectConsistent(text);
+        expect(pane.liveThinkingWindowForItem(id)!.start).toBeGreaterThan(0);
+        expect(longest).toBeLessThanOrEqual(LIVE_WINDOW_RECUT_CHARS + 173);
+
+        // A caught-up settle retains the whole text as the window.
+        pane.applyItemPatch({
+          threadId: 'thread-window',
+          itemId: id,
+          kind: 'thinking',
+          patch: { rev: 0, status: 'completed', updatedAt: 5_000 },
+        });
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingWindowForItem(id)).toEqual({ text, start: 0 });
+        expect(pane.liveThinkingTailForItem(id)).toBe(text);
+
+        // A resumed stream continues from the retained text.
+        pane.upsertItem({ ...pane.items[0], status: 'streaming', updatedAt: 5_001 });
+        pane.applyItemDelta({
+          threadId: 'thread-window',
+          itemId: id,
+          kind: 'thinking',
+          delta: 'resumed 🧠\n',
+          updatedAt: 5_002,
+        });
+        clock.tickFrame(16);
+        expectConsistent(`${text}resumed 🧠\n`);
+        expect(pane.liveThinkingWindowForItem(id)!.start).toBeGreaterThan(0);
+      } finally {
+        getSettings().lowPowerMode = false;
         __setSmoothingClockForTest(undefined);
       }
     });

@@ -78,17 +78,41 @@ export function mcpTextOf(item: Item): string {
   return JSON.stringify(mcp);
 }
 
+/** A timeline position: a row's `(turnIndex, itemIndex)`. */
+export interface RunCoordinate {
+  turnIndex: number;
+  itemIndex: number;
+}
+
+export function compareCoordinates(a: RunCoordinate, b: RunCoordinate): number {
+  if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+  return a.itemIndex - b.itemIndex;
+}
+
+/**
+ * A row the pane refused because it belongs to a part of a held run the
+ * pane does not hold (`threadActivityRuns.runCoveringUnshipped`), with the
+ * key of that run's record.
+ */
+export interface RunRefusal {
+  runKey: string;
+  item: Item;
+}
+
 /**
  * One run the pane holds part of.
  *
  * `loadedFirstItemId` / `loadedLastItemId` are the span the PANE actually
  * holds, which is not always the span the stub was built for: a cursor
  * page can cross into a held run and ship a different slice of it, and a
- * live append extends the span the server has not described yet. When the
- * two disagree the pane's span wins and the record is `dirty` — every
+ * live append extends the span past the one the server described. When
+ * the two disagree the pane's span wins and the record is `dirty`: every
  * count derived from the stub then describes rows the pane no longer
  * holds exactly, so the record refreshes and contributes no held window
- * until it does.
+ * until it does. Two moves keep it clean, because the record accounts for
+ * them itself: members shed from the span's older side (`shed`), and
+ * members appended after a span that ends at the run's newest member,
+ * which change nothing the stub counts (`extendOverTailAppend`).
  */
 export interface ActivityRunRecord {
   /** The run's identity and the map key: its first physical member. */
@@ -103,25 +127,56 @@ export interface ActivityRunRecord {
    */
   shed: ShedRow[];
   dirty: boolean;
-  /** Local invalidations cannot be acknowledged by a read already in flight. */
+  /**
+   * Bumped by every server stub the record takes. A newer one supersedes a
+   * read in flight; a local extension of the stub does not.
+   */
+  stubVersion: number;
+  /**
+   * Bumped by local invalidations other than members appended after the
+   * loaded span. A read already in flight cannot acknowledge them.
+   */
   invalidationVersion: number;
+  /**
+   * Bumped by members appended after the loaded span. A read in flight
+   * still describes its own span, and folding it extends the record over
+   * them (`foldPageStub`), unless the read replaced the span.
+   */
+  appendVersion: number;
   /** A window cut supersedes an outstanding member-navigation request. */
   cutVersion: number;
+  /**
+   * The newest position of a row refused as a member of this run
+   * (`noteRefusedRow`), until a members answer read after the refusal
+   * settles it (`settleRefusedRows`). The record stays dirty meanwhile:
+   * a page stub cannot settle it, because the page may have been read
+   * before the row existed.
+   */
+  refusedThrough: RunCoordinate | null;
 }
 
 /** Records by `runFirstItemId`. */
 export type ActivityRunRecords = Map<string, ActivityRunRecord>;
 
 /**
- * Fold one page's stub into the records.
+ * Fold one stub, from a page or a members answer, into the records.
  *
- * `span` is the run's members as the pane holds them AFTER the page
+ * `span` is the run's members as the pane holds them AFTER the rows
  * merged, or null when it holds none. The stub always replaces the stored
- * one — it is newer by construction — but the pane's span is authoritative
- * about what is loaded, so a stub describing a different span leaves the
- * record dirty and the shed list untouched. A stub that agrees with the
- * pane describes every member outside the span, shed rows included, so it
- * clears them.
+ * one, which it is newer than by construction, but the pane's span is
+ * authoritative about what is loaded, so a stub describing a different
+ * span leaves the record dirty and the shed list untouched. A stub that
+ * agrees with the pane describes every member outside the span, shed rows
+ * included, so it clears them.
+ *
+ * A stub whose span ended at the run's newest member when it was read also
+ * agrees with a span that continues past that member: the members after
+ * it were appended since. The record then takes the stub's span, clean,
+ * and the caller moves it over the appended members
+ * (`extendOverTailAppend`) or re-points it (`noteSpanMoved`).
+ *
+ * A record with an unsettled refusal (`refusedThrough`) stays dirty
+ * whatever the stub describes.
  */
 export function foldPageStub(
   records: ActivityRunRecords,
@@ -130,28 +185,32 @@ export function foldPageStub(
 ): ActivityRunRecord {
   const key = stub.firstItemId;
   const loadedFirstItemId = span?.firstItemId ?? '';
-  const loadedLastItemId = span?.lastItemId ?? '';
-  const describesPaneSpan =
-    stub.loadedFirstItemId === loadedFirstItemId
-    && stub.loadedLastItemId === loadedLastItemId;
+  const describedLastItemId = stub.loadedFirstItemId === loadedFirstItemId
+    ? describedLastMember(stub, span)
+    : null;
   const existing = records.get(key);
   const record: ActivityRunRecord = existing ?? {
     runFirstItemId: key,
     stub,
     loadedFirstItemId,
-    loadedLastItemId,
+    loadedLastItemId: '',
     shed: [],
     dirty: false,
+    stubVersion: 0,
     invalidationVersion: 0,
+    appendVersion: 0,
     cutVersion: 0,
+    refusedThrough: null,
   };
   record.stub = stub;
+  record.stubVersion += 1;
   record.loadedFirstItemId = loadedFirstItemId;
-  record.loadedLastItemId = loadedLastItemId;
-  if (describesPaneSpan) {
+  if (describedLastItemId !== null) {
+    record.loadedLastItemId = describedLastItemId;
     record.shed = [];
-    record.dirty = false;
+    record.dirty = record.refusedThrough !== null;
   } else {
+    record.loadedLastItemId = span?.lastItemId ?? '';
     record.dirty = true;
   }
   records.set(key, record);
@@ -159,57 +218,131 @@ export function foldPageStub(
 }
 
 /**
- * Apply a `ListActivityRunMembers` answer: its stub describes the run for
- * the span the caller holds after mounting the response, so it supersedes
- * everything the record was carrying.
+ * The member of `span` a stub's span ends at, or null when the stub does
+ * not describe the span's newer side: its last member, or an earlier one
+ * that was the run's newest when the stub was read.
  */
-export function applyMembersStub(
-  records: ActivityRunRecords,
-  stub: ActivityRunStub,
-): ActivityRunRecord {
-  const key = stub.firstItemId;
-  const record: ActivityRunRecord = records.get(key) ?? {
-    runFirstItemId: key,
-    stub,
-    loadedFirstItemId: stub.loadedFirstItemId,
-    loadedLastItemId: stub.loadedLastItemId,
-    shed: [],
-    dirty: false,
-    invalidationVersion: 0,
-    cutVersion: 0,
-  };
-  record.stub = stub;
-  record.loadedFirstItemId = stub.loadedFirstItemId;
-  record.loadedLastItemId = stub.loadedLastItemId;
-  record.shed = [];
-  record.dirty = false;
-  records.set(key, record);
-  return record;
+function describedLastMember(stub: ActivityRunStub, span: ActivityRunSpan | null): string | null {
+  const last = span?.lastItemId ?? '';
+  if (stub.loadedLastItemId === last) return last;
+  return span !== null && spanEndsRun(stub) && span.items.some(item => item.id === stub.loadedLastItemId)
+    ? stub.loadedLastItemId
+    : null;
+}
+
+/**
+ * Whether a stub's span ended at its run's newest member: it counts no
+ * member after the span. Callers look the span's last member up in the
+ * pane's span, which an empty span (every member counted before it) never
+ * matches.
+ */
+function spanEndsRun(stub: ActivityRunStub): boolean {
+  return stub.unshippedAfter === 0;
 }
 
 /**
  * Re-point a record at the span the pane holds now, without a server
  * answer. Used when a wholesale item replacement moved a run's loaded
- * members (a streamed append, a reconcile) — the stub still describes the
- * old span, so the record goes dirty and a refresh restates it. Returns
- * whether the span moved.
+ * members (a streamed append `extendOverTailAppend` cannot fold, a
+ * reconcile). The stub still describes the old span, so the record goes
+ * dirty and a refresh restates it. A span that only gained members after
+ * its newer end counts as an append (`appendVersion`), which a read in
+ * flight still describes. Returns whether the span moved.
  */
 export function noteSpanMoved(
   record: ActivityRunRecord,
-  span: ActivityRunSpan | null,
+  span: ActivityRunSpan,
 ): boolean {
-  const first = span?.firstItemId ?? '';
-  const last = span?.lastItemId ?? '';
-  if (record.loadedFirstItemId === first && record.loadedLastItemId === last) return false;
+  const first = span.firstItemId;
+  const last = span.lastItemId;
+  const previousLast = record.loadedLastItemId;
+  if (record.loadedFirstItemId === first && previousLast === last) return false;
+  const appended = record.loadedFirstItemId === first && previousLast !== ''
+    && span.items.some(item => item.id === previousLast);
   record.loadedFirstItemId = first;
   record.loadedLastItemId = last;
-  invalidateActivityRun(record);
+  if (appended) {
+    record.appendVersion += 1;
+    record.dirty = true;
+  } else {
+    invalidateActivityRun(record);
+  }
+  return true;
+}
+
+/**
+ * Extend a record over members appended at its run's newer end, without a
+ * server answer. The stub describes only the members outside its span, and
+ * when that span ends at the run's newest member no row landing after it
+ * changes them, unless it is a completion of a launch outside the run's
+ * loaded span. The record then takes the stub a refresh would return: the
+ * same aggregates with the run's newer edge, member count and loaded span
+ * moved to the new last member. An answer read before the append does not
+ * count the appended members; folding it applies this rule to them again
+ * (`appendVersion`). Returns false, changing nothing, for any other change;
+ * the caller re-points the record instead (`noteSpanMoved`).
+ */
+export function extendOverTailAppend(
+  record: ActivityRunRecord,
+  span: ActivityRunSpan,
+): boolean {
+  const stub = record.stub;
+  const previousLast = record.loadedLastItemId;
+  if (record.dirty || !spanEndsRun(stub)
+    || span.firstItemId !== record.loadedFirstItemId || span.lastItemId === previousLast) {
+    return false;
+  }
+  const at = span.items.findIndex(item => item.id === previousLast);
+  if (at < 0) return false;
+  const held = new Set(span.items.map(item => item.id));
+  for (let index = at + 1; index < span.items.length; index += 1) {
+    const completionOf = span.items[index].completionOf ?? '';
+    if (completionOf !== '' && !held.has(completionOf)) return false;
+  }
+  const last = span.items[span.items.length - 1];
+  record.stub = {
+    ...stub,
+    lastItemId: last.id,
+    lastTurnIndex: last.turnIndex,
+    lastItemIndex: last.itemIndex,
+    memberCount: stub.memberCount + span.items.length - 1 - at,
+    loadedLastItemId: last.id,
+  };
+  record.loadedLastItemId = last.id;
+  record.appendVersion += 1;
   return true;
 }
 
 export function invalidateActivityRun(record: ActivityRunRecord): void {
   record.invalidationVersion += 1;
   record.dirty = true;
+}
+
+/**
+ * Account for a row the pane refused as a member of this run: the record
+ * goes dirty and keeps the newest refused position for the refresh to
+ * check (`settleRefusedRows`).
+ */
+export function noteRefusedRow(record: ActivityRunRecord, row: RunCoordinate): void {
+  invalidateActivityRun(record);
+  const through = record.refusedThrough;
+  if (through && compareCoordinates(row, through) <= 0) return;
+  record.refusedThrough = { turnIndex: row.turnIndex, itemIndex: row.itemIndex };
+}
+
+/**
+ * Settle a record's refused rows with a members answer read after the
+ * newest of them, clearing `refusedThrough`. A run is contiguous and
+ * every refused row lies at or after its first member, so all of them are
+ * members when the answer's run ends at or after the newest one. Returns
+ * true when it ends before it: that row is in no part of the run, and the
+ * pane holds it nowhere.
+ */
+export function settleRefusedRows(record: ActivityRunRecord, stub: ActivityRunStub): boolean {
+  const through = record.refusedThrough;
+  if (!through) return false;
+  record.refusedThrough = null;
+  return compareCoordinates({ turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex }, through) < 0;
 }
 
 /**

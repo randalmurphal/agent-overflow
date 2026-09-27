@@ -305,6 +305,7 @@ func TestListBackgroundTrayRowsMatchesTheWholeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	var launches []string
 	for rows.Next() {
 		var id string
@@ -324,6 +325,7 @@ func TestListBackgroundTrayRowsMatchesTheWholeRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		var ids []string
 		for rows.Next() {
 			var id string

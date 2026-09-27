@@ -87,12 +87,10 @@ func fakeBackendMain(mode string) {
 	line, _ := json.Marshal(payload)
 	fmt.Printf("\n%s %s\n", BootstrapPrefix, line)
 
-	if mode == "linger" {
-		// Live until the test terminates us, which is what makes the
-		// detached path assertable.
-		time.Sleep(2 * time.Minute)
-	}
-	if mode == "wrong-pid" {
+	switch mode {
+	case "linger", "wrong-pid", "startup-error":
+		// Live until the test terminates us. A real backend whose App failed
+		// keeps serving so its logs stay readable, and the launcher must end it.
 		time.Sleep(2 * time.Minute)
 	}
 }
@@ -249,12 +247,30 @@ func TestLaunchRefusesAStartedBackendWhoseAppFailed(t *testing.T) {
 	// The transport serves so logs stay readable, but the instance is not
 	// usable; handing it back as a success would produce RPC failures
 	// nobody can explain.
-	_, err := Launch(context.Background(), fakeBackendOpts(t, "startup-error", t.TempDir()))
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "startup-error", t.TempDir()))
 	if err == nil {
 		t.Fatal("Launch accepted a backend that reported a startup error")
 	}
 	if !strings.Contains(err.Error(), "disk is full") {
 		t.Fatalf("error drops the reported cause: %v", err)
+	}
+	assertLaunchTornDown(t, launched, err)
+}
+
+// assertLaunchTornDown checks that a failed launch ended its backend. A
+// survivor is killed through its own process handle so a failing run does
+// not leak it.
+func assertLaunchTornDown(t *testing.T, launched *Launched, launchErr error) {
+	t.Helper()
+	if launched == nil {
+		t.Fatalf("Launch returned no handle with error %v", launchErr)
+	}
+	if strings.Contains(launchErr.Error(), "terminate backend") {
+		t.Errorf("Launch could not tear down the backend: %v", launchErr)
+	}
+	if instanceinfo.ProcessAlive(launched.PID) {
+		_ = launched.cmd.Process.Kill()
+		t.Fatalf("backend %d survived the failed launch: %v", launched.PID, launchErr)
 	}
 }
 

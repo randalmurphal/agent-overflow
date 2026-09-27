@@ -32,11 +32,10 @@ const (
 )
 
 // newNativeEngine answers a WKWebView engine only when the caller supplied a
-// desktop window to host views inside AND this macOS carries the one API the
-// engine is built on. The same darwin binary also runs with no window at all —
-// `--connect`, a headless serve mode, `go test` — and those get NO engine and
-// no browser tools, which is why this is a capability answer and never a GOOS
-// check.
+// desktop window to host views inside. The same darwin binary also runs
+// without one (`--connect`, a headless serve mode, `go test`), and those get
+// no engine and no browser tools, which is why this is a capability answer
+// and never a GOOS check.
 //
 // configDir is deliberately unused here, unlike the WebKitGTK engine. macOS
 // exposes no documented way to place a WKWebsiteDataStore in a directory of the
@@ -45,7 +44,7 @@ const (
 // AO-owned `browser-profiles/` tree (spec §4) has no macOS counterpart, and
 // inventing an empty one would be a directory that documents a lie.
 func newNativeEngine(_ string, opts ManagerOptions, events engineEvents) browserEngine {
-	if opts.NativeWindow == nil || !wkSupported() {
+	if opts.NativeWindow == nil {
 		return nil
 	}
 	return &wkEngine{
@@ -197,6 +196,9 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	if !e.Running() {
 		return nil, fmt.Errorf("browser: engine unavailable")
 	}
+	if opts.Allow == nil {
+		return nil, fmt.Errorf("browser: a navigation policy is required for a browser profile")
+	}
 	id := wkProfileSeq.Add(1)
 	store, err := wkNewStore(wkStoreIdentifier(opts.Workspace), !opts.Persist)
 	if err != nil {
@@ -204,8 +206,8 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		downloadDir: opts.DownloadDir,
-		pages:       make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		downloadDir: opts.DownloadDir, allow: opts.Allow,
+		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -230,6 +232,9 @@ type wkProfile struct {
 	// only honest answer there.
 	store       unsafe.Pointer
 	downloadDir string
+	// allow is the workspace's navigation policy. It answers for a popup
+	// until the Manager adopts it (wkNavigationAllowed).
+	allow func(url string) bool
 
 	mu        sync.Mutex
 	disposed  bool

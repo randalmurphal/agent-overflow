@@ -186,9 +186,9 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 	if f.SpawnedBy != "" {
 		conditions = append(conditions, `EXISTS (SELECT 1 FROM thread_requests spawns
 		            WHERE spawns.caller_thread_id = ?
-		              AND spawns.kind = ?
+		              AND spawns.kind = '`+ThreadRequestSpawn+`'
 		              AND spawns.target_thread_id = `+alias+`id)`)
-		args = append(args, f.SpawnedBy, ThreadRequestSpawn)
+		args = append(args, f.SpawnedBy)
 	}
 	return conditions, args
 }

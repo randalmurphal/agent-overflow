@@ -87,24 +87,10 @@ func findChromium(override string, lookPath func(string) (string, error), goos s
 // Not redundant: selection runs once at boot and a serve host stays up for
 // weeks, so the browser can be upgraded out from under it or the override
 // edited to a path that does not exist. A tool error naming the file and the
-// setting beats chromedp's own "chrome failed to start" naming neither.
+// setting beats a failed exec naming neither.
 func validateChromiumBinary(path string, lookPath func(string) (string, error)) error {
 	if _, err := lookPath(path); err != nil {
 		return fmt.Errorf("Chromium is not executable at %q; set %s to a Chromium binary or install one: %w", path, chromiumSettingKey, err)
 	}
 	return nil
-}
-
-// tailOf keeps the LAST limit bytes of a message.
-//
-// A failed launch's diagnosis is its final lines — the sandbox refusal, the
-// missing library, the abort — while everything before them is startup
-// chatter the process chose the length of. Bounding from the front would
-// keep exactly the part nobody needs and let a noisy binary decide how much
-// memory an error costs.
-func tailOf(message string, limit int) string {
-	if len(message) <= limit {
-		return message
-	}
-	return "..." + message[len(message)-limit:]
 }

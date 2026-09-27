@@ -19,12 +19,12 @@ const (
 	rolloutSubagentNotificationMaxLineBytes = 16 * 1024 * 1024
 	// rolloutSubagentNotificationPartialKeepBytes bounds the capacity the
 	// reusable partial-line buffer is allowed to carry once a line COMPLETES.
-	// The steady state is a buffer of at most one read chunk; a single
-	// pathological line can grow it to rolloutSubagentNotificationMaxLineBytes,
-	// and holding that for the rest of the session would pin 16 MiB on a thread
-	// that saw one bad line. Above this the buffer is dropped and the next
-	// partial re-allocates.
-	rolloutSubagentNotificationPartialKeepBytes = 64 * 1024
+	// The steady state is a carried tail shorter than a read chunk plus one
+	// read chunk, under two chunks; a single pathological line can grow it to
+	// rolloutSubagentNotificationMaxLineBytes, and holding that for the rest
+	// of the session would pin 16 MiB on a thread that saw one bad line. Above
+	// this the buffer is dropped and the next partial re-allocates.
+	rolloutSubagentNotificationPartialKeepBytes = 4 * rolloutSubagentNotificationReadChunk
 )
 
 // sessionRolloutTailState observes native mailbox records when thread/resume
@@ -170,7 +170,8 @@ func (s *Session) watchRolloutSubagentNotifications(ctx context.Context, path st
 }
 
 // retainRolloutPartialLine copies an unterminated tail back into the reusable
-// buffer, and sheds the buffer entirely once a long line has completed.
+// buffer, and sheds the buffer once a long line has completed, keeping only a
+// copy of any short tail that followed it.
 //
 // carry may ALIAS buf's own array (it is a suffix of the assembled view), which
 // append's copy handles as a memmove; and it can never be longer than what buf
@@ -178,14 +179,14 @@ func (s *Session) watchRolloutSubagentNotifications(ctx context.Context, path st
 // aliases the freshly-read chunk instead, buf is empty and the copy is the
 // ordinary one.
 func retainRolloutPartialLine(buf, carry []byte) []byte {
+	if cap(buf) > rolloutSubagentNotificationPartialKeepBytes && len(carry) <= rolloutSubagentNotificationPartialKeepBytes {
+		// One pathological line grew this buffer up to
+		// rolloutSubagentNotificationMaxLineBytes. The line is behind us;
+		// keeping its capacity would pin that memory for the rest of the
+		// session on the strength of a single bad record.
+		return bytes.Clone(carry)
+	}
 	if len(carry) == 0 {
-		if cap(buf) > rolloutSubagentNotificationPartialKeepBytes {
-			// One pathological line grew this buffer up to
-			// rolloutSubagentNotificationMaxLineBytes. The line is behind us;
-			// keeping its capacity would pin that memory for the rest of the
-			// session on the strength of a single bad record.
-			return nil
-		}
 		return buf[:0]
 	}
 	return append(buf[:0], carry...)

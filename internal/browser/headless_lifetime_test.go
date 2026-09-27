@@ -4,22 +4,25 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// The two ends of a headless profile's browser that no fake Chromium can
-// reach: adopting a launch that REPLACES a dead one, and the profile
-// ending when its browser context is cancelled under it.
+// The ends of a headless profile's browser, tested against plain contexts
+// rather than a process: a relaunch retiring a browser that was lost, a
+// page binding only to the connected browser, and the profile ending when
+// its browser context is cancelled under it.
 //
-// Both are tested against plain contexts rather than a process, because
-// what they turn on is chromedp's contract and not Chromium's: the browser
-// context is cancelled when the connection to the process is lost
-// (allocate.go's LostConnection goroutine calls that context's own cancel),
-// so "the browser died" IS "this context was cancelled" and nothing else
-// has to be simulated.
+// What they turn on is chromedp's contract and not Chromium's: the browser
+// context is cancelled when the connection to the process is lost (the
+// remote allocator's LostConnection goroutine cancels it), so "the browser
+// died" IS "this context was cancelled" and nothing else has to be
+// simulated. The same paths against a fake Chromium and a dropped CDP
+// connection, including the reap, are in headless_engine_test.go.
 
 // lifetimeProfile is a profile whose engine records what it was told,
 // wired to no browser at all.
@@ -70,47 +73,98 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// TestAdoptingABrowserCancelsTheOneItReplaced: ensureBrowser relaunches
-// when the previous browser context is CANCELLED, which is exactly what a
-// Chromium that died looks like, and chromedp's allocator holds a
-// goroutine, a WaitGroup and the process's own reaping behind the ALLOC
-// cancel, which is not cancelled by the browser context going. Overwriting
-// the two funcs dropped the only reference to both.
-func TestAdoptingABrowserCancelsTheOneItReplaced(t *testing.T) {
+// publish makes a browser the profile's without the watcher adopt starts,
+// which leaves the caller to decide when, or whether, that watcher runs.
+func (lp *lifetimeProfile) publish(browser *launchedBrowser) {
+	lp.headlessProfile.mu.Lock()
+	defer lp.headlessProfile.mu.Unlock()
+	lp.current = browser
+}
+
+// TestARelaunchRetiresOnlyALostBrowser: ensureBrowser relaunches when the
+// previous browser context is CANCELLED, which is exactly what a Chromium
+// whose connection was lost looks like. The lost browser is owed its close
+// (its allocator is cancelled nowhere else) and its pages are owed their
+// report, once, even when its watcher runs afterwards. A browser that is
+// still connected is never retired.
+func TestARelaunchRetiresOnlyALostBrowser(t *testing.T) {
 	lp := newLifetimeProfile(t)
+	lp.engine.bindPage("page-a", lp.headlessProfile)
+	browserCtx, browserCancel := context.WithCancel(context.Background())
+	var allocCancelled atomic.Bool
+	lp.publish(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() { allocCancelled.Store(true) }})
 
-	firstCtx, firstCancel := context.WithCancel(context.Background())
-	var firstAllocCancelled bool
-	if err := lp.adopt(firstCtx, firstCancel, func() { firstAllocCancelled = true }); err != nil {
-		t.Fatalf("adopt the first browser: %v", err)
-	}
-
-	secondCtx, secondCancel := context.WithCancel(context.Background())
-	defer secondCancel()
-	if err := lp.adopt(secondCtx, secondCancel, func() {}); err != nil {
-		t.Fatalf("adopt the replacement: %v", err)
+	lp.retireLostBrowser()
+	if _, ok := lp.browser(); !ok || allocCancelled.Load() {
+		t.Fatal("a connected browser was retired")
 	}
 
-	if firstCtx.Err() == nil {
-		t.Error("the replaced browser's context was left live; its page contexts stay under it")
+	browserCancel()
+	lp.retireLostBrowser()
+	if !allocCancelled.Load() {
+		t.Error("the lost browser's allocator was never cancelled")
 	}
-	if !firstAllocCancelled {
-		t.Error("the replaced browser's allocator was never cancelled; its process is never reaped")
-	}
-	if secondCtx.Err() != nil {
-		t.Fatal("adopting cancelled the browser it was installing")
-	}
-	// The replaced browser's watcher must stay silent: the profile is
-	// alive and running the new one.
-	time.Sleep(50 * time.Millisecond)
-	if got := lp.closedPages(); len(got) != 0 {
-		t.Fatalf("the replaced browser's watcher reported %v; only the CURRENT browser's death ends the profile", got)
+	eventually(t, "the lost browser's page to be reported closed", func() bool {
+		return len(lp.closedPages()) > 0
+	})
+	lp.retireLostBrowser()
+	lp.watchBrowser(browserCtx)
+	if got := lp.closedPages(); !slices.Equal(got, []string{"page-a"}) {
+		t.Fatalf("reported %v closed, want page-a once", got)
 	}
 	lp.headlessProfile.mu.Lock()
 	disposed := lp.disposed
 	lp.headlessProfile.mu.Unlock()
 	if disposed {
-		t.Fatal("adopting a replacement disposed the profile")
+		t.Fatal("retiring a lost browser disposed the profile the relaunch is for")
+	}
+}
+
+// TestAProfileAdoptsOneBrowser: a profile holds at most one browser, so
+// adopting a second one is refused and leaves the first in place rather
+// than dropping the only reference to a running process.
+func TestAProfileAdoptsOneBrowser(t *testing.T) {
+	lp := newLifetimeProfile(t)
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	defer firstCancel()
+	if err := lp.adopt(&launchedBrowser{ctx: firstCtx, cancel: firstCancel, allocCancel: func() {}}); err != nil {
+		t.Fatalf("adopt the first browser: %v", err)
+	}
+	secondCtx, secondCancel := context.WithCancel(context.Background())
+	defer secondCancel()
+	if err := lp.adopt(&launchedBrowser{ctx: secondCtx, cancel: secondCancel, allocCancel: func() {}}); err == nil {
+		t.Fatal("a profile adopted a second browser")
+	}
+	if got, ok := lp.browser(); !ok || got != firstCtx {
+		t.Fatal("a refused adopt replaced the profile's browser")
+	}
+}
+
+// TestAPageBindsOnlyToTheConnectedBrowser: a page is bound under the lock
+// that also takes a lost browser's pages, so a page created on a browser
+// that is lost or no longer the profile's is refused rather than bound
+// where no report would ever reach it.
+func TestAPageBindsOnlyToTheConnectedBrowser(t *testing.T) {
+	lp := newLifetimeProfile(t)
+	browserCtx, browserCancel := context.WithCancel(context.Background())
+	lp.publish(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}})
+	otherCtx, otherCancel := context.WithCancel(context.Background())
+	defer otherCancel()
+
+	if err := lp.bindPage(browserCtx, "page-a"); err != nil {
+		t.Fatalf("bind a page of the connected browser: %v", err)
+	}
+	if err := lp.bindPage(otherCtx, "page-other"); err == nil {
+		t.Error("a page of a browser that is not the profile's was bound")
+	}
+	browserCancel()
+	if err := lp.bindPage(browserCtx, "page-late"); err == nil {
+		t.Error("a page of a lost browser was bound")
+	}
+	for handle, want := range map[string]bool{"page-a": true, "page-other": false, "page-late": false} {
+		if _, bound := lp.engine.profileForPage(handle); bound != want {
+			t.Errorf("page %s bound = %v, want %v", handle, bound, want)
+		}
 	}
 }
 
@@ -130,7 +184,7 @@ func TestAProfileEndsWhenItsBrowserDies(t *testing.T) {
 	lp.engine.bindPage("page-b", lp.headlessProfile)
 
 	browserCtx, browserCancel := context.WithCancel(context.Background())
-	if err := lp.adopt(browserCtx, browserCancel, func() {}); err != nil {
+	if err := lp.adopt(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}}); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 
@@ -166,7 +220,7 @@ func TestDisposeLeavesTheWatcherSilent(t *testing.T) {
 	lp.engine.bindPage("page-a", lp.headlessProfile)
 
 	browserCtx, browserCancel := context.WithCancel(context.Background())
-	if err := lp.adopt(browserCtx, browserCancel, func() {}); err != nil {
+	if err := lp.adopt(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}}); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	if err := lp.Dispose(context.Background()); err != nil {

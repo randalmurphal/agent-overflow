@@ -43,9 +43,9 @@ import {
   type ThreadMetadataRead,
   noteRowsFromCall,
   projectBackend,
-  resolveThreadBackend,
   currentThreadEvent,
 } from './entityIndex';
+import { threadOwner } from './threadOwner';
 import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
 import { familyBackend, ROUTE_BY_ID_FAMILY } from './methodFamilies';
 import { selectedBackend } from '../stores/selectedBackend.svelte';
@@ -197,7 +197,7 @@ function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
   switch (route) {
     case 'thread': {
       const id = args[0];
-      const owner = typeof id === 'string' ? resolveThreadBackend(id) : undefined;
+      const owner = typeof id === 'string' ? threadOwner(id) : undefined;
       return requireEntityBackend(owner);
     }
     case 'project': {

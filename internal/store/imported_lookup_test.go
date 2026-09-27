@@ -19,6 +19,7 @@ func (p *lookupPlanReader) Query(query string, args ...any) (*sql.Rows, error) {
 	if err != nil {
 		p.t.Fatal(err)
 	}
+	defer plan.Close()
 	for plan.Next() {
 		var id, parent, unused int
 		var detail string

@@ -45,10 +45,10 @@ import (
 // carries store.UnstampedItemRev and takes neither path: the settle patch
 // is what makes the client's copy a stored row again.
 //
-// The refresh timers are tracked by r.refreshWG, not r.settleWG: the
-// settle drain runs on in-turn paths (persistOrUpdateCompletedTextItem)
-// and must not sit out a quiet period. DrainWireItemRefresh is the
-// shutdown drain.
+// The refresh timers are tracked by r.refreshWG, not r.settleWG, so the
+// shutdown's settle drain does not sit out a quiet period:
+// DrainWireItemRefresh runs every pending refresh at once and waits only
+// for the ones already running.
 const (
 	wireRefreshQuiet   = time.Second
 	wireRefreshMaxWait = 5 * time.Second

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -25,18 +26,21 @@ func (m *Manager) ownedPages(threadID string) []*managedPage {
 	return out
 }
 
+// errPageNotFound answers a page that is gone or that another thread owns.
+var errPageNotFound = errors.New("browser: page not found")
+
 func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *workspaceScope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		if p := scope.pages[pageID]; p != nil {
 			if p.owner != access.ThreadID {
-				return nil, nil, fmt.Errorf("browser: page not found")
+				return nil, nil, errPageNotFound
 			}
 			return p, scope, nil
 		}
 	}
-	return nil, nil, fmt.Errorf("browser: page not found")
+	return nil, nil, errPageNotFound
 }
 
 func (m *Manager) workspaceForPage(pageID string) string {
@@ -112,6 +116,8 @@ func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error
 	}, nil
 }
 
+// truncateUTF8 bounds value to limit bytes at a rune boundary. A truncated
+// result is a copy, so keeping it does not keep the engine's whole value.
 func truncateUTF8(value string, limit int) string {
 	if len(value) <= limit {
 		return value
@@ -119,7 +125,7 @@ func truncateUTF8(value string, limit int) string {
 	for limit > 0 && (value[limit]&0xc0) == 0x80 {
 		limit--
 	}
-	return value[:limit]
+	return strings.Clone(value[:limit])
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }

@@ -23,6 +23,10 @@ import { getCompactScreen, setCompactLayoutForTest, showCompactList } from './la
 import { focusPane, getFocusedPaneId, registerPaneForTest } from './panes.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
+import { takePinnedBackend } from '../transport/backends';
+import { HOME_BACKEND } from '../transport/backendKey';
 import type { ThreadDefaults } from './bindings';
 import type { Project, Thread } from '../types/models';
 
@@ -362,6 +366,57 @@ describe('openDraftThreadForProject', () => {
       const reported = records.filter((r) => r.message === 'thread defaults fetch failed');
       expect(reported).toHaveLength(1);
       expect(reported[0].detail).toContain('thread defaults timed out');
+    });
+  });
+
+  // With several computers attached, a project whose owner is unknown is
+  // refused rather than read from the page's own computer.
+  describe('with a project no computer is known to own', () => {
+    const diagnostics = installDiagnosticsCapture();
+    beforeEach(() => stageBackend());
+    afterEach(() => {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    });
+
+    it('opens the placeholder without asking any computer for its defaults', async () => {
+      const project = makeProject();
+      addProjectLocal(project);
+      const pane = createThreadPane({ paneId: 'main' });
+      const defaults = setBindingMock('GetThreadDefaults', async () => makeDefaults());
+
+      await expect(openDraftThreadForProject({ projectId: project.id, targetPane: pane })).resolves.toBe(pane);
+
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      expect(defaults).not.toHaveBeenCalled();
+      const reported = (await diagnostics.all()).filter((r) => r.message === 'thread defaults fetch failed');
+      expect(reported).toHaveLength(1);
+      expect(reported[0].detail).toContain('computer that owns');
+      pane.clear();
+    });
+
+    // Both pickers move a draft through switchDraftProject.
+    it('refuses to move a draft there and keeps it on its project', async () => {
+      const owned = makeProject();
+      const unowned = makeProject({ id: 'project-2', path: '/tmp/p2', name: 'Project Two' });
+      addProjectLocal(owned);
+      addProjectLocal(unowned);
+      noteProject(owned.id, HOME_BACKEND);
+      const asked: Array<string | null> = [];
+      const defaults = setBindingMock('GetThreadDefaults', async () => { asked.push(takePinnedBackend()); return makeDefaults(); });
+      const pane = createThreadPane({ paneId: 'main' });
+      await openDraftThreadForProject({ projectId: owned.id, targetPane: pane });
+      expect(defaults).toHaveBeenCalledTimes(1);
+
+      await expect(switchDraftProject(pane, unowned)).rejects.toThrow('computer that owns');
+      expect(defaults).toHaveBeenCalledTimes(1);
+      expect(pane.thread?.projectId).toBe(owned.id);
+
+      noteProject(unowned.id, 'laptop');
+      await expect(switchDraftProject(pane, unowned)).resolves.toBe(true);
+      expect(pane.thread?.projectId).toBe(unowned.id);
+      expect(asked).toEqual([HOME_BACKEND, 'laptop']);
+      pane.clear();
     });
   });
 

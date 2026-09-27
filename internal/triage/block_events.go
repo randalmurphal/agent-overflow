@@ -45,9 +45,9 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	// content_block_stop is the freeze hot path: a thinking block ending
 	// or a text block ending fires SQLite-write-heavy settle work that
 	// would otherwise stall the provider read-loop. Async dispatch lets
-	// the next provider event flow immediately; settleTurnStreaming at
-	// turn boundary still waits on every in-flight scope before the
-	// turns row commits.
+	// the next provider event flow immediately; the turn's end, an error
+	// flip and a snapshot block's lookup wait for the thread's settles in
+	// flight (waitThreadSettles) before they read its rows.
 	// ONE decode of the stop envelope for both readers below it: the block
 	// type and the delivery marker are two top-level strings on the same
 	// object, and this is the freeze hot path.

@@ -5,6 +5,7 @@ package containment
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,9 +86,14 @@ func PrepareWithFallback(limit uint64) (Group, string, error) {
 type linuxFallbackGroup struct {
 	limit      uint64
 	configured bool
+	// launcherCmdline is the launcher's /proc cmdline. It names the launcher
+	// until the launcher execs the configured command.
+	launcherCmdline string
 }
 
-func (g *linuxFallbackGroup) Kill() error { return nil }
+// launcherExecTimeout bounds Adopt's wait for the launcher, which runs two
+// shell builtins before its exec.
+var launcherExecTimeout = 10 * time.Second
 
 func (g *linuxFallbackGroup) Configure(cmd *exec.Cmd) error {
 	if cmd == nil {
@@ -107,12 +113,62 @@ func (g *linuxFallbackGroup) Configure(cmd *exec.Cmd) error {
 	script := `limit="$1"; shift; ulimit -d "$limit" || { printf '%s\n' 'harness containment: setrlimit(RLIMIT_DATA) failed' >&2; exit 125; }; exec "$@"`
 	cmd.Path = "/bin/sh"
 	cmd.Args = append([]string{"sh", "-c", script, "agent-overflow-memory-limit", limit}, args...)
+	g.launcherCmdline = strings.Join(cmd.Args, "\x00") + "\x00"
 	g.configured = true
 	return nil
 }
 
-func (g *linuxFallbackGroup) Adopt(*exec.Cmd) error { return nil }
-func (g *linuxFallbackGroup) Close() error          { return nil }
+// Adopt returns once the launcher has exec'd the configured command, so a
+// process identity recorded afterwards names that command rather than the
+// shell. A launcher that exits instead, because the limit was refused or the
+// command could not run, also ends the wait; the caller observes that exit.
+func (g *linuxFallbackGroup) Adopt(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return errors.New("harness containment: cannot adopt nil process")
+	}
+	if g == nil || !g.configured {
+		return errors.New("harness containment: command was not configured")
+	}
+	pid := cmd.Process.Pid
+	proc := filepath.Join("/proc", strconv.Itoa(pid))
+	deadline := time.Now().Add(launcherExecTimeout)
+	for {
+		done, err := g.launcherDone(proc)
+		if err != nil {
+			return fmt.Errorf("harness containment: inspect launcher %d: %w", pid, err)
+		}
+		if done {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("harness containment: launcher %d did not exec the command within %s", pid, launcherExecTimeout)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// launcherDone reports whether the process has left the launcher, by exec or
+// by exit. An exec installs the new executable before it publishes the new
+// arguments, so an empty cmdline is an exec in progress while the process
+// still has an executable, and an exit once it has none.
+func (g *linuxFallbackGroup) launcherDone(proc string) (bool, error) {
+	cmdline, err := os.ReadFile(filepath.Join(proc, "cmdline"))
+	if err != nil {
+		return false, err
+	}
+	if len(cmdline) > 0 {
+		return string(cmdline) != g.launcherCmdline, nil
+	}
+	if _, err := os.Readlink(filepath.Join(proc, "exe")); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func (g *linuxFallbackGroup) Close() error { return nil }
 
 func pruneOrphanGroups(parent string) error {
 	entries, err := os.ReadDir(parent)

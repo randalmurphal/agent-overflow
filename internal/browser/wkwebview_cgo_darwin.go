@@ -78,11 +78,6 @@ func wkDo(fn func()) bool {
 
 var errWKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
 
-// wkSupported answers whether this macOS carries the one API the engine cannot
-// exist without. It is a pure runtime version read with no UI in it, so it does
-// not need the main thread — and it runs before any Manager exists.
-func wkSupported() bool { return C.ao_wkv_supported() == 1 }
-
 // wkOnMainThread answers whether wkDo would run its closure inline right now —
 // true only on the AppKit main thread, where Wails' dispatch short-circuits.
 func wkOnMainThread() bool { return C.ao_wkv_on_main_thread() == 1 }
@@ -164,16 +159,16 @@ func aoWKVSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, height, 
 }
 
 //export aoWKVAllow
-func aoWKVAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char, download C.int) {
+func aoWKVAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.char, download C.int) {
 	target := wkTakeString(uri)
-	page := wkLookupPage(uint64(pageID))
+	page, profile := uint64(pageID), uint64(profileID)
 	// Answered OFF the main thread: navigation authority is the Manager's, and
 	// asking it takes Manager locks — blocking the main thread on a Go lock is
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a copied block held for exactly this.
 	go func() {
 		verdict := C.int(C.AO_POLICY_CANCEL)
-		if page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target)) {
+		if wkNavigationAllowed(page, profile, target) {
 			// The Manager's authority is over the URL; whether an allowed URL
 			// navigates or downloads is what the anchor asked for.
 			verdict = C.AO_POLICY_ALLOW
@@ -185,6 +180,19 @@ func aoWKVAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char, downloa
 		// dies with the process rather than blocking anything.
 		wkDo(func() { C.ao_wkv_policy_finish(decision, verdict) })
 	}()
+}
+
+// wkNavigationAllowed answers one navigation in a view. A page answers with
+// its own policy. A view with no page is a popup the Manager has not adopted
+// yet: it loads from creation, so its workspace's policy answers until
+// adoption stamps the page. A page or profile that is gone refuses.
+func wkNavigationAllowed(pageID, profileID uint64, target string) bool {
+	if pageID == 0 {
+		profile := wkLookupProfile(profileID)
+		return profile != nil && profile.allow(target)
+	}
+	page := wkLookupPage(pageID)
+	return page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target))
 }
 
 //export aoWKVConsole
@@ -282,9 +290,13 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 	if name == "" {
 		name = handle
 	}
-	go profile.engine.events.DownloadStarted(downloadStart{
-		Frame: frame, ID: handle, URL: target, SuggestedName: name,
-	})
+	go func() {
+		if !profile.engine.events.DownloadStarted(downloadStart{
+			Frame: frame, ID: handle, URL: target, SuggestedName: name,
+		}) {
+			profile.CancelDownload(handle)
+		}
+	}()
 }
 
 //export aoWKVDownloadFinished

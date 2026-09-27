@@ -436,11 +436,21 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 // observeCodexUnifiedExecComplete owns item/completed for tracked unified exec
 // startups. This mirrors Codex TUI: late completions still clear background
 // process state, but chat history only changes while the task indicator is
-// running. TerminalInteraction owns only explicit stdin interaction markers.
+// running. TerminalInteraction owns only explicit stdin interaction marker
 // rows.
 func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bool, error) {
 	itemID := strings.TrimSpace(eventItemID(evt))
 	if itemID == "" {
+		return false, nil
+	}
+
+	// Every tool completion of every provider passes here and few are a
+	// tracked unified exec, so that is checked before the meta is decoded.
+	r.mu.Lock()
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
+	tracked := state != nil && state.unifiedExec[itemID] != nil
+	r.mu.Unlock()
+	if !tracked {
 		return false, nil
 	}
 
@@ -452,7 +462,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	var tracker unifiedExecTracker
 	handled := false
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(evt.ThreadID)
+	state = r.codexBackgroundIfPresent(evt.ThreadID)
 	now := eventTimestampMillis(evt)
 	if state != nil && state.unifiedExec[itemID] != nil {
 		live := state.unifiedExec[itemID]

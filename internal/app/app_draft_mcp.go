@@ -16,6 +16,16 @@ func (a *App) draftMCPPreferences(threadID string) draftMCPPreferences {
 	}
 }
 
+// forgetThreadMCP drops a deleted conversation's switches and registrations
+// from every AO-owned MCP server.
+func (a *App) forgetThreadMCP(threadID string) {
+	a.threadMCPServer().UnregisterThread(threadID)
+	a.remoteMCPServer().UnregisterThread(threadID)
+	if a.browser.mcp != nil {
+		a.browser.mcp.UnregisterThread(threadID)
+	}
+}
+
 func (a *App) applyDraftMCPPreferences(threadID string, preferences draftMCPPreferences) {
 	a.threadMCPServer().SetThreadEnabled(threadID, preferences.Threads)
 	a.remoteMCPServer().SetThreadEnabled(threadID, preferences.Remote)

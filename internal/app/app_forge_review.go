@@ -470,7 +470,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		// A false return means the connection is already tearing down —
 		// the safety net it would have provided is gone, so release the
 		// reference now rather than leak a pump until shutdown.
-		if !state.RegisterCleanup(func() { a.unsubscribePRUpdates(ref.id) }) {
+		if !state.BindCleanup(prUpdatesCleanupKey(ref.id), func() { a.unsubscribePRUpdates(ref.id) }) {
 			a.unsubscribePRUpdates(ref.id)
 			return PRUpdateSubscriptionResult{}, fmt.Errorf("pr updates: connection closing")
 		}
@@ -597,10 +597,13 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference 
 
 //ao:scope git:operate
 //ao:route home
-func (a *App) UnsubscribePRUpdates(subscriptionID string) error {
+func (a *App) UnsubscribePRUpdates(ctx context.Context, subscriptionID string) error {
+	transport.ConnStateFromContext(ctx).UnbindCleanup(prUpdatesCleanupKey(subscriptionID))
 	a.unsubscribePRUpdates(subscriptionID)
 	return nil
 }
+
+func prUpdatesCleanupKey(id string) string { return "pr-updates:" + id }
 
 // SetPRUpdatesActive reports whether ONE subscriber currently wants its PR
 // polled. The frontend drives it from document visibility so a hidden

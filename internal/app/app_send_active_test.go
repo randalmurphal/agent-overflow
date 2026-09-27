@@ -42,7 +42,7 @@ func TestComposerSendActiveUsesQueue(t *testing.T) {
 			if queued[0].SendID != opts.SendID {
 				t.Fatalf("send identity lost: %+v", queued[0])
 			}
-			items, err := a.store.ListItemsForTurn(thread.ID, 4)
+			items, err := a.store.ListTurnItems(thread.ID, 4)
 			if err != nil || len(items) != 0 {
 				t.Fatalf("phantom next-turn rows = %+v, %v", items, err)
 			}
@@ -122,7 +122,7 @@ func TestComposerSendActiveCodexEchoKeepsActualTurn(t *testing.T) {
 			if _, err := a.SendMessageWithOptions(context.Background(), thread.ID, "follow-up", SendMessageOptions{ReconcileBySendID: true, SendID: "one-send"}); err != nil {
 				t.Fatal(err)
 			}
-			items, err := a.store.ListItemsForTurn(thread.ID, expectedTurn+1)
+			items, err := a.store.ListTurnItems(thread.ID, expectedTurn+1)
 			if err != nil || len(items) != 0 {
 				t.Fatalf("retry created future rows: %+v, %v", items, err)
 			}

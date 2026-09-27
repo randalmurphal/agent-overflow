@@ -5,8 +5,8 @@
 //
 // Lists, thread-row events and matching per-computer catalogs populate the
 // index. Search/patch hints cannot displace an already known owner. An unknown
-// entity retains the single-computer HOME fallback; contradictory owners never
-// get that fallback. Higher epochs supersede old cached rows and invalidate
+// entity routes to the sole attached computer; contradictory owners never get
+// that fallback. Higher epochs supersede old cached rows and invalidate
 // thread history/read state through the ownership notification.
 //
 // Bounded by the metadata rows already held by the frontend. Thread/project
@@ -17,7 +17,11 @@ import { HOME_BACKEND, type BackendKey } from './backendKey';
 import type { IdFamily } from './methodFamilies';
 import type { WorkflowItemDetail, WorkflowRunMapView } from '../types/workflow';
 
-interface ThreadOwner { backend: BackendKey; epoch?: number; conflict?: boolean }
+// `rivals` are the other computers claiming the same epoch. Routing refuses a
+// contested thread until a higher epoch settles it or one claimant remains
+// attached. An entry is replaced, never mutated, so reactive readers see
+// every change.
+interface ThreadOwner { backend: BackendKey; epoch?: number; rivals?: readonly BackendKey[] }
 const threads = new SvelteMap<string, ThreadOwner>();
 // Ownership evidence only lives as long as the metadata requests it can
 // invalidate. A late list may contain an archived ID this frontend has never
@@ -47,7 +51,7 @@ export function captureThreadMetadataRead(methodId: number, backend: BackendKey)
         const claim = typeof id === 'string' ? held.claims.get(id) : undefined;
         const epoch = (row as { ownershipEpoch?: number }).ownershipEpoch ?? 0;
         if (claim && ((claim.epoch ?? 0) > epoch
-          || ((claim.epoch ?? 0) === epoch && (claim.conflict || claim.backend !== backend)))) {
+          || ((claim.epoch ?? 0) === epoch && (claim.rivals !== undefined || claim.backend !== backend)))) {
           throw new Error('Conversation ownership changed during this read. Refresh to load its current computer.');
         }
       }
@@ -74,13 +78,14 @@ export function onThreadOwnershipChanged(listener: (threadId: string, previousBa
 const projects = new SvelteMap<string, BackendKey>();
 // The id families that are neither thread nor project and cannot be
 // resolved through one: a workflow item and an automation belong to a
-// project the caller may never have listed, a terminal is a live process
-// on one machine, and a subscription id means nothing off the connection
-// that minted it. ./methodFamilies.ts names which methods take each.
+// project the caller may never have listed, and a terminal is a live
+// process on one machine. ./methodFamilies.ts names which methods take each.
 const workflowItems = new Map<string, BackendKey>();
 const automations = new Map<string, BackendKey>();
+// A terminal lives as long as its process: its entry goes when its backend
+// reports the exit, starts a new launch, or is detached (../stores/events.ts).
+// A dropped connection ends no terminal.
 const terminals = new Map<string, BackendKey>();
-const subscriptions = new Map<string, BackendKey>();
 // A thread group belongs to one project and so to one machine, but the
 // group RPCs name the GROUP: resolved here rather than through the
 // project because a group id arrives in the sidebar list before any
@@ -102,14 +107,14 @@ export function threadIdsForBackend(backendId: BackendKey): string[] {
 /** Read-only hints cannot displace a verified move or resolve conflicting owners. */
 export function resolveThreadBackend(threadId: string): BackendKey | undefined {
   const owner = threads.get(threadId);
-  if (owner?.conflict) throw new Error('Two computers claim this conversation. Reconnect them to verify its owner before continuing.');
+  if (owner?.rivals) throw new Error('Two computers claim this conversation. Reconnect them to verify its owner before continuing.');
   return owner?.backend;
 }
 
 /** Thread-scoped runtime frames from a retired owner cannot alter live state. */
 export function currentThreadEvent(threadId: string, backend: BackendKey): boolean {
   const owner = threads.get(threadId);
-  return !owner || (!owner.conflict && owner.backend === backend);
+  return !owner || (!owner.rivals && owner.backend === backend);
 }
 
 export function validOwnershipEpoch(value: unknown): value is number {
@@ -119,7 +124,7 @@ export function validOwnershipEpoch(value: unknown): value is number {
 /** Whether a catalog row still belongs to the newest known ownership. */
 export function currentThreadRow(row: { id: string; ownershipEpoch?: number }, backend?: BackendKey): boolean {
   const owner = threads.get(row.id);
-  return !owner || (!owner.conflict && (backend === undefined || owner.backend === backend) && (owner.epoch ?? 0) === (row.ownershipEpoch ?? 0));
+  return !owner || (!owner.rivals && (backend === undefined || owner.backend === backend) && (owner.epoch ?? 0) === (row.ownershipEpoch ?? 0));
 }
 
 /** The backend that owns `projectId`, or undefined when unknown. */
@@ -142,25 +147,22 @@ export function terminalBackend(terminalId: string): BackendKey | undefined {
   return terminals.get(terminalId);
 }
 
-/** The backend that minted `subscriptionId`, or undefined. */
-export function subscriptionBackend(subscriptionId: string): BackendKey | undefined {
-  return subscriptions.get(subscriptionId);
-}
-
 export function noteThread(threadId: string, backendId: BackendKey, epoch?: unknown): boolean {
   if (threadId === '' || (epoch !== undefined && !validOwnershipEpoch(epoch))) return false;
   const previous = threads.get(threadId);
   if (previous) {
     // Patches and search references are hints. They never move an indexed id.
-    if (epoch === undefined) return previous.backend === backendId && !previous.conflict;
+    if (epoch === undefined) return previous.backend === backendId && !previous.rivals;
     if (previous.epoch !== undefined) {
       if (epoch < previous.epoch) return false;
       if (epoch === previous.epoch) {
-        if (previous.backend !== backendId) {
-          previous.conflict = true;
-          invalidateMetadataClaim(threadId, previous);
+        if (previous.backend === backendId) return !previous.rivals;
+        if (!previous.rivals?.includes(backendId)) {
+          const contested = { ...previous, rivals: [...previous.rivals ?? [], backendId] };
+          threads.set(threadId, contested);
+          invalidateMetadataClaim(threadId, contested);
         }
-        return !previous.conflict;
+        return false;
       }
     }
   }
@@ -193,14 +195,14 @@ export function noteTerminal(terminalId: string, backendId: BackendKey): void {
   terminals.set(terminalId, backendId);
 }
 
-/**
- * Record where a subscription was OPENED. The only fact that can answer
- * "unsubscribe on which connection" — the id is minted by one backend and
- * is not a name any other would recognise.
- */
-export function noteSubscription(subscriptionId: string, backendId: BackendKey): void {
-  if (subscriptionId === '') return;
-  subscriptions.set(subscriptionId, backendId);
+/** Forget `terminalId` once `backendId`, the backend running it, reports it exited. */
+export function forgetTerminal(terminalId: string, backendId: BackendKey): void {
+  if (terminals.get(terminalId) === backendId) terminals.delete(terminalId);
+}
+
+/** Forget every terminal `backendId` was running, once it has restarted. */
+export function forgetBackendTerminals(backendId: BackendKey): void {
+  takeOwned(terminals, backendId);
 }
 
 /** The backend that owns thread group `groupId`, or undefined when unknown. */
@@ -215,13 +217,6 @@ export function noteThreadGroup(groupId: string, backendId: BackendKey): void {
 
 export function forgetThreadGroup(groupId: string): void {
   threadGroups.delete(groupId);
-}
-
-/** Release a subscription id once it has been closed. Unlike the entity
- *  maps these are unbounded in TIME rather than in row count, so the one
- *  path that ends a subscription is the one that must forget it. */
-export function forgetSubscription(subscriptionId: string): void {
-  subscriptions.delete(subscriptionId);
 }
 
 export function forgetThread(threadId: string): void {
@@ -258,20 +253,37 @@ export interface ForgottenEntities {
  * sequenced against it.
  *
  * Every map is swept, including the ones no store mirrors: a leftover
- * entry would resolve a terminal or a subscription to a machine this
- * client no longer holds a socket to.
+ * entry would resolve a terminal to a machine this client no longer holds
+ * a socket to.
  */
 export function forgetBackendEntities(backendId: BackendKey): ForgottenEntities {
   for (const read of metadataReads.get(backendId) ?? []) read.detached = true;
   metadataReads.delete(backendId);
   const threadIds: string[] = [];
+  const handedOver: string[] = [];
   for (const [id, owner] of threads) {
-    if (owner.backend === backendId) { threadIds.push(id); threads.delete(id); }
+    if (owner.backend !== backendId && !owner.rivals?.includes(backendId)) continue;
+    // A contested thread stays with the claimants that remain.
+    const claimants = [owner.backend, ...owner.rivals ?? []].filter((backend) => backend !== backendId);
+    if (claimants.length === 0) {
+      threadIds.push(id);
+      threads.delete(id);
+      continue;
+    }
+    const [backend, ...rivals] = claimants;
+    const remaining: ThreadOwner = { backend, epoch: owner.epoch, rivals: rivals.length > 0 ? rivals : undefined };
+    threads.set(id, remaining);
+    invalidateMetadataClaim(id, remaining);
+    if (backend !== owner.backend) handedOver.push(id);
+  }
+  // A thread handed to its remaining claimant reroutes like a move.
+  for (const id of handedOver) {
+    for (const listener of ownershipListeners) listener(id, backendId);
   }
   const projectIds = takeOwned(projects, backendId);
   const threadGroupIds = takeOwned(threadGroups, backendId);
   const workflowItemIds = takeOwned(workflowItems, backendId);
-  for (const map of [automations, terminals, subscriptions]) {
+  for (const map of [automations, terminals]) {
     takeOwned(map, backendId);
   }
   return { threadIds, projectIds, threadGroupIds, workflowItemIds };
@@ -408,8 +420,6 @@ const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
   2319799628: { family: 'workflowAutomation', key: 'id' }, // WorkflowListAutomations
   2445206506: { family: 'terminal', key: 'terminalID' }, // ListTerminals
   3037887964: { family: 'workflowItem', key: 'id' }, // WorkflowListItems
-  3272491649: { family: 'subscription', key: 'id', single: true }, // SubscribePRUpdates
-  3282404643: { family: 'subscription', key: 'id', single: true }, // GitStatusSubscribe
   3613211765: { family: 'workflowItem', key: 'id' }, // WorkflowListUnresolvedItems
   1478438024: { family: 'threadGroup', key: 'id', single: true }, // CreateThreadGroup
   2176447381: { family: 'threadGroup', key: 'id' }, // ListThreadGroups
@@ -420,7 +430,9 @@ const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKe
   workflowItem: noteWorkflowItem,
   workflowAutomation: noteAutomation,
   terminal: noteTerminal,
-  subscription: noteSubscription,
+  // A subscription id names no computer: every caller pins the one that
+  // minted it, so none is recorded.
+  subscription: () => {},
   threadGroup: noteThreadGroup,
   // A thread list names threads, which the thread registry already
   // notes; no call answers with one.
@@ -431,8 +443,7 @@ const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKe
  * Record the ids a call ANSWERED with, for the families that have no row
  * in any list this client already fans out (`methodFamilies.ts`'s
  * `RESULT_FAMILIES` below). A workflow item, an automation and a terminal are
- * only ever learned from the call that listed or opened them; a
- * subscription id only from the subscribe that minted it.
+ * only ever learned from the call that listed or opened them.
  */
 export function noteFamilyRowsFromCall(
   methodId: number,
@@ -511,7 +522,6 @@ export function __resetEntityIndexForTest(): void {
   workflowItems.clear();
   automations.clear();
   terminals.clear();
-  subscriptions.clear();
   threadGroups.clear();
 }
 

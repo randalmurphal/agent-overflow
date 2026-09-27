@@ -1,6 +1,9 @@
 package store
 
 import (
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -301,5 +304,56 @@ func TestThreadTitleContextItemsEmptyAndNonPositiveLimit(t *testing.T) {
 	}
 	if len(got) != 0 || dropped {
 		t.Fatalf("limit 0 returned %d rows (dropped=%v)", len(got), dropped)
+	}
+}
+
+// The title context holds the rows and columns the timeline_items view
+// holds, on a thread with imported, overridden and local rows and on its
+// pointer forks: the window reads each row it keeps by its locator, and
+// the earliest ask from its arm.
+func TestThreadTitleContextItemsMatchTheView(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	read := func(summary, where, order string, limit int, threadID string) []Item {
+		t.Helper()
+		rows, err := s.db.Query(`SELECT id, thread_id, turn_index, item_index, kind, role, status, `+summary+`,
+		        COALESCE(payload_id, ''), parent_id, is_background, completion_of, tool_name, decision,
+		        CASE WHEN kind = 'user_text' THEN meta ELSE '' END, created_at, updated_at, rev
+		   FROM timeline_items
+		  WHERE thread_id = ? AND `+topLevelItemsFilter+` AND `+where+`
+		  ORDER BY turn_index `+order+`, item_index `+order+`
+		  LIMIT `+strconv.Itoa(limit), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items, err := scanThreadTitleContextItems(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+	for _, threadID := range seedTimelineParityForks(t, s) {
+		for _, limit := range []int{1, 3, 100} {
+			got, dropped, err := s.ThreadTitleContextItems(threadID, limit)
+			if err != nil {
+				t.Fatalf("%s limit %d: %v", threadID, limit, err)
+			}
+			want := read("substr(summary, -"+strconv.Itoa(threadTitleContextSummaryTail)+")",
+				"kind IN ('user_text', 'assistant_text')", "DESC", limit+1, threadID)
+			wantDropped := len(want) > limit
+			want = want[:min(len(want), limit)]
+			slices.Reverse(want)
+			earliest := read("substr(summary, 1, "+strconv.Itoa(threadTitleContextSummaryHead)+")",
+				"kind = 'user_text'", "ASC", 1, threadID)
+			if len(earliest) == 1 && !threadTitleContextWindowHolds(want, earliest[0]) {
+				want = append(earliest, want...)
+			}
+			if len(want) == 0 {
+				t.Fatalf("%s holds no title context; the check proves nothing", threadID)
+			}
+			if dropped != wantDropped || !reflect.DeepEqual(got, want) {
+				t.Errorf("%s limit %d: dropped=%v items\n %+v\nwant dropped=%v items\n %+v", threadID, limit, dropped, got, wantDropped, want)
+			}
+		}
 	}
 }

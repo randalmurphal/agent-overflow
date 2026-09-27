@@ -94,9 +94,8 @@ tasks:
       Build natively from Linux/WSL with gcc/clang on PATH (the
       `package` task already mandates Linux/WSL hosts); cross-building
       from macOS would need a Linux-targeting C toolchain (e.g.
-      `zig cc`) and is unsupported. If a fully static payload is ever
-      wanted again, musl-gcc with `-linkmode external -extldflags
-      -static` is the documented path.
+      `zig cc`) and is unsupported. The payload needs glibc: it calls
+      malloc_trim, which musl does not provide.
     internal: true
     # Let Go track sources, embedded assets and build flags; Task glob caches
     # can silently miss inputs and reuse an old backend or launcher.

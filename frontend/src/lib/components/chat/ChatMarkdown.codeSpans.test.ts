@@ -10,7 +10,6 @@ import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import {
   __resetStreamdownCodeHostForTest,
   __streamdownCodeHostStatsForTest,
-  appendCodeLines,
 } from './markdown/StreamdownCodeHost.svelte';
 import { createProvenAppend } from '../../markdown';
 import {
@@ -46,12 +45,6 @@ beforeEach(() => {
   __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
-});
-
-it('appends code-line materialization from only the new suffix', () => {
-  const lines = ['alpha', 'partial'];
-  appendCodeLines(lines, ' tail\nbeta\n');
-  expect(lines).toEqual(['alpha', 'partial tail', 'beta', '']);
 });
 
 // Simulates a backend `highlight:seed` push (remote clients) through

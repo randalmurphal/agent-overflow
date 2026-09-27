@@ -55,13 +55,6 @@ const (
 	// lock to one chunk at a time; without it a 47-thread pass held the
 	// writer continuously for 17 s.
 	retentionChunkPause = 100 * time.Millisecond
-
-	// retentionCheckpointEvery is how often (in successful deletes) the
-	// sweep runs PassiveCheckpoint so a long backfill doesn't grow the
-	// WAL unboundedly. Each commit appends to the WAL; without periodic
-	// recycling a 50k-thread backfill can inflate the WAL into the
-	// hundreds of MB and stay there until the loop ends.
-	retentionCheckpointEvery = 500
 )
 
 // startRetentionCleanup launches the background retention sweeper.
@@ -226,19 +219,6 @@ func (a *App) runRetentionDeletes(now time.Time) {
 	for _, err := range sweepErrs {
 		log.Printf("app: retention sweep: %v", err)
 	}
-
-	// Opportunistic WAL recycle when thread rows were actually freed.
-	// PassiveCheckpoint is non-blocking and a no-op when there's
-	// nothing to reclaim; failure is benign (the next autocheckpoint
-	// catches up). The truncating checkpoint that used to follow is
-	// deliberately absent: it needs every reader gone, so mid-session it
-	// stalls reads for up to the busy timeout. Boot and Close are the
-	// two moments where that quiescence is free, and both run it.
-	if a.store != nil && threadDeleted > 0 {
-		if err := a.store.PassiveCheckpoint(); err != nil {
-			log.Printf("app: retention sweep: passive checkpoint: %v", err)
-		}
-	}
 }
 
 // reclaimStoreFreeSpace hands pages on the freelist back to the
@@ -271,10 +251,7 @@ func (a *App) reclaimStoreFreeSpace() {
 		log.Printf("app: retention sweep: reclaim free space: %v", err)
 	case pages > 0:
 		// Under WAL the shortened database lands in the WAL; the file
-		// itself shrinks when a checkpoint moves it back.
-		if err := a.store.PassiveCheckpoint(); err != nil {
-			log.Printf("app: retention sweep: passive checkpoint: %v", err)
-		}
+		// itself shrinks when the store's checkpointer copies it back.
 		log.Printf("app: retention sweep: reclaimed %d pages in %s", pages, time.Since(start).Round(time.Millisecond))
 	}
 }
@@ -317,15 +294,6 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 			continue
 		}
 		deleted++
-		// Recycle the WAL periodically so a multi-thousand-thread
-		// backfill doesn't keep growing it. PassiveCheckpoint is
-		// non-blocking and benign on failure (the next autocheckpoint
-		// catches up).
-		if deleted%retentionCheckpointEvery == 0 {
-			if err := a.store.PassiveCheckpoint(); err != nil {
-				log.Printf("app: retention sweep: passive checkpoint: %v", err)
-			}
-		}
 	}
 	return deleted, failed
 }

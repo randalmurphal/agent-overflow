@@ -1,7 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetPayloadCacheForTest, writePayloadCache } from './payloadDataCache';
-import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+import {
+  createPayloadExpansion,
+  formatPayloadSize,
+  type LiveRevealStream,
+  type PayloadExpansionHandle,
+} from './payloadExpansion.svelte';
+
+// A live reveal stream over `text` that records which ends it was read at.
+function liveStream(text: string): LiveRevealStream & { text: string; reads: number[] } {
+  const reads: number[] = [];
+  return {
+    text,
+    reads,
+    revealedText(end) {
+      reads.push(end);
+      return text.slice(0, end);
+    },
+  };
+}
+
+// Reveal `stream` through `end`, the delta being what follows the previous
+// reveal of the same stream.
+const revealedEnds = new WeakMap<LiveRevealStream, number>();
+function reveal(
+  expansion: PayloadExpansionHandle,
+  stream: LiveRevealStream & { text: string },
+  end: number,
+  payloadVersion: unknown = 'streaming',
+): void {
+  const start = revealedEnds.get(stream) ?? 0;
+  revealedEnds.set(stream, end);
+  expansion.appendLiveDelta(stream, stream.text.slice(start, end), end, payloadVersion);
+}
 
 describe('payloadExpansion', () => {
   beforeEach(() => {
@@ -119,14 +151,14 @@ describe('payloadExpansion', () => {
       { loadMode: 'full', payloadVersion: () => version },
     );
 
-    expansion.appendLiveDelta(' ignored', 2);
+    reveal(expansion, liveStream(' ignored'), ' ignored'.length, 2);
     expect(expansion.displayData).toBeNull();
 
     await expansion.expand();
     expect(expansion.displayData).toBe('seed');
 
     version = 2;
-    expansion.appendLiveDelta(' delta', 2);
+    reveal(expansion, liveStream(' delta'), ' delta'.length, 2);
     expect(expansion.displayData).toBe('seed delta');
     await expansion.ensureLoaded();
     expect(data).toHaveBeenCalledTimes(1);
@@ -157,7 +189,8 @@ describe('payloadExpansion', () => {
     );
 
     await expansion.expand();
-    expansion.appendLiveDelta(' more', version);
+    const stream = liveStream('FULL THINKING TEXT more');
+    reveal(expansion, stream, stream.text.length, version);
     expect(expansion.displayData).toBe('FULL THINKING TEXT more');
 
     // Settle: smoother disposes, status flips, version changes, cache opens, and
@@ -176,7 +209,7 @@ describe('payloadExpansion', () => {
     expect(data).toHaveBeenCalledTimes(2);
   });
 
-  it('repairs a stale full payload from the previous live tail before appending a delta', async () => {
+  it('repairs a stale full payload from the revealed text before appending a delta', async () => {
     setBindingMock('GetPayloadData', async () => ({ data: 'full before ' }));
 
     const expansion = createPayloadExpansion(
@@ -186,7 +219,7 @@ describe('payloadExpansion', () => {
     );
 
     await expansion.expand();
-    expansion.appendLiveDelta(' more', 'streaming', 'live tail');
+    reveal(expansion, liveStream('live tail more'), 'live tail more'.length);
 
     expect(expansion.displayData).toBe('full before live tail more');
   });
@@ -195,12 +228,11 @@ describe('payloadExpansion', () => {
     // Regression: mid-stream expand. GetPayloadData flushes the live buffer
     // (app_payloads.go) so the snapshot is the FULL text received so far — a
     // longer prefix of the thinking text than the smoother has revealed. The
-    // smoother then reveals already-buffered text, calling appendLiveDelta with
-    // previousLiveTail = the prior revealed PREFIX. That prefix is already
-    // contained in displayData, so the merge must be a no-op. The old
-    // nonOverlappingSuffix-only path could not detect prefix containment and
-    // appended a second copy of the revealed-so-far text — the user-reported
-    // "entire thinking block is duplicated" on completion.
+    // smoother then reveals already-buffered text; that revealed prefix is
+    // already contained in displayData, so the merge must be a no-op. A
+    // containment-blind merge would append a second copy of the
+    // revealed-so-far text, duplicating the whole thinking block on
+    // completion.
     const snapshot = 'Para one. Para two. Para three.';
     setBindingMock('GetPayloadData', async () => ({ data: snapshot }));
 
@@ -213,17 +245,99 @@ describe('payloadExpansion', () => {
     await expansion.expand();
     expect(expansion.displayData).toBe(snapshot);
 
-    // Smoother reveals 'Para two. ', having previously revealed 'Para one. '.
-    // previousLiveTail + delta = 'Para one. Para two. ' is a prefix of snapshot.
-    expansion.appendLiveDelta('Para two. ', 'streaming', 'Para one. ');
+    const stream = liveStream('Para one. Para two. Para three.Para four.');
+    reveal(expansion, stream, 'Para one. Para two. '.length);
+    expect(expansion.displayData).toBe(snapshot);
+    reveal(expansion, stream, snapshot.length);
     expect(expansion.displayData).toBe(snapshot);
 
-    // Smoother reveals genuinely-new content that arrived after the snapshot.
-    expansion.appendLiveDelta('Para four.', 'streaming', 'Para one. Para two. Para three.');
+    // The smoother reveals content that arrived after the snapshot.
+    reveal(expansion, stream, stream.text.length);
     expect(expansion.displayData).toBe('Para one. Para two. Para three.Para four.');
   });
 
-  it('queues live deltas while the initial full payload load is pending', async () => {
+  it('appends an aligned reveal by offset without reading the revealed text again', async () => {
+    const snapshot = 'alpha beta ';
+    setBindingMock('GetPayloadData', async () => ({ data: snapshot }));
+    const expansion = createPayloadExpansion('payload-offsets', 'thread-offsets', {
+      loadMode: 'full',
+      payloadVersion: () => 'streaming',
+    });
+    await expansion.expand();
+
+    const stream = liveStream('alpha beta gamma delta epsilon');
+    const words = ['alpha ', 'beta ', 'gamma ', 'delta ', 'epsilon'];
+    let end = 0;
+    for (const word of words) {
+      end += word.length;
+      reveal(expansion, stream, end);
+    }
+
+    expect(expansion.displayData).toBe('alpha beta gamma delta epsilon');
+    expect(stream.reads).toEqual([6]);
+  });
+
+  it('aligns a new stream that starts inside the payload', async () => {
+    // A smoother re-created mid-stream reseeds from the trimmed summary: its
+    // offsets start inside the payload, not at the aligned stream's origin.
+    setBindingMock('GetPayloadData', async () => ({ data: 'alpha beta gamma ' }));
+    const expansion = createPayloadExpansion('payload-restream', 'thread-restream', {
+      loadMode: 'full',
+      payloadVersion: () => 'streaming',
+    });
+    await expansion.expand();
+
+    const first = liveStream('alpha beta gamma delta ');
+    reveal(expansion, first, first.text.length);
+    expect(expansion.displayData).toBe('alpha beta gamma delta ');
+
+    const resumed = liveStream('gamma delta epsilon zeta');
+    reveal(expansion, resumed, 'gamma delta epsilon '.length);
+    expect(expansion.displayData).toBe('alpha beta gamma delta epsilon ');
+    reveal(expansion, resumed, resumed.text.length);
+    expect(expansion.displayData).toBe('alpha beta gamma delta epsilon zeta');
+    expect(resumed.reads).toEqual(['gamma delta epsilon '.length]);
+  });
+
+  it('aligns a stream again when its reveal no longer matches the body', async () => {
+    // A short reveal can match the body at the wrong place. The next reveal
+    // disagrees with the text there, and the stream is aligned from its
+    // longer revealed text.
+    setBindingMock('GetPayloadData', async () => ({ data: 'the cat. the dog. ' }));
+    const expansion = createPayloadExpansion('payload-realign', 'thread-realign', {
+      loadMode: 'full',
+      payloadVersion: () => 'streaming',
+    });
+    await expansion.expand();
+
+    const stream = liveStream('the dog. runs');
+    reveal(expansion, stream, 'the '.length);
+    expect(expansion.displayData).toBe('the cat. the dog. ');
+    reveal(expansion, stream, 'the dog. '.length);
+    expect(expansion.displayData).toBe('the cat. the dog. ');
+    reveal(expansion, stream, stream.text.length);
+    expect(expansion.displayData).toBe('the cat. the dog. runs');
+    expect(stream.reads).toEqual(['the '.length, 'the dog. '.length]);
+  });
+
+  it('aligns a stream again when its reveal starts past the end of the body', async () => {
+    // A reveal the handle never received leaves a gap between the body and
+    // the next delta; the stream's text fills it.
+    setBindingMock('GetPayloadData', async () => ({ data: 'alpha ' }));
+    const expansion = createPayloadExpansion('payload-gap', 'thread-gap', {
+      loadMode: 'full',
+      payloadVersion: () => 'streaming',
+    });
+    await expansion.expand();
+
+    const stream = liveStream('alpha beta gamma');
+    reveal(expansion, stream, 'alpha '.length);
+    expansion.appendLiveDelta(stream, 'gamma', stream.text.length, 'streaming');
+    expect(expansion.displayData).toBe('alpha beta gamma');
+    expect(stream.reads).toEqual(['alpha '.length, stream.text.length]);
+  });
+
+  it('holds only the latest reveal while the initial full payload load is pending', async () => {
     let resolvePayload!: (value: { data: string }) => void;
     setBindingMock('GetPayloadData', async () => (
       new Promise<{ data: string }>((resolve) => {
@@ -239,14 +353,17 @@ describe('payloadExpansion', () => {
 
     const expand = expansion.expand();
     await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
-    expansion.appendLiveDelta(' live', 'streaming');
+    const stream = liveStream('seed live more');
+    reveal(expansion, stream, 'seed live'.length);
+    reveal(expansion, stream, stream.text.length);
     resolvePayload({ data: 'seed live' });
     await expand;
 
-    expect(expansion.displayData).toBe('seed live');
+    expect(expansion.displayData).toBe('seed live more');
+    expect(stream.reads).toEqual([stream.text.length]);
   });
 
-  it('repairs a stale pending full payload from the previous live tail before queued deltas', async () => {
+  it('repairs a stale pending full payload from the revealed text', async () => {
     let resolvePayload!: (value: { data: string }) => void;
     setBindingMock('GetPayloadData', async () => (
       new Promise<{ data: string }>((resolve) => {
@@ -262,22 +379,18 @@ describe('payloadExpansion', () => {
 
     const expand = expansion.expand();
     await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
-    expansion.appendLiveDelta(' more', 'streaming', 'live tail');
+    reveal(expansion, liveStream('live tail more'), 'live tail more'.length);
     resolvePayload({ data: 'full before ' });
     await expand;
 
     expect(expansion.displayData).toBe('full before live tail more');
   });
 
-  it('does not duplicate buffered text when replaying multiple queued deltas behind a fresh snapshot', async () => {
-    // Multi-delta variant of the buffer-ahead regression, exercising the
-    // replayPendingLiveDeltas() loop rather than a single direct append.
-    // Several smoother reveals queue while the initial full load is in flight,
+  it('does not duplicate buffered text when the pending reveals trail a fresh snapshot', async () => {
+    // Several smoother reveals arrive while the initial full load is in flight,
     // then the load resolves with a flushed snapshot AHEAD of the early
-    // reveals. Each queued revealed-so-far prefix is already contained in the
-    // snapshot and must replay as a no-op; only the reveal that overtakes the
-    // snapshot appends its genuine continuation. Without revealedSuffix's
-    // prefix guard, every queued prefix would re-append and stack duplicates.
+    // reveals. Only the reveal that overtakes the snapshot appends its genuine
+    // continuation; the text it shares with the snapshot is not re-appended.
     let resolvePayload!: (value: { data: string }) => void;
     setBindingMock('GetPayloadData', async () => (
       new Promise<{ data: string }>((resolve) => {
@@ -294,12 +407,10 @@ describe('payloadExpansion', () => {
     const expand = expansion.expand();
     await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
 
-    // Three reveals queue while the load is pending. The first two stay behind
-    // the snapshot (each revealed-so-far is a prefix of it); the third overtakes
-    // it with content that arrived after the flush.
-    expansion.appendLiveDelta('Para one. ', 'streaming', '');
-    expansion.appendLiveDelta('Para two. ', 'streaming', 'Para one. ');
-    expansion.appendLiveDelta('Para four.', 'streaming', 'Para one. Para two. Para three.');
+    const stream = liveStream('Para one. Para two. Para three.Para four.');
+    reveal(expansion, stream, 'Para one. '.length);
+    reveal(expansion, stream, 'Para one. Para two. '.length);
+    reveal(expansion, stream, stream.text.length);
 
     resolvePayload({ data: 'Para one. Para two. Para three.' });
     await expand;
@@ -307,15 +418,45 @@ describe('payloadExpansion', () => {
     expect(expansion.displayData).toBe('Para one. Para two. Para three.Para four.');
   });
 
+  it('drops a held reveal whose stream ended before the body loaded', async () => {
+    // An interrupted row's last reveal is held while the body loads, and its
+    // smoother is disposed before the body arrives. The ended stream reads no
+    // text; the body loaded for the row's new version stands, and so does
+    // that version.
+    let resolvePayload!: (value: { data: string }) => void;
+    const firstLoad = new Promise<{ data: string }>((resolve) => {
+      resolvePayload = resolve;
+    });
+    const data = setBindingMock('GetPayloadData', async () => (
+      data.mock.calls.length === 1 ? firstLoad : { data: 'body tail' }
+    ));
+    const expansion = createPayloadExpansion('payload-ended', 'thread-ended', {
+      loadMode: 'full',
+      payloadVersion: () => 'errored',
+      cacheEnabled: false,
+    });
+
+    const expand = expansion.expand();
+    await vi.waitFor(() => expect(data).toHaveBeenCalledTimes(1));
+    const ended: LiveRevealStream = { revealedText: () => null };
+    expansion.appendLiveDelta(ended, ' tail', 'body tail'.length, 'streaming');
+    resolvePayload({ data: 'body tail' });
+    await expand;
+
+    expect(expansion.displayData).toBe('body tail');
+    await expansion.ensureLoaded();
+    expect(data).toHaveBeenCalledTimes(1);
+  });
+
   it('suppresses an interior-window reconnect reveal already contained in the flushed snapshot', async () => {
     // On reconnect the per-item smoother reseeds from the bounded thinking tail,
     // so its revealed window is an INTERIOR slice of the canonical reasoning
-    // rather than an offset-0 prefix. revealedSuffix's containment check
+    // rather than an offset-0 prefix. alignRevealed's containment check
     // (textOverlap.ts) recognises the window is already present in the flushed
-    // snapshot and appends nothing, so the live merge no longer duplicates the
-    // snapshot's interior into chunks while streaming. At settle the version
-    // relabel drives keepExpandedPayloadFresh -> ensureLoaded -> loadPreview,
-    // whose `chunks = [result.data]` reloads the complete reasoning.
+    // snapshot and appends nothing, so the live merge does not duplicate the
+    // snapshot's interior while streaming. At settle the version relabel drives
+    // keepExpandedPayloadFresh -> ensureLoaded -> loadPreview, whose
+    // `chunks = [result.data]` reloads the complete reasoning.
     let version = 'streaming';
     let flushCall = 0;
     setBindingMock('GetPayloadData', async () => {
@@ -336,11 +477,14 @@ describe('payloadExpansion', () => {
     await expansion.expand();
     expect(expansion.displayData).toBe('alpha beta gamma delta ');
 
-    // Interior-window reveal: previousLiveTail='gamma ' is the reseeded tail;
-    // revealed 'gamma delt' is a verbatim interior substring of the flush. It is
-    // already shown, so the merge is a no-op (previously it duplicated the
-    // interior into the buffer).
-    expansion.appendLiveDelta('delt', 'streaming', 'gamma ');
+    // Interior-window reveal: the stream reseeded from 'gamma '; its revealed
+    // 'gamma delt' is a verbatim interior substring of the flush. It is
+    // already shown, so the merge is a no-op, and so is the next reveal that
+    // it aligned.
+    const stream = liveStream('gamma delta epsilon ');
+    reveal(expansion, stream, 'gamma delt'.length);
+    expect(expansion.displayData).toBe('alpha beta gamma delta ');
+    reveal(expansion, stream, 'gamma delta '.length);
     expect(expansion.displayData).toBe('alpha beta gamma delta ');
 
     // Turn settles: the payload version relabels. In production
@@ -351,6 +495,81 @@ describe('payloadExpansion', () => {
 
     expect(flushCall).toBe(2);
     expect(expansion.displayData).toBe('alpha beta gamma delta epsilon ');
+  });
+
+  it('counts appended live text in the payload size', async () => {
+    setBindingMock('GetPayloadData', async () => ({ data: 'seed ' }));
+    const expansion = createPayloadExpansion('payload-copy', 'thread-copy', {
+      loadMode: 'full',
+      payloadVersion: () => 'streaming',
+    });
+    await expansion.expand();
+    const stream = liveStream('seed one two three');
+    for (const end of [9, 13, 18]) reveal(expansion, stream, end);
+
+    expect(expansion.displayData).toBe('seed one two three');
+    expect(expansion.fullData).toBe('seed one two three');
+    expect(expansion.totalSize).toBe('seed one two three'.length);
+  });
+
+  it('keeps copies of appended live text, not the reveal slices', async () => {
+    // A reveal delta can be a slice of the smoother's whole received text;
+    // appendCopied keeps only the appended characters alive
+    // (liveTextRetention.test.ts). The test setup has loaded this module, so
+    // the recording appendCopied binds to a fresh module graph.
+    vi.resetModules();
+    const appendCopied = vi.fn();
+    vi.doMock('./liveText', async (importOriginal) => {
+      const original = await importOriginal<typeof import('./liveText')>();
+      appendCopied.mockImplementation(original.appendCopied);
+      return { ...original, appendCopied };
+    });
+    try {
+      const bindings = await import('../../test/mocks/bindings-app');
+      const fresh = await import('./payloadExpansion.svelte');
+      bindings.setBindingMock('GetPayloadData', async () => ({ data: 'seed ' }));
+      const expansion = fresh.createPayloadExpansion('payload-copied', 'thread-copied', {
+        loadMode: 'full',
+        payloadVersion: () => 'streaming',
+      });
+      await expansion.expand();
+      const stream = liveStream('seed one two');
+      reveal(expansion, stream, 'seed one'.length);
+      reveal(expansion, stream, stream.text.length);
+
+      expect(expansion.displayData).toBe('seed one two');
+      expect(appendCopied.mock.calls).toEqual([['', 'one'], ['one', ' two']]);
+    } finally {
+      vi.doUnmock('./liveText');
+    }
+  });
+
+  it('drops live text when a version change hydrates the body from the cache', async () => {
+    let version = 'streaming';
+    setBindingMock('GetPayloadData', async () => ({ data: 'body ' }));
+    const expansion = createPayloadExpansion('payload-hydrate-live', 'thread-hydrate-live', {
+      loadMode: 'full',
+      payloadVersion: () => version,
+      cacheEnabled: () => version !== 'streaming',
+    });
+    await expansion.expand();
+    const stream = liveStream('body live');
+    reveal(expansion, stream, stream.text.length);
+    expect(expansion.displayData).toBe('body live');
+
+    // Another view of the payload already cached its settled body.
+    writePayloadCache('thread-hydrate-live', 'payload-hydrate-live', 'settled', {
+      chunks: ['body live'],
+      hasFullChunks: true,
+      totalSize: 9,
+      isComplete: true,
+      loadedBytes: 9,
+    });
+    version = 'settled';
+    await expansion.ensureLoaded();
+
+    expect(expansion.displayData).toBe('body live');
+    expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1);
   });
 
   it('skips cache reads and writes when cache is disabled', async () => {

@@ -21,6 +21,8 @@
 
 import type { Item } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
+import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
+import type { TextWindow } from '../utils/liveText';
 import { classifyRevealText } from './threadRevealText';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { isSmoothLiveContentKind, isReasoningTailKind } from './threadPaneShared';
@@ -121,9 +123,10 @@ export interface ThreadStreamingRevealOptions {
   appendLivePayloadDeltaForItem(
     itemId: string,
     stateKey: string,
+    stream: LiveRevealStream,
     delta: string,
+    end: number,
     payloadVersion?: unknown,
-    previousLiveTail?: string,
   ): void;
 }
 
@@ -174,9 +177,17 @@ export interface ThreadStreamingReveal {
    * Full revealed text for a reasoning-tail row, or null. Live while the
    * row streams, and RETAINED across a content-consistent settle so the
    * collapsed clamp never re-wraps in front of the reader; dropped on
-   * overwrite/removal, by the offscreen prune, and on thread switch.
+   * overwrite/removal, by the offscreen prune, and on thread switch. Not
+   * retained for a text over the retention budget.
    */
   liveThinkingTailFor(itemId: string): string | null;
+  /**
+   * The end of that text the collapsed clamp renders: a window while the
+   * row streams, and once it settles the whole text, or the last window
+   * when the whole text is over the retention budget. Dropped on the same
+   * paths as `liveThinkingTailFor`.
+   */
+  liveThinkingWindowFor(itemId: string): TextWindow | null;
   /** Row-UI prune hook: drop retained settled tails not in the retention set. */
   pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void;
   /**
@@ -509,6 +520,7 @@ export function createThreadStreamingReveal(
     disposeAll,
     snapAllToReceived,
     liveThinkingTailFor: registry.liveThinkingTailFor,
+    liveThinkingWindowFor: registry.liveThinkingWindowFor,
     pruneSettledThinkingTails: registry.pruneSettledThinkingTails,
     smootherCount: registry.smootherCount,
     debugStats: registry.debugStats,

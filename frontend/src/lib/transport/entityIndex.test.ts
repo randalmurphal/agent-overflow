@@ -1,6 +1,6 @@
 import generatedAPI from '../../../bindings/agent-overflow/app.ts?raw';
 import { beforeEach, expect, it } from 'vitest';
-import { __resetEntityIndexForTest, captureThreadMetadataRead, currentThreadRow, forgetBackendEntities, noteRowsFromCall, noteThread, onThreadOwnershipChanged, resolveThreadBackend, projectBackend, threadBackend } from './entityIndex';
+import { __resetEntityIndexForTest, captureThreadMetadataRead, currentThreadRow, forgetBackendEntities, forgetTerminal, noteRowsFromCall, noteTerminal, noteThread, onThreadOwnershipChanged, resolveThreadBackend, projectBackend, terminalBackend, threadBackend } from './entityIndex';
 
 beforeEach(__resetEntityIndexForTest);
 
@@ -35,6 +35,50 @@ it('refuses conflicting claims instead of choosing an execution host by arrival 
   noteThread('thread', 'mac', 3);
   expect(() => resolveThreadBackend('thread')).toThrow('Two computers claim');
   noteThread('thread', 'gpu', 4);
+  expect(resolveThreadBackend('thread')).toBe('gpu');
+});
+
+// A computer attached twice (a legacy slot beside its paired entry) claims its
+// own threads under both keys. Detaching one leaves the other the sole owner.
+it('hands a contested conversation to the claimant that remains attached', () => {
+  const handedOver: string[] = [];
+  const stop = onThreadOwnershipChanged((id, previous) => handedOver.push(`${id}:${previous}:${threadBackend(id)}`));
+  try {
+    noteThread('rival-leaves', 'canonical', 0);
+    noteThread('rival-leaves', 'slot', 0);
+    noteThread('owner-leaves', 'slot', 0);
+    noteThread('owner-leaves', 'canonical', 0);
+    noteThread('slot-only', 'slot', 0);
+    expect(() => resolveThreadBackend('rival-leaves')).toThrow('Two computers claim');
+    expect(() => resolveThreadBackend('owner-leaves')).toThrow('Two computers claim');
+
+    expect(forgetBackendEntities('slot').threadIds).toEqual(['slot-only']);
+
+    expect(resolveThreadBackend('rival-leaves')).toBe('canonical');
+    expect(resolveThreadBackend('owner-leaves')).toBe('canonical');
+    expect(noteThread('owner-leaves', 'canonical', 0)).toBe(true);
+    expect(currentThreadRow({ id: 'owner-leaves', ownershipEpoch: 0 }, 'canonical')).toBe(true);
+    expect(handedOver).toEqual(['owner-leaves:slot:canonical']);
+  } finally { stop(); }
+});
+
+it('accepts the remaining claimant\'s in-flight list once the contest ends', () => {
+  const read = captureThreadMetadataRead(1090132042, 'canonical')!;
+  try {
+    noteThread('thread', 'canonical', 0);
+    noteThread('thread', 'slot', 0);
+    forgetBackendEntities('slot');
+    expect(() => read.verify([{ id: 'thread', ownershipEpoch: 0 }])).not.toThrow();
+  } finally { read.release(); }
+});
+
+it('keeps a conversation contested while two claimants remain', () => {
+  noteThread('thread', 'mac', 1);
+  noteThread('thread', 'gpu', 1);
+  noteThread('thread', 'nas', 1);
+  forgetBackendEntities('mac');
+  expect(() => resolveThreadBackend('thread')).toThrow('Two computers claim');
+  forgetBackendEntities('nas');
   expect(resolveThreadBackend('thread')).toBe('gpu');
 });
 
@@ -112,4 +156,12 @@ it('does not let a late mutation response reclaim a transferred conversation', (
   noteThread('thread', 'destination', 2);
   noteRowsFromCall(3140398729, { id: 'thread', ownershipEpoch: 1 }, 'source');
   expect(resolveThreadBackend('thread')).toBe('destination');
+});
+
+it('forgets a terminal only on its own computer\'s exit report', () => {
+  noteTerminal('mac-terminal', 'mac');
+  forgetTerminal('mac-terminal', 'gpu');
+  expect(terminalBackend('mac-terminal')).toBe('mac');
+  forgetTerminal('mac-terminal', 'mac');
+  expect(terminalBackend('mac-terminal')).toBeUndefined();
 });

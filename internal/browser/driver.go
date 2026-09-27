@@ -100,7 +100,9 @@ type engineProfile interface {
 	Handle() string
 	// NewPage creates a hidden page in this profile.
 	NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error)
-	// AttachPage adopts a page the engine created on its own (a popup).
+	// AttachPage adopts a page the engine created on its own (a popup). On an
+	// error the Manager discards the page, which is a no-op for an engine
+	// that already closed it.
 	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
 	// CancelDownload aborts one in-flight download by its engine id.
 	CancelDownload(id string)
@@ -119,6 +121,9 @@ type profileOptions struct {
 	// session (spec §4). The hosted engine forwards it as the directive's
 	// Ephemeral flag.
 	Persist bool
+	// Allow is the workspace's navigation policy, for an engine that can
+	// load a page before AttachPage installs the page's own policy.
+	Allow func(url string) bool
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry
@@ -142,8 +147,8 @@ type pageDriver interface {
 	Lifetime() context.Context
 	// Handle identifies this page in engine events.
 	Handle() string
-	// OwnsFrame reports whether an engine frame handle belongs to this page.
-	// Engines that address events per page can answer false.
+	// OwnsFrame reports whether an engine frame handle belongs to this page,
+	// its main frame included.
 	OwnsFrame(frame string) bool
 	// Close destroys the page.
 	Close()
@@ -316,10 +321,12 @@ const (
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
 type engineEvents struct {
-	PopupOpened      func(enginePopup)
-	PageClosed       func(handle string)
-	PageInfoChanged  func(handle, url, title string)
-	DownloadStarted  func(downloadStart)
+	PopupOpened     func(enginePopup)
+	PageClosed      func(handle string)
+	PageInfoChanged func(handle, url, title string)
+	// DownloadStarted reports whether the download may continue. The engine
+	// cancels one it answers false for.
+	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord
 	// was pressed while the page's native view held keyboard focus — does AO

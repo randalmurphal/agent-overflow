@@ -7,10 +7,15 @@ package triage
 
 import (
 	"database/sql"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/pathlinks"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -383,5 +388,145 @@ func TestAnAgentsEndPersistsTheRowsQueuedBehindItsStreams(t *testing.T) {
 	}
 	if open := openRows(t, st, "t1"); len(open) != 0 {
 		t.Fatalf("rows left open: %v", open)
+	}
+}
+
+// An agent's end can land while a block stop's settle of the agent's
+// text is in flight: before that settle flushed the stream's last
+// window, or between its read of the row and its write. The row settles
+// once, as a row settle writes it: with its whole text, its code spans
+// and path refs, and a settle patch to the client. The end's rule decides
+// its status, since the end's write lands first.
+func TestAgentEndSettlesARowItsStopIsSettling(t *testing.T) {
+	const head, tail = "Worker read src/foo.ts:", "\n```go\nfunc main() {}\n```"
+	text := head + tail
+	for _, end := range []struct {
+		name         string
+		run          func(t *testing.T, router *Router)
+		status, want string
+	}{
+		{"completed", func(t *testing.T, router *Router) { parkStop(t, router, "t1", "tu-a", "task-a", "Done.", "u-end") }, statusCompleted, text},
+		{"killed", func(t *testing.T, router *Router) { agentKilled(t, router, "t1", "tu-a", "task-a", "") }, statusErrored, stoppedSummary(text)},
+	} {
+		for _, order := range []struct {
+			name string
+			// deltas streams the text. The flush of a window writes path
+			// refs of its own, so a stream whose first delta carries the
+			// whole text leaves them to the settle.
+			deltas []string
+			// stopAndEnd runs the stop of the agent's text with the end
+			// landing inside its settle.
+			stopAndEnd func(t *testing.T, router *Router, turnIndex int, end func())
+		}{
+			{"before the stop's flush", []string{head, tail}, func(t *testing.T, router *Router, turnIndex int, end func()) {
+				// The stop's two halves (settleStreamingTextAsync).
+				itemID, taken := router.takeActiveTextBlock("t1", turnIndex, "tu-a", "")
+				if !taken {
+					t.Fatal("the agent's stream is not open")
+				}
+				end()
+				if err := router.doSettleStreamingText("t1", "tu-a", itemID, statusCompleted, "", false, nil); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"between the stop's read and write", []string{text}, func(t *testing.T, router *Router, _ int, end func()) {
+				hold := newBlockSettleHold(t, router)
+				if err := router.Handle(provider.ProviderEvent{
+					Kind: provider.EventContentBlockStop, ThreadID: "t1", ParentToolUseID: "tu-a",
+					Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-hold.held:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the stop's settle never reached its write")
+				}
+				end()
+				hold.release()
+				router.WaitForPendingSettles()
+			}},
+		} {
+			t.Run(end.name+"/"+order.name, func(t *testing.T) {
+				router, st, emissions := newTestRouter(t)
+				router.SetCodeSpanEnricher(func(string) json.RawMessage { return json.RawMessage(`{"spans":1}`) })
+				createWorkspaceThread(t, st, "t1", "src/foo.ts")
+				parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
+				parkLaunchAgent(t, router, "t1", "tu-a", "task-a", "")
+				for _, delta := range order.deltas {
+					parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", ParentToolUseID: "tu-a", Content: delta})
+				}
+				texts := agentTexts(t, st, "t1", "tu-a")
+				if len(texts) != 1 || texts[0].Summary != order.deltas[0] {
+					t.Fatalf("agent text = %+v, want one row with its first delta, the rest in its flush window", texts)
+				}
+				id := texts[0].ID
+
+				emissions.reset()
+				order.stopAndEnd(t, router, texts[0].TurnIndex, func() {
+					end.run(t, router)
+					if !router.hasActiveStreamingItem("t1") || scopeStreams(router, "t1", "tu-a") != 1 {
+						t.Fatal("the end released the count the stop's settle holds until it finishes")
+					}
+				})
+
+				got := mustItem(t, st, "t1", id)
+				if got.Status != end.status || got.Summary != end.want {
+					t.Fatalf("agent text = %s %q, want %s %q", got.Status, got.Summary, end.status, end.want)
+				}
+				var meta map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(got.Meta), &meta); err != nil {
+					t.Fatalf("agent text meta %q: %v", got.Meta, err)
+				}
+				if meta[codeSpansMetaKey] == nil || !strings.Contains(string(meta[pathlinks.MetaKey]), "src/foo.ts") {
+					t.Fatalf("agent text meta = %s, want its code spans and path refs", got.Meta)
+				}
+				var patches int
+				for _, evt := range itemStreamEventsFor(t, emissions, id) {
+					switch evt.Action {
+					case itemStreamActionPatch:
+						patches++
+						if evt.Patch.Status == nil || *evt.Patch.Status != end.status {
+							t.Fatalf("settle patch = %+v, want status %s", evt.Patch.ItemPatchFields, end.status)
+						}
+					case itemStreamActionUpsert:
+						t.Fatalf("agent text sent as a %s upsert, want a settle patch", evt.Item.Status)
+					}
+				}
+				if patches != 1 {
+					t.Fatalf("agent text sent %d settle patches, want 1", patches)
+				}
+				if n := scopeStreams(router, "t1", "tu-a"); n != 0 {
+					t.Fatalf("the agent's stream is still counted: %d", n)
+				}
+				if open := openRows(t, st, "t1"); len(open) != 0 {
+					t.Fatalf("rows left open: %v", open)
+				}
+			})
+		}
+	}
+}
+
+// createWorkspaceThread creates thread id in a temporary workspace that
+// holds the files at paths, so a path to one of them validates.
+func createWorkspaceThread(t *testing.T, st *store.Store, id string, paths ...string) {
+	t.Helper()
+	root := t.TempDir()
+	for _, path := range paths {
+		file := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ensureTriageProject(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID: id, ProjectID: triageTestProjectID, Title: "Test", Provider: "claude",
+		WorkspacePath: root, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
 	}
 }

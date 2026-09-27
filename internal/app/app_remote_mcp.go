@@ -61,7 +61,7 @@ func (a *App) remoteMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !enabled || !a.remoteMCPServer().ThreadEnabled(thread.ID) {
 		return nil, nil
 	}
-	return a.remoteMCPServer().RegisterThread(thread.ID, remoteMCPAccess{thread.ID, sessionToken})
+	return a.remoteMCPServer().RegisterThread(thread.ID, sessionToken, remoteMCPAccess{thread.ID, sessionToken})
 }
 
 func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
@@ -456,7 +456,7 @@ func (a *App) signalRemotePeers() {
 	}
 }
 func (a *App) revokeRemoteMCP(threadID, token string) {
-	a.remoteMCPServer().RevokeThread(threadID, remoteMCPAccess{threadID, token})
+	a.remoteMCPServer().RevokeThread(threadID, token)
 	a.cancelRemoteWaits(threadID)
 }
 

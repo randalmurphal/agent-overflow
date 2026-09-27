@@ -21,6 +21,7 @@ import (
 type Cache struct {
 	group singleflight.Group
 	sem   chan struct{}
+	heap  heapRelease
 
 	mu       sync.Mutex
 	entries  map[[32]byte]*list.Element
@@ -49,6 +50,7 @@ type cacheEntry struct {
 func NewCache() *Cache {
 	return &Cache{
 		sem:      make(chan struct{}, computeConcurrency),
+		heap:     heapRelease{release: releaseFreedMemory},
 		entries:  map[[32]byte]*list.Element{},
 		lru:      list.New(),
 		maxBytes: defaultCacheBytes,
@@ -125,9 +127,14 @@ func (c *Cache) getWith(key [32]byte, compute func() Result, memoize bool) Resul
 			return res, nil
 		}
 		c.sem <- struct{}{}
-		res := compute()
-		<-c.sem
-		return res, nil
+		c.heap.begin()
+		// Deferred so a computation that panics, which the RPC dispatcher
+		// recovers, still returns its slot.
+		defer func() {
+			c.heap.end()
+			<-c.sem
+		}()
+		return compute(), nil
 	})
 	res := v.(Result)
 	// Insertion is per caller, outside the flight closure: a transient
@@ -156,14 +163,18 @@ func (c *Cache) lookup(key [32]byte) (Result, bool) {
 
 func (c *Cache) insert(key [32]byte, res Result) {
 	size := resultBytes(res)
+	if size > c.maxBytes {
+		return // pathological single entry; recompute on demand
+	}
+	if _, ok := c.lookup(key); ok {
+		return // another caller of the same flight inserted it
+	}
+	res = compactResult(res)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if elem, ok := c.entries[key]; ok {
 		c.lru.MoveToFront(elem)
 		return
-	}
-	if size > c.maxBytes {
-		return // pathological single entry; recompute on demand
 	}
 	c.entries[key] = c.lru.PushFront(&cacheEntry{key: key, result: res, size: size})
 	c.bytes += size
@@ -179,12 +190,38 @@ func (c *Cache) insert(key [32]byte, res Result) {
 	}
 }
 
-// resultBytes estimates an entry's retained size: run pairs are
-// uint16s, plus per-line and per-entry overhead.
+// resultBytes is an entry's retained size once compactResult has laid it
+// out: the line headers, the run pairs as uint16s, and the entry's
+// bookkeeping (its cacheEntry, list element and map slot).
 func resultBytes(res Result) int {
-	size := 64
+	size := 224
 	for _, line := range res.Lines {
 		size += 24 + 2*len(line.Runs)
 	}
 	return size
+}
+
+// compactResult copies res into an exactly sized line slice and one run
+// array its lines share. A computed result grows its slices by appending,
+// so without the copy an entry retains their spare capacity too.
+func compactResult(res Result) Result {
+	if len(res.Lines) == 0 {
+		return res
+	}
+	total := 0
+	for _, line := range res.Lines {
+		total += len(line.Runs)
+	}
+	lines := make([]EncodedLine, len(res.Lines))
+	runs := make([]uint16, 0, total)
+	for i, line := range res.Lines {
+		if len(line.Runs) == 0 {
+			continue
+		}
+		start := len(runs)
+		runs = append(runs, line.Runs...)
+		lines[i].Runs = runs[start:len(runs):len(runs)]
+	}
+	res.Lines = lines
+	return res
 }

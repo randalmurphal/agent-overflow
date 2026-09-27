@@ -60,6 +60,7 @@ import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { renderedFlushedUserItemIds } from './threadFlushRowReveal';
 import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
+import type { TextWindow } from '../utils/liveText';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import { createThreadLiveStateHydration } from './threadLiveStateHydration';
 import { createThreadSwitchLoad } from './threadSwitchLoad.svelte';
@@ -1275,6 +1276,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // switch) — callers fall back to `item.summary`.
     liveThinkingTailForItem(itemId: string): string | null {
       return streamingReveal.liveThinkingTailFor(itemId);
+    },
+    // The end of that text the collapsed clamp renders (utils/liveText.ts).
+    liveThinkingWindowForItem(itemId: string): TextWindow | null {
+      return streamingReveal.liveThinkingWindowFor(itemId);
     },
 
     /**

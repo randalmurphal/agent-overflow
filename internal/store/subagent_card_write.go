@@ -20,7 +20,7 @@ var subagentCardLiveSQL = `SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = 
 // subagentPromptNamesSQL reports whether a local resume prompt directly
 // under the root ?2 names the carrier ?3 (idx_items_subagent_resume_prompt).
 var subagentPromptNamesSQL = `SELECT EXISTS (SELECT 1 FROM items p
- WHERE p.thread_id = ?1 AND p.parent_id = ?2 AND ` + aggPromptSQL("p.") + ` AND ` + aggPromptCarrierSQL("p.") + ` = ?3)`
+ WHERE p.thread_id = ?1 AND p.parent_id = ` + textParam("?2") + ` AND ` + aggPromptSQL("p.") + ` AND ` + aggPromptCarrierSQL("p.") + ` = ?3)`
 
 // Writes.
 
@@ -36,6 +36,9 @@ type cardWrite struct {
 	// every chain it touched instead. bump makes the recompute advance
 	// the thread stamp, for a bulk writer none of whose writes did.
 	bulk, bump bool
+	// grouped marks a write that shares its transaction (groupCommit),
+	// which must leave no transaction state behind.
+	grouped bool
 
 	inserts, changes []subagentRow
 	chains, seeds    []string
@@ -66,10 +69,10 @@ type cardWrite struct {
 	levelsDropped bool
 
 	// t is the thread's cards, when the writer holds their lock
-	// (writeItems, bulkWriteItems): finish then settles what the write
-	// leaves in memory. A write without it may stop an agent only in a
-	// thread whose cards hold nothing, or in a boot sweep (sweep), which
-	// runs before any card is opened.
+	// (writeItems, groupWriteItems, bulkWriteItems): finish then settles
+	// what the write leaves in memory. A write without it may stop an
+	// agent only in a thread whose cards hold nothing, or in a boot sweep
+	// (sweep), which runs before any card is opened.
 	t     *cardThread
 	sweep bool
 	// live and liveAnchor are the card's liveness as the transaction read
@@ -391,16 +394,32 @@ func (w *cardWrite) apply() {
 // not follow and settles what no boot pass would recover before it
 // commits, and the cards take the rest once it has.
 func (s *Store) writeItems(threadID string, card *SubagentCard, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
-	return s.itemWriteTx(threadID, card, false, label, fn)
+	return s.itemWriteTx(threadID, card, itemWriteOwn, label, fn)
+}
+
+// groupWriteItems is writeItems for a write whose transaction may commit
+// with other grouped writes (groupCommit): one bounded write that splits no
+// shown rows. A live event's write to one item is one.
+func (s *Store) groupWriteItems(threadID string, card *SubagentCard, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
+	return s.itemWriteTx(threadID, card, itemWriteGrouped, label, fn)
 }
 
 // bulkWriteItems is writeItems for a bulk writer of one thread: counted
 // rows need no card, and fn recomputes every chain it touched.
 func (s *Store) bulkWriteItems(threadID, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
-	return s.itemWriteTx(threadID, nil, true, label, fn)
+	return s.itemWriteTx(threadID, nil, itemWriteBulk, label, fn)
 }
 
-func (s *Store) itemWriteTx(threadID string, card *SubagentCard, bulk bool, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
+// itemWriteMode is how itemWriteTx runs a write.
+type itemWriteMode uint8
+
+const (
+	itemWriteOwn     itemWriteMode = iota // writeItems
+	itemWriteGrouped                      // groupWriteItems
+	itemWriteBulk                         // bulkWriteItems
+)
+
+func (s *Store) itemWriteTx(threadID string, card *SubagentCard, mode itemWriteMode, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
 	t := s.cards.acquire(threadID, true)
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -415,8 +434,12 @@ func (s *Store) itemWriteTx(threadID string, card *SubagentCard, bulk bool, labe
 			return fmt.Errorf("%w: the card of %s/%s is closed", ErrSubagentAnchor, card.threadID, card.parentID)
 		}
 	}
-	w := &cardWrite{s: s, threadID: threadID, card: card, bulk: bulk, t: t, live: true}
-	err := s.cardTxLocked(t, label, func(tx *sql.Tx) (func(), error) {
+	w := &cardWrite{s: s, threadID: threadID, card: card, bulk: mode == itemWriteBulk, grouped: mode == itemWriteGrouped, t: t, live: true}
+	run := s.cardTxLocked
+	if w.grouped {
+		run = s.cardGroupTxLocked
+	}
+	err := run(t, label, func(tx *sql.Tx) (func(), error) {
 		w.tx = tx
 		if card != nil {
 			w.live, w.liveAnchor = card.live, card.liveAnchor

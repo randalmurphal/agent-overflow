@@ -296,9 +296,9 @@ func forkHiddenClosureTx(tx *sql.Tx, sourceID string, roots []string) ([]string,
 			clause, args := inClause("items.completion_of", added[start:min(start+forkCopyBatch, len(added))])
 			query, binds, err := timelineArms(tx, sourceID, timelineSelection{
 				Columns:   timelineIDColumns,
+				KeyFirst:  true,
 				Where:     "items.completion_of <> '' AND " + clause,
 				WhereArgs: args,
-				OrderBy:   "turn_index, item_index",
 			})
 			if err != nil {
 				return nil, err

@@ -26,7 +26,7 @@ Published builds are available on the
 
 | Platform | Release build | Requirements |
 |---|---|---|
-| macOS | Apple Silicon | Provider CLIs installed on the Mac |
+| macOS | Apple Silicon, macOS 13 or later | Provider CLIs installed on the Mac |
 | Linux | x86-64 | GTK 4 and WebKitGTK 6.0 runtime libraries |
 | Windows | x86-64 launcher with a WSL backend | A working WSL distribution with interop enabled; install providers inside that distribution |
 | Android | APK, Android 8.0 or later | A running Agent Overflow host; see [Android setup](#android-app) |
@@ -251,7 +251,7 @@ attach the entire application data directory.
 
 ## Build from source
 
-Use Go 1.26.6 or later, Node 24 or later, and the pnpm version pinned in
+Use Go 1.27.1 or later, Node 24 or later, and the pnpm version pinned in
 [`package.json`](package.json). Linux GUI builds also need `gcc`, `pkg-config`,
 `libgtk-4-dev`, and `libwebkitgtk-6.0-dev` from the distribution's packages.
 

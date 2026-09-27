@@ -15,13 +15,16 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 		return false, nil
 	}
 
+	items, err := r.store.ListTurnSummaryOnlyDiffItems(threadID, turnIndex)
+	if err != nil {
+		return false, fmt.Errorf("list turn items for diff upgrade: %w", err)
+	}
+	if len(items) == 0 {
+		return false, nil
+	}
 	_, workspacePath, err := r.store.GetThreadProviderWorkspace(threadID)
 	if err != nil {
 		return false, fmt.Errorf("lookup thread for diff upgrade: %w", err)
-	}
-	items, err := r.store.ListTurnItems(threadID, turnIndex)
-	if err != nil {
-		return false, fmt.Errorf("list turn items for diff upgrade: %w", err)
 	}
 
 	candidates := make([]toolResultCandidate, 0, len(items))
@@ -101,9 +104,7 @@ func (r *Router) loadSummaryOnlyToolResultCandidate(item store.Item) (toolResult
 	if item.PayloadID == "" {
 		return toolResultCandidate{}, false
 	}
-	// ListTurnItems left-joins payloads so PayloadKind and PayloadMeta
-	// arrive hydrated on the row already — the former GetPayloadMeta
-	// round-trip was pure N×1 overhead per turn on diff-upgrade.
+	// The store read hydrates PayloadKind and PayloadMeta on the row.
 	if item.PayloadKind != toolResultPayloadKind {
 		return toolResultCandidate{}, false
 	}

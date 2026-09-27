@@ -93,22 +93,6 @@
   export function __streamdownCodeHostStatsForTest(): { lastAdopted: number; chars: number } {
     return { lastAdopted: lastAdopted.size, chars: lastAdoptedChars };
   }
-
-  export function appendCodeLines(lines: string[], delta: string): void {
-    if (lines.length === 0) lines.push('');
-    let start = 0;
-    let newline = delta.indexOf('\n');
-    if (newline < 0) {
-      lines[lines.length - 1] += delta;
-      return;
-    }
-    lines[lines.length - 1] += delta.slice(0, newline);
-    while (newline >= 0) {
-      start = newline + 1;
-      newline = delta.indexOf('\n', start);
-      lines.push(newline < 0 ? delta.slice(start) : delta.slice(start, newline));
-    }
-  }
 </script>
 
 <script lang="ts">
@@ -126,7 +110,6 @@
   import Icon from '../../primitives/Icon.svelte';
   import IconButton from '../../primitives/IconButton.svelte';
   import { addToast } from '../../../stores/toast.svelte';
-  import { spanSegments } from '../../../utils/syntaxSpans';
   import {
     appendCodeSourceIdentity,
     createCodeSourceIdentity,
@@ -143,6 +126,7 @@
   } from './staticCodeBlock';
   import { isCodeBlockUnwrappedByKey, setCodeBlockUnwrappedByKey } from './codeWrapState';
   import { liveCodeSeedGeneration, matchLiveCodeSeed } from './liveCodeSeeds.svelte';
+  import { CodeLines } from './codeLines.svelte';
 
   let {
     token,
@@ -164,19 +148,17 @@
   // Resolved spans plus the exact (lang, source) they were computed
   // for. Language is part of the identity: the same text under a new
   // fence language must re-request, not keep the old classes.
-  let spans = $state<EncodedLine[] | null>(null);
+  let spans = $state.raw<EncodedLine[] | null>(null);
   let spansFor = $state('');
   let spansForLang = $state('');
   let staleUsable = $state(false);
 
-  // Keep line materialization append-only too. Splitting the full growing
-  // code source on every token allocated every old line again and made a long
-  // open fence O(n²) after the parser itself had become incremental.
+  // CodeLines renders the lines and re-renders only the lines a step changes.
   const initialText = untrack(() => token.text);
   let renderedText = initialText;
   let renderedLang = untrack(() => highlightLang);
   let sourceIdentity = createCodeSourceIdentity(initialText);
-  let lines = $state(initialText.split('\n'));
+  const codeLines = new CodeLines(initialText);
   let codeRoot = $state<HTMLElement>();
   // Per-block wrap choice. Seeded from the keyed record so a remounted or
   // re-rendered block keeps the reader's choice; the toggle records the
@@ -190,6 +172,12 @@
     setCodeBlockUnwrappedByKey(highlightLang, sourceIdentity.contentKey, unwrapped);
   }
   const completedRendererOwner = {};
+  // While the block streams, each of its span results replaces the previous
+  // one in the span cache (see codeSpanCache.ts).
+  const streamingCacheOwner = {};
+  function spanCacheOwner(): object | undefined {
+    return streamdown.parseIncompleteMarkdown === false ? undefined : streamingCacheOwner;
+  }
   let documentInteraction: DocumentInteraction | undefined;
   let pendingAdoption: {
     lang: string;
@@ -209,13 +197,13 @@
     if (text !== renderedText) {
       const appended = matchesProvenAppend(textAppend, renderedText, text);
       if (appended) {
-        appendCodeLines(lines, textAppend.delta);
+        untrack(() => codeLines.append(textAppend.delta));
         sourceIdentity = appendCodeSourceIdentity(sourceIdentity, textAppend);
         staleUsable = spans !== null &&
           spansForLang === lang &&
           (staleUsable || spansFor === renderedText);
       } else {
-        lines = text.split('\n');
+        untrack(() => codeLines.replace(text));
         sourceIdentity = createCodeSourceIdentity(text);
         staleUsable = spans !== null &&
           spansForLang === lang &&
@@ -352,7 +340,7 @@
       lang,
       text,
       (staticID) =>
-        renderStaticCodeBlockHtml(token, staticID, streamdown, lines, staticLineSpans, unwrapped),
+        renderStaticCodeBlockHtml(token, staticID, streamdown, codeLines.texts(), staticLineSpans, unwrapped),
     );
     streamdown.requestStaticRetry();
   }
@@ -413,7 +401,7 @@
     const source = pendingSource;
     const text = source.source;
     try {
-      const result = await requestBlockSpansByIdentity(lang, source);
+      const result = await requestBlockSpansByIdentity(lang, source, spanCacheOwner());
       if (!destroyed && result && seq === fireSeq) {
         adopt(lang, text, result);
       } else if (!destroyed && result === null && seq === fireSeq) {
@@ -451,7 +439,7 @@
       codeDiagnostics = {
         get tokenText() { return token.text; },
         get renderedText() { return renderedText; },
-        get renderedLines() { return lines.join('\n'); },
+        get renderedLines() { return codeLines.texts().join('\n'); },
         get spansFor() { return spansFor; },
         get spansForLang() { return spansForLang; },
       };
@@ -473,7 +461,7 @@
         adopt(lang, text, null);
         return;
       }
-      const hit = getCachedBlockSpansByIdentity(lang, source);
+      const hit = getCachedBlockSpansByIdentity(lang, source, spanCacheOwner());
       if (hit) {
         cancelScheduled();
         adopt(lang, text, hit);
@@ -575,6 +563,8 @@
     return index < completeLines ? (spans[index] ?? null) : null;
   }
 
+  $effect.pre(() => codeLines.paint(lineSpans));
+
 </script>
 
 <!-- Named Tailwind group (`group/codeblock`) so the hover scope is
@@ -595,7 +585,7 @@
   >
     <div style="height: fit-content; width: 100%;" class={streamdown.theme.code.container}>
       <pre class={streamdown.theme.code.pre}><code
-          >{#each lines as lineText, lineIndex (lineIndex)}{#if lineIndex > 0}{'\n'}{/if}{#each spanSegments(lineText, lineSpans(lineIndex)) as seg, segIndex (segIndex)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{/each}</code
+          >{#each codeLines.lines as line, lineIndex (lineIndex)}{#if lineIndex > 0}{'\n'}{/if}{#each line.segments as seg, segIndex (segIndex)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{/each}</code
         ></pre>
     </div>
   </div>

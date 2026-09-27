@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -155,9 +156,12 @@ type CDPRelay interface {
 }
 
 type workspaceScope struct {
-	workspace     string
-	profile       engineProfile
-	pages         map[string]*managedPage
+	workspace string
+	profile   engineProfile
+	pages     map[string]*managedPage
+	// creating counts the pages createPage is creating in this scope. Guarded
+	// by m.mu.
+	creating      int
 	downloadDir   string
 	downloadBytes atomic.Int64
 }
@@ -403,30 +407,39 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 	p.mu.Unlock()
 	m.mu.Lock()
 	delete(scope.pages, p.id)
-	empty := len(scope.pages) == 0
+	release := m.releaseScopeLocked(scope)
 	m.mu.Unlock()
 	m.repairActivePage(access.ThreadID)
 	m.emitThreadState(access.ThreadID)
 	m.syncPanePresentation(access.ThreadID)
-	if empty {
-		return m.disposeScope(ctx, scope.workspace)
+	if release {
+		return m.disposeScope(ctx, scope)
 	}
 	return nil
 }
 
+// CloseThread closes every page the thread owns, including a popup one of
+// them opens while it runs, and forgets the thread's browser session. A page
+// the engine closed meanwhile counts as closed. A workspace profile that
+// fails to dispose once its last page is gone is logged rather than
+// returned: the thread's pages are closed, and the profile is no longer
+// registered for a retry to dispose.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
-	pages := m.ownedPages(threadID)
-	var errs []error
-	for _, p := range pages {
-		access := Access{ThreadID: threadID, Workspace: m.workspaceForPage(p.id)}
-		if err := m.ClosePage(ctx, access, p.id); err != nil {
-			errs = append(errs, err)
+	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("browser: close thread pages: %w", err)
+		}
+		for _, p := range pages {
+			access := Access{ThreadID: threadID, Workspace: m.workspaceForPage(p.id)}
+			if err := m.ClosePage(ctx, access, p.id); err != nil && !errors.Is(err, errPageNotFound) {
+				log.Printf("browser: close thread %s: %v", threadID, err)
+			}
 		}
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
 	m.mu.Unlock()
-	return errors.Join(errs...)
+	return nil
 }
 
 // ClearSiteData closes every engine page first, then deletes the site data
@@ -474,21 +487,23 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 }
 
 func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
-	if err := m.ensureStarted(ctx); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		m.scheduleIdleClose()
-		return nil, err
-	}
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
 	}
 	access.Workspace = workspace
 
+	// One startMu hold spans the engine start and the page's registration, so
+	// the idle close cannot stop the engine in between.
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+	if err := m.startLocked(ctx); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		m.scheduleIdleClose()
+		return nil, err
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -499,7 +514,6 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		m.idleTimer = nil
 	}
 	scope := m.scopes[workspace]
-	newScope := scope == nil
 	if scope == nil && len(m.scopes) >= maxWorkspaceContexts {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: workspace context limit reached (%d)", maxWorkspaceContexts)
@@ -516,41 +530,58 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: process page limit reached (%d)", maxPagesTotal)
 	}
+	// The reservation keeps a concurrent close of the scope's last page from
+	// disposing the profile this page is being created in.
+	if scope != nil {
+		scope.creating++
+	}
 	m.mu.Unlock()
 
 	if scope == nil {
-		scope, err = m.createScope(workspace)
+		scope, err = m.createScope(access)
 		if err != nil {
+			// The engine may be running for this page alone.
+			m.scheduleIdleClose()
 			return nil, err
 		}
+		scope.creating = 1
 		m.mu.Lock()
 		m.scopes[workspace] = scope
 		m.mu.Unlock()
 	}
 
-	abandon := func() {
-		if newScope {
-			_ = m.disposeScope(context.Background(), workspace)
-		}
+	p, err := m.newPage(ctx, scope, access)
+	m.mu.Lock()
+	scope.creating--
+	if err == nil {
+		scope.pages[p.id] = p
 	}
+	release := m.releaseScopeLocked(scope)
+	m.mu.Unlock()
+	if err != nil {
+		if release {
+			err = errors.Join(err, m.disposeScope(context.Background(), scope))
+		}
+		return nil, err
+	}
+	m.pageChanged(p)
+	return p, nil
+}
+
+// newPage creates a page in scope, laid out at its thread's viewport.
+func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, access Access) (*managedPage, error) {
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
 	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
 	if err != nil {
-		abandon()
 		return nil, err
 	}
 	p.attach(driver)
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
-		abandon()
 		return nil, err
 	}
 	p.touch()
-	m.mu.Lock()
-	scope.pages[p.id] = p
-	m.mu.Unlock()
-	m.pageChanged(p)
 	return p, nil
 }
 
@@ -564,28 +595,36 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 	}
 }
 
-func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
+// createScope creates the profile for access's canonical workspace. The
+// profile's navigation policy is the workspace's: a workspace belongs to one
+// project, so access's roots are those of every thread with a page in it.
+func (m *Manager) createScope(access Access) (*workspaceScope, error) {
 	m.mu.Lock()
 	persist := m.config.PersistSiteData
 	m.mu.Unlock()
+	workspace := access.Workspace
 	digest := sha256.Sum256([]byte(workspace))
 	downloadDir := filepath.Join(m.artifactRoot, "downloads", fmt.Sprintf("%x", digest[:12]))
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Persist: persist})
+	roots := Access{Workspace: workspace, ProjectRoot: access.ProjectRoot}
+	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
+		Workspace: workspace, DownloadDir: downloadDir, Persist: persist,
+		Allow: func(rawURL string) bool { return m.navigationAllowed(roots, rawURL) },
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &workspaceScope{workspace: workspace, profile: profile, pages: make(map[string]*managedPage), downloadDir: downloadDir}, nil
 }
 
-func (m *Manager) ensureStarted(ctx context.Context) error {
+// startLocked starts the engine unless it is running. The caller holds
+// startMu.
+func (m *Manager) startLocked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -614,12 +653,8 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 			continue
 		}
 		scope = candidate
-		for _, p := range candidate.pages {
-			if p.driver.Handle() == popup.Opener {
-				owner = p.owner
-				access = p.access
-				break
-			}
+		if opener := pageWithHandle(candidate, popup.Opener); opener != nil {
+			owner, access = opener.owner, opener.access
 		}
 		break
 	}
@@ -635,16 +670,20 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	p.touch()
 	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
 	if err != nil {
+		log.Printf("browser: adopt popup %s: %v", popup.Handle, err)
+		m.engine.DiscardPage(popup.Handle)
 		return
 	}
 	p.attach(driver)
 	if err := m.applyViewport(p); err != nil {
+		log.Printf("browser: size popup %s: %v", popup.Handle, err)
 		driver.Close()
 		return
 	}
 	m.mu.Lock()
+	// The opener may have closed meanwhile, with its thread's other pages.
 	current := m.scopes[scope.workspace]
-	if current != scope || countOwnedPagesLocked(m.scopes, owner) >= maxPagesPerThread || len(scope.pages) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal {
+	if current != scope || pageWithHandle(scope, popup.Opener) == nil || countOwnedPagesLocked(m.scopes, owner) >= maxPagesPerThread || len(scope.pages) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal {
 		m.mu.Unlock()
 		driver.Close()
 		return
@@ -657,46 +696,64 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 }
 
+// pageWithHandle returns the scope's page whose driver has handle, or nil.
+// The caller holds m.mu.
+func pageWithHandle(scope *workspaceScope, handle string) *managedPage {
+	for _, p := range scope.pages {
+		if p.driver.Handle() == handle {
+			return p
+		}
+	}
+	return nil
+}
+
 func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Lock()
-	var emptyWorkspace string
 	var owner string
-	for workspace, scope := range m.scopes {
-		for id, p := range scope.pages {
-			if p.driver.Handle() == handle {
-				owner = p.owner
-				delete(scope.pages, id)
-				if len(scope.pages) == 0 {
-					emptyWorkspace = workspace
-				}
-				break
+	var released *workspaceScope
+	for _, scope := range m.scopes {
+		if p := pageWithHandle(scope, handle); p != nil {
+			owner = p.owner
+			delete(scope.pages, p.id)
+			if m.releaseScopeLocked(scope) {
+				released = scope
 			}
-		}
-		if emptyWorkspace != "" {
 			break
 		}
 	}
 	m.mu.Unlock()
 	if owner != "" {
+		m.repairActivePage(owner)
 		m.emitThreadState(owner)
 		m.syncPanePresentation(owner)
 	}
-	if emptyWorkspace != "" {
-		_ = m.disposeScope(context.Background(), emptyWorkspace)
+	if released != nil {
+		if err := m.disposeScope(context.Background(), released); err != nil {
+			log.Printf("browser: dispose the profile of %s: %v", released.workspace, err)
+		}
 	}
 }
 
-func (m *Manager) disposeScope(ctx context.Context, workspace string) error {
-	m.mu.Lock()
-	scope := m.scopes[workspace]
-	if scope == nil {
-		m.mu.Unlock()
-		return nil
+// releaseScopeLocked unregisters scope when it has no page and none is being
+// created, and reports whether the caller must dispose it. Deciding and
+// unregistering under one m.mu hold means a concurrent createPage either
+// reserved the scope first or creates a new one, and a scope that is no
+// longer registered is never disposed again. The caller holds m.mu.
+func (m *Manager) releaseScopeLocked(scope *workspaceScope) bool {
+	if len(scope.pages) > 0 || scope.creating > 0 || m.scopes[scope.workspace] != scope {
+		return false
 	}
-	delete(m.scopes, workspace)
+	delete(m.scopes, scope.workspace)
+	return true
+}
+
+// disposeScope disposes a scope releaseScopeLocked unregistered and starts
+// the idle close once no scope remains.
+func (m *Manager) disposeScope(ctx context.Context, scope *workspaceScope) error {
+	err := scope.profile.Dispose(ctx)
+	m.mu.Lock()
 	noScopes := len(m.scopes) == 0
 	m.mu.Unlock()
-	err := scope.profile.Dispose(ctx)
 	if noScopes {
 		m.scheduleIdleClose()
 	}
@@ -709,6 +766,29 @@ func (m *Manager) closeBrowser(caller context.Context) error {
 	m.engine.Interrupt()
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+	return m.closeBrowserLocked(caller)
+}
+
+// closeIdleBrowser is the idle timer's close. It decides under startMu, which
+// createPage holds from the engine start to the page's registration, so a
+// page being created keeps the engine running.
+func (m *Manager) closeIdleBrowser() {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	m.mu.Lock()
+	idle := len(m.scopes) == 0
+	m.mu.Unlock()
+	if !idle {
+		return
+	}
+	if err := m.closeBrowserLocked(context.Background()); err != nil {
+		log.Printf("browser: idle close: %v", err)
+	}
+}
+
+// closeBrowserLocked disposes every profile and stops the engine. The caller
+// holds startMu.
+func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Lock()
 	scopes := make([]*workspaceScope, 0, len(m.scopes))
 	owners := make(map[string]struct{})
@@ -793,12 +873,5 @@ func (m *Manager) scheduleIdleClose() {
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 	}
-	m.idleTimer = time.AfterFunc(idleBrowserDelay, func() {
-		m.mu.Lock()
-		empty := len(m.scopes) == 0
-		m.mu.Unlock()
-		if empty {
-			_ = m.closeBrowser(context.Background())
-		}
-	})
+	m.idleTimer = time.AfterFunc(idleBrowserDelay, m.closeIdleBrowser)
 }

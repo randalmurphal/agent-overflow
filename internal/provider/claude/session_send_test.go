@@ -944,7 +944,7 @@ done
 				t.Fatal(err)
 			}
 			events := make(chan provider.ProviderEvent, 128)
-			s, err := NewSession(t.Context(), testThread, Config{Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
+			s, err := NewSession(context.Background(), testThread, Config{Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
 			if err != nil {
 				t.Fatal(err)
 			}

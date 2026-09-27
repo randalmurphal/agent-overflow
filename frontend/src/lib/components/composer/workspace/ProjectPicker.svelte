@@ -34,6 +34,7 @@
     hasMultipleBackends,
   } from '../../../stores/attachedBackends.svelte';
   import { projectBackend } from '../../../transport/entityIndex';
+  import { requireEntityBackend } from '../../../transport/backends';
   import { HOME_BACKEND } from '../../../transport/backendKey';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -94,8 +95,10 @@
     try {
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
+      // The draft's destination computer, captured before the switch awaits.
+      const backend = requireEntityBackend(projectBackend(projectId));
       if (await switchDraftProject(pane, project)) {
-        setPaneBackend(pane.paneId, projectBackend(projectId) ?? HOME_BACKEND);
+        setPaneBackend(pane.paneId, backend);
       }
     } catch (err) {
       console.error('Failed to switch draft project:', err);

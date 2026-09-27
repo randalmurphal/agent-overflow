@@ -2081,6 +2081,7 @@ func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer query.Close()
 	for query.Next() {
 		var threadID, id, root string
 		if err := query.Scan(&threadID, &id, &root); err != nil {

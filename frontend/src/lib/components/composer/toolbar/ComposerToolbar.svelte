@@ -233,7 +233,7 @@
         data-composer-toolbar-meter
         data-testid="composer-context-meter"
       >
-        <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
+        <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} threadId={pane.threadId} />
       </div>
     {/if}
     {#if !hideSendButton}

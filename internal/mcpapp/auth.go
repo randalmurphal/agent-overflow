@@ -24,10 +24,8 @@ func (a *Service) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, erro
 	if err != nil {
 		return MCPAuthInitResult{}, err
 	}
-	if !a.hasActiveSession(threadID) {
-		if err := a.startSession(threadID); err != nil {
-			return MCPAuthInitResult{}, fmt.Errorf("auto-start session: %w", err)
-		}
+	if err := a.ensureSession(threadID); err != nil {
+		return MCPAuthInitResult{}, fmt.Errorf("auto-start session: %w", err)
 	}
 	sess, ok := a.session(threadID)
 	if !ok {

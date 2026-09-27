@@ -81,33 +81,38 @@ export function newlineCutOffset(text: string, cutOffset: number, minKeep: numbe
 
 /**
  * O(1) monotonic-append check for the window's cut bookkeeping: is
- * `text` an append of the previously seen string (length `prevLen`,
- * final char code `prevLastCharCode`) with the cut boundary intact
- * (char code `cutFirstCharCode` still at `cutOffset`)?
+ * `text`, starting at stream offset `textStart`, an append of the
+ * previously seen text (ending at stream offset `prevEnd` with final char
+ * code `prevLastCharCode`) with the cut boundary intact (char code
+ * `cutFirstCharCode` still at stream offset `cutOffset`)? A cut before
+ * `textStart` is not checked: the text it was in has been dropped.
  *
- * This is a sentinel, not a proof — a same-or-longer replacement that
+ * This is a sentinel, not a proof: a same-or-longer replacement that
  * happens to preserve both probed characters is misclassified as an
- * append and would render a stale (but wrap-valid) window. Accepted:
- * callers contractually feed a monotonically-growing tail, and the
- * real replacements — the swaps to the rune-trimmed summary when the
- * retained tail is dropped (offscreen prune, budget eviction,
- * post-settle summary overwrite; see threadStreamingReveal.svelte.ts) —
- * are always caught by the length probe, because summaries are trimmed
- * to 400 runes (≤ 800 UTF-16 units) while a live cut keeps at least
- * TAIL_WINDOW_MIN_KEEP_CHARS (2048): the swap can only shrink the text.
+ * append and would render a stale window, possibly starting mid-line.
+ * Accepted: callers contractually feed a tail that grows only at its end,
+ * and the length probe always catches the real replacements, the swaps to
+ * the rune-trimmed summary when the retained tail is dropped (offscreen
+ * prune, budget eviction, post-settle summary overwrite; see
+ * threadStreamingReveal.svelte.ts). Summaries are trimmed to 400 runes
+ * (≤ 800 UTF-16 units) while a live cut keeps at least
+ * TAIL_WINDOW_MIN_KEEP_CHARS (2048), so the swap can only shrink the text.
+ * Text that starts at or past the previous end cannot be checked and is
+ * not an append.
  */
 export function isMonotonicAppend(
   text: string,
-  prevLen: number,
+  textStart: number,
+  prevEnd: number,
   prevLastCharCode: number,
   cutOffset: number,
   cutFirstCharCode: number,
 ): boolean {
-  return (
-    text.length >= prevLen &&
-    (prevLen === 0 || text.charCodeAt(prevLen - 1) === prevLastCharCode) &&
-    (cutOffset === 0 || text.charCodeAt(cutOffset) === cutFirstCharCode)
-  );
+  if (textStart + text.length < prevEnd) return false;
+  if (prevEnd > 0 && (prevEnd <= textStart ||
+    text.charCodeAt(prevEnd - 1 - textStart) !== prevLastCharCode)) return false;
+  return cutOffset === 0 || cutOffset < textStart ||
+    text.charCodeAt(cutOffset - textStart) === cutFirstCharCode;
 }
 
 /**

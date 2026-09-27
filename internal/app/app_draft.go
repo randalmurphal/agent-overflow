@@ -205,6 +205,9 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 			errs = append(errs, fmt.Errorf("close terminals: %w", err))
 		}
 	}
+	if err := a.closeThreadBrowserPages(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("close browser pages: %w", err))
+	}
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
@@ -234,10 +237,18 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if deleted {
-		a.broadcastThreadDeleted(threadID)
+	if !deleted {
+		return false, nil
 	}
-	return deleted, nil
+	// As in DeleteTree: a page a companion action opened after the close
+	// above is left to this one.
+	var closeErr error
+	if err := a.closeThreadBrowserPages(threadID); err != nil {
+		closeErr = fmt.Errorf("delete empty draft thread %s: close browser pages opened during the delete: %w", threadID, err)
+	}
+	a.forgetThreadMCP(threadID)
+	a.broadcastThreadDeleted(threadID)
+	return true, closeErr
 }
 
 // stagedThreadDraft is the before/after pair one merge-and-upsert wrote.

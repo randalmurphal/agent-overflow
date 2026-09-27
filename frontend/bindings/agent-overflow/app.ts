@@ -120,6 +120,9 @@ import * as wsllauncher$0 from "./internal/wsllauncher/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as json$0 from "../encoding/json/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as jsontext$0 from "../encoding/json/jsontext/models.js";
 
 export function AcceptOwnDeviceIntroduction(link: string): $CancellablePromise<void> {
     return $Call.ByID(2097968437, link);

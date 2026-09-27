@@ -408,8 +408,8 @@ turn (`internal/store/agent_rows.go`).
 - The agent's end settles its rows. Its ending sibling (never a parked
   one) is written with `store.UpsertAgentEnd`, which settles every row still open under
   the agent in the same transaction. Before that write the router
-  settles the streams it holds for the agent and persists the rows
-  queued behind them (`persistAgentEndLocked`).
+  settles the agent's streaming rows and persists the rows queued
+  behind them (`persistAgentEndLocked`).
 - The sibling's status decides how the rows read (`newAgentEnd`): a
   completed agent's open text completes and a running tool call reads
   as a turn's unresolved tool does; a stopped agent's rows read

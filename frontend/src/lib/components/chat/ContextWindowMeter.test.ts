@@ -193,6 +193,7 @@ describe('<ContextWindowMeter>', () => {
         props: {
           data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
           thread: claudeThread,
+          threadId: claudeThread.id,
         },
       });
 
@@ -216,6 +217,7 @@ describe('<ContextWindowMeter>', () => {
         props: {
           data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
           thread: claudeThread,
+          threadId: claudeThread.id,
         },
       });
 
@@ -234,12 +236,32 @@ describe('<ContextWindowMeter>', () => {
         props: {
           data: { usedTokens: 650, maxTokens: 2000, usedPercentage: 32.5 },
           thread: { ...claudeThread, provider: 'codex', model: 'gpt-5.5' },
+          threadId: claudeThread.id,
         },
       });
 
       await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
       expect(await screen.findByText('33% used')).toBeTruthy();
       expect(screen.queryByText('Show exact breakdown')).toBeNull();
+    });
+
+    // A draft placeholder has no session to break down; its seeded meter
+    // still reads out.
+    it('is not offered before the thread materializes', async () => {
+      const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve({}));
+      render(ContextWindowMeter, {
+        props: {
+          data: { usedTokens: 0, maxTokens: 1000000, usedPercentage: 0 },
+          thread: claudeThread,
+          threadId: null,
+        },
+      });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      expect(await screen.findByText('0% used')).toBeTruthy();
+      expect(screen.getByLabelText('Context settings')).toBeTruthy();
+      expect(screen.queryByText('Show exact breakdown')).toBeNull();
+      expect(mock).not.toHaveBeenCalled();
     });
 
     it('is not offered when the meter has no thread', async () => {
@@ -270,6 +292,7 @@ describe('<ContextWindowMeter>', () => {
         props: {
           data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
           thread: claudeThread,
+          threadId: claudeThread.id,
         },
       });
 

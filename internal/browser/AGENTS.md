@@ -11,7 +11,8 @@ mode. Product behavior and authority are defined in
 - Register the thread before spawning its provider. First registration starts
   the loopback MCP listener because the provider receives its per-thread
   capability URL in argv; starting it on first tool use is too late.
-  Unregistering revokes that capability and closes only that thread's pages.
+  Session end revokes that capability; the thread's pages outlive it and
+  close when the thread is deleted.
 - One manager owns one engine. Profiles are per workspace, pages are per thread,
   and every operation rechecks thread ownership. Closing the last page disposes
   its profile; manager shutdown joins all engine work.
@@ -81,7 +82,9 @@ stores to clear themselves. A platform-specific silent no-op is incorrect.
 Unit tests use `fake_engine.go` and fake CDP endpoints. They must not start or
 download a browser. Keep `ManagerOptions.FakeEngine` as the default for test
 boots. Real Chromium launch compatibility is covered only by the documented
-`AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate.
+`AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate. Real WebKitGTK and WKWebView
+behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1` manual gate
+(`native_engine_smoke_test.go`), which opens a window and needs a display.
 
 - [embedded-browser.md](../../docs/specs/embedded-browser.md)
 - [codex-browser-parity.md](../../docs/references/codex-browser-parity.md)

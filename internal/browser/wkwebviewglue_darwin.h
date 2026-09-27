@@ -15,14 +15,7 @@
 
 #include <stdint.h>
 
-// ---- availability --------------------------------------------------------
-
-// ao_wkv_supported reports whether this macOS can host the engine at all.
-// -callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler: is
-// macOS 11.0, and it is the ONE call every page operation goes through: there
-// is no engine without it. An older macOS answers 0 and keeps managed Chrome,
-// which is a capability answer exactly like "is there a window".
-int ao_wkv_supported(void);
+// ---- main thread ---------------------------------------------------------
 
 // ao_wkv_on_main_thread reports whether the caller is AppKit's main thread: the
 // thread every call here runs on, and the one Wails blocks while services shut
@@ -114,9 +107,11 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
                       const char *download_dir);
 
 // ao_wkv_view_adopt connects the delegates to a view the engine created itself
-// (a popup) once the Manager has decided to keep it. The popup's configuration
-// may share the opener's user content controller, so the user script is added
-// only when that controller carries none.
+// (a popup) once the Manager has decided to keep it. The popup's navigation
+// delegate is set when WebKit creates it, and answers with its workspace's
+// policy until this stamps the page id. The popup's configuration may share
+// the opener's user content controller, so the user script is added only when
+// that controller carries none.
 void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
                        const char *user_script, const char *console_handler,
                        const char *download_dir);

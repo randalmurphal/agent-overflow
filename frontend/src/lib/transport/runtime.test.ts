@@ -46,13 +46,14 @@ import {
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
   __resetEntityIndexForTest,
-  subscriptionBackend,
   terminalBackend,
+  noteProject,
   noteThread,
   forgetBackendEntities,
   threadBackend,
 } from './entityIndex';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
+import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
 // `src/test/setup.ts` loads the real `wsClient` before this file's
 // `vi.mock` registers, so the registry attached home over it. Re-point the
@@ -311,6 +312,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   const REMOTE = 'laptop';
   const GIT_STATUS_SUBSCRIBE = 3282404643;
   const LIST_TERMINALS = 2445206506;
+  const OPEN_TERMINAL = 2247958725;
 
   function remoteClient(result: unknown) {
     const callByID = vi.fn(async (_method: number, _args: unknown[]) => result);
@@ -352,19 +354,66 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   });
 
   it('notes a single minted id against the pinned backend', async () => {
-    const callByID = remoteClient({ id: 'sub-1' });
+    const callByID = remoteClient({ terminalID: 'term-1' });
 
-    await withBackendTarget(REMOTE, () => Call.ByID(GIT_STATUS_SUBSCRIBE, 'p1'));
+    await withBackendTarget(REMOTE, () => Call.ByID(OPEN_TERMINAL, 't1', {}));
 
     expect(callByID).toHaveBeenCalledTimes(1);
-    expect(subscriptionBackend('sub-1')).toBe(REMOTE);
+    expect(terminalBackend('term-1')).toBe(REMOTE);
   });
 
-  it.each([1098302047, 1496882310, 1186337974, 70120675])('refuses unknown entity ownership with two computers for method %s', async (method) => {
+  // The last three name a subscription id, which every caller pins.
+  it.each([1098302047, 1496882310, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
     const callByID = remoteClient(null);
     await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');
     expect(callByID).not.toHaveBeenCalled();
     expect(mockClient.callByID).not.toHaveBeenCalled();
+  });
+
+  describe('a draft placeholder thread id', () => {
+    const PROJECT = '5b0c1e7a-2f3d-4c8e-9a61-0d4f7b2e8c13';
+    const CLOSE_THREAD_TERMINALS = 1705768020;
+    const MOVE_THREAD_TERMINALS = 3013708277;
+
+    beforeEach(() => {
+      mockClient.callByID.mockResolvedValue(null);
+    });
+
+    it.each([
+      ['OpenTerminal', OPEN_TERMINAL],
+      ['ListTerminals', LIST_TERMINALS],
+      ['CloseThreadTerminals', CLOSE_THREAD_TERMINALS],
+      ['MoveThreadTerminals', MOVE_THREAD_TERMINALS],
+    ])('routes %s to the computer of the project it names', async (_name, method) => {
+      const remote = remoteClient(null);
+      noteProject(PROJECT, REMOTE);
+      await Call.ByID(method, draftPlaceholderId('main', PROJECT, 'chat'), 'arg');
+      expect(remote).toHaveBeenCalledTimes(1);
+      expect(mockClient.callByID).not.toHaveBeenCalled();
+
+      noteProject(PROJECT, '');
+      await Call.ByID(method, draftPlaceholderId('main', PROJECT, 'chat'), 'arg');
+      expect(mockClient.callByID).toHaveBeenCalledTimes(1);
+      expect(remote).toHaveBeenCalledTimes(1);
+    });
+
+    it('is refused while its project has no known computer', async () => {
+      const remote = remoteClient(null);
+      await expect(Call.ByID(OPEN_TERMINAL, draftPlaceholderId('main', PROJECT, 'chat'), {})).rejects.toThrow('computer that owns');
+      expect(remote).not.toHaveBeenCalled();
+      expect(mockClient.callByID).not.toHaveBeenCalled();
+    });
+
+    it('leaves other thread ids routed by their thread', async () => {
+      const remote = remoteClient(null);
+      noteProject(PROJECT, REMOTE);
+      const unprefixed = draftPlaceholderId('pane-2', PROJECT, 'chat').slice('draft:'.length);
+      await expect(Call.ByID(LIST_TERMINALS, unprefixed)).rejects.toThrow('computer that owns');
+      noteThread(unprefixed, '');
+      await Call.ByID(LIST_TERMINALS, unprefixed);
+      expect(mockClient.callByID).toHaveBeenCalledTimes(1);
+      expect(remote).not.toHaveBeenCalled();
+    });
   });
 
   it('opens a hidden workflow thread on the computer that supplied the run map', async () => {

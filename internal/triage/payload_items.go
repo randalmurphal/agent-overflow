@@ -251,7 +251,7 @@ func (r *Router) findMatchingProposedPlanItemInCurrentTurn(evt provider.Provider
 	if err != nil {
 		return store.Item{}, false, fmt.Errorf("plan turn index: %w", err)
 	}
-	items, err := r.store.ListItemsForTurn(evt.ThreadID, turnIndex)
+	items, err := r.store.ListTurnItems(evt.ThreadID, turnIndex)
 	if err != nil {
 		return store.Item{}, false, fmt.Errorf("plan matching items for turn %d: %w", turnIndex, err)
 	}

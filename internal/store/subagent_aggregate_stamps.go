@@ -320,9 +320,12 @@ func aggPromptCarrierSQL(a string) string {
 // lineage row `l`, so threadExpr and idExpr must not name either; the
 // other aliases are prefixed so a caller's own (c, refs, o) cannot be
 // captured. A thread without lineage probes thread_fork_lineage once per
-// lineage arm.
+// lineage arm. idExpr is compared through textParam, so a parameter binds
+// without being planned on.
 func aggHasChildSQL(threadExpr, idExpr, exceptExpr string) string {
-	return "(" + aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr) + `
+	local := aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr)
+	idExpr = textParam(idExpr)
+	return "(" + local + `
 	 OR EXISTS (SELECT 1 FROM import_history_items agg_hc
 	             CROSS JOIN thread_import_chunks agg_hc_refs
 	                ON agg_hc_refs.chunk_id = agg_hc.chunk_id AND agg_hc_refs.thread_id = ` + threadExpr + `
@@ -346,12 +349,14 @@ func aggHasChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	              AND ` + inheritedKeyedItemVisibleSQL + `))`
 }
 
+// aggHasLocalChildSQL is aggHasChildSQL's local arm alone, with idExpr
+// compared the same way.
 func aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	except := ""
 	if exceptExpr != "" {
 		except = " AND agg_hc.id <> " + exceptExpr
 	}
 	return `EXISTS (SELECT 1 FROM items agg_hc
-	          WHERE agg_hc.thread_id = ` + threadExpr + ` AND agg_hc.parent_id = ` + idExpr + ` AND agg_hc.parent_id <> ''` + except + `
+	          WHERE agg_hc.thread_id = ` + threadExpr + ` AND agg_hc.parent_id = ` + textParam(idExpr) + ` AND agg_hc.parent_id <> ''` + except + `
 	            AND ` + visibleItemsFilterFor("agg_hc.") + `)`
 }

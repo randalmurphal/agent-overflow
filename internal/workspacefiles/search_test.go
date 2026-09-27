@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func setupWorkspace(t *testing.T) string {
@@ -198,28 +199,38 @@ func TestSearchInvalidateForcesRescan(t *testing.T) {
 	}
 }
 
-func TestSearchEvictsExpiredSiblingIndices(t *testing.T) {
+func TestSearchReleasesExpiredIndices(t *testing.T) {
 	rootA := setupWorkspace(t)
-	rootB := setupWorkspace(t)
 	searcher := NewSearcher(Config{TTL: 10 * time.Millisecond})
 
 	if _, _, err := searcher.Search(rootA, "App", 10); err != nil {
 		t.Fatalf("Search rootA: %v", err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	resident := func() bool {
+		searcher.mu.Lock()
+		defer searcher.mu.Unlock()
+		_, ok := searcher.indices[rootA]
+		return ok
+	}
+	// No other search happens: the index is released when it expires.
+	deadline := time.Now().Add(2 * time.Second)
+	for resident() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if resident() {
+		t.Fatal("expected rootA's expired index to be released")
+	}
 
-	// A store for another root sweeps expired siblings.
-	if _, _, err := searcher.Search(rootB, "App", 10); err != nil {
+	// A fresh index stays resident until it expires.
+	rootB := setupWorkspace(t)
+	fresh := NewSearcher(Config{TTL: time.Hour})
+	if _, _, err := fresh.Search(rootB, "App", 10); err != nil {
 		t.Fatalf("Search rootB: %v", err)
 	}
-
-	searcher.mu.Lock()
-	_, aResident := searcher.indices[rootA]
-	_, bResident := searcher.indices[rootB]
-	searcher.mu.Unlock()
-	if aResident {
-		t.Fatal("expected rootA's expired index to be evicted")
-	}
+	time.Sleep(20 * time.Millisecond)
+	fresh.mu.Lock()
+	_, bResident := fresh.indices[rootB]
+	fresh.mu.Unlock()
 	if !bResident {
 		t.Fatal("expected rootB's fresh index to stay resident")
 	}
@@ -231,6 +242,45 @@ func TestSearchEvictsExpiredSiblingIndices(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Fatal("expected results after transparent rebuild")
+	}
+}
+
+// An index's expiry timer finds a newer build in the slot when the index
+// was invalidated and rebuilt; the newer build must stay.
+func TestReleaseExpiredKeepsANewerIndex(t *testing.T) {
+	searcher := NewSearcher(Config{TTL: time.Hour})
+	fresh := &workspaceIndex{scannedAt: time.Now()}
+	searcher.indices["root"] = fresh
+	searcher.releaseExpired("root")
+	if searcher.indices["root"] != fresh {
+		t.Fatal("an expiry released an index that has not expired")
+	}
+	searcher.indices["root"] = &workspaceIndex{scannedAt: time.Now().Add(-2 * time.Hour)}
+	searcher.releaseExpired("root")
+	if _, ok := searcher.indices["root"]; ok {
+		t.Fatal("an expired index stayed resident")
+	}
+}
+
+// The index keeps up to maxEntries paths of a listing that can be far
+// larger; no kept string may point into the listing.
+func TestGitIndexDoesNotPinTheListing(t *testing.T) {
+	listing := "src/App.tsx\x00src/lib/util.ts\x00README.md\x00"
+	start := uintptr(unsafe.Pointer(unsafe.StringData(listing)))
+	end := start + uintptr(len(listing))
+	idx := indexGitPaths(listing, 100)
+	if len(idx.entries) != 5 {
+		t.Fatalf("entries = %+v, want 2 directories and 3 files", idx.entries)
+	}
+	for _, entry := range idx.entries {
+		for _, kept := range []string{entry.Path, entry.ParentPath, entry.normalizedPath, entry.normalizedName} {
+			if kept == "" {
+				continue
+			}
+			if at := uintptr(unsafe.Pointer(unsafe.StringData(kept))); at >= start && at < end {
+				t.Fatalf("%q of entry %q points into the listing", kept, entry.Path)
+			}
+		}
 	}
 }
 

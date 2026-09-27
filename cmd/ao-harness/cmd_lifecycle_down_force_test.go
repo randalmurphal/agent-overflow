@@ -252,12 +252,15 @@ func TestDownForceStopsAConfirmedPIDAndPrunesTheRow(t *testing.T) {
 	registry := t.TempDir()
 	root := t.TempDir()
 	id := seedInstance(t, registry, root, os.Getpid())
+	reservations := t.TempDir()
+	seedDetachedLease(t, reservations, id, root)
 
 	restoreProbe(t, fakeProbe(true, instanceinfo.ProcessIdentity{StartTime: "900", Executable: "/opt/ao/bin/agent-overflow", Namespace: ourNamespace()}, nil, "agent-overflow", nil))
 	signalled := stubTerminate(t)
 
 	e, stdout, _ := testEnv(registry)
 	e.instance = id
+	e.governorDir = reservations
 	if err := runDown(e, []string{"--force"}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,6 +274,7 @@ func TestDownForceStopsAConfirmedPIDAndPrunesTheRow(t *testing.T) {
 	if listErr != nil || len(rows) != 0 {
 		t.Fatalf("row was not pruned: rows=%v err=%v", rows, listErr)
 	}
+	assertNoLeases(t, reservations)
 }
 
 // A dead pid needs no signal at all, and the row is then pure leftovers.
@@ -278,11 +282,14 @@ func TestDownForcePrunesARowWhosePIDIsGone(t *testing.T) {
 	registry := t.TempDir()
 	root := t.TempDir()
 	id := seedInstance(t, registry, root, deadPID(t))
+	reservations := t.TempDir()
+	seedDetachedLease(t, reservations, id, root)
 
 	signalled := stubTerminate(t)
 
 	e, stdout, _ := testEnv(registry)
 	e.instance = id
+	e.governorDir = reservations
 	if err := runDown(e, []string{"--force"}); err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +302,7 @@ func TestDownForcePrunesARowWhosePIDIsGone(t *testing.T) {
 	if rows, listErr := instanceinfo.ListIn(registry, nil); listErr != nil || len(rows) != 0 {
 		t.Fatalf("row was not pruned: rows=%v err=%v", rows, listErr)
 	}
+	assertNoLeases(t, reservations)
 }
 
 // --force overrides ONE refusal: nothing claims the root. A root that

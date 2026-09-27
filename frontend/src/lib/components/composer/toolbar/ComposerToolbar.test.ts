@@ -394,3 +394,29 @@ describe('<ComposerToolbar>', () => {
     }
   });
 });
+
+// Outside the suite above, whose synchronous animation frames spin the
+// popover's anchor tracking.
+describe('<ComposerToolbar> context meter', () => {
+  beforeEach(resetBindingMocks);
+
+  // The exact breakdown reads the thread's live session. A draft placeholder
+  // has none, so only the materialized row offers it.
+  it('offers the context breakdown only once the draft materializes', async () => {
+    const usage = setBindingMock('GetThreadContextUsage', () => Promise.resolve({ available: false, reason: 'No session yet.' }));
+    const pane = createThreadPane();
+    pane.startDraftPlaceholder({ id: 'p-1', name: 'p', path: '/tmp', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, 'chat');
+    pane.applyDraftPlaceholderDefaults({ provider: 'claude', model: 'claude-opus-4-7', contextWindow: 1000000 });
+    const result = render(ComposerToolbar, { props: toolbarProps(pane) });
+
+    await fireEvent.mouseEnter(result.getByLabelText(/Context Window/));
+    expect(await result.findByText('0% used')).toBeTruthy();
+    expect(result.queryByText('Show exact breakdown')).toBeNull();
+
+    setBindingMock('CreateThread', async () => makeThread({ provider: 'claude', isDraft: true }));
+    expect(await pane.ensureMaterializedThread()).toBe('thread-1');
+    await fireEvent.click(await result.findByText('Show exact breakdown'));
+    expect(await result.findByText('No session yet.')).toBeTruthy();
+    expect(usage.mock.calls).toEqual([['thread-1']]);
+  });
+});

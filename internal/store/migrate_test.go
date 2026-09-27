@@ -1866,6 +1866,15 @@ func readIndexSQL(t *testing.T, db *sql.DB, indexName string) string {
 
 func assertPlanUses(t *testing.T, db *sql.DB, indexName, query string, args ...any) {
 	t.Helper()
+	if plan := queryPlanText(t, db, query, args...); !strings.Contains(plan, indexName) {
+		t.Errorf("query plan did not use %s: %s", indexName, plan)
+	}
+}
+
+// queryPlanText runs query, an EXPLAIN QUERY PLAN, and returns its
+// details, one line each.
+func queryPlanText(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
@@ -1881,9 +1890,10 @@ func assertPlanUses(t *testing.T, db *sql.DB, indexName, query string, args ...a
 		plan.WriteString(detail)
 		plan.WriteString("\n")
 	}
-	if !strings.Contains(plan.String(), indexName) {
-		t.Errorf("query plan did not use %s: %s", indexName, plan.String())
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read plan: %v", err)
 	}
+	return plan.String()
 }
 
 // v13: the partial in-flight index backing the boot-time crashed-turn

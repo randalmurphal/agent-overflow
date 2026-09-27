@@ -146,3 +146,37 @@ func TestTriggerWorkspaceMCPAuthShutdownClosesFlowWithoutEvent(t *testing.T) {
 		t.Fatalf("post-shutdown events = %d, want 0", emits.Load())
 	}
 }
+
+// The MCP service starts a session under the thread's action lock, and
+// only when none is live, so it waits out a delete and never replaces a
+// session another caller started.
+func TestMCPEnsureSessionTakesTheThreadLock(t *testing.T) {
+	app := newTestAppWithStore(t)
+	var starts atomic.Int32
+	app.startSessionFn = func(string) error { starts.Add(1); return nil }
+	ensure := app.mcpDeps().EnsureSession
+
+	unlock := app.threadLocks().Lock("thread")
+	done := make(chan error, 1)
+	go func() { done <- ensure("thread") }()
+	select {
+	case err := <-done:
+		t.Fatalf("the session start ran while another action held the thread: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := starts.Load(); n != 1 {
+		t.Fatalf("starts = %d, want 1", n)
+	}
+
+	app.sessionManager().put("thread", session{Provider: "claude", Token: "live"})
+	if err := ensure("thread"); err != nil {
+		t.Fatal(err)
+	}
+	if n := starts.Load(); n != 1 {
+		t.Fatalf("starts = %d with a live session, want it left alone", n)
+	}
+}

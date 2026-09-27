@@ -157,7 +157,9 @@ type fakePage struct {
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
 func (p *fakePage) Handle() string            { return p.handle }
-func (p *fakePage) OwnsFrame(string) bool     { return false }
+
+// OwnsFrame answers for the page's handle, the one frame a fake page has.
+func (p *fakePage) OwnsFrame(frame string) bool { return frame == p.handle }
 
 func (p *fakePage) Close() {
 	p.mu.Lock()

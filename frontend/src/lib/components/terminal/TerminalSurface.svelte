@@ -14,8 +14,12 @@
   } from '../../types/terminal';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
+  import { errString } from '../../utils/errors';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+  import { forgetTerminal } from '../../transport/entityIndex';
   import {
     getThreadTerminalState,
+    registerTerminalSurface,
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
@@ -189,28 +193,41 @@
     };
   });
 
+  // Make the tabs match the thread's terminal list, at mount and again when
+  // the thread's computer reconnects or loses terminal events. A failed read
+  // keeps the tabs.
+  async function syncTerminals(
+    threadId: string,
+    workspacePath: string | undefined,
+    activate: boolean,
+  ): Promise<void> {
+    try {
+      const gone = await handle.syncTabs(
+        async () => (await ListTerminals(threadId)) as TerminalSessionSummary[] | null,
+        { activate, current: () => canUseTerminalResult(threadId, workspacePath) },
+      );
+      const backend = threadMachine(threadId, null);
+      for (const terminalID of gone) forgetTerminal(terminalID, backend);
+    } catch (err) {
+      reportFrontendDiagnostic('terminal list failed', errString(err));
+    }
+  }
+
+  onMount(() => {
+    const threadId = surface.threadId;
+    const workspacePath = surface.workspacePath;
+    if (manual || !threadId) return;
+    // A re-read leaves the active tab alone, like a terminal another client opens.
+    return registerTerminalSurface(threadId, () => syncTerminals(threadId, workspacePath, false));
+  });
+
   onMount(async () => {
     const threadId = surface.threadId;
     const workspacePath = surface.workspacePath;
     if (manual || !threadId) return;
 
-    try {
-      const list = (await ListTerminals(threadId)) as TerminalSessionSummary[] | null;
-      if (!canUseTerminalResult(threadId, workspacePath)) return;
-      if (list) {
-        const listedIDs = new Set(list.map((s) => s.terminalID));
-        for (const tab of handle.tabs) {
-          if (!listedIDs.has(tab.terminalID)) {
-            handle.removeTab(tab.terminalID);
-          }
-        }
-        for (const s of list) {
-          handle.addTab(s);
-        }
-      }
-    } catch (err) {
-      console.error('terminal: ListTerminals failed', err);
-    }
+    await syncTerminals(threadId, workspacePath, true);
+    if (!canUseTerminalResult(threadId, workspacePath)) return;
     // Auto-open a first terminal if none exist yet so the surface is not empty.
     if (handle.tabs.length === 0) {
       await openTerminal();

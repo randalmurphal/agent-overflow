@@ -144,7 +144,7 @@ func requireActiveDetachedWatchdog(dataRoot string, bootstrap harnessclient.Boot
 	if watchdog.StartTime != state.WatchdogBirthID || watchdog.Executable != state.WatchdogExe {
 		return errors.New("watchdog process identity changed")
 	}
-	mgr, err := governor.New(governor.Options{})
+	mgr, err := openGovernor("")
 	if err != nil {
 		return err
 	}
@@ -273,7 +273,7 @@ func runDetachedWatchdog(args []string) (err error) {
 	if identity.StartTime != bootstrap.ProcessStartTime || identity.Executable != bootstrap.ExecutablePath {
 		return fmt.Errorf("backend process identity changed before watchdog start")
 	}
-	mgr, err := governor.New(governor.Options{})
+	mgr, err := openGovernor("")
 	if err != nil {
 		return err
 	}

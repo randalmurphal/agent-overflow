@@ -66,6 +66,7 @@ import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
+import type { TextWindow } from '../utils/liveText';
 import type { TimelineCursorLike } from './threadItems';
 import type {
   LoadOlderResult,
@@ -277,6 +278,7 @@ export interface RowUiRegistry {
 export interface RevealRead {
   readonly revealBoundary: RevealBoundary | null;
   readonly liveThinkingTailForItem: (itemId: string) => string | null;
+  readonly liveThinkingWindowForItem: (itemId: string) => TextWindow | null;
   readonly isItemSmoothing: (itemId: string) => boolean;
   /** Changes after pane-wide reveal disposal so mounted rows re-register. */
   readonly assistantRevealRegistrationGeneration: number;

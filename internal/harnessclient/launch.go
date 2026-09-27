@@ -290,10 +290,11 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 			return launched, fmt.Errorf("adopt backend into memory containment: %w", errors.Join(err, cleanupErr))
 		}
 	}
-	// A fast-failing backend can become a zombie between Start and the
-	// identity read. Keep the pipes open long enough to collect its bootstrap
-	// or startup error, then perform the unverified cleanup path. Returning
-	// the raw /proc race here used to hide the backend's actual failure.
+	// Every teardown verifies the backend against this identity, so it is
+	// read after Adopt, once a containment launcher has exec'd the backend.
+	// A fast-failing backend can become a zombie before this read. Keep the
+	// pipes open long enough to collect its bootstrap or startup error, then
+	// perform the unverified cleanup path.
 	identity, identityErr := captureProcessIdentity(launched.PID)
 	if identityErr != nil {
 		launched.unverified = true

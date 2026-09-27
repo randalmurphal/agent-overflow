@@ -128,7 +128,7 @@ func deliverSubagentPrompt(t *testing.T, router *Router, threadID, scope, provid
 
 func childrenOfLaunch(t *testing.T, st *store.Store, threadID, launchID string, turnIndex int) []store.Item {
 	t.Helper()
-	items, err := st.ListTurnItemsSansPayload(threadID, turnIndex)
+	items, err := st.ListTurnItems(threadID, turnIndex)
 	if err != nil {
 		t.Fatalf("list turn %d items: %v", turnIndex, err)
 	}

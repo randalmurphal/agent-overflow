@@ -53,12 +53,15 @@ func TestJSONContentTypeAllowsParametersAndCasing(t *testing.T) {
 func TestCapabilitiesRotateAndCloseCannotReopen(t *testing.T) {
 	server := New("test-tools", "", func(string) []map[string]any { return nil }, nil)
 	t.Cleanup(func() { _ = server.Close() })
-	first, err := server.RegisterThread("thread", "first")
+	if _, err := server.RegisterThread("thread", "", "access"); err == nil {
+		t.Fatal("registered a capability for no session")
+	}
+	first, err := server.RegisterThread("thread", "first", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server.SetThreadEnabled("thread", false)
-	second, err := server.RegisterThread("thread", "second")
+	second, err := server.RegisterThread("thread", "second", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +79,7 @@ func TestCapabilitiesRotateAndCloseCannotReopen(t *testing.T) {
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.RegisterThread("thread", "third"); err == nil {
+	if _, err := server.RegisterThread("thread", "third", "access"); err == nil {
 		t.Fatal("closed server reopened")
 	}
 }
@@ -87,7 +90,7 @@ func streamedCallServer(t *testing.T, handler func(http.ResponseWriter, Request)
 	t.Helper()
 	server := New("test-tools", "", func(string) []map[string]any { return nil }, func(w http.ResponseWriter, _ context.Context, req Request, _ string) { handler(w, req) })
 	t.Cleanup(func() { _ = server.Close() })
-	config, err := server.RegisterThread("thread", "access")
+	config, err := server.RegisterThread("thread", "session", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +224,7 @@ func postRequest(t *testing.T, url, body string) map[string]json.RawMessage {
 func TestInstructionsFuncReplacesTheFixedTextPerHandshake(t *testing.T) {
 	server := New("test-tools", "fixed text", func(string) []map[string]any { return nil }, nil)
 	t.Cleanup(func() { _ = server.Close() })
-	config, err := server.RegisterThread("thread", "access-1")
+	config, err := server.RegisterThread("thread", "session", "access-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +271,7 @@ func TestDisabledErrorCarriesTheOwnersCode(t *testing.T) {
 			WriteResult(w, req.ID, map[string]any{"content": []map[string]any{}})
 		})
 	t.Cleanup(func() { _ = server.Close() })
-	config, err := server.RegisterThread("thread", "access")
+	config, err := server.RegisterThread("thread", "session", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +290,7 @@ func TestDisabledErrorCarriesTheOwnersCode(t *testing.T) {
 	// that sets none is unchanged.
 	plain := New("plain-tools", "", func(string) []map[string]any { return nil }, nil)
 	t.Cleanup(func() { _ = plain.Close() })
-	plainConfig, err := plain.RegisterThread("thread", "access")
+	plainConfig, err := plain.RegisterThread("thread", "session", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +308,7 @@ func afterResponseServer(t *testing.T, handler func(http.ResponseWriter, context
 	server := New("test-tools", "", func(string) []map[string]any { return nil },
 		func(w http.ResponseWriter, ctx context.Context, req Request, _ string) { handler(w, ctx, req) })
 	t.Cleanup(func() { _ = server.Close() })
-	config, err := server.RegisterThread("thread", "access")
+	config, err := server.RegisterThread("thread", "session", "access")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,5 +433,78 @@ func TestAfterResponseReportsAnUndeliveredAnswer(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("deferred work never ran for an abandoned call")
+	}
+}
+
+// Retire waits out a call admitted before it, and the thread's capability
+// is gone once it returns.
+func TestRetireWaitsForAdmittedRequests(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	server := New("test-tools", "", func(string) []map[string]any { return nil }, func(w http.ResponseWriter, _ context.Context, req Request, _ string) {
+		close(entered)
+		<-release
+		WriteResult(w, req.ID, map[string]any{})
+	})
+	t.Cleanup(func() { _ = server.Close() })
+	config, err := server.RegisterThread("thread", "session", "access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := config["test-tools"].(map[string]any)["url"].(string)
+	call := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(url, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"slow","arguments":{}}}`))
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+		call <- err
+	}()
+	<-entered
+	retired := make(chan struct{})
+	go func() { server.Retire("thread"); close(retired) }()
+	select {
+	case <-retired:
+		t.Fatal("Retire returned while an admitted call was running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-retired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Retire did not return after the call finished")
+	}
+	if err := <-call; err != nil {
+		t.Fatal(err)
+	}
+	if server.HasThread("thread") {
+		t.Fatal("Retire left the capability registered")
+	}
+	resp := postToolCall(t, url, "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("retired capability answered %d, want 404", resp.StatusCode)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.requests) != 0 {
+		t.Fatalf("request counts left behind: %v", server.requests)
+	}
+}
+
+// A thread's toggle is stored only once set; registering records none.
+func TestRegisteringStoresNoToggle(t *testing.T) {
+	server := New("test-tools", "", func(string) []map[string]any { return nil }, nil)
+	t.Cleanup(func() { _ = server.Close() })
+	if _, err := server.RegisterThread("thread", "session", "access"); err != nil {
+		t.Fatal(err)
+	}
+	server.RevokeThread("thread", "session")
+	if !server.ThreadEnabled("thread") {
+		t.Fatal("a thread without a toggle is off")
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.threadEnabled) != 0 {
+		t.Fatalf("toggles held for threads nobody switched: %v", server.threadEnabled)
 	}
 }
