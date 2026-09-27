@@ -400,14 +400,30 @@ export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {
   };
 }
 
+/** The mock's Claude-specific knobs (`scenario.ClaudeOptions`). */
+export interface ClaudeScenarioOptions {
+  /**
+   * Hold a user envelope that arrives mid-turn until that turn ends, then
+   * pick it up as a turn of its own: the CLI's turn-pickup consumption, so
+   * the echo confirming a queued message lands after every row the running
+   * turn still wrote. Off, the mock picks a mid-turn envelope up at once.
+   */
+  queuedInputAtBoundary?: boolean;
+}
+
 /** A Claude scenario of several turns, each consumed by one user message. */
-export function claudeTurnsScenario(name: string, turns: ScenarioStep[][]): unknown {
+export function claudeTurnsScenario(
+  name: string,
+  turns: ScenarioStep[][],
+  claude?: ClaudeScenarioOptions,
+): unknown {
   return {
     version: 1,
     name,
     provider: 'claude',
     turns: turns.map((steps, i) => ({ label: `${name}-${i + 1}`, steps })),
     afterTurns: 'silent',
+    ...(claude ? { claude } : {}),
   };
 }
 

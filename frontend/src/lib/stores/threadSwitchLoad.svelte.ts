@@ -1722,7 +1722,7 @@ export function createThreadSwitchLoad(
             },
             () => {
               if (changedDuringFetch) {
-                options.timelineWindow.refreshCursorsAfterUpserts(next, true, snapshot);
+                options.timelineWindow.refreshCursorsAfterUpserts(next, snapshot);
               }
             },
           ]);

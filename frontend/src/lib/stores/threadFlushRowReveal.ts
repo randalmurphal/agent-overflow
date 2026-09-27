@@ -9,13 +9,23 @@
 //
 // Quiet reservations stay in the preview until confirmation or interrupt
 // promotion. Confirmed rows follow `sliceRevealedNodes`: their position must
-// be at or before the boundary, or the boundary must be absent.
+// be at or before the boundary, or the boundary must be absent. A held row
+// outside the loaded window (`itemWithinLoadedWindow`, the projection's own
+// rule) is not in the timeline either, however the reveal gate stands: a
+// queued message the backend moved past the window's newest cursor is such a
+// row until the cursor follows it.
 
 import type { Item } from '../types/models';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { FlushedItem } from './sendQueue.svelte';
-import { compareItemToCursor } from './threadItems';
+import { compareItemToCursor, itemWithinLoadedWindow, type TimelineCursorLike } from './threadItems';
 import { isPendingFlushRow } from '../utils/userMessageMeta';
+
+/** The pane's loaded-window edges, as the projection reads them. */
+export interface LoadedWindowEdges {
+  oldest: TimelineCursorLike | null;
+  newest: TimelineCursorLike | null;
+}
 
 /** A loaded, confirmed row renders when the reveal gate passes its position. */
 export function itemIsRevealed(
@@ -28,20 +38,23 @@ export function itemIsRevealed(
 }
 
 /**
- * The Zone 2 entries whose rows this pane currently renders. Returns an
- * empty array for the overwhelmingly common case (no pending entries),
- * so the caller's chokepoint costs one registry read per reveal pass.
+ * The Zone 2 entries whose rows this pane currently renders: held, inside
+ * the loaded window, and past the reveal gate. Returns an empty array for
+ * the overwhelmingly common case (no pending entries), so the caller's
+ * chokepoint costs one registry read per reveal pass.
  */
 export function renderedFlushedUserItemIds(
   pending: readonly FlushedItem[],
   getItemById: (itemId: string) => Item | undefined,
   revealBoundary: RevealBoundary | null,
+  window: LoadedWindowEdges,
 ): string[] {
   if (pending.length === 0) return [];
   const rendered: string[] = [];
   for (const entry of pending) {
     const item = getItemById(entry.userItemId);
     if (!item) continue;
+    if (!itemWithinLoadedWindow(item, window.oldest, window.newest)) continue;
     if (!itemIsRevealed(item, revealBoundary)) continue;
     rendered.push(entry.userItemId);
   }

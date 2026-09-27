@@ -75,6 +75,36 @@ describe('threadTimelineWindow', () => {
       expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 2, itemId: 'floor' });
       expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 6, itemId: 'ceiling' });
     });
+
+    // A queued message confirmed after later output: its held row is
+    // rewritten in place past the ceiling, with nothing appended in the
+    // batch. An edge with no unloaded history beyond it follows the row,
+    // so the projection admits it at once; an edge with unloaded history
+    // holds (the moved-outlier rule), and the row waits outside the page.
+    it.each([false, true])('a held row moved past the tail extends the ceiling only when nothing newer is unloaded, hasMoreNewer=%s', async (hasMoreNewer) => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'floor', turnIndex: 2, itemIndex: 2 }),
+          makeItem({ id: 'queued', turnIndex: 2, itemIndex: 3, kind: 'user_text', role: 'user' }),
+          makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 4 }),
+        ],
+        oldestTurnIndex: 2, newestTurnIndex: 2,
+        hasMoreOlder: true, hasMoreNewer,
+      }));
+      await pane.switchThread(makeThread());
+
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'queued', turnIndex: 2, itemIndex: 6, kind: 'user_text', role: 'user', updatedAt: 2 }),
+      ]);
+
+      expect(pane.items.map((item) => item.id)).toEqual(['floor', 'ceiling', 'queued']);
+      expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 2, itemId: 'floor' });
+      expect(pane.newestLoadedCursor).toEqual(hasMoreNewer
+        ? { turnIndex: 2, itemIndex: 4, itemId: 'ceiling' }
+        : { turnIndex: 2, itemIndex: 6, itemId: 'queued' });
+      expect(pane.hasMoreNewer).toBe(hasMoreNewer);
+    });
   });
 
   describe('reordered page coverage', () => {

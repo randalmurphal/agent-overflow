@@ -404,6 +404,25 @@ func (e *engine) finishTurn(n int) {
 	}
 	e.mu.Unlock()
 	e.reportDroppedAdvances(n, dropped)
+	// After the active turn is cleared, so a pickup here begins the next
+	// turn and an envelope arriving now is picked up directly instead.
+	if holder, ok := e.adapter.(heldInputReleaser); ok {
+		holder.releaseHeldInput()
+	}
+}
+
+// turnActive reports whether a scenario turn is running.
+func (e *engine) turnActive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeTurn != 0
+}
+
+// heldInputReleaser is the adapter half of holding mid-turn user input for
+// the turn boundary (scenario.ClaudeOptions.QueuedInputAtBoundary). Optional:
+// only the Claude adapter's CLI consumes queued input that way.
+type heldInputReleaser interface {
+	releaseHeldInput()
 }
 
 // shutdownTurn interrupts a matching live turn and waits until its adapter has

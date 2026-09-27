@@ -506,11 +506,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!threadId) return;
     const pending = getFlushedForThread(threadId);
     if (pending.length === 0) return;
-    for (const userItemId of renderedFlushedUserItemIds(
+    const rendered = renderedFlushedUserItemIds(
       pending,
       getItemById,
       streamingReveal.revealBoundary,
-    )) {
+      { oldest: timelineWindow.oldestLoadedCursor, newest: timelineWindow.newestLoadedCursor },
+    );
+    if (rendered.length === 0) return;
+    // The hand-off IS the queued send appearing in the timeline, the same
+    // event the composer's optimistic send arms for. The row mounts in the
+    // flush this commit is about to run, and its confirmation is a held-row
+    // rewrite, not an append, so the wire-upsert arm never sees it; without
+    // this arm the message lands as a sync pin whenever the live-content
+    // latch has gone cold under a long tool call.
+    armLiveContentAppendSpring();
+    for (const userItemId of rendered) {
       confirmFlushedByUserItemId(threadId, userItemId);
     }
   }

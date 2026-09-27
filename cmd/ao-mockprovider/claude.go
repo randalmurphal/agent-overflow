@@ -99,6 +99,12 @@ const claudeContextUsageResponsePayload = `{"totalTokens":24028,"maxTokens":2000
 //     --replay-user-messages; the echo (isReplay:true, same uuid)
 //     resolves triage's pending-send, stamps provider_item_id onto the
 //     user row, and is the persistence trigger for queued sends.
+//
+// A user envelope that arrives while a turn is running is acked `queued`
+// on arrival and, by default, picked up into its own turn at once. With
+// scenario.ClaudeOptions.QueuedInputAtBoundary the pickup waits for the
+// running turn to end, however it ends, so the echo lands after every
+// frame that turn still wrote: the CLI's turn-pickup consumption.
 type claudeAdapter struct {
 	e *engine
 	w *lineWriter
@@ -124,6 +130,12 @@ type claudeAdapter struct {
 	// tasks follows the background tasks this process announced, for the
 	// terminals an interrupt owes them (claude_tasks.go).
 	tasks *claudeTaskLedger
+
+	// heldMu guards held: user envelopes that arrived while a turn was
+	// running under scenario.ClaudeOptions.QueuedInputAtBoundary, picked
+	// up when that turn ends (holdQueuedInput / releaseHeldInput).
+	heldMu sync.Mutex
+	held   [][]byte
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -316,32 +328,74 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// user turn. The init + echo protocol frames (see the adapter
 		// doc) are written synchronously here so they precede every
 		// scenario step of the turn.
-		commandUUID := claudeEnvelopeUUID(line)
-		a.writeCommandLifecycle(commandUUID, "queued")
-		n, vars := a.e.beginTurn()
-		input := claudeUserText(line)
-		// The turn's own text, for the steps that run against it. A
-		// scenario cannot name what the app is about to send (an agent's
-		// message carries a request token minted after the scenario was
-		// installed), so a capture step reads it out of here.
-		a.e.setTurnVars(n, scenario.Vars{"USER_INPUT": input})
-		vars["USER_INPUT"] = input
-		a.e.rep.report(control.Report{
-			Kind: control.ReportUserInput, Turn: n,
-			Input: input, SessionRef: vars["SESSION_ID"],
-		})
-		a.writeInit(vars)
-		a.echoUserEnvelope(line)
-		// `started` AFTER the init: this mock always picks a message up
-		// into a turn of its own, and writing the ack once the init has
-		// opened that turn is what makes the app classify the delivery
-		// as new_turn rather than mid-turn. See claude-wire.md
-		// §command_lifecycle for the real CLI's two flavours — this mock
-		// models only the immediate-pickup one, so the mid-turn-drain
-		// classification is covered by the triage unit tests instead.
-		a.writeCommandLifecycle(commandUUID, "started")
-		a.e.enqueueTurn(n)
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "queued")
+		if a.holdQueuedInput(line) {
+			return
+		}
+		a.pickUpUserEnvelope(line)
 	}
+}
+
+// holdQueuedInput keeps a mid-turn user envelope for the running turn's end
+// when the scenario asks for it (scenario.ClaudeOptions.QueuedInputAtBoundary).
+// The decision and the append share heldMu with releaseHeldInput, and the
+// engine clears its active turn before calling that release, so an envelope
+// racing the turn's end is either held and drained by the release or picked
+// up here directly; never both, never neither.
+func (a *claudeAdapter) holdQueuedInput(line []byte) bool {
+	if a.e.sc.Claude == nil || !a.e.sc.Claude.QueuedInputAtBoundary {
+		return false
+	}
+	a.heldMu.Lock()
+	defer a.heldMu.Unlock()
+	if !a.e.turnActive() {
+		return false
+	}
+	a.held = append(a.held, append([]byte(nil), line...))
+	return true
+}
+
+// releaseHeldInput picks up every envelope held for the turn that just
+// ended, in arrival order. The engine calls it once that turn is no longer
+// active, so each pickup begins a turn of its own.
+func (a *claudeAdapter) releaseHeldInput() {
+	a.heldMu.Lock()
+	held := a.held
+	a.held = nil
+	a.heldMu.Unlock()
+	for _, line := range held {
+		a.pickUpUserEnvelope(line)
+	}
+}
+
+// pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
+// already written: init, replay echo, `started`, and the turn's steps.
+func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
+	commandUUID := claudeEnvelopeUUID(line)
+	n, vars := a.e.beginTurn()
+	input := claudeUserText(line)
+	// The turn's own text, for the steps that run against it. A
+	// scenario cannot name what the app is about to send (an agent's
+	// message carries a request token minted after the scenario was
+	// installed), so a capture step reads it out of here.
+	a.e.setTurnVars(n, scenario.Vars{"USER_INPUT": input})
+	vars["USER_INPUT"] = input
+	a.e.rep.report(control.Report{
+		Kind: control.ReportUserInput, Turn: n,
+		Input: input, SessionRef: vars["SESSION_ID"],
+	})
+	a.writeInit(vars)
+	a.echoUserEnvelope(line)
+	// `started` AFTER the init: this mock always picks a message up
+	// into a turn of its own, and writing the ack once the init has
+	// opened that turn is what makes the app classify the delivery
+	// as new_turn rather than mid-turn. See claude-wire.md
+	// §command_lifecycle for the real CLI's flavours. This mock picks
+	// up at once or, under QueuedInputAtBoundary, when the running turn
+	// ends; the mid-turn-drain classification is covered by the triage
+	// unit tests instead.
+	a.writeCommandLifecycle(commandUUID, "started")
+	a.e.enqueueTurn(n)
 }
 
 // claudeControlRequestSubtype reads the routing key off a raw inbound

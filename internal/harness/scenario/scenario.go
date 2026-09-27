@@ -98,6 +98,21 @@ type Scenario struct {
 	// what they need. Templates support the same ${VAR} substitution as
 	// step lines, plus ${REQUEST_ID} for the JSON-RPC id.
 	Codex *CodexOptions `json:"codex,omitempty"`
+
+	// Claude carries the Claude-specific pieces of a scenario.
+	Claude *ClaudeOptions `json:"claude,omitempty"`
+}
+
+// ClaudeOptions carries the Claude-specific pieces of a scenario.
+type ClaudeOptions struct {
+	// QueuedInputAtBoundary holds a user envelope that arrives while a
+	// turn is running until that turn ends, then picks it up as a turn of
+	// its own: the CLI's turn-pickup flavor of queued-message consumption
+	// (claude-wire.md §Queued-message consumption), where the replay echo
+	// lands after every frame the running turn still had to write. The
+	// `command_lifecycle` `queued` ack is written on arrival either way.
+	// Off, the mock picks a mid-turn envelope up at once.
+	QueuedInputAtBoundary bool `json:"queuedInputAtBoundary,omitempty"`
 }
 
 // CodexOptions carries the Codex-specific pieces of a scenario.

@@ -125,7 +125,7 @@ export function createThreadItemStreamApply(
     let errors: unknown[] | null = null;
     if (next.structureChanged) {
       try {
-        timelineWindow.refreshCursorsAfterUpserts(next.changedItems, next.appendedItems.length > 0, previousItems);
+        timelineWindow.refreshCursorsAfterUpserts(next.changedItems, previousItems);
       } catch (error) {
         (errors ??= []).push(error);
       }

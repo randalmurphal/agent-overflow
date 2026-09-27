@@ -1082,9 +1082,13 @@ settles.
 
 The pane data layer is the sole owner of the arm, with two arm shapes in
 `threadPaneScroll.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
-for `applyProviderItemUpserts` (a wire append to the loaded tail) and
+for `applyProviderItemUpserts` (a wire append to the loaded tail),
 `recomputeRevealPass` (the reveal gate releasing withheld rows, which are
-already in `pane.items` and mount without any upsert in that flush), and bare
+already in `pane.items` and mount without any upsert in that flush) and
+`syncRenderedFlushRows` (a queued message's held quiet row confirmed and
+moved past the loaded tail: the hand-off from the send-queue preview to the
+timeline is that message appearing, and the row is rewritten in place, so
+the wire-upsert arm never sees an append), and bare
 `armStructuralSpring` (arm only, no stamp) for the composer's optimistic
 user-send. All arm sites run
 synchronously with the data change, strictly before the Svelte flush in

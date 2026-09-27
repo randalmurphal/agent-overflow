@@ -535,7 +535,7 @@ in `e2e/src` is the spec-side await.
 An `mcpCall` does not pace an unbounded `repeat`: it answers as fast as
 the server does.
 
-Two scenario-level knobs sit beside the step lists. `startupDelayMs`
+Scenario-level knobs sit beside the step lists. `startupDelayMs`
 delays the first frame that proves the provider is up (Claude's first
 `system/init`, Codex's `initialize` response), once per process and
 capped at 30s, so the app's cold-start window is drivable. `providerVersion`
@@ -546,6 +546,16 @@ is the only way a spec exercises a gate's fails-closed branch. It does
 not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario
 loads.
+
+`claude.queuedInputAtBoundary` selects how the Claude mock consumes a user
+envelope that arrives while a turn is running. The `command_lifecycle`
+`queued` ack is written on arrival either way. Off, the mock picks the
+envelope up into its own turn at once. On, it holds the envelope until the
+running turn ends and picks it up then, so the replay echo that confirms a
+queued message lands after every row that turn still wrote: the CLI's
+turn-pickup consumption (claude-wire.md §Queued-message consumption), and
+the case where the backend moves the message's row past output streamed
+since dispatch.
 
 A Codex sign-in is the exception among those: its argv is a plain
 `app-server`, so it reaches the ordinary adapter and DOES register on

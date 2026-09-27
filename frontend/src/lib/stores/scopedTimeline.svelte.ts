@@ -253,7 +253,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
         window.applyWindowMetadataFromPaged({ ...page, scope: undefined });
         runs.noteRefusals(refusals);
         const changed = [...observation.touched].flatMap(id => next.get(id) ?? []);
-        window.refreshCursorsAfterUpserts(changed, true, page.items as Item[]);
+        window.refreshCursorsAfterUpserts(changed, page.items as Item[]);
       },
     });
     for (const runId of dirtyRuns) runs.markRunDirty(runId);

@@ -30,6 +30,7 @@ import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   buildPane,
+  installPaneMocks,
   makeItem,
   makeThread,
   stubScrollController,
@@ -3700,6 +3701,84 @@ describe('setupEventListeners', () => {
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: row.threadId, item: { ...row, meta: '{"pendingFlush":false}', updatedAt: 1 } });
     await nextFrame();
     expect(getFlushedForThread(row.threadId)).toHaveLength(0);
+  });
+
+  // The hand-off for a quiet row the pane already holds (loaded from
+  // SQLite after a thread switch or reload while the message was still
+  // unconsumed). Confirmation moves the row past the output that streamed
+  // since dispatch: a rewrite in place, not an append. The window's tail
+  // has to follow it, the preview has to let go in the same pass, and the
+  // hand-off has to arm the spring the way a wire append does, because
+  // this IS the queued send appearing.
+  it('hands a held quiet row over to the timeline when its confirmation moves it past the tail', async () => {
+    const quiet = makeItem({
+      id: 'user:1:flush:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 1,
+      kind: 'user_text', role: 'user', summary: 'queued mid-turn', meta: '{"pendingFlush":true}',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 1, itemIndex: 0 }),
+      quiet,
+      makeItem({ id: 'tool:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 2, kind: 'tool_call', role: 'assistant', toolName: 'Bash', status: 'completed' }),
+    ]);
+    markItemsFlushed('thread-a', [{ queueItemId: 'q-1', userItemId: quiet.id, message: quiet.summary }]);
+    const markStructuralContentPending = vi.fn();
+    pane.attachScrollController(stubScrollController({ markStructuralContentPending }));
+    await nextFrame();
+    expect(getFlushedForThread('thread-a')).toHaveLength(1);
+    expect(pane.newestLoadedCursor).toEqual({ turnIndex: 1, itemIndex: 2, itemId: 'tool:1' });
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert', threadId: 'thread-a',
+      item: { ...quiet, itemIndex: 3, meta: '{}', updatedAt: quiet.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual(['a:0', 'tool:1', quiet.id]);
+    expect(pane.newestLoadedCursor).toEqual({ turnIndex: 1, itemIndex: 3, itemId: quiet.id });
+    expect(getFlushedForThread('thread-a')).toHaveLength(0);
+    expect(markStructuralContentPending).toHaveBeenCalled();
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+  });
+
+  // The same confirmation reaching a pane scrolled back into history: the
+  // ceiling holds (unloaded rows lie between it and the moved row), so the
+  // row is not in this timeline and the preview keeps the message.
+  it('keeps the preview when the confirmed row moves past a ceiling with unloaded rows beyond it', async () => {
+    const quiet = makeItem({
+      id: 'user:1:flush:1', threadId: 'thread-b', turnIndex: 1, itemIndex: 1,
+      kind: 'user_text', role: 'user', summary: 'queued mid-turn', meta: '{"pendingFlush":true}',
+    });
+    const items = [
+      makeItem({ id: 'a:0', threadId: 'thread-b', turnIndex: 1, itemIndex: 0 }),
+      quiet,
+      makeItem({ id: 'tool:1', threadId: 'thread-b', turnIndex: 1, itemIndex: 2, kind: 'tool_call', role: 'assistant', toolName: 'Bash', status: 'completed' }),
+    ];
+    installPaneMocks(items);
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items, oldestTurnIndex: 1, newestTurnIndex: 1,
+      hasMoreOlder: false, hasMoreNewer: true,
+    }));
+    const pane = createThreadPane({ paneId: 'main' });
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+    registerPaneForTest('main', pane);
+    markItemsFlushed('thread-b', [{ queueItemId: 'q-1', userItemId: quiet.id, message: quiet.summary }]);
+    const markStructuralContentPending = vi.fn();
+    pane.attachScrollController(stubScrollController({ markStructuralContentPending }));
+    await nextFrame();
+    expect(getFlushedForThread('thread-b')).toHaveLength(1);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert', threadId: 'thread-b',
+      item: { ...quiet, itemIndex: 3, meta: '{}', updatedAt: quiet.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.newestLoadedCursor).toEqual({ turnIndex: 1, itemIndex: 2, itemId: 'tool:1' });
+    expect(getFlushedForThread('thread-b')).toHaveLength(1);
+    // No hand-off, so no hand-off arm. (The wire fan-out's own liveness
+    // stamp for an advanced row is a separate signal and still applies.)
+    expect(markStructuralContentPending).not.toHaveBeenCalled();
   });
 
   // provider:queue_restored reports queued messages whose store rows

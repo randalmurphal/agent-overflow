@@ -59,11 +59,25 @@ export function itemsWithinLoadedWindow(
   if (items.length === 0 || !oldest || !newest) return items;
   // The rows are sorted, so the outermost rows decide whether any row
   // lies outside.
-  if (compareItemToCursor(items[0], oldest) >= 0 && compareItemToCursor(items[items.length - 1], newest) <= 0) {
+  if (itemWithinLoadedWindow(items[0], oldest, newest) && itemWithinLoadedWindow(items[items.length - 1], oldest, newest)) {
     return items;
   }
-  return items.filter((item) =>
-    compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
+  return items.filter((item) => itemWithinLoadedWindow(item, oldest, newest));
+}
+
+/**
+ * The per-row form of `itemsWithinLoadedWindow`: whether a held row is
+ * inside the contiguous span the paging edges describe. Every reader that
+ * asks "does the timeline show this row" uses this, so the projection and
+ * the send-queue hand-off cannot disagree about an outlier.
+ */
+export function itemWithinLoadedWindow(
+  item: Item,
+  oldest: TimelineCursorLike | null,
+  newest: TimelineCursorLike | null,
+): boolean {
+  if (!oldest || !newest) return true;
+  return compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0;
 }
 
 /** Reconcile page cuts before admission; moved outliers must not skip unloaded history. */

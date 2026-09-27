@@ -125,8 +125,11 @@ confirmation decision as ordinary echo handling.
 
 The frontend reconciles page boundaries when rows move, before admitting new
 rows from the same batch. A moved outlier cannot extend a page across unknown
-history; paging must retain coverage of that gap. Late page replies also preserve
-boundary corrections received while their request was in flight.
+history; paging must retain coverage of that gap. An edge with no unloaded
+rows beyond it follows a moved row, so a confirmed queued message the page
+already held is admitted at its new position in the same commit, without
+waiting for a later append. Late page replies also preserve boundary
+corrections received while their request was in flight.
 
 Interrupt display order and provider consumption order can differ: output already
 shown after an interrupted message must stay there even if it preceded that

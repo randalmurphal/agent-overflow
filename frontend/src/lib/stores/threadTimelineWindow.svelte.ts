@@ -136,8 +136,8 @@ export interface ThreadTimelineWindow {
   applyConversationCut(boundaryWasLoaded: boolean): void;
   /** Mount an authoritative member page, extending the held run at either edge. */
   mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void;
-  /** Follow repositioned anchors, retaining the capped floor and ordinary tail-append policy. */
-  refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void;
+  /** Follow repositioned anchors and rows past a held edge, retaining the capped floor. */
+  refreshCursorsAfterUpserts(changedItems: readonly Item[], previousItems: readonly Item[]): void;
   /**
    * Streaming-path window cut. Over `ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`
    * top-level rows it keeps `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` around
@@ -750,7 +750,7 @@ export function createThreadTimelineWindow(
     setLoadedCursors(oldest, newest);
   }
 
-  function refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void {
+  function refreshCursorsAfterUpserts(changedItems: readonly Item[], previousItems: readonly Item[]): void {
     const thread = options.getThread();
     if (!thread) return;
     const { oldest, newest } = cursorsAfterItemUpserts(
@@ -759,9 +759,15 @@ export function createThreadTimelineWindow(
     if (oldest !== oldestLoadedCursor || newest !== newestLoadedCursor) {
       setLoadedCursors(oldest, newest);
     }
-    if (!appended) return;
-    // Stubs cover unshipped members beyond the physical rows. A live append
-    // can extend those bounds, but cannot shrink them to the shipped slice.
+    // An edge the window holds the end of (no more history, no more newer)
+    // follows every row that lands past it: an append, or a held row the
+    // backend moved there. A queued message confirmed after later output is
+    // such a move: its row is rewritten in place at the new tail, and a
+    // cursor left behind it would hide the row until an unrelated append.
+    // The moved-outlier rule (`cursorsAfterItemUpserts`) still governs an
+    // edge with unloaded history beyond it. Stubs cover unshipped members
+    // beyond the physical rows; these bounds extend and never shrink to the
+    // shipped slice.
     for (const item of changedItems) {
       if (!includes(item)) continue;
       const cursor = cursorFromItem(item);

@@ -994,9 +994,15 @@ smoother mutation runs through it) and at the two events that add entries
 without touching the window. Arrival of the row's upsert is not the trigger:
 the flush row lands at the turn tail behind any still-draining prose, and a
 scrolled-back window refuses it, so both would leave the message in neither
-place for as long as the condition lasts. A thread with no mounted pane has
-no timeline for the row to be in; its item-stream handler confirms on
-arrival, which is also what lets the sidebar's working indicator settle.
+place for as long as the condition lasts. A quiet row the pane already holds
+(loaded from SQLite after a thread switch or reload) is confirmed by a
+rewrite in place, moved past whatever streamed since dispatch; a loaded edge
+with no unloaded rows beyond it follows the moved row
+(`refreshCursorsAfterUpserts`), so the same commit admits it and the pane
+arms the append spring for the hand-off. A scrolled-back window keeps the
+message in the preview until it loads that far. A thread with no mounted
+pane has no timeline for the row to be in; its item-stream handler confirms
+on arrival, which is also what lets the sidebar's working indicator settle.
 
 **Removal before dispatch.** `removeQueuedItem` deletes a queued message that
 has not been sent: it takes the durable row and the triage entry out together
