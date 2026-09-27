@@ -26,9 +26,8 @@ import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types/models';
+import type { DiffReviewComment, PRDetail, ReviewThread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
-import { NO_WORKSPACE_REF } from '../utils/workspaceKey';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import {
   PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
@@ -84,16 +83,15 @@ const REVIEW_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: REVIEW_
  * workspace. Every workspace-scoped RPC is asserted against `REVIEW_WS`;
  * `threadId` is what the thread-scoped ones (edits, comments, steer) take.
  */
-function subjectFor(threadId: string | null = 'thread-1', thread: Thread | null = null): ReviewSubject {
-  return { identity: threadId ?? 'draft:pane-1', threadId, workspace: REVIEW_WS, thread };
+function subjectFor(threadId: string | null = 'thread-1'): ReviewSubject {
+  return { identity: threadId ?? 'draft:pane-1', threadId, workspace: REVIEW_WS };
 }
 
 /**
- * The mount/reload PR probe resolves the thread's own `prRef` first and falls
- * back to the workspace's LIVE git status — the same observation the header
- * badge renders, read from the shared store rather than re-fetched. Reaching
- * that fallback needs the source pane registered (that is how the probe finds
- * the workspace) and that workspace observed.
+ * A pane's PR is its workspace's open PR, read from the LIVE git status — the
+ * same observation the header badge renders, read from the shared store
+ * rather than re-fetched. Reaching it needs the source pane registered (that
+ * is how the pane finds the workspace) and that workspace observed.
  */
 function seedPaneWorkspaceStatus(paneId: string, overrides: Partial<GitStatus>): void {
   const pane = createThreadPane({ paneId });
@@ -126,10 +124,6 @@ function seedPaneWorkspaceStatus(paneId: string, overrides: Partial<GitStatus>):
 }
 
 function installDefaultMocks(): void {
-  // probePRRef reads the thread row on every state creation; the default
-  // resolves to "no PR on the thread", and with nothing seeded into the
-  // git-status store the workspace fallback finds none either.
-  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: REVIEW_WORKSPACE }) as Thread);
   // Seeding a workspace status runs the shared store's branch reconciliation;
   // no rows come back, which is the ordinary answer for an already-correct
   // cache. Unmocked it only produces console noise, but noise in a passing
@@ -628,13 +622,14 @@ describe('reviewPane store', () => {
 const PR_KEY = 'github:owner/repo:5';
 const PR_SOURCE_KEY = `pr:${PR_KEY}`;
 
-function prThreadStub(): Thread {
-  // workspacePath set: a workspace-less thread with a prRef defaults straight
-  // into pr scope at creation, which is its own test below.
-  return {
-    prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-    workspacePath: '/tmp/ws',
-  } as Thread;
+/** The ordinary PR subject: the pane's workspace has PR #5 open. */
+function prSubject(paneId = 'pane-1'): ReviewSubject {
+  seedPaneWorkspaceStatus(paneId, {
+    forge: 'github',
+    openPrUrl: 'https://github.com/owner/repo/pull/5',
+    openPrNumber: 5,
+  });
+  return subjectFor();
 }
 
 function prDetailStub(overrides: Partial<PRDetail> = {}): PRDetail {
@@ -698,7 +693,7 @@ describe('reviewPane store — PR scope', () => {
   it('enter subscribes and loads the PR diff; leaving unsubscribes exactly once', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     await state.setScope('pr');
@@ -728,7 +723,7 @@ describe('reviewPane store — PR scope', () => {
     ]);
     const commitDiff = setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     // The known head SHA rides along so the backend can skip its fetch
@@ -756,7 +751,7 @@ describe('reviewPane store — PR scope', () => {
     ]);
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     expect(subscribe).toHaveBeenCalledTimes(1);
@@ -780,7 +775,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
 
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     state.setSubmitTarget('pr');
@@ -807,7 +802,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const fullDiff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
 
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     await state.selectCommit(sha);
@@ -822,7 +817,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('shows no PR commit selector without a local clone (empty commit list)', async () => {
     installPRMocks(); // default ListPRCommits mock resolves []
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -841,7 +836,7 @@ describe('reviewPane store — PR scope', () => {
       releaseDiff = resolve;
     }));
     setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     const prSwitch = state.setScope('pr'); // hangs on the PR diff
@@ -865,7 +860,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRDiff', async () => {
       throw new Error('diff exploded');
     });
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     await state.setScope('pr');
@@ -888,7 +883,7 @@ describe('reviewPane store — PR scope', () => {
       resolveSubscribe = resolve;
     }));
 
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     const entering = state.setScope('pr');
     await vi.waitFor(() => {
@@ -909,7 +904,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('replacing a pane state on thread switch disposes the old PR subscription', async () => {
     const { unsubscribe } = installPRMocks();
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -920,7 +915,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('pr:updated applies live on same head and flags stale on a moved head without touching the diff', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -954,7 +949,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('leaving the PR drops the head its diff was anchored to', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     expect(state.prHeadSHA).toBe('sha-a');
@@ -976,9 +971,6 @@ describe('reviewPane store — PR scope', () => {
       openPrNumber: 5,
     });
     installPRMocks();
-    // The thread carries no PR of its own, so the reference comes from the
-    // workspace and is free to change.
-    setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: REVIEW_WORKSPACE }) as Thread);
     setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
       id: `sub-${pr.Number}`,
       prKey: `github:owner/repo:${pr.Number}`,
@@ -1026,7 +1018,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -1048,8 +1040,8 @@ describe('reviewPane store — PR scope', () => {
 
   it('one poll heals every pane on the PR, and staleness stays per pane', async () => {
     const { subscribe } = installPRMocks();
-    const first = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
-    const second = reviewStateForPane('pane-2', subjectFor('thread-1', prThreadStub()));
+    const first = reviewStateForPane('pane-1', prSubject());
+    const second = reviewStateForPane('pane-2', prSubject('pane-2'));
     await waitLoaded(first);
     await waitLoaded(second);
     await first.setScope('pr');
@@ -1081,8 +1073,8 @@ describe('reviewPane store — PR scope', () => {
 
   it('the last pane to leave the PR releases the shared subscription', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
-    const first = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
-    const second = reviewStateForPane('pane-2', subjectFor('thread-1', prThreadStub()));
+    const first = reviewStateForPane('pane-1', prSubject());
+    const second = reviewStateForPane('pane-2', prSubject('pane-2'));
     await waitLoaded(first);
     await waitLoaded(second);
     await first.setScope('pr');
@@ -1121,7 +1113,7 @@ describe('reviewPane store — PR scope', () => {
       '>>>>>>> theirs',
       'after',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1175,7 +1167,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1210,7 +1202,7 @@ describe('reviewPane store — PR scope', () => {
       if (path === 'other.go') throw new Error('path not in merged tree');
       return '<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs';
     });
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1246,7 +1238,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1275,7 +1267,7 @@ describe('reviewPane store — PR scope', () => {
       paths: [],
       messages: [],
     }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1297,7 +1289,7 @@ describe('reviewPane store — PR scope', () => {
       paths: ['main.go'],
       messages: [],
     }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -1335,7 +1327,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1374,7 +1366,7 @@ describe('reviewPane store — PR scope', () => {
       truncated: false,
       totalBytes: 14,
     }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1412,7 +1404,7 @@ describe('reviewPane store — PR scope', () => {
       messages: [],
     }));
     setBindingMock('GetPRCIJobLog', async () => ({ text: 'x\n', truncated: false, totalBytes: 2 }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1433,7 +1425,7 @@ describe('reviewPane store — PR scope', () => {
     installPRMocks();
     setBindingMock('GetPRCIJobLog', async () => ({ text: 'boom\n', truncated: false, totalBytes: 5 }));
     const save = setBindingMock('SavePRCIJobLog', async () => '/data/ci-logs/github-owner-repo-pr5-20-unit.log');
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1525,29 +1517,11 @@ describe('reviewPane store — PR scope', () => {
     });
   });
 
-  it('a workspace-less thread with a prRef defaults to pr scope', async () => {
+  it('restores a persisted pr scope from the workspace\'s open PR', async () => {
     const { subscribe } = installPRMocks();
-    const state = reviewStateForPane('pane-1', {
-      identity: 'thread-1',
-      threadId: 'thread-1',
-      // No local clone: the PR RPCs read the zero ref and take the forge path.
-      workspace: NO_WORKSPACE_REF,
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-      } as Thread,
-    });
-    await waitLoaded(state);
-
-    expect(state.scope).toBe('pr');
-    expect(subscribe).toHaveBeenCalledTimes(1);
-  });
-
-  it('restores a persisted pr scope by resolving the reference from the thread', async () => {
-    const { subscribe } = installPRMocks();
-    setBindingMock('GetThread', async () => prThreadStub());
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
 
-    const state = reviewStateForPane('pane-1', subjectFor());
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     expect(state.scope).toBe('pr');
@@ -1558,7 +1532,7 @@ describe('reviewPane store — PR scope', () => {
   it('submit success marks drafts sent against the head SHA and clears the summary', async () => {
     installPRMocks();
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1582,7 +1556,7 @@ describe('reviewPane store — PR scope', () => {
       partialFailure: 'boom',
     }));
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1606,7 +1580,7 @@ describe('reviewPane store — PR scope', () => {
       partialFailure: 'glab api approve merge request failed',
     }));
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1627,7 +1601,7 @@ describe('reviewPane store — PR scope', () => {
       throw new Error('gh api submit review failed');
     });
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1658,7 +1632,7 @@ describe('reviewPane store — PR scope', () => {
   it('pauses the pump while the document is hidden and resumes it on visible', async () => {
     installPRMocks();
     const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     expect(setActive).not.toHaveBeenCalled();
@@ -1678,7 +1652,7 @@ describe('reviewPane store — PR scope', () => {
   it('a PR load that finishes while the document is hidden starts its pump paused', async () => {
     installPRMocks();
     const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     setDocumentVisibility('hidden');
@@ -1818,7 +1792,7 @@ describe('comments-only PR refresh', () => {
     installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub());
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     expect(diff).toHaveBeenCalledTimes(1);
@@ -1838,7 +1812,7 @@ describe('comments-only PR refresh', () => {
     installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -2493,7 +2467,7 @@ describe('reviewPane store — conversation section and resolve', () => {
       threads,
       headSHA: 'sha-a',
     }));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     return state;
@@ -2567,7 +2541,7 @@ describe('reviewPane store — conversation section and resolve', () => {
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'ann', authoredAt: Date.parse('2026-01-04T00:00:00Z') },
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'ann', authoredAt: Date.parse('2026-01-01T12:00:00Z') },
     ]);
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     await waitLoaded(state);
@@ -2701,7 +2675,7 @@ describe('reviewPane store: painted span retention', () => {
     };
     setBindingMock('GetPRMergeConflicts', async () => tree);
     setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
-    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     const [a, b] = state.files;

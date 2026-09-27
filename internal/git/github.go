@@ -188,58 +188,6 @@ func (f *githubForge) ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, 
 	return heads, nil
 }
 
-// ViewPR fetches PR metadata via `gh pr view --json ...`. project is
-// "owner/repo"; cwd may be empty when there is no local clone.
-func (f *githubForge) ViewPR(cwd, project string, number int) (PRMetadata, error) {
-	if strings.TrimSpace(project) == "" {
-		return PRMetadata{}, errors.New("project (owner/repo) is required")
-	}
-	if number <= 0 {
-		return PRMetadata{}, fmt.Errorf("PR number must be positive, got %d", number)
-	}
-
-	result, err := f.core.runBinary(
-		"gh",
-		cwd,
-		"pr", "view",
-		"--repo", project,
-		strconv.Itoa(number),
-		"--json", "title,body,headRefName,baseRefName,files,url,author,state",
-	)
-	if err != nil {
-		return PRMetadata{}, normalizeGitHubCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return PRMetadata{}, fmt.Errorf("gh pr view failed: %s", commandOutputMessage(result.stdout, result.stderr))
-	}
-
-	var raw struct {
-		Title       string   `json:"title"`
-		Body        string   `json:"body"`
-		HeadRefName string   `json:"headRefName"`
-		BaseRefName string   `json:"baseRefName"`
-		URL         string   `json:"url"`
-		Files       []PRFile `json:"files"`
-		Author      struct {
-			Login string `json:"login"`
-		} `json:"author"`
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
-		return PRMetadata{}, fmt.Errorf("gh pr view returned malformed JSON: %w", err)
-	}
-	return PRMetadata{
-		Title:       raw.Title,
-		Body:        raw.Body,
-		HeadRefName: raw.HeadRefName,
-		BaseRefName: raw.BaseRefName,
-		URL:         raw.URL,
-		AuthorLogin: raw.Author.Login,
-		State:       NormalizePRState(raw.State),
-		Files:       raw.Files,
-	}, nil
-}
-
 // GetPRDetail fetches the review-pane PR detail via gh's JSON view plus
 // a tiny authenticated-user probe for own-PR verdict gating.
 func (f *githubForge) GetPRDetail(cwd, project string, number int) (PRDetail, error) {
@@ -1011,32 +959,6 @@ func splitGitHubProject(project string) (string, string, error) {
 		return "", "", err
 	}
 	return namespace, repo, nil
-}
-
-// Diff returns the unified diff for a PR via `gh pr diff`.
-func (f *githubForge) Diff(cwd, project string, number int) (string, error) {
-	if strings.TrimSpace(project) == "" {
-		return "", errors.New("project (owner/repo) is required")
-	}
-	if number <= 0 {
-		return "", fmt.Errorf("PR number must be positive, got %d", number)
-	}
-
-	result, err := f.core.runBinaryWithLimit(
-		"gh",
-		cwd,
-		maxPRDiffBytes,
-		"pr", "diff",
-		"--repo", project,
-		strconv.Itoa(number),
-	)
-	if err != nil {
-		return "", normalizeGitHubCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return "", fmt.Errorf("gh pr diff failed: %s", commandOutputMessage(result.stdout, result.stderr))
-	}
-	return result.stdout, nil
 }
 
 // CreatePR is a thin wrapper that dispatches to the forge detected for

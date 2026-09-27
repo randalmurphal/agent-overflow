@@ -238,7 +238,7 @@ describe('review.toggle command', () => {
   });
 
   it('toggles the review companion on the command context pane', () => {
-    const pane = readyPane();
+    const pane = readyPane({ projectId: 'project-1' });
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     registerFixtureCommands(pane);
 
@@ -248,6 +248,20 @@ describe('review.toggle command', () => {
 
     expect(runCommand('review.toggle', makeCommandContext(pane, {}))).toBe(true);
     expect(pane.showReviewPane).toBe(false);
+  });
+
+  it('says so when the thread has no workspace to review', () => {
+    const pane = readyPane();
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
+    registerFixtureCommands(pane);
+    const before = getToasts().length;
+
+    expect(runCommand('review.toggle', makeCommandContext(pane, {}))).toBe(true);
+
+    expect(pane.showReviewPane).toBe(false);
+    expect(getToasts().slice(before)).toEqual([
+      expect.objectContaining({ type: 'warning', message: 'This thread has no workspace.' }),
+    ]);
   });
 });
 
@@ -505,7 +519,6 @@ type BuiltinHooks = Parameters<typeof registerBuiltinCommands>[0];
 function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
   return {
     openThreadForm: () => {},
-    openThreadFromPR: () => {},
     openShipChanges: () => {},
     requestDiscussion: () => {},
     focusThreadSearch: () => {},
@@ -2021,7 +2034,6 @@ describe('capability-gated commands', () => {
     expect(ctx.flags.terminalOperate).toBe(false);
     expect(isCommandEnabled('thread.new', ctx)).toBe(false);
     expect(isCommandEnabled('thread.newPane', ctx)).toBe(false);
-    expect(isCommandEnabled('thread.new.fromPR', ctx)).toBe(false);
     expect(isCommandEnabled('thread.delete', ctx)).toBe(false);
     expect(isCommandEnabled('thread.fork', ctx)).toBe(false);
     expect(isCommandEnabled('git.commit', ctx)).toBe(false);

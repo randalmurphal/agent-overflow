@@ -57,8 +57,8 @@ type Pull struct {
 	HeadSHA  string `json:"headSha,omitempty"`
 	BaseSHA  string `json:"baseSha,omitempty"`
 	StartSHA string `json:"startSha,omitempty"`
-	// Diff is the unified diff `gh pr diff` / `glab mr diff` print. File
-	// and line counts are derived from it.
+	// Diff is the PR's unified diff. The file and line counts the PR reads
+	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
 	// Mergeable is "clean" (default), "conflicts" or "checking".
 	Mergeable string `json:"mergeable,omitempty"`

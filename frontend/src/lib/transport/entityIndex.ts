@@ -314,7 +314,6 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   2367642633: 'thread', // AttachThreadWorktree
   969543070: 'project', // CreateProject
   2579322833: 'thread', // CreateThread
-  1716017387: 'thread', // CreateThreadFromPR
   2246569884: 'thread', // ForkSideChat
   4063914461: 'thread', // ForkThread
   3977213964: 'thread', // ForkThreadFromMessage

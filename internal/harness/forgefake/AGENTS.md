@@ -52,8 +52,7 @@ Handled, covering the reads the review pane, git status and CI make:
 
 | CLI | Invocation | App caller |
 |---|---|---|
-| gh | `pr view --repo P N --json ...` | ViewPR, GetPRDetail, CI rollup |
-| gh | `pr diff --repo P N` | GetPRDiff (no checkout) |
+| gh | `pr view --repo P N --json ...` | GetPRDetail, CI rollup |
 | gh | `pr list --head B --state open --json ...` | open PR lookup (checkout origin) |
 | gh | `pr list --state merged --limit N --json ...` | merged heads (checkout origin) |
 | gh | `run view ID --repo P --json jobs,workflowName` | CI jobs |
@@ -61,8 +60,7 @@ Handled, covering the reads the review pane, git status and CI make:
 | gh | `api graphql -f query=...` review threads and PR comments | ListReviewThreads |
 | gh | `api repos/O/R/actions/jobs/ID/logs` | CI job log |
 | gh | `api <attachment URL> -H "Accept: */*" [--allow-escape-sequences]` | forge attachments |
-| glab | `mr diff N -R P` | GetPRDiff (no checkout) |
-| glab | `api projects/P/merge_requests/N` | ViewPR, GetPRDetail, CI |
+| glab | `api projects/P/merge_requests/N` | GetPRDetail, CI |
 | glab | `api projects/P/merge_requests/N/approvals` | GetPRDetail |
 | glab | `api --include projects/P/merge_requests/N/discussions?...` | ListReviewThreads |
 | glab | `api projects/:fullpath/merge_requests?...` (opened, merged) | open MR lookup, merged heads |

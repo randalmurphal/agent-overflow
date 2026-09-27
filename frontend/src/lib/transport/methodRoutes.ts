@@ -69,7 +69,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	969543070: 'selected', // CreateProject
 	4246792665: 'thread', // CreateProposedPlanComment
 	2579322833: 'selected', // CreateThread
-	1716017387: 'selected', // CreateThreadFromPR
 	1478438024: 'project', // CreateThreadGroup
 	2485293844: 'selected', // CreateThreadTransferOffer
 	2428457759: 'thread', // DeleteAttachment

@@ -457,7 +457,6 @@ export {
   RequestWebviewMemoryTrim,
 
   // PR-based thread creation
-  CreateThreadFromPR,
 
   // Turn lifecycle
   ListRecentTurns,

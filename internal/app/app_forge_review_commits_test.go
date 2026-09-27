@@ -12,7 +12,7 @@ import (
 
 // prCloneFixture builds an "origin" repo carrying refs/pull/5/head with
 // two commits beyond main, clones it, and registers the clone as a project —
-// the shape ListPRCommits/GetPRCommitDiff resolve through localCloneWorkspace.
+// the shape ListPRCommits/GetPRCommitDiff resolve through prCloneWorkspace.
 func prCloneFixture(t *testing.T, app *App) (ref WorkspaceRef, clone string, prSHAs []string) {
 	t.Helper()
 
@@ -63,16 +63,13 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 	}
 }
 
-func TestListPRCommitsWithoutCloneReturnsEmpty(t *testing.T) {
+func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir()) // not a git repo
 
-	commits, err := app.ListPRCommits(noClone, prRef(), "main", "")
-	if err != nil {
-		t.Fatalf("ListPRCommits() error = %v", err)
-	}
-	if commits == nil || len(commits) != 0 {
-		t.Fatalf("expected empty non-nil list without a clone, got %#v", commits)
+	_, err := app.ListPRCommits(noClone, prRef(), "main", "")
+	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
+		t.Fatalf("ListPRCommits() error = %v, want the not-a-repository refusal", err)
 	}
 }
 
@@ -131,7 +128,8 @@ func TestGetPRCommitDiffWithoutCloneErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir())
 
-	if _, err := app.GetPRCommitDiff(noClone, prRef(), strings.Repeat("a", 40), false); err == nil {
-		t.Fatal("expected error without a local clone")
+	_, err := app.GetPRCommitDiff(noClone, prRef(), strings.Repeat("a", 40), false)
+	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
+		t.Fatalf("GetPRCommitDiff() error = %v, want the not-a-repository refusal", err)
 	}
 }

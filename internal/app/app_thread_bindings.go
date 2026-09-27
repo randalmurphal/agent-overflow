@@ -678,60 +678,6 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 	return update.Thread, nil
 }
 
-// CreateThreadFromPR creates a new thread seeded with a PR/MR's metadata +
-// diff as the first user message. Routes through the appropriate forge CLI
-// (`gh` for GitHub, `glab` for GitLab) detected from the `forge` parameter.
-//
-// Parameters:
-//   - project:       "owner/repo" for GitHub, "namespace/.../repo" for GitLab
-//   - number:        PR / MR number
-//   - providerName + model: provider + model for the new thread
-//   - forge:         "github" (default for empty) or "gitlab"
-//
-// If the user has a local clone of the target repo registered in
-// settings.RecentWorkspaces, that path is auto-selected as the workspace.
-// Otherwise the caller is expected to pick a workspace; we still create the
-// thread but WorkspacePath is left empty and the UI can prompt.
-//
-//ao:scope threads:operate
-//ao:route selected
-func (a *App) CreateThreadFromPR(
-	ctx context.Context,
-	project string,
-	number int,
-	providerName string,
-	model string,
-	forge string,
-) (store.Thread, error) {
-	prBucket, prClass := a.callerSettingsScreen(ctx)
-	thread, err := a.threadApplication().CreateFromPR(
-		threadapp.PullRequestOptions{
-			Project:         project,
-			Number:          number,
-			Provider:        providerName,
-			Model:           model,
-			Forge:           forge,
-			CreatedByDevice: creatingDevice(ctx),
-			SettingsBucket:  prBucket,
-			SettingsClass:   string(prClass),
-			// No mode argument on this path, so the seed profile is the
-			// resolved mode — and it defaults to full-access. Creating a
-			// thread that acts without approval gates is the same
-			// authority however the mode arrived.
-			AuthorizeRuntimeMode: func(mode string) error {
-				return a.requireAutonomy(ctx, mode)
-			},
-		},
-		threadPullRequestPort{app: a, bucket: prBucket, class: prClass},
-	)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	profileErr := a.rememberChatModelProfileFields(thread, nil)
-	a.broadcastThreadRow(triage.ThreadActionListed, thread)
-	return thread, profileErr
-}
-
 // RegenerateThreadTitle starts a re-title of an existing thread from its
 // conversation so far. It acknowledges as soon as the run is under way;
 // the outcome arrives on `thread:title_generation`, and the new title

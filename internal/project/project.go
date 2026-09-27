@@ -15,9 +15,9 @@ import (
 )
 
 // EnsureForWorkspace finds or creates a project row for the given
-// workspace path. Used by flows (CreateThreadFromPR, session import,
-// worktree/thread creation) that need a project implicitly before a
-// Thread can be inserted.
+// workspace path. Used by flows (session import, worktree/thread
+// creation) that need a project implicitly before a Thread can be
+// inserted.
 //
 // Lookup precedence:
 //  1. Project whose path exactly matches the MAIN repository root of the

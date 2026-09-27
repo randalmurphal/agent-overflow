@@ -7,12 +7,6 @@
 // the factory in `reviewPane.svelte.ts` owns reactive pane state and calls
 // into this module, never the other way round, which is what keeps the
 // selection resolvers and the diff-source switch testable on their own.
-//
-// The one lookup that is not an argument is the transport's entity index
-// (`onThreadBackend` below), because the pr scope has to name a machine
-// that its zero workspace ref cannot. That index is a plain Map keyed by
-// id, not pane state, so the functions here stay callable from a test with
-// nothing mounted.
 
 import {
   GetBranchBaseDiff,
@@ -33,8 +27,6 @@ import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../t
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
 import { filePatchDisplayRows, type PatchFile } from '../utils/patchFiles';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import { withBackendTarget } from '../transport/backends';
-import { threadBackend } from '../transport/entityIndex';
 import { SvelteSet } from 'svelte/reactivity';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
@@ -43,10 +35,8 @@ import { SvelteSet } from 'svelte/reactivity';
  * - workspace / branch — `GetWorkspaceCurrentDiff` / `GetBranchBaseDiff`.
  * - any selected commit, including in pr scope — `GetCommitDiff` /
  *   `GetPRCommitDiff`.
- * - pr whole-diff — NO. It is a local `git diff --merge-base` when the
- *   thread has a clone and the forge's own diff API when it doesn't, and
- *   the API cannot ignore whitespace at all. A toggle that quietly worked
- *   only for cloned threads is worse than no toggle.
+ * - pr whole-diff — NO. `GetPRDiff` runs `git diff --merge-base` in
+ *   `internal/git`, which takes no `-w`.
  * - edits — NO. Those are persisted tool-call patches replayed verbatim,
  *   never a git recomputation.
  *
@@ -198,28 +188,6 @@ export interface DiffSubject {
   threadId: string | null;
 }
 
-/**
- * Issue one PR-scope call on the THREAD's machine.
- *
- * The pr scope is the only diff source whose workspace ref can be the zero
- * ref (a pr-anchor thread has no local clone), and the `workspace` route
- * reads a machine out of the ref's project id. A zero ref therefore names
- * nobody and resolves home, which sends a second machine's PR straight to
- * the wrong forge credentials and the wrong clone. The thread is the only
- * subject left that still knows where the PR lives, so it is what names the
- * backend.
- *
- * A real ref already routes correctly, and pinning it to the same machine
- * the ref resolves to changes nothing, so this wraps every pr call rather
- * than branching on the ref, and there is no zero-ref special case to
- * forget. `issue` must dispatch exactly one RPC synchronously, the same
- * contract `withBackendTarget` states.
- */
-function onThreadBackend<T>(threadId: string | null, issue: () => T): T {
-  const owner = threadId === null ? undefined : threadBackend(threadId);
-  return owner === undefined ? issue() : withBackendTarget(owner, issue);
-}
-
 export async function loadPatch(
   subject: DiffSubject,
   scope: DiffReviewScope,
@@ -254,19 +222,13 @@ export async function loadPatch(
       const commits = existing
         ? existing.commits
         : baseRef
-          ? (((await onThreadBackend(threadId, () => ListPRCommits(workspace, pr, baseRef, headSHA))) ??
+          ? (((await ListPRCommits(workspace, pr, baseRef, headSHA)) ??
               []) as BranchCommit[])
           : [];
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-      // GetPRDiff takes no ignoreWhitespace: the PR whole-diff can come from
-      // the forge API, which cannot ignore whitespace at all.
       const patchText = commitSHA
-        ? String(
-            (await onThreadBackend(threadId, () =>
-              GetPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace),
-            )) ?? '',
-          )
-        : String((await onThreadBackend(threadId, () => GetPRDiff(workspace, pr, baseRef))) ?? '');
+        ? String((await GetPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace)) ?? '')
+        : String((await GetPRDiff(workspace, pr, baseRef)) ?? '');
       return { patchText, commits, selectedCommitSHA: commitSHA, prHeadSHA: headSHA };
     }
     case 'workspace':

@@ -19,8 +19,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   only the intended disposable device profile.
 - Shared provider frames, pairing flows, and result narrowing belong in the
   relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
-- `forge-helpers.ts` seeds the fake `gh`/`glab` (`HarnessForgeSeed`), reads
-  the recorded calls and opens a PR's review pane through the UI. A forge
+- `forge-helpers.ts` seeds the fake `gh`/`glab` (`HarnessForgeSeed`),
+  publishes a seeded workspace's branch as a PR through a local origin,
+  reads the recorded calls and opens a PR's review pane through the UI. A forge
   call the fake does not answer is added to the fake first:
   [forgefake/AGENTS.md](../internal/harness/forgefake/AGENTS.md).
 - `rigs/` contains manual performance tools outside release gates. Follow

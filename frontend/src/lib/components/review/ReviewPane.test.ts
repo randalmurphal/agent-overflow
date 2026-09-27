@@ -12,9 +12,46 @@ import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
+import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { createThreadPane } from '../../stores/thread.svelte';
 
 function makeCtx(): PanelContext {
   return makeStubPanelContext();
+}
+
+/** The source pane's workspace has PR #5 open, which is how a review pane
+ *  finds its PR. */
+function seedSourcePanePR(): void {
+  const pane = createThreadPane({ paneId: 'source-pane' });
+  pane.replaceThread({
+    id: 'thread-1',
+    title: 'Review',
+    provider: 'claude',
+    workspacePath: '/repo',
+    projectPath: '/repo',
+    model: 'm',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  });
+  registerPaneForTest('source-pane', pane);
+  __seedGitStatusForTest('/repo', {
+    isRepo: true,
+    branch: 'feature',
+    isDefaultBranch: false,
+    hasChanges: false,
+    insertions: 0,
+    deletions: 0,
+    fileCount: 0,
+    hasUpstream: true,
+    aheadCount: 0,
+    behindCount: 0,
+    hasOriginRemote: true,
+    forge: 'github',
+    openPrUrl: 'https://github.com/owner/repo/pull/5',
+    openPrNumber: 5,
+  });
 }
 
 function patch(): string {
@@ -40,9 +77,10 @@ beforeEach(() => {
   resetAppStorageForTest();
   __resetReviewPaneStateForTest();
   resetDiffReviewCommentsForTest();
-  // The mount/reload PR probe reads both; defaults resolve to "no PR".
-  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
+  resetPanesForTest();
   setBindingMock('GetGitStatus', async () => ({}));
+  // Seeding a workspace status runs the shared store's branch reconciliation.
+  setBindingMock('UpdateThreadBranch', async () => []);
   setBindingMock('GetWorkspaceCurrentDiff', async () => patch());
   setBindingMock('GetBranchBaseDiff', async () => '');
   setBindingMock('ListBranchCommits', async () => []);
@@ -442,16 +480,11 @@ describe('<ReviewPane>', () => {
     setBindingMock('GetPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
 
-    const ctx: PanelContext = {
-      ...makeCtx(),
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    };
+    seedSourcePanePR();
+    const ctx = makeCtx();
     const view = render(ReviewPane, { ctx });
 
-    // The PR scope option only appears once the thread's prRef resolves.
+    // The PR scope option only appears once the workspace's open PR resolves.
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
@@ -527,13 +560,8 @@ describe('<ReviewPane>', () => {
         : [],
     );
 
-    const ctx: PanelContext = {
-      ...makeCtx(),
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    };
+    seedSourcePanePR();
+    const ctx = makeCtx();
     const view = render(ReviewPane, { ctx });
 
     await waitFor(() => {
@@ -616,13 +644,8 @@ describe('<ReviewPane>', () => {
         : [],
     );
 
-    const ctx: PanelContext = {
-      ...makeCtx(),
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    };
+    seedSourcePanePR();
+    const ctx = makeCtx();
     const view = render(ReviewPane, { ctx });
 
     await waitFor(() => {
@@ -706,13 +729,8 @@ describe('<ReviewPane>', () => {
     setBindingMock('GetPRDiff', () => new Promise<string>(() => {}));
     setBindingMock('ListPRReviewThreads', async () => []);
 
-    const ctx: PanelContext = {
-      ...makeCtx(),
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    };
+    seedSourcePanePR();
+    const ctx = makeCtx();
     const view = render(ReviewPane, { ctx });
 
     await waitFor(() => {
@@ -761,13 +779,8 @@ describe('<ReviewPane>', () => {
     setBindingMock('GetPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
 
-    const ctx: PanelContext = {
-      ...makeCtx(),
-      thread: {
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    };
+    seedSourcePanePR();
+    const ctx = makeCtx();
     const view = render(ReviewPane, { ctx });
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
@@ -960,16 +973,9 @@ async function renderPRScope() {
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
+  seedSourcePanePR();
   const view = render(ReviewPane, {
-    ctx: {
-      ...makeCtx(),
-      thread: {
-        id: 'thread-1',
-        projectId: 'project-1',
-        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-        workspacePath: '/repo',
-      } as unknown as Thread,
-    },
+    ctx: makeCtx(),
   });
   await waitFor(() => {
     expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();

@@ -10,7 +10,6 @@ import {
   GetEditDiffContextLines,
   GetPRCIJobLog,
   GetPRDetail,
-  GetThread,
   SavePRCIJobLog,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
@@ -23,7 +22,7 @@ import {
 } from './bindings';
 import { openCompanion } from './companionPanes.svelte';
 import { peekGitStatus } from './gitStatusStore.svelte';
-import { NO_WORKSPACE_REF, workspaceKeyForThread } from '../utils/workspaceKey';
+import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
@@ -89,7 +88,6 @@ import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import {
   prKey,
-  prRefFromThread,
   prRefFromUrl,
   prReferenceWire,
   prScopeLabel,
@@ -331,19 +329,16 @@ const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
 
 /**
- * What a review pane is looking at. The four values travel together because
- * they answer different questions and only agree by accident:
+ * What a review pane is looking at. The three values travel together
+ * because they answer different questions and only agree by accident:
  * `identity` keys the registry (a draft placeholder has one without a row),
- * `threadId` is the REAL row and is null until the draft materializes,
- * `workspace` is the checkout every workspace-scoped RPC addresses (the zero
- * ref means "no local clone", which is what a pr-anchor thread has), and
- * `thread` carries the row metadata the initial scope choice reads.
+ * `threadId` is the REAL row and is null until the draft materializes, and
+ * `workspace` is the checkout every workspace-scoped RPC addresses.
  */
 export interface ReviewSubject {
   readonly identity: string;
   readonly threadId: string | null;
   readonly workspace: WorkspaceRef;
-  readonly thread: Thread | null;
 }
 
 /** The one place a review subject is built. Structural in the pane so both
@@ -353,13 +348,12 @@ export function reviewSubjectForPane(pane: {
   thread: Thread | null;
   workspace: WorkspaceRef | null;
 }): ReviewSubject | null {
-  const thread = pane.thread;
-  if (!thread) return null;
+  const workspace = pane.workspace;
+  if (!pane.thread || !workspace) return null;
   return {
     identity: companionSubjectKey(pane),
     threadId: pane.threadId,
-    workspace: pane.workspace ?? NO_WORKSPACE_REF,
-    thread,
+    workspace,
   };
 }
 
@@ -426,25 +420,15 @@ function createReviewPaneState(
   const { identity, threadId, workspace } = subject;
   const backend = threadMachine(threadId ?? '', workspace.projectId);
   function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
-  const initialThread = subject.thread;
   // Scope persistence is keyed on a real row; a draft placeholder has no
   // history to restore and nothing to write back.
   const persisted = threadId === null ? null : readPersistedScope(threadId);
-  const initialPRRef = prRefFromThread(initialThread ?? {});
-  // The thread row's own PR reference — set when the thread was created FROM
-  // a pull request, and never rewritten afterwards, so resolving it once is
-  // honest memoization. `undefined` means "not looked up yet".
-  let threadPRRef: PRRef | null | undefined = $state(
-    initialThread === null ? undefined : initialPRRef,
-  );
-  // Derived, not probed-once: the workspace fallback reads the live
-  // git-status store, so the PR becomes selectable the moment status
-  // lands (or a PR opens while the pane sits open) instead of only when
-  // something re-enters pr scope.
-  const prRef: PRRef | null = $derived(threadPRRef ?? workspacePRRef());
-  let scope: ReviewScope = $state(
-    initialPRRef && workspace.workspacePath === '' ? 'pr' : (persisted?.scope ?? 'workspace'),
-  );
+  // Derived, not probed-once: the PR is the workspace's, read from the live
+  // git-status store, so it becomes selectable the moment status lands (or a
+  // PR opens while the pane sits open) instead of only when something
+  // re-enters pr scope.
+  const prRef: PRRef | null = $derived(workspacePRRef());
+  let scope: ReviewScope = $state(persisted?.scope ?? 'workspace');
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
   // computed FOR. The PR's live head lives in the shared store; staleness
@@ -785,33 +769,6 @@ function createReviewPaneState(
     );
   }
 
-  async function ensurePRRef(): Promise<PRRef | null> {
-    if (threadPRRef === undefined) {
-      // No row to ask: a draft placeholder's PR, if any, is the workspace's.
-      if (threadId === null) threadPRRef = null;
-      else {
-        try {
-          threadPRRef = prRefFromThread((await GetThread(threadId)) as Thread);
-        } catch (err) {
-          error = userFacingError(err);
-          throw err;
-        }
-      }
-    }
-    return prRef;
-  }
-
-  // `prRef` derives from the git-status store live, but the thread-row
-  // half still takes one GetThread round trip to memoize — kick it at
-  // mount so a thread created FROM a PR surfaces that PR without waiting
-  // for pr-scope entry.
-  function probePRRef(): void {
-    void ensurePRRef().catch(() => {
-      // Not swallowed: ensurePRRef records a thread-lookup failure in
-      // `error` before throwing, and no-PR resolves to null, not a throw.
-    });
-  }
-
   // Set by dispose(); a load that resolves after disposal must not write
   // back into a dead state — or hold a PR reference nobody will release.
   let disposed = false;
@@ -898,14 +855,6 @@ function createReviewPaneState(
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
     const navigation = ++navigationSeq;
     const scopeChanged = nextScope !== scope;
-    if (nextScope === 'pr') {
-      // Resolve before entry so the load below can hold the PR. A null
-      // ref still ENTERS the scope: the load surfaces the user-facing
-      // error, and the ref watcher retries the moment one resolves — a
-      // badge click can race the git-status fetch by design.
-      await ensurePRRef();
-    }
-    if (navigation !== navigationSeq || disposed) return;
     const nextBaseBranch = nextScope === 'branch'
       ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(workspace))
       : null;
@@ -1002,18 +951,6 @@ function createReviewPaneState(
     loading = true;
     error = null;
     try {
-      if (!selectionOnly) {
-        if (scope === 'pr' && !prRef) {
-          // Persisted 'pr' scope restores before the thread/git status is at
-          // hand; resolve the reference here instead of failing the load.
-          await ensurePRRef();
-        } else {
-          // Fire-and-forget: a PR opened after this pane mounted becomes
-          // selectable on the next reload without blocking the diff load.
-          probePRRef();
-        }
-        if (seq !== loadSeq || disposed) return;
-      }
       // The diff needs the PR detail's base ref (a local three-dot diff is
       // the only source without gh/glab's 20k-line cap), so the shared
       // snapshot is awaited before the patch call. Attaching is what

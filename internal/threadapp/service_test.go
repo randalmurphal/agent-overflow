@@ -92,17 +92,6 @@ func (r *recentRecorder) AddRecentWorkspace(bucket, class, path string) {
 	r.paths = append(r.paths, path)
 }
 
-type pullRequestPort struct {
-	workspace string
-	project   store.Project
-}
-
-func (p pullRequestPort) ResolveWorkspace(gitops.PRReference) string { return p.workspace }
-func (p pullRequestPort) Load(string, gitops.PRReference) (gitops.PRMetadata, string, error) {
-	return gitops.PRMetadata{Title: "Fix the thing", Body: "Details"}, "diff --git a/a b/a", nil
-}
-func (p pullRequestPort) EnsureProject(string) (store.Project, error) { return p.project, nil }
-
 func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	t.Helper()
 	database, err := store.New(":memory:")
@@ -213,44 +202,6 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 	}
 	if len(setup.started) != 0 {
 		t.Fatalf("setup ran for a worktree that was never cut: %v", setup.started)
-	}
-}
-
-func TestCreateFromPROwnsRowAndFirstItemSaga(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	ids := []string{"pr-thread", "pr-item"}
-	service.deps.NewID = func() string {
-		id := ids[0]
-		ids = ids[1:]
-		return id
-	}
-	project, err := database.GetProject("project")
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	thread, err := service.CreateFromPR(
-		PullRequestOptions{
-			Project:  "owner/repo",
-			Number:   42,
-			Provider: "claude",
-			Model:    "claude-sonnet-4-6",
-			Forge:    "github",
-		},
-		pullRequestPort{workspace: "/repo", project: project},
-	)
-	if err != nil {
-		t.Fatalf("CreateFromPR: %v", err)
-	}
-	if thread.Title != "PR #42: Fix the thing" || thread.PRRef == "" || thread.WorkspacePath != "/repo" {
-		t.Fatalf("thread = %+v", thread)
-	}
-	item, found, err := database.GetThreadItem(thread.ID, "pr-item")
-	if err != nil || !found || item.Kind != "user_text" || item.Role != "user" {
-		t.Fatalf("first item = %+v, %v, %v", item, found, err)
-	}
-	bitbucket := PullRequestOptions{Project: "owner/repo", Number: 1, Provider: "claude", Forge: "bitbucket"}
-	if _, err := service.CreateFromPR(bitbucket, pullRequestPort{}); err == nil {
-		t.Fatal("CreateFromPR(bitbucket) error = nil")
 	}
 }
 

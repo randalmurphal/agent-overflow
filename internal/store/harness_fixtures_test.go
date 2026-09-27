@@ -201,12 +201,14 @@ func schemaObjects(t *testing.T, db *sql.DB) []schemaObject {
 // downgradeSchema gives db the schema of ref, a database the chain migrated
 // through version, and the migration record and deferred watermark of that
 // version. Rows stay as they are. Indexes, triggers and views may differ in
-// shape. A table may differ by columns a later migration added, which are
-// dropped with their values, and then only in its declaration (a rebuild
-// migration's constraints): it is rebuilt to ref's declaration with its
-// rows, which must satisfy it (rebuildTableAs). A table with other columns
-// is a failure, and a table ref lacks is dropped. It fails unless the two
-// schemas end up identical.
+// shape. A table may differ by trailing columns a later migration added,
+// which are dropped with their values, by columns a later migration
+// dropped, and in its declaration (a rebuild migration's constraints): it
+// is rebuilt to ref's declaration with its rows, which must satisfy it, and
+// a dropped column comes back with its declared default (rebuildTableAs).
+// A table whose remaining columns are not in ref's order is a failure, and
+// a table ref lacks is dropped. It fails unless the two schemas end up
+// identical.
 func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 	t.Helper()
 	want := map[string]schemaObject{}
@@ -233,7 +235,7 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 				drop(o)
 			case w.SQL != o.SQL && kind == "table":
 				if got := dropAddedColumns(t, db, ref, o.Name); got != w.SQL {
-					if !slices.Equal(orderedColumnsForTest(t, db, o.Name), orderedColumnsForTest(t, ref, o.Name)) {
+					if !isSubsequence(orderedColumnsForTest(t, db, o.Name), orderedColumnsForTest(t, ref, o.Name)) {
 						t.Fatalf("table %s differs from v%d's; the fixture cannot be downgraded:\n%s\nwant:\n%s", o.Name, version, got, w.SQL)
 					}
 					rebuildTableAs(t, db, o.Name, w.SQL)
@@ -321,12 +323,17 @@ func rebuildTableAs(t *testing.T, db *sql.DB, table, create string) {
 }
 
 // dropAddedColumns drops the columns of table that ref's table lacks, when
-// ref's columns are the leading ones, and returns the table's SQL after.
+// they trail every column ref's has, as a later ADD COLUMN leaves them, and
+// returns the table's SQL after.
 func dropAddedColumns(t *testing.T, db, ref *sql.DB, table string) string {
 	t.Helper()
 	have, want := orderedColumnsForTest(t, db, table), orderedColumnsForTest(t, ref, table)
-	if len(have) > len(want) && slices.Equal(have[:len(want)], want) {
-		for _, name := range have[len(want):] {
+	kept := len(have)
+	for kept > 0 && !slices.Contains(want, have[kept-1]) {
+		kept--
+	}
+	if !slices.ContainsFunc(have[:kept], func(name string) bool { return !slices.Contains(want, name) }) {
+		for _, name := range have[kept:] {
 			mustExec(t, db, fmt.Sprintf(`ALTER TABLE "%s" DROP COLUMN "%s"`, table, name))
 		}
 	}
@@ -335,6 +342,53 @@ func dropAddedColumns(t *testing.T, db, ref *sql.DB, table string) string {
 		t.Fatal(err)
 	}
 	return sqlText
+}
+
+func TestDowngradeRestoresADroppedColumnButRefusesARenamedOne(t *testing.T) {
+	open := func(create string) *sql.DB {
+		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "downgrade.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() { _ = db.Close() })
+		mustExec(t, db, create)
+		return db
+	}
+	const declared = `CREATE TABLE x (a TEXT, b TEXT NOT NULL DEFAULT 'kept', c TEXT)`
+	ref := open(declared)
+
+	// b was dropped and d added since ref's version.
+	dropped := open(`CREATE TABLE x (a TEXT, c TEXT, d TEXT)`)
+	mustExec(t, dropped, `INSERT INTO x (a, c, d) VALUES ('1', '3', '4')`)
+	dropAddedColumns(t, dropped, ref, "x")
+	if got := orderedColumnsForTest(t, dropped, "x"); !isSubsequence(got, orderedColumnsForTest(t, ref, "x")) {
+		t.Fatalf("columns after dropping the added one = %v", got)
+	}
+	rebuildTableAs(t, dropped, "x", declared)
+	var a, b, c string
+	if err := dropped.QueryRow(`SELECT a, b, c FROM x`).Scan(&a, &b, &c); err != nil || a != "1" || b != "kept" || c != "3" {
+		t.Fatalf("rebuilt row = %q %q %q, %v", a, b, c, err)
+	}
+
+	// b became b2: its values must not be replaced by b's default.
+	renamed := open(`CREATE TABLE x (a TEXT, b2 TEXT, c TEXT, d TEXT)`)
+	dropAddedColumns(t, renamed, ref, "x")
+	got := orderedColumnsForTest(t, renamed, "x")
+	if !slices.Equal(got, []string{"a", "b2", "c", "d"}) || isSubsequence(got, orderedColumnsForTest(t, ref, "x")) {
+		t.Fatalf("a renamed column was accepted: %v", got)
+	}
+}
+
+// isSubsequence reports whether sub is seq with zero or more elements removed.
+func isSubsequence(sub, seq []string) bool {
+	i := 0
+	for _, name := range seq {
+		if i < len(sub) && sub[i] == name {
+			i++
+		}
+	}
+	return i == len(sub)
 }
 
 func countRowsDB(t *testing.T, db *sql.DB, query string, args ...any) int {

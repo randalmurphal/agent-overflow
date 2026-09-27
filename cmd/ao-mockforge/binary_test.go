@@ -150,16 +150,12 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, githubFixture())
 	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
 
-	meta, err := r.core.ForgeByID("github").ViewPR("", "acme/widgets", 7)
-	if err != nil || meta.Title != "Add widgets" || meta.HeadRefName != "feat/widgets" || meta.URL != "https://github.com/acme/widgets/pull/7" {
-		t.Fatalf("ViewPR = %+v, %v", meta, err)
-	}
-
 	detail, err := r.core.GetPRDetail("", ref)
 	if err != nil {
 		t.Fatalf("GetPRDetail: %v", err)
 	}
-	if !detail.ViewerIsAuthor || !detail.Draft || detail.State != "open" || detail.HeadSHA != strings.Repeat("a", 40) ||
+	if detail.Title != "Add widgets" || detail.URL != "https://github.com/acme/widgets/pull/7" || detail.HeadRefName != "feat/widgets" ||
+		!detail.ViewerIsAuthor || !detail.Draft || detail.State != "open" || detail.HeadSHA != strings.Repeat("a", 40) ||
 		detail.Additions != 2 || detail.Deletions != 1 || detail.ChangedFiles != 1 || detail.Mergeability != gitops.MergeabilityConflicts ||
 		detail.ReviewDecision != "CHANGES_REQUESTED" || len(detail.LatestReviews) != 1 || detail.LatestReviews[0].Body != "fix" ||
 		detail.Checks.Total != 3 || detail.Checks.Success != 1 || detail.Checks.Failure != 1 || detail.Checks.Pending != 1 {
@@ -188,10 +184,6 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if last := threads[len(threads)-1]; last.Path != "" || last.Comments[0].Body != "conversation 54" {
 		t.Fatalf("last conversation comment = %+v", last)
-	}
-
-	if got, err := r.core.GetPRDiff("", ref); err != nil || got != diff {
-		t.Fatalf("GetPRDiff = %q, %v", got, err)
 	}
 
 	pipeline, err := r.core.ListPRCIJobs("", ref)
@@ -263,9 +255,6 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("last note = %+v", last)
 	}
 
-	if got, err := r.core.GetPRDiff("", ref); err != nil || got != diff {
-		t.Fatalf("GetPRDiff = %q, %v", got, err)
-	}
 	pipeline, err := r.core.ListPRCIJobs("", ref)
 	if err != nil {
 		t.Fatalf("ListPRCIJobs: %v", err)

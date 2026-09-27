@@ -136,26 +136,6 @@ func TestValidateProjectSegmentRejectsColon(t *testing.T) {
 	}
 }
 
-func TestBuildPRAnchor(t *testing.T) {
-	cases := []struct {
-		forge, namespace, repo string
-		want                   string
-	}{
-		{"github", "owner", "repo", "pr://github/owner/repo"},
-		{"gitlab", "group/sub", "repo", "pr://gitlab/group/sub/repo"},
-		{"gitlab", "group/sub1/sub2", "repo", "pr://gitlab/group/sub1/sub2/repo"},
-	}
-	for _, tc := range cases {
-		got := BuildPRAnchor(tc.forge, tc.namespace, tc.repo)
-		if got != tc.want {
-			t.Errorf("BuildPRAnchor(%q, %q, %q) = %q, want %q", tc.forge, tc.namespace, tc.repo, got, tc.want)
-		}
-		if !strings.HasPrefix(got, PRAnchorScheme) {
-			t.Errorf("anchor missing PRAnchorScheme prefix: %q", got)
-		}
-	}
-}
-
 func TestNormalizePRState(t *testing.T) {
 	cases := []struct {
 		input string
@@ -199,11 +179,8 @@ func TestNullForgeReturnsErrUnsupported(t *testing.T) {
 	if _, err := f.CreatePR("", "title", "body", "", false); !errors.Is(err, ErrUnsupportedForge) {
 		t.Errorf("CreatePR err = %v, want ErrUnsupportedForge", err)
 	}
-	if _, err := f.ViewPR("", "owner/repo", 1); !errors.Is(err, ErrUnsupportedForge) {
-		t.Errorf("ViewPR err = %v, want ErrUnsupportedForge", err)
-	}
-	if _, err := f.Diff("", "owner/repo", 1); !errors.Is(err, ErrUnsupportedForge) {
-		t.Errorf("Diff err = %v, want ErrUnsupportedForge", err)
+	if _, err := f.GetPRDetail("", "owner/repo", 1); !errors.Is(err, ErrUnsupportedForge) {
+		t.Errorf("GetPRDetail err = %v, want ErrUnsupportedForge", err)
 	}
 }
 

@@ -107,7 +107,6 @@ export interface BuiltinCommandHooks {
   // from panes.svelte#openThreadInNewPane, which opens an existing
   // thread in a new pane).
   openThreadFormInNewPane?: () => void;
-  openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
@@ -216,7 +215,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
     openThreadForm,
     openThreadFormInNewPane,
-    openThreadFromPR,
     openShipChanges,
     requestDiscussion,
     focusThreadSearch,
@@ -360,15 +358,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '▥',
     when: 'hasActiveThread && !anyModalOpen && !terminalFocus',
     editableReachable: true,
-    run: (ctx) => ctx.pane?.toggleReviewPane(),
-  });
-
-  registerCommand({
-    id: 'thread.new.fromPR',
-    label: 'Thread: New from Pull/Merge Request',
-    icon: '⇠',
-    when: 'threadsOperate',
-    run: () => openThreadFromPR(),
+    run: (ctx) => {
+      if (ctx.pane?.showReviewPane) ctx.pane.toggleReviewPane();
+      else withWorkspace(ctx, (_workspace, pane) => pane.toggleReviewPane());
+    },
   });
 
   registerCommand({

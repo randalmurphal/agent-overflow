@@ -17,7 +17,6 @@ const SUBJECT = {
   identity: expect.any(String),
   threadId: 'thread-1',
   workspace: { projectId: 'project-1', workspacePath: '/repo' },
-  thread: THREAD,
 };
 
 function makeFakePane(): ThreadPane {

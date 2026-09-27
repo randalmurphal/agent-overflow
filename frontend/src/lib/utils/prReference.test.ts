@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   parsePRReference,
   prKey,
-  prRefFromThread,
   prRefFromUrl,
   prScopeLabel,
   prSourceKey,
@@ -224,13 +223,6 @@ describe('review-pane PRRef helpers', () => {
     expect(prRefFromUrl('github', 'not a url', 1)).toBeNull();
     expect(prRefFromUrl('github', 'https://github.com/o/r/issues/1', 1)).toBeNull();
     expect(prRefFromUrl('gitlab', 'https://gitlab.com/g/r/-/merge_requests/2', 1)).toBeNull();
-  });
-
-  it('prRefFromThread parses persisted Go JSON and rejects invalid JSON', () => {
-    expect(prRefFromThread({
-      prRef: JSON.stringify({ Forge: 'gitlab', Namespace: 'group/sub', Repo: 'repo', Number: 12 }),
-    })).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 12 });
-    expect(prRefFromThread({ prRef: '{nope' })).toBeNull();
   });
 
   it('prScopeLabel adapts by forge', () => {

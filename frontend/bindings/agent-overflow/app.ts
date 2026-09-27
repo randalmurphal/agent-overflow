@@ -774,28 +774,6 @@ export function CreateThread(opts: app$0.CreateThreadOptions): $CancellablePromi
 }
 
 /**
- * CreateThreadFromPR creates a new thread seeded with a PR/MR's metadata +
- * diff as the first user message. Routes through the appropriate forge CLI
- * (`gh` for GitHub, `glab` for GitLab) detected from the `forge` parameter.
- * 
- * Parameters:
- *   - project:       "owner/repo" for GitHub, "namespace/.../repo" for GitLab
- *   - number:        PR / MR number
- *   - providerName + model: provider + model for the new thread
- *   - forge:         "github" (default for empty) or "gitlab"
- * 
- * If the user has a local clone of the target repo registered in
- * settings.RecentWorkspaces, that path is auto-selected as the workspace.
- * Otherwise the caller is expected to pick a workspace; we still create the
- * thread but WorkspacePath is left empty and the UI can prompt.
- */
-export function CreateThreadFromPR(project: string, $number: number, providerName: string, model: string, forge: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(1716017387, project, $number, providerName, model, forge).then(($result: any) => {
-        return $$createType7($result);
-    });
-}
-
-/**
  * CreateThreadGroup adds an empty group to a project, or returns the one
  * that name already names there: a group name identifies a group inside its
  * project, and the agent tools resolve by name, so a second row of the same
@@ -1633,9 +1611,7 @@ export function GetPRCIJobs(pr: git$0.PRReference): $CancellablePromise<git$0.CI
 
 /**
  * GetPRCommitDiff returns the unified patch a single PR commit
- * introduced (first-parent diff), read from the referenced local clone.
- * Requires a clone — the selector that feeds it only renders when
- * ListPRCommits found one.
+ * introduced (first-parent diff), read from the referenced clone.
  */
 export function GetPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, sha: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
     return $Call.ByID(1737292419, ws, pr, sha, ignoreWhitespace);
@@ -1647,6 +1623,11 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
     });
 }
 
+/**
+ * GetPRDiff returns the PR's three-dot diff (merge base of the base branch
+ * to the PR head), computed in the referenced clone after fetching the PR
+ * head and base branch.
+ */
 export function GetPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string): $CancellablePromise<string> {
     return $Call.ByID(1867413234, ws, pr, baseRef);
 }
@@ -2813,9 +2794,7 @@ export function ListOwnDevices(): $CancellablePromise<app$0.OwnDeviceList> {
 
 /**
  * ListPRCommits returns the commits a PR carries (`origin/base..head`,
- * newest first), computed from the referenced local clone. Empty — not
- * an error — for a zero ref (a pr-anchor thread with no checkout): the
- * frontend hides the commit selector instead of failing the PR load.
+ * newest first), computed from the referenced clone.
  * 
  * headSHA is an optimization contract, not a filter: when the caller
  * already knows the PR head OID (GetPRDiff fetched it moments earlier)

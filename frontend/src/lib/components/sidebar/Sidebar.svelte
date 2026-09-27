@@ -25,36 +25,19 @@
   import WorkflowsFooter from './WorkflowsFooter.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
-  import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
 
   interface Props {
     pane: ThreadPane | null;
     onOpenSettings?: () => void;
     /** Palette/command hook: receives a focus callback for the search input. */
     registerFocusSearch?: (focus: () => void) => void;
-    /** Palette/command hook: receives a callback that opens the
-     * "new thread from PR" dialog. Kept even though no visible button
-     * triggers it from the sidebar — the command palette owns the entry
-     * point in v13. */
-    registerOpenFromPR?: (openFromPR: () => void) => void;
   }
 
   let {
     pane,
     onOpenSettings,
     registerFocusSearch,
-    registerOpenFromPR,
   }: Props = $props();
-
-  let showFromPR = $state(false);
-
-  $effect(() => {
-    if (registerOpenFromPR) {
-      registerOpenFromPR(() => {
-        showFromPR = true;
-      });
-    }
-  });
 
   // Kick off the projects fetch on mount. Callers refresh threads from
   // App.svelte, so the sidebar only needs to own project loading.
@@ -139,11 +122,3 @@
     {/if}
   </aside>
 {/if}
-
-<ThreadFromPRDialog
-  open={showFromPR}
-  pane={pane ?? undefined}
-  onClose={() => {
-    showFromPR = false;
-  }}
-/>

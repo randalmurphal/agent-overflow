@@ -1726,6 +1726,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: summaryOnlyDiffIndexMigrationVersion, Name: "summary_only_diff_index", SQL: summaryOnlyDiffIndexV135SQL},
 	{Version: topLevelTimelineIndexMigrationVersion, Name: "top_level_timeline_index", SQL: topLevelTimelineIndexV136SQL},
 	{Version: newestChunkRefsIndexMigrationVersion, Name: "newest_chunk_refs_index", SQL: newestChunkRefsIndexV137SQL},
+	{Version: dropThreadPRRefMigrationVersion, Name: "drop_thread_pr_ref", SQL: dropThreadPRRefV138SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

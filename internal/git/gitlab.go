@@ -198,38 +198,6 @@ func gitLabDiscussionNotesEndpoint(project string, number int, discussionID stri
 	return gitLabDiscussionEndpoint(project, number, discussionID) + "/notes"
 }
 
-// ViewPR fetches MR metadata via raw REST. glab 1.36.0 has no JSON
-// output mode for `mr view`, but `glab api` exists across the supported
-// range and returns the full MR shape.
-func (f *gitlabForge) ViewPR(cwd, project string, number int) (PRMetadata, error) {
-	if strings.TrimSpace(project) == "" {
-		return PRMetadata{}, errors.New("project (namespace/repo) is required")
-	}
-	if number <= 0 {
-		return PRMetadata{}, fmt.Errorf("MR number must be positive, got %d", number)
-	}
-	result, err := f.core.runBinary("glab", cwd, "api", gitLabMREndpoint(project, number))
-	if err != nil {
-		return PRMetadata{}, normalizeGitLabCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return PRMetadata{}, gitlabCommandFailure("glab api merge request view failed", result)
-	}
-	detail, err := parseGitLabPRDetail(result.stdout, nil)
-	if err != nil {
-		return PRMetadata{}, fmt.Errorf("glab mr view returned malformed JSON: %w", err)
-	}
-	return PRMetadata{
-		Title:       detail.Title,
-		Body:        detail.Body,
-		HeadRefName: detail.HeadRefName,
-		BaseRefName: detail.BaseRefName,
-		URL:         detail.URL,
-		AuthorLogin: detail.AuthorLogin,
-		State:       detail.State,
-	}, nil
-}
-
 func (f *gitlabForge) GetPRDetail(cwd, project string, number int) (PRDetail, error) {
 	if strings.TrimSpace(project) == "" {
 		return PRDetail{}, errors.New("project (namespace/repo) is required")
@@ -396,31 +364,6 @@ func normalizeGitLabMergeability(hasConflicts bool, detailed string) string {
 	default:
 		return MergeabilityClean
 	}
-}
-
-// Diff returns the unified diff for an MR via `glab mr diff -R <project>`.
-func (f *gitlabForge) Diff(cwd, project string, number int) (string, error) {
-	if strings.TrimSpace(project) == "" {
-		return "", errors.New("project (namespace/repo) is required")
-	}
-	if number <= 0 {
-		return "", fmt.Errorf("MR number must be positive, got %d", number)
-	}
-	result, err := f.core.runBinaryWithLimit(
-		"glab",
-		cwd,
-		maxPRDiffBytes,
-		"mr", "diff",
-		strconv.Itoa(number),
-		"-R", project,
-	)
-	if err != nil {
-		return "", normalizeGitLabCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return "", fmt.Errorf("glab mr diff failed: %s", commandOutputMessage(result.stdout, result.stderr))
-	}
-	return result.stdout, nil
 }
 
 func (f *gitlabForge) ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error) {

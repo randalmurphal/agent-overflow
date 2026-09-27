@@ -1367,17 +1367,20 @@ greppable evidence.
 
 ## Recipes
 
-**Review pane against a merge request, zero network.** A pr-anchor thread
-(Start Thread From Pull/Merge Request with a seeded `HarnessForgeSeed`
-PR) needs nothing else. A checkout-backed PR scope also fetches the PR
-head: give the workspace a loopback dumb-HTTP origin (a bare repo with
-`git update-server-info` and a `refs/merge-requests/<n>/head` ref, served
-as static files on 127.0.0.1), set `gitlabSelfHostedHosts: ["127.0.0.1"]`,
-and seed the MR with `host: "127.0.0.1"`.
-`e2e/tests/compact-forge-image-menu.spec.ts` is the worked example. `git
-daemon` is not installed on AlmaLinux, and an `insteadOf` rewrite cannot
-hide a local path from forge detection (`remote get-url` applies
-rewrites).
+**Review pane against a pull or merge request, zero network.** The PR
+scope reads a checkout whose branch has an open PR and fetches the PR
+head from `origin`. `publishPullRequest` (`e2e/tests/forge-helpers.ts`)
+publishes a seeded workspace's branch as a GitHub PR or GitLab MR: the
+origin is `git://github.com/<project>.git` or `git://gitlab.com/...`, so
+forge detection sees the forge's own host, and the workspace's
+`core.gitProxy` answers every connection from a bare repository under the
+harness data root, so git opens no socket. It seeds the fake forge before
+adding the origin because git status caches a branch's PR lookup by
+workspace path and branch for 30 seconds; give each case its own project
+so it does not read an earlier case's lookup.
+`e2e/tests/forge-image-menu.spec.ts` is the worked example. An
+`insteadOf` rewrite cannot replace the proxy: `remote get-url` applies
+rewrites, so forge detection would see the local path.
 
 ## e2e/ (Playwright)
 

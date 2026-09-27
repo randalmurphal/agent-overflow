@@ -93,7 +93,7 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 	}
 	result, err := tx.Exec(`UPDATE threads
 		    SET mode = ?, deleting = 0, project_id = NULL, workspace_path = '', worktree_path = NULL,
-		        branch = NULL, pr_ref = '', session_ref = NULL, pending_fork_session_ref = NULL,
+		        branch = NULL, session_ref = NULL, pending_fork_session_ref = NULL,
 		        pending_fork_resume_at = '', fork_preparing = 0, discussion_id = NULL,
 		        parent_thread_id = NULL, forked_from_thread_id = NULL, pinned_at = NULL,
 		        pin_group = NULL, group_id = NULL, archived = 0, live_todo = '',

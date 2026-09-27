@@ -1,9 +1,13 @@
 // The fake forge from a spec: seed the pull or merge requests `gh` and
-// `glab` answer from, read back what the app asked them, and reach a PR's
-// review pane the way a user does. The fixture and invocation shapes are
-// internal/harness/forgefake's (fixture.go, engine.go); its AGENTS.md lists
-// which invocations have handlers.
+// `glab` answer from, publish a seeded workspace's branch as one, read back
+// what the app asked the CLIs, and reach a PR's review pane the way a user
+// does. The fixture and invocation shapes are internal/harness/forgefake's
+// (fixture.go, engine.go); its AGENTS.md lists which invocations have
+// handlers.
 
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
@@ -77,32 +81,76 @@ export async function expectEveryForgeCallHandled(harness: HarnessApp): Promise<
   ).toEqual([]);
 }
 
-/** Run one command palette command by its label. */
-export async function runPaletteCommand(page: Page, label: string): Promise<void> {
-  const input = page.getByTestId('command-palette-input');
-  // A chord pressed while the page is still installing its keybindings is
-  // dropped, so it is repeated until the palette answers.
-  await expect(async () => {
-    if (!(await input.isVisible())) await page.keyboard.press('ControlOrMeta+Shift+K');
-    await expect(input).toBeVisible({ timeout: 2_000 });
-  }).toPass({ timeout: 15_000 });
-  await input.fill(label);
-  await page.getByRole('listbox', { name: 'Commands' }).getByRole('option').filter({ hasText: label }).click();
+const FORGE_HOST = { github: 'github.com', gitlab: 'gitlab.com' } as const;
+
+// Where each forge publishes a pull request's head.
+const PULL_HEAD_REF = {
+  github: (number: number) => `refs/pull/${number}/head`,
+  gitlab: (number: number) => `refs/merge-requests/${number}/head`,
+} as const;
+
+// git runs this in place of a git:// connection (`core.gitProxy`, argv
+// `host port`). It reads the daemon request pkt-line, whose first field is
+// `git-upload-pack <path>` and whose extra fields may ask for protocol v2,
+// and answers it from the bare repository at that path under the root.
+function gitProxyScript(root: string): string {
+  return `#!/bin/sh
+len=$(dd bs=1 count=4 2>/dev/null)
+request=$(dd bs=1 count=$((0x$len - 4)) 2>/dev/null | tr '\\0' '\\n')
+repo=$(printf '%s\\n' "$request" | sed -n '1s/^git-upload-pack //p')
+case "$request" in *version=2*) GIT_PROTOCOL=version=2; export GIT_PROTOCOL ;; esac
+exec git upload-pack --strict '${root}'"$repo"
+`;
 }
 
 /**
- * Start a thread from `url` through the palette and the Start Thread From
- * Pull/Merge Request dialog, then open its review pane. Answers the
- * review pane section.
+ * Publish the seeded `workspace` as `repo`'s first pull request and seed
+ * the fake forge with `repo`. The workspace gets a `feature` branch one
+ * commit ahead of `main` (the fixture's default head and base refs), and
+ * an origin that publishes it the way the forge does. The origin URL is
+ * `git://<forge host>/<project>.git`, so forge detection sees the forge's
+ * own host, and the workspace's `core.gitProxy` answers every connection
+ * from a bare repository under the harness data root: git opens no socket.
+ * The forge is seeded before the origin is added because the app looks
+ * the branch's PR up as soon as the workspace has a forge origin, and
+ * caches a miss. Git runs with the harness home, never the developer's.
  */
-export async function openPullRequestReview(page: Page, url: string) {
-  await runPaletteCommand(page, 'Thread: New from Pull/Merge Request');
-  const dialog = page.getByTestId('thread-from-pr-dialog');
-  await page.getByTestId('thread-from-pr-url').fill(url);
-  await page.getByTestId('thread-from-pr-provider-claude').click();
-  await page.getByTestId('thread-from-pr-submit').click();
-  await expect(dialog).toHaveCount(0);
-  await runPaletteCommand(page, 'Toggle review pane');
+export async function publishPullRequest(harness: HarnessApp, workspace: string, repo: ForgeRepo): Promise<void> {
+  const [pull, ...rest] = repo.pulls ?? [];
+  if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
+  const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
+  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const proxy = path.join(root, 'git-proxy.sh');
+  const bare = path.join(root, `${repo.project}.git`);
+  await mkdir(bare, { recursive: true });
+  await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
+  git(bare, 'init', '--bare', '--quiet');
+
+  const baseSha = git(workspace, 'rev-parse', 'HEAD');
+  git(workspace, 'checkout', '--quiet', '-b', 'feature');
+  await writeFile(path.join(workspace, 'feature.md'), 'Feature work.\n');
+  git(workspace, 'add', 'feature.md');
+  git(workspace, 'commit', '--quiet', '-m', 'feature work');
+  const headSha = git(workspace, 'rev-parse', 'HEAD');
+  git(workspace, 'push', '--quiet', bare, 'main', 'feature');
+  git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);
+
+  await seedForge(harness, [{ ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha }, ...rest] }]);
+  git(workspace, 'config', 'core.gitProxy', proxy);
+  git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);
+}
+
+/**
+ * Open the thread titled `title` and its review pane on the PR scope
+ * through the chat header's PR badge, which appears once git status has
+ * looked the branch's PR up. Answers the review pane section.
+ */
+export async function openPullRequestReview(page: Page, title: string) {
+  await page.getByTestId('thread-row').filter({ hasText: title }).click();
+  const badge = page.getByTestId('chat-header-pr-badge');
+  await expect(badge).toBeVisible({ timeout: 30_000 });
+  await badge.click();
   const review = page.locator('section[data-pane-kind="review"]');
   await expect(review.getByTestId('review-pr-header')).toBeVisible();
   return review;

@@ -25,7 +25,6 @@ var githubPullFields = map[string]func(r *Repo, p *Pull) any{
 	"headRefName":      func(_ *Repo, p *Pull) any { return p.HeadRef },
 	"baseRefName":      func(_ *Repo, p *Pull) any { return p.BaseRef },
 	"headRefOid":       func(_ *Repo, p *Pull) any { return p.HeadSHA },
-	"files":            func(_ *Repo, p *Pull) any { return diffFiles(p.Diff) },
 	"additions":        func(_ *Repo, p *Pull) any { return diffTotals(p.Diff).additions },
 	"deletions":        func(_ *Repo, p *Pull) any { return diffTotals(p.Diff).deletions },
 	"changedFiles":     func(_ *Repo, p *Pull) any { return len(diffFiles(p.Diff)) },
@@ -102,14 +101,6 @@ func ghPRView(e *Engine, c *call) response {
 		return unhandled("%v", err)
 	}
 	return jsonResponse(out)
-}
-
-func ghPRDiff(e *Engine, c *call) response {
-	_, p, fail, ok := e.ghRepoPull(c)
-	if !ok {
-		return fail
-	}
-	return response{stdout: []byte(p.Diff)}
 }
 
 // ghPRList answers the two lists the app makes: the open PR for a head
@@ -567,11 +558,7 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // diffFile is one file's line counts in a unified diff.
-type diffFile struct {
-	Path      string `json:"path"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-}
+type diffFile struct{ Additions, Deletions int }
 
 type diffCounts struct{ additions, deletions int }
 
@@ -584,15 +571,10 @@ func diffFiles(diff string) []diffFile {
 		case strings.HasPrefix(line, "diff --git "):
 			out = append(out, diffFile{})
 			current = &out[len(out)-1]
-			if _, b, ok := strings.Cut(line, " b/"); ok {
-				current.Path = b
-			}
 			inHunk = false
 		case current == nil:
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
-		case !inHunk && strings.HasPrefix(line, "+++ b/"):
-			current.Path = strings.TrimPrefix(line, "+++ b/")
 		case inHunk && strings.HasPrefix(line, "+"):
 			current.Additions++
 		case inHunk && strings.HasPrefix(line, "-"):

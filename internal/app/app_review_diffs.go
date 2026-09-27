@@ -240,20 +240,11 @@ func (a *App) GetEditDiffContextLines(threadID string, req DiffContextRequest) (
 	return a.diffContextLines(action, workspace, threadID, req)
 }
 
-// liveDiffWorkspace resolves the checkout a live review scope reads from. pr
-// is the one scope with a second answer: a pr-anchor thread carries no local
-// clone, and its callers get "requires a local clone" rather than a project
-// resolution failure.
+// liveDiffWorkspace resolves the checkout a live review scope reads from.
 func (a *App) liveDiffWorkspace(action string, ws WorkspaceRef, scope string) (string, error) {
 	switch scope {
-	case "workspace", "branch", "commit":
+	case "workspace", "branch", "commit", "pr":
 		return a.reviewWorkspace(action, ws)
-	case "pr":
-		workspace, ok := a.localCloneWorkspace(ws)
-		if !ok {
-			return "", errors.New("expanding context requires a local clone")
-		}
-		return workspace, nil
 	default:
 		return "", fmt.Errorf("%s: %q is not a live review scope", action, scope)
 	}

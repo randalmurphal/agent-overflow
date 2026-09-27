@@ -587,7 +587,6 @@ export const ReportFrontendErrorBatch = dispatch('ReportFrontendErrorBatch');
 export const RequestWebviewMemoryTrim = dispatch('RequestWebviewMemoryTrim');
 
 // PR-based thread creation
-export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
 
 // Projects (sidebar)
 export const ListProjects = dispatch('ListProjects');

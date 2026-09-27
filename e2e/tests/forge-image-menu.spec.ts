@@ -4,9 +4,10 @@
 // Each forge seeds one PR/MR whose body wraps a PNG in
 // `<p align="center"><img ...></p>` (the claim hook in the sanitizer, not a
 // markdown token), references an SVG as markdown, and carries a
-// conversation comment with a second PNG. The review pane is reached the
-// way a user reaches it: the palette's Start Thread From Pull/Merge
-// Request dialog, then Toggle review pane. Covered: the images render from
+// conversation comment with a second PNG. The PR is a seeded workspace's
+// branch published through a local origin (`publishPullRequest`), and the
+// review pane is reached the way a user reaches it: the thread, then the
+// chat header's PR badge. Covered: the images render from
 // bytes the backend fetched through `gh api` / `glab api` (asserted on the
 // recorded invocations), a right-click opens only the Image Actions menu,
 // Copy Image puts a PNG of the right size on the clipboard (an SVG is
@@ -17,8 +18,7 @@
 //
 // The paired browser reaches the backend on loopback; `transport/scopes.ts`
 // still treats a paired session as off the host, which is the download
-// path. It creates its own thread from the PR because a thread with no
-// items yet is not listed in another client's sidebar.
+// path.
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -26,14 +26,14 @@ import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
-import { expect, test } from './fixtures.js';
+import { expect, test, type SeedResult } from './fixtures.js';
 import { PNG_BASE64, PNG_BYTES, PNG_HEIGHT, PNG_WIDTH } from './attachment-fixture.js';
 import {
   expandReviewSection,
   expectEveryForgeCallHandled,
   forgeInvocations,
   openPullRequestReview,
-  seedForge,
+  publishPullRequest,
   type ForgeInvocation,
   type ForgeRepo,
 } from './forge-helpers.js';
@@ -49,6 +49,7 @@ type ImageKey = 'centered' | 'diagram' | 'comment';
 type AttachmentKey = ImageKey | 'log';
 
 const LOG_TEXT = 'build ok\n';
+const TITLE = 'Forge images thread';
 
 const ALT: Record<ImageKey, string> = {
   centered: 'Centered shot',
@@ -58,8 +59,6 @@ const ALT: Record<ImageKey, string> = {
 
 interface ForgeCase {
   repo: ForgeRepo;
-  /** What the user pastes into the dialog. */
-  prUrl: string;
   /** The href each attachment is written with. */
   href: Record<AttachmentKey, string>;
   /** The name the backend saves each attachment under. */
@@ -114,7 +113,6 @@ function githubCase(): ForgeCase {
         { url: href.log, text: LOG_TEXT },
       ],
     },
-    prUrl: `https://github.com/${project}/pull/${number}`,
     href,
     // A user-attachments asset URL carries only an opaque id, and the id is
     // the name (internal/forgeattach gitHubAttachmentName). A save adds the
@@ -167,7 +165,6 @@ function gitlabCase(): ForgeCase {
         { secret: secret.log, filename: savedName.log, contentType: 'text/plain', text: LOG_TEXT },
       ],
     },
-    prUrl: `https://gitlab.com/${project}/-/merge_requests/${number}`,
     href,
     savedName,
     downloadName: savedName.centered,
@@ -190,9 +187,14 @@ function imageMenu(page: Page) {
   return page.getByRole('menu', { name: 'Image Actions' });
 }
 
-/** Open the review pane on `forge`'s PR with the description and conversation expanded. */
-async function openImages(page: Page, forge: ForgeCase): Promise<Record<ImageKey, Locator>> {
-  const review = await openPullRequestReview(page, forge.prUrl);
+/** Open the review pane on the seeded PR with the description and conversation expanded. */
+async function openImages(page: Page): Promise<Record<ImageKey, Locator>> {
+  await openPullRequestReview(page, TITLE);
+  return expandImages(page);
+}
+
+/** Expand the open review pane's description and conversation, and answer their images. */
+async function expandImages(page: Page): Promise<Record<ImageKey, Locator>> {
   const description = await expandReviewSection(page, 'review-pr-description');
   const conversation = await expandReviewSection(page, 'review-pr-conversation');
   const images = {
@@ -200,7 +202,6 @@ async function openImages(page: Page, forge: ForgeCase): Promise<Record<ImageKey
     diagram: description.getByRole('img', { name: ALT.diagram }),
     comment: conversation.getByRole('img', { name: ALT.comment }),
   };
-  await expect(review).toBeVisible();
   return images;
 }
 
@@ -240,9 +241,21 @@ async function saveImageHere(page: Page, image: Locator, name: string): Promise<
   return saved;
 }
 
+/** Seed a thread whose workspace branch is `make`'s PR, and the forge that answers for it. */
 async function seedCase(harness: HarnessApp, make: () => ForgeCase): Promise<ForgeCase> {
   const forge = make();
-  await seedForge(harness, [forge.repo]);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        // A workspace path per case: the app caches a branch's PR lookup
+        // by path and branch, and every case's branch is `feature`.
+        name: `forge-images-${randomBytes(4).toString('hex')}`,
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [{ title: TITLE, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  await publishPullRequest(harness, seed.projects[0].path, forge.repo);
   return forge;
 }
 
@@ -254,7 +267,10 @@ for (const [name, make] of forges) {
     }) => {
       const forge = await seedCase(harness, make);
       await harness.open(page);
-      const images = await openImages(page, forge);
+      const review = await openPullRequestReview(page, TITLE);
+      // The diff is the checkout's: the PR head fetched from origin.
+      await expect(review.getByTestId('review-file-header-path')).toContainText(['feature.md']);
+      const images = await expandImages(page);
 
       await expect.poll(() => naturalSize(images.centered)).toEqual({ width: PNG_WIDTH, height: PNG_HEIGHT });
       await expect.poll(() => naturalSize(images.diagram)).toEqual({ width: SVG_WIDTH, height: SVG_HEIGHT });
@@ -282,7 +298,7 @@ for (const [name, make] of forges) {
         origin: new URL(harness.url).origin,
       });
       await harness.open(page);
-      const images = await openImages(page, forge);
+      const images = await openImages(page);
       await expect.poll(() => naturalSize(images.diagram)).toEqual({ width: SVG_WIDTH, height: SVG_HEIGHT });
 
       // Only the image menu: the HTML-wrapped image sits in markdown that
@@ -322,7 +338,7 @@ for (const [name, make] of forges) {
     test('a file attachment is a chip that saves the file on the owner\'s screen', async ({ harness, page }) => {
       const forge = await seedCase(harness, make);
       await harness.open(page);
-      await openImages(page, forge);
+      await openImages(page);
       const chip = page.getByTestId('review-pr-description').locator('[data-forge-attachment-file]');
       await expect(chip).toContainText(forge.savedName.log);
       await chip.click();
@@ -349,9 +365,9 @@ for (const [name, make] of forges) {
         expect(new URL(invite.url).hostname).toBe('127.0.0.1');
         const code = await redeemOnScreen(device, invite, `${name} forge browser`);
         await confirmOnHost(harness, code);
-        await expect(device.getByText('No projects yet')).toBeVisible({ timeout: 30_000 });
+        await expect(device.getByTestId('thread-row').filter({ hasText: TITLE })).toBeVisible({ timeout: 30_000 });
 
-        const images = await openImages(device, forge);
+        const images = await openImages(device);
         await expect.poll(() => naturalSize(images.centered)).toEqual({ width: PNG_WIDTH, height: PNG_HEIGHT });
         await images.centered.click({ button: 'right' });
         await expect(imageMenu(device).getByRole('menuitem')).toHaveText(['Copy Image', 'Save Image']);

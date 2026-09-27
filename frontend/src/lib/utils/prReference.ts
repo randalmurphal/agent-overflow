@@ -144,34 +144,6 @@ export function prRefFromUrl(forge: string, url: string, number: number): PRRef 
   };
 }
 
-export function prRefFromThread(thread: { prRef?: string | null }): PRRef | null {
-  const raw = thread.prRef?.trim();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<PRRef> & {
-      Forge?: string;
-      Namespace?: string;
-      Repo?: string;
-      Number?: number;
-    };
-    const forge = parsed.forge ?? parsed.Forge;
-    const namespace = parsed.namespace ?? parsed.Namespace;
-    const repo = parsed.repo ?? parsed.Repo;
-    const number = parsed.number ?? parsed.Number;
-    if (forge !== 'github' && forge !== 'gitlab') return null;
-    if (!namespace || !repo || !Number.isFinite(number) || (number ?? 0) <= 0) return null;
-    if (number === undefined) return null;
-    return {
-      forge,
-      namespace,
-      repo,
-      number,
-    };
-  } catch {
-    return null;
-  }
-}
-
 export function prScopeLabel(ref: PRRef): string {
   return ref.forge === 'gitlab' ? `MR !${ref.number}` : `PR #${ref.number}`;
 }

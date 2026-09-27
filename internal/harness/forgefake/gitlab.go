@@ -373,23 +373,3 @@ func glabUpload(e *Engine, c *call, m []string) response {
 	}
 	return glabNotFound("File")
 }
-
-func glabMRDiff(e *Engine, c *call) response {
-	project := c.flag("repo")
-	if project == "" || len(c.positional) != 1 {
-		return unhandled("expected one MR number and -R GROUP/REPO")
-	}
-	number, err := strconv.Atoi(c.positional[0])
-	if err != nil || number <= 0 {
-		return unhandled("MR number %q is not a positive integer", c.positional[0])
-	}
-	r := e.repo("gitlab", project)
-	if r == nil {
-		return response{exit: 1, stderr: "glab: 404 Project Not Found (HTTP 404)\n"}
-	}
-	p := r.pull(number)
-	if p == nil {
-		return response{exit: 1, stderr: "glab: 404 Not found (HTTP 404)\n"}
-	}
-	return response{stdout: []byte(p.Diff)}
-}

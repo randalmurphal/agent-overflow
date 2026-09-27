@@ -1,13 +1,11 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/gitdiff"
 )
 
 type PRMergeConflictsResult struct {
@@ -38,7 +36,7 @@ func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRe
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	workspace, err := a.conflictWorkspace(ws)
+	workspace, err := a.prCloneWorkspace("get PR merge conflicts", ws)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
@@ -80,36 +78,9 @@ func (a *App) GetMergeConflictFile(ws WorkspaceRef, treeOID, path string) (strin
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
-	workspace, err := a.conflictWorkspace(ws)
+	workspace, err := a.prCloneWorkspace("get merge conflict file", ws)
 	if err != nil {
 		return "", err
 	}
 	return a.gitCore().ShowTreeFile(workspace, treeOID, path)
-}
-
-func (a *App) conflictWorkspace(ws WorkspaceRef) (string, error) {
-	workspace, ok := a.localCloneWorkspace(ws)
-	if !ok {
-		return "", errors.New("viewing conflicts requires a local clone")
-	}
-	return workspace, nil
-}
-
-// localCloneWorkspace resolves a workspace ref to a real local git clone.
-// ok=false means there is none — a ZERO ref (a pr-anchor thread that never
-// had a checkout), a ref that fails validation, or a directory that is not a
-// repository. Callers decide whether that is an error (conflict viewer) or a
-// fall-back-to-the-forge-API signal (PR diff).
-func (a *App) localCloneWorkspace(ws WorkspaceRef) (string, bool) {
-	if strings.TrimSpace(ws.ProjectID) == "" {
-		return "", false
-	}
-	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
-	if err != nil || strings.TrimSpace(workspace) == "" {
-		return "", false
-	}
-	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return "", false
-	}
-	return workspace, true
 }

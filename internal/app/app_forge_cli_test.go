@@ -45,8 +45,8 @@ func trapsThatRan(t *testing.T, markers string) []string {
 }
 
 // writeFakeForge writes a stand-in for ao-mockforge that records the CLI
-// it stands in for and the control env it was given, then answers
-// `pr view` and the GitLab MR endpoint with a title.
+// it stands in for and the control env it was given, then answers every
+// call with the same line.
 func writeFakeForge(t *testing.T) (path, record string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -74,12 +74,12 @@ func TestIsolatedAppRunsTheFakeForgeCLI(t *testing.T) {
 
 	core := app.gitCore()
 	for _, forge := range []string{"github", "gitlab"} {
-		meta, err := core.ForgeByID(forge).ViewPR("", "acme/widgets", 7)
+		log, err := core.ForgeByID(forge).GetCIJobLog("", "acme/widgets", "7")
 		if err != nil {
-			t.Fatalf("%s ViewPR: %v", forge, err)
+			t.Fatalf("%s GetCIJobLog: %v", forge, err)
 		}
-		if meta.Title != "from fake" {
-			t.Fatalf("%s ViewPR title = %q, want the fake's answer", forge, meta.Title)
+		if !strings.Contains(log, "from fake") {
+			t.Fatalf("%s GetCIJobLog = %q, want the fake's answer", forge, log)
 		}
 	}
 	got, err := os.ReadFile(record)
@@ -101,9 +101,9 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 	ConfigureIsolation(app, IsolationConfig{})
 
 	for _, forge := range []string{"github", "gitlab"} {
-		_, err := app.gitCore().ForgeByID(forge).ViewPR("", "acme/widgets", 7)
+		_, err := app.gitCore().ForgeByID(forge).GetCIJobLog("", "acme/widgets", "7")
 		if _, ok := errors.AsType[*gitops.ForgeCLIUnavailableError](err); !ok {
-			t.Fatalf("%s ViewPR error = %v, want ForgeCLIUnavailableError", forge, err)
+			t.Fatalf("%s GetCIJobLog error = %v, want ForgeCLIUnavailableError", forge, err)
 		}
 	}
 	if ran := trapsThatRan(t, markers); len(ran) != 0 {
@@ -112,8 +112,8 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 
 	// The control: the same PATH reaches the trap from an ordinary App,
 	// so the assertions above are not passing because it was unreachable.
-	if _, err := (&App{}).gitCore().ForgeByID("github").ViewPR("", "acme/widgets", 7); err != nil {
-		t.Fatalf("desktop ViewPR through the trap: %v", err)
+	if _, err := (&App{}).gitCore().ForgeByID("github").GetCIJobLog("", "acme/widgets", "7"); err != nil {
+		t.Fatalf("desktop GetCIJobLog through the trap: %v", err)
 	}
 	if ran := trapsThatRan(t, markers); strings.Join(ran, ",") != "gh" {
 		t.Fatalf("desktop App ran %v, want the gh on PATH", ran)

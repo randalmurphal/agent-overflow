@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -260,51 +259,6 @@ func (a *App) removeDeliberationByID(channelID string) {
 	a.discussionService().Remove(channelID)
 }
 
-// threadPullRequestPort carries the caller's settings bucket because the
-// recent-workspace list it searches is device tier: the clone this screen has
-// opened before is the one to seed the PR thread with.
-type threadPullRequestPort struct {
-	app    *App
-	bucket string
-	class  settings.DeviceClass
-}
-
-func (p threadPullRequestPort) ResolveWorkspace(ref gitops.PRReference) string {
-	return p.app.resolveRepoWorkspace(p.bucket, p.class, ref)
-}
-
-func (p threadPullRequestPort) Load(workspace string, ref gitops.PRReference) (gitops.PRMetadata, string, error) {
-	forge := p.app.gitCore().ForgeByID(ref.Forge)
-	metadata, err := forge.ViewPR(workspace, ref.Project(), ref.Number)
-	if err != nil {
-		return gitops.PRMetadata{}, "", err
-	}
-	diff, err := forge.Diff(workspace, ref.Project(), ref.Number)
-	if err != nil {
-		return gitops.PRMetadata{}, "", err
-	}
-	return metadata, diff, nil
-}
-
-func (p threadPullRequestPort) EnsureProject(workspaceOrAnchor string) (store.Project, error) {
-	return p.app.ensureProjectForWorkspace(workspaceOrAnchor)
-}
-
-func (a *App) resolveRepoWorkspace(bucket string, class settings.DeviceClass, ref gitops.PRReference) string {
-	if a.settings == nil {
-		return ""
-	}
-	suffix := "/" + ref.Repo
-	fullSuffix := "/" + ref.Project()
-	for _, workspace := range a.settings.For(bucket, class).Get().RecentWorkspaces {
-		workspace = strings.TrimSpace(strings.TrimRight(workspace, "/"))
-		if workspace != "" && (strings.HasSuffix(workspace, suffix) || strings.HasSuffix(workspace, fullSuffix)) {
-			return workspace
-		}
-	}
-	return ""
-}
-
 const applyActiveModeTimeout = 5 * time.Second
 
 func (a *App) applyActiveModeChange(threadID string, sess session, mode provider.InteractionMode) bool {
@@ -324,5 +278,3 @@ func (a *App) applyActiveModeChange(threadID string, sess session, mode provider
 		return true
 	}
 }
-
-var _ threadapp.PullRequestPort = threadPullRequestPort{}

@@ -1555,7 +1555,6 @@ export class Thread {
     "workspacePath": string;
     "worktreePath"?: string;
     "branch"?: string;
-    "prRef"?: string;
     "sessionRef"?: string;
     "pendingForkRef"?: string;
     "forkPreparing"?: boolean;
@@ -1804,10 +1803,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField37_0 = $$createType21;
+        const $$createField36_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField37_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }

@@ -27,7 +27,6 @@ export interface Thread {
   projectId?: string;
   worktreePath?: string;
   branch?: string;
-  prRef?: string;
   /**
    * Canonical mode column.
    * "chat" | "plan" | "discussion" | "terminal" plus the

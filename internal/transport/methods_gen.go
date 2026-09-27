@@ -98,7 +98,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CreateProject", ID: 969543070, Scope: "git:operate", Route: "selected"},                                  // main.App.CreateProject
 	{Name: "CreateProposedPlanComment", ID: 4246792665, Scope: "threads:operate", Route: "thread"},                   // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833, Scope: "threads:operate", Route: "selected"},                              // main.App.CreateThread
-	{Name: "CreateThreadFromPR", ID: 1716017387, Scope: "threads:operate", Route: "selected"},                        // main.App.CreateThreadFromPR
 	{Name: "CreateThreadGroup", ID: 1478438024, Scope: "threads:operate", Route: "project"},                          // main.App.CreateThreadGroup
 	{Name: "CreateThreadTransferOffer", ID: 2485293844, Scope: "threads:operate", Route: "selected"},                 // main.App.CreateThreadTransferOffer
 	{Name: "DeleteAttachment", ID: 2428457759, Scope: "attachments:write", Route: "thread"},                          // main.App.DeleteAttachment

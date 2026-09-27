@@ -31,14 +31,12 @@ type apiRoute struct {
 // handlers lives in AGENTS.md; keep the two in step.
 var commands = []command{
 	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
-	{cli: "gh", path: []string{"pr", "diff"}, flags: []flagDef{{long: "repo", short: "R", value: true}}, run: ghPRDiff},
 	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{
 		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
 		{long: "state", short: "s", value: true}, {long: "limit", short: "L", value: true}, {long: "json", value: true},
 	}, run: ghPRList},
 	{cli: "gh", path: []string{"run", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghRunView},
 	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, githubAPI) }},
-	{cli: "glab", path: []string{"mr", "diff"}, flags: []flagDef{{long: "repo", short: "R", value: true}}, run: glabMRDiff},
 	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, gitlabAPI) }},
 }
 

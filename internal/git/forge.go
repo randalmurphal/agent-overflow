@@ -29,13 +29,6 @@ type Forge interface {
 	ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(cwd, title, body, base string, draft bool) (string, error)
-	// ViewPR fetches metadata for a PR/MR identified by project + number.
-	// project is "owner/repo" (GitHub) or "namespace/.../repo" (GitLab).
-	// cwd may be empty when there is no local clone — gh --repo and
-	// glab -R both query authenticated state without needing one.
-	ViewPR(cwd, project string, number int) (PRMetadata, error)
-	// Diff returns the unified-patch diff for the given PR/MR.
-	Diff(cwd, project string, number int) (string, error)
 	// GetPRDetail fetches the review-pane detail shape for a PR/MR.
 	GetPRDetail(cwd, project string, number int) (PRDetail, error)
 	// ListReviewThreads fetches normalized inline review threads.
@@ -69,25 +62,6 @@ type MergedPRHead struct {
 	HeadOid string
 	// URL links the PR/MR for display.
 	URL string
-}
-
-// PRMetadata is the forge-agnostic view of a PR/MR fetched via ViewPR.
-type PRMetadata struct {
-	Title       string
-	Body        string
-	HeadRefName string
-	BaseRefName string
-	URL         string
-	AuthorLogin string
-	State       string
-	Files       []PRFile
-}
-
-// PRFile describes one file's per-PR change stats.
-type PRFile struct {
-	Path      string `json:"path"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
 }
 
 const (
@@ -302,14 +276,6 @@ func (nullForge) CreatePR(string, string, string, string, bool) (string, error) 
 	return "", ErrUnsupportedForge
 }
 
-func (nullForge) ViewPR(string, string, int) (PRMetadata, error) {
-	return PRMetadata{}, ErrUnsupportedForge
-}
-
-func (nullForge) Diff(string, string, int) (string, error) {
-	return "", ErrUnsupportedForge
-}
-
 func (nullForge) GetPRDetail(string, string, int) (PRDetail, error) {
 	return PRDetail{}, ErrUnsupportedForge
 }
@@ -338,20 +304,6 @@ func (nullForge) GetCIJobLog(string, string, string) (string, error) {
 	return "", ErrUnsupportedForge
 }
 
-// PRAnchorScheme is the URI scheme used for the project-row anchor we
-// generate when a PR/MR thread has no local clone matching its repo.
-// The anchor is opaque — it is stored as Project.Path and used as a
-// uniqueness key, never re-parsed. Use BuildPRAnchor to construct one.
-const PRAnchorScheme = "pr://"
-
-// BuildPRAnchor constructs a "pr://forge/namespace/repo" pseudo-URI
-// for the project-row of a PR/MR thread that has no matching local
-// clone. The forge prefix makes the anchor self-describing without
-// requiring callers to re-classify the namespace later.
-func BuildPRAnchor(forge, namespace, repo string) string {
-	return fmt.Sprintf("%s%s/%s/%s", PRAnchorScheme, forge, namespace, repo)
-}
-
 // SplitProjectForForge separates "namespace/repo" with per-forge
 // segment rules: github requires exactly two segments (owner/repo),
 // gitlab accepts any N≥2 segments where everything before the last is
@@ -359,7 +311,7 @@ func BuildPRAnchor(forge, namespace, repo string) string {
 //
 // Each segment is also validated against safe-name rules — no leading
 // dashes (would be misread as flags by shell-out targets), no `.` or
-// `..` (path traversal in the pseudo-anchor), no control characters
+// `..` (path traversal in forge API paths), no control characters
 // or whitespace. The CLI argv path itself is shell-safe (we never
 // interpolate via a shell), but defense-in-depth keeps the values
 // out of DB rows and logs in pathological shapes.
@@ -444,10 +396,6 @@ func NormalizePRState(s string) string {
 
 func (c *Core) GetPRDetail(cwd string, ref PRReference) (PRDetail, error) {
 	return c.ForgeByID(ref.Forge).GetPRDetail(cwd, ref.Project(), ref.Number)
-}
-
-func (c *Core) GetPRDiff(cwd string, ref PRReference) (string, error) {
-	return c.ForgeByID(ref.Forge).Diff(cwd, ref.Project(), ref.Number)
 }
 
 func (c *Core) ListReviewThreads(cwd string, ref PRReference) ([]ReviewThread, error) {

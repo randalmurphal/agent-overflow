@@ -29,11 +29,6 @@ export function openReviewForItem(pane: PaneSession, opts: OpenReviewForItemOpts
     });
     return;
   }
-  // Workspace scope needs a real checkout. A pane with none — terminal-only,
-  // or a pr-anchor thread with no local clone — has no workspace diff rows to
-  // click in the first place, so this is a structural floor, not a refusal
-  // the user can reach.
-  if (subject.workspace.workspacePath === '') return;
   void openReviewCompanion(pane.paneId, subject, {
     scope: 'workspace',
     filePath: opts.filePath,

@@ -136,14 +136,3 @@ export function workspaceRefForProject(
   if (id === '') return null;
   return { projectId: id, workspacePath: workspacePath?.trim() ?? '' };
 }
-
-/**
- * The zero ref. The PR-review RPCs (`GetPRDiff`, `ListPRCommits`,
- * `GetPRCommitDiff`, `GetPRMergeConflicts`, `GetMergeConflictFile`) accept it
- * and read it as "no local clone", taking their forge-API path. No other RPC
- * does: passing this anywhere else is a refusal from `ResolveWorkspace`.
- */
-export const NO_WORKSPACE_REF: WorkspaceRef = Object.freeze({
-  projectId: '',
-  workspacePath: '',
-});

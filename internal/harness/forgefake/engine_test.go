@@ -212,7 +212,7 @@ func TestInvocationsAreRecordedAndObserved(t *testing.T) {
 		mu.Unlock()
 	}})
 	e.Handle(control.ForgeCall{CLI: "gh", Args: []string{"api", "user", "--jq", ".login"}, Cwd: "/a", Stdin: []byte("in")})
-	e.Handle(control.ForgeCall{CLI: "glab", Args: []string{"mr", "diff", "3", "-R", "grp/sub/tool"}, Cwd: "/b"})
+	e.Handle(control.ForgeCall{CLI: "glab", Args: []string{"api", "projects/grp%2Fsub%2Ftool/merge_requests/3"}, Cwd: "/b"})
 
 	log := e.Invocations(0)
 	if len(log.Invocations) != 2 || len(observed) != 2 {
@@ -223,7 +223,7 @@ func TestInvocationsAreRecordedAndObserved(t *testing.T) {
 		first.Cwd != "/a" || first.Stdin != "in" || first.Route != "gh api user" || first.ExitCode != 0 || first.StdoutBytes != len("octo\n") {
 		t.Fatalf("first = %+v", first)
 	}
-	if second := log.Invocations[1]; second.Route != "glab mr diff" || second.Cwd != "/b" {
+	if second := log.Invocations[1]; second.Route != "glab api merge request" || second.Cwd != "/b" {
 		t.Fatalf("second = %+v", second)
 	}
 	if since := e.Invocations(1); len(since.Invocations) != 1 || since.Invocations[0].Seq != 2 {

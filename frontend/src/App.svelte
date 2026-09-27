@@ -123,7 +123,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
-  let openFromPR = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
   let appReady = $state(false);
   let paneLayoutRestored = $state(false);
@@ -549,12 +548,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     registerBuiltinCommands({
       openThreadForm: () => requestNewThread(false),
       openThreadFormInNewPane: () => requestNewThread(true),
-      openThreadFromPR: () => {
-        // Sidebar registers a callback that flips its local `showFromPR`
-        // state. The indirection keeps dialog ownership with the sidebar,
-        // same pattern as focusThreadSearch above.
-        openFromPR?.();
-      },
       openShipChanges: (paneId) => {
         // The Ship Changes drawer lives inside GitActionsControl (deep in
         // the chat tree). A CustomEvent keeps App.svelte from owning a
@@ -645,7 +638,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       pane={sidebarPane}
       onOpenSettings={() => openSettingsOverlay('theme')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
-      registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
     {#if appReady}
       <PaneHost />

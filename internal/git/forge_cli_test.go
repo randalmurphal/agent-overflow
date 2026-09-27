@@ -94,10 +94,10 @@ func TestIsolatedCoreWithoutFakeRefusesForgeCLIs(t *testing.T) {
 	core := NewCore(WithIsolatedForgeCLIs("", nil))
 
 	for _, forge := range []string{"github", "gitlab"} {
-		_, err := core.ForgeByID(forge).ViewPR("", "acme/widgets", 7)
+		_, err := core.ForgeByID(forge).GetPRDetail("", "acme/widgets", 7)
 		var unavailable *ForgeCLIUnavailableError
 		if !errors.As(err, &unavailable) {
-			t.Fatalf("%s ViewPR error = %v, want ForgeCLIUnavailableError", forge, err)
+			t.Fatalf("%s GetPRDetail error = %v, want ForgeCLIUnavailableError", forge, err)
 		}
 		if !strings.Contains(err.Error(), "isolated boot") {
 			t.Errorf("error %q does not say why", err)

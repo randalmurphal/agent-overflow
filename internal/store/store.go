@@ -452,7 +452,6 @@ type Thread struct {
 	WorkspacePath  string `json:"workspacePath"`
 	WorktreePath   string `json:"worktreePath,omitempty"`
 	Branch         string `json:"branch,omitempty"`
-	PRRef          string `json:"prRef,omitempty"`
 	SessionRef     string `json:"sessionRef,omitempty"`
 	PendingForkRef string `json:"pendingForkRef,omitempty"`
 	ForkPreparing  bool   `json:"forkPreparing,omitempty"`

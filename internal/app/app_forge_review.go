@@ -174,57 +174,39 @@ func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 	return a.gitCore().GetPRDetail("", pr)
 }
 
+// GetPRDiff returns the PR's three-dot diff (merge base of the base branch
+// to the PR head), computed in the referenced clone after fetching the PR
+// head and base branch.
+//
 //ao:scope git:operate
 func (a *App) GetPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string) (string, error) {
+	const action = "get PR diff"
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
 		return "", err
 	}
-	// Prefer a locally-computed diff: gh/glab's PR-diff endpoints refuse
-	// diffs over 20k lines (HTTP 406), which large PRs blow past. When the
-	// caller has a clone and we know the base ref, we can fetch the PR head
-	// + base and diff them from local objects with no such cap. The forge
-	// API stays the fallback for a zero ref — a pr-anchor thread with no
-	// local checkout.
-	if diff, attempted, err := a.localPRDiff(ws, pr, baseRef); attempted {
-		return diff, err
-	}
-	return a.gitCore().GetPRDiff("", pr)
-}
-
-// localPRDiff computes the PR diff from local git objects. attempted=false
-// means the local path was not viable (no clone or no base ref) and the
-// caller should fall back to the forge API; attempted=true returns the
-// local result (or its error) authoritatively.
-func (a *App) localPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string) (diff string, attempted bool, err error) {
 	baseRef = strings.TrimSpace(baseRef)
 	if baseRef == "" {
-		return "", false, nil
-	}
-	workspace, ok := a.localCloneWorkspace(ws)
-	if !ok {
-		return "", false, nil
+		return "", errors.New("base branch is required")
 	}
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
-		return "", true, err
+		return "", err
+	}
+	workspace, err := a.prCloneWorkspace(action, ws)
+	if err != nil {
+		return "", err
 	}
 	headOID, err := a.fetchPRHeadAndBase(workspace, pr, baseRef)
 	if err != nil {
-		return "", true, err
+		return "", err
 	}
-	diff, err = a.gitCore().DiffMergeBase(workspace, "origin/"+baseRef, headOID)
-	if err != nil {
-		return "", true, err
-	}
-	return diff, true, nil
+	return a.gitCore().DiffMergeBase(workspace, "origin/"+baseRef, headOID)
 }
 
 // ListPRCommits returns the commits a PR carries (`origin/base..head`,
-// newest first), computed from the referenced local clone. Empty — not
-// an error — for a zero ref (a pr-anchor thread with no checkout): the
-// frontend hides the commit selector instead of failing the PR load.
+// newest first), computed from the referenced clone.
 //
 // headSHA is an optimization contract, not a filter: when the caller
 // already knows the PR head OID (GetPRDiff fetched it moments earlier)
@@ -234,6 +216,7 @@ func (a *App) localPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string
 //
 //ao:scope git:operate
 func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
+	const action = "list PR commits"
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
 	}
@@ -244,16 +227,15 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, hea
 	if baseRef == "" {
 		return nil, errors.New("base branch is required")
 	}
-	workspace, ok := a.localCloneWorkspace(ws)
-	if !ok {
-		return []BranchCommit{}, nil
-	}
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
+		return nil, err
+	}
+	workspace, err := a.prCloneWorkspace(action, ws)
+	if err != nil {
 		return nil, err
 	}
 	headOID := strings.TrimSpace(headSHA)
 	if !gitdiff.RevisionsExist(context.Background(), workspace, headOID, "refs/remotes/origin/"+baseRef) {
-		var err error
 		headOID, err = a.fetchPRHeadAndBase(workspace, pr, baseRef)
 		if err != nil {
 			return nil, err
@@ -267,21 +249,20 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, hea
 }
 
 // GetPRCommitDiff returns the unified patch a single PR commit
-// introduced (first-parent diff), read from the referenced local clone.
-// Requires a clone — the selector that feeds it only renders when
-// ListPRCommits found one.
+// introduced (first-parent diff), read from the referenced clone.
 //
 //ao:scope git:operate
 func (a *App) GetPRCommitDiff(ws WorkspaceRef, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
+	const action = "get PR commit diff"
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
 		return "", err
 	}
-	workspace, ok := a.localCloneWorkspace(ws)
-	if !ok {
-		return "", errors.New("viewing a PR commit requires a local clone")
+	workspace, err := a.prCloneWorkspace(action, ws)
+	if err != nil {
+		return "", err
 	}
 	// The commit almost always sits in the clone already (ListPRCommits
 	// just fetched the head), so only fetch the PR head — the case where
@@ -302,6 +283,21 @@ func (a *App) GetPRCommitDiff(ws WorkspaceRef, pr gitops.PRReference, sha string
 		return "", err
 	}
 	return string(patch), nil
+}
+
+// prCloneWorkspace resolves the clone a PR read runs in: the caller's
+// workspace, which must be a git repository. Every PR a review pane shows
+// comes from its workspace's git status, so the clone always exists; a
+// resolution failure is the caller's to see.
+func (a *App) prCloneWorkspace(action string, ws WorkspaceRef) (string, error) {
+	workspace, err := a.reviewWorkspace(action, ws)
+	if err != nil {
+		return "", err
+	}
+	if !gitdiff.IsGitRepository(context.Background(), workspace) {
+		return "", fmt.Errorf("%s: workspace is not a git repository", action)
+	}
+	return workspace, nil
 }
 
 // fetchPRHeadAndBase fetches the PR head ref and base branch into the

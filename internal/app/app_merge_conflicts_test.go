@@ -124,17 +124,16 @@ func readAppTestFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func TestGetPRMergeConflictsRequiresLocalClone(t *testing.T) {
+func TestGetPRMergeConflictsRequiresAGitWorkspace(t *testing.T) {
 	app := newTestAppWithStore(t)
-	// A pr-anchor caller has no project of its own: the zero ref is exactly
-	// what the frontend sends for one, and it must read as "no local clone"
-	// rather than a project-resolution failure.
 	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
-	_, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, "main", "")
-	if err == nil {
-		t.Fatal("expected local clone error")
+	// A zero ref names no project, so resolution refuses it outright.
+	if _, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, "main", ""); err == nil {
+		t.Fatal("zero ref: expected a workspace resolution error")
 	}
-	if err.Error() != "viewing conflicts requires a local clone" {
-		t.Fatalf("error = %q", err.Error())
+	noClone := testWorkspaceRef(t, app, t.TempDir())
+	_, err := app.GetPRMergeConflicts(noClone, pr, "main", "")
+	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
+		t.Fatalf("error = %v, want the not-a-repository refusal", err)
 	}
 }

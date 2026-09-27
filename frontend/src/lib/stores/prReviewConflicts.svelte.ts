@@ -13,7 +13,6 @@ import { SvelteMap } from 'svelte/reactivity';
 import { GetMergeConflictFile, GetPRMergeConflicts } from './bindings';
 import { errString } from '../utils/errors';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import { NO_WORKSPACE_REF } from '../utils/workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PRDetail } from '../types/models';
 
@@ -52,9 +51,8 @@ class PRConflictEntry {
   readonly inFlight = new Map<string, Promise<void>>();
   /** The checkout that computed the tree — merge-tree needs a local clone,
    * and a head move has to recompute without an attacher present to supply
-   * one. The zero ref is "no local clone" (a pr-anchor thread): the backend
-   * refuses, which is the honest answer for a merge that cannot be run. */
-  workspace: WorkspaceRef = NO_WORKSPACE_REF;
+   * one. Null until the first load names it. */
+  workspace: WorkspaceRef | null = null;
   /** The (base, head) pair that moved WHILE a load was running. The view is
    * open, so it has to converge on it once the in-flight load settles —
    * dropping it left the pane pinned to a superseded merge forever, because
@@ -231,6 +229,8 @@ export async function ensurePRConflictFile(key: string, path: string): Promise<v
   const seq = entry.seq;
   const treeOID = entry.state?.treeOID ?? '';
   const workspace = entry.workspace;
+  // A tree exists only after a load, and a load records its checkout.
+  if (workspace === null) return;
   const load = (async () => {
     try {
       const content = await withBackendTarget(workspaceKeyBackend(key), () => GetMergeConflictFile(workspace, treeOID, path));
@@ -296,6 +296,7 @@ export function reconcileConflictsWithHead(
   } else if (entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
     return;
   }
+  if (entry.workspace === null) return;
   void loadPRConflicts(entry, key, entry.workspace, ref, detail);
 }
 
