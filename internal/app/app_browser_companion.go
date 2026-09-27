@@ -143,7 +143,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case "back", "forward", "reload", "stop":
 		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
 	case "activate":
-		err = a.browser.manager.ActivateCompanionPage(access, action.PageID)
+		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
 	case "move":
 		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
 	case "show":

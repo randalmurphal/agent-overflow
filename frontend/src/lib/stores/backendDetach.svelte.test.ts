@@ -44,6 +44,11 @@ import {
   setPaneBackend,
 } from './selectedBackend.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getToasts } from './toast.svelte';
+import {
+  getExistingThreadTerminalState,
+  getThreadTerminalState,
+} from '../components/terminal/terminalStore.svelte';
 import type { Project, Thread, ThreadGroup } from '../types/models';
 
 const LAPTOP = 'laptop';
@@ -249,6 +254,86 @@ describe('a backend detaching', () => {
       const pane = createPane('only');
       mockThreadSwitch(laptopThread);
       await pane.switchThread(laptopThread);
+      revealPane('only');
+      expect(getCompactScreen()).toBe('thread');
+
+      detachBackend(LAPTOP);
+
+      expect(getAllPanes().size).toBe(0);
+      expect(getCompactScreen()).toBe('list');
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  // A placeholder has no thread id, so the detached thread list cannot name
+  // it. It routes through its project, and that project just left: kept
+  // open, it would refuse to send or create the thread on another computer.
+  it('closes every draft placeholder on one of its projects, and leaves the rest', () => {
+    attachLaptop();
+    const laptopProject = makeProject('p-laptop', '/laptop');
+    const homeProject = makeProject('p-home', '/home');
+    noteProject(laptopProject.id, LAPTOP);
+    noteProject(homeProject.id, '');
+    createPane('laptop-chat').startDraftPlaceholder(laptopProject, 'chat');
+    createPane('laptop-plan').startDraftPlaceholder(laptopProject, 'plan');
+    createPane('home-chat').startDraftPlaceholder(homeProject, 'chat');
+    createPane('empty');
+
+    detachBackend(LAPTOP);
+
+    expect([...getAllPanes().keys()]).toEqual(['home-chat', 'empty']);
+    expect(getAllPanes().get('home-chat')?.draftPlaceholder?.projectId).toBe(homeProject.id);
+  });
+
+  // The computer that ran the placeholder's shells is no longer reachable,
+  // and no other one owns them: routed by the forgotten project, the close
+  // would reach the wrong computer or fail with an error.
+  it("drops a placeholder's terminals without asking any computer to close them", () => {
+    attachLaptop();
+    const project = makeProject('p-laptop', '/laptop');
+    noteProject(project.id, LAPTOP);
+    const pane = createPane('laptop-chat');
+    pane.startDraftPlaceholder(project, 'chat');
+    const placeholderId = pane.thread!.id;
+    getThreadTerminalState(placeholderId).addTab({
+      terminalID: 'term-1', threadID: placeholderId, shell: '/bin/sh', cwd: project.path,
+      rows: 24, cols: 80, pid: 123, startedAt: 1, running: true, exitCode: 0, exitReason: '',
+    });
+    pane.setShowTerminal(true);
+    const close = setBindingMock('CloseThreadTerminals', async () => {
+      throw new Error('The computer that owns this item is unknown. Refresh it before continuing.');
+    });
+    const toastsBefore = getToasts().length;
+
+    detachBackend(LAPTOP);
+
+    expect(getAllPanes().size).toBe(0);
+    expect(getExistingThreadTerminalState(placeholderId)).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(getToasts().slice(toastsBefore)).toEqual([]);
+  });
+
+  it('closes a placeholder on each detach of a computer that attached again', () => {
+    const project = makeProject('p-laptop', '/laptop');
+    for (const paneId of ['first', 'second']) {
+      attachLaptop();
+      noteProject(project.id, LAPTOP);
+      createPane(paneId).startDraftPlaceholder(project, 'chat');
+
+      detachBackend(LAPTOP);
+
+      expect(getAllPanes().size).toBe(0);
+    }
+  });
+
+  it('returns a compact client to the list when a placeholder was the only pane', () => {
+    setCompactLayoutForTest(true);
+    try {
+      attachLaptop();
+      const project = makeProject('p-laptop', '/laptop');
+      noteProject(project.id, LAPTOP);
+      createPane('only').startDraftPlaceholder(project, 'chat');
       revealPane('only');
       expect(getCompactScreen()).toBe('thread');
 

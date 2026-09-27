@@ -636,6 +636,7 @@
             collapsedPaths={review.conflictCollapsedPaths}
             onToggleCollapsed={review.toggleConflictCollapsed}
             onExpandFold={review.expandConflictFold}
+            painted={review.conflictPaintedSpans}
             drafts={[]}
             openEditors={[]}
             prThreads={[]}
@@ -680,6 +681,7 @@
           viewMode={review.viewMode}
           wordWrap={review.wordWrap}
           spanContext={review.spanContext}
+          painted={review.paintedSpans}
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
           drafts={review.drafts}

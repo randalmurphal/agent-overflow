@@ -237,18 +237,19 @@ export interface OpenTerminalThreadOptions {
 }
 
 /**
- * Create a persistent `mode:'terminal'` thread and open it in a fresh pane.
+ * Create a `mode:'terminal'` thread and open it in a fresh pane.
  * Every terminal entry point routes here — the per-project `+terminal`
  * button, the `mod+shift+~` chord, and the ChatHeader ctrl/cmd-click — so a
  * terminal always lands in its own new pane (locked decision: always fresh).
  *
  * `StartTerminal` writes the SQLite row (sentinel provider; `workspacePath` =
  * resolved cwd — project root when `projectId` is set, else home) but does NOT
- * spawn a PTY. The shell is opened by `TerminalSurface.onMount` once the pane
- * mounts, which is why a restored terminal re-spawns a fresh shell in its saved
- * cwd for free. The new row is prepended to the sidebar store (mirroring draft
- * materialization) so it shows immediately rather than only after the next
- * thread-list refresh.
+ * spawn a PTY. The first shell is opened by `TerminalSurface.onMount` once the
+ * pane mounts. The thread lives as long as its shells: when the last one ends,
+ * or the backend restarts, the backend deletes it and every client drops it
+ * (internal/app/app_terminal_threads.go). The new row is prepended to the
+ * sidebar store (mirroring draft materialization) so it shows immediately
+ * rather than only after the next thread-list refresh.
  *
  * Two timing decisions are load-bearing:
  *  - The focus latch is set BEFORE `mountThreadInPane`. `switchThread` mounts

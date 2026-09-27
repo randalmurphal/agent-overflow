@@ -57,6 +57,7 @@ import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { recoverThreadWindows } from './threadWindowRecovery';
+import { resyncLiveCodeRows } from '../components/chat/markdown/liveCodeSpans.svelte';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -393,6 +394,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Latest-only invalidation: the following retained event re-reads the
       // open settings page. Its mount/reconnect also reads the whole table.
       return;
+    case 'terminal:end_failed':
+      // Nothing restates a lost report, and nothing needs refreshing: the
+      // thread's row carries the outcome (still listed, where opening it
+      // reports the refusal, or deleted on `thread:updated`).
+      return;
     case 'terminal:opened':
     case 'terminal:exit': {
       // A lost open hides a running terminal and a lost exit leaves a dead
@@ -401,13 +407,18 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       if (!isBackendRecovering(backend)) reconcileTerminalSurfaces(backend);
       return;
     }
+    case 'highlight:live':
+      // Lost deltas show as a sequence gap on the row's next push, but a
+      // lost final push has no next push: every open row asks for a
+      // keyframe, which also stops the fences that ended meanwhile.
+      resyncLiveCodeRows(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'system:stats':
-    case 'highlight:seed':
     case 'highlight:diff_seed': {
       // The opposite of the entity channels: nothing to recover. A
       // system:stats frame carries the WHOLE host sample and the next one
-      // lands within ~2s; the highlight seeds are point-in-time cache
-      // warmers whose consumers fall back to the highlight RPC on a miss.
+      // lands within ~2s; the diff seeds are point-in-time cache warmers
+      // whose consumers fall back to the highlight RPC on a miss.
       // These are also the highest-rate channels on the wire, so they are
       // the likeliest to be the ones dropped when a subscriber buffer
       // fills — letting them reach the default branch would turn every

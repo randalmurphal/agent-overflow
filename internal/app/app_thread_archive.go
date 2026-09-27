@@ -150,30 +150,33 @@ func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 //
 // A thread with no live session costs one map lookup and no query,
 // which is what archiving an idle thread does.
+//
+// The thread's browser pages close with the session, suspended ones and
+// their saved copies included, and stay open exactly when the session is
+// kept: a turn that started after the request may be using them.
 func (a *App) stopArchivedThreadSession(threadID string, requestedAtMillis int64) {
-	if _, live := a.sessionManager().get(threadID); !live {
-		return
+	if _, live := a.sessionManager().get(threadID); live {
+		reengaged, err := a.threadTurnStartedAfter(threadID, requestedAtMillis)
+		if err != nil {
+			// Fail in the same direction the idle reaper does on its own
+			// probe error: an unreadable turn history is not evidence that
+			// nothing started, so leave the session alone. Shutdown and the
+			// next archive still reach it.
+			log.Printf("app: archive thread %s: read turn history: %v", threadID, err)
+			return
+		}
+		if reengaged {
+			log.Printf("app: archive thread %s: session kept, a turn started after the archive was requested", threadID)
+			return
+		}
+		if sess, ok := a.sessionManager().take(threadID); ok {
+			if err := a.teardownAndCloseSession(threadID, sess); err != nil {
+				log.Printf("app: archive thread %s: close provider session: %v", threadID, err)
+			}
+		}
 	}
-	reengaged, err := a.threadTurnStartedAfter(threadID, requestedAtMillis)
-	if err != nil {
-		// Fail in the same direction the idle reaper does on its own
-		// probe error: an unreadable turn history is not evidence that
-		// nothing started, so leave the session alone. Shutdown and the
-		// next archive still reach it.
-		log.Printf("app: archive thread %s: read turn history: %v", threadID, err)
-		return
-	}
-	if reengaged {
-		log.Printf("app: archive thread %s: session kept, a turn started after the archive was requested", threadID)
-		return
-	}
-
-	sess, ok := a.sessionManager().take(threadID)
-	if !ok {
-		return
-	}
-	if err := a.teardownAndCloseSession(threadID, sess); err != nil {
-		log.Printf("app: archive thread %s: close provider session: %v", threadID, err)
+	if err := a.closeThreadBrowserPages(threadID); err != nil {
+		log.Printf("app: archive thread %s: close browser pages: %v", threadID, err)
 	}
 }
 

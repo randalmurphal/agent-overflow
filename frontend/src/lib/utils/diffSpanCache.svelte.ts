@@ -32,7 +32,6 @@ import { withHighlightBackend, withHighlightService } from './highlightService';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
 import { requireEntityBackend } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
-import { expansionPredecessor } from './diffContextExpansion';
 import { contentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
@@ -447,7 +446,7 @@ export async function requestFileSpans(
 
 /** Wire shape of one file's backend-precomputed diff spans (Go:
  * PatchSpanSeed) — attached to diff-kind payload responses and pushed
- * on the remote-only `highlight:diff_seed` channel. `path` +
+ * on the `highlight:diff_seed` channel. `path` +
  * `contentKey` are exactly this cache's base key, computed by the
  * backend with frontend parser/hash parity; a mismatched key is simply
  * never looked up (the RPC path proceeds as usual). Seeds are complete
@@ -575,11 +574,74 @@ function seedPatchFileSpans(
   insert(key, spans, false, primed);
 }
 
-/** How many superseded arrays a read may walk through (see below).
- * diffContextExpansion truncates stored chains at 3 retained
- * predecessors, and the first one with a landed entry almost always
- * answers; the extra hop is slack, not expected traversal. */
-const MAX_PREDECESSOR_DEPTH = 4;
+/** A file's colors as its surface last painted them. */
+interface PaintedFile {
+  lines: PatchLine[];
+  spans: EncodedLine[];
+  /** Line content (diff prefix included) → the spans its first colored
+   * occurrence was painted with. */
+  byContent: Map<string, EncodedLine>;
+}
+
+/** Only add, del and context rows carry spans: meta and marker rows
+ * (fold rows included) go to the backend as non-content lines, so no
+ * painted color is theirs. The three prefixes keep those rows apart,
+ * so content alone is the key. */
+function carriesSpans(line: PatchLine): boolean {
+  return line.type === 'add' || line.type === 'del' || line.type === 'context';
+}
+
+/**
+ * The colors one review surface last painted, per file path. A line
+ * keeps its colors while its file's exact result is in flight: after a
+ * rebuild (context or fold expansion), a reload after a push (primed
+ * keys carry the head), or a refresh that changed the file's diff,
+ * getSpansForLine serves each line the spans its same text was last
+ * painted with in that file, and the exact result replaces them when it
+ * lands. The path fixes the language (backend LangFromPath).
+ *
+ * Owned by the surface's state, which retains only the paths it shows
+ * and clears it when the surface or pane closes. Records share their
+ * spans and content strings with the cache entries and parsed lines
+ * they were built from.
+ */
+export class PaintedSpans {
+  private readonly files = new Map<string, PaintedFile>();
+
+  /** Records `spans` (index-aligned with `file.lines`) as `file`'s
+   * painted colors, replacing an earlier paint of its path. */
+  record(file: PatchFile, spans: EncodedLine[]): void {
+    const prior = this.files.get(file.path);
+    if (prior && prior.lines === file.lines && prior.spans === spans) return;
+    const byContent = new Map<string, EncodedLine>();
+    for (let index = 0; index < file.lines.length; index += 1) {
+      const line = file.lines[index];
+      const span = spans[index];
+      if (!span?.r || span.r.length < 2 || byContent.has(line.content)) continue;
+      byContent.set(line.content, span);
+    }
+    this.files.set(file.path, { lines: file.lines, spans, byContent });
+  }
+
+  /** The spans `line`'s text was last painted with in `path`. */
+  lookup(path: string, line: PatchLine): EncodedLine | null {
+    if (!carriesSpans(line)) return null;
+    return this.files.get(path)?.byContent.get(line.content) ?? null;
+  }
+
+  /** Drops every path the surface no longer shows. */
+  retain(paths: readonly string[]): void {
+    if (this.files.size === 0) return;
+    const shown = new Set(paths);
+    for (const path of this.files.keys()) {
+      if (!shown.has(path)) this.files.delete(path);
+    }
+  }
+
+  clear(): void {
+    this.files.clear();
+  }
+}
 
 function entryForKey(base: string, context?: PatchScopeContext | null): SpanEntry | undefined {
   // The scoped lookup derives its subject from the context exactly as the
@@ -599,17 +661,16 @@ function entryForKey(base: string, context?: PatchScopeContext | null): SpanEntr
  * back to the shared unprimed entry while the primed request is in
  * flight.
  *
- * While a rebuilt array's own result is in flight (review-pane context
- * expansion produces a new lines array on every click), lines shared
- * with a superseded array keep serving that array's spans — expanding
- * context must not flash the already-highlighted lines plain for a
- * round trip. Only the freshly fetched lines render plain until the
- * expanded result lands.
+ * A surface that passes its `painted` colors (the review pane) records
+ * every exact result it paints there, and until a file's exact result
+ * lands its lines keep the colors their text was last painted with (see
+ * PaintedSpans). Only lines whose text was never painted render plain.
  */
 export function getSpansForLine(
   file: PatchFile,
   line: PatchLine,
   context?: PatchScopeContext | null,
+  painted?: PaintedSpans | null,
 ): EncodedLine | null {
   void generation;
   // Register the array's key and line index synchronously (memoized
@@ -620,23 +681,11 @@ export function getSpansForLine(
   // no later repaint to fix a miss here.
   const direct = entryForKey(ensureFileKey(file), context);
   if (direct) {
+    painted?.record(file, direct.spans);
     const index = lineIndexes.get(file.lines)?.get(line);
     return index === undefined ? null : (direct.spans[index] ?? null);
   }
-  let lines = expansionPredecessor(file.lines);
-  for (let depth = 0; lines && depth < MAX_PREDECESSOR_DEPTH; depth += 1) {
-    const base = fileKeys.get(lines);
-    const entry = base === undefined ? undefined : entryForKey(base, context);
-    if (entry) {
-      const index = lineIndexes.get(lines)?.get(line);
-      // Absent index = a line newer than this array (freshly fetched
-      // context): plain until the expanded result lands. Older
-      // predecessors are strict subsets, so there is nothing deeper.
-      return index === undefined ? null : (entry.spans[index] ?? null);
-    }
-    lines = expansionPredecessor(lines);
-  }
-  return null;
+  return painted?.lookup(file.path, line) ?? null;
 }
 
 /**

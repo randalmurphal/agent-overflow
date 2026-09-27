@@ -290,7 +290,7 @@ func TestEventBus_Replay_EphemeralChannelCursors(t *testing.T) {
 	bus := NewEventBus(10)
 	defer bus.Close()
 
-	const channel = "highlight:seed"
+	const channel = "highlight:live"
 	if channelRetention(channel) != RetentionEphemeral {
 		t.Fatalf("%s is no longer ephemeral; pick another fixture", channel)
 	}
@@ -1127,7 +1127,6 @@ func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
 		// a member of each class with the DEFAULT retention so every
 		// channel below is really retained and really drained.
 		"backend:attach", // loopback-only
-		"highlight:seed", // remote-only
 		"thread:updated", // universal
 	}
 	cases := []struct {

@@ -3381,7 +3381,8 @@ export function OpenOwnComputerPairing(networkChoice: string): $CancellablePromi
 
 /**
  * OpenTerminal starts a new PTY-backed terminal session bound to the given
- * thread.
+ * thread or draft placeholder. It refuses a thread that no longer exists
+ * and a terminal thread that has ended (app_terminal_threads.go).
  */
 export function OpenTerminal(threadID: string, opts: app$0.TerminalOpenOptions): $CancellablePromise<app$0.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
@@ -4271,6 +4272,18 @@ export function RestoreAccessDevice(deviceID: string): $CancellablePromise<void>
 }
 
 /**
+ * ResyncLiveCode answers a client that missed pushes on highlight:live for
+ * one streaming row: the row's next push of its open fence is a keyframe
+ * (From 0). It returns that fence's ordinal, or -1 when the row has no open
+ * fence, so the client can drop partial state for every other fence and
+ * fall back to HighlightCode for those. Only an index crosses the wire, so
+ * `files:read` is the gate, the same as the channel's.
+ */
+export function ResyncLiveCode(threadID: string, itemID: string): $CancellablePromise<number> {
+    return $Call.ByID(1113976056, threadID, itemID);
+}
+
+/**
  * RetryThreadTransfer wakes a durable operation without minting another copy.
  */
 export function RetryThreadTransfer(operationID: string): $CancellablePromise<void> {
@@ -4932,17 +4945,17 @@ export function StartSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
- * StartTerminal mints a persistent terminal-mode thread and returns it.
+ * StartTerminal mints a terminal-mode thread and returns it.
  * A terminal is a first-class sidebar entity that never runs a provider
  * session: it carries a CHECK-valid sentinel provider/model/effort purely
  * so the threads table's coupled (provider, reasoning_effort) constraint
  * passes — no session is ever started from it, and seedChatModelProfile is
  * read-only so the sentinel is NOT remembered as a user model choice.
  * 
- * It deliberately does NOT spawn a PTY: the frontend opens one via
- * OpenTerminal on pane mount, which is also why a terminal thread restored
- * after restart re-spawns a fresh shell in its saved workspace (PTYs are
- * ephemeral across restart; the saved cwd is what persists).
+ * It does not spawn a PTY: the pane that shows the thread opens the first
+ * shell through OpenTerminal when it mounts. The thread lives as long as
+ * its shells; the exit of the last one, or a restart, deletes it
+ * (app_terminal_threads.go).
  */
 export function StartTerminal(opts: app$0.StartTerminalOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3009548683, opts).then(($result: any) => {

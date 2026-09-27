@@ -132,6 +132,9 @@
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
   const workspacePath = $derived(paneWorkspacePath(pane));
   const threadId = $derived(pane?.threadId ?? '');
+  // Names the row to its code blocks, which paint from the spans the backend
+  // pushes while it streams.
+  const liveCodeRow = $derived({ threadId: item.threadId, itemId: item.id });
   // Stable across per-reveal row replacements. A context transition can
   // remount or reinterpret the volatile parser tree even when its source is
   // unchanged, so the router must drop direct DOM before that transition.
@@ -310,6 +313,7 @@
       {workspacePath}
       {pathRefs}
       {threadId}
+      {liveCodeRow}
     />
   </div>
   {#if hasVisibleBody}

@@ -194,6 +194,7 @@ export function createAgentScopeView(
     get applyDraftPlaceholderDefaults() { return sourcePane.applyDraftPlaceholderDefaults; },
     get applyDraftPlaceholderWorkspace() { return sourcePane.applyDraftPlaceholderWorkspace; },
     get dematerializeEmptyDraftThread() { return sourcePane.dematerializeEmptyDraftThread; },
+    get dropDraftPlaceholderTerminals() { return sourcePane.dropDraftPlaceholderTerminals; },
     get isLocked() { return sourcePane.isLocked; },
     get pendingApprovals() { return sourcePane.pendingApprovals; },
     get pendingUserInputs() { return sourcePane.pendingUserInputs; },

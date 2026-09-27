@@ -39,11 +39,17 @@ const CHUNKS = 60;
 const CHUNK_DELAY_MS = 10;
 
 function chunkText(turn: string, index: number): string {
-  return `${turn}${index} `;
+  return `${turn}_${index} = ${index}`;
 }
 
+/** The turn's answer is one code fence, a line per chunk, so the backend
+ * also pushes the fence's live spans on `highlight:live`. */
 function chunks(turn: string): string[] {
-  return Array.from({ length: CHUNKS }, (_, i) => chunkText(turn, i));
+  return [
+    '```python\n',
+    ...Array.from({ length: CHUNKS }, (_, i) => `${chunkText(turn, i)}\n`),
+    '```\n',
+  ];
 }
 
 /**
@@ -203,14 +209,11 @@ test('a backgrounded connection is streamed in merged frames, and resuming resto
     channelFrames(afterBackground.received, backgroundFrom, 'thread:updated', threadId),
     'the wildcard thread-row carrier must reach a backgrounded client',
   ).toBeGreaterThan(0);
-  // Highlight seeds are withheld from a backgrounded connection. A FLOOR,
-  // not the proof: the channel is remote-only, so this loopback page would
-  // not be sent one either way, and its producer is gated on a remote client
-  // being attached at all. The withholding itself is proven at the seam it
-  // runs on, in internal/transport/lease_test.go.
+  // Live code spans are withheld from a backgrounded connection; the
+  // resumed turn below proves the same fence is pushed to this page.
   expect(
-    channelFrames(afterBackground.received, backgroundFrom, 'highlight:seed', threadId),
-    'no highlight seed reaches a backgrounded connection',
+    channelFrames(afterBackground.received, backgroundFrom, 'highlight:live', threadId),
+    'no live code spans reach a backgrounded connection',
   ).toBe(0);
 
   // ---- turn two: resumed ----
@@ -219,7 +222,12 @@ test('a backgrounded connection is streamed in merged frames, and resuming resto
   await runTurn(harness, threadId, 'stream while I am watching');
   await expect(page.getByText(chunkText('fg', CHUNKS - 1))).toBeVisible();
 
-  const activeDeltas = deltasFor((await readWire(page)).received, activeFrom, threadId);
+  const afterActive = await readWire(page);
+  const activeDeltas = deltasFor(afterActive.received, activeFrom, threadId);
+  expect(
+    channelFrames(afterActive.received, activeFrom, 'highlight:live', threadId),
+    'a resumed connection receives the fence\'s live code spans',
+  ).toBeGreaterThan(0);
   // The same script, streamed live: the frames are back to one per chunk,
   // minus whatever the provider itself coalesced.
   expect(

@@ -1,6 +1,6 @@
 // Project-row projection domain: syncing the cached project list against
-// project:updated frames. Leaf module — it imports the projects store and
-// nothing from another events* module. Fan-in target of events.ts's
+// project:updated frames. Leaf module — it imports the projects and panes
+// stores and nothing from another events* module. Fan-in target of events.ts's
 // setupEventListeners.
 import type { Project } from '../types/models';
 import {
@@ -9,6 +9,7 @@ import {
   removeProjectLocal,
   updateProjectLocal,
 } from './projects.svelte';
+import { closeDraftPlaceholderPanes } from './panes.svelte';
 
 /**
  * Payload for project:updated. Mirrors triage.ProjectUpdateEvent, which owns
@@ -36,9 +37,11 @@ export function applyProjectUpdated(evt: ProjectUpdateEvent): void {
     case 'deleted': {
       // The row is gone from SQLite. The threads that went with it arrive as
       // their own thread:updated 'deleted' frames from the same call, which is
-      // what closes the panes; nothing to do here but drop the project.
+      // what closes their panes. A draft placeholder has no thread row, so
+      // this frame closes it. The deleting client receives this frame too.
       if (!evt.id) return;
       removeProjectLocal(evt.id);
+      closeDraftPlaceholderPanes([evt.id]);
       return;
     }
     case 'unlisted': {

@@ -19,7 +19,13 @@ class HighlightSchemaMismatch extends Error {
 }
 let canonical: HighlightMetadata | null = null;
 let loading: Promise<HighlightMetadata> | null = null;
-let metadata = new WeakMap<BackendEntry, { generation: string; hello: TransportHello | null; promise: Promise<HighlightMetadata> }>();
+let metadata = new WeakMap<BackendEntry, {
+  generation: string;
+  hello: TransportHello | null;
+  promise: Promise<HighlightMetadata>;
+  /** The resolved metadata, for synchronous checks. */
+  value?: HighlightMetadata;
+}>();
 
 function candidates(): BackendEntry[] {
   const home = backendById(HOME_BACKEND);
@@ -47,9 +53,11 @@ function readMetadata(entry: BackendEntry): Promise<HighlightMetadata> {
     if (!version || !Array.isArray(names)) throw new Error('Invalid syntax highlighting metadata');
     cached.generation = entry.generation;
     cached.hello = entry.client.getHello();
-    return { version, names };
+    cached.value = { version, names };
+    return cached.value;
   });
-  const cached = { generation, hello, promise: pending };
+  const cached: { generation: string; hello: TransportHello | null; promise: Promise<HighlightMetadata>; value?: HighlightMetadata } =
+    { generation, hello, promise: pending };
   metadata.set(entry, cached);
   void pending.catch(() => { if (metadata.get(entry) === cached) metadata.delete(entry); });
   return pending;
@@ -87,6 +95,17 @@ export async function requireHighlightSchema(backend: BackendKey): Promise<Highl
   }
   if (actual.version !== expected.version) throw new HighlightSchemaMismatch();
   return { entry, generation: entry.generation, hello: entry.client.getHello() };
+}
+
+/** What requireHighlightSchema resolves for backend, when that backend's
+ * schema is already proven to be this page's and its connection has not
+ * changed since; null when only the asynchronous check can tell. */
+export function provenHighlightSource(backend: BackendKey): HighlightSource | null {
+  const entry = backendById(backend);
+  const cached = entry ? metadata.get(entry) : undefined;
+  if (!entry || !cached?.value || !canonical || cached.value.version !== canonical.version) return null;
+  if (cached.generation !== entry.generation || cached.hello !== entry.client.getHello()) return null;
+  return { entry, generation: entry.generation, hello: cached.hello };
 }
 
 export function assertHighlightSource(source: HighlightSource): void {

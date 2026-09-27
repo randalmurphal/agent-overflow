@@ -187,46 +187,28 @@ func TestSubscriberWatchWithheldFramesNeverMarkGapped(t *testing.T) {
 	}
 }
 
-// TestSubscriberWatchComposesWithOriginAndScopeFilters: the watch set is a
-// third narrowing, not a replacement for the other two. A frame the origin
-// or grant filter refuses stays refused however the watch set reads.
-func TestSubscriberWatchComposesWithOriginAndScopeFilters(t *testing.T) {
-	// highlight:seed is AudienceRemoteOnly and ScopeFilesRead, so a
-	// loopback origin and a grantless session each refuse it on their own.
-	const filtered = "highlight:seed"
+// TestSubscriberWatchComposesWithScopeFilter: the watch set narrows what
+// the grant filter admits, it does not replace it. A frame the grants
+// refuse stays refused however the watch set reads. (Every entity-filtered
+// channel is AudienceAny, so the origin filter never meets a watched one.)
+func TestSubscriberWatchComposesWithScopeFilter(t *testing.T) {
+	// highlight:live is ScopeFilesRead, so a grantless session refuses it.
+	const filtered = "highlight:live"
 	if !channelEntityFiltered(filtered) {
-		t.Skipf("%s is no longer entity-filtered; pick another composed case", filtered)
+		t.Fatalf("%s is no longer entity-filtered; pick another composed case", filtered)
 	}
-
-	t.Run("originStillRefuses", func(t *testing.T) {
-		bus := NewEventBus(10)
-		defer bus.Close()
-		sub := bus.Subscribe()
-		defer sub.Close()
-		sub.SetOriginLoopback(true)
-		sub.SetWatch([]string{"thread-A"}, nil, nil)
-		if _, err := bus.EmitEntity(filtered, "thread-A", "x"); err != nil {
-			t.Fatalf("emit: %v", err)
-		}
-		if got := drainEvents(t, sub, 1, 150*time.Millisecond); len(got) != 0 {
-			t.Fatalf("a watched entity must not defeat the origin filter, got %+v", got)
-		}
-	})
-
-	t.Run("scopeStillRefuses", func(t *testing.T) {
-		bus := NewEventBus(10)
-		defer bus.Close()
-		sub := bus.Subscribe()
-		defer sub.Close()
-		sub.SetScopeFilter(sessionScopeFilter(nil, false))
-		sub.SetWatch([]string{"thread-A"}, nil, nil)
-		if _, err := bus.EmitEntity(filtered, "thread-A", "x"); err != nil {
-			t.Fatalf("emit: %v", err)
-		}
-		if got := drainEvents(t, sub, 1, 150*time.Millisecond); len(got) != 0 {
-			t.Fatalf("a watched entity must not defeat the scope filter, got %+v", got)
-		}
-	})
+	bus := NewEventBus(10)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	sub.SetScopeFilter(sessionScopeFilter(nil, false))
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
+	if _, err := bus.EmitEntity(filtered, "thread-A", "x"); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if got := drainEvents(t, sub, 1, 150*time.Millisecond); len(got) != 0 {
+		t.Fatalf("a watched entity must not defeat the scope filter, got %+v", got)
+	}
 }
 
 // TestWatchingConnectionIsNotAChannelSubscriber pins the invariant that

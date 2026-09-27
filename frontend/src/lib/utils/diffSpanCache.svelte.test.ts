@@ -11,6 +11,7 @@ import {
   requestFileSpans,
   resetDiffSpanCacheForTest,
   seedPayloadPatchSpans,
+  PaintedSpans,
   type PatchSpanSeedWire,
   __diffSpanCacheStatsForTest,
 } from './diffSpanCache.svelte';
@@ -42,6 +43,22 @@ function keywordResult(file: PatchFile) {
     ),
     truncated: false,
   };
+}
+
+/** Spans derived from a row's text: one run per character, classed by
+ * the character and the whole line, so another line's spans never equal
+ * these. Meta rows carry none. */
+function textSpans(content: string): { r: number[] } | Record<string, never> {
+  if (content.startsWith('@@') || content.startsWith('diff ')) return {};
+  let hash = 0;
+  for (const char of content) hash = (hash * 31 + char.charCodeAt(0)) % 997;
+  const r: number[] = [];
+  for (const char of content) r.push(1, 1 + ((char.charCodeAt(0) * 31 + hash) % 997));
+  return { r };
+}
+
+function textResult(file: PatchFile) {
+  return { lang: 'typescript', lines: file.lines.map((line) => textSpans(line.content)), truncated: false };
 }
 
 // The checkout the primed workspace-scope request resolves content from —
@@ -333,81 +350,80 @@ describe('requestFileSpans', () => {
     expect(getSpansForLine(file, file.lines[2])?.r).toEqual(['const x = 1;'.length, 1]);
   });
 
-  it('serves predecessor spans for shared lines while an expanded file is in flight', async () => {
-    // Context expansion rebuilds the lines array (new content key), so
-    // the expanded file's own spans need a round trip. Already-visible
-    // lines must keep their colors from the superseded array's entry —
-    // expanding must not flash the whole file plain — while freshly
-    // fetched lines render plain until the expanded result lands.
-    const patchText = [
+  it('serves a surface\'s painted colors by line text until the exact result lands', async () => {
+    // A rebuilt file (expansion, reload, refresh) is a new content key,
+    // so its own spans need a round trip. Lines whose text the surface
+    // painted before keep exactly those colors meanwhile; lines it never
+    // painted render plain; the exact result replaces both.
+    const painted = new PaintedSpans();
+    const before = parsePatchFiles([
       'diff --git a/exp.ts b/exp.ts',
       '@@ -5,2 +5,2 @@',
       ' const kept = 1;',
       '-const removed = 2;',
       '+const added = 2;',
-    ].join('\n');
-    const file = parsePatchFiles(patchText)[0];
-    setBindingMock('HighlightPatch', async () => keywordResult(file));
-    await requestFileSpans(file, 'thread-1');
-    const addLine = file.lines.find((line) => line.type === 'add')!;
-    const addSpans = getSpansForLine(file, addLine);
-    expect(addSpans).not.toBeNull();
+    ].join('\n'))[0];
+    setBindingMock('HighlightPatch', async () => textResult(before));
+    await requestFileSpans(before, 'thread-1');
+    for (const line of before.lines) getSpansForLine(before, line, null, painted);
 
-    const expanded = applyContextExpansion(file, {
-      lines: new Map([[4, 'above()']]),
-      eofLine: null,
-      version: nextExpansionVersion(),
-    });
-    expect(expanded).not.toBe(file);
-    const fetched = expanded.lines.find((line) => line.content === ' above()')!;
-
-    // The expanded file's request hasn't landed (nor even started):
-    // shared lines resolve through the predecessor, new lines plain.
-    expect(getSpansForLine(expanded, addLine)).toEqual(addSpans);
-    expect(getSpansForLine(expanded, fetched)).toBeNull();
-
-    // Once the expanded result lands it takes over, fetched line too.
-    setBindingMock('HighlightPatch', async () => ({
-      lang: 'typescript',
-      lines: expanded.lines.map(() => ({ r: [1, 1] })),
-      truncated: false,
-    }));
-    await requestFileSpans(expanded, 'thread-1');
-    expect(getSpansForLine(expanded, fetched)?.r).toEqual([1, 1]);
-    expect(getSpansForLine(expanded, addLine)?.r).toEqual([1, 1]);
-  });
-
-  it('keeps base spans reachable through the truncated chain during rapid expansions', async () => {
-    // 5 expansion clicks before ANY expanded highlight request runs:
-    // the chain is truncated, but it stays terminated at the base
-    // array, whose spans are the only landed entry — shared lines must
-    // not flash plain mid-burst.
-    const patchText = [
-      'diff --git a/burst.ts b/burst.ts',
-      '@@ -7,2 +7,2 @@',
+    // Fresh parse, as after a refresh: no PatchLine is shared.
+    const after = parsePatchFiles([
+      'diff --git a/exp.ts b/exp.ts',
+      '@@ -4,3 +4,3 @@',
+      ' above();',
       ' const kept = 1;',
       '-const removed = 2;',
-      '+const added = 2;',
-    ].join('\n');
-    const file = parsePatchFiles(patchText)[0];
-    setBindingMock('HighlightPatch', async () => keywordResult(file));
-    await requestFileSpans(file, 'thread-1');
-    const addLine = file.lines.find((line) => line.type === 'add')!;
-    const baseSpans = getSpansForLine(file, addLine);
-    expect(baseSpans).not.toBeNull();
-
-    const expansion = {
-      lines: new Map<number, string>(),
-      eofLine: null as number | null,
-      version: 0,
-    };
-    let latest = file;
-    for (const lineNo of [6, 5, 4, 3, 2]) {
-      expansion.lines.set(lineNo, `line ${lineNo}`);
-      expansion.version = nextExpansionVersion();
-      latest = applyContextExpansion(file, expansion);
+      '+const added = 3;',
+    ].join('\n'))[0];
+    const byContent = (file: PatchFile, content: string) => file.lines.find((line) => line.content === content)!;
+    for (const content of [' const kept = 1;', '-const removed = 2;']) {
+      expect(getSpansForLine(after, byContent(after, content), null, painted)).toEqual(textSpans(content));
     }
-    expect(getSpansForLine(latest, addLine)).toEqual(baseSpans);
+    expect(getSpansForLine(after, byContent(after, ' above();'), null, painted)).toBeNull();
+    expect(getSpansForLine(after, byContent(after, '+const added = 3;'), null, painted)).toBeNull();
+    // Without the surface's colors (chat cards) nothing carries over.
+    expect(getSpansForLine(after, byContent(after, ' const kept = 1;'))).toBeNull();
+
+    setBindingMock('HighlightPatch', async () => textResult(after));
+    await requestFileSpans(after, 'thread-1');
+    for (const line of after.lines.filter((candidate) => candidate.type !== 'meta')) {
+      expect(getSpansForLine(after, line, null, painted)).toEqual(textSpans(line.content));
+    }
+  });
+
+  it('keeps painted colors per path and replaces them with each new paint', async () => {
+    const painted = new PaintedSpans();
+    const first = makeFile('src/a.ts', ['const x = 1;', 'const y = 2;']);
+    setBindingMock('HighlightPatch', async () => textResult(first));
+    await requestFileSpans(first, 'thread-1');
+    getSpansForLine(first, first.lines[2], null, painted);
+
+    // Same text in another file: never that file's colors.
+    const other = makeFile('src/b.ts', ['const x = 1;']);
+    expect(getSpansForLine(other, other.lines[2], null, painted)).toBeNull();
+
+    // A newer paint of the path replaces the older one wholesale.
+    const second = makeFile('src/a.ts', ['const x = 1;', 'let z = 3;']);
+    setBindingMock('HighlightPatch', async () => ({
+      lang: 'typescript',
+      lines: second.lines.map((line) => (line.type === 'add' ? { r: [line.content.length - 1, 1] } : {})),
+      truncated: false,
+    }));
+    await requestFileSpans(second, 'thread-1');
+    getSpansForLine(second, second.lines[2], null, painted);
+    const third = makeFile('src/a.ts', ['const x = 1;', 'const y = 2;', 'let w = 4;']);
+    expect(getSpansForLine(third, third.lines[2], null, painted)?.r).toEqual(['const x = 1;'.length, 1]);
+    expect(getSpansForLine(third, third.lines[3], null, painted)).toBeNull();
+
+    // Marker rows never carry spans, even when their text matches.
+    expect(painted.lookup('src/a.ts', { type: 'marker', content: '+const x = 1;' })).toBeNull();
+
+    painted.retain(['src/b.ts']);
+    expect(getSpansForLine(third, third.lines[2], null, painted)).toBeNull();
+    getSpansForLine(second, second.lines[2], null, painted);
+    painted.clear();
+    expect(getSpansForLine(third, third.lines[2], null, painted)).toBeNull();
   });
 
   it('paints a new array identity with an existing content-key entry on its first read', async () => {

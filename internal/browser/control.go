@@ -10,7 +10,7 @@ import (
 )
 
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
-	p, _, err := m.lookupOwnedPage(access, strings.TrimSpace(pageID))
+	p, _, err := m.resolvePage(ctx, access, pageID, false)
 	if err != nil {
 		return PageInfo{}, err
 	}
@@ -31,25 +31,23 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 	return info, nil
 }
 
-func (m *Manager) LabelPage(_ context.Context, access Access, pageID, label string) (PageInfo, error) {
-	p, _, err := m.lookupOwnedPage(access, strings.TrimSpace(pageID))
-	if err != nil {
-		return PageInfo{}, err
-	}
+func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label string) (PageInfo, error) {
 	label = strings.TrimSpace(label)
-	if utf8.RuneCountInString(label) > 80 {
+	if utf8.RuneCountInString(label) > maxPageLabelRunes {
 		return PageInfo{}, fmt.Errorf("browser: page label exceeds 80 characters")
 	}
 	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return PageInfo{}, fmt.Errorf("browser: page label cannot contain control characters")
 	}
+	p, _, err := m.resolvePage(ctx, access, pageID, false)
+	if err != nil {
+		return PageInfo{}, err
+	}
 	m.mu.Lock()
-	for _, scope := range m.scopes {
-		for _, candidate := range scope.pages {
-			if candidate.owner == access.ThreadID && candidate.id != p.id && label != "" && strings.EqualFold(candidate.cachedInfo().Label, label) {
-				m.mu.Unlock()
-				return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, candidate.id)
-			}
+	for _, tab := range m.threadTabsLocked(access.ThreadID) {
+		if tab.id != p.id && label != "" && strings.EqualFold(tab.info.Label, label) {
+			m.mu.Unlock()
+			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, tab.id)
 		}
 	}
 	info := p.setLabel(label)
@@ -73,23 +71,26 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 	return info, nil
 }
 
-func (m *Manager) Visibility(_ context.Context, access Access, visible *bool, pageID string) (SessionInfo, error) {
+// Visibility shows the companion on one page. A suspended page is restored
+// by the pane that presents it (BrowserPane), not here, so a page that
+// cannot be restored still opens the companion, where its refusal shows and
+// the user can navigate or close it. Hiding touches no page.
+func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID string) (SessionInfo, error) {
 	pageID = strings.TrimSpace(pageID)
 	if visible != nil && *visible {
-		if pageID != "" {
-			if _, _, err := m.lookupOwnedPage(access, pageID); err != nil {
-				return SessionInfo{}, err
-			}
-		} else {
-			pages := m.ownedPages(access.ThreadID)
-			switch len(pages) {
+		if pageID == "" {
+			tabs := m.threadTabs(access.ThreadID)
+			switch len(tabs) {
 			case 0:
 				return SessionInfo{}, fmt.Errorf("browser: cannot show the companion because this thread has no open pages")
 			case 1:
-				pageID = pages[0].id
+				pageID = tabs[0].id
 			default:
-				return SessionInfo{}, ambiguousPageError(pages)
+				return SessionInfo{}, ambiguousPageError(tabs)
 			}
+		}
+		if !m.hasTab(access.ThreadID, pageID) {
+			return SessionInfo{}, errPageNotFound
 		}
 	} else if pageID != "" {
 		return SessionInfo{}, fmt.Errorf("browser: page_id is only valid when visible is true")
@@ -140,22 +141,21 @@ func (m *Manager) setActivePage(threadID, pageID string) {
 	m.mu.Unlock()
 }
 
+// repairActivePage keeps the thread's active page one of its pages, live or
+// suspended: a missing one is replaced by the most recently used page, and a
+// thread with none hides its companion.
 func (m *Manager) repairActivePage(threadID string) {
 	m.mu.Lock()
 	info := m.sessionLocked(threadID)
-	var replacement *managedPage
+	var replacement *threadTab
 	activeExists := false
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.owner != threadID {
-				continue
-			}
-			if p.id == info.ActivePageID {
-				activeExists = true
-			}
-			if replacement == nil || p.lastUse.Load() > replacement.lastUse.Load() {
-				replacement = p
-			}
+	tabs := m.threadTabsLocked(threadID)
+	for i := range tabs {
+		if tabs[i].id == info.ActivePageID {
+			activeExists = true
+		}
+		if replacement == nil || tabs[i].lastUse > replacement.lastUse {
+			replacement = &tabs[i]
 		}
 	}
 	if !activeExists {

@@ -286,7 +286,16 @@ func TestSubscriberScopeDropNamesOnlyTheThread(t *testing.T) {
 // carries the scope it was emitted with, which is what replay and lease
 // coalescing read.
 func TestSubscriberScopeWatchKeepsTheEventsAttribution(t *testing.T) {
-	channel := transcriptScopeFilteredChannel(t)
+	channel := ""
+	for _, name := range TranscriptScopeFilteredChannels() {
+		if channelRetention(name) != RetentionEphemeral {
+			channel = name
+			break
+		}
+	}
+	if channel == "" {
+		t.Fatal("no retained TranscriptScopeFiltered channel; the ring has nothing to replay")
+	}
 	bus := NewEventBus(20)
 	defer bus.Close()
 	if _, err := bus.EmitScoped(eventchan.Channel(channel), "thread-A", "agent-1", "child"); err != nil {

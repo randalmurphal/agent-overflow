@@ -36,9 +36,8 @@ func (a *App) highlightService() *highlightapp.Service {
 				return content, err
 			},
 			ReadWorkspaceFile: readWorkspaceFile,
-			HasRemoteClient:   a.hasRemoteClient,
-			EmitSeed: func(event highlightapp.SeedEvent) {
-				a.emit(eventchan.HighlightSeed, wireHighlightSeed(event))
+			EmitLiveCode: func(event highlightapp.LiveCodeEvent) {
+				a.emit(eventchan.HighlightLive, wireHighlightLiveCode(event))
 			},
 			EmitDiffSeed: func(event highlightapp.DiffSeedEvent) {
 				a.emit(eventchan.HighlightDiffSeed, HighlightDiffSeedEvent{ThreadID: event.ThreadID, Files: wirePatchSpanSeeds(event.Files)})
@@ -118,6 +117,18 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 	return a.highlightService().Code(req.Lang, req.Source)
 }
 
+// ResyncLiveCode answers a client that missed pushes on highlight:live for
+// one streaming row: the row's next push of its open fence is a keyframe
+// (From 0). It returns that fence's ordinal, or -1 when the row has no open
+// fence, so the client can drop partial state for every other fence and
+// fall back to HighlightCode for those. Only an index crosses the wire, so
+// `files:read` is the gate, the same as the channel's.
+//
+//ao:scope files:read
+func (a *App) ResyncLiveCode(threadID, itemID string) int {
+	return a.highlightService().ResyncLiveCode(threadID, itemID)
+}
+
 // HighlightPatch returns patch-aligned spans for one file's unified
 // diff: result line i corresponds to patch line i, add/del spans cover
 // the prefix-stripped body, context spans include a 1-byte plain pad
@@ -186,14 +197,28 @@ func (a *App) highlightPatchWithContext(workspace, threadID string, req Highligh
 	return res, err
 }
 
-type HighlightSeedEvent struct {
-	ThreadID   string                  `json:"threadId"`
-	ItemID     string                  `json:"itemId"`
+// HighlightLiveCodeEvent is one push of a streaming code fence's spans
+// (highlightapp.LiveCodeEvent). Fence is the fence's ordinal in the row,
+// Seq numbers its pushes from 1, and Lines and LineHashes replace the
+// fence's lines from From to the end; From 0 is a keyframe. A final push
+// describes the finished fence and carries its ContentKey; a final push
+// with neither is a stop: the fence is not followed any further.
+type HighlightLiveCodeEvent struct {
+	ThreadID string `json:"threadId"`
+	ItemID   string `json:"itemId"`
+	// ParentID is the row's transcript scope; the transport narrows the
+	// channel by it as it does the row's own text.
+	ParentID   string                  `json:"parentId,omitempty"`
+	Fence      int                     `json:"fence"`
 	Lang       string                  `json:"lang"`
-	ContentKey string                  `json:"contentKey,omitempty"`
+	Seq        int                     `json:"seq"`
+	From       int                     `json:"from"`
 	LineHashes []uint32                `json:"lineHashes"`
 	Lines      []highlight.EncodedLine `json:"lines"`
 	Final      bool                    `json:"final"`
+	ContentKey string                  `json:"contentKey,omitempty"`
+	// Head is the fence's first line, on a push From 0.
+	Head string `json:"head,omitempty"`
 }
 
 // PatchSpanSeed is one file's precomputed diff spans. ContentKey is the
@@ -230,10 +255,11 @@ type PersistedCodeSpans struct {
 	Blocks  []PersistedCodeSpan `json:"blocks"`
 }
 
-func wireHighlightSeed(event highlightapp.SeedEvent) HighlightSeedEvent {
-	return HighlightSeedEvent{
-		ThreadID: event.ThreadID, ItemID: event.ItemID, Lang: event.Lang, ContentKey: event.ContentKey,
-		LineHashes: event.LineHashes, Lines: event.Lines, Final: event.Final,
+func wireHighlightLiveCode(event highlightapp.LiveCodeEvent) HighlightLiveCodeEvent {
+	return HighlightLiveCodeEvent{
+		ThreadID: event.ThreadID, ItemID: event.ItemID, ParentID: event.ParentID, Fence: event.Fence, Lang: event.Lang,
+		Seq: event.Seq, From: event.From, LineHashes: event.LineHashes, Lines: event.Lines,
+		Final: event.Final, ContentKey: event.ContentKey, Head: event.Head,
 	}
 }
 func wirePatchSpanSeeds(seeds []highlightapp.PatchSpanSeed) []PatchSpanSeed {
@@ -245,9 +271,6 @@ func wirePatchSpanSeeds(seeds []highlightapp.PatchSpanSeed) []PatchSpanSeed {
 		out[i] = PatchSpanSeed{Path: seed.Path, ContentKey: seed.ContentKey, Lines: seed.Lines, Primed: seed.Primed}
 	}
 	return out
-}
-func (a *App) observeAssistantTextStream(threadID, itemID, text string, final bool) {
-	a.highlightService().ObserveAssistantText(threadID, itemID, text, final)
 }
 
 // observeDiffPayloadPersisted seeds spans for a thread's own persisted diff.
@@ -272,12 +295,4 @@ func (a *App) persistedPayloadPatchSpans(threadID, kind, payloadID string) []Pat
 }
 func (a *App) loadPersistedPatchSpans(threadID, payloadID string) []PatchSpanSeed {
 	return wirePatchSpanSeeds(a.highlightService().LoadPatchSpans(threadID, payloadID))
-}
-
-func (a *App) hasRemoteClient() bool {
-	if a.remoteClientProbeFn != nil {
-		return a.remoteClientProbeFn()
-	}
-	server := a.transportServer.Load()
-	return server != nil && server.HasRemoteClient()
 }

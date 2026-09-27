@@ -8,8 +8,9 @@ Tree-sitter syntax highlighting and compact span encoding for backend and persis
 - Unknown languages, malformed patches, caps, and parser failures degrade to
   plain spans rather than failing the caller. Mark transient parse degradation
   `Incomplete` and never cache it; deterministic size truncation may be cached.
-- Pool completed parsers only; trees belong to one parse and are closed after
-  use. Close a timed-out or cancelled parser instead of returning it to the
+- Pool completed parsers only. A tree belongs to one parse and is closed
+  after use, except a `Stream`'s, which it keeps for its next append until
+  `Close`. Close a timed-out or cancelled parser instead of returning it to the
   pool because upstream reset does not clear all cancelled state. No parser may
   be used concurrently.
 - Preserve byte offsets and valid nesting through patch splitting and encoding.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -161,5 +162,8 @@ func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
 	}
 
 	log.Printf("provider: idle close thread=%q provider=%q", threadID, sess.Provider)
-	return a.teardownAndCloseSession(threadID, sess)
+	// Only this idle end suspends the thread's browser pages, and it does so
+	// under the thread lock, so a session starting next finds them
+	// suspended rather than suspended under it.
+	return errors.Join(a.teardownAndCloseSession(threadID, sess), a.suspendThreadBrowserPages(threadID))
 }

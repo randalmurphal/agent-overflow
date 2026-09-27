@@ -89,10 +89,6 @@ const (
 	// subscriber regardless of who armed it. Those rows carry `host` on
 	// Scope AND loopback-only here, so neither has to be the only answer.
 	AudienceLoopbackOnly
-	// AudienceRemoteOnly reaches non-loopback connections only. For frames
-	// that exist purely to hide WAN round-trip latency and are pure waste
-	// on a local pipe.
-	AudienceRemoteOnly
 )
 
 // String makes the worklist and any failure message readable.
@@ -102,8 +98,6 @@ func (a Audience) String() string {
 		return "any"
 	case AudienceLoopbackOnly:
 		return "loopback-only"
-	case AudienceRemoteOnly:
-		return "remote-only"
 	default:
 		return "unknown"
 	}
@@ -419,36 +413,34 @@ var channelPolicies = []ChannelPolicy{
 			"be parse-primed with the just-edited workspace file — better " +
 			"spans than the loopback RPC path recomputes for a persisted diff " +
 			"— so local clients consume them as in-place cache upgrades rather " +
-			"than redundant warmers. (It used to be remote-only; the producer " +
-			"gate was dropped alongside.) Ephemeral because a seed is a " +
+			"than redundant warmers. Ephemeral because a seed is a " +
 			"point-in-time cache warmer: replaying a superseded one is useless " +
 			"and each frame can carry large span/hash arrays.",
 	},
 	{
-		Channel:        eventchan.HighlightSeed,
-		Audience:       AudienceRemoteOnly,
-		Retention:      RetentionEphemeral,
-		Scope:          ScopeFilesRead,
-		EntityFiltered: true,
-		Why: "Entity-filtered, same argument as highlight:diff_seed and with " +
-			"more force: this is per-growth-step span metadata for a STREAMING " +
-			"fence, so a busy thread produces frames at the delta rate, and its " +
-			"consumers (liveCodeSeeds putLiveCodeSeed, codeSpanCache " +
-			"seedFinalBlockSpans) are read only by a StreamdownCodeHost mounted " +
-			"in a pane on that thread. Missing seeds degrade to the highlight " +
-			"RPC that host already falls back to. One accepted loss: a final " +
-			"seed's contentKey entry is content-addressed, so an identical " +
-			"fence in another thread would have got a free cache hit it now " +
-			"pays an RPC for. " +
-			"Pushes syntax-span metadata alongside streaming text so a remote " +
-			"client colors code without a highlight RPC per growth step. " +
-			"Loopback clients get faster spans from the RPC path (sub-ms round " +
-			"trip), so these frames carry nothing they would use. The producer " +
-			"is also gated on Server.HasRemoteClient; this filter is what keeps " +
-			"the frames off loopback pipes while a remote viewer keeps the " +
-			"producer running. Caveat: SSH-tunneled remotes arrive as loopback " +
-			"and are invisible to the probe — they keep the RPC path. Ephemeral " +
-			"for the same reason as highlight:diff_seed.",
+		Channel:                 eventchan.HighlightLive,
+		Audience:                AudienceAny,
+		Retention:               RetentionEphemeral,
+		Scope:                   ScopeFilesRead,
+		EntityFiltered:          true,
+		TranscriptScopeFiltered: true,
+		Why: "The backend's incremental highlight of each streaming code " +
+			"fence, pushed as numbered line-range deltas at most every 33 ms " +
+			"per row, so every client paints the same spans the finished " +
+			"block will have without a highlight RPC per growth step. " +
+			"Audience any: local and remote panes both render from it. Scope " +
+			"files:read, the scope of HighlightCode, which answers the same " +
+			"data. Entity-filtered because only a pane showing the thread " +
+			"reads it, and a busy thread produces frames at the push rate. " +
+			"TranscriptScopeFiltered like provider:item_event: a frame names " +
+			"its row's parentId, and a subagent row's code is painted only by " +
+			"the scoped surfaces that receive that row's text. " +
+			"Ephemeral because a delta applies only on top of the one before " +
+			"it: a client that misses one (reconnect, background lease, " +
+			"filter) sees the sequence gap and calls ResyncLiveCode, which " +
+			"makes the next push a whole-fence keyframe; a fence that ended " +
+			"meanwhile falls back to the HighlightCode RPC. Replaying stale " +
+			"deltas would buy nothing.",
 	},
 	{
 		Channel:   eventchan.KeybindingsUpdated,
@@ -1273,6 +1265,18 @@ var channelPolicies = []ChannelPolicy{
 			"(CPU %, RAM, isWsl) — monitoring the backend host is the " +
 			"channel's purpose, including from a remote viewer, and the " +
 			"payload doc bars per-process detail from ever joining it.",
+	},
+	{
+		Channel:   eventchan.TerminalEndFailed,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "A terminal thread whose last shell exited and whose delete " +
+			"then failed, told to every client because no caller waits on " +
+			"that delete. The frame is a hand-written sentence naming the " +
+			"thread's title, which thread:updated already carries to the " +
+			"same readers; the cause stays in the backend log. Every frame " +
+			"is a distinct toast: never latest-only.",
 	},
 	{
 		Channel:   eventchan.TerminalExit,

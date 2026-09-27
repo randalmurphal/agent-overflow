@@ -186,16 +186,15 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       } finally {
         listReadsInFlight.delete(changed);
       }
-      if (!list || !options.current()) return [];
+      if (!list || !options.current()) return;
       const listed = new Set(list.map((summary) => summary.terminalID));
       const gone = tabs
         .map((tab) => tab.terminalID)
         .filter((terminalID) => !listed.has(terminalID) && !changed.has(terminalID));
-      for (const terminalID of gone) removeTab(terminalID);
+      for (const terminalID of gone) options.remove(terminalID);
       for (const summary of list) {
         if (!changed.has(summary.terminalID)) addTab(summary, { activate: options.activate });
       }
-      return gone;
     },
 
     setActive(terminalID: string): void {
@@ -300,17 +299,17 @@ export interface ThreadTerminalStateHandle {
   addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void;
   removeTab(terminalID: string): void;
   /**
-   * Make the tabs match `read`'s list of the thread's terminals: drop the
-   * tabs it lacks and add or refresh the ones it names. A tab added or
-   * removed while the read was in flight keeps that change, which is newer
-   * than the list. Returns the dropped ids; nothing changes when the read
-   * answers null or `current` says its answer no longer applies. A failed
-   * read rejects and changes nothing.
+   * Make the tabs match `read`'s list of the thread's terminals: hand each
+   * tab it lacks to `remove`, which must remove it, and add or refresh the
+   * ones it names. A tab added or removed while the read was in flight keeps
+   * that change, which is newer than the list. Nothing changes when the
+   * read answers null or `current` says its answer no longer applies. A
+   * failed read rejects and changes nothing.
    */
   syncTabs(
     read: () => Promise<TerminalSessionSummary[] | null>,
-    options: { activate: boolean; current(): boolean },
-  ): Promise<string[]>;
+    options: { activate: boolean; current(): boolean; remove(terminalID: string): void },
+  ): Promise<void>;
   setActive(terminalID: string): void;
   appendOutput(terminalID: string, data: Uint8Array, sequence?: number): void;
   drainOutput(terminalID: string): Uint8Array[];

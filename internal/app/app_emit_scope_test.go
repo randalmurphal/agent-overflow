@@ -29,7 +29,9 @@ func TestEmitAttributesItemEventsToTheirScope(t *testing.T) {
 	app.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(top))
 	// EntityFiltered but not TranscriptScopeFiltered: the thread is derived, a
 	// parentId in the payload is not read.
-	app.emit(eventchan.HighlightSeed, scoped)
+	app.emit(eventchan.HighlightDiffSeed, scoped)
+	// A subagent row's live code spans are addressed like its text.
+	app.emit(eventchan.HighlightLive, HighlightLiveCodeEvent{ThreadID: "t1", ItemID: "child", ParentID: "toolu_parent"})
 	// Neither column: nothing is derived for the bus.
 	app.emit(eventchan.ThreadUpdated, scoped)
 
@@ -37,7 +39,8 @@ func TestEmitAttributesItemEventsToTheirScope(t *testing.T) {
 	want := []address{
 		{string(eventchan.ProviderItemEvent), "t1", "toolu_parent"},
 		{string(eventchan.ProviderItemEvent), "t1", ""},
-		{string(eventchan.HighlightSeed), "t1", ""},
+		{string(eventchan.HighlightDiffSeed), "t1", ""},
+		{string(eventchan.HighlightLive), "t1", "toolu_parent"},
 		{string(eventchan.ThreadUpdated), "", ""},
 	}
 	deadline := time.After(2 * time.Second)

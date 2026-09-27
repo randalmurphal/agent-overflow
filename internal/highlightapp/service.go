@@ -27,8 +27,7 @@ type Config struct {
 	ShutdownError     error
 	ResolveContext    func(workspace, threadID string, req ContextRequest, maxBytes int64) (string, error)
 	ReadWorkspaceFile func(path string, maxBytes int64) (string, error)
-	HasRemoteClient   func() bool
-	EmitSeed          func(SeedEvent)
+	EmitLiveCode      func(LiveCodeEvent)
 	EmitDiffSeed      func(DiffSeedEvent)
 	Now               func() time.Time
 }
@@ -37,7 +36,7 @@ type Config struct {
 type Service struct {
 	config      Config
 	cache       *highlight.Cache
-	seeder      seeder
+	live        liveHighlighter
 	diffWorkers atomic.Int32
 }
 
@@ -48,11 +47,8 @@ func New(config Config) *Service {
 	if config.ShutdownError == nil {
 		config.ShutdownError = errors.New("highlight service is shutting down")
 	}
-	if config.HasRemoteClient == nil {
-		config.HasRemoteClient = func() bool { return false }
-	}
-	if config.EmitSeed == nil {
-		config.EmitSeed = func(SeedEvent) {}
+	if config.EmitLiveCode == nil {
+		config.EmitLiveCode = func(LiveCodeEvent) {}
 	}
 	if config.EmitDiffSeed == nil {
 		config.EmitDiffSeed = func(DiffSeedEvent) {}
@@ -60,7 +56,9 @@ func New(config Config) *Service {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Service{config: config, cache: highlight.NewCache()}
+	s := &Service{config: config, cache: highlight.NewCache()}
+	s.live.init()
+	return s
 }
 
 func (s *Service) Code(langName, source string) (Result, error) {
@@ -114,13 +112,4 @@ func (s *Service) PatchWithContext(workspace, threadID string, req ContextReques
 		res = s.cache.Patch(lang, req.Patch)
 	}
 	return Result{Lang: lang.String(), Lines: res.Lines, Truncated: res.Truncated, Incomplete: res.Incomplete, Primed: primed}, nil
-}
-
-// PendingSeedCount reports registered streaming items. It exists for
-// lifecycle verification: session replacement must prove it purged states
-// whose provider stream can no longer deliver a final tick.
-func (s *Service) PendingSeedCount() int {
-	s.seeder.mu.Lock()
-	defer s.seeder.mu.Unlock()
-	return len(s.seeder.states)
 }

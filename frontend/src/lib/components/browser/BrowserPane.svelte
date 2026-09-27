@@ -243,6 +243,22 @@
     await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
   }
 
+  // A suspended page (its session went idle, or the app restarted) has no
+  // native view. Presenting it restores it: the pane asks once each time the
+  // active page is found suspended, so a refusal stays in the banner until
+  // the user acts on the page.
+  let restoreAsked = '';
+  $effect(() => {
+    const page = attached ? activePage : null;
+    if (!page?.suspended) {
+      restoreAsked = '';
+      return;
+    }
+    if (page.id === restoreAsked) return;
+    restoreAsked = page.id;
+    void act('activate', page.id);
+  });
+
   async function revealPageFile(): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId || !activePageId) return;

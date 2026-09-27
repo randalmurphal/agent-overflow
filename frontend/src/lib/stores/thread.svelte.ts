@@ -755,6 +755,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     applyDraftPlaceholderDefaults: draftState.applyDraftPlaceholderDefaults,
     applyDraftPlaceholderWorkspace: draftState.applyDraftPlaceholderWorkspace,
     dematerializeEmptyDraftThread: draftState.dematerializeEmptyDraftThread,
+    dropDraftPlaceholderTerminals: draftState.dropPlaceholderTerminals,
     /**
      * "Locked in" — the user has sent at least one message, so the
      * provider/model selection is committed for this thread. UI

@@ -368,7 +368,8 @@ for readers that must hear about threads no pane shows.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.
-Background policy may withhold highlight seeds and merge provider item deltas.
+Background policy may withhold live code spans (`highlight:live`) and merge
+provider item deltas.
 Returning active flushes pending deltas in channel sequence order before later
 pass-through frames.
 

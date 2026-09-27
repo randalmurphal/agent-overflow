@@ -17,6 +17,8 @@
   import { errString } from '../../utils/errors';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import { forgetTerminal } from '../../transport/entityIndex';
+  import { endTerminalTab } from '../../stores/eventsTerminal';
+  import { isDraftPlaceholderId } from '../../stores/draftPlaceholderId';
   import {
     getThreadTerminalState,
     registerTerminalSurface,
@@ -115,7 +117,11 @@
         new TerminalOpenOptions({ cwd: workspacePath }),
       )) as TerminalHandle;
       if (!canUseTerminalResult(threadId, workspacePath)) {
-        if (th?.terminalID) {
+        // A thread's shell keeps running, as when its pane closes after the
+        // open, and the thread's next surface lists it. A draft placeholder's
+        // shells end with its surface (closeDraftPlaceholderTerminals), which
+        // this late open missed.
+        if (th?.terminalID && isDraftPlaceholderId(threadId)) {
           await closeStaleOpenedTerminal(th.terminalID);
         }
         return;
@@ -129,6 +135,9 @@
       }
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
+      // A surface that is gone asked for nothing any more: its thread may have
+      // been deleted while the open was in flight.
+      if (!canUseTerminalResult(threadId, workspacePath)) return;
       addToast('error', `Could not open terminal: ${userFacingError(err)}`);
     }
   }
@@ -141,10 +150,11 @@
     }
     handle.removeTab(terminalID);
     // Closing the last tab leaves nothing to render. In the drawer, collapse
-    // it (the user re-opens via the header button or ⌘J). In a full pane,
-    // setVisible is a no-op and the "No active terminal" empty state stays put
-    // with ＋ to re-open. When a sibling tab remains, removeTab promotes it to
-    // active (a remount); re-latch focus so the cursor follows into it.
+    // it (the user re-opens via the header button or ⌘J). A terminal thread's
+    // pane ends with its last terminal: its computer deletes the thread, and
+    // that deletion closes the pane. When a sibling tab remains, removeTab
+    // promotes it to active (a remount); re-latch focus so the cursor follows
+    // into it.
     if (handle.tabs.length === 0) {
       collapseDrawer();
     } else {
@@ -194,20 +204,27 @@
   });
 
   // Make the tabs match the thread's terminal list, at mount and again when
-  // the thread's computer reconnects or loses terminal events. A failed read
-  // keeps the tabs.
+  // the thread's computer reconnects or loses terminal events. A terminal the
+  // list no longer names has ended, and goes the way its exit would have: its
+  // tab is removed, focus follows to the next tab, and the drawer collapses
+  // with the last one (the effect above). A failed read keeps the tabs.
   async function syncTerminals(
     threadId: string,
     workspacePath: string | undefined,
     activate: boolean,
   ): Promise<void> {
     try {
-      const gone = await handle.syncTabs(
+      await handle.syncTabs(
         async () => (await ListTerminals(threadId)) as TerminalSessionSummary[] | null,
-        { activate, current: () => canUseTerminalResult(threadId, workspacePath) },
+        {
+          activate,
+          current: () => canUseTerminalResult(threadId, workspacePath),
+          remove: (terminalID) => {
+            forgetTerminal(terminalID, threadMachine(threadId, null));
+            endTerminalTab(handle, threadId, terminalID);
+          },
+        },
       );
-      const backend = threadMachine(threadId, null);
-      for (const terminalID of gone) forgetTerminal(terminalID, backend);
     } catch (err) {
       reportFrontendDiagnostic('terminal list failed', errString(err));
     }
@@ -228,7 +245,10 @@
 
     await syncTerminals(threadId, workspacePath, true);
     if (!canUseTerminalResult(threadId, workspacePath)) return;
-    // Auto-open a first terminal if none exist yet so the surface is not empty.
+    // Auto-open a first terminal if none exist yet so the surface is not empty:
+    // a new terminal thread's first shell, or a drawer being opened. A terminal
+    // thread whose shells have ended is refused by the backend (OpenTerminal),
+    // so a pane mounting while its delete runs cannot bring it back.
     if (handle.tabs.length === 0) {
       await openTerminal();
     }

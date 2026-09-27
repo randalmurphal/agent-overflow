@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -38,6 +40,20 @@ func (a *App) headlessChromiumOptions(current settings.Settings) *appbrowser.Hea
 		return nil
 	}
 	return &appbrowser.HeadlessChromiumOptions{Binary: current.BrowserChromiumPath}
+}
+
+// newBrowserManager builds the browser manager over dbDir. Its construction
+// loads the saved pages of every thread that keeps them
+// (browserThreadKeepsPages).
+func (a *App) newBrowserManager(dbDir string, current settings.Settings) *appbrowser.Manager {
+	return appbrowser.NewManager(dbDir, browserConfigFromSettings(current), appbrowser.ManagerOptions{
+		FakeEngine:       a.browser.mockEngine,
+		PaneHost:         a.paneHostOptions(),
+		HeadlessChromium: a.headlessChromiumOptions(current),
+		NativeWindow:     a.browser.nativeWindow,
+		Accelerators:     a.browserAccelerators,
+		KeepThread:       a.browserThreadKeepsPages,
+	})
 }
 
 func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
@@ -135,10 +151,10 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 	return nil
 }
 
-// closeThreadBrowserPages closes the pages a deleted conversation owns. Its
-// browser tools calls finish first, so none opens a page after the close;
-// the delete's thread lock keeps a session start from registering the thread
-// again meanwhile.
+// closeThreadBrowserPages closes the pages a deleted or archived
+// conversation owns, suspended ones included. Its browser tools calls finish
+// first, so none opens a page after the close; the caller's thread lock keeps
+// a session start from registering the thread again meanwhile.
 func (a *App) closeThreadBrowserPages(threadID string) error {
 	if a.browser.manager == nil {
 		return nil
@@ -149,6 +165,34 @@ func (a *App) closeThreadBrowserPages(threadID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return a.browser.manager.CloseThread(ctx, threadID)
+}
+
+// suspendThreadBrowserPages unloads the browser pages of a thread whose idle
+// provider session the reaper ended. They stay in the thread's page list and
+// reload on their next use. Shutdown cancels it between pages: a desktop
+// shutdown holds the UI thread every engine call needs, and Close saves the
+// pages still live.
+func (a *App) suspendThreadBrowserPages(threadID string) error {
+	if a.browser.manager == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
+	defer cancel()
+	return a.browser.manager.SuspendThread(ctx, threadID)
+}
+
+// browserThreadKeepsPages answers at boot whether a thread's saved browser
+// pages still belong to it: the thread exists and is not archived. Pages a
+// delete or archive could not close (the app stopped mid-way) go here.
+func (a *App) browserThreadKeepsPages(threadID string) (bool, error) {
+	thread, err := a.browserThread(threadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !thread.Archived, nil
 }
 
 // ClearBrowserSiteData closes active browser contexts before deleting their

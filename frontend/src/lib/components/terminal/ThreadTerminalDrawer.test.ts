@@ -79,9 +79,9 @@ vi.mock('../../stores/toast.svelte', () => ({
   addToast: vi.fn(),
 }));
 
-function makeSurface() {
+function makeSurface(threadId = 'thread-A') {
   const thread = {
-    id: 'thread-A',
+    id: threadId,
     workspacePath: '/workspace',
     title: 't',
     provider: 'claude',
@@ -184,12 +184,8 @@ describe('ThreadTerminalDrawer', () => {
     expect(getByTestId('terminal-tab-t1')).toBeDefined();
   });
 
-  it('closes a terminal when OpenTerminal resolves after the surface is invalidated', async () => {
-    const pane = makeSurface() as ReturnType<typeof makeSurface> & {
-      canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
-    };
-    let canAdopt = true;
-    pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
+  // Holds OpenTerminal open until the test resolves it with shell t1.
+  async function deferOpenTerminal(): Promise<(threadID: string) => void> {
     let resolveOpen: ((value: Awaited<ReturnType<typeof defaultOpenTerminalImpl>>) => void) | undefined;
     const bindings = await import('../../stores/bindings');
     (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
@@ -200,40 +196,133 @@ describe('ThreadTerminalDrawer', () => {
         });
       },
     );
+    return (threadID) => {
+      resolveOpen!({
+        terminalID: 't1',
+        threadID,
+        summary: {
+          terminalID: 't1',
+          threadID,
+          shell: '/bin/bash',
+          cwd: '/tmp',
+          rows: 24,
+          cols: 80,
+          pid: 1,
+          startedAt: 0,
+          running: true,
+          exitCode: 0,
+          exitReason: '',
+        },
+      });
+    };
+  }
 
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, {
-      surface: pane as never,
-      manual: true,
-    });
+  // Closing a new terminal pane during its first open is closing it after the
+  // open: the shell keeps the thread alive, and its next surface lists it.
+  it("leaves a thread's shell running when its first open resolves after the pane closed", async () => {
+    const finishOpen = await deferOpenTerminal();
+    const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface('terminal-thread') as never });
+    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
+    unmount();
+    finishOpen('terminal-thread');
+    await Promise.resolve();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(callLog.filter((c) => c.fn === 'CloseTerminal')).toEqual([]);
+  });
+
+  it("leaves a thread's shell running when its open resolves after the surface is invalidated", async () => {
+    const pane = makeSurface() as ReturnType<typeof makeSurface> & {
+      canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
+    };
+    let canAdopt = true;
+    pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
+    const finishOpen = await deferOpenTerminal();
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
     await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
     canAdopt = false;
-    resolveOpen!({
-      terminalID: 't1',
-      threadID: 'thread-A',
-      summary: {
-        terminalID: 't1',
-        threadID: 'thread-A',
-        shell: '/bin/bash',
-        cwd: '/tmp',
-        rows: 24,
-        cols: 80,
-        pid: 1,
-        startedAt: 0,
-        running: true,
-        exitCode: 0,
-        exitReason: '',
-      },
-    });
+    finishOpen('thread-A');
     await Promise.resolve();
     await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(callLog.filter((c) => c.fn === 'CloseTerminal')).toEqual([]);
+    expect(queryByTestId('terminal-tab-t1')).toBeNull();
+  });
+
+  // A draft placeholder's shells end with its surface, so one opened too late
+  // for that close is closed here.
+  it("closes a draft placeholder's shell when its open resolves after the surface is invalidated", async () => {
+    const draftId = 'draft:main:project-1:chat:abc';
+    const pane = makeSurface(draftId) as ReturnType<typeof makeSurface> & {
+      canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
+    };
+    let canAdopt = true;
+    pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
+    const finishOpen = await deferOpenTerminal();
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
+    canAdopt = false;
+    finishOpen(draftId);
 
     await waitFor(() => {
       expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual([['t1']]);
     });
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
+  });
+
+  it("closes a draft placeholder's shell when its first open resolves after the pane closed", async () => {
+    const draftId = 'draft:main:project-1:terminal:abc';
+    const finishOpen = await deferOpenTerminal();
+    const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface(draftId) as never });
+    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
+    unmount();
+    finishOpen(draftId);
+
+    await waitFor(() => {
+      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual([['t1']]);
+    });
+  });
+
+  // A pane whose thread its computer deleted closes while the open is in
+  // flight: the refusal answers a surface that is gone and reports nothing.
+  it('reports a failed open only while its surface remains', async () => {
+    const { addToast } = await import('../../stores/toast.svelte');
+    vi.mocked(addToast).mockClear();
+    const rejects: Array<(err: Error) => void> = [];
+    const bindings = await import('../../stores/bindings');
+    (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+      async (threadID: string, opts: unknown) => {
+        callLog.push({ fn: 'OpenTerminal', args: [threadID, opts] });
+        return new Promise((_resolve, reject) => { rejects.push(reject); });
+      },
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { getByTestId, unmount } = render(ThreadTerminalDrawer, { surface: makeSurface() as never, manual: true });
+      await tick();
+      getByTestId('terminal-open').click();
+      await waitFor(() => expect(rejects).toHaveLength(1));
+      rejects[0]!(new Error('This terminal has ended.'));
+      await waitFor(() => expect(addToast).toHaveBeenCalledTimes(1));
+
+      getByTestId('terminal-open').click();
+      await waitFor(() => expect(rejects).toHaveLength(2));
+      unmount();
+      rejects[1]!(new Error('This terminal has ended.'));
+      await Promise.resolve();
+      await tick();
+      expect(addToast).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('renders terminal body without the old send-selection header', async () => {

@@ -6,7 +6,11 @@ import {
   getProjects,
   resetProjectsForTest,
 } from './projects.svelte';
+import { createPane, getAllPanes, resetPanesForTest, revealPane } from './panes.svelte';
+import { getCompactScreen, setCompactLayoutForTest } from './layoutMode.svelte';
 import type { Project } from '../types/models';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { getThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 
 function makeProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -24,6 +28,7 @@ function makeProject(id: string, overrides: Partial<Project> = {}): Project {
 describe('applyProjectUpdated — project:updated convergence', () => {
   beforeEach(() => {
     resetProjectsForTest();
+    resetPanesForTest();
   });
 
   it("inserts a row this client does not have on 'listed'", () => {
@@ -71,6 +76,62 @@ describe('applyProjectUpdated — project:updated convergence', () => {
     addProjectLocal(makeProject('p2'));
     applyProjectUpdated({ action: 'deleted', id: 'p1' });
     expect(getProjects().map((p) => p.project.id)).toEqual(['p2']);
+  });
+
+  // A placeholder has no thread row, so no thread:updated frame names it.
+  // Its project is what it would be created in, and that project is gone.
+  it("closes every draft placeholder on a deleted project, and leaves the rest", () => {
+    const gone = makeProject('p1');
+    const kept = makeProject('p2');
+    addProjectLocal(gone);
+    addProjectLocal(kept);
+    createPane('gone-chat').startDraftPlaceholder(gone, 'chat');
+    createPane('gone-plan').startDraftPlaceholder(gone, 'plan');
+    createPane('kept-chat').startDraftPlaceholder(kept, 'chat');
+    createPane('empty');
+
+    applyProjectUpdated({ action: 'deleted', id: 'p1' });
+
+    expect([...getAllPanes().keys()]).toEqual(['kept-chat', 'empty']);
+    expect(getAllPanes().get('kept-chat')?.draftPlaceholder?.projectId).toBe('p2');
+  });
+
+  // The project's computer is still attached, so it closes the shells.
+  it("asks the computer to close a deleted project's placeholder terminals", () => {
+    const project = makeProject('p1');
+    addProjectLocal(project);
+    const pane = createPane('gone-chat');
+    pane.startDraftPlaceholder(project, 'chat');
+    const placeholderId = pane.thread!.id;
+    getThreadTerminalState(placeholderId).addTab({
+      terminalID: 'term-1', threadID: placeholderId, shell: '/bin/sh', cwd: project.path,
+      rows: 24, cols: 80, pid: 123, startedAt: 1, running: true, exitCode: 0, exitReason: '',
+    });
+    pane.setShowTerminal(true);
+    const close = setBindingMock('CloseThreadTerminals', async () => undefined);
+
+    applyProjectUpdated({ action: 'deleted', id: 'p1' });
+
+    expect(getAllPanes().size).toBe(0);
+    expect(close.mock.calls).toEqual([[placeholderId]]);
+  });
+
+  it("returns a compact client to the list when a deleted project's placeholder was the only pane", () => {
+    setCompactLayoutForTest(true);
+    try {
+      const project = makeProject('p1');
+      addProjectLocal(project);
+      createPane('only').startDraftPlaceholder(project, 'chat');
+      revealPane('only');
+      expect(getCompactScreen()).toBe('thread');
+
+      applyProjectUpdated({ action: 'deleted', id: 'p1' });
+
+      expect(getAllPanes().size).toBe(0);
+      expect(getCompactScreen()).toBe('list');
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('ignores frames with nothing to act on', () => {

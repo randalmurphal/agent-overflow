@@ -8,7 +8,6 @@ import {
   extractPatchFile,
   filePatchDisplayRows,
   mergePatchFilesByPath,
-  mergePatchFilesByPathCached,
   parsePatchFileSummaries,
   parsePatchFiles,
   parsePatchFilesCached,
@@ -896,32 +895,5 @@ describe('mergePatchFilesByPath', () => {
     const a = section('a.go');
     const b = section('b.go');
     expect(mergePatchFilesByPath([a, b])).toEqual([a, b]);
-  });
-
-  it('mergePatchFilesByPathCached returns the identical array per input identity', () => {
-    const parsed = parsePatchFiles(
-      [
-        'diff --git a/a.ts b/a.ts',
-        '--- a/a.ts',
-        '+++ b/a.ts',
-        '@@ -5,2 +5,2 @@',
-        ' ctx',
-        '-old',
-        '+new',
-        'diff --git a/a.ts b/a.ts',
-        '--- a/a.ts',
-        '+++ b/a.ts',
-        '@@ -9,1 +9,2 @@',
-        ' ctx2',
-        '+later',
-      ].join('\n'),
-    );
-    const mergedOnce = mergePatchFilesByPathCached(parsed);
-    // Identity, not just equality: downstream memos (expansion rebuild
-    // cache, span-cache predecessor chains) key on the lines array.
-    expect(mergePatchFilesByPathCached(parsed)).toBe(mergedOnce);
-    // A different input array (same content) misses — the memo is
-    // keyed on the parse-cache result's identity.
-    expect(mergePatchFilesByPathCached([...parsed])).not.toBe(mergedOnce);
   });
 });

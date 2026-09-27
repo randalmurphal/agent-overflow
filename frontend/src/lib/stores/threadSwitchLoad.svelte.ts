@@ -210,6 +210,11 @@ export interface ThreadSwitchLoad {
   snapshotPaneForClose(): void;
   /** Tear down the terminals a draft placeholder opened. */
   closeDraftPlaceholderTerminals(placeholderId: string): void;
+  /**
+   * The client half of `closeDraftPlaceholderTerminals`, for a computer this
+   * client can no longer reach. Reports whether there was anything to drop.
+   */
+  dropDraftPlaceholderTerminals(placeholderId: string): boolean;
   /** Move a draft placeholder's terminals onto the thread it materialized into. */
   migrateDraftPlaceholderTerminals(
     placeholderId: string,
@@ -784,11 +789,16 @@ export function createThreadSwitchLoad(
     );
   }
 
-  function closeDraftPlaceholderTerminals(placeholderId: string): void {
-    if (!placeholderHasTerminalState(placeholderId)) return;
+  function dropDraftPlaceholderTerminals(placeholderId: string): boolean {
+    if (!placeholderHasTerminalState(placeholderId)) return false;
     options.invalidatedDraftTerminalIds.add(placeholderId);
     options.setShowTerminal(false);
     clearThreadTerminalState(placeholderId);
+    return true;
+  }
+
+  function closeDraftPlaceholderTerminals(placeholderId: string): void {
+    if (!dropDraftPlaceholderTerminals(placeholderId)) return;
     void CloseThreadTerminals(placeholderId).catch((err) => {
       console.error('Failed to close placeholder terminals:', err);
       addToast('error', `Could not close terminal: ${errString(err)}`);
@@ -1892,6 +1902,7 @@ export function createThreadSwitchLoad(
     dropCachedWindow,
     snapshotPaneForClose,
     closeDraftPlaceholderTerminals,
+    dropDraftPlaceholderTerminals,
     migrateDraftPlaceholderTerminals,
     getLiveTouchedDuringSync: () => liveTouchedDuringSync,
     noteItemMutation,

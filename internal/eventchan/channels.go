@@ -74,11 +74,11 @@ const (
 	HarnessUIQuery Channel = "harness:ui-query"
 )
 
-// highlight:* — syntax-span cache warmers pushed alongside streaming
-// text and persisted diffs.
+// highlight:* — syntax spans pushed for streaming code blocks and
+// persisted diffs.
 const (
 	HighlightDiffSeed Channel = "highlight:diff_seed"
-	HighlightSeed     Channel = "highlight:seed"
+	HighlightLive     Channel = "highlight:live"
 )
 
 // keybindings:* — a payload-less refetch nudge fired after the user
@@ -277,10 +277,15 @@ const (
 // exists rather than dropping its output for an id it never saw. Close
 // needs no channel of its own — closing a session kills the process, so
 // TerminalExit already carries it.
+//
+// TerminalEndFailed reports that a terminal thread whose last shell
+// exited could not be deleted. No caller waits on that delete, so every
+// client is told.
 const (
-	TerminalExit   Channel = "terminal:exit"
-	TerminalOpened Channel = "terminal:opened"
-	TerminalOutput Channel = "terminal:output"
+	TerminalEndFailed Channel = "terminal:end_failed"
+	TerminalExit      Channel = "terminal:exit"
+	TerminalOpened    Channel = "terminal:opened"
+	TerminalOutput    Channel = "terminal:output"
 )
 
 // thread-group:* — the sidebar thread group (migration v76). Its own

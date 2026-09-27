@@ -223,9 +223,11 @@ func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
 		t.Fatalf("receipt names no turn of its own thread: %+v", receipt)
 	}
 	// The fence reads the turn the thread is running; until the turn start
-	// has been processed there is no turn to fence against.
+	// and its wire round have been processed there is no running turn to
+	// fence against.
 	waitUntil(t, 10*time.Second, func() bool {
-		return f.app.triage.OpenTurnIndex(receipt.TargetThreadID) == index
+		live, err := f.adapter().LiveState(t.Context(), receipt.TargetThreadID)
+		return err == nil && live.ActiveTurn && f.app.triage.OpenTurnIndex(receipt.TargetThreadID) == index
 	})
 	interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index+1, nil)
 	if err != nil {

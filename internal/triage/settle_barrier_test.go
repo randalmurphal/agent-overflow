@@ -364,10 +364,7 @@ func newBlockSettleHold(t *testing.T, router *Router) *blockSettleHold {
 		held:    make(chan struct{}),
 		release: sync.OnceFunc(func() { close(released) }),
 	}
-	router.SetAssistantTextStreamObserver(func(_, _, text string, final bool) {
-		if !final {
-			return
-		}
+	router.SetAssistantTextObservers(nil, func(_, _, text string) {
 		hold.mu.Lock()
 		first := len(hold.finals) == 0
 		hold.finals = append(hold.finals, text)

@@ -73,7 +73,21 @@ type Manager struct {
 	config  Config
 	closed  bool
 
-	scopes    map[string]*workspaceScope
+	scopes map[string]*workspaceScope
+	// suspended holds the pages whose engine page was unloaded (suspend.go),
+	// by page id. They belong to their thread's tab set but hold no engine
+	// resource. Guarded by mu.
+	suspended map[string]*suspendedPage
+	// recordsCleared counts forgetAllRecords calls, so a suspension that
+	// began before its browser was turned off or its site data cleared
+	// records nothing. Guarded by mu.
+	recordsCleared uint64
+	// recordDir holds the durable copy of the suspended pages, one file per
+	// thread (page_records.go). persistMu orders its writes: each takes its
+	// snapshot under mu while holding persistMu, so an older snapshot never
+	// replaces a newer one.
+	recordDir string
+	persistMu sync.Mutex
 	idleTimer *time.Timer
 	eventSink func(CompanionEvent)
 	panes     map[string]paneMount
@@ -127,6 +141,12 @@ type ManagerOptions struct {
 	// window — that absence is exactly what leaves `go test` and a remote
 	// `--connect` backend with no engine at all.
 	HeadlessChromium *HeadlessChromiumOptions
+
+	// KeepThread answers at boot whether a thread whose saved pages were
+	// found still exists and is not archived. The pages of a thread it
+	// rejects are removed; an error keeps them for the next boot. Nil keeps
+	// every saved page.
+	KeepThread func(threadID string) (bool, error)
 
 	// NativeWindow returns the desktop window an in-process engine hosts its
 	// views inside (spec docs/specs/embedded-browser.md §6), or nil when this
@@ -223,6 +243,8 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		config:        config,
 		profileDir:    filepath.Join(configDir, browserProfileDir),
 		scopes:        make(map[string]*workspaceScope),
+		suspended:     make(map[string]*suspendedPage),
+		recordDir:     filepath.Join(configDir, browserPageRecordDir),
 		panes:         make(map[string]paneMount),
 		sessions:      make(map[string]SessionInfo),
 		viewportSyncs: make(map[string]*viewportSync),
@@ -238,6 +260,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		KeyChord:         m.keyChord,
 	})
 	pruneEncryptedCheckpoints(configDir)
+	m.loadPageRecords(opts.KeepThread)
 	return m
 }
 
@@ -296,7 +319,10 @@ func (m *Manager) Reconfigure(config Config) error {
 	m.config = config
 	m.mu.Unlock()
 	if !config.Enabled || changedPersistence {
-		return m.closeBrowser(context.Background())
+		// The pages close as they always have, suspended ones included: a
+		// disabled browser keeps no browser state, and a page restored into
+		// the other site-data mode would not be the page that was open.
+		return errors.Join(m.forgetAllRecords(), m.closeBrowser(context.Background()))
 	}
 	return nil
 }
@@ -316,7 +342,7 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
-	p, err := m.pageForOpen(ctx, access, "")
+	p, err := m.pageForOpen(ctx, access, "", false)
 	if err != nil {
 		return PageInfo{}, err
 	}
@@ -351,7 +377,7 @@ func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts
 }
 
 func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions) (PageInfo, error) {
-	p, err := m.pageForOpen(ctx, access, opts.PageID)
+	p, err := m.pageForOpen(ctx, access, opts.PageID, true)
 	if err != nil {
 		return PageInfo{}, err
 	}
@@ -372,13 +398,23 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	return info, err
 }
 
+// Pages lists the thread's pages, suspended ones included as they were saved:
+// listing is not a touch, so it restores nothing.
 func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
-	pages := m.ownedPages(access.ThreadID)
+	tabs := m.threadTabs(access.ThreadID)
 	m.mu.Lock()
 	activePageID := m.sessionLocked(access.ThreadID).ActivePageID
 	m.mu.Unlock()
-	out := make([]PageInfo, 0, len(pages))
-	for _, p := range pages {
+	out := make([]PageInfo, 0, len(tabs))
+	for _, tab := range tabs {
+		p := tab.live
+		if p == nil {
+			info := tab.info
+			info.Selected = info.ID == activePageID
+			info.LastOpened = time.Unix(0, tab.lastUse).UTC().Format(time.RFC3339Nano)
+			out = append(out, info)
+			continue
+		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 		info, err := m.pageInfo(opCtx, p)
@@ -396,12 +432,38 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 	return out, nil
 }
 
+// ClosePage closes one of the caller's pages. A suspended page has no engine
+// page to close; closing it forgets its record.
 func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) error {
+	err := m.closeLivePage(ctx, access, pageID)
+	if errors.Is(err, errPageNotFound) {
+		return m.forgetRecord(access.ThreadID, pageID)
+	}
+	return err
+}
+
+// closeLivePage closes a live page. It answers errPageNotFound when the page
+// is not live.
+func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID string) error {
 	p, scope, err := m.lookupOwnedPage(access, pageID)
 	if err != nil {
 		return err
 	}
+	return m.closeFoundPage(ctx, access, p, scope)
+}
+
+// closeFoundPage closes a page a lookup found live. It answers
+// errPageNotFound when the page stopped being live before its lock was
+// taken: suspended meanwhile, it is now a record for ClosePage to forget.
+func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedPage, scope *workspaceScope) error {
 	p.mu.Lock()
+	m.mu.Lock()
+	registered := scope.pages[p.id] == p
+	m.mu.Unlock()
+	if !registered {
+		p.mu.Unlock()
+		return errPageNotFound
+	}
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
 	p.mu.Unlock()
@@ -419,19 +481,28 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 }
 
 // CloseThread closes every page the thread owns, including a popup one of
-// them opens while it runs, and forgets the thread's browser session. A page
-// the engine closed meanwhile counts as closed. A workspace profile that
-// fails to dispose once its last page is gone is logged rather than
-// returned: the thread's pages are closed, and the profile is no longer
-// registered for a retry to dispose.
+// them opens while it runs, forgets its suspended pages and their saved copy,
+// and forgets the thread's browser session. A page the engine closed
+// meanwhile counts as closed. A workspace profile that fails to dispose once
+// its last page is gone is logged rather than returned: the thread's pages
+// are closed, and the profile is no longer registered for a retry to
+// dispose. A saved copy that cannot be removed is logged the same way: its
+// pages are gone from memory, and the next boot removes the saved copy of a
+// deleted or archived thread.
+//
+// The records go first, so no restore can register a page after the loop
+// below has closed the thread's live ones.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
+	if err := m.forgetThreadRecords(threadID); err != nil {
+		log.Printf("browser: close thread %s: %v", threadID, err)
+	}
 	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("browser: close thread pages: %w", err)
 		}
 		for _, p := range pages {
 			access := Access{ThreadID: threadID, Workspace: m.workspaceForPage(p.id)}
-			if err := m.ClosePage(ctx, access, p.id); err != nil && !errors.Is(err, errPageNotFound) {
+			if err := m.closeLivePage(ctx, access, p.id); err != nil && !errors.Is(err, errPageNotFound) {
 				log.Printf("browser: close thread %s: %v", threadID, err)
 			}
 		}
@@ -453,7 +524,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	if err := m.closeBrowser(ctx); err != nil {
+	if err := errors.Join(m.forgetAllRecords(), m.closeBrowser(ctx)); err != nil {
 		return err
 	}
 	var errs []error
@@ -468,35 +539,61 @@ func (m *Manager) ClearSiteData(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Close shuts the manager down. The pages open at that moment are saved as
+// suspended pages first, so they come back in their threads after a restart.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
-	return m.closeBrowser(context.Background())
+	return errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
 }
 
-func (m *Manager) pageForOpen(ctx context.Context, access Access, requested string) (*managedPage, error) {
+// pageForOpen answers the page an open navigates: the requested one, or a new
+// page. A suspended page asked for by a caller about to navigate it is
+// restored blank (skipLoad), since loading its old address first is wasted.
+func (m *Manager) pageForOpen(ctx context.Context, access Access, requested string, skipLoad bool) (*managedPage, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
 	if requested = strings.TrimSpace(requested); requested != "" {
-		p, _, err := m.lookupOwnedPage(access, requested)
+		p, _, err := m.resolvePage(ctx, access, requested, skipLoad)
 		return p, err
 	}
 	return m.createPage(ctx, access)
 }
 
 func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
+	p := newManagedPage(access)
+	p.info = PageInfo{ID: p.id, URL: "about:blank"}
+	// One startMu hold spans the engine start and the page's registration, so
+	// the idle close cannot stop the engine in between.
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	scope, err := m.openPageLocked(ctx, access, p, true)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	scope.creating--
+	scope.pages[p.id] = p
+	m.mu.Unlock()
+	m.pageChanged(p)
+	return p, nil
+}
+
+// openPageLocked starts the engine if it is not running, applies the page
+// caps, and creates p's engine page in the scope of access's workspace, laid
+// out at its thread's viewport. It returns with the scope reserved for p
+// (scope.creating): the caller registers p or abandons it (abandonPage). The
+// per-thread cap is skipped for a restore, whose record already holds its
+// thread's slot. The caller holds startMu.
+func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage, threadCap bool) (*workspaceScope, error) {
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
 	}
 	access.Workspace = workspace
-
-	// One startMu hold spans the engine start and the page's registration, so
-	// the idle close cannot stop the engine in between.
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
+	p.access = access
 	if err := m.startLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -518,11 +615,11 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: workspace context limit reached (%d)", maxWorkspaceContexts)
 	}
-	if countOwnedPagesLocked(m.scopes, access.ThreadID) >= maxPagesPerThread {
+	if threadCap && m.threadPageCountLocked(access.ThreadID) >= maxPagesPerThread {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: page limit reached for thread (%d)", maxPagesPerThread)
+		return nil, fmt.Errorf("browser: page limit reached for thread (%d); close a page first", maxPagesPerThread)
 	}
-	if scope != nil && len(scope.pages) >= maxPagesPerWorkspace {
+	if scope != nil && scopeLoadLocked(scope) >= maxPagesPerWorkspace {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: page limit reached for workspace (%d)", maxPagesPerWorkspace)
 	}
@@ -550,39 +647,48 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		m.mu.Unlock()
 	}
 
-	p, err := m.newPage(ctx, scope, access)
-	m.mu.Lock()
-	scope.creating--
-	if err == nil {
-		scope.pages[p.id] = p
-	}
-	release := m.releaseScopeLocked(scope)
-	m.mu.Unlock()
-	if err != nil {
+	if err := m.newPage(ctx, scope, p); err != nil {
+		m.mu.Lock()
+		scope.creating--
+		release := m.releaseScopeLocked(scope)
+		m.mu.Unlock()
 		if release {
 			err = errors.Join(err, m.disposeScope(context.Background(), scope))
 		}
 		return nil, err
 	}
-	m.pageChanged(p)
-	return p, nil
+	return scope, nil
 }
 
-// newPage creates a page in scope, laid out at its thread's viewport.
-func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, access Access) (*managedPage, error) {
-	p := newManagedPage(access)
-	p.info = PageInfo{ID: p.id, URL: "about:blank"}
+// abandonPage closes a page openPageLocked created that will not be
+// registered, ends its reservation, and disposes the scope if that left it
+// empty.
+func (m *Manager) abandonPage(scope *workspaceScope, p *managedPage) error {
+	p.driver.Close()
+	m.mu.Lock()
+	scope.creating--
+	release := m.releaseScopeLocked(scope)
+	m.mu.Unlock()
+	if release {
+		return m.disposeScope(context.Background(), scope)
+	}
+	return nil
+}
+
+// newPage creates p's engine page in scope, laid out at its thread's
+// viewport.
+func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managedPage) error {
 	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	p.attach(driver)
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
-		return nil, err
+		return err
 	}
 	p.touch()
-	return p, nil
+	return nil
 }
 
 // pageHooks binds one page's AO-owned state to the engine events its driver
@@ -658,7 +764,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		}
 		break
 	}
-	tooMany := owner != "" && (countOwnedPagesLocked(m.scopes, owner) >= maxPagesPerThread || len(scope.pages) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal)
+	tooMany := owner != "" && (m.threadPageCountLocked(owner) >= maxPagesPerThread || scopeLoadLocked(scope) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal)
 	m.mu.Unlock()
 	if scope == nil || owner == "" || tooMany {
 		m.engine.DiscardPage(popup.Handle)
@@ -683,7 +789,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	m.mu.Lock()
 	// The opener may have closed meanwhile, with its thread's other pages.
 	current := m.scopes[scope.workspace]
-	if current != scope || pageWithHandle(scope, popup.Opener) == nil || countOwnedPagesLocked(m.scopes, owner) >= maxPagesPerThread || len(scope.pages) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal {
+	if current != scope || pageWithHandle(scope, popup.Opener) == nil || m.threadPageCountLocked(owner) >= maxPagesPerThread || scopeLoadLocked(scope) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal {
 		m.mu.Unlock()
 		driver.Close()
 		return

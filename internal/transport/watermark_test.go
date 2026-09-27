@@ -47,14 +47,14 @@ func drainQueued(sub *Subscriber) []uint64 {
 }
 
 // TestDeliverMarksOnlyElectedWithholds: a frame the watch set or the
-// background lease holds back is marked; one the channel subscription,
-// the origin or the grants hold back is not, since those channels never
-// reach the client's cursor.
+// background lease holds back is marked; one the channel subscription or
+// the grants hold back is not, since those channels never reach the
+// client's cursor.
 func TestDeliverMarksOnlyElectedWithholds(t *testing.T) {
 	bus := NewEventBus(0)
 	defer bus.Close()
 	item := eventchan.ProviderItemEvent
-	seed := fixtureChannel(t, eventchan.HighlightSeed, RetentionEphemeral)
+	seed := fixtureChannel(t, eventchan.HighlightLive, RetentionEphemeral)
 
 	watching := watermarkBus(t, bus)
 	watching.SetOriginLoopback(false)
@@ -66,10 +66,6 @@ func TestDeliverMarksOnlyElectedWithholds(t *testing.T) {
 	defer subscribed.Close()
 	subscribed.SetChannels([]string{"notification:send"})
 	subscribed.SetWatch([]string{"thread-A"}, nil, nil)
-	loopback := bus.Subscribe()
-	defer loopback.Close()
-	loopback.SetOriginLoopback(true)
-	loopback.SetWatch([]string{"thread-A"}, nil, nil)
 	ungranted := bus.Subscribe()
 	defer ungranted.Close()
 	ungranted.SetScopeFilter(sessionScopeFilter(nil, false))
@@ -85,11 +81,6 @@ func TestDeliverMarksOnlyElectedWithholds(t *testing.T) {
 	}
 	if got, want := background.takeWithheld(), map[string]uint64{string(seed): seedB.Seq}; !maps.Equal(got, want) {
 		t.Fatalf("lease-withheld marks = %v, want %v", got, want)
-	}
-	// The loopback connection is withheld the remote-only seed by origin,
-	// before its watch set is consulted: only its item frames are marked.
-	if got, want := loopback.takeWithheld(), map[string]uint64{string(item): lastB.Seq}; !maps.Equal(got, want) {
-		t.Fatalf("origin-withheld marks = %v, want %v", got, want)
 	}
 	for name, sub := range map[string]*Subscriber{"subscription": subscribed, "grant": ungranted} {
 		if got := sub.takeWithheld(); got != nil {
@@ -253,12 +244,13 @@ func TestPumpWatermarkIsVisibilityGated(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	seed := string(eventchan.HighlightSeed)
+	seed := string(eventchan.HighlightLive)
 	item := string(eventchan.ProviderItemEvent)
 	sub.withheld = map[string]uint64{seed: 7, item: 9}
 	p := newPumpWire(sub)
+	p.h.eventScopes = sessionScopeFilter([]string{string(ScopeThreadsRead)}, false)
 	if p.h.eventVisible(seed) || !p.h.eventVisible(item) {
-		t.Fatal("fixture: a loopback connection must see provider:item_event and not the remote-only highlight:seed")
+		t.Fatal("fixture: a threads:read session must see provider:item_event and not the files:read highlight:live")
 	}
 	wire := p.tick()
 	if len(wire) != 1 || wire[0].Channel != item || wire[0].Seq != 9 || !wire[0].Watermark {

@@ -231,19 +231,32 @@ describe('syncTabs', () => {
     return { read: () => promise, resolve, reject };
   }
   const ids = (s: ReturnType<typeof createThreadTerminalState>) => s.tabs.map((tab) => tab.terminalID);
+  // The options a surface passes: `remove` records the id and removes the tab.
+  function syncOptions(s: ReturnType<typeof createThreadTerminalState>, current = () => true) {
+    const removed: string[] = [];
+    return {
+      removed,
+      options: {
+        activate: false,
+        current,
+        remove: (terminalID: string) => { removed.push(terminalID); s.removeTab(terminalID); },
+      },
+    };
+  }
 
-  it('drops the tabs the list lacks and adds the ones it names without taking the active tab', async () => {
+  it('hands the tabs the list lacks to remove and adds the ones it names without taking the active tab', async () => {
     const s = createThreadTerminalState();
     s.addTab(makeSummary({ terminalID: 'dead' }));
     s.addTab(makeSummary({ terminalID: 'live' }));
     s.setActive('live');
+    const { removed, options } = syncOptions(s);
 
-    const gone = await s.syncTabs(
+    await s.syncTabs(
       async () => [makeSummary({ terminalID: 'live' }), makeSummary({ terminalID: 'new' })],
-      { activate: false, current: () => true },
+      options,
     );
 
-    expect(gone).toEqual(['dead']);
+    expect(removed).toEqual(['dead']);
     expect(ids(s)).toEqual(['live', 'new']);
     expect(s.activeTerminalID).toBe('live');
   });
@@ -252,20 +265,22 @@ describe('syncTabs', () => {
     const s = createThreadTerminalState();
     s.addTab(makeSummary({ terminalID: 'exits' }));
     const list = deferredList();
-    const sync = s.syncTabs(list.read, { activate: false, current: () => true });
+    const { removed, options } = syncOptions(s);
+    const sync = s.syncTabs(list.read, options);
 
     s.removeTab('exits');
     s.addTab(makeSummary({ terminalID: 'opens' }), { activate: false });
     list.resolve([makeSummary({ terminalID: 'exits' })]);
+    await sync;
 
-    expect(await sync).toEqual([]);
+    expect(removed).toEqual([]);
     expect(ids(s)).toEqual(['opens']);
   });
 
   it('keeps an exit for a terminal it has no tab for, so the list cannot resurrect it', async () => {
     const s = createThreadTerminalState();
     const list = deferredList();
-    const sync = s.syncTabs(list.read, { activate: false, current: () => true });
+    const sync = s.syncTabs(list.read, syncOptions(s).options);
 
     s.removeTab('exits');
     list.resolve([makeSummary({ terminalID: 'exits' })]);
@@ -278,11 +293,14 @@ describe('syncTabs', () => {
     const s = createThreadTerminalState();
     s.addTab(makeSummary({ terminalID: 'a' }));
     const failed = deferredList();
-    const sync = s.syncTabs(failed.read, { activate: false, current: () => true });
+    const first = syncOptions(s);
+    const sync = s.syncTabs(failed.read, first.options);
     failed.reject(new Error('offline'));
     await expect(sync).rejects.toThrow('offline');
 
-    expect(await s.syncTabs(async () => [], { activate: false, current: () => false })).toEqual([]);
+    const stale = syncOptions(s, () => false);
+    await s.syncTabs(async () => [], stale.options);
+    expect([...first.removed, ...stale.removed]).toEqual([]);
     expect(ids(s)).toEqual(['a']);
   });
 });

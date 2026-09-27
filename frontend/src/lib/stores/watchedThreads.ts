@@ -40,6 +40,7 @@ type WatchedScopeSource = () => Iterable<WatchScope>;
 
 const sources = new Set<WatchedThreadSource>();
 const scopeSources = new Set<WatchedScopeSource>();
+const composedListeners = new Set<(threadIds: ReadonlySet<string>) => void>();
 
 /**
  * Register a contributor of watched thread ids. Every registered source is
@@ -102,7 +103,31 @@ function composeWatchedScopes(): WatchScope[] {
  * wire.
  */
 export function refreshWatchedThreads(): void {
-  setWatchedThreadsEverywhere(composeWatchedThreads(), composeWatchedScopes());
+  const threadIds = composeWatchedThreads();
+  setWatchedThreadsEverywhere(threadIds, composeWatchedScopes());
+  if (composedListeners.size === 0) return;
+  const watched = new Set(threadIds);
+  for (const listener of [...composedListeners]) {
+    try {
+      listener(watched);
+    } catch (err) {
+      console.warn('watchedThreads: a composition listener threw', err);
+    }
+  }
+}
+
+/**
+ * Observe each authoritative composition of the watched threads. A consumer
+ * that keeps state from an entity-filtered channel drops what it holds for
+ * threads outside the set: their frames stop arriving, so that state could
+ * only go stale. `watchThreadsBeforeMount` only widens the set and is not
+ * reported.
+ */
+export function onWatchedThreadsComposed(listener: (threadIds: ReadonlySet<string>) => void): () => void {
+  composedListeners.add(listener);
+  return () => {
+    composedListeners.delete(listener);
+  };
 }
 
 /**
@@ -131,4 +156,5 @@ export function watchThreadsBeforeMount(threadIds: readonly string[]): void {
 export function resetWatchedThreadSourcesForTest(): void {
   sources.clear();
   scopeSources.clear();
+  composedListeners.clear();
 }

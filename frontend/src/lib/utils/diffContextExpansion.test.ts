@@ -3,10 +3,9 @@ import {
   applyContextExpansion,
   DIFF_CONTEXT_EXPAND_STEP,
   expansionFetchRange,
-  expansionPredecessor,
   type ContextExpansionState,
 } from './diffContextExpansion';
-import { buildPatchDisplayRows, parsePatchFiles, type DiffGap, type PatchFile } from './patchFiles';
+import { buildPatchDisplayRows, filePatchDisplayRows, parsePatchFiles, type DiffGap, type PatchFile } from './patchFiles';
 
 // Two hunks with a known between-gap (new-side 14..41), a leading gap
 // (1..9), and an unknown-size trailing gap starting at 44. Hunk 1 nets
@@ -149,34 +148,11 @@ describe('applyContextExpansion', () => {
     expect(second).not.toBe(first);
   });
 
-  it('reuses fetched context-line objects across rebuilds and records the predecessor chain', () => {
-    const file = fileOf(midFilePatch);
-    const expansion = state(range(14, 18), null, 11);
-    const first = applyContextExpansion(file, expansion);
-    const firstFetched = first.lines.filter((line) => line.content.startsWith(' src '));
-    expect(firstFetched.length).toBeGreaterThan(0);
-
-    expansion.lines.set(19, 'src 19');
-    expansion.version = 12;
-    const second = applyContextExpansion(file, expansion);
-
-    // Every rebuild starts from the base parsed file; previously
-    // fetched lines must keep their object identity or identity-keyed
-    // caches (the diff span cache's predecessor fallback) would treat
-    // the region the user just expanded as brand-new on every click.
-    for (const line of firstFetched) {
-      expect(second.lines).toContain(line);
-    }
-    expect(expansionPredecessor(second.lines)).toBe(first.lines);
-    expect(expansionPredecessor(first.lines)).toBe(file.lines);
-  });
-
   it('keeps two expansion states on the same base array fully independent', () => {
     // parsePatchFilesCached shares one base array per patch text, so
     // two panes expanding identical content hit applyContextExpansion
     // with the SAME base but different states. Each state must keep
-    // its own memo slot (no rebuild ping-pong) and its own predecessor
-    // chain (no cross-pane links).
+    // its own memo slot (no rebuild ping-pong).
     const file = fileOf(midFilePatch);
     const paneA = state(range(14, 16), null, 21);
     const paneB = state(range(37, 39), null, 22);
@@ -190,34 +166,24 @@ describe('applyContextExpansion', () => {
     paneA.lines.set(17, 'src 17');
     paneA.version = 23;
     const a2 = applyContextExpansion(file, paneA);
-    // Pane A's chain links to ITS previous version, never pane B's.
-    expect(expansionPredecessor(a2.lines)).toBe(a1.lines);
-    expect(expansionPredecessor(b1.lines)).toBe(file.lines);
+    expect(a2).not.toBe(a1);
+    expect(applyContextExpansion(file, paneB)).toBe(b1);
   });
 
-  it('truncates the retained predecessor chain but keeps it terminated at the base array', () => {
+  it('never serves a build of the original to a copy with other file fields', () => {
+    // The edits scope retires a refused file's gaps by copying it with
+    // suppressGaps. The copy shares the original's lines, so a memo hit
+    // on lines alone would hand back the original's build, arrows and
+    // all.
     const file = fileOf(midFilePatch);
-    const expansion = state(range(14, 15), null, 31);
-    let latest = applyContextExpansion(file, expansion);
-    for (let click = 0; click < 6; click += 1) {
-      expansion.lines.set(16 + click, `src ${16 + click}`);
-      expansion.version = 32 + click;
-      latest = applyContextExpansion(file, expansion);
-    }
+    const expansion = state(range(14, 16), null, 41);
+    const expanded = applyContextExpansion(file, expansion);
+    expect(filePatchDisplayRows(expanded).some((row) => row.gap)).toBe(true);
 
-    // Each link strongly retains a full superseded array; the chain is
-    // capped so a long-lived file cannot accumulate one per click. It
-    // must still END at the base array (retained by the parse cache
-    // anyway): during a rapid-click burst base is often the only
-    // landed span entry, and severing it would flash lines plain.
-    const seen: unknown[] = [];
-    let cursor = expansionPredecessor(latest.lines);
-    while (cursor) {
-      seen.push(cursor);
-      cursor = expansionPredecessor(cursor);
-    }
-    expect(seen.at(-1)).toBe(file.lines);
-    expect(seen.length).toBeLessThanOrEqual(4); // ≤3 expanded arrays + base
+    const retired = applyContextExpansion({ ...file, suppressGaps: true }, expansion);
+    expect(retired.suppressGaps).toBe(true);
+    expect(retired.lines.map((line) => line.content)).toEqual(expanded.lines.map((line) => line.content));
+    expect(filePatchDisplayRows(retired).some((row) => row.gap)).toBe(false);
   });
 
   it('leaves added files and conflict pseudo-content untouched', () => {

@@ -5355,7 +5355,7 @@ describe('WSClient under a shell origin', () => {
 // receives only part of.
 describe('watermark frames', () => {
   const ITEMS = 'provider:item_event';
-  const SEEDS = 'highlight:seed';
+  const SEEDS = 'highlight:live';
 
   beforeEach(() => {
     MockWebSocket.reset();

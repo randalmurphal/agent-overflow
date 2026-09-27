@@ -196,6 +196,9 @@ type App struct {
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
 	pendingThreadDeletes pendingThreadDeletes
+	// terminalThreads ends each terminal thread when its last shell exits
+	// (app_terminal_threads.go).
+	terminalThreads terminalThreads
 	// firstReads holds heavy post-boot work until a client has read its
 	// catalogs. See app_first_reads.go.
 	firstReads       firstReadsGate
@@ -433,7 +436,8 @@ type App struct {
 	// don't have to wire it.
 	devServerProbeOnce sync.Once
 	devServerProber    *devserverprobe.Prober
-	// highlightApp owns cached parsing, live seeds, and persisted span workers.
+	// highlightApp owns cached parsing, live code highlighting, and persisted
+	// span workers.
 	// Lazy construction keeps bare App test fixtures cheap.
 	highlightAppOnce sync.Once
 	highlightApp     *highlightapp.Service
@@ -507,10 +511,6 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
-	// remoteClientProbeFn is a test-only override for hasRemoteClient
-	// (production reads the transport server's connection counter).
-	remoteClientProbeFn func() bool
-
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

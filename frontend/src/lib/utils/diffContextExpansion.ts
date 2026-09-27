@@ -70,59 +70,11 @@ export function expansionFetchRange(
 // expansion STATE (its `lines` Map identity), not the shared base
 // array: parsePatchFilesCached returns one base array per patch text,
 // so a base-keyed slot would ping-pong between two panes expanding
-// identical content and cross-link their predecessor chains.
+// identical content.
 const expansionCache = new WeakMap<
   Map<number, string>,
-  { version: number; base: PatchLine[]; file: PatchFile }
+  { version: number; source: PatchFile; file: PatchFile }
 >();
-
-// Expanded array → the array it superseded (the previous expansion
-// version from the SAME state, or the base parsed file on the first
-// expansion). Consumers with identity-keyed caches (the diff span
-// cache) use this to keep serving a superseded array's values for the
-// PatchLine objects both arrays share while the expanded array's own
-// results are in flight — without it, every expansion click
-// re-renders the whole file bare for a round trip.
-const predecessors = new WeakMap<PatchLine[], PatchLine[]>();
-
-/** Superseded EXPANDED arrays kept reachable per live chain. Each
- * link strongly retains its predecessor array, so an uncapped chain
- * would grow one full array per expansion click for as long as the
- * file stays loaded; the fallback almost always resolves in one hop
- * (the array that was on screen when the click happened). */
-const MAX_RETAINED_PREDECESSORS = 3;
-
-/** The lines array `lines` was rebuilt from, if it came out of
- * applyContextExpansion. */
-export function expansionPredecessor(lines: PatchLine[]): PatchLine[] | undefined {
-  return predecessors.get(lines);
-}
-
-function truncatePredecessorChain(lines: PatchLine[], base: PatchLine[]): void {
-  let tail = lines;
-  for (let depth = 0; depth < MAX_RETAINED_PREDECESSORS; depth += 1) {
-    const next = predecessors.get(tail);
-    if (!next || next === base) return; // already within bounds
-    tail = next;
-  }
-  // Drop everything past the deepest retained expanded array, but keep
-  // the chain terminated at the BASE array rather than cutting it off:
-  // the parse cache retains base anyway (re-pointing costs nothing),
-  // and base is usually the only landed entry during a rapid-click
-  // burst — severing it would flash shared lines plain, the exact
-  // regression this chain exists to prevent.
-  predecessors.set(tail, base);
-}
-
-// Fetched context lines get a stable PatchLine identity per
-// (expansion state, new-side line number). Every rebuild starts from
-// the BASE parsed file, so without this each rebuild would mint fresh
-// objects for previously fetched lines — breaking every identity-keyed
-// downstream memo and defeating the predecessor fallback for exactly
-// the region the user just expanded. Keyed by the state's `lines` Map
-// identity (the store mutates it in place; a diff reload replaces the
-// whole state, which correctly resets the memo).
-const contextLineCache = new WeakMap<Map<number, string>, Map<number, PatchLine>>();
 
 /**
  * A copy of `file` with the expansion's fetched lines merged into its
@@ -134,18 +86,13 @@ export function applyContextExpansion(
   state: ContextExpansionState | undefined,
 ): PatchFile {
   if (!state || (state.lines.size === 0 && state.eofLine === null)) return file;
+  // A hit needs the very file the build came from: a copy that shares
+  // its lines but not its other fields (the edits scope's suppressGaps)
+  // must not be served a build of the original.
   const cached = expansionCache.get(state.lines);
-  // Same-state only: a state is per (pane, path) and cleared on
-  // reload, so a cached file built from a different base array is a
-  // defensive impossibility, not a fallback source.
-  const prior = cached && cached.base === file.lines ? cached : undefined;
-  if (prior && prior.version === state.version) return prior.file;
+  if (cached && cached.source === file && cached.version === state.version) return cached.file;
   const expanded = applyContextExpansionUncached(file, state);
-  if (expanded !== file) {
-    predecessors.set(expanded.lines, (prior?.file ?? file).lines);
-    truncatePredecessorChain(expanded.lines, file.lines);
-  }
-  expansionCache.set(state.lines, { version: state.version, base: file.lines, file: expanded });
+  expansionCache.set(state.lines, { version: state.version, source: file, file: expanded });
   return expanded;
 }
 
@@ -233,15 +180,5 @@ function applyContextExpansionUncached(file: PatchFile, state: ContextExpansionS
 }
 
 function contextLine(state: ContextExpansionState, lineNo: number): PatchLine {
-  const text = state.lines.get(lineNo)!;
-  let memo = contextLineCache.get(state.lines);
-  if (!memo) {
-    memo = new Map();
-    contextLineCache.set(state.lines, memo);
-  }
-  const cached = memo.get(lineNo);
-  if (cached && cached.content === ` ${text}`) return cached;
-  const line: PatchLine = { content: ` ${text}`, type: 'context' };
-  memo.set(lineNo, line);
-  return line;
+  return { content: ` ${state.lines.get(lineNo)!}`, type: 'context' };
 }

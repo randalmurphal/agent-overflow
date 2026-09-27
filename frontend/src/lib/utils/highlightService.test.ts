@@ -7,7 +7,10 @@ import { DisconnectedError, type TransportHello } from '../transport/wsClient';
 import { assertHighlightSource, highlightMetadata, requireHighlightSchema, resetHighlightServiceForTest, withHighlightBackend, withHighlightService } from './highlightService';
 import { getCachedBlockSpans, requestBlockSpans, resetCodeSpanCacheForTest } from '../components/chat/markdown/codeSpanCache';
 import { getToasts } from '../stores/toast.svelte';
-import { applyHighlightSeed } from '../stores/eventsHighlight';
+import { applyHighlightLive } from '../stores/eventsHighlight';
+import { TextLineChain, liveCodeRow, resetLiveCodeSpansForTest } from '../components/chat/markdown/liveCodeSpans.svelte';
+import { prependThread, removeThread } from '../stores/threads.svelte';
+import { makeThread } from '../../test/helpers/chat';
 import { contentKey } from './fnv1a';
 
 vi.mock('../native/platform', async (importOriginal) => ({
@@ -113,21 +116,26 @@ describe('highlight rendering service', () => {
     expect(() => assertHighlightSource(validated)).toThrow(DisconnectedError);
   });
 
-  it('refuses a mismatched live seed before it can enter the global content cache', async () => {
+  it('refuses mismatched live spans before they can enter the global content cache', async () => {
     add('mac');
     add('gpu');
     versions.set('gpu', 'hv-two');
     await highlightMetadata();
+    resetLiveCodeSpansForTest();
+    prependThread(makeThread({ id: 't1' }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      applyHighlightSeed({
-        threadId: 't1', itemId: 'i1', lang: 'sh', lineHashes: [],
+      const chain = new TextLineChain('echo');
+      applyHighlightLive({
+        threadId: 't1', itemId: 'i1', fence: 0, lang: 'sh', seq: 1, from: 0, lineHashes: [chain.at(0)],
         contentKey: contentKey('echo'), final: true, lines: [{ r: [4, 1] }],
-      }, { backendId: 'gpu' });
+      }, { backendId: 'gpu-uuid' });
       await vi.waitFor(() => expect(warn).toHaveBeenCalled());
       expect(getCachedBlockSpans('sh', 'echo')).toBeNull();
+      expect(liveCodeRow('t1', 'i1')).toBeUndefined();
     } finally {
       warn.mockRestore();
+      removeThread('t1');
     }
   });
 

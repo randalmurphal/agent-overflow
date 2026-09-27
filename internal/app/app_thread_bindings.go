@@ -163,17 +163,17 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 	return thread, profileErr
 }
 
-// StartTerminal mints a persistent terminal-mode thread and returns it.
+// StartTerminal mints a terminal-mode thread and returns it.
 // A terminal is a first-class sidebar entity that never runs a provider
 // session: it carries a CHECK-valid sentinel provider/model/effort purely
 // so the threads table's coupled (provider, reasoning_effort) constraint
 // passes — no session is ever started from it, and seedChatModelProfile is
 // read-only so the sentinel is NOT remembered as a user model choice.
 //
-// It deliberately does NOT spawn a PTY: the frontend opens one via
-// OpenTerminal on pane mount, which is also why a terminal thread restored
-// after restart re-spawns a fresh shell in its saved workspace (PTYs are
-// ephemeral across restart; the saved cwd is what persists).
+// It does not spawn a PTY: the pane that shows the thread opens the first
+// shell through OpenTerminal when it mounts. The thread lives as long as
+// its shells; the exit of the last one, or a restart, deletes it
+// (app_terminal_threads.go).
 //
 //ao:scope terminal:operate
 //ao:route selected

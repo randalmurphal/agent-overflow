@@ -88,15 +88,12 @@ var (
 		"updater:verifying",  // 2026-08-25 pass
 		"webview:trim",       // 2026-08-25: launcher GC directive, same posture as updater:install
 	}
-	frozenRemoteOnlyChannels = []string{
-		"highlight:seed",
-	}
 	frozenEphemeralChannels = []string{
 		"browser:companion-state", // the thread-state read returns the complete snapshot
 		"browser:host",            // 2026-08-31: replaying a stale pane directive reopens closed pages
 		"harness:ui-query",        // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
-		"highlight:seed",
+		"highlight:live",
 		// Wave 8i: an authorize URL is a one-use PKCE challenge and a
 		// device code dies with its flow, so a replayed frame offers a
 		// link that no longer answers. GetProviderLoginState is the
@@ -163,7 +160,7 @@ var (
 	// cards, tray and agent panes; a pane that opens reads both whole.
 	frozenEntityFilteredChannels = []string{
 		"highlight:diff_seed",
-		"highlight:seed",
+		"highlight:live",
 		"provider:background_tray",
 		"provider:item_event",
 		"provider:subagent_progress",
@@ -175,6 +172,7 @@ var (
 	// the authored column, not the derived set, so a row that sets it
 	// without EntityFiltered is caught here too.
 	frozenTranscriptScopeFilteredChannels = []string{
+		"highlight:live",
 		"provider:item_event",
 	}
 )
@@ -189,11 +187,6 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 			name:     "loopbackOnly",
 			frozen:   frozenLoopbackOnlyChannels,
 			classify: func(c string) bool { return channelAudience(c) == AudienceLoopbackOnly },
-		},
-		{
-			name:     "remoteOnly",
-			frozen:   frozenRemoteOnlyChannels,
-			classify: func(c string) bool { return channelAudience(c) == AudienceRemoteOnly },
 		},
 		{
 			name:     "ephemeral",

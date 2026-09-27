@@ -30,9 +30,14 @@ import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types
 import type { GitStatus, WorkspaceRef } from '../types/git';
 import { NO_WORKSPACE_REF } from '../utils/workspaceKey';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import { expansionPredecessor } from '../utils/diffContextExpansion';
-import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
+import {
+  PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
+  filePatchDisplayRows,
+  parsePatchFilesCached,
+  type PatchFile,
+} from '../utils/patchFiles';
 import { buildReviewRows } from '../utils/reviewRows';
+import type { PaintedSpans } from '../utils/diffSpanCache.svelte';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 function patchFor(path: string, lines: number): string {
@@ -51,6 +56,24 @@ async function waitLoaded(state: ReturnType<typeof reviewStateForPane>): Promise
   await vi.waitFor(() => {
     expect(state.loading).toBe(false);
   });
+}
+
+/** `target` plus an added filler file that takes the whole patch past
+ * the parse cache's entry cap, so every parsePatchFilesCached call on it
+ * returns a fresh parse, as for any large review diff. */
+function oversizedPatch(target: string): string {
+  const fillerLines = Math.ceil(PATCH_PARSE_CACHE_MAX_ENTRY_CHARS / 32);
+  const patch = [
+    target,
+    'diff --git a/zz-filler.txt b/zz-filler.txt',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ b/zz-filler.txt',
+    `@@ -0,0 +1,${fillerLines} @@`,
+    ...Array.from({ length: fillerLines }, (_, index) => `+filler ${String(index).padStart(32, '0')}`),
+  ].join('\n');
+  expect(patch.length).toBeGreaterThan(PATCH_PARSE_CACHE_MAX_ENTRY_CHARS);
+  return patch;
 }
 
 const REVIEW_WORKSPACE = '/tmp/ws';
@@ -1951,6 +1974,36 @@ describe('reviewPane store — edits scope', () => {
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
   });
 
+  it('retires a file\'s gaps when a refusal follows a successful expansion', async () => {
+    installEditMocks();
+    const contextLines = setBindingMock('GetEditDiffContextLines', async () => ({
+      lines: ['top 3', 'top 4'],
+      startLine: 3,
+      eof: false,
+      totalLines: 20,
+    }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+    await waitGapsVerified(state, 'x.go');
+
+    await state.expandDiffContext('x.go', filePatchDisplayRows(state.files[0]).find((row) => row.gap)!.gap!, 'up');
+    expect(contextLines).toHaveBeenCalledTimes(1);
+    const gap = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+    expect(gap).toBeDefined();
+
+    // The file drifted after the first click: the next one is refused.
+    setBindingMock('GetEditDiffContextLines', async () => {
+      throw new Error('x.go has changed since this edit');
+    });
+    await state.expandDiffContext('x.go', gap!, 'up');
+    expect(state.error).toBeNull();
+    expect(state.files[0].suppressGaps).toBe(true);
+    // The fetched context stays; the arrows go.
+    expect(state.files[0].lines.some((line) => line.content === ' top 4')).toBe(true);
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+  });
+
   it('gates gap arrows on load-time verification', async () => {
     const { verify } = installEditMocks();
     setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
@@ -2147,24 +2200,29 @@ describe('reviewPane store — edits scope', () => {
     expect(filePatchDisplayRows(inside!).some((row) => row.gap)).toBe(true);
   });
 
-  it('keeps merged-file lines identity stable across expansion rebuilds', async () => {
+  it('parses an oversized merged diff once across expansion rebuilds', async () => {
+    // Past the parse cache's entry cap every parse is fresh. The pane
+    // parses once per patch text, so an expansion click rebuilds only
+    // the expanded file: every other file keeps its lines identity and
+    // with it every per-array memo (display rows, span keys).
     installEditMocks();
-    const twiceEdited = [
-      'diff --git a/x.go b/x.go',
-      '--- a/x.go',
-      '+++ b/x.go',
-      '@@ -5,3 +5,3 @@',
-      ' ctx',
-      '-old',
-      '+new',
-      'diff --git a/x.go b/x.go',
-      '--- a/x.go',
-      '+++ b/x.go',
-      '@@ -9,2 +9,3 @@',
-      ' ctx2',
-      '+later',
-    ].join('\n');
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
+    setBindingMock('GetTurnEditsDiff', async () => ({
+      data: oversizedPatch([
+        'diff --git a/x.go b/x.go',
+        '--- a/x.go',
+        '+++ b/x.go',
+        '@@ -5,3 +5,3 @@',
+        ' ctx',
+        '-old',
+        '+new',
+        'diff --git a/x.go b/x.go',
+        '--- a/x.go',
+        '+++ b/x.go',
+        '@@ -9,2 +9,3 @@',
+        ' ctx2',
+        '+later',
+      ].join('\n')),
+    }));
     setBindingMock('GetEditDiffContextLines', async () => ({
       lines: ['l1', 'l2', 'l3', 'l4'],
       startLine: 1,
@@ -2176,20 +2234,14 @@ describe('reviewPane store — edits scope', () => {
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
 
-    const baseLines = state.files[0].lines;
-    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    const fillerLines = state.files.find((file) => file.path === 'zz-filler.txt')!.lines;
+    const x = state.files.find((file) => file.path === 'x.go')!;
+    const gapRow = filePatchDisplayRows(x).find((row) => row.gap);
     expect(gapRow?.gap?.location).toBe('leading');
     await state.expandDiffContext('x.go', gapRow!.gap!, 'all');
 
-    // The rebuilt array must record the EXACT array it superseded: the
-    // span cache walks this chain to keep serving the pre-expansion
-    // spans while the expanded file's own highlight request is in
-    // flight. When the merge minted a fresh base array on every derived
-    // re-run, the chain pointed at an unregistered array and the whole
-    // file flashed plain on every expansion click.
-    const expandedLines = state.files[0].lines;
-    expect(expandedLines).not.toBe(baseLines);
-    expect(expansionPredecessor(expandedLines)).toBe(baseLines);
+    expect(state.files.find((file) => file.path === 'x.go')!.lines).not.toBe(x.lines);
+    expect(state.files.find((file) => file.path === 'zz-filler.txt')!.lines).toBe(fillerLines);
   });
 
   it('shows an empty surface for a thread with no edits', async () => {
@@ -2624,5 +2676,75 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(state.collapsedPaths.has('src/app.ts')).toBe(false);
     expect(state.expandedPRThreadIds.has('t-1')).toBe(true);
     expect(state.pendingJumpRowKey).toBe('pt:t-1');
+  });
+});
+
+describe('reviewPane store: painted span retention', () => {
+  function paint(spans: PaintedSpans, file: PatchFile): void {
+    spans.record(file, file.lines.map(() => ({ r: [1, 1] })));
+  }
+
+  function colored(spans: PaintedSpans, file: PatchFile): boolean {
+    return file.lines.some((line) => spans.lookup(file.path, line) !== null);
+  }
+
+  it('keeps each surface\'s colors for the files it shows and releases them when it closes', async () => {
+    installPRMocks();
+    setBindingMock('GetPRDiff', async () => [patchFor('src/a.ts', 2), patchFor('src/b.ts', 2)].join('\n'));
+    const tree = {
+      conflicted: true,
+      treeOID: 'tree-1',
+      baseLabel: 'origin/main',
+      headLabel: 'feature',
+      paths: ['main.go'],
+      messages: [],
+    };
+    setBindingMock('GetPRMergeConflicts', async () => tree);
+    setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const [a, b] = state.files;
+    paint(state.paintedSpans, a);
+    paint(state.paintedSpans, b);
+
+    // A reload that drops a file drops that file's colors only.
+    setBindingMock('GetPRDiff', async () => patchFor('src/a.ts', 2));
+    await state.reload();
+    await vi.waitFor(() => {
+      expect(colored(state.paintedSpans, b)).toBe(false);
+    });
+    expect(colored(state.paintedSpans, a)).toBe(true);
+
+    await state.openConflictView();
+    const conflict = state.conflictFiles[0];
+    paint(state.conflictPaintedSpans, conflict);
+
+    // A push recomputes the merge: the tree is empty until the new one
+    // lands, and the colors carry across that gap.
+    let finish!: () => void;
+    const recomputed = new Promise<void>((resolve) => { finish = resolve; });
+    setBindingMock('GetPRMergeConflicts', async () => {
+      await recomputed;
+      return tree;
+    });
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+    expect(state.conflicts).toBeNull();
+    await tick();
+    expect(colored(state.conflictPaintedSpans, conflict)).toBe(true);
+    finish();
+    await vi.waitFor(() => {
+      expect(state.conflictsLoading).toBe(false);
+    });
+    await tick();
+    expect(colored(state.conflictPaintedSpans, conflict)).toBe(true);
+
+    state.closeConflictView();
+    await tick();
+    expect(colored(state.conflictPaintedSpans, conflict)).toBe(false);
+    expect(colored(state.paintedSpans, a)).toBe(true);
+
+    disposeReviewStateForPane('pane-1');
+    expect(colored(state.paintedSpans, a)).toBe(false);
   });
 });

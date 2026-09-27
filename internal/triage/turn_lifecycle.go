@@ -1470,11 +1470,11 @@ func (r *Router) flipTurnItemsErrored(
 				return fmt.Errorf("error flip item %s: %w", item.ID, err)
 			}
 			if changed {
-				if item.Kind == itemKindAssistantText && item.Status == statusStreaming && r.assistantTextStream != nil {
-					// The flip ends the row's stream as a settle does: the
-					// observer's final tick, with the model's text before
-					// the stopped or interrupted suffix.
-					r.assistantTextStream(threadID, item.ID, item.Summary, true)
+				if item.Kind == itemKindAssistantText && item.Status == statusStreaming {
+					// The flip ends the row's stream as a settle does, with
+					// the model's text before the stopped or interrupted
+					// suffix.
+					r.endAssistantText(threadID, item.ID, item.Summary)
 				}
 				r.emitItemUpsert(persisted)
 				r.emitErrorNotice(persisted)

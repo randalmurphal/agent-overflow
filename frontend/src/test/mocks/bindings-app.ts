@@ -565,6 +565,7 @@ export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
 export const HighlightClassNames = dispatch('HighlightClassNames');
 export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
 export const HighlightCode = dispatch('HighlightCode');
+export const ResyncLiveCode = dispatch('ResyncLiveCode');
 export const HighlightPatch = dispatch('HighlightPatch');
 export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
 export const HighlightEditPatchWithContext = dispatch('HighlightEditPatchWithContext');

@@ -180,7 +180,7 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error)
 			_, _ = manager.Visibility(context.Background(), access, &visible, previous.ActivePageID)
 		} else {
 			if previous.ActivePageID != "" {
-				_ = manager.ActivateCompanionPage(access, previous.ActivePageID)
+				_ = manager.ActivateCompanionPage(context.Background(), access, previous.ActivePageID)
 			}
 			visible := false
 			_, _ = manager.Visibility(context.Background(), access, &visible, "")

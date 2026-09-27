@@ -8,87 +8,62 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 )
 
-type observedTextTick struct {
+type observedText struct {
 	threadID string
 	itemID   string
+	parentID string
 	text     string
-	final    bool
+	end      bool
 }
 
-// TestAssistantTextStreamObserver pins the observer contract the
-// highlight seed push builds on: a flush-window tick carries the
-// row's FULL accumulated summary (not the delta), and settle delivers
-// exactly one final tick with the row's final model text.
-func TestAssistantTextStreamObserver(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	var mu sync.Mutex
-	var ticks []observedTextTick
-	router.SetAssistantTextStreamObserver(func(threadID, itemID, text string, final bool) {
-		mu.Lock()
-		ticks = append(ticks, observedTextTick{threadID, itemID, text, final})
-		mu.Unlock()
+// textObserver records both observers in call order.
+type textObserver struct {
+	mu   sync.Mutex
+	seen []observedText
+}
+
+func observeText(router *Router) *textObserver {
+	o := &textObserver{}
+	router.SetAssistantTextObservers(func(threadID, itemID, parentID, delta string) {
+		o.mu.Lock()
+		o.seen = append(o.seen, observedText{threadID, itemID, parentID, delta, false})
+		o.mu.Unlock()
+	}, func(threadID, itemID, text string) {
+		o.mu.Lock()
+		o.seen = append(o.seen, observedText{threadID, itemID, "", text, true})
+		o.mu.Unlock()
 	})
-	ensureTriageProject(t, st)
-	now := time.Now().UnixMilli()
-	if err := st.CreateThread(store.Thread{
-		ID:        "t1",
-		ProjectID: triageTestProjectID,
-		Title:     "text-observer",
-		Provider:  "claude",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	return o
+}
 
-	// Delta 1 creates the row directly (firstBlock bypasses the flush
-	// buffer) — no tick yet. Delta 2 trips the byte threshold and
-	// flushes inline: the observer must see the COMBINED summary.
-	first := "```python\ndef f():\n"
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTextDelta, ThreadID: "t1", Content: first, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 1: %v", err)
-	}
-	mu.Lock()
-	if len(ticks) != 0 {
-		t.Fatalf("expected no observer tick from the firstBlock path, got %#v", ticks)
-	}
-	mu.Unlock()
+func (o *textObserver) snapshot() []observedText {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]observedText(nil), o.seen...)
+}
 
-	padding := "    pass  # " + strings.Repeat("x", streamPersistByteThreshold)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTextDelta, ThreadID: "t1", Content: padding, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 2: %v", err)
-	}
-	mu.Lock()
-	if len(ticks) != 1 {
-		t.Fatalf("expected 1 flush tick, got %#v", ticks)
-	}
-	flush := ticks[0]
-	mu.Unlock()
-	if flush.final {
-		t.Fatalf("flush tick marked final: %#v", flush)
-	}
-	if flush.threadID != "t1" || flush.itemID == "" {
-		t.Fatalf("flush tick identity wrong: %#v", flush)
-	}
-	if flush.text != first+padding {
-		t.Fatalf("flush tick must carry the full accumulated summary; got %q", flush.text)
-	}
+// TestAssistantTextObservers pins the contract live highlighting builds on:
+// every delta the row emits is observed in order as it is emitted, whether
+// or not a persistence flush follows, and the settle ends the row exactly
+// once, last, with its final model text.
+func TestAssistantTextObservers(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	observer := observeText(router)
+	createTestThread(t, st, "t1")
 
-	// Settle with a trailing sub-threshold delta still buffered: the
-	// settle's own flush ticks first (full text), then exactly one
-	// final tick with the same final content.
-	tail := "\n```"
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTextDelta, ThreadID: "t1", Content: tail, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 3: %v", err)
+	deltas := []string{"```python\ndef f():\n", "    pass  # " + strings.Repeat("x", streamPersistByteThreshold), "\n```"}
+	for i, delta := range deltas {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: "t1", Content: delta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("delta %d: %v", i, err)
+		}
+		seen := observer.snapshot()
+		if len(seen) != i+1 || seen[i].end || seen[i].text != delta || seen[i].threadID != "t1" || seen[i].itemID == "" {
+			t.Fatalf("after delta %d observed %#v", i, seen)
+		}
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventContentBlockStop, ThreadID: "t1",
@@ -98,31 +73,87 @@ func TestAssistantTextStreamObserver(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	mu.Lock()
-	defer mu.Unlock()
-	finalTicks := 0
-	var last observedTextTick
-	for _, tick := range ticks {
-		if tick.final {
-			finalTicks++
-			last = tick
+	seen := observer.snapshot()
+	ends := 0
+	for _, o := range seen {
+		if o.end {
+			ends++
+		}
+		if o.itemID != seen[0].itemID {
+			t.Fatalf("observations for another row: %#v", seen)
 		}
 	}
-	if finalTicks != 1 {
-		t.Fatalf("expected exactly 1 final tick, got %d: %#v", finalTicks, ticks)
+	last := seen[len(seen)-1]
+	if ends != 1 || !last.end || last.text != strings.Join(deltas, "") {
+		t.Fatalf("want one final end with the full text, got %#v", seen)
 	}
-	if last.text != first+padding+tail {
-		t.Fatalf("final tick text = %q, want the full final content", last.text)
+}
+
+// TestAssistantTextIsObservedBeforeItIsEmitted: the observer sees each delta
+// before the row's delta event is emitted, so live highlighting's first push
+// for a fence reaches clients ahead of the fence's text.
+func TestAssistantTextIsObservedBeforeItIsEmitted(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	var early []string
+	router.SetAssistantTextObservers(func(threadID, itemID, parentID, delta string) {
+		for _, e := range emissions.snapshot() {
+			if evt, ok := e.data.(ItemStreamEvent); ok && evt.Action == itemStreamActionDelta && evt.Delta == delta {
+				early = append(early, delta)
+			}
+		}
+	}, func(threadID, itemID, text string) {})
+	for _, delta := range []string{"```go\n", "x := 1\n"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: "t1", Content: delta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("delta: %v", err)
+		}
 	}
-	if last != ticks[len(ticks)-1] {
-		t.Fatalf("final tick must be the last observation: %#v", ticks)
+	if len(early) > 0 {
+		t.Fatalf("deltas emitted before they were observed: %q", early)
+	}
+	deltas := 0
+	for _, e := range emissions.snapshot() {
+		if evt, ok := e.data.(ItemStreamEvent); ok && evt.Action == itemStreamActionDelta {
+			deltas++
+		}
+	}
+	if deltas != 2 {
+		t.Fatalf("emitted %d delta events, want 2", deltas)
+	}
+}
+
+// TestAssistantTextObserverCarriesTheRowsScope: a subagent's text row is
+// observed with its parentId, so live highlighting addresses its pushes to
+// that transcript scope.
+func TestAssistantTextObserverCarriesTheRowsScope(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	observer := observeText(router)
+	createTestThread(t, st, "t1")
+	for _, delta := range []string{"```go\n", "x := 1\n"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: "t1", ParentToolUseID: "toolu_agent",
+			Content: delta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("delta: %v", err)
+		}
+	}
+	seen := observer.snapshot()
+	if len(seen) != 2 {
+		t.Fatalf("observed %#v, want both deltas", seen)
+	}
+	for _, o := range seen {
+		if o.parentID != "toolu_agent" {
+			t.Fatalf("observed %#v, want parentId toolu_agent on every delta", seen)
+		}
 	}
 }
 
 // TestAssistantTextStreamEndsOnErrorFlip streams a text row past the flush
 // threshold, then ends its turn by a user Stop and by a fatal truncation:
-// the flip delivers the observer's final tick with the text before the
-// suffix, and the settle that follows adds no seedable text.
+// the flip ends the row with the text before the suffix, and the settle
+// that follows ends it again with no text.
 func TestAssistantTextStreamEndsOnErrorFlip(t *testing.T) {
 	for _, end := range []struct {
 		name string
@@ -138,13 +169,7 @@ func TestAssistantTextStreamEndsOnErrorFlip(t *testing.T) {
 	} {
 		t.Run(end.name, func(t *testing.T) {
 			router, st, _ := newTestRouter(t)
-			var mu sync.Mutex
-			var ticks []observedTextTick
-			router.SetAssistantTextStreamObserver(func(threadID, itemID, text string, final bool) {
-				mu.Lock()
-				ticks = append(ticks, observedTextTick{threadID, itemID, text, final})
-				mu.Unlock()
-			})
+			observer := observeText(router)
 			createTestThread(t, st, "t1")
 			seedOpenTurn(t, router, st, "t1", 0)
 			first := "```go\nx := 1\n"
@@ -156,12 +181,11 @@ func TestAssistantTextStreamEndsOnErrorFlip(t *testing.T) {
 					t.Fatalf("delta: %v", err)
 				}
 			}
-			mu.Lock()
-			if len(ticks) != 1 || ticks[0].final {
-				t.Fatalf("want one flush tick before the end, got %#v", ticks)
+			before := observer.snapshot()
+			if len(before) != 2 || before[0].end || before[1].end {
+				t.Fatalf("want the two deltas before the end, got %#v", before)
 			}
-			itemID := ticks[0].itemID
-			mu.Unlock()
+			itemID := before[0].itemID
 
 			if err := end.run(router); err != nil {
 				t.Fatalf("end turn: %v", err)
@@ -171,43 +195,57 @@ func TestAssistantTextStreamEndsOnErrorFlip(t *testing.T) {
 			}
 			router.WaitForPendingSettles()
 
-			mu.Lock()
-			defer mu.Unlock()
-			var finals []observedTextTick
-			for _, tick := range ticks {
-				if tick.itemID == itemID && tick.final {
-					finals = append(finals, tick)
+			seen := observer.snapshot()
+			var ends []observedText
+			for _, o := range seen {
+				if o.itemID == itemID && o.end {
+					ends = append(ends, o)
 				}
 			}
-			if len(finals) == 0 || finals[0].text != first+padding {
-				t.Fatalf("flip did not end the stream with the model text: %#v", finals)
+			if len(ends) == 0 || ends[0].text != first+padding {
+				t.Fatalf("flip did not end the stream with the model text: %#v", ends)
 			}
-			for _, tick := range finals[1:] {
-				if tick.text != "" {
-					t.Fatalf("a later final tick carried text to seed again: %#v", tick)
+			for _, o := range ends[1:] {
+				if o.text != "" {
+					t.Fatalf("a later end carried text again: %#v", o)
 				}
 			}
-			if last := ticks[len(ticks)-1]; last.itemID == itemID && !last.final {
-				t.Fatalf("the row's last observation is not final: %#v", last)
+			if last := seen[len(seen)-1]; last.itemID == itemID && !last.end {
+				t.Fatalf("the row's last observation is not its end: %#v", last)
 			}
 		})
 	}
 }
 
 // TestSettleWithoutStreamingRowEndsTheStream settles a row the store no
-// longer holds: the settle still ends the row's observer stream, with no
-// text to seed.
+// longer holds: the settle still ends the row's observed stream, with no
+// text.
 func TestSettleWithoutStreamingRowEndsTheStream(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	var ticks []observedTextTick
-	router.SetAssistantTextStreamObserver(func(threadID, itemID, text string, final bool) {
-		ticks = append(ticks, observedTextTick{threadID, itemID, text, final})
-	})
+	observer := observeText(router)
 	createTestThread(t, st, "t1")
 	if err := router.settleStreamingTextRow("t1", "gone", statusCompleted, interruptedSummary, "", false, nil); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	if len(ticks) != 1 || ticks[0] != (observedTextTick{"t1", "gone", "", true}) {
-		t.Fatalf("observations = %#v, want one empty final tick", ticks)
+	if seen := observer.snapshot(); len(seen) != 1 || seen[0] != (observedText{"t1", "gone", "", "", true}) {
+		t.Fatalf("observations = %#v, want one empty end", seen)
+	}
+}
+
+// TestRecoveredTextBlockIsObservedAsAStream persists a never-streamed
+// top-level block, which the wire reveals as one streamed delta: the
+// observers see that delta and the row's end, so the block's code is
+// highlighted like any streamed text.
+func TestRecoveredTextBlockIsObservedAsAStream(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	observer := observeText(router)
+	createTestThread(t, st, "t1")
+	content := "```go\nx := 1\n```"
+	if err := router.persistCompletedTextItem("t1", 0, "", "recovered", content, nil, time.Now()); err != nil {
+		t.Fatalf("persist recovered block: %v", err)
+	}
+	seen := observer.snapshot()
+	if len(seen) != 2 || seen[0].end || seen[0].text != content || !seen[1].end || seen[1].text != content || seen[0].itemID != seen[1].itemID {
+		t.Fatalf("observations = %#v, want the delta then the end", seen)
 	}
 }

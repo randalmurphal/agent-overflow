@@ -58,6 +58,16 @@ export interface TerminalExitEventPayload {
   reason: string;
 }
 
+/**
+ * Payload of `terminal:end_failed`: a terminal thread whose last shell exited
+ * could not be deleted by its computer.
+ */
+export interface TerminalEndFailedEventPayload {
+  threadID: string;
+  /** The sentence to show. The cause stays in the computer's log. */
+  message: string;
+}
+
 export function normalizeTerminalReplay(value: unknown): TerminalReplay {
   if (!value) return { data: '', fromSequence: 0, throughSequence: 0 };
   if (typeof value === 'string') return { data: value, fromSequence: 0, throughSequence: 0 };

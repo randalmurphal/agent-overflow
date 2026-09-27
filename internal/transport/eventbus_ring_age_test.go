@@ -204,7 +204,7 @@ func TestRingSweepReleasesAgedFrames(t *testing.T) {
 	defer bus.Close()
 	item := fixtureChannel(t, eventchan.ProviderItemEvent, RetentionDefault)
 	quiet := fixtureChannel(t, eventchan.ProviderTurnCompleted, RetentionDefault)
-	ephemeral := fixtureChannel(t, eventchan.HighlightSeed, RetentionEphemeral)
+	ephemeral := fixtureChannel(t, eventchan.HighlightLive, RetentionEphemeral)
 
 	for range 40 {
 		emitOn(t, bus, item)

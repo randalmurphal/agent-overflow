@@ -373,6 +373,33 @@ export function closePanesShowingThreads(threadIds: Iterable<string>): void {
 }
 
 /**
+ * Close every pane holding a draft placeholder for one of `projectIds`. A
+ * placeholder has no thread id, so `closePanesShowingThreads` cannot name
+ * it; it is created in, and routed through, its project
+ * (transport/threadOwner.ts). Callers are the events that end a project for
+ * this client: its computer detaching, or the project being deleted. A
+ * detached computer can no longer be asked to close the placeholders'
+ * terminals, and no other computer owns them, so `computerDetached` drops
+ * them without the call.
+ */
+export function closeDraftPlaceholderPanes(
+  projectIds: Iterable<string>,
+  opts: { computerDetached?: boolean } = {},
+): void {
+  const idSet = new Set(projectIds);
+  if (idSet.size === 0) return;
+  const toDestroy: ThreadPane[] = [];
+  for (const pane of panes.values()) {
+    const placeholder = pane.draftPlaceholder;
+    if (placeholder && idSet.has(placeholder.projectId)) toDestroy.push(pane);
+  }
+  for (const pane of toDestroy) {
+    if (opts.computerDetached) pane.dropDraftPlaceholderTerminals();
+    destroyPane(pane.paneId);
+  }
+}
+
+/**
  * Destroy the focused THREAD pane. A focused companion resolves to its
  * source thread pane here (via getFocusedPaneOrNull), so this closes the
  * thread — callers that want "close whatever holds focus, companion
@@ -782,8 +809,10 @@ setActiveBackendPaneResolver(() => getFocusedThreadPaneId());
 // unreachable once the entry is gone) and the next send resolves to the
 // page's own backend. Closing is what this app already does when a thread
 // stops being openable, and it is the only answer that cannot re-route.
-onBackendDetached(({ threadIds }) => {
+// A draft placeholder belongs to the computer that owns its project.
+onBackendDetached(({ threadIds, projectIds }) => {
   closePanesShowingThreads(threadIds);
+  closeDraftPlaceholderPanes(projectIds, { computerDetached: true });
 });
 
 setGitStatusPaneBridge({

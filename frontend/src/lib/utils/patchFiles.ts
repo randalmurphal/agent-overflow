@@ -245,24 +245,6 @@ export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
   return groups.map((sections) => (sections.length === 1 ? sections[0] : mergeFileSections(sections)));
 }
 
-// Identity memo for the store's `files` derived: it re-runs on every
-// expansion click, and a fresh merged lines array per run would break
-// every identity-keyed memo downstream — the expansion rebuild cache
-// and the span cache's predecessor-chain fallback especially, which
-// re-renders the whole file plain for a round trip (the expansion
-// white-flash bug). Keyed on the parsePatchFilesCached result, which
-// is stable per patch text; oversized patches that bypass that cache
-// miss here too and keep today's rebuild-per-run behavior.
-const mergedFilesCache = new WeakMap<PatchFile[], PatchFile[]>();
-
-export function mergePatchFilesByPathCached(files: PatchFile[]): PatchFile[] {
-  const hit = mergedFilesCache.get(files);
-  if (hit) return hit;
-  const merged = mergePatchFilesByPath(files);
-  mergedFilesCache.set(files, merged);
-  return merged;
-}
-
 interface SectionHunk {
   oldStart: number;
   newStart: number;

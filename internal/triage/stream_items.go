@@ -278,6 +278,9 @@ func (r *Router) persistCompletedBlockEmitStreaming(
 		Delta:     content,
 		UpdatedAt: persisted.UpdatedAt,
 	})
+	if persisted.Kind == itemKindAssistantText {
+		r.endAssistantText(persisted.ThreadID, persisted.ID, content)
+	}
 	completed := statusCompleted
 	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.ParentID, persisted.Kind, persisted.Rev, ItemPatchFields{
 		Status:    &completed,

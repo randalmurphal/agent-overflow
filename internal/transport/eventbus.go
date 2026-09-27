@@ -920,10 +920,10 @@ type Subscriber struct {
 	// loopback, when set, applies the per-origin channel-visibility
 	// filter (event_visibility.go) at enqueue time so frames the
 	// connection could never emit don't consume buffer slots — a burst
-	// of invisible traffic (terminal:output toward a remote peer,
-	// highlight:seed toward loopback) could otherwise force drops of
-	// visible events and gap-driven re-fetches. nil means unfiltered
-	// (non-conn subscribers like the harness workflow waiter).
+	// of invisible traffic (terminal:output toward a remote peer) could
+	// otherwise force drops of visible events and gap-driven re-fetches.
+	// nil means unfiltered (non-conn subscribers like the harness
+	// workflow waiter).
 	loopback atomic.Pointer[bool]
 	// scopes, when set, applies the per-GRANT channel filter at the same
 	// point and for the same reason (event_visibility.go): a

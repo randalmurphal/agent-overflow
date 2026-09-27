@@ -10,6 +10,8 @@ import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
+import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 
 function makeCtx(): PanelContext {
   return makeStubPanelContext();
@@ -784,5 +786,471 @@ describe('<ReviewPane>', () => {
     // the diff: the header and the rendered patch stay put.
     expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Syntax colors across rebuilds. The fake highlighter derives each
+// row's spans from its text, so a row painted with another row's spans
+// fails exactly like a row that went plain.
+// ---------------------------------------------------------------------
+
+const FAKE_CLASS_COUNT = 997;
+const FAKE_CLASS_NAMES = ['none', ...Array.from({ length: FAKE_CLASS_COUNT }, (_, index) => `c${index + 1}`)];
+
+/** The text a row's spans cover, as DiffLineContent slices it: add and
+ * del rows drop their prefix, context rows keep the leading space. Null
+ * for rows the backend receives as non-content lines (hunk headers, and
+ * conflict markers and folds, which go out as `\` lines). */
+function spanBody(row: string): string | null {
+  const prefix = row.charAt(0);
+  if (prefix === '+' || prefix === '-') return row.slice(1);
+  return prefix === ' ' ? row : null;
+}
+
+/** One run per character, classed by the character and a hash of the
+ * whole body, so no other text renders with these colors. Spaces stay
+ * plain. */
+function fakeRuns(body: string): number[] {
+  let hash = 0;
+  for (const char of body) hash = (hash * 31 + char.charCodeAt(0)) % FAKE_CLASS_COUNT;
+  const runs: number[] = [];
+  for (const char of body) {
+    runs.push(1, char === ' ' ? 0 : 1 + ((char.charCodeAt(0) * 31 + hash) % FAKE_CLASS_COUNT));
+  }
+  return runs;
+}
+
+/** Adjacent runs of one class merge, as the renderer merges them. */
+function coloredRuns(parts: { cls: string; text: string }[]): string[] {
+  const merged: { cls: string; text: string }[] = [];
+  for (const part of parts) {
+    const last = merged.at(-1);
+    if (last && last.cls === part.cls) last.text += part.text;
+    else merged.push({ ...part });
+  }
+  return merged.filter((run) => run.cls !== '').map((run) => `${run.cls}:${run.text}`);
+}
+
+/** The colors a row renders with when painted with its own spans. */
+function ownColors(row: string): string[] {
+  const body = spanBody(row);
+  if (body === null) return [];
+  const runs = fakeRuns(body);
+  return coloredRuns([...body].map((text, index) => {
+    const id = runs[index * 2 + 1];
+    return { cls: id === 0 ? '' : `syntax-${FAKE_CLASS_NAMES[id]}`, text };
+  }));
+}
+
+/** Every rendered code cell (both sides in split view): its text and
+ * the colored runs it shows. */
+function renderedRows(container: HTMLElement): { text: string; colors: string[] }[] {
+  const cells = container.querySelectorAll('[data-testid="review-line-block"] span.min-w-0.flex-1');
+  return Array.from(cells, (cell) => ({
+    text: cell.textContent ?? '',
+    colors: coloredRuns(Array.from(cell.children, (child) => ({
+      cls: /\bsyntax-\S+/.exec(child.className)?.[0] ?? '',
+      text: child.textContent ?? '',
+    }))),
+  }));
+}
+
+function rowTexts(container: HTMLElement): string[] {
+  return renderedRows(container).map((row) => row.text);
+}
+
+/** Every row shows exactly its own text's colors. */
+function expectOwnColors(container: HTMLElement): void {
+  const rows = renderedRows(container);
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) expect(row.colors, row.text).toEqual(ownColors(row.text));
+}
+
+/** The texts of the rows shown colored now. */
+function coloredTexts(container: HTMLElement): Set<string> {
+  return new Set(renderedRows(container).filter((row) => row.colors.length > 0).map((row) => row.text));
+}
+
+/** While fresh spans are held: every row whose text was shown colored
+ * keeps exactly that text's colors, and no other row is colored. */
+function expectColorsKept(container: HTMLElement, colored: ReadonlySet<string>): void {
+  const rows = renderedRows(container);
+  let kept = 0;
+  for (const row of rows) {
+    const was = colored.has(row.text);
+    if (was) kept += 1;
+    expect(row.colors, row.text).toEqual(was ? ownColors(row.text) : []);
+  }
+  expect(kept).toBeGreaterThan(0);
+}
+
+/** Installs the fake on every highlight RPC. The returned `hold` parks
+ * every request made after it until its release is called. */
+function installFakeHighlighter(): () => () => void {
+  resetDiffSpanCacheForTest();
+  resetSyntaxClassNamesForTest();
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
+  setBindingMock('HighlightClassNames', async () => FAKE_CLASS_NAMES);
+  let held: Promise<void> | null = null;
+  const highlight = async (req: unknown) => {
+    const gate = held;
+    if (gate) await gate;
+    const { patch } = req as { patch: string };
+    return {
+      lines: patch.split('\n').map((row) => {
+        const body = spanBody(row);
+        return body === null ? {} : { r: fakeRuns(body) };
+      }),
+      incomplete: false,
+    };
+  };
+  setBindingMock('HighlightPatchWithContext', async (_ws, req) => highlight(req));
+  setBindingMock('HighlightPatch', async (req) => highlight(req));
+  return () => {
+    let release!: () => void;
+    held = new Promise<void>((resolve) => { release = resolve; });
+    return () => {
+      held = null;
+      release();
+    };
+  };
+}
+
+function sourceLine(lineNo: number): string {
+  return `const row${lineNo} = compute(${lineNo * 7}, "v${lineNo}");`;
+}
+
+function prDetailFor(headSHA: string): PRDetail {
+  return {
+    number: 5,
+    title: 'Add feature',
+    body: '',
+    authorLogin: 'octocat',
+    state: 'open',
+    draft: false,
+    headRefName: 'feature',
+    baseRefName: 'main',
+    headSHA,
+    url: 'https://github.com/owner/repo/pull/5',
+    additions: 1,
+    deletions: 1,
+    changedFiles: 2,
+    viewerIsAuthor: false,
+    reviewDecision: '',
+    latestReviews: [],
+    checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+    mergeability: 'conflicts',
+  };
+}
+
+function pushTo(headSHA: string): void {
+  applyPRReviewUpdated({ prKey: 'github:owner/repo:5', detail: prDetailFor(headSHA), threads: [], headSHA });
+}
+
+/** Renders the pane on a PR thread and enters pr scope at head `sha-a`. */
+async function renderPRScope() {
+  setBindingMock('SubscribePRUpdates', async () => ({
+    id: 'sub-1',
+    prKey: 'github:owner/repo:5',
+    detail: prDetailFor('sha-a'),
+    threads: [],
+    headSHA: 'sha-a',
+  }));
+  setBindingMock('UnsubscribePRUpdates', async () => undefined);
+  setBindingMock('ListPRReviewThreads', async () => []);
+  setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
+  const view = render(ReviewPane, {
+    ctx: {
+      ...makeCtx(),
+      thread: {
+        id: 'thread-1',
+        projectId: 'project-1',
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    },
+  });
+  await waitFor(() => {
+    expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+  });
+  await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+  await waitFor(() => {
+    expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
+  });
+  return view;
+}
+
+const CONFLICT_TREE = {
+  conflicted: true,
+  treeOID: 'tree-1',
+  baseLabel: 'origin/main',
+  headLabel: 'feature',
+  paths: ['main.go'],
+  messages: [],
+};
+
+/** Five conflict regions with a foldable unchanged run before each:
+ * fold ids 0-4, the first hiding lines 1-7 and fold n lines 100n+4 to
+ * 100n+9. `theirs` is the first region's head side. */
+function conflictContent(theirs: string): string {
+  const lines = Array.from({ length: 10 }, (_, index) => sourceLine(index + 1));
+  for (let region = 1; region <= 5; region += 1) {
+    if (region > 1) lines.push(...Array.from({ length: 12 }, (_, index) => sourceLine(region * 100 - 100 + index + 1)));
+    lines.push('<<<<<<< ours', `return ours(${region});`, '=======', region === 1 ? theirs : `return theirs(${region});`, '>>>>>>> theirs');
+  }
+  return lines.join('\n');
+}
+
+/** Opens the conflict view and waits for its colors to land. */
+async function openColoredConflicts(view: Awaited<ReturnType<typeof renderPRScope>>): Promise<void> {
+  await fireEvent.click(view.getByRole('button', { name: 'View conflicts' }));
+  await waitFor(() => {
+    expect(view.getAllByTestId('review-conflict-fold')).toHaveLength(5);
+    expect(rowTexts(view.container)).toContain('+return theirs(1);');
+    expectOwnColors(view.container);
+  });
+}
+
+describe('<ReviewPane> syntax colors across rebuilds', () => {
+  it.each(['stacked', 'split'] as const)('keeps colored lines colored through an expansion burst (%s)', async (mode) => {
+    const hold = installFakeHighlighter();
+    setBindingMock('GetWorkspaceCurrentDiff', async () => [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -150,2 +150,2 @@',
+      ` ${sourceLine(150)}`,
+      '-let removed = beta();',
+      '+let added = gamma();',
+    ].join('\n'));
+    setBindingMock('GetDiffContextLines', async (_ws, req) => {
+      const { startLine, endLine } = req as { startLine: number; endLine: number };
+      return {
+        lines: Array.from({ length: endLine - startLine + 1 }, (_, index) => sourceLine(startLine + index)),
+        startLine,
+        eof: false,
+        totalLines: 0,
+      };
+    });
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+let added = gamma();');
+      expectOwnColors(view.container);
+    });
+    if (mode === 'split') {
+      await fireEvent.click(view.getByTestId('review-split-toggle'));
+      expect(view.getByTestId('review-line-block').querySelectorAll('.w-1\\/2').length).toBeGreaterThan(0);
+      expectOwnColors(view.container);
+    }
+
+    // The first click's colors land.
+    await fireEvent.click(view.getByTestId('review-gap-expand-up'));
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain(` ${sourceLine(130)}`);
+      expectOwnColors(view.container);
+    });
+    const colored = coloredTexts(view.container);
+    expect(colored).toContain(` ${sourceLine(149)}`);
+
+    // Four more clicks, every fresh result held: each rebuild keeps the
+    // colors on screen, the first click's lines included, and only the
+    // lines it fetched render plain.
+    const release = hold();
+    for (const first of [110, 90, 70, 50]) {
+      await fireEvent.click(view.getByTestId('review-gap-expand-up'));
+      await waitFor(() => {
+        expect(rowTexts(view.container)).toContain(` ${sourceLine(first)}`);
+      });
+      expectColorsKept(view.container, colored);
+    }
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+  });
+
+  it('keeps colored lines colored while a conflict fold expands', async () => {
+    const hold = installFakeHighlighter();
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('GetPRMergeConflicts', async () => CONFLICT_TREE);
+    setBindingMock('GetMergeConflictFile', async () => conflictContent('return theirs(1);'));
+    const view = await renderPRScope();
+    await openColoredConflicts(view);
+
+    // The first fold's colors land.
+    await fireEvent.click(view.getAllByTestId('review-conflict-fold')[0]!);
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain(` ${sourceLine(1)}`);
+      expectOwnColors(view.container);
+    });
+    const colored = coloredTexts(view.container);
+
+    // Four more folds, every fresh result held.
+    const release = hold();
+    for (const revealed of [104, 204, 304, 404]) {
+      await fireEvent.click(view.getAllByTestId('review-conflict-fold')[0]!);
+      await waitFor(() => {
+        expect(rowTexts(view.container)).toContain(` ${sourceLine(revealed)}`);
+      });
+      expectColorsKept(view.container, colored);
+    }
+    expect(view.queryAllByTestId('review-conflict-fold')).toHaveLength(0);
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+  });
+
+  it('keeps colored conflict lines colored while a push recomputes the merge', async () => {
+    const hold = installFakeHighlighter();
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('GetPRMergeConflicts', async () => CONFLICT_TREE);
+    setBindingMock('GetMergeConflictFile', async () => conflictContent('return theirs(1);'));
+    const view = await renderPRScope();
+    await openColoredConflicts(view);
+    const colored = coloredTexts(view.container);
+
+    const release = hold();
+    setBindingMock('GetMergeConflictFile', async () => conflictContent('return pushed(1);'));
+    pushTo('sha-b');
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+return pushed(1);');
+    });
+    expectColorsKept(view.container, colored);
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+  });
+
+  it('keeps colored lines colored while a reload after a push re-highlights', async () => {
+    const hold = installFakeHighlighter();
+    const diffAt = (added: string) => [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -10,3 +10,3 @@',
+      ` ${sourceLine(10)}`,
+      '-let removed = beta();',
+      `+${added}`,
+      ` ${sourceLine(12)}`,
+      'diff --git a/src/util.ts b/src/util.ts',
+      'index 3333333..4444444 100644',
+      '--- a/src/util.ts',
+      '+++ b/src/util.ts',
+      '@@ -4,2 +4,2 @@',
+      ` ${sourceLine(4)}`,
+      '-export const unused = 1;',
+      '+export const used = 2;',
+    ].join('\n');
+    setBindingMock('GetPRDiff', async () => diffAt('let added = gamma();'));
+    const view = await renderPRScope();
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+let added = gamma();');
+      expectOwnColors(view.container);
+    });
+    const colored = coloredTexts(view.container);
+
+    // The push changes one line of one file. Primed spans are keyed by
+    // the head, so the reload misses every file's exact result.
+    setBindingMock('GetPRDiff', async () => diffAt('let added = delta();'));
+    pushTo('sha-b');
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-stale')).toBeInTheDocument();
+    });
+    const release = hold();
+    await fireEvent.click(view.getByTestId('review-pr-stale').querySelector('button')!);
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+let added = delta();');
+    });
+    expectColorsKept(view.container, colored);
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+  });
+
+  it('keeps colored lines colored while a refresh that changed one hunk re-highlights', async () => {
+    const hold = installFakeHighlighter();
+    const diffWith = (secondHunkAdd: string) => [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -10,3 +10,3 @@',
+      ` ${sourceLine(10)}`,
+      '-let removed = beta();',
+      '+let added = gamma();',
+      ` ${sourceLine(12)}`,
+      '@@ -40,3 +40,3 @@',
+      ` ${sourceLine(40)}`,
+      '-return legacy(total);',
+      `+${secondHunkAdd}`,
+      ` ${sourceLine(42)}`,
+    ].join('\n');
+    setBindingMock('GetWorkspaceCurrentDiff', async () => diffWith('return modern(total);'));
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+return modern(total);');
+      expectOwnColors(view.container);
+    });
+    const colored = coloredTexts(view.container);
+
+    setBindingMock('GetWorkspaceCurrentDiff', async () => diffWith('return modern(total, cap);'));
+    const release = hold();
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+return modern(total, cap);');
+    });
+    expectColorsKept(view.container, colored);
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+  });
+
+  it('keeps colored lines colored while hide-whitespace re-highlights the diff', async () => {
+    const hold = installFakeHighlighter();
+    setBindingMock('GetWorkspaceCurrentDiff', async (...args: never[]) => {
+      const [, ignoreWhitespace] = args as unknown as [unknown, boolean];
+      return [
+        'diff --git a/src/app.ts b/src/app.ts',
+        'index 1111111..2222222 100644',
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -10,4 +10,4 @@',
+        ` ${sourceLine(10)}`,
+        ...(ignoreWhitespace
+          ? ['   return total;']
+          : ['-  return   total;', '+  return total;']),
+        '-let removed = beta();',
+        '+let added = gamma();',
+        ` ${sourceLine(13)}`,
+      ].join('\n');
+    });
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('+  return total;');
+      expectOwnColors(view.container);
+    });
+    const colored = coloredTexts(view.container);
+    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
+    await waitFor(() => {
+      expect(toggle).toBeEnabled();
+    });
+
+    const release = hold();
+    await fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(rowTexts(view.container)).toContain('   return total;');
+    });
+    expectColorsKept(view.container, colored);
+    release();
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
   });
 });

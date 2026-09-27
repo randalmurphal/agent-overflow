@@ -366,8 +366,8 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 	// outlives the stream. A release carries no text to seed.
 	ended := false
 	defer func() {
-		if !ended && r.assistantTextStream != nil {
-			r.assistantTextStream(threadID, itemID, "", true)
+		if !ended {
+			r.endAssistantText(threadID, itemID, "")
 		}
 	}()
 
@@ -386,18 +386,13 @@ func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summari
 		pathRefSource = finalContent
 		item.Summary = finalContent
 	}
-	// Final observer tick with the row's final MODEL text
-	// (pathRefSource — before the interrupted-summary decoration; the
+	// End the observed stream with the row's final MODEL text
+	// (pathRefSource, before the interrupted-summary decoration: the
 	// decorated text differs from what streamed, and for a stream cut
-	// mid-fence the suffix would land inside the fence, so seeds for
-	// either version can only prefix-match. The undecorated text at
-	// least matches every fence the model actually closed). The
-	// observer pushes final highlight seeds and drops its per-row
-	// state.
-	if r.assistantTextStream != nil {
-		ended = true
-		r.assistantTextStream(threadID, itemID, pathRefSource, true)
-	}
+	// mid-fence the suffix would land inside the fence). The observer
+	// pushes the row's final code spans and drops its per-row state.
+	ended = true
+	r.endAssistantText(threadID, itemID, pathRefSource)
 	if status == statusErrored {
 		item.Summary = summarise(item.Summary)
 	}

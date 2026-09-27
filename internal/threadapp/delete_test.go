@@ -45,7 +45,7 @@ func TestDeleteTreeRunsChildrenFirstAndPreservesResourceOrder(t *testing.T) {
 	wantChild := []string{
 		"child:background", "child:session", "child:setup", "child:terminal",
 		"child:browser", "child:prompt", "child:discussion", "child:reconnect",
-		"child:attachments", "child:replay", "child:browser", "child:forget",
+		"child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
 	}
 	if !slices.Equal(calls[:len(wantChild)], wantChild) {
 		t.Fatalf("child cleanup order = %v, want %v", calls[:len(wantChild)], wantChild)
@@ -88,6 +88,63 @@ func TestDeleteTreeContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 	}
 }
 
+// From its delete mark on a thread is gone to every read, so a delete that
+// fails after the mark still reports the row deleted, for clients to drop
+// it, and the next boot finishes it. One that fails before the mark keeps
+// the row listed and reports nothing.
+func TestDeleteTreeReportsTheRowOnceItsDeleteMarkCommits(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	afterMark, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.deps.NewID = func() string { return "before-mark" }
+	beforeMark, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted []string
+	report := func(thread store.Thread) { deleted = append(deleted, thread.ID) }
+
+	cleanupErr := errors.New("disk busy")
+	err = service.DeleteTree(afterMark.ID, false, DeletePorts{
+		CleanupAttachments: func(string) error { return cleanupErr },
+		Deleted:            report,
+	})
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("DeleteTree error = %v, want the cleanup failure", err)
+	}
+	if !slices.Equal(deleted, []string{afterMark.ID}) {
+		t.Fatalf("deleted = %v after a failure past the mark, want the thread", deleted)
+	}
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{afterMark.ID}) {
+		t.Fatalf("pending deletes = %v, %v; want the thread for the next boot", pending, err)
+	}
+
+	deleted = nil
+	remoteErr := errors.New("remote command admitted during cleanup could not be stopped")
+	calls := 0
+	err = service.DeleteTree(beforeMark.ID, false, DeletePorts{
+		StopRemoteWork: func(string) error {
+			calls++
+			if calls == 2 {
+				return remoteErr
+			}
+			return nil
+		},
+		Deleted: report,
+	})
+	if !errors.Is(err, remoteErr) {
+		t.Fatalf("DeleteTree error = %v, want the refusal before the mark", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("deleted = %v after a failure before the mark, want none", deleted)
+	}
+	if _, err := service.Get(beforeMark.ID); err != nil {
+		t.Fatalf("Get after a failure before the mark: %v, want the thread listed", err)
+	}
+}
+
 // The second close catches a page a companion action opened while the row
 // was present. Its failure is reported, and the delete it follows stands.
 func TestDeleteTreeClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
@@ -116,6 +173,43 @@ func TestDeleteTreeClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
 	}
 	if !slices.Equal(rowPresent, []bool{true, false}) {
 		t.Fatalf("browser closes saw the row present = %v, want before and after the drop", rowPresent)
+	}
+	if !forgotten || !deleted {
+		t.Fatalf("forgotten = %v, deleted = %v after the row dropped, want both", forgotten, deleted)
+	}
+	if _, err := database.GetThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetThread error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// The second close catches a terminal a client opened while the row was
+// present. Its failure is reported, and the delete it follows stands.
+func TestDeleteTreeClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rowPresent []bool
+	var forgotten, deleted bool
+	closeErr := errors.New("pty busy")
+	err = service.DeleteTree(thread.ID, false, DeletePorts{
+		CloseTerminals: func(id string) error {
+			_, err := database.GetThread(id)
+			rowPresent = append(rowPresent, err == nil)
+			if len(rowPresent) == 2 {
+				return closeErr
+			}
+			return nil
+		},
+		Forget:  func(string) { forgotten = true },
+		Deleted: func(store.Thread) { deleted = true },
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("DeleteTree error = %v, want the second close's error", err)
+	}
+	if !slices.Equal(rowPresent, []bool{true, false}) {
+		t.Fatalf("terminal closes saw the row present = %v, want before and after the drop", rowPresent)
 	}
 	if !forgotten || !deleted {
 		t.Fatalf("forgotten = %v, deleted = %v after the row dropped, want both", forgotten, deleted)

@@ -18,6 +18,11 @@ import { projectReaderMessageSent, projectThreadError } from './threadStatuses.s
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
 import { deferEmptyDraftDeletion } from './emptyDraftCleanup';
+import { GetThread } from './bindings';
+import { withBackendTarget } from '../transport/backends';
+import { forgetThread, threadBackend } from '../transport/entityIndex';
+import { threadHasScope } from '../transport/entityScopes';
+import { TransportError } from '../transport/wsClient';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at its two acquisition points, so a new pane member
@@ -178,6 +183,32 @@ async function resyncThreadRows(): Promise<void> {
   }
   reconcileThreadRows(read.rows);
   settleCatalogAnswers('threads', read.answered);
+  closePanesOfDeletedThreads(read.rows);
+}
+
+/**
+ * A deletion whose frame this client never received leaves panes open on a
+ * row that no longer exists: the frame was lost, or the thread's computer
+ * deleted it while this client was away (a restart ends every terminal
+ * thread). A thread the rows do not name may still exist, archived or not
+ * listed, so its computer is asked, and only its not_found answer closes the
+ * panes the way the `deleted` frame would have.
+ */
+function closePanesOfDeletedThreads(rows: readonly Thread[]): void {
+  const listed = new Set(rows.map((row) => row.id));
+  const asked = new Set<string>();
+  for (const pane of ingestPanes()) {
+    const id = pane.threadId;
+    if (!id || listed.has(id) || asked.has(id)) continue;
+    const backend = threadBackend(id);
+    if (backend === undefined || !threadHasScope('threads:read', id)) continue;
+    asked.add(id);
+    withBackendTarget(backend, () => GetThread(id)).catch((err: unknown) => {
+      if (!(err instanceof TransportError) || err.code !== 'not_found') return;
+      applyThreadUpdated({ action: 'deleted', id });
+      forgetThread(id);
+    });
+  }
 }
 
 export function reconcileThreadRows(rows: Thread[]): void {

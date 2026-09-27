@@ -13,9 +13,9 @@ import (
 
 func TestHighlightWireProjectionsPreserveEveryField(t *testing.T) {
 	lines := []highlight.EncodedLine{{Runs: []uint16{2, 3}}}
-	seed := wireHighlightSeed(highlightapp.SeedEvent{ThreadID: "t", ItemID: "i", Lang: "go", ContentKey: "key", LineHashes: []uint32{7}, Lines: lines, Final: true})
-	if seed.ThreadID != "t" || seed.ItemID != "i" || seed.Lang != "go" || seed.ContentKey != "key" || len(seed.LineHashes) != 1 || len(seed.Lines) != 1 || !seed.Final {
-		t.Fatalf("seed = %+v", seed)
+	live := wireHighlightLiveCode(highlightapp.LiveCodeEvent{ThreadID: "t", ItemID: "i", ParentID: "p", Fence: 2, Lang: "go", Seq: 5, From: 3, ContentKey: "key", LineHashes: []uint32{7}, Lines: lines, Final: true, Head: "head"})
+	if live.ThreadID != "t" || live.ItemID != "i" || live.ParentID != "p" || live.Fence != 2 || live.Lang != "go" || live.Seq != 5 || live.From != 3 || live.ContentKey != "key" || len(live.LineHashes) != 1 || len(live.Lines) != 1 || !live.Final || live.Head != "head" {
+		t.Fatalf("live = %+v", live)
 	}
 	patches := wirePatchSpanSeeds([]highlightapp.PatchSpanSeed{{Path: "x.go", ContentKey: "patch-key", Lines: lines, Primed: true}})
 	if len(patches) != 1 || patches[0].Path != "x.go" || patches[0].ContentKey != "patch-key" || len(patches[0].Lines) != 1 || !patches[0].Primed {

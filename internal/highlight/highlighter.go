@@ -394,46 +394,7 @@ func (e *engine) paint(src []byte, ranges []tree_sitter.Range, classes []uint16,
 	releaseParser(p)
 	defer tree.Close()
 
-	qc := tree_sitter.NewQueryCursor()
-	defer qc.Close()
-	matches := qc.Matches(e.query, tree.RootNode(), src)
-
-	spans := make([]paintSpan, 0, 256)
-	for m := matches.Next(); m != nil; m = matches.Next() {
-		for _, c := range m.Captures {
-			class := e.captureClass[c.Index]
-			if class == ClassNone {
-				continue
-			}
-			start, end := int(c.Node.StartByte()), int(c.Node.EndByte())
-			if end > len(src) {
-				end = len(src)
-			}
-			if start >= end {
-				continue
-			}
-			spans = append(spans, paintSpan{start: start, end: end, class: class, pattern: m.PatternIndex})
-		}
-	}
-
-	// Paint longest-first so narrower (more specific) captures land on
-	// top of enclosing ones. Same-length overlaps resolve to the later
-	// pattern in the query file — both our query sources (helix,
-	// nvim-treesitter) document "last matching pattern wins", and their
-	// files are ordered broad-to-specific accordingly.
-	sort.Slice(spans, func(i, j int) bool {
-		li, lj := spans[i].end-spans[i].start, spans[j].end-spans[j].start
-		if li != lj {
-			return li > lj
-		}
-		return spans[i].pattern < spans[j].pattern
-	})
-
-	for _, s := range spans {
-		for i := s.start; i < s.end; i++ {
-			classes[i] = s.class
-		}
-	}
+	e.paintCaptures(tree, src, 0, len(src), classes)
 
 	complete = true
 	if e.inj != nil && depth < maxInjectionDepth {
@@ -445,4 +406,55 @@ func (e *engine) paint(src []byte, ranges []tree_sitter.Range, classes []uint16,
 		}
 	}
 	return true, complete
+}
+
+// paintCaptures paints the classes of e's highlight captures over
+// src[lo:hi] into classes, which holds exactly that range. A capture
+// that crosses the range keeps its whole length for precedence, so a
+// range paints the same classes as the same bytes of a whole-document
+// paint.
+func (e *engine) paintCaptures(tree *tree_sitter.Tree, src []byte, lo, hi int, classes []uint16) {
+	qc := tree_sitter.NewQueryCursor()
+	defer qc.Close()
+	if lo > 0 || hi < len(src) {
+		qc.SetByteRange(uint(lo), uint(hi))
+	}
+	matches := qc.Matches(e.query, tree.RootNode(), src)
+	spans := make([]paintSpan, 0, 256)
+	for m := matches.Next(); m != nil; m = matches.Next() {
+		for _, c := range m.Captures {
+			class := e.captureClass[c.Index]
+			if class == ClassNone {
+				continue
+			}
+			start, end := int(c.Node.StartByte()), int(c.Node.EndByte())
+			if end > len(src) {
+				end = len(src)
+			}
+			if start >= end || end <= lo || start >= hi {
+				continue
+			}
+			spans = append(spans, paintSpan{start: start, end: end, class: class, pattern: m.PatternIndex})
+		}
+	}
+
+	// Paint longest-first so narrower (more specific) captures land on
+	// top of enclosing ones. Same-length overlaps resolve to the later
+	// pattern in the query file — both our query sources (helix,
+	// nvim-treesitter) document "last matching pattern wins", and their
+	// files are ordered broad-to-specific accordingly. Remaining ties
+	// keep match order, which a ranged query shares with a whole one.
+	sort.SliceStable(spans, func(i, j int) bool {
+		li, lj := spans[i].end-spans[i].start, spans[j].end-spans[j].start
+		if li != lj {
+			return li > lj
+		}
+		return spans[i].pattern < spans[j].pattern
+	})
+
+	for _, s := range spans {
+		for i := max(s.start, lo); i < min(s.end, hi); i++ {
+			classes[i-lo] = s.class
+		}
+	}
 }

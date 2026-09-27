@@ -605,13 +605,6 @@ type Server struct {
 	// ticket minted for a forge cache entry admit different things, and
 	// one book would mean a subject minted for either decoding at both.
 	forgeAttachmentTickets *ticketBook
-
-	// remoteConns counts live non-loopback WebSocket connections.
-	// Feeds HasRemoteClient, which gates work that only benefits
-	// remote viewers (the highlight seed push). Note tunneled remotes
-	// (SSH local forward) arrive AS loopback and are invisible here —
-	// they get the ordinary RPC path, today's behavior.
-	remoteConns atomic.Int64
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -1353,12 +1346,6 @@ func (s *Server) sessionAdmitsPeer(sessionID, remoteAddr string) bool {
 	return sessionID != "" && s.cfg.Sessions != nil && s.cfg.Sessions.AdmitsPeer(sessionID, remoteAddr)
 }
 
-// HasRemoteClient reports whether at least one non-loopback WebSocket
-// connection is currently attached. Producers of remote-only event
-// channels (see event_visibility.go) consult this to skip the work
-// entirely when nobody would receive it.
-func (s *Server) HasRemoteClient() bool { return s.remoteConns.Load() > 0 }
-
 // SessionLive is the exported form of the same conjunction every path in
 // here consults: a session admits work only while its own row and its
 // DEVICE's row are both unrevoked. Exported for the preview gateway,
@@ -2050,11 +2037,6 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		// re-expose the handshake URL, and the identity has to be in place
 		// before the first RPC is dispatched.
 		client: ParseClientIdentity(r.URL.Query()),
-	}
-
-	if !isLoopback {
-		s.remoteConns.Add(1)
-		defer s.remoteConns.Add(-1)
 	}
 
 	backendID := ""

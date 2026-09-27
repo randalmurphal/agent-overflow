@@ -1,9 +1,11 @@
+//go:build !windows
+
 package terminal
 
 import (
 	"os"
 
-	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // osFilePty bundles the PTY master *os.File with a typed resize method.
@@ -13,6 +15,18 @@ type osFilePty struct {
 	*os.File
 }
 
+// resize sets the winsize through SyscallConn rather than File.Fd, which
+// would put a pollable master back in blocking mode (pollableMaster).
 func (o *osFilePty) resize(rows, cols uint16) error {
-	return pty.Setsize(o.File, &pty.Winsize{Rows: rows, Cols: cols})
+	raw, err := o.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ioctlErr error
+	if err := raw.Control(func(fd uintptr) {
+		ioctlErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+	}); err != nil {
+		return err
+	}
+	return ioctlErr
 }

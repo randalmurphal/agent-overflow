@@ -688,17 +688,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	endPhase()
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()
-	a.browser.manager = appbrowser.NewManager(
-		dbDir,
-		browserConfigFromSettings(browserSettings),
-		appbrowser.ManagerOptions{
-			FakeEngine:       a.browser.mockEngine,
-			PaneHost:         a.paneHostOptions(),
-			HeadlessChromium: a.headlessChromiumOptions(browserSettings),
-			NativeWindow:     a.browser.nativeWindow,
-			Accelerators:     a.browserAccelerators,
-		},
-	)
+	a.browser.manager = a.newBrowserManager(dbDir, browserSettings)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
 		a.emit(eventchan.BrowserCompanionState, event)
 	})
@@ -735,6 +725,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		return err
 	}
 	a.sweepThreadRequestsAtBoot()
+	// Every terminal thread's shells ended with the last process, so the
+	// threads end too, before any client lists them. Beside the request
+	// sweep because deleting needs the same services.
+	endPhase = a.bootPhase("app.end_terminal_threads", "Closing terminals from the last run")
+	if err := a.endTerminalThreadsAtBoot(); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	endPhase()
 	a.installThreadRequestObserver()
 	if err := a.initWorkflowEngine(dbDir); err != nil {
 		return err

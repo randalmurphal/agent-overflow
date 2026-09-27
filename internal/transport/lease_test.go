@@ -355,7 +355,7 @@ func TestSubscriberBackgroundWithholdsSeeds(t *testing.T) {
 	defer sub.Close()
 
 	sub.SetBackground(true)
-	if _, err := bus.Emit(eventchan.HighlightSeed, map[string]any{"threadId": "thread-A"}); err != nil {
+	if _, err := bus.Emit(eventchan.HighlightLive, map[string]any{"threadId": "thread-A"}); err != nil {
 		t.Fatalf("emit seed: %v", err)
 	}
 	// A channel the lease does not touch, emitted after, proves the seed was
@@ -375,10 +375,10 @@ func TestSubscriberBackgroundWithholdsSeeds(t *testing.T) {
 	}
 
 	sub.SetBackground(false)
-	if _, err := bus.Emit(eventchan.HighlightSeed, map[string]any{"threadId": "thread-A"}); err != nil {
+	if _, err := bus.Emit(eventchan.HighlightLive, map[string]any{"threadId": "thread-A"}); err != nil {
 		t.Fatalf("emit seed after resume: %v", err)
 	}
-	if got := receiveEvent(t, sub); got.Channel != string(eventchan.HighlightSeed) {
+	if got := receiveEvent(t, sub); got.Channel != string(eventchan.HighlightLive) {
 		t.Fatalf("after resume the first frame = %s, want the seed delivered", got.Channel)
 	}
 }
@@ -392,10 +392,10 @@ func TestSubscriberWithoutLeaseDeliversSeeds(t *testing.T) {
 	sub := bus.Subscribe()
 	defer sub.Close()
 
-	if _, err := bus.Emit(eventchan.HighlightSeed, map[string]any{"threadId": "thread-A"}); err != nil {
+	if _, err := bus.Emit(eventchan.HighlightLive, map[string]any{"threadId": "thread-A"}); err != nil {
 		t.Fatalf("emit seed: %v", err)
 	}
-	if got := receiveEvent(t, sub); got.Channel != string(eventchan.HighlightSeed) {
+	if got := receiveEvent(t, sub); got.Channel != string(eventchan.HighlightLive) {
 		t.Fatalf("first frame = %s, want the seed delivered unfiltered", got.Channel)
 	}
 }

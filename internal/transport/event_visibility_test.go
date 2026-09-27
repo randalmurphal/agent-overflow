@@ -68,22 +68,13 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		// be parse-primed — better than the loopback RPC recompute — so
 		// local clients consume them as in-place cache upgrades.
 		"highlight:diff_seed",
+		"highlight:live",
 	} {
 		if !eventVisibleToOrigin(channel, false) {
 			t.Fatalf("remote-safe event %s hidden from non-loopback peer", channel)
 		}
 		if !eventVisibleToOrigin(channel, true) {
 			t.Fatalf("remote-safe event %s hidden from loopback peer", channel)
-		}
-	}
-	for _, channel := range []string{
-		"highlight:seed",
-	} {
-		if !eventVisibleToOrigin(channel, false) {
-			t.Fatalf("remote-only event %s hidden from non-loopback peer", channel)
-		}
-		if eventVisibleToOrigin(channel, true) {
-			t.Fatalf("remote-only event %s visible to loopback peer", channel)
 		}
 	}
 }
@@ -129,7 +120,7 @@ func TestEventBusEphemeralChannelsSkipReplayRetention(t *testing.T) {
 	sub := bus.Subscribe()
 	defer sub.Close()
 
-	for _, channel := range []string{"highlight:seed", "highlight:diff_seed"} {
+	for _, channel := range []string{"highlight:live", "highlight:diff_seed"} {
 		first, err := bus.Emit(eventchan.Channel(channel), map[string]string{"n": "1"})
 		if err != nil {
 			t.Fatalf("Emit(%s): %v", channel, err)

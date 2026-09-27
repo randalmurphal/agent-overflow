@@ -355,6 +355,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RestartTerminal", ID: 4152403588, Scope: "terminal:operate", Route: "home"},                              // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084, Scope: "host", Route: "home"},                                          // main.App.RestartToUpdate
 	{Name: "RestoreAccessDevice", ID: 3386497005, Scope: "access:admin", Route: "home"},                              // main.App.RestoreAccessDevice
+	{Name: "ResyncLiveCode", ID: 1113976056, Scope: "files:read", Route: "thread"},                                   // main.App.ResyncLiveCode
 	{Name: "RetryThreadTransfer", ID: 650634694, Scope: "threads:operate", Route: "selected"},                        // main.App.RetryThreadTransfer
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469, Scope: "terminal:operate", Route: "thread"},                   // main.App.RetryThreadWorktreeSetup
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413, Scope: "threads:operate", Route: "thread"},          // main.App.RevertConversationAndResendMessage

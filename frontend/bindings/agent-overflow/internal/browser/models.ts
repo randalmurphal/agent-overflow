@@ -125,6 +125,13 @@ export class PageInfo {
     "canGoBack": boolean;
     "canGoForward": boolean;
 
+    /**
+     * Suspended marks a page with no engine page behind it (suspend.go): its
+     * thread's idle session was reaped or the app restarted. The next tool
+     * call on it, or presenting it, reloads its URL.
+     */
+    "suspended"?: boolean;
+
     /** Creates a new PageInfo instance. */
     constructor($$source: Partial<PageInfo> = {}) {
         if (!("id" in $$source)) {

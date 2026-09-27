@@ -27,7 +27,6 @@ func insertDiffSpanPayload(t *testing.T, app *App, threadID, itemID, payloadID, 
 
 func TestHighlightDiffCoordinationPersistsSnapshotsSpansAndEvent(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.remoteClientProbeFn = func() bool { return true }
 	workspace := t.TempDir()
 	thread := testThread("thread-highlight-diff")
 	thread.WorkspacePath = workspace

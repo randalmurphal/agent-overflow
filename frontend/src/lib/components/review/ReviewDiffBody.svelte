@@ -6,7 +6,7 @@
   import { createReviewScrollOwner, reviewScrollKey } from './reviewScroll';
   import type { DiffReviewComment, ReviewThread } from '../../types/models';
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
-  import type { PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap, PatchFile } from '../../utils/patchFiles';
   import {
     captureReadingAnchor,
@@ -73,6 +73,9 @@
     /** Diff view only: scope fields for parse-priming span requests
      * (HighlightPatchWithContext). Omitted on the conflict surface. */
     spanContext?: PatchScopeContext | null;
+    /** The colors this surface last painted, which lines keep while
+     * their file's exact spans are in flight. Owned by the review state. */
+    painted?: PaintedSpans | null;
     jumpToFilePath?: string | null;
     onJumpConsumed?: () => void;
     /** Row-key jump (comments list): scrolls to the exact row and
@@ -101,6 +104,7 @@
     onExpandFold,
     onExpandGap,
     spanContext = null,
+    painted = null,
     jumpToFilePath = null,
     onJumpConsumed,
     jumpToRowKey = null,
@@ -464,6 +468,7 @@
               path={file.path}
               {subjectId}
               {spanContext}
+              {painted}
               {wordWrap}
               gutterCh={gutterChars.get(row.fileIndex) ?? 2}
               {onAddComment}

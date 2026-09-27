@@ -4,7 +4,7 @@
 // through `staticRenderers.code`, and without the mirrored routing a
 // WARM span cache (the backend highlights every fence — all-plain for
 // languages tree-sitter doesn't know — and both the persisted-blob
-// ingest and `highlight:seed` pushes warm the frontend cache) let the
+// ingest and final `highlight:live` pushes warm the frontend cache) let the
 // static renderer swallow the DIAGRAM into a plain <pre><code> block.
 // Silently, and only in the real app: every test environment has no
 // backend, so the cache was always cold and the island always mounted.

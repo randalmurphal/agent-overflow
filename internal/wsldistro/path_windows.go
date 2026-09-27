@@ -32,3 +32,10 @@ func WSLConfigDir() (string, bool) {
 	}
 	return filepath.Join(roaming, "agent-overflow"), true
 }
+
+// WindowsDownloadsDir answers ("", false) on Windows: the launcher exports
+// the folder only to a WSL backend, and a Windows process finds the user's
+// Downloads folder under its own home.
+func WindowsDownloadsDir() (string, bool) {
+	return "", false
+}

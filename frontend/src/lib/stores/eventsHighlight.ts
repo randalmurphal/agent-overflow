@@ -1,31 +1,35 @@
-// highlight:seed event domain: backend-pushed syntax spans for
-// streaming code fences (remote clients only — the transport filters
-// the channel away from loopback origins, and the backend producer is
-// gated on HasRemoteClient). Fan-in target of events.ts's
-// setupEventListeners.
+// highlight:live and highlight:diff_seed event domain: backend-pushed syntax
+// spans for streaming code fences and persisted diffs. Fan-in target of
+// events.ts's setupEventListeners.
 //
-// Seeds are cache-warmers, never authority: a final seed lands in
-// codeSpanCache under the backend-computed contentKey so a settled
-// block's mount is a synchronous hit, and every seed (live or final)
-// feeds the live-seed match table StreamdownCodeHost consults before
-// falling back to the RPC path. Malformed or diverged seeds degrade to
-// that RPC path — never to misaligned colors.
+// Pushes only land once the origin proves it speaks this page's span
+// schema; a push that fails the check or names a thread this client does
+// not know is dropped, and its consumers recover through the highlight RPC
+// (live code also through its sequence numbers: liveCodeSpans.svelte.ts).
+// A fence's first live push carries no spans, so it lands at once.
 import {
-  putLiveCodeSeed,
-  type HighlightSeedEvent,
-} from '../components/chat/markdown/liveCodeSeeds.svelte';
-import { seedFinalBlockSpans } from '../components/chat/markdown/codeSpanCache';
+  applyLiveCode,
+  resyncLiveCodeRows,
+  retainLiveCodeThreads,
+  stopLiveCodeFence,
+  type HighlightLiveCodeEvent,
+} from '../components/chat/markdown/liveCodeSpans.svelte';
 import {
   seedPayloadPatchSpans,
   type PatchSpanSeedWire,
 } from '../utils/diffSpanCache.svelte';
-import { ensureSyntaxClassNames } from '../utils/syntaxSpans';
+import { ensureSyntaxClassNames, syntaxClassNamesReady } from '../utils/syntaxSpans';
 import { getThreadById } from './threads.svelte';
 import type { EventOrigin } from '../transport/handle';
-import { assertHighlightSource, requireHighlightSchema } from '../utils/highlightService';
+import { assertHighlightSource, provenHighlightSource, requireHighlightSchema } from '../utils/highlightService';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { backendKeyForOrigin } from '../transport/backends';
+import { onClientLeaseChange } from '../transport/lease';
+import { onBackendRecovery } from './transportRecovery';
+import { onWatchedThreadsComposed } from './watchedThreads';
+import { wailsEventOn } from './wailsEvents';
 
-export type { HighlightSeedEvent };
+export type { HighlightLiveCodeEvent };
 
 /** Wire payload of `highlight:diff_seed` (Go: HighlightDiffSeedEvent):
  * patch-aligned spans for a just-persisted inline-diff tool result's
@@ -35,22 +39,70 @@ export interface HighlightDiffSeedEvent {
   files: PatchSpanSeedWire[] | null;
 }
 
-export function applyHighlightSeed(evt: HighlightSeedEvent, origin?: EventOrigin): void {
-  if (!evt || typeof evt.lang !== 'string' || !Array.isArray(evt.lineHashes)) return;
-  // Never surface spans before the classId → class-name table exists;
-  // it loads once per page load, so this await is a no-op after boot.
-  void requireHighlightSchema(origin?.backendId ?? HOME_BACKEND)
+function isCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function validLiveCodeEvent(evt: HighlightLiveCodeEvent): boolean {
+  if (!evt || typeof evt.threadId !== 'string' || !evt.threadId || typeof evt.itemId !== 'string' || !evt.itemId) {
+    return false;
+  }
+  if (!isCount(evt.fence) || !isCount(evt.from) || !isCount(evt.seq) || evt.seq === 0) return false;
+  if (typeof evt.lang !== 'string' || typeof evt.final !== 'boolean') return false;
+  if (evt.contentKey !== undefined && typeof evt.contentKey !== 'string') return false;
+  if (evt.head !== undefined && typeof evt.head !== 'string') return false;
+  const hashes = evt.lineHashes ?? [];
+  const lines = evt.lines ?? [];
+  return Array.isArray(hashes) && Array.isArray(lines) && hashes.length === lines.length;
+}
+
+export function applyHighlightLive(evt: HighlightLiveCodeEvent, origin?: EventOrigin): void {
+  if (!validLiveCodeEvent(evt) || !getThreadById(evt.threadId)) return;
+  const backend = backendKeyForOrigin(origin?.backendId ?? '');
+  // A fence's first push precedes its text and names no span class: it
+  // applies at once, so the fence's hosts wait for spans instead of
+  // requesting them. Later pushes apply at once when the origin's schema is
+  // already proven. Pushes that wait resume in arrival order, all before the
+  // next event: they wait on the same promises, which settle together.
+  const firstPush = evt.seq === 1 && (evt.lines ?? []).every((line) => !line.r?.length);
+  if (firstPush || (syntaxClassNamesReady() && provenHighlightSource(backend))) {
+    applyLiveCode(evt, backend);
+    return;
+  }
+  void requireHighlightSchema(backend)
     .then(async (source) => {
       await ensureSyntaxClassNames();
       assertHighlightSource(source);
-      if (evt.final && evt.contentKey) {
-        seedFinalBlockSpans(evt.lang, evt.contentKey, evt.lines ?? []);
-      }
-      putLiveCodeSeed(evt.threadId ?? '', evt.itemId ?? '', evt.lang, evt.lineHashes ?? [], evt.lines ?? []);
+      if (getThreadById(evt.threadId)) applyLiveCode(evt, backend);
     })
     .catch((error) => {
-      console.warn('events: highlight seed ingest failed', error);
+      console.warn('events: live code span ingest failed', error);
+      // The fence's later pushes build on this one; its hosts request spans.
+      stopLiveCodeFence(evt.threadId, evt.itemId, evt.fence);
     });
+}
+
+/**
+ * Subscribes live code spans and the moments their pushes may have been
+ * lost: a replayed reconnect and a return from a background lease withhold
+ * or drop frames without a gap on this ephemeral channel, so the rows ask
+ * for keyframes; a thread leaving the watched set takes its rows along.
+ */
+export function setupHighlightLiveEvents(): () => void {
+  const offLive = wailsEventOn<HighlightLiveCodeEvent>('highlight:live', applyHighlightLive);
+  const offRecovery = onBackendRecovery((backend, phase) => {
+    if (phase === 'complete') resyncLiveCodeRows(backend);
+  });
+  const offLease = onClientLeaseChange((state) => {
+    if (state === 'active') resyncLiveCodeRows();
+  });
+  const offWatched = onWatchedThreadsComposed(retainLiveCodeThreads);
+  return () => {
+    offLive();
+    offRecovery();
+    offLease();
+    offWatched();
+  };
 }
 
 export function applyHighlightDiffSeed(evt: HighlightDiffSeedEvent, origin?: EventOrigin): void {

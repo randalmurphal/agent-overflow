@@ -54,31 +54,50 @@ func (m *Manager) workspaceForPage(pageID string) string {
 	return ""
 }
 
-func countOwnedPagesLocked(scopes map[string]*workspaceScope, threadID string) int {
+// threadPageCountLocked counts the thread's tabs, live and suspended: a
+// suspended page holds no engine resource but keeps its slot in the
+// thread's page cap, which is what bounds the saved pages a thread keeps.
+// The caller holds m.mu.
+func (m *Manager) threadPageCountLocked(threadID string) int {
 	count := 0
-	for _, scope := range scopes {
+	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.owner == threadID {
 				count++
 			}
 		}
 	}
-	return count
-}
-
-func countPagesLocked(scopes map[string]*workspaceScope) int {
-	count := 0
-	for _, scope := range scopes {
-		count += len(scope.pages)
+	for _, rec := range m.suspended {
+		if rec.owner == threadID {
+			count++
+		}
 	}
 	return count
 }
 
-func ambiguousPageError(pages []*managedPage) error {
-	sortPagesByTabOrder(pages)
-	refs := make([]string, 0, len(pages))
-	for _, p := range pages {
-		info := p.cachedInfo()
+// scopeLoadLocked counts the engine pages a scope holds or is creating: the
+// quantity the workspace cap bounds. Suspended pages hold none. The caller
+// holds m.mu.
+func scopeLoadLocked(scope *workspaceScope) int {
+	return len(scope.pages) + scope.creating
+}
+
+// countPagesLocked counts the engine pages of every scope, the quantity the
+// process cap bounds. The caller holds m.mu.
+func countPagesLocked(scopes map[string]*workspaceScope) int {
+	count := 0
+	for _, scope := range scopes {
+		count += scopeLoadLocked(scope)
+	}
+	return count
+}
+
+// ambiguousPageError names the thread's tabs, in tab order, for a call that
+// omitted page_id while the thread has several.
+func ambiguousPageError(tabs []threadTab) error {
+	refs := make([]string, 0, len(tabs))
+	for _, tab := range tabs {
+		info := tab.info
 		ref := info.ID
 		if info.Label != "" {
 			ref += " (" + info.Label + ")"
@@ -87,7 +106,7 @@ func ambiguousPageError(pages []*managedPage) error {
 		}
 		refs = append(refs, ref)
 	}
-	return fmt.Errorf("browser: page_id is required because this thread has %d open pages; call browser_pages and pass the intended page_id (%s)", len(pages), strings.Join(refs, ", "))
+	return fmt.Errorf("browser: page_id is required because this thread has %d open pages; call browser_pages and pass the intended page_id (%s)", len(tabs), strings.Join(refs, ", "))
 }
 
 func (p *managedPage) touch() { p.lastUse.Store(time.Now().UnixNano()) }

@@ -158,6 +158,14 @@ Mechanism in
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart
   loses unbound setup runs and staged intent.
+- A terminal thread lives as long as its shells. When its last terminal
+  exits, its computer deletes it whether or not a client is connected, and
+  it leaves the sidebar and every pane; a restart or crash ends every
+  terminal thread the same way. Nothing reopens or restores one: the user
+  opens a new terminal. A chat thread's drawer terminals are only tabs; a
+  dead one is removed and the drawer collapses with the last. Restoring
+  terminals across a restart would be a separate feature
+  (`internal/app/app_terminal_threads.go`).
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Thread content search matches title and workspace path only. Searching

@@ -8,9 +8,9 @@
 // HTML rendering here; that is the (deliberately removed, commit
 // 2ed0609f) server-rendered-chat path this package must not become.
 //
-// Streaming callers re-request on content growth. Each request is a
-// full reparse — incremental tree reuse (tree.Edit) was consciously
-// declined: a 500-line block parses in ~5ms, and holding per-caller
-// trees would fight both the stateless content-hash cache and the
-// sync.Pool parser model for a win measured in single milliseconds.
+// Requests are stateless full parses. The one stateful path is Stream,
+// which the backend's live highlighter holds for a code fence while an
+// agent streams it: a full reparse per growth step costs O(n) each time,
+// O(n^2) over the fence, while an incremental reparse and a query of the
+// changed lines stays near constant.
 package highlight

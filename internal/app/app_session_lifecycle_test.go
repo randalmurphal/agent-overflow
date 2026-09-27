@@ -14,14 +14,14 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-func (a *App) seedStateCount() int { return a.highlightService().PendingSeedCount() }
+func (a *App) liveCodeRowCount() int { return a.highlightService().LiveItemCount() }
 
-func waitForSeedStates(t *testing.T, app *App, want int) {
+func waitForLiveCodeRows(t *testing.T, app *App, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for app.seedStateCount() != want {
+	for app.liveCodeRowCount() != want {
 		if time.Now().After(deadline) {
-			t.Fatalf("seed states = %d, want %d", app.seedStateCount(), want)
+			t.Fatalf("live code rows = %d, want %d", app.liveCodeRowCount(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -202,13 +202,12 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		Claude:   existing,
 	})
 
-	// A stream killed by replacement never delivers the final tick that
-	// clears its highlight-seeder state; stopExistingSessionLocked must
-	// purge it (unregisterSession can't — the token is taken before the
-	// close, so its callback no-ops for this path).
-	app.remoteClientProbeFn = func() bool { return true }
-	app.observeAssistantTextStream(thread.ID, "stranded-item", "```python\npass", false)
-	waitForSeedStates(t, app, 1)
+	// A stream killed by replacement never delivers the end that releases
+	// its live highlighting row; stopExistingSessionLocked must purge it
+	// (unregisterSession can't — the token is taken before the close, so
+	// its callback no-ops for this path).
+	app.highlightService().ObserveAssistantTextDelta(thread.ID, "stranded-item", "", "```python\npass")
+	waitForLiveCodeRows(t, app, 1)
 
 	// A delta still sitting in the triage stream-persist buffer is the
 	// other re-registration path: its 250ms flush fires the observer
@@ -230,14 +229,12 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		t.Fatalf("startSessionNow() error = %v, want nil (prior subprocess exit is not a close failure)", err)
 	}
 
-	if got := app.seedStateCount(); got != 0 {
-		t.Fatalf("replacement start must purge stranded seeder states, got %d", got)
-	}
+	waitForLiveCodeRows(t, app, 0)
 	// Past the stream-persist flush window: a timer the drain missed
 	// would have re-registered the old stream's state by now.
 	time.Sleep(500 * time.Millisecond)
-	if got := app.seedStateCount(); got != 0 {
-		t.Fatalf("delayed stream flush re-registered purged seeder state: %d", got)
+	if got := app.liveCodeRowCount(); got != 0 {
+		t.Fatalf("a delayed stream flush re-registered a purged live code row: %d", got)
 	}
 
 	// The marker write happens inside the shell script before `cat`

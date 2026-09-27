@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
 
@@ -168,6 +169,7 @@ func TestOpenTerminalAnnouncesTheNewSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+	createModeThread(t, app, "thread-terminal-open", threadmode.ModeChat)
 
 	snapshot := captureOrderedEmissions(app, string(eventchan.TerminalOpened))
 	handle, err := app.OpenTerminal("thread-terminal-open", TerminalOpenOptions{Cwd: t.TempDir()})

@@ -84,6 +84,41 @@ per-platform no-op.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
   the companion closes when its last tab does. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
+- A thread's pages outlive a stop of its provider session, so a restarted
+  session finds the same tabs. Deleting or archiving the thread closes them and
+  forgets their saved copies; an archive that keeps a re-engaged session keeps
+  its pages. A workspace profile with no pages is disposed. An engine with no
+  profiles is stopped after a bounded idle delay.
+- When the session reaper ends an idle session, and only then, the thread's
+  pages are suspended: each engine page is closed and the tab stays in the
+  companion and `browser_pages` (`suspended: true`) with its id, address,
+  title and label. The page a mounted pane is showing stays live, since
+  unloading it would only make the pane reload it. App shutdown saves every
+  open page the same way, so it returns after a restart as a suspended tab,
+  and cancels a suspension in progress before its next page. The next tool
+  call on a suspended page, or presenting it (a mounted pane whose active tab
+  is suspended selects it at once), reloads its address under the ordinary
+  navigation policy; a refused or failed reload leaves it suspended and
+  returns the error to the tool or the pane's banner. Showing the companion
+  does not reload the page itself, so a page that cannot be reloaded still
+  opens the pane, where it can be navigated elsewhere or closed. A reload
+  starts a fresh page: history, console, downloads and clipboard do not
+  return. A suspended tab counts toward the thread's page limit but holds no
+  workspace or process page slot. Pages are never suspended for being hidden.
+- Suspended pages are saved as one JSON file per thread under
+  `browser-pages/` in the config directory, written atomically
+  (`internal/browser/page_records.go`). At boot, a file that is unreadable,
+  invalid or belongs to a deleted or archived thread is removed with a log
+  line, so a delete or archive that cannot remove a thread's file logs it and
+  still completes. Clearing site data and turning the browser off remove
+  every saved page.
+- App shutdown saves the open pages, cancels calls, disposes profiles, stops
+  the engine, then closes the MCP listener. Wails runs that shutdown ON the
+  desktop UI thread, which the WebKit engines dispatch every native call to,
+  so when the caller is that thread the profiles are disposed inline on it
+  (`engineUIThread`) rather than fanned out to goroutines that could only wait
+  for it. Saving uses the pages' cached address and title and makes no engine
+  call.
 
 ## Keyboard
 
@@ -109,15 +144,6 @@ so AO's chords have to be taken back at the engine:
   keydown, so `when` gates, rebinds and the palette all behave as if the SPA
   had been focused. A bound chord whose `when` fails there is a no-op — the
   page never gets it back, which is the price of answering synchronously.
-- A thread's pages outlive its provider session, so a restarted session finds
-  the same tabs. Deleting the thread closes them. A workspace profile with no
-  pages is disposed. An engine with no profiles is stopped after a bounded idle
-  delay.
-- App shutdown cancels calls, disposes profiles, stops the engine, then closes
-  the MCP listener. Wails runs that shutdown ON the desktop UI thread, which
-  the WebKit engines dispatch every native call to, so when the caller is that
-  thread the profiles are disposed inline on it (`engineUIThread`) rather than
-  fanned out to goroutines that could only wait for it.
 
 ## Tool surface
 

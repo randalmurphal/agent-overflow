@@ -15,8 +15,8 @@
 // stays: watermarks are periodic, so frames withheld since the last one
 // still leave a skip.
 //
-// The scope filter (`TranscriptScopeFiltered` in that table, only
-// `provider:item_event`) withholds a watched thread's subagent rows by the
+// The scope filter (`TranscriptScopeFiltered` in that table:
+// `provider:item_event` and `highlight:live`) withholds a watched thread's subagent rows by the
 // same sequence rule, so it needs no list of its own: every channel it
 // narrows is already here, and TestTranscriptScopeFilteredChannelsAreEntityFiltered
 // keeps it that way.
@@ -32,7 +32,7 @@
 // trusting that asymmetry.
 export const ENTITY_FILTERED_CHANNELS: readonly string[] = [
   'highlight:diff_seed',
-  'highlight:seed',
+  'highlight:live',
   'provider:background_tray',
   'provider:item_event',
   'provider:subagent_progress',

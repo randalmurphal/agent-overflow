@@ -21,7 +21,10 @@ type DeletePorts struct {
 	CleanProviderBackground func(store.Thread) error
 	StopSession             func(threadID string) error
 	CancelWorktreeSetup     func(threadID string)
-	CloseTerminals          func(threadID string) error
+	// CloseTerminals runs before the row drops and again after, for a
+	// terminal a client opened meanwhile: OpenTerminal needs the row, so
+	// none can open after the drop.
+	CloseTerminals func(threadID string) error
 	// CloseBrowserPages runs before the row drops, so a failure keeps the
 	// thread for a retry, and again after, for a page a companion action
 	// opened meanwhile (the action leaves it to the delete while the row
@@ -35,9 +38,12 @@ type DeletePorts struct {
 	// Forget drops the conversation's in-memory settings after its row is
 	// gone, so a delete that fails earlier keeps them.
 	Forget func(threadID string)
-	// Deleted fires once per row actually dropped from SQLite, children
-	// included, after the row is gone. Root broadcasts it on
-	// `thread:updated` so a second attached client drops the same rows
+	// Deleted fires once per row whose delete mark committed
+	// (store.BeginThreadDelete), children included, as DeleteTree returns.
+	// From the mark on the row is gone to every read, so a delete that
+	// fails after it still reports the row, and the next boot finishes it
+	// (store.ListPendingThreadDeletes). Root broadcasts it on
+	// `thread:updated` so every attached client drops the same rows
 	// without a refresh; a tree deletion is several rows, and the child
 	// ids are only knowable here.
 	Deleted func(store.Thread)
@@ -135,8 +141,14 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	// The mark refuses new forks before the attachments go, so the ones
 	// the thread's forks show are known and kept (store.ReleasableAttachments).
 	if threadFound {
-		if err := database.BeginThreadDelete(threadID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		err := database.BeginThreadDelete(threadID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("delete thread %s: mark deleting: %w", threadID, err)
+		}
+		// No client lists a holder: its source's delete reported the
+		// thread gone, and a revert's holder was never shown.
+		if err == nil && ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
+			defer ports.Deleted(thread)
 		}
 	}
 	if ports.CleanupAttachments != nil {
@@ -166,19 +178,19 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
-	var closeErr error
+	var closeErrs []error
+	if ports.CloseTerminals != nil {
+		if err := ports.CloseTerminals(threadID); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("delete thread %s: close terminals opened during the delete: %w", threadID, err))
+		}
+	}
 	if ports.CloseBrowserPages != nil {
 		if err := ports.CloseBrowserPages(threadID); err != nil {
-			closeErr = fmt.Errorf("delete thread %s: close browser pages opened during the delete: %w", threadID, err)
+			closeErrs = append(closeErrs, fmt.Errorf("delete thread %s: close browser pages opened during the delete: %w", threadID, err))
 		}
 	}
 	if ports.Forget != nil {
 		ports.Forget(threadID)
 	}
-	// No client lists a holder: its source's delete reported the thread
-	// gone, and a revert's holder was never shown.
-	if ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
-		ports.Deleted(thread)
-	}
-	return closeErr
+	return errors.Join(closeErrs...)
 }

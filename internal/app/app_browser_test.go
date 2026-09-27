@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 )
 
 func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
@@ -529,5 +530,216 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 				t.Fatalf("the deleted thread owns %d browser pages", len(pages))
 			}
 		})
+	}
+}
+
+func newBrowserTestApp(t *testing.T) (*App, *appbrowser.Manager) {
+	t.Helper()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	app.browser.mcp = appbrowser.NewMCPServer(manager, true)
+	t.Cleanup(func() { _ = app.browser.mcp.Close(); _ = manager.Close() })
+	return app, manager
+}
+
+func browserTestThread(t *testing.T, app *App, id string) (store.Thread, appbrowser.Access) {
+	t.Helper()
+	thread := testThread(id)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	access, err := app.browserAccess(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return thread, access
+}
+
+func browserPageStates(manager *appbrowser.Manager, access appbrowser.Access) []appbrowser.PageInfo {
+	return manager.CompanionState(access).Pages
+}
+
+// The reaper ending an idle session suspends the thread's browser pages; a
+// user stopping the session leaves them live. Only the idle end suspends.
+func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
+	app, manager := newBrowserTestApp(t)
+	reaped, reapedAccess := browserTestThread(t, app, "thread-browser-reaped")
+	stopped, stoppedAccess := browserTestThread(t, app, "thread-browser-stopped")
+	for _, access := range []appbrowser.Access{reapedAccess, stoppedAccess} {
+		if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	app.sessionManager().put(reaped.ID, session{
+		Provider: string(provider.Codex), Token: "reaped",
+		Liveness: newSessionLiveness(now.Add(-idleReapThreshold - time.Minute)),
+	})
+	app.sessionManager().put(stopped.ID, session{
+		Provider: string(provider.Codex), Token: "stopped", Liveness: newSessionLiveness(now),
+	})
+
+	app.reapIdleSessions(now)
+	if err := app.StopSession(stopped.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+
+	if pages := browserPageStates(manager, reapedAccess); len(pages) != 1 || !pages[0].Suspended {
+		t.Fatalf("pages of the reaped thread = %#v, want one suspended", pages)
+	}
+	if pages := browserPageStates(manager, stoppedAccess); len(pages) != 1 || pages[0].Suspended {
+		t.Fatalf("pages of the stopped thread = %#v, want one live", pages)
+	}
+
+	// The pane hydrates the suspended tab and presenting it restores it.
+	hydrated, err := app.BrowserCompanionThreadState(reaped.ID)
+	if err != nil || len(hydrated.Pages) != 1 || !hydrated.Pages[0].Suspended {
+		t.Fatalf("BrowserCompanionThreadState = %#v, %v; want one suspended page", hydrated.Pages, err)
+	}
+	pageID := hydrated.Pages[0].ID
+	if _, err := app.BrowserCompanionDo(t.Context(), reaped.ID, BrowserCompanionAction{Kind: "activate", PageID: pageID}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if pages := browserPageStates(manager, reapedAccess); len(pages) != 1 || pages[0].ID != pageID || pages[0].Suspended {
+		t.Fatalf("pages after presenting = %#v, want %s live", pages, pageID)
+	}
+}
+
+// Archiving a thread closes its browser pages, live and suspended, through
+// both doors that archive; a session kept because a turn started after the
+// request keeps its pages too.
+func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
+	archived := true
+	for _, tc := range []struct {
+		name    string
+		archive func(*App, string) error
+	}{
+		{"archive binding", (*App).ArchiveThread},
+		{"thread_update", func(app *App, threadID string) error {
+			_, err := app.applyThreadOrganizePatch(context.Background(), threadID, threadapp.OrganizePatch{Archived: &archived})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, manager := newBrowserTestApp(t)
+			thread, access := browserTestThread(t, app, "thread-archive-browser")
+			if _, err := manager.Open(t.Context(), access, "https://example.test/suspended", appbrowser.OpenOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.SuspendThread(t.Context(), thread.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Open(t.Context(), access, "https://example.test/live", appbrowser.OpenOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tc.archive(app, thread.ID); err != nil {
+				t.Fatalf("archive: %v", err)
+			}
+			if pages := browserPageStates(manager, access); len(pages) != 0 {
+				t.Fatalf("archived thread still has browser pages: %#v", pages)
+			}
+		})
+	}
+	t.Run("session kept", func(t *testing.T) {
+		app, manager := newBrowserTestApp(t)
+		thread, access := browserTestThread(t, app, "thread-archive-browser-reengaged")
+		if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.store.InsertTurn(store.Turn{
+			TurnID: "turn-after", ThreadID: thread.ID, StartedAt: time.Now().Add(time.Minute).UnixMilli(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		app.sessionManager().put(thread.ID, session{
+			Provider: string(provider.Codex), Token: "tok", Liveness: newSessionLiveness(time.Now()),
+		})
+		if err := app.ArchiveThread(thread.ID); err != nil {
+			t.Fatalf("ArchiveThread: %v", err)
+		}
+		if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+			t.Fatalf("pages of a thread whose session the archive kept = %#v", pages)
+		}
+	})
+}
+
+// At boot, saved browser pages belong to a thread that exists and is not
+// archived.
+func TestBrowserThreadKeepsPagesOnlyWhileListed(t *testing.T) {
+	app := newTestAppWithStore(t)
+	listed := testThread("thread-listed")
+	archivedThread := testThread("thread-archived")
+	for _, thread := range []store.Thread{listed, archivedThread} {
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := app.store.ArchiveThread(archivedThread.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{{listed.ID, true}, {archivedThread.ID, false}, {"thread-missing", false}} {
+		got, err := app.browserThreadKeepsPages(tc.id)
+		if err != nil || got != tc.want {
+			t.Fatalf("browserThreadKeepsPages(%s) = %v, %v; want %v", tc.id, got, err, tc.want)
+		}
+	}
+}
+
+// The boot's browser manager brings back the saved pages of a listed thread
+// and drops those of a thread archived while the app was down.
+func TestBootKeepsSavedBrowserPagesOnlyForListedThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.browser.mockEngine = true
+	dir := t.TempDir()
+	listed, listedAccess := browserTestThread(t, app, "thread-boot-listed")
+	archived, archivedAccess := browserTestThread(t, app, "thread-boot-archived")
+	current := app.currentSettings()
+	current.BrowserEnabled = true
+	first := app.newBrowserManager(dir, current)
+	for _, access := range []appbrowser.Access{listedAccess, archivedAccess} {
+		if _, err := first.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.store.ArchiveThread(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := app.newBrowserManager(dir, current)
+	t.Cleanup(func() { _ = restarted.Close() })
+	if pages := browserPageStates(restarted, listedAccess); len(pages) != 1 || !pages[0].Suspended {
+		t.Fatalf("pages of %s after the restart = %#v, want one suspended", listed.ID, pages)
+	}
+	if pages := browserPageStates(restarted, archivedAccess); len(pages) != 0 {
+		t.Fatalf("pages of archived %s after the restart = %#v", archived.ID, pages)
+	}
+}
+
+// Shutdown cancels the reaper's suspension before its next page: a desktop
+// shutdown holds the UI thread every engine call needs, and Close saves the
+// pages still live.
+func TestShutdownStopsTheReapersBrowserSuspension(t *testing.T) {
+	app, manager := newBrowserTestApp(t)
+	thread, access := browserTestThread(t, app, "thread-browser-shutdown")
+	if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.appCtx = ctx
+	cancel()
+	if err := app.suspendThreadBrowserPages(thread.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("suspension after the shutdown began = %v", err)
+	}
+	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+		t.Fatalf("pages = %#v, want one live", pages)
 	}
 }

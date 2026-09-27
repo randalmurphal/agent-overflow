@@ -12,7 +12,12 @@ mode. Product behavior and authority are defined in
   the loopback MCP listener because the provider receives its per-thread
   capability URL in argv; starting it on first tool use is too late.
   Session end revokes that capability; the thread's pages outlive it and
-  close when the thread is deleted.
+  close when the thread is deleted or archived. Only the reaper's idle end
+  suspends them (`suspend.go`), and shutdown saves them for the next boot
+  (`page_records.go`); see browser-tools.md for the lifecycle. Every path that
+  acts on a page by id goes through `resolvePage` so a suspended page
+  restores under the navigation policy. Showing the companion (`Visibility`)
+  only checks the tab exists; the pane's selection restores it.
 - One manager owns one engine. Profiles are per workspace, pages are per thread,
   and every operation rechecks thread ownership. Closing the last page disposes
   its profile; manager shutdown joins all engine work.

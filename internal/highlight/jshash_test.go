@@ -1,8 +1,13 @@
 package highlight
 
 import (
+	"bytes"
+	"math/rand"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Vectors generated from the frontend implementation
@@ -64,6 +69,36 @@ func TestFrontendLineHashesArePrefixHashes(t *testing.T) {
 		h, _ := jsHashUnits(jsFNVOffsetBasis, prefix)
 		if hashes[i] != h {
 			t.Errorf("hashes[%d] = %d, want prefix hash %d of %q", i, hashes[i], h, prefix)
+		}
+	}
+}
+
+func TestLineHashChainMatchesFrontendLineHashes(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	alphabet := []string{"a", "b", "\n", "é", "😀", "\t", "\n\n", "xyz"}
+	for round := 0; round < 500; round++ {
+		var b strings.Builder
+		for n := rng.Intn(40); n >= 0; n-- {
+			b.WriteString(alphabet[rng.Intn(len(alphabet))])
+		}
+		text := []byte(b.String())
+		var chain LineHashChain
+		for off := 0; off < len(text); {
+			off = min(len(text), off+1+rng.Intn(5))
+			prefix := text[:off]
+			from := rng.Intn(bytes.Count(prefix, []byte("\n")) + 1)
+			got := chain.Hashes(prefix, from)
+			if !utf8.Valid(prefix) {
+				// A cut character is left out of the last entry only.
+				want := FrontendLineHashes(string(prefix))
+				if !reflect.DeepEqual(got[:len(got)-1], want[from:len(want)-1]) {
+					t.Fatalf("%q from %d: complete lines %v, want %v", prefix, from, got, want[from:])
+				}
+				continue
+			}
+			if want := FrontendLineHashes(string(prefix))[from:]; !reflect.DeepEqual(got, want) {
+				t.Fatalf("%q from %d: %v, want %v", prefix, from, got, want)
+			}
 		}
 	}
 }

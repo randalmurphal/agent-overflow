@@ -55,7 +55,8 @@ type TerminalReplay struct {
 }
 
 // OpenTerminal starts a new PTY-backed terminal session bound to the given
-// thread.
+// thread or draft placeholder. It refuses a thread that no longer exists
+// and a terminal thread that has ended (app_terminal_threads.go).
 //
 //ao:scope terminal:operate
 func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalHandle, error) {
@@ -73,6 +74,10 @@ func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalH
 		return TerminalHandle{}, err
 	}
 	defer unlock()
+	terminalThread, err := a.terminalThreadForOpen(threadID)
+	if err != nil {
+		return TerminalHandle{}, err
+	}
 	summary, err := a.terminals.Open(threadID, terminal.SessionOptions{
 		Shell: opts.Shell,
 		Cwd:   opts.Cwd,
@@ -81,6 +86,9 @@ func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalH
 	})
 	if err != nil {
 		return TerminalHandle{}, err
+	}
+	if terminalThread {
+		a.terminalThreads.noteStarted(threadID)
 	}
 	return a.announceTerminalOpened(summary), nil
 }
@@ -188,13 +196,23 @@ func (a *App) MoveThreadTerminals(fromThreadID, toThreadID string) ([]terminal.S
 	if !isDraftPlaceholderThreadID(fromThreadID) {
 		return nil, fmt.Errorf("terminal: source thread must be a draft placeholder")
 	}
+	if isDraftPlaceholderThreadID(toThreadID) {
+		return nil, fmt.Errorf("terminal: target thread must not be a draft placeholder")
+	}
 	if a.store == nil {
 		return nil, fmt.Errorf("terminal: store unavailable")
 	}
-	if _, err := a.store.GetThread(toThreadID); err != nil {
-		return nil, fmt.Errorf("terminal: resolve target thread %s: %w", toThreadID, err)
+	// Moving shells into a thread opens them there, so the target follows
+	// OpenTerminal's rules.
+	terminalThread, err := a.terminalThreadForOpen(toThreadID)
+	if err != nil {
+		return nil, err
 	}
-	return a.terminals.MoveThread(fromThreadID, toThreadID)
+	moved, err := a.terminals.MoveThread(fromThreadID, toThreadID)
+	if err == nil && len(moved) > 0 && terminalThread {
+		a.terminalThreads.noteStarted(toThreadID)
+	}
+	return moved, err
 }
 
 // CloseThreadTerminals kills every live terminal session bound to a thread-like
@@ -281,23 +299,16 @@ func (a *App) terminalOutputCallback(threadID, terminalID string, sequence uint6
 	})
 }
 
-// terminalExitCallback emits a `terminal:exit` event to the frontend.
-//
-// Suppressed during shutdown: Manager.Shutdown SIGTERMs every PTY, which fires
-// each session's exit callback. The frontend treats a real terminal exit as
-// "this terminal is gone" and drops the thread from the sidebar (ctrl+D / last
-// tab close). Terminal threads must instead PERSIST across restart, so we must
-// not let the shutdown-time mass-kill reach the frontend as exits. shuttingDown
-// is CAS'd true at the very top of Shutdown, before terminals close, so every
-// shutdown-induced exit observes it.
+// terminalExitCallback emits a `terminal:exit` event to the frontend, which
+// drops the terminal's tab, and ends the thread if this was a terminal
+// thread's last shell. The manager has already dropped the session, so the
+// end sees the thread's remaining terminals.
 func (a *App) terminalExitCallback(threadID, terminalID string, status terminal.ExitStatus) {
-	if a.shuttingDown.Load() {
-		return
-	}
 	a.emit(eventchan.TerminalExit, TerminalExitEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,
 		Code:       status.Code,
 		Reason:     status.Reason,
 	})
+	a.endTerminalThreadAfterExit(threadID)
 }

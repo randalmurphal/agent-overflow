@@ -16,27 +16,28 @@
   // native selection copy matches the source byte-for-byte.
   //
   // Streaming: the volatile tail re-renders this component with
-  // growing `token.text`. Requests are serialized on the in-flight
-  // one: an idle block fires immediately (after a short floor since
-  // the last fire), and content that grows mid-flight coalesces into
-  // one drain fire when the flight settles — the color trail behind
-  // streamed text is max(floor, round trip + parse), not a fixed
-  // throttle window. While a request is pending, the previous
-  // response still paints the unchanged prefix lines (minus the
-  // last, likely partial, line) and new lines render plain. Each
-  // pending window holds a `registerAsyncResource` gate so
-  // Streamdown's `onsettled` (the chat warm-gate signal) fires only
-  // after spans are cached.
+  // growing `token.text`. A block of a streaming assistant row paints
+  // from the spans the backend pushes for the row's fences
+  // (`highlight:live` → liveCodeSpans.svelte.ts): the fence's line-hash
+  // chain proves which lines of this text its spans describe, the
+  // partial last line takes its line's spans clipped, and no request
+  // runs while a fence covers the text. A fence's first push arrives
+  // before its text, so a followed block never requests spans; a fence
+  // takes over from requested colors only once it colors as many lines.
+  // A block no fence covers requests spans instead. Requests are
+  // serialized on the in-flight one: an idle block fires immediately
+  // (after a short floor since the last fire), and content that grows
+  // mid-flight coalesces into one drain fire when the flight settles.
+  // While a request is
+  // pending, the previous spans still paint the prefix they describe,
+  // their last line clipped to what it was, and new text renders
+  // plain; colors never leave text they were proven for. Each pending
+  // window holds a `registerAsyncResource` gate so Streamdown's
+  // `onsettled` (the chat warm-gate signal) fires only after spans are
+  // cached.
   // A completed host never replaces itself with static HTML. CompactBlocks is
   // the sole retirement owner, and span adoption waits while a native text
   // selection intersects this block so highlighting cannot erase the range.
-  //
-  // Remote clients additionally receive backend-pushed span seeds
-  // (`highlight:seed` → liveCodeSeeds.svelte.ts) for streaming fences:
-  // the seed's hash chain proves which line prefix of the current text
-  // its spans describe, so a matching seed paints ahead of — or
-  // entirely instead of — the RPC round trip. Seeds are cache-warmers,
-  // never authority: no match, no effect.
   //
   // The gate does NOT delay ChatMarkdown's committed-prefix migration
   // — the boundary splitter commits blocks on markdown structure
@@ -125,7 +126,16 @@
     renderStaticCodeBlockHtml,
   } from './staticCodeBlock';
   import { isCodeBlockUnwrappedByKey, setCodeBlockUnwrappedByKey } from './codeWrapState';
-  import { liveCodeSeedGeneration, matchLiveCodeSeed } from './liveCodeSeeds.svelte';
+  import {
+    coverColorsWhole,
+    coverLiveCode,
+    coverPaints,
+    getLiveCodeRowContext,
+    liveCodeRow,
+    liveCoverSpans,
+    TextLineChain,
+    type LiveCodeCover,
+  } from './liveCodeSpans.svelte';
   import { CodeLines } from './codeLines.svelte';
 
   let {
@@ -141,7 +151,7 @@
   const streamdown = useStreamdown();
 
   // Highlight identity for this block (see infoWord above). Everything
-  // span-related — cache keys, seed matching, RPC lang — uses this;
+  // span-related — cache keys, pushed-span matching, RPC lang — uses this;
   // only the data-code-lang stamp keeps the full info string.
   let highlightLang = $derived(codeFenceInfoWord(token.lang ?? ''));
 
@@ -159,6 +169,12 @@
   let renderedLang = untrack(() => highlightLang);
   let sourceIdentity = createCodeSourceIdentity(initialText);
   const codeLines = new CodeLines(initialText);
+  // The row this block streams in, and the line-hash chain of its text that
+  // proves which pushed spans describe it.
+  const liveRowRef = getLiveCodeRowContext();
+  const lineChain = new TextLineChain(initialText);
+  // The pushed fence painting this block, while one covers its text.
+  let live = $state.raw<LiveCodeCover | null>(null);
   let codeRoot = $state<HTMLElement>();
   // Per-block wrap choice. Seeded from the keyed record so a remounted or
   // re-rendered block keeps the reader's choice; the toggle records the
@@ -198,12 +214,14 @@
       const appended = matchesProvenAppend(textAppend, renderedText, text);
       if (appended) {
         untrack(() => codeLines.append(textAppend.delta));
+        lineChain.append(textAppend.delta);
         sourceIdentity = appendCodeSourceIdentity(sourceIdentity, textAppend);
         staleUsable = spans !== null &&
           spansForLang === lang &&
           (staleUsable || spansFor === renderedText);
       } else {
         untrack(() => codeLines.replace(text));
+        lineChain.reset(text);
         sourceIdentity = createCodeSourceIdentity(text);
         staleUsable = spans !== null &&
           spansForLang === lang &&
@@ -429,11 +447,11 @@
     const text = token.text;
     const lang = highlightLang;
     const source = sourceIdentity;
-    // Tracked alongside the token: a backend-pushed seed (remote
-    // clients, highlight:seed) can arrive BETWEEN token changes — e.g.
-    // the final seed after the last delta — and must re-run the match
-    // below. Loopback clients never receive seeds, so this stays 0.
-    liveCodeSeedGeneration();
+    // Tracked alongside the token: a push for the row can arrive BETWEEN
+    // token changes (the final push after the last delta) and must re-run
+    // the cover below.
+    const ref = liveRowRef?.();
+    const row = ref ? liveCodeRow(ref.threadId, ref.itemId) : undefined;
     if (streamdown.diagnostics && codeRoot && !codeDiagnostics) {
       const root = codeRoot as HTMLElement & { __aoCodeDiagnostics?: unknown };
       codeDiagnostics = {
@@ -452,30 +470,51 @@
       if (spansForLang === lang && spansFor === text && spans !== null) {
         // Already exact for the current token: any queued or in-flight
         // fire is for an older token and must not adopt over this.
+        live = null;
         cancelScheduled();
         return;
       }
       if (!lang) {
         // No fence language → definitively plain; skip the round trip.
+        live = null;
         cancelScheduled();
         adopt(lang, text, null);
         return;
       }
       const hit = getCachedBlockSpansByIdentity(lang, source, spanCacheOwner());
       if (hit) {
+        live = null;
         cancelScheduled();
         adopt(lang, text, hit);
         return;
       }
-      // Backend-pushed live seed (remote clients): the hash chain
-      // verifies exactly which line prefix of THIS text the seed's
-      // spans describe. An exact match settles the block without any
-      // RPC; a partial match paints the verified prefix through the
-      // existing stale-prefix rendering while the exact request runs.
-      const seed = matchLiveCodeSeed(lang, text);
-      if (seed?.exact) {
+      const streaming = streamdown.parseIncompleteMarkdown !== false;
+      const cover = row || live ? coverLiveCode(row, live?.fence, lang, lineChain, streaming) : null;
+      if (cover?.exact) {
+        live = null;
         cancelScheduled();
-        adopt(lang, text, seed.spans);
+        adopt(lang, text, cover.fence.lines);
+        return;
+      }
+      // Another fence's cover, or one replacing requested colors, takes over
+      // only once it colors in full every line the block's colors reach;
+      // until then the block keeps requesting its own.
+      if (cover && ((live && cover.fence === live.fence) || coverColorsWhole(cover) >= paintedLines())) {
+        live = cover;
+        cancelScheduled();
+        return;
+      }
+      if (live) {
+        // The pushed fence no longer describes this text (it stopped, or
+        // the text left it): its verified lines keep their colors while
+        // the request runs.
+        keepLiveColors(live, lang);
+        live = null;
+      }
+      if (text === '') {
+        // Nothing to color yet, and a fence's first push precedes its text.
+        cancelScheduled();
+        adopt(lang, text, null);
         return;
       }
       if (spans === null) {
@@ -491,27 +530,29 @@
           staleUsable = true;
         }
       }
-      if (seed) {
-        // Adopt the seed's verified prefix only when it covers MORE of
-        // the current text than whatever spans this instance already
-        // paints from (its own last response or the lastAdopted seed).
-        const currentCoverage =
-          spansForLang === lang && spans !== null && staleUsable
-            ? spansFor.length
-            : 0;
-        if (seed.covered.length > currentCoverage) {
-          // Adopt WITH the trailing newline: the hash walk verified the
-          // covered lines as complete up to a '\n' in this text, and
-          // keeping that newline in spansFor both preserves the
-          // alignment guarantee under later replacements (startsWith
-          // fails if the newline is gone) and tells lineSpans() the
-          // final span line is complete, not mid-growth.
-          adopt(lang, seed.covered + '\n', seed.spans);
-        }
-      }
       schedule(lang, source);
     });
   });
+
+  /** Leading lines the block's current colors cover. */
+  function paintedLines(): number {
+    if (live) return coverPaints(live);
+    if (!spans || spansForLang !== highlightLang || !(exact || staleUsable)) return 0;
+    return Math.min(spans.length, lineChain.lineCount);
+  }
+
+  /** Keeps the lines a cover painted as the stale spans the next request
+   * replaces. They are copied: an open fence changes in place. spansFor is
+   * kept a strict prefix of the text, so the block still requests its own
+   * spans. */
+  function keepLiveColors(cover: LiveCodeCover, lang: string): void {
+    const text = token.text;
+    spans = cover.fence.lines.slice(0, coverPaints(cover));
+    spansFor = codeLines.texts().slice(0, cover.verified).join('\n');
+    if (spansFor === text) spansFor = text.slice(0, -1);
+    spansForLang = lang;
+    staleUsable = text.startsWith(spansFor);
+  }
 
   onMount(() => {
     const ownerDocument = codeRoot?.ownerDocument ?? document;
@@ -552,15 +593,13 @@
   // own result lands — especially since that result can reject.
 
   function lineSpans(index: number): EncodedLine | null {
+    if (live) return liveCoverSpans(live, index);
     if (!spans) return null;
     if (exact) return spans[index] ?? null;
     if (!staleUsable) return null;
-    // Stale spans mid-stream: trust the prefix, but drop the last span
-    // line when the source it covered may have still been growing. A
-    // spansFor ending in '\n' (seed adoption) proves every content
-    // line it covers is complete, so nothing needs dropping.
-    const completeLines = spansFor.endsWith('\n') ? spans.length : spans.length - 1;
-    return index < completeLines ? (spans[index] ?? null) : null;
+    // Stale spans describe a prefix of this text. A last line that has
+    // grown since keeps its runs over the part they were computed for.
+    return spans[index] ?? null;
   }
 
   $effect.pre(() => codeLines.paint(lineSpans));

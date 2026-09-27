@@ -244,3 +244,31 @@ func TestPointerForkOfAMovedSourceSaysItMoved(t *testing.T) {
 		t.Fatalf("a refused fork left thread F: %v", err)
 	}
 }
+
+// ListTerminalThreads names each owned terminal thread, archived or not,
+// and leaves one whose delete began to ListPendingThreadDeletes.
+func TestListTerminalThreadsNamesOwnedTerminalThreads(t *testing.T) {
+	s := openStoreAt(t)
+	for id, mode := range map[string]string{
+		"term": threadmode.ModeTerminal, "term-archived": threadmode.ModeTerminal,
+		"term-deleting": threadmode.ModeTerminal, "chat": threadmode.ModeChat,
+	} {
+		thread := makeThread(id, "claude")
+		thread.Mode = mode
+		thread.Archived = id == "term-archived"
+		if err := s.CreateThread(thread); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.BeginThreadDelete("term-deleting"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.ListTerminalThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"term", "term-archived"}) {
+		t.Fatalf("ListTerminalThreads = %v, want term and term-archived", ids)
+	}
+}

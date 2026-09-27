@@ -64,10 +64,11 @@ export function clientLease(): LeaseState {
  * Watch the foreground state. Fires once immediately, then on each
  * change.
  *
- * The consumer is the shell's bundle sync: a multi-megabyte download is
- * work worth deferring while the OS has the app paused, which is the one
- * case where deferring is not off-view work shedding — the app is not
- * being looked at because it is not running.
+ * Consumers: the shell's bundle sync, which defers a multi-megabyte
+ * download while the OS has the app paused (the one case where deferring
+ * is not off-view work shedding: the app is not being looked at because
+ * it is not running), and live code spans, which ask for keyframes on the
+ * return from the background because the backend withheld their pushes.
  */
 export function onClientLeaseChange(listener: (state: LeaseState) => void): () => void {
   listener(current);

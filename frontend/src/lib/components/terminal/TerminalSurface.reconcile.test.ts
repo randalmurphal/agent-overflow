@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import TerminalSurface from './TerminalSurface.svelte';
-import { getThreadTerminalState, resetThreadTerminalStatesForTest } from './terminalStore.svelte';
+import {
+  getThreadTerminalState,
+  notifyTerminalFocus,
+  resetTerminalFocusForTest,
+  resetThreadTerminalStatesForTest,
+} from './terminalStore.svelte';
 import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 import type { TerminalSessionSummary } from '../../types/terminal';
 import { setupEventListeners } from '../../stores/events';
@@ -12,6 +17,8 @@ import { __resetEntityIndexForTest, noteTerminal, noteThread, terminalBackend } 
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { transportGapChannel } from '../../transport/wsClient';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import type { Thread } from '../../types/models';
 
 // A mounted surface re-reads its thread's terminals once the thread's computer
 // has replayed what this client missed, or has lost terminal frames, so a tab
@@ -32,12 +39,12 @@ function summary(terminalID: string, threadID: string): TerminalSessionSummary {
   };
 }
 
-function surfaceFor(threadId: string): ThreadTerminalSurfaceContext {
+function surfaceFor(threadId: string, setVisible: (visible: boolean) => void = () => {}): ThreadTerminalSurfaceContext {
   return {
     paneId: `pane-${threadId}`,
     threadId,
     workspacePath: '/tmp',
-    setVisible: () => {},
+    setVisible,
     acquireResizeLease: () => null,
     consumeFocusRequest: () => false,
   };
@@ -50,8 +57,8 @@ let listTerminals: ReturnType<typeof setBindingMock>;
 let laptop: StagedBackend;
 let cleanupEvents: (() => void) | null = null;
 
-async function mount(threadId: string): Promise<void> {
-  render(TerminalSurface, { surface: surfaceFor(threadId) as never });
+async function mount(threadId: string, setVisible?: (visible: boolean) => void): Promise<void> {
+  render(TerminalSurface, { surface: surfaceFor(threadId, setVisible) as never });
   await vi.waitFor(() => expect(ids(threadId)).toEqual(running[threadId]));
 }
 
@@ -61,6 +68,8 @@ function fromLaptop(channel: string, data: unknown): void {
 
 beforeEach(() => {
   resetThreadTerminalStatesForTest();
+  resetPanesForTest();
+  resetTerminalFocusForTest();
   resetBindingMocks();
   __resetEntityIndexForTest();
   running = { 'thread-L': ['a', 'b'], 'thread-H': ['h'] };
@@ -78,6 +87,8 @@ afterEach(() => {
   cleanupEvents = null;
   resetStagedBackends();
   resetThreadTerminalStatesForTest();
+  resetPanesForTest();
+  resetTerminalFocusForTest();
   vi.mocked(reportFrontendDiagnostic).mockClear();
 });
 
@@ -107,6 +118,41 @@ describe('terminal surface reconciliation', () => {
     await vi.waitFor(() => expect(ids('thread-L')).toEqual(['a']));
     expect(terminalBackend('b')).toBeUndefined();
     expect(terminalBackend('a')).toBe('laptop');
+  });
+
+  // A terminal the re-read no longer names ended while this client was away,
+  // and goes the way its exit would have (events.terminalExit.test.ts).
+  it('moves focus to the next tab when the focused active terminal is gone', async () => {
+    await mount('thread-L');
+    const handle = getThreadTerminalState('thread-L');
+    handle.setActive('b');
+    const pane = createPane('pane-thread-L');
+    pane.replaceThread({ id: 'thread-L', title: 'term', mode: 'terminal' } as Thread);
+    notifyTerminalFocus('pane-thread-L', true);
+    running['thread-L'] = ['a'];
+
+    emitWailsEvent(transportGapChannel, { channel: 'terminal:exit', seq: 9 }, REMOTE_BACKEND_UUID);
+
+    await vi.waitFor(() => expect(ids('thread-L')).toEqual(['a']));
+    expect(handle.activeTerminalID).toBe('a');
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('collapses the drawer and opens nothing when the re-read finds every terminal gone', async () => {
+    const setVisible = vi.fn();
+    await mount('thread-L', setVisible);
+    const openTerminal = setBindingMock('OpenTerminal', async () => {
+      throw new Error('unexpected open');
+    });
+    noteTerminal('a', 'laptop');
+    running['thread-L'] = [];
+
+    emitWailsEvent(transportGapChannel, { channel: 'terminal:exit', seq: 9 }, REMOTE_BACKEND_UUID);
+
+    await vi.waitFor(() => expect(ids('thread-L')).toEqual([]));
+    await vi.waitFor(() => expect(setVisible).toHaveBeenCalledWith(false));
+    expect(openTerminal).not.toHaveBeenCalled();
+    expect(terminalBackend('a')).toBeUndefined();
   });
 
   it('adds a terminal whose open a gap lost', async () => {

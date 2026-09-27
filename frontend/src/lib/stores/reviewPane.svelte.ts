@@ -84,7 +84,7 @@ import type {
   Thread,
 } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import { type PatchScopeContext } from '../utils/diffSpanCache.svelte';
+import { PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import {
@@ -104,7 +104,7 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import {
-  mergePatchFilesByPathCached,
+  mergePatchFilesByPath,
   parsePatchFilesCached,
   type DiffGap,
   type PatchFile,
@@ -187,6 +187,10 @@ export interface ReviewPaneState {
   readonly conflictContentByPath: SvelteMap<string, string>;
   readonly conflictCollapsedPaths: SvelteSet<string>;
   readonly conflictFiles: PatchFile[];
+  /** The colors the diff surface and the conflict surface last painted,
+   * served to their lines while exact spans are in flight. */
+  readonly paintedSpans: PaintedSpans;
+  readonly conflictPaintedSpans: PaintedSpans;
   readonly ciPipeline: CIPipeline | null;
   readonly ciLoading: boolean;
   readonly ciError: string | null;
@@ -666,21 +670,28 @@ function createReviewPaneState(
   // Tree display order (dirs first, alphabetical), so the diff body,
   // rail tree, j/k nav, and comment grouping all read top-to-bottom in
   // the same sequence. Git's raw patch order is plain lexicographic,
-  // which interleaves root files between directories. Hunk-gap
-  // expansions overlay per file, keyed by the version counter.
+  // which interleaves root files between directories.
+  //
+  // Parsed once per patch text. Expansion clicks and edit gap gating
+  // re-run only the `files` overlay below, so each file keeps its lines
+  // identity across clicks even when the shared parse cache skips or
+  // evicts this patch. The expansion rebuild memo and every per-array
+  // memo downstream (display rows, span keys) depend on that identity:
+  // a fresh parse per click would rebuild and rehash every file.
+  const parsedFiles = $derived.by(() => {
+    if (scope !== 'edits') return sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    // A whole-turn concatenation repeats a path when a file was edited
+    // more than once in the turn — merge those sections into one
+    // renumbered file-ordered section per path (the review surface
+    // keys rows/tree/collapse by path; see mergePatchFilesByPath),
+    // BEFORE tree sorting.
+    return sortFilesTreeOrder(mergePatchFilesByPath(parsePatchFilesCached(patchText)));
+  });
+  // Hunk-gap expansions overlay per file, keyed by the version counter.
   const files = $derived.by(() => {
     void contextExpansionVersion;
-    let parsed: PatchFile[];
+    let parsed = parsedFiles;
     if (scope === 'edits') {
-      // A whole-turn concatenation repeats a path when a file was edited
-      // more than once in the turn — merge those sections into one
-      // renumbered file-ordered section per path (the review surface
-      // keys rows/tree/collapse by path; see mergePatchFilesByPath).
-      // The merge runs BEFORE tree sorting and through the identity
-      // cache: this derived re-runs per expansion click, and only a
-      // stable merged lines array keeps the expansion rebuild memo and
-      // the span cache's predecessor fallback working — a fresh array
-      // per run flashes the whole file plain for a round trip.
       // Gap arrows are verification-gated (merged files included): a
       // file's gaps render only after the load-time VerifyEditDiffs
       // pass proved an expansion request would be served (persisted
@@ -691,14 +702,11 @@ function createReviewPaneState(
       // click-time refusal (rare race) still retires the path via
       // unexpandableEditPaths. Copies, not mutation: the parse cache
       // is shared across panes and scopes.
-      parsed = sortFilesTreeOrder(mergePatchFilesByPathCached(parsePatchFilesCached(patchText))).map(
-        (file) =>
-          editExpandablePaths.has(file.path) && !unexpandableEditPaths.has(file.path)
-            ? file
-            : { ...file, suppressGaps: true },
+      parsed = parsed.map((file) =>
+        editExpandablePaths.has(file.path) && !unexpandableEditPaths.has(file.path)
+          ? file
+          : { ...file, suppressGaps: true },
       );
-    } else {
-      parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
     }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
@@ -721,6 +729,23 @@ function createReviewPaneState(
         });
       }
       return { path, kind: 'conflict', additions: 0, deletions: 0, lines: [] };
+    });
+  });
+  // The colors each surface last painted (see PaintedSpans), retained
+  // for exactly the files that surface shows. Lines keep them while
+  // their file's exact spans are in flight after an expansion, a reload
+  // or a recompute.
+  const paintedSpans = new PaintedSpans();
+  const conflictPaintedSpans = new PaintedSpans();
+  const disposePaintedRetention = $effect.root(() => {
+    $effect(() => {
+      paintedSpans.retain(files.map((file) => file.path));
+    });
+    $effect(() => {
+      // A recompute after a push empties the tree until the new one
+      // lands; the painted colors carry across that gap.
+      if (!conflictView) conflictPaintedSpans.clear();
+      else if (conflictsState.state) conflictPaintedSpans.retain(conflictsState.state.paths);
     });
   });
   // Whether every file on the ACTIVE surface (conflict view or diff) is
@@ -840,6 +865,9 @@ function createReviewPaneState(
   function dispose(): void {
     disposed = true;
     disposePRRefWatch();
+    disposePaintedRetention();
+    paintedSpans.clear();
+    conflictPaintedSpans.clear();
     resetConflictView();
     closeCILogView();
     releasePR();
@@ -1174,11 +1202,12 @@ function createReviewPaneState(
   // Load-time expandability pass for the edits scope: one batch RPC
   // proves which files an expansion click would actually serve, and
   // only those get gap arrows (editExpandablePaths gates the files
-  // derived). Candidates come from the unsuppressed merge, NOT the
-  // files derived — that one already suppresses everything still
-  // unverified. Any failure (a session without `files:read`
-  // included) just leaves paths unverified: no arrows, no error
-  // banner, exactly what clicking would have found out the hard way.
+  // derived). Candidates come from the unsuppressed merge
+  // (`parsedFiles`), NOT the files derived — that one already
+  // suppresses everything still unverified. Any failure (a session
+  // without `files:read` included) just leaves paths unverified: no
+  // arrows, no error banner, exactly what clicking would have found
+  // out the hard way.
   // Edits scope is unreachable without a real row: the option is not
   // rendered on a draft placeholder, and both the diff load and this
   // expansion path refuse it in the same words rather than no-oping.
@@ -1198,10 +1227,9 @@ function createReviewPaneState(
 
   async function verifyEditExpandability(seq: number): Promise<void> {
     if (scope !== 'edits' || threadId === null || !patchText) return;
-    const merged = mergePatchFilesByPathCached(parsePatchFilesCached(patchText));
     // Added files are fully present — no gaps to gate, so no reason to
     // resolve them.
-    const candidates = merged.filter(
+    const candidates = parsedFiles.filter(
       (file) => !file.suppressGaps && file.kind !== 'added' && !file.path.startsWith('/'),
     );
     if (candidates.length === 0) return;
@@ -1814,6 +1842,8 @@ function createReviewPaneState(
     get conflictContentByPath() { return conflictsState.contentByPath; },
     get conflictCollapsedPaths() { return conflictCollapsedPaths; },
     get conflictFiles() { return conflictFiles; },
+    paintedSpans,
+    conflictPaintedSpans,
     get ciPipeline() { return ciState.pipeline; },
     get ciLoading() { return ciState.loading; },
     get ciError() { return ciState.error; },

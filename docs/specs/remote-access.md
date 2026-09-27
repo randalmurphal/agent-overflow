@@ -2082,8 +2082,8 @@ Prerequisite sweep, valuable standalone:
 - **Phone-era efficiency**: per-thread subscription narrowing (the
   `subscribe` frame exists, unused by the SPA), server-buffered
   assistant deltas, background scope leases (client reports visibility +
-  interested scopes with TTL; backend skips unleased work, generalizing
-  `HasRemoteClient`), `afterSeq`-with-snapshot-fallback resume.
+  interested scopes with TTL; backend skips unleased work),
+  `afterSeq`-with-snapshot-fallback resume.
 
   Subscription narrowing LANDED 2026-09-01 (wave 6d, phone phase), by
   ENTITY rather than by channel. A new `watch` wire frame
@@ -2111,9 +2111,9 @@ Prerequisite sweep, valuable standalone:
   discussion live-tail roster's pane-less child threads — never from
   visibility or focus; pane open sends the union ahead of the mount so
   the history load and the narrowed pushes cannot race (same-socket
-  frame ordering is the seam). Two channels are entity-filtered
-  today: `highlight:diff_seed` and `highlight:seed`, the large-payload
-  cache warmers whose designed fallback is the highlight RPC. The
+  frame ordering is the seam). Two channels were entity-filtered
+  then: `highlight:diff_seed` and the streaming-code span channel (now
+  `highlight:live`), whose designed fallback is the highlight RPC. The
   central finding: **`provider:item_event` is NOT narrowable yet** —
   six off-pane consumers read it for threads with no pane (sidebar
   error/interrupted/Plan badges, activity ordering bumps, proposed-plan
@@ -2470,7 +2470,7 @@ visibility signal the client ever sends, as one `lease` frame
 (`{"type":"lease","state":"background"|"active"}`) — whole-client native
 lifecycle, never per-pane, never document visibility (the off-view shedding rule above).
 A backgrounded client keeps its socket until the OS closes it; the
-backend stops highlight seeds and coalesces assistant deltas for that
+backend withholds live code spans and coalesces assistant deltas for that
 connection (one frame per thread per 250 ms) while the lease says
 background, and turn/approval/error events keep flowing so the push
 mapping and the badge carriers are unaffected. Resume restores full
@@ -2583,14 +2583,14 @@ text above was deviated from:
   viewport above the keyboard; those are on-device checks for the Mac
   pass.
 - *Lease frame* (27cfb2fd): `{"type":"lease","state":...}` parsed in
-  `conn.go`; `highlight:seed` is withheld at `Subscriber.deliver` before
+  `conn.go`; `highlight:live` is withheld at `Subscriber.deliver` before
   gap accounting; `provider:item_event` deltas are merged per (thread,
   item) per 250 ms in `lease.go` with the LAST merged seq, and every
   pass-through on the channel flushes ALL pending rows first so the
   channel never goes backwards. `transport/lease.ts` `setClientLease` is
-  the one door; only the shell calls it. The loopback harness never
-  receives a seed (remote-only audience), so the e2e asserts a floor and
-  the withholding is proved at the seam.
+  the one door; only the shell calls it. The e2e streams a code fence
+  and asserts no `highlight:live` frame reaches the backgrounded page and
+  some reach it after resuming.
 - *Verification*: Playwright has a second project, `compact` (Pixel 7,
   `compact-*.spec.ts`), inside `make e2e`; the 390×844 figure above is
   the descriptor's 412×915 in practice. Rule recorded in the guides: a
@@ -3327,9 +3327,9 @@ frame.**
   are buffered with periodic fsync and bounded rotation, never
   fsync-per-entry.
 - **Draft sync is gated on there being another client.** With a single
-  attached client, debounced draft events are pure waste; the existing
-  `HasRemoteClient`-style gate generalizes to "more than one session
-  attached". Same rule for any other convergence-only channel.
+  attached client, debounced draft events are pure waste; gate them on
+  "more than one session attached". Same rule for any other
+  convergence-only channel.
 - **tsnet is opt-in and lazily initialized.** An embedded userspace
   WireGuard stack costs memory and keeps DERP connections alive; a user
   who never enables remote access must not pay for it. Same for the

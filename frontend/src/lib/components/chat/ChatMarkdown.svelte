@@ -109,6 +109,7 @@
   import { hasScope } from '../../transport/scopes';
   import { canPreviewFiles } from '../../stores/filePreviews';
   import { isHarnessSession } from '../../transport/harnessMode';
+  import { setLiveCodeRowContext, type LiveCodeRowRef } from './markdown/liveCodeSpans.svelte';
 
   let {
     source,
@@ -117,6 +118,7 @@
     workspacePath = '',
     pathRefs,
     threadId = '',
+    liveCodeRow,
     embeddedHtml = false,
     class: className = '',
   }: {
@@ -147,6 +149,10 @@
      *  the surface. Surfaces with no thread (settings previews, PR bodies)
      *  leave every link exactly as written. */
     threadId?: string;
+    /** The streaming assistant row this prose is, when it is one: its code
+     *  blocks paint from the spans the backend pushes for the row's fences
+     *  (liveCodeSpans.svelte.ts). */
+    liveCodeRow?: LiveCodeRowRef;
     /** Render forge-authored embedded HTML. OFF for agent chat output by
      *  design: only forge-content surfaces (PR/MR descriptions, review
      *  comments) pass true. `<details>/<summary>` and the safe inline
@@ -158,6 +164,7 @@
     class?: string;
   } = $props();
 
+  setLiveCodeRowContext(() => liveCodeRow);
   // Path links resolve to an editor open on the host desktop, so a page
   // that cannot act there emits none.
   let noHost = $derived(!hasScope('host', threadMachine(threadId, null)));

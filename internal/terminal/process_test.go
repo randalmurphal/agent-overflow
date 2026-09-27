@@ -4,6 +4,8 @@ package terminal
 
 import (
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -224,6 +226,109 @@ func TestProcessKillsGroup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("child pid %d is still alive after Kill", childPID)
+}
+
+// A job the shell leaves in the background keeps the pty open, and the
+// terminal still ends with the shell, as a terminal window closes when its
+// shell exits: the output closes while the job (which ignores the hangup)
+// runs on. The shell is quiet before it exits, so the output pump is
+// waiting on an empty pty when the exit lands.
+func TestProcessEndsWhenTheShellExitsWhileAJobHoldsThePTY(t *testing.T) {
+	p, job := startShellWithBackgroundJob(t, `sleep 0.3; exit 3`)
+
+	out, closed := collectOutput(p.Output(), 10*time.Second)
+	if !closed {
+		t.Fatalf("output still open after the shell exited; got %q", out)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("process did not report the shell's exit")
+	}
+	if code := p.ExitStatus().Code; code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
+	}
+	if !processAlive(job) {
+		t.Fatal("the background job died, so it did not hold the pty")
+	}
+}
+
+// Everything the shell wrote before it exited is delivered, though the pty
+// stays open behind a background job. Nothing reads the output until the
+// shell has exited, so the output channel fills and the rest of the shell's
+// output is still in the pty when it exits.
+func TestProcessDeliversTheShellsLastOutputWhileAJobHoldsThePTY(t *testing.T) {
+	const lines = 80 // more reads than the output channel holds
+	p, _ := startShellWithBackgroundJob(t,
+		`i=0; while [ $i -lt 80 ]; do printf 'line\n'; sleep 0.005; i=$((i+1)); done; printf 'TAIL\n'; exit 0`)
+
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("process did not report the shell's exit")
+	}
+	out, closed := collectOutput(p.Output(), 10*time.Second)
+	if !closed {
+		t.Fatalf("output still open after the shell exited; got %q", out)
+	}
+	if got := strings.Count(out, "line"); got != lines || !strings.Contains(out, "TAIL") {
+		t.Fatalf("delivered %d of %d lines (tail seen: %v) the shell wrote before exiting",
+			got, lines, strings.Contains(out, "TAIL"))
+	}
+}
+
+// startShellWithBackgroundJob starts a shell that leaves a job holding the
+// pty and ignoring the hangup, then runs script. It returns the process and
+// the job's pid, which the test's cleanup kills.
+func startShellWithBackgroundJob(t *testing.T, script string) (*Process, int) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "job.pid")
+	p, err := Start(ProcessConfig{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", `(trap '' HUP; exec sleep 30) & echo $! > "$0"; ` + script, pidFile},
+		Cwd:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+	return p, backgroundJobPID(t, pidFile)
+}
+
+// backgroundJobPID reads the pid a test shell wrote to path and kills that
+// process when the test ends.
+func backgroundJobPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		raw, err := os.ReadFile(path)
+		if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && convErr == nil && pid > 0 {
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			return pid
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background job pid never written to %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// collectOutput reads ch until it closes or timeout passes, reporting
+// whether it closed.
+func collectOutput(ch <-chan []byte, timeout time.Duration) (string, bool) {
+	var sb strings.Builder
+	deadline := time.After(timeout)
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				return sb.String(), true
+			}
+			sb.Write(chunk)
+		case <-deadline:
+			return sb.String(), false
+		}
+	}
 }
 
 // TestProcessStartRejectsBadCwd confirms we surface pty-spawn errors.

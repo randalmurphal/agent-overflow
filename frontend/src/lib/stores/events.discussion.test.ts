@@ -10,6 +10,7 @@ import { refreshDiscussionChannel } from './eventsDiscussion';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import type { ChannelMessage, ChannelParticipantState, ChannelStatePayload } from '../types/discussion';
 import type { Thread } from '../types/models';
+import { applyLiveCode, resetLiveCodeSpansForTest } from '../components/chat/markdown/liveCodeSpans.svelte';
 
 // Exercises the push-driven discussion wiring added alongside the
 // ChannelView rewrite: discussion:message / discussion:state routing
@@ -485,7 +486,7 @@ describe('transport gap recovery for discussion channels', () => {
     const refreshSpy = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue(undefined);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    for (const channel of ['system:stats', 'highlight:seed', 'highlight:diff_seed']) {
+    for (const channel of ['system:stats', 'highlight:live', 'highlight:diff_seed']) {
       emitWailsEvent(transportGapChannel, { channel, seq: 1 });
     }
     await Promise.resolve();
@@ -494,6 +495,21 @@ describe('transport gap recovery for discussion channels', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     refreshSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  it('asks open live code rows for keyframes on a highlight:live gap', async () => {
+    const resync = setBindingMock('ResyncLiveCode', async () => 0);
+    applyLiveCode(
+      { threadId: 'plain-thread', itemId: 'i1', fence: 0, lang: 'python', seq: 1, from: 0, lineHashes: [1], lines: [{}], final: false },
+      '',
+    );
+    try {
+      emitWailsEvent(transportGapChannel, { channel: 'highlight:live', seq: 1 });
+      await Promise.resolve();
+      expect(resync).toHaveBeenCalledWith('plain-thread', 'i1');
+    } finally {
+      resetLiveCodeSpansForTest();
+    }
   });
 
   it('keeps the unknown-channel default fallback working after adding discussion cases', async () => {

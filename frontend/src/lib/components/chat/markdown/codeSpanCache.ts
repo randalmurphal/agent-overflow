@@ -136,12 +136,11 @@ function insert(key: string, spans: EncodedLine[], owner: object | undefined): v
 }
 
 /**
- * Ingests a backend-pushed FINAL seed (`highlight:seed`, remote
- * clients only): the spans for a fence whose content is final, keyed
- * by the `contentKey(source)` the backend computed with frontend hash
+ * Ingests a fence's final spans from a `highlight:live` push, keyed by
+ * the `contentKey(source)` the backend computed with frontend hash
  * parity. A later mount of the exact content is a synchronous hit —
- * no RPC. The caller (eventsHighlight) has already awaited the class-
- * name table and filtered incomplete results.
+ * no RPC. The ingest (eventsHighlight) has already awaited the class-
+ * name table, and the backend pushes only complete results.
  */
 export function seedFinalBlockSpans(
   lang: string,

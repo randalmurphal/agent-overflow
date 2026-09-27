@@ -19,7 +19,7 @@ import { installComputerHydration } from './computerHydration';
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
-//   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
+//   - eventsHighlight.ts     — highlight:live / highlight:diff_seed span ingest
 //   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
 //   - eventsSessionImport.ts — session-import:progress run frames (+ the
 //                              transport-loss end condition a run has no
@@ -50,6 +50,7 @@ import type {
   ThreadGroupUpdateEvent,
 } from '../types/events';
 import type {
+  TerminalEndFailedEventPayload,
   TerminalExitEventPayload,
   TerminalHandle,
   TerminalOutputEventPayload,
@@ -133,7 +134,7 @@ import {
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
-import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened, reconcileTerminalSurfaces } from './eventsTerminal';
+import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened, applyTerminalEndFailed, reconcileTerminalSurfaces } from './eventsTerminal';
 import { onBackendRecovery } from './transportRecovery';
 import {
   applyQueueStateChanged,
@@ -178,9 +179,8 @@ import {
 import { applyPRReviewUpdated } from './eventsPRReview';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
-  applyHighlightSeed,
   applyHighlightDiffSeed,
-  type HighlightSeedEvent,
+  setupHighlightLiveEvents,
   type HighlightDiffSeedEvent,
 } from './eventsHighlight';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
@@ -433,7 +433,7 @@ export function setupEventListeners(): () => void {
     'terminal:exit',
     (evt, origin) => {
       if (evt?.terminalID) forgetTerminal(evt.terminalID, backendKeyForOrigin(origin.backendId));
-      void applyTerminalExit(evt);
+      applyTerminalExit(evt);
     },
   );
   // terminal:opened is the other half of terminal:exit. The surface reads the
@@ -448,6 +448,12 @@ export function setupEventListeners(): () => void {
       if (evt?.terminalID) noteTerminal(evt.terminalID, backendKeyForOrigin(origin.backendId));
       applyTerminalOpened(evt);
     },
+  );
+  // A terminal thread whose last shell exited and whose computer could not
+  // delete it. That delete has no caller, so every client is told.
+  const cancelTerminalEndFailed = wailsEventOn<TerminalEndFailedEventPayload>(
+    'terminal:end_failed',
+    applyTerminalEndFailed,
   );
   // A computer's shutdown reports no exits, so a new launch is what ends the
   // terminals it was running.
@@ -747,13 +753,9 @@ export function setupEventListeners(): () => void {
   // run's other terminal condition and nothing replays the frames it ate.
   const cancelSessionImport = setupSessionImportEvents();
 
-  // highlight:seed — backend-pushed syntax spans for streaming code
-  // fences. Remote-only by transport filtering; loopback clients never
-  // see this channel (they highlight via the local RPC round trip).
-  const cancelHighlightSeed = wailsEventOn<HighlightSeedEvent>(
-    'highlight:seed',
-    applyHighlightSeed,
-  );
+  // highlight:live — the backend's incremental spans for streaming code
+  // fences, plus the recovery triggers their deltas depend on.
+  const cancelHighlightLive = setupHighlightLiveEvents();
   const cancelHighlightDiffSeed = wailsEventOn<HighlightDiffSeedEvent>(
     'highlight:diff_seed',
     applyHighlightDiffSeed,
@@ -793,6 +795,7 @@ export function setupEventListeners(): () => void {
     cancelTerminalOutput();
     cancelTerminalExit();
     cancelTerminalOpened();
+    cancelTerminalEndFailed();
     cancelTerminalLaunches();
     cancelTerminalRecovery();
     cancelQueueStateChanged();
@@ -828,7 +831,7 @@ export function setupEventListeners(): () => void {
     cancelWorkflowSoftStop();
     cancelWorkflowDefinitions();
     cancelSessionImport();
-    cancelHighlightSeed();
+    cancelHighlightLive();
     cancelHighlightDiffSeed();
     clearAllDiscussionLiveTail();
   };

@@ -13,11 +13,12 @@ import {
 } from './markdown/StreamdownCodeHost.svelte';
 import { createProvenAppend } from '../../markdown';
 import {
-  lineHashChain,
-  resetLiveCodeSeedsForTest,
-  type HighlightSeedEvent,
-} from './markdown/liveCodeSeeds.svelte';
-import { applyHighlightSeed } from '../../stores/eventsHighlight';
+  TextLineChain,
+  applyLiveCode,
+  resetLiveCodeSpansForTest,
+  type HighlightLiveCodeEvent,
+} from './markdown/liveCodeSpans.svelte';
+import { contentKey } from '../../utils/fnv1a';
 import { __resetAnimationFrameCoordinatorForTest } from '../../utils/animationFrameBatcher';
 
 // Integration coverage for the backend-span code-block host
@@ -40,26 +41,44 @@ function keywordSpans() {
 
 beforeEach(() => {
   resetCodeSpanCacheForTest();
-  resetLiveCodeSeedsForTest();
+  resetLiveCodeSpansForTest();
   resetCodeWrapStateForTest();
   __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
 });
 
-// Simulates a backend `highlight:seed` push (remote clients) through
-// the real ingest path, waiting out its class-name-table await.
-async function pushSeed(text: string, lines: object[], overrides: Partial<HighlightSeedEvent> = {}) {
-  applyHighlightSeed({
-    threadId: 't1',
-    itemId: 'i1',
-    lang: 'python',
-    lineHashes: lineHashChain(text),
-    lines: lines as HighlightSeedEvent['lines'],
-    final: false,
-    ...overrides,
-  });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+const LIVE_ROW = { threadId: 't1', itemId: 'i1' };
+
+function chainOf(text: string): number[] {
+  const chain = new TextLineChain(text);
+  return Array.from({ length: chain.lineCount }, (_, i) => chain.at(i));
+}
+
+// A backend `highlight:live` push with spans for fence 0 of LIVE_ROW (seq 1
+// is the fence's first push, which has none), applied to the store as the
+// ingest does once the schema check passes.
+async function pushLive(text: string, lines: object[], overrides: Partial<HighlightLiveCodeEvent> = {}) {
+  applyLiveCode(
+    {
+      threadId: 't1',
+      itemId: 'i1',
+      fence: 0,
+      lang: 'python',
+      seq: 2,
+      from: 0,
+      lineHashes: chainOf(text),
+      lines: lines as HighlightLiveCodeEvent['lines'],
+      final: false,
+      ...overrides,
+    },
+    '',
+  );
+  await tick();
+}
+
+function keywordText(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('.syntax-keyword'), (el) => el.textContent ?? '');
 }
 
 describe('<ChatMarkdown> code-block spans', () => {
@@ -1003,65 +1022,198 @@ describe('<ChatMarkdown> code-block spans', () => {
     await waitFor(() => expect(settled).toHaveBeenCalled());
   });
 
-  it('adopts an exact live seed without any RPC', async () => {
-    // Remote-client fast path: a pushed seed whose hash chain covers
-    // the whole block settles it — the round trip is skipped entirely.
+  it('paints a streaming block from pushed spans without any RPC', async () => {
     const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
-    await pushSeed(SOURCE, [{ r: [3, 1] }, {}]);
-
+    await pushLive(SOURCE, [{ r: [3, 1] }, {}]);
     const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
     });
-    await waitFor(() => {
-      expect(container.querySelector('.syntax-keyword')?.textContent).toBe('def');
-    });
+    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(rpc).not.toHaveBeenCalled();
   });
 
-  it('paints a verified seed prefix while the exact request runs', async () => {
-    // A seed for the first line only: the verified prefix must paint
-    // immediately (including its LAST line — hash-verified complete,
-    // unlike own stale results) while the exact request still fires.
+  it('paints the partial last line from its pushed line and keeps colors as the text grows', async () => {
+    // The backend is ahead of the reveal: its line 2 is whole while the
+    // block shows part of it. The part takes the line's spans, clipped, so
+    // colors appear as characters do and never leave them.
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    const full = 'def route():\n    return 1\n';
+    await pushLive(full, [{ r: [3, 1] }, { r: [4, 0, 6, 1, 2, 0] }, {}]);
+    const view = render(ChatMarkdown, {
+      props: { source: '```python\ndef route():\n    re', streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def', 're']));
+    for (const shown of ['def route():\n    retu', 'def route():\n    return 1']) {
+      const previous = '```python\n' + view.container.querySelector('[data-code-source] code')!.textContent;
+      const append = createProvenAppend(previous, shown.slice(previous.length - '```python\n'.length));
+      await view.rerender({ source: append.next, sourceAppend: append, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW });
+      expect(view.container.querySelector('[data-code-source] code')?.textContent).toBe(shown);
+      expect(keywordText(view.container)).toEqual(['def', shown.endsWith('1') ? 'return' : 'retu']);
+    }
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps earlier colors while the text runs ahead of the pushes, then paints the next push', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    await pushLive('def route():\n', [{ r: [3, 1] }, {}]);
+    const view = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def']));
+    await pushLive(SOURCE, [{ r: [3, 1] }, { r: [4, 0, 4, 1] }], { seq: 3 });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def', 'pass']));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('requests spans for a settled block whose last line a final fence continues', async () => {
+    // A settled block's last line is complete, so a longer fence line does
+    // not color it.
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    await pushLive('def route():\n    return 1', [{ r: [3, 1] }, { r: [4, 0, 6, 1, 2, 0] }], { final: true });
+    render(ChatMarkdown, {
+      props: { source: '```python\ndef route():\n    return\n```', pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(rpc).toHaveBeenCalledWith({ lang: 'python', source: 'def route():\n    return' }));
+  });
+
+  it('requests nothing for a streaming block with no text yet', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'Intro\n\n```python\n', streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(container.querySelector('[data-code-source] code')).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('waits on a fence whose first push has no spans, then paints its first line by the head', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    // The fence's first push: hashes and head of what the backend has, no
+    // spans. The block shows more of the first line than the fence has.
+    await pushLive('def ro', [{}], { seq: 1, head: 'def ro' });
+    const view = render(ChatMarkdown, {
+      props: { source: '```python\ndef route', streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(view.container.querySelector('[data-code-source] code')?.textContent).toBe('def route'));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(rpc).not.toHaveBeenCalled();
+    expect(keywordText(view.container)).toEqual([]);
+    // The backend is now ahead: its first line is whole; the block's
+    // partial first line is a prefix of it and takes its spans, clipped.
+    await pushLive(SOURCE, [{ r: [3, 1] }, {}], { head: 'def route():' });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def']));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps requested colors until a push colors as many lines', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => ({ lang: 'python', lines: [{ r: [3, 1] }, { r: [4, 0, 4, 1] }], truncated: false }));
+    const view = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def', 'pass']));
+    // A fence that colors only the first line does not take over.
+    await pushLive('def route():\n', [{ r: [3, 1] }, {}], { seq: 1, lines: [{}, {}], head: 'def route():' });
+    await pushLive('def route():\n', [{ r: [3, 1] }, {}]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(keywordText(view.container)).toEqual(['def', 'pass']);
+    const previous = '```python\n' + SOURCE;
+    const append = createProvenAppend(previous, '\n    return');
+    await view.rerender({ source: append.next, sourceAppend: append, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW });
+    await waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
+    // One that colors every line takes over once the block grows past its
+    // requested spans.
+    await waitFor(() => expect(view.container.querySelector('[data-code-source] code')?.textContent).toBe(append.next.slice('```python\n'.length)));
+    rpc.mockClear();
+    const grown = createProvenAppend(append.next, '\n    x');
+    await pushLive(grown.next.slice('```python\n'.length), [{ r: [3, 1] }, { r: [4, 0, 4, 1] }, { r: [4, 0, 6, 1] }, {}], { seq: 3 });
+    await view.rerender({ source: grown.next, sourceAppend: grown, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def', 'pass', 'return']));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('requests spans when the pushed fence stops, keeping its colors meanwhile', async () => {
     let release: ((v: ReturnType<typeof keywordSpans>) => void) | undefined;
     const rpc = setBindingMock(
       'HighlightCode',
       () => new Promise<ReturnType<typeof keywordSpans>>((resolve) => { release = resolve; }),
     );
-    await pushSeed('def route():', [{ r: [3, 1] }]);
-
+    await pushLive(SOURCE, [{ r: [3, 1] }, { r: [4, 0, 2, 1] }]);
     const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
     });
-    await waitFor(() => {
-      expect(container.querySelector('.syntax-keyword')?.textContent).toBe('def');
-    });
+    await waitFor(() => expect(keywordText(container)).toEqual(['def', 'pa']));
+    await pushLive('', [], { seq: 3, from: 2, lineHashes: null, lines: null, final: true });
     await waitFor(() => expect(rpc).toHaveBeenCalledWith({ lang: 'python', source: SOURCE }));
-
+    expect(keywordText(container)).toEqual(['def', 'pa']);
     release!(keywordSpans());
-    await waitFor(() => {
-      expect(container.querySelector('[data-code-source] code')?.textContent).toBe(SOURCE);
-      expect(container.querySelector('.syntax-keyword')).not.toBeNull();
-    });
+    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
   });
 
-  it('re-matches when a seed arrives after mount', async () => {
-    // The final seed can land AFTER the last token change (settle
-    // without further deltas). The generation signal must re-run the
-    // match so the block colors without waiting on the stalled RPC.
-    setBindingMock('HighlightCode', () => new Promise<never>(() => {}));
+  it('requests spans when the pushed fence is not this text', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
+    // Line 1 verifies; line 2 is whole on both sides and differs.
+    const text = SOURCE + '\n    return';
+    await pushLive('def route():\n    x = 1\n', [{ r: [3, 1] }, {}, {}]);
     const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
+      props: { source: '```python\n' + text, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+    });
+    await waitFor(() => expect(rpc).toHaveBeenCalledWith({ lang: 'python', source: text }));
+    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
+  });
+
+  it('adopts an exact final push without any RPC, arriving after mount', async () => {
+    // The final push can land AFTER the last token change: the row's
+    // version signal re-runs the cover.
+    const rpc = setBindingMock('HighlightCode', () => new Promise<never>(() => {}));
+    const { container } = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [], liveCodeRow: LIVE_ROW },
     });
     await waitFor(() => {
       expect(container.querySelector('[data-code-source] code')?.textContent).toBe(SOURCE);
     });
     expect(container.querySelector('.syntax-keyword')).toBeNull();
+    rpc.mockClear();
 
-    await pushSeed(SOURCE, [{ r: [3, 1] }, {}]);
-    await waitFor(() => {
-      expect(container.querySelector('.syntax-keyword')?.textContent).toBe('def');
+    await pushLive(SOURCE, [{ r: [3, 1] }, {}], { final: true, contentKey: contentKey(SOURCE) });
+    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
+  });
+
+  it('ignores pushed spans on a surface that names no row', async () => {
+    setBindingMock('HighlightCode', () => new Promise<never>(() => {}));
+    await pushLive(SOURCE, [{ r: [3, 1] }, {}]);
+    const { container } = render(ChatMarkdown, {
+      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [] },
     });
+    await waitFor(() => {
+      expect(container.querySelector('[data-code-source] code')?.textContent).toBe(SOURCE);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(container.querySelector('.syntax-keyword')).toBeNull();
+  });
+
+  it('keeps a stale last line colored while the next request runs', async () => {
+    // Own request results describe a prefix of the growing text; the last
+    // line keeps its runs over the part they were computed for instead of
+    // going plain until the next response.
+    let calls = 0;
+    let releaseSecond: ((v: object) => void) | undefined;
+    setBindingMock('HighlightCode', (req: { source: string }) => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve({ lang: 'python', lines: [{ r: [3, 1] }, { r: [4, 0, 2, 1] }], truncated: false });
+      return new Promise((resolve) => { releaseSecond = resolve; void req; });
+    });
+    const initial = '```python\ndef route():\n    pa';
+    const view = render(ChatMarkdown, {
+      props: { source: initial, streaming: true, pathRefs: [] },
+    });
+    await waitFor(() => expect(keywordText(view.container)).toEqual(['def', 'pa']));
+    const append = createProvenAppend(initial, 'ss');
+    await view.rerender({ source: append.next, sourceAppend: append, streaming: true, pathRefs: [] });
+    await waitFor(() => expect(releaseSecond).toBeTypeOf('function'));
+    expect(view.container.querySelector('[data-code-source] code')?.textContent).toBe('def route():\n    pass');
+    expect(keywordText(view.container)).toEqual(['def', 'pa']);
   });
 
   it('uses the first info-string word as highlight identity for attributed fences', async () => {
@@ -1082,18 +1234,16 @@ describe('<ChatMarkdown> code-block spans', () => {
     );
   });
 
-  it('matches a pushed seed against an attributed fence', async () => {
-    // The backend fence scanner seeds under the first info-string word;
-    // the host must look it up under the same identity.
+  it('matches pushed spans against an attributed fence', async () => {
+    // The backend follows fences under the first info-string word; the
+    // host looks them up under the same identity.
     const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
-    await pushSeed(SOURCE, [{ r: [3, 1] }, {}]);
+    await pushLive(SOURCE, [{ r: [3, 1] }, {}]);
 
     const { container } = render(ChatMarkdown, {
-      props: { source: '```python title=demo\n' + SOURCE + '\n```', pathRefs: [] },
+      props: { source: '```python title=demo\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
     });
-    await waitFor(() => {
-      expect(container.querySelector('.syntax-keyword')?.textContent).toBe('def');
-    });
+    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(rpc).not.toHaveBeenCalled();
   });

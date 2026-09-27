@@ -439,6 +439,7 @@ export {
   HighlightCode,
   HighlightPatch,
   HighlightPatchWithContext,
+  ResyncLiveCode,
   HighlightEditPatchWithContext,
 
   // Thread runtime mode (three-tier approval axis)

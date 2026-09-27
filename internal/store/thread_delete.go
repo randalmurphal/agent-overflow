@@ -109,6 +109,18 @@ func (s *Store) ListPendingThreadDeletes() ([]string, error) {
 	return ids, nil
 }
 
+// ListTerminalThreads returns every terminal-mode thread this backend owns
+// that no delete has begun on, archived or not. A terminal thread lives
+// only as long as its shells, so at boot each one belongs to a process
+// that is gone.
+func (s *Store) ListTerminalThreads() ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT id FROM owned_threads WHERE mode = ?`, threadmode.ModeTerminal)
+	if err != nil {
+		return nil, fmt.Errorf("store: list terminal threads: %w", err)
+	}
+	return ids, nil
+}
+
 // ListReleasedHolders returns the holders no fork reads any more
 // (trg_thread_fork_lineage_release), for the app to delete.
 func (s *Store) ListReleasedHolders() ([]string, error) {

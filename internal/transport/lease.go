@@ -70,19 +70,18 @@ const leaseDeltaWindow = 250 * time.Millisecond
 // receiving this channel entirely.
 //
 // ONE member today, and the membership rule is what keeps it one: the
-// channel must be a pure cache WARMER whose consumers already have a
-// working path without it. `highlight:seed` is per-growth-step span
-// metadata for a streaming fence; its consumers (liveCodeSeeds,
-// codeSpanCache) fall back to the highlight RPC, which is what they do for
-// every fence that mounts after the seed anyway. A backgrounded client is
-// rendering nothing, so the seeds it is being handed warm a cache for code
-// nobody is looking at — the largest frames on the wire buying the least.
+// channel's consumers must already recover without the withheld frames.
+// `highlight:live` carries span deltas for streaming fences; a client that
+// missed some sees the per-fence sequence gap on the next push and calls
+// ResyncLiveCode, and a fence that ended meanwhile falls back to the
+// highlight RPC. A backgrounded client is rendering nothing, so the deltas
+// it is being handed paint code nobody is looking at.
 //
 // A channel whose absence a consumer cannot recover from does NOT belong
 // here, however cheap it looks. That is the whole difference between this
 // list and dropping frames.
 var backgroundWithheldChannels = map[string]bool{
-	string(eventchan.HighlightSeed): true,
+	string(eventchan.HighlightLive): true,
 }
 
 func backgroundWithheldChannel(channel string) bool {

@@ -29,10 +29,10 @@
   });
 
   // Pane-flavored surface. Unlike the bottom drawer, a full pane has no
-  // visibility to toggle (setVisible is a no-op — closing the last tab leaves
-  // the empty state, not a collapse) and no auto-scrolling timeline to pause
-  // for a resize lease. Focus intent still delegates to the pane so the
-  // new-pane create helper can latch focus into the fresh shell.
+  // visibility to toggle (setVisible is a no-op: the thread ends with its
+  // last terminal, and its deletion closes the pane) and no auto-scrolling
+  // timeline to pause for a resize lease. Focus intent still delegates to the
+  // pane so the new-pane create helper can latch focus into the fresh shell.
   let surface = $derived<ThreadTerminalSurfaceContext>({
     paneId: pane.paneId,
     get threadId() { return pane.threadId; },

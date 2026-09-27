@@ -14,6 +14,11 @@ export function draftPlaceholderId(paneId: string, projectId: string, mode: Draf
   return `${PREFIX}${paneId}:${projectId}:${mode}:${randomId()}`;
 }
 
+/** Whether `threadId` is a draft placeholder's id rather than a thread's. */
+export function isDraftPlaceholderId(threadId: string): boolean {
+  return threadId.startsWith(PREFIX);
+}
+
 /**
  * The project a placeholder id names, or undefined for any other id.
  * Parsed from the right: a pane id may contain `:`, while a project id

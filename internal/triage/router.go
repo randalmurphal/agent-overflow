@@ -163,18 +163,20 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
-	// assistantTextStream is an app-layer observer of a streaming
-	// assistant_text row's full accumulated text: called with
-	// final=false at each persistence flush window (the same cadence
-	// as the live pathRefs enrichment, possibly on the provider read
-	// loop; implementations must not block) and with final=true when
-	// the row leaves streaming: from the settle path with the row's
-	// final model text, from an error flip with its text before the
-	// stopped/interrupted suffix, and with empty text from a settle that
-	// finds no streaming row, which only ends the stream. Wired via
-	// SetAssistantTextStreamObserver at router construction; nil
-	// disables it. Backs the highlight seed push.
-	assistantTextStream func(threadID, itemID, text string, final bool)
+	// assistantTextDelta and assistantTextEnd are app-layer observers of
+	// a streaming assistant_text row. Delta receives every piece of text
+	// the row emits, in order, just before it is emitted (possibly on the
+	// provider read loop; implementations must not block), with the row's
+	// parentId (its transcript scope, "" for a root row), so an event it
+	// emits reaches clients ahead of the text. End is called when the
+	// row leaves streaming: from the settle path with the row's final
+	// model text, from an error flip with its text before the stopped or
+	// interrupted suffix, and with empty text from a settle that finds no
+	// streaming row, which only ends the stream. Wired via
+	// SetAssistantTextObservers at router construction; nil disables
+	// them. Backs live code highlighting.
+	assistantTextDelta func(threadID, itemID, parentID, delta string)
+	assistantTextEnd   func(threadID, itemID, text string)
 	// diffPayloadPersisted is an app-layer observer of a just-persisted
 	// diff-bearing payload with COMPLETE content: tool results
 	// (persistToolResult and the summary_only→exact upgrade) carry
@@ -192,11 +194,18 @@ type Router struct {
 	codeSpanEnricher func(text string) json.RawMessage
 }
 
-// SetAssistantTextStreamObserver wires the streaming-text observer
-// (see the assistantTextStream field). Call before the router handles
-// events — it is read without synchronization on the streaming paths.
-func (r *Router) SetAssistantTextStreamObserver(fn func(threadID, itemID, text string, final bool)) {
-	r.assistantTextStream = fn
+// SetAssistantTextObservers wires the streaming-text observers (see the
+// assistantTextDelta field). Call before the router handles events: they
+// are read without synchronization on the streaming paths.
+func (r *Router) SetAssistantTextObservers(delta func(threadID, itemID, parentID, delta string), end func(threadID, itemID, text string)) {
+	r.assistantTextDelta, r.assistantTextEnd = delta, end
+}
+
+// endAssistantText ends a row's observed stream.
+func (r *Router) endAssistantText(threadID, itemID, text string) {
+	if r.assistantTextEnd != nil {
+		r.assistantTextEnd(threadID, itemID, text)
+	}
 }
 
 // SetDiffPayloadObserver wires the diff payload observer (see the

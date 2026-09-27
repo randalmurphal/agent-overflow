@@ -380,6 +380,14 @@ export function createThreadDraftPlaceholder(
       options.switchLoad().closeDraftPlaceholderTerminals(draftPlaceholder.id);
       clearWorktreeIntent(draftPlaceholder.id);
     },
+    /**
+     * Drop the placeholder's terminals without asking its computer to close
+     * them: the computer has detached, and no other one owns them.
+     */
+    dropPlaceholderTerminals(): void {
+      if (!draftPlaceholder) return;
+      options.switchLoad().dropDraftPlaceholderTerminals(draftPlaceholder.id);
+    },
     /** Drop the placeholder without touching intents (the pane's `clear()`). */
     reset(): void {
       draftPlaceholder = null;

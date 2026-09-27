@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -162,26 +161,18 @@ func (m *Manager) pageChanged(p *managedPage) {
 
 func (m *Manager) threadState(threadID string) CompanionEvent {
 	m.mu.Lock()
-	pages := make([]*managedPage, 0)
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.owner == threadID {
-				pages = append(pages, p)
-			}
-		}
-	}
+	tabs := m.threadTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
 	m.mu.Unlock()
-	sortPagesByTabOrder(pages)
-	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(pages))}
+	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs))}
 	visible := false
 	if hasSession {
 		visible = session.Visible
 		event.SessionName = session.Name
 	}
 	event.Visible = &visible
-	for _, p := range pages {
-		event.Pages = append(event.Pages, p.cachedInfo())
+	for _, tab := range tabs {
+		event.Pages = append(event.Pages, tab.info)
 	}
 	event.ActivePageID = session.ActivePageID
 	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
@@ -394,6 +385,44 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	return nil
 }
 
+// shownPaneRectLocked answers the host rect of a mounted pane of the thread
+// that can show a page: visible, and neither empty nor clipped away. The
+// caller holds m.mu.
+func (m *Manager) shownPaneRectLocked(threadID string) (PaneRect, bool) {
+	var rect PaneRect
+	shown := false
+	for _, mount := range m.panes {
+		if mount.threadID != threadID || !mount.hasRect {
+			continue
+		}
+		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
+			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
+			shown = true
+			rect = mount.rect
+		}
+	}
+	return rect, shown
+}
+
+// presentedPageLocked answers the page a mounted pane shows: the thread's
+// active page while its companion is visible and a pane can show it, or "".
+// The caller holds m.mu.
+func (m *Manager) presentedPageLocked(threadID string) string {
+	session, ok := m.sessions[threadID]
+	if !ok || !session.Visible {
+		return ""
+	}
+	rect, shown := m.shownPaneRectLocked(threadID)
+	if !shown {
+		return ""
+	}
+	pageW, pageH := sessionViewport(session)
+	if _, ok := placePage(rect, pageW, pageH); !ok {
+		return ""
+	}
+	return session.ActivePageID
+}
+
 // OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
 // Only engines with an inspector they can open implement paneDevTools;
 // WKWebView (Safari's Develop menu is the inspector) and the fake engine
@@ -432,18 +461,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	}
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
-	shown := false
-	var rect PaneRect
-	for _, mount := range m.panes {
-		if mount.threadID != threadID || !mount.hasRect {
-			continue
-		}
-		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
-			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
-			shown = true
-			rect = mount.rect
-		}
-	}
+	rect, shown := m.shownPaneRectLocked(threadID)
 	visible := hasSession && session.Visible && shown
 	var pages []*managedPage
 	var active *managedPage
@@ -479,51 +497,44 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	}
 }
 
-// sortPagesByTabOrder is THE tab-strip order: every surface that lists a
-// thread's pages (companion state, ambiguity errors) sorts with it so the
-// UI, the tools and the errors never disagree about which tab is first.
-func sortPagesByTabOrder(pages []*managedPage) {
-	sort.Slice(pages, func(i, j int) bool {
-		oi, oj := pages[i].tabOrder.Load(), pages[j].tabOrder.Load()
-		if oi != oj {
-			return oi < oj
-		}
-		return pages[i].createdAt < pages[j].createdAt
-	})
-}
-
-// MoveCompanionPage places one of the thread's pages at index in tab order
-// (clamped). Order is runtime state, like the pages themselves: the moved
-// prefix is renumbered 1..n, and a page opened later keeps appending at the
-// end because its creation-time key is always larger.
+// MoveCompanionPage places one of the thread's pages, live or suspended, at
+// index in tab order (clamped). Moving a tab is not a touch. The moved prefix
+// is renumbered 1..n, and a page opened later keeps appending at the end
+// because its creation-time key is always larger. A suspended page's new
+// position is saved with it.
 func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
-	p, _, err := m.lookupOwnedPage(access, pageID)
-	if err != nil {
-		return err
-	}
+	pageID = strings.TrimSpace(pageID)
 	m.mu.Lock()
-	var pages []*managedPage
-	for _, scope := range m.scopes {
-		for _, q := range scope.pages {
-			if q.owner == access.ThreadID {
-				pages = append(pages, q)
-			}
+	tabs := m.threadTabsLocked(access.ThreadID)
+	ordered := make([]threadTab, 0, len(tabs))
+	var moved *threadTab
+	for i := range tabs {
+		if tabs[i].id == pageID {
+			moved = &tabs[i]
+		} else {
+			ordered = append(ordered, tabs[i])
+		}
+	}
+	if moved == nil {
+		m.mu.Unlock()
+		return errPageNotFound
+	}
+	index = max(0, min(index, len(ordered)))
+	ordered = append(ordered[:index], append([]threadTab{*moved}, ordered[index:]...)...)
+	savedMoved := false
+	for i, tab := range ordered {
+		if tab.live != nil {
+			tab.live.tabOrder.Store(int64(i + 1))
+		} else if tab.rec.tabOrder != int64(i+1) {
+			tab.rec.tabOrder = int64(i + 1)
+			savedMoved = true
 		}
 	}
 	m.mu.Unlock()
-	sortPagesByTabOrder(pages)
-	ordered := make([]*managedPage, 0, len(pages))
-	for _, q := range pages {
-		if q != p {
-			ordered = append(ordered, q)
-		}
-	}
-	index = max(0, min(index, len(ordered)))
-	ordered = append(ordered[:index], append([]*managedPage{p}, ordered[index:]...)...)
-	for i, q := range ordered {
-		q.tabOrder.Store(int64(i + 1))
-	}
 	m.emitThreadState(access.ThreadID)
+	if savedMoved {
+		return m.persistThreads([]string{access.ThreadID})
+	}
 	return nil
 }
 
@@ -538,8 +549,10 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access) (PageInfo
 	return p.cachedInfo(), nil
 }
 
-func (m *Manager) ActivateCompanionPage(access Access, pageID string) error {
-	p, _, err := m.lookupOwnedPage(access, pageID)
+// ActivateCompanionPage is the user selecting a tab in the pane, which
+// presents it: a suspended page is restored first.
+func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
+	p, _, err := m.resolvePage(ctx, access, pageID, false)
 	if err != nil {
 		return err
 	}

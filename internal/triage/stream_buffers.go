@@ -82,6 +82,9 @@ type pendingStreamFlush struct {
 }
 
 func (r *Router) emitItemDelta(evt ItemDeltaEvent) {
+	if evt.Kind == itemKindAssistantText && r.assistantTextDelta != nil {
+		r.assistantTextDelta(evt.ThreadID, evt.ItemID, evt.ParentID, evt.Delta)
+	}
 	r.emit(eventchan.ProviderItemEvent, newItemStreamDelta(evt))
 }
 
@@ -408,11 +411,6 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		// skip a redundant SQLite read on the hot path. See
 		// enrichStreamingPathRefsAndEmit.
 		r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
-		// Same full-running-summary cadence feeds the highlight seed
-		// push (app-wired; nil when unwired).
-		if r.assistantTextStream != nil {
-			r.assistantTextStream(updated.ThreadID, updated.ID, updated.Summary, false)
-		}
 		return nil
 	case itemKindThinking:
 		_, err := r.store.AppendItemSummaryTailAndPayloadData(

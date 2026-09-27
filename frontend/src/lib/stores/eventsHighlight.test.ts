@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { contentKey } from '../utils/fnv1a';
 import {
@@ -6,36 +6,51 @@ import {
   resetCodeSpanCacheForTest,
 } from '../components/chat/markdown/codeSpanCache';
 import {
-  lineHashChain,
-  matchLiveCodeSeed,
-  resetLiveCodeSeedsForTest,
-  __liveCodeSeedStatsForTest,
-  type HighlightSeedEvent,
-} from '../components/chat/markdown/liveCodeSeeds.svelte';
+  TextLineChain,
+  __liveCodeSpanStatsForTest,
+  applyLiveCode,
+  liveCodeRow,
+  resetLiveCodeSpansForTest,
+  type HighlightLiveCodeEvent,
+} from '../components/chat/markdown/liveCodeSpans.svelte';
 import {
   getSpansForLine,
   resetDiffSpanCacheForTest,
 } from '../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../utils/syntaxSpans';
+import { requireHighlightSchema } from '../utils/highlightService';
+import { HOME_BACKEND } from '../transport/backends';
 import { parsePatchFiles } from '../utils/patchFiles';
 import { makeThread } from '../../test/helpers/chat';
 import { getThreads, prependThread, removeThread } from './threads.svelte';
 import {
   applyHighlightDiffSeed,
-  applyHighlightSeed,
+  applyHighlightLive,
+  setupHighlightLiveEvents,
   type HighlightDiffSeedEvent,
 } from './eventsHighlight';
+import { refreshWatchedThreads, registerWatchedThreadSource, resetWatchedThreadSourcesForTest } from './watchedThreads';
+import { __resetClientLeaseForTest, setClientLease } from '../transport/lease';
 
 const SOURCE = 'def f():\n    pass';
 
-function seedEvent(overrides: Partial<HighlightSeedEvent> = {}): HighlightSeedEvent {
+function chainOf(text: string): number[] {
+  const chain = new TextLineChain(text);
+  return Array.from({ length: chain.lineCount }, (_, i) => chain.at(i));
+}
+
+function liveEvent(overrides: Partial<HighlightLiveCodeEvent> = {}): HighlightLiveCodeEvent {
   return {
     threadId: 't1',
     itemId: 'i1',
+    fence: 0,
     lang: 'python',
-    lineHashes: lineHashChain(SOURCE),
+    seq: 2,
+    from: 0,
+    lineHashes: chainOf(SOURCE),
     lines: [{ r: [3, 1] }, {}],
     final: false,
+    head: 'def f():',
     ...overrides,
   };
 }
@@ -47,7 +62,7 @@ function drain(): Promise<void> {
 
 beforeEach(() => {
   resetCodeSpanCacheForTest();
-  resetLiveCodeSeedsForTest();
+  resetLiveCodeSpansForTest();
   resetDiffSpanCacheForTest();
   resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
@@ -58,27 +73,145 @@ beforeEach(() => {
   prependThread(makeThread({ id: 't1' }));
 });
 
-describe('applyHighlightSeed', () => {
-  it('feeds the live-seed table for non-final seeds without touching the block cache', async () => {
-    applyHighlightSeed(seedEvent());
+describe('applyHighlightLive', () => {
+  it('applies a push once the origin speaks the page schema', async () => {
+    applyHighlightLive(liveEvent());
+    expect(liveCodeRow('t1', 'i1')).toBeUndefined();
     await drain();
-    expect(matchLiveCodeSeed('python', SOURCE)?.exact).toBe(true);
+    expect(liveCodeRow('t1', 'i1')!.fences.get(0)!.lineHashes).toEqual(chainOf(SOURCE));
     expect(getCachedBlockSpans('python', SOURCE)).toBeNull();
   });
 
-  it('warms the block cache under the backend contentKey for final seeds', async () => {
-    applyHighlightSeed(seedEvent({ final: true, contentKey: contentKey(SOURCE) }));
+  it('warms the block cache under the backend contentKey for a final push', async () => {
+    applyHighlightLive(liveEvent({ final: true, contentKey: contentKey(SOURCE) }));
     await drain();
     expect(getCachedBlockSpans('python', SOURCE)?.[0]?.r).toEqual([3, 1]);
-    expect(matchLiveCodeSeed('python', SOURCE)?.exact).toBe(true);
   });
 
-  it('drops malformed events', async () => {
-    applyHighlightSeed(null as unknown as HighlightSeedEvent);
-    applyHighlightSeed(seedEvent({ lang: 7 as unknown as string }));
-    applyHighlightSeed(seedEvent({ lineHashes: null }));
+  it('drops malformed pushes and pushes for threads this client does not know', async () => {
+    applyHighlightLive(null as unknown as HighlightLiveCodeEvent);
+    applyHighlightLive(liveEvent({ lang: 7 as unknown as string }));
+    applyHighlightLive(liveEvent({ seq: 0 }));
+    applyHighlightLive(liveEvent({ fence: -1 }));
+    applyHighlightLive(liveEvent({ from: 1.5 }));
+    applyHighlightLive(liveEvent({ itemId: '' }));
+    applyHighlightLive(liveEvent({ lines: [] }));
+    applyHighlightLive(liveEvent({ threadId: 'unknown' }));
     await drain();
-    expect(__liveCodeSeedStatsForTest().entries).toBe(0);
+    expect(__liveCodeSpanStatsForTest().rows).toBe(0);
+  });
+
+  it('applies a fence\'s first push at once, before any schema check', () => {
+    applyHighlightLive(liveEvent({ seq: 1, lines: [{}, {}] }));
+    expect(liveCodeRow('t1', 'i1')!.fences.get(0)).toMatchObject({ seq: 1, spanned: false, head: 'def f():' });
+    // A first push that names span classes waits like any other.
+    applyHighlightLive(liveEvent({ fence: 1, seq: 1 }));
+    expect(liveCodeRow('t1', 'i1')!.fences.get(1)).toBeUndefined();
+  });
+
+  it('applies pushes at once after the origin is proven', async () => {
+    const resync = setBindingMock('ResyncLiveCode', async () => 0);
+    applyHighlightLive(liveEvent());
+    expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+    await drain();
+    const fence = liveCodeRow('t1', 'i1')!.fences.get(0)!;
+    applyHighlightLive(liveEvent({ seq: 3, from: 1, lineHashes: chainOf(SOURCE).slice(1), lines: [{}] }));
+    expect(fence.seq).toBe(3);
+    expect(resync).not.toHaveBeenCalled();
+  });
+
+  it('waits on the schema for a first push that names span classes', async () => {
+    applyHighlightLive(liveEvent({ seq: 1 }));
+    expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+    await drain();
+    expect(liveCodeRow('t1', 'i1')!.fences.get(0)!.seq).toBe(1);
+  });
+
+  it('waits on the class-name table when only the origin is proven', async () => {
+    await requireHighlightSchema(HOME_BACKEND);
+    applyHighlightLive(liveEvent());
+    expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+    await drain();
+    expect(liveCodeRow('t1', 'i1')!.fences.get(0)!.seq).toBe(2);
+  });
+
+  it('applies pushes that wait in arrival order', async () => {
+    const resync = setBindingMock('ResyncLiveCode', async () => 0);
+    applyHighlightLive(liveEvent());
+    applyHighlightLive(liveEvent({ seq: 3, from: 1, lineHashes: chainOf(SOURCE).slice(1), lines: [{}] }));
+    expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+    await drain();
+    expect(liveCodeRow('t1', 'i1')!.fences.get(0)!.seq).toBe(3);
+    expect(resync).not.toHaveBeenCalled();
+  });
+
+  it('stops the fence of a push it cannot take', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      applyHighlightLive(liveEvent({ seq: 1, lines: [{}, {}] }));
+      setBindingMock('HighlightClassNames', async () => {
+        throw new Error('backend gone');
+      });
+      applyHighlightLive(liveEvent());
+      await drain();
+      expect(liveCodeRow('t1', 'i1')!.fences.get(0)).toMatchObject({ seq: 1, final: true, stopped: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('drops a push whose origin speaks another schema', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      setBindingMock('HighlightClassNames', async () => {
+        throw new Error('backend gone');
+      });
+      applyHighlightLive(liveEvent());
+      await drain();
+      expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('setupHighlightLiveEvents', () => {
+  function openRow(threadId = 't1'): void {
+    applyLiveCode({ ...liveEvent(), threadId }, '');
+  }
+
+  it('asks open rows for keyframes on returning from a background lease', () => {
+    const resync = setBindingMock('ResyncLiveCode', async () => 0);
+    const off = setupHighlightLiveEvents();
+    try {
+      openRow();
+      setClientLease('active');
+      expect(resync).not.toHaveBeenCalled();
+      setClientLease('background');
+      expect(resync).not.toHaveBeenCalled();
+      setClientLease('active');
+      expect(resync).toHaveBeenCalledWith('t1', 'i1');
+    } finally {
+      off();
+      __resetClientLeaseForTest();
+    }
+  });
+
+  it('drops the rows of threads that leave the watched set', () => {
+    const off = setupHighlightLiveEvents();
+    const unregister = registerWatchedThreadSource(() => ['t2']);
+    try {
+      openRow('t1');
+      openRow('t2');
+      refreshWatchedThreads();
+      expect(liveCodeRow('t1', 'i1')).toBeUndefined();
+      expect(liveCodeRow('t2', 'i1')).toBeDefined();
+    } finally {
+      unregister();
+      off();
+      resetWatchedThreadSourcesForTest();
+    }
   });
 });
 

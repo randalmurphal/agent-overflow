@@ -260,6 +260,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// path as the sweep, and is joined beside it for the same reasons.
 	a.waitPendingThreadDeletes()
 	record("stop pending thread deletes", nil)
+	// Terminal thread ends delete through the same path and are joined
+	// for the same reasons. Stopping them before Step 6 closes the PTYs
+	// also keeps a quit from deleting terminal threads; the next boot
+	// ends them instead.
+	a.stopTerminalThreadEnds()
+	record("stop terminal thread ends", nil)
 
 	// Step 3c2: stop the deferred migration run. It writes to SQLite and
 	// its auto_vacuum conversion replaces the database file under both
@@ -360,7 +366,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// Step 6: close PTYs. Must happen after provider sessions because
 	// a provider close might emit terminal output events; terminating
-	// the terminal manager first would drop those final frames.
+	// the terminal manager first would drop those final frames. Their
+	// exits end no terminal thread: Step 3c stopped the ends.
 	if a.terminals != nil {
 		record("close terminal sessions", a.terminals.Shutdown())
 	}
@@ -431,6 +438,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		settleCancel()
 	}
+	// Triage has stopped feeding streaming text, so the live highlighter's
+	// row goroutines can stop and release their parse trees.
+	a.highlightService().Close()
 
 	// Step 9: close SQLite last. Triage, replay, provider sessions,
 	// and the logger have all flushed by this point; anyone calling

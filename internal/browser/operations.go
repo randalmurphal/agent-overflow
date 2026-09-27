@@ -406,12 +406,15 @@ func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage)
 	m.pageChanged(p)
 }
 
+// lookupOrSelectPage answers the live page a page-scoped call acts on: the
+// named page, or with none named the thread's only page, or a new one when it
+// has none. A suspended page is restored, since the call touches it.
 func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID string) (*managedPage, *workspaceScope, error) {
 	if pageID = strings.TrimSpace(pageID); pageID != "" {
-		return m.lookupOwnedPage(access, pageID)
+		return m.resolvePage(ctx, access, pageID, false)
 	}
-	owned := m.ownedPages(access.ThreadID)
-	switch len(owned) {
+	tabs := m.threadTabs(access.ThreadID)
+	switch len(tabs) {
 	case 0:
 		p, err := m.createPage(ctx, access)
 		if err != nil {
@@ -420,11 +423,9 @@ func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID 
 		_, scope, err := m.lookupOwnedPage(access, p.id)
 		return p, scope, err
 	case 1:
-		p := owned[0]
-		_, scope, err := m.lookupOwnedPage(access, p.id)
-		return p, scope, err
+		return m.resolvePage(ctx, access, tabs[0].id, false)
 	default:
-		return nil, nil, ambiguousPageError(owned)
+		return nil, nil, ambiguousPageError(tabs)
 	}
 }
 

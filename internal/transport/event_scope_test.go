@@ -47,7 +47,7 @@ func TestChannelScopeMatchesItsReadRPC(t *testing.T) {
 		{eventchan.ProviderApproval, ScopeApprovalsRespond, "the prompt RespondToApproval answers"},
 		{eventchan.ProviderQueueStateChanged, ScopeThreadsOperate, "GetQueueState is threads:operate"},
 		{eventchan.GitStatus, ScopeGitOperate, "GetGitStatus is git:operate"},
-		{eventchan.HighlightSeed, ScopeFilesRead, "HighlightCode is files:read"},
+		{eventchan.HighlightLive, ScopeFilesRead, "HighlightCode is files:read"},
 		{eventchan.ProviderItemEvent, ScopeThreadsRead, "the timeline ListItems returns"},
 		{eventchan.SettingsUpdated, ScopeSettingsRead, "GetSettings is settings:read"},
 		{eventchan.ServiceUpdateStatus, ScopeAccessAdmin, "GetServiceUpdateStatus returns this exact shape"},

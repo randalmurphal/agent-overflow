@@ -68,6 +68,10 @@ type PageInfo struct {
 	// that can only error.
 	CanGoBack    bool `json:"canGoBack"`
 	CanGoForward bool `json:"canGoForward"`
+	// Suspended marks a page with no engine page behind it (suspend.go): its
+	// thread's idle session was reaped or the app restarted. The next tool
+	// call on it, or presenting it, reloads its URL.
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type Snapshot struct {
