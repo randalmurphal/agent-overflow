@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -180,5 +181,17 @@ func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
 	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
 		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
+	}
+}
+
+// holdPopupAdoption makes the Manager adopt each popup only after hold, so
+// the popup decides its first navigations with no page: the window a
+// profile's policy covers. Call it before the Manager opens a page.
+func holdPopupAdoption(manager *Manager, hold time.Duration) {
+	engine := manager.engine.(*webkitEngine)
+	adopt := engine.events.PopupOpened
+	engine.events.PopupOpened = func(popup enginePopup) {
+		time.Sleep(hold)
+		adopt(popup)
 	}
 }

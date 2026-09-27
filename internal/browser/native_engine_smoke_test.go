@@ -110,6 +110,9 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
 	}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	// Left alone, the Manager adopts a popup before the popup decides its
+	// first navigation, and the page's policy answers every decision.
+	holdPopupAdoption(manager, time.Second)
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
 			t.Errorf("close manager: %v", err)
