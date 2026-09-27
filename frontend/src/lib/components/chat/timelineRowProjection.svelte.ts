@@ -201,7 +201,11 @@ export function createTimelineRowProjection(
     // reference when nothing shaped it, and its prelude already excludes the
     // growing summary text inside an existing row.) `timelineRowDecorations`
     // is pure over the nodes it is handed, so this adds no per-item reads.
-    return timelineRowDecorations(revealedNodes, activeTurnKey, turns.keyOf);
+    // The final response of a turn is decided on `groupedNodes`, the whole
+    // held structure: a withheld tail must not hand the pill to the last
+    // assistant text that happens to be revealed. `revealedNodes` already
+    // derives from it, so this adds no invalidation source.
+    return timelineRowDecorations(revealedNodes, activeTurnKey, turns.keyOf, groupedNodes);
   });
 
   function responsePillDuration(node: TimelineNode): string {

@@ -48,13 +48,23 @@ function stampNodeTurnRoles(
  * timeline keys on the provider turn; the agent pane keys its whole
  * scoped window as one run, so the main thread settling never stamps a
  * "Response" pill on a subagent that is still working.
+ *
+ * `nodes` are the rows on screen; every returned set indexes into them.
+ * `structure` is every row the pane holds, revealed or not, and decides
+ * which row is a turn's final response. The two differ while the reveal
+ * gate withholds a turn's tail: the turn is wire-complete, its final text
+ * sits behind the frontier, and the last assistant text ON SCREEN is an
+ * intermediate one. Deciding on the screen rows put the pill there and
+ * moved it when the tail revealed. Decided on the structure, the pill
+ * waits for its row.
  */
 export function timelineRowDecorations(
   nodes: readonly TimelineNode[],
   activeTurnKey: number | null,
   turnKeyOf: (item: Item) => number = itemTurnIndexKey,
+  structure: readonly TimelineNode[] = nodes,
 ): TimelineRowDecorationSets {
-  const finalResponseIds = finalResponseIdsByTurn(nodes, activeTurnKey, turnKeyOf);
+  const finalResponseIds = finalResponseIdsByTurn(structure, activeTurnKey, turnKeyOf);
   const toolTextBoundaryIndexes = new Set<number>();
   const responseDividerIndexes = new Set<number>();
   const responsePillIndexes = new Set<number>();

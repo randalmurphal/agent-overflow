@@ -915,7 +915,11 @@ was actively working on.
 settled-turn projection for read-state and trace/debug consumers. The
 chat transcript no longer renders a settled-turn divider from this state;
 the visible "Response" divider is structural and appears when assistant
-text first follows tool activity in the same turn.
+text first follows tool activity in the same turn. The "Response" pill on
+that divider marks the turn's final assistant text once the turn is no
+longer active, decided on every row the pane holds rather than the rows
+revealed so far: a final row still behind the reveal frontier keeps the pill
+off the intermediate text on screen until it renders.
 
 ### `isTurnActive` replacement
 
@@ -950,7 +954,10 @@ clears it.
 ### Per-thread send queue
 
 The composer is always-typeable. A message submitted while the backend is
-working is ACCEPTED rather than sent: `RegisterQueueItem` writes the durable
+working, or while the pane's reveal frontier still stands for a completed
+turn (a direct send would append a row the gate withholds behind the
+draining text, so the message would be visible nowhere), is ACCEPTED rather
+than sent: `RegisterQueueItem` writes the durable
 `flush_queue_items` row (`internal/app/AGENTS.md` § The flush queue outlives
 the process) and appends the message to triage's per-thread flush queue. The
 queue and every dispatch decision live in the backend

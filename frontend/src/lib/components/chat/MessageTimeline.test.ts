@@ -6,7 +6,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
-import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
+import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import {
   projectTurnCompleted,
   projectTurnStarted,
@@ -38,25 +38,6 @@ function agentMeta(description: string): string {
     toolName: 'Agent',
     input: { description, subagent_type: 'Explore' },
   });
-}
-
-class FakeSmoothingClock implements SmoothingClock {
-  private current = 0;
-  private nextHandle = 1;
-  private pending = new Map<number, () => void>();
-  now(): number { return this.current; }
-  schedule(cb: () => void): number {
-    const h = this.nextHandle++;
-    this.pending.set(h, cb);
-    return h;
-  }
-  cancel(h: number): void { this.pending.delete(h); }
-  tickFrame(ms: number): void {
-    this.current += ms;
-    const toFire = [...this.pending.values()];
-    this.pending.clear();
-    for (const cb of toFire) cb();
-  }
 }
 
 describe('<MessageTimeline>', () => {
@@ -1241,6 +1222,61 @@ describe('<MessageTimeline>', () => {
       const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
 
       expect(queryAllByTestId('response-divider')).toHaveLength(1);
+    });
+
+    // The turn completes on the wire while an intermediate observation is
+    // still draining, so the final text sits behind the reveal frontier.
+    // The pill must not fall on the observation (the last assistant text
+    // revealed) and then move: it waits for the final row.
+    it('keeps the "Response" pill off a revealed intermediate row while the final text is withheld', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-1' }), [
+          makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi', turnIndex: 0, itemIndex: 0 }),
+          makeItem({ id: 'tool:0:1', kind: 'tool_call', toolName: 'Bash', summary: 'ls', turnIndex: 0, itemIndex: 1, status: 'completed' }),
+        ]);
+        pane.upsertItem(makeItem({
+          id: 'text:0:2', kind: 'assistant_text', role: 'assistant', status: 'streaming',
+          turnIndex: 0, itemIndex: 2, summary: '', payloadId: 'p', updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'thread-1', itemId: 'text:0:2', kind: 'assistant_text',
+          delta: 'looking around '.repeat(40), updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:3', kind: 'tool_call', role: 'assistant', status: 'completed',
+          turnIndex: 0, itemIndex: 3, toolName: 'Bash', summary: 'cat README', updatedAt: 3,
+        }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:4', kind: 'assistant_text', role: 'assistant', status: 'completed',
+          turnIndex: 0, itemIndex: 4, summary: 'final answer', updatedAt: 4,
+        }));
+        // Wire completion: the observation settles but its smoother still
+        // holds a backlog, so the frontier stays on it.
+        pane.applyItemPatch({ threadId: 'thread-1', itemId: 'text:0:2', kind: 'assistant_text',
+          patch: { rev: 0, status: 'completed', updatedAt: 5 } });
+
+        const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+        await tick();
+
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 2 });
+        const withheld = queryAllByTestId('response-divider');
+        expect(withheld).toHaveLength(1);
+        expect(withheld[0].getAttribute('data-final-response')).toBe('false');
+        expect(withheld[0].textContent).not.toContain('Response');
+
+        for (let i = 0; i < 400 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
+        await tick();
+
+        const released = queryAllByTestId('response-divider');
+        expect(released).toHaveLength(2);
+        expect(released[0].getAttribute('data-final-response')).toBe('false');
+        expect(released[1].getAttribute('data-final-response')).toBe('true');
+        expect(released[1].textContent).toContain('Response');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
 
     it('shows the "Response" pill only on the final wire round of a settled turn', async () => {

@@ -6,7 +6,8 @@ import {
   createComposerDraftStore,
   resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
+import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
+import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -24,6 +25,7 @@ import {
   resetForTest as resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
 import {
+  getActiveTurn,
   projectSendResolved,
   projectSendStarted,
   resetForTest as resetThreadStatuses,
@@ -2643,6 +2645,56 @@ describe('<Composer>', () => {
     // Composer cleared after enqueue so the user can stack the next
     // message immediately.
     expect(draft.content).toBe('');
+  });
+
+  // The turn is over on the wire but the pane is still revealing its text.
+  // A direct send would append a row the reveal gate withholds behind that
+  // text, so the message vanishes from the composer and appears nowhere
+  // until the drain ends. The queue path keeps it in the preview instead.
+  it('enqueues while the pane is still revealing a completed turn, then sends directly once drained', async () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const pane = await buildPane(makeTestThread({ id: 'thread-1' }), [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi', turnIndex: 0, itemIndex: 0 }),
+      ]);
+      pane.upsertItem(makeItem({
+        id: 'text:0:1', kind: 'assistant_text', role: 'assistant', status: 'streaming',
+        turnIndex: 0, itemIndex: 1, summary: '', payloadId: 'p', updatedAt: 1,
+      }));
+      pane.applyItemDelta({
+        threadId: 'thread-1', itemId: 'text:0:1', kind: 'assistant_text',
+        delta: 'long answer '.repeat(60), updatedAt: 2,
+      });
+      pane.applyItemPatch({ threadId: 'thread-1', itemId: 'text:0:1', kind: 'assistant_text',
+        patch: { rev: 0, status: 'completed', updatedAt: 3 } });
+      expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
+      expect(getActiveTurn('thread-1')).toBeNull();
+      const draft = await buildDraft();
+      const send = setBindingMock('SendMessageWithOptions', async () =>
+        makeTestThread({ runtimeMode: 'full-access' }));
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'while it drains' } });
+      await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await tick();
+
+      expect(send).not.toHaveBeenCalled();
+      expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['while it drains']);
+      expect(pane.items.some((item) => item.id.startsWith('optimistic:'))).toBe(false);
+
+      // Drained: the same composer sends directly again.
+      for (let i = 0; i < 400 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
+      await tick();
+      expect(pane.revealBoundary).toBeNull();
+      await fireEvent.input(textarea, { target: { value: 'after the drain' } });
+      await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+      expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['while it drains']);
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('does not clear a restored draft when queue restore arrives before RegisterQueueItem resolves', async () => {

@@ -271,6 +271,67 @@ test('a queued message the pane already holds hands over when Claude picks it up
   await expect(page.getByText('Changelog updated.', { exact: true })).toBeVisible();
 });
 
+// A message sent after the turn completed on the wire but while its text is
+// still revealing. The backend is idle, so nothing queues there; the pane's
+// reveal frontier is still up, so a directly sent optimistic row would be
+// withheld behind the draining prose with everything else past the frontier,
+// and the person's own message would leave the composer and appear nowhere
+// until the drain ended. The composer routes the send through the queue
+// path while the frontier stands: the preview holds the message and the
+// hand-off lands it when the gate releases the row.
+test('a message sent while the previous turn is still revealing stays in the preview until its row renders', async ({
+  harness,
+  page,
+}) => {
+  test.setTimeout(90_000);
+
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario('send-during-drain', [
+      [emit([...textLines('msg-prose', PROSE), RESULT_LINE])],
+      [
+        { waitSignal: { name: 'reply' } },
+        emit([...textLines('msg-reply', 'Changelog updated.'), RESULT_LINE]),
+      ],
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'send-during-drain', 'Send during drain');
+  await harness.open(page);
+  await page.getByText('Send during drain', { exact: true }).click();
+  const mockId = await startMock(harness, threadId);
+
+  const input = page.getByLabel('Message Input');
+  await input.fill('Write the long answer.');
+  await input.press('Enter');
+  // The wire is done with turn 1 while the prose has barely started
+  // revealing: the first paragraph is on screen, the last is not.
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  await expect(page.getByText('Paragraph 1:', { exact: false })).toBeVisible();
+  await expect(page.getByText('Paragraph 8:', { exact: false })).toHaveCount(0);
+
+  await startZoneSampler(page, QUEUED);
+
+  // The send is accepted into the queue (and dispatched at once by the
+  // idle backend) rather than appended as an optimistic row.
+  const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+  await input.fill(QUEUED);
+  await input.press('Enter');
+  await flushed;
+  await waitForGate(harness, 'reply');
+
+  await expect.poll(lastZoneSample(page), { timeout: 30_000 }).toBe('0/1');
+  expectOneHomePerFrame(await stopZoneSampler(page));
+  // The row landed after the prose it waited for.
+  await expect(page.getByText('Paragraph 8:', { exact: false })).toBeVisible();
+  const bubble = page.getByTestId('user-message-bubble').filter({ hasText: QUEUED });
+  await expect(bubble).toBeInViewport();
+
+  await advance(harness, mockId, 'reply');
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  await expect(page.getByText('Changelog updated.', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('send-queue-preview-row')).toHaveCount(0);
+  await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
+});
+
 // Hold only this fixture's mock process, so the queued stdin write succeeds
 // without a replay echo. This models Claude waiting on a foreground tool and
 // avoids the mock adapter's automatic immediate acknowledgement.

@@ -166,6 +166,17 @@
   // actual behaviour and is the canonical wire-round emission contract
   // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
+  // Send routes through the queue on the wire signal above and on one
+  // presentation signal: the pane's reveal frontier is still up (a
+  // completed turn's text is still draining). A direct send appends an
+  // optimistic row after that frontier, and `sliceRevealedNodes` withholds
+  // it with everything else past the frontier, so the person's own message
+  // would leave the composer and appear nowhere until the drain ended. The
+  // queue path's preview is the home for a message accepted but not yet
+  // renderable, and the hand-off lands the row when the gate releases it.
+  // The backend dispatches an accepted message at once when nothing is
+  // running, so the provider sees the same send either way.
+  let routesThroughQueue = $derived(isTurnActive || pane.revealBoundary !== null);
   let interruptPending = $derived(isThreadInterruptPending(pane.threadId));
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
@@ -633,7 +644,7 @@
     // provider-agnostic here — provider branching previously needed
     // to choose between Steer and a frontend-side queue, but the
     // unified backend queue removes that choice.
-    if (isTurnActive) {
+    if (routesThroughQueue) {
       const midTurnThreadId = pane.threadId;
       if (!midTurnThreadId) return;
       const draftReady = draft.prepareForSend();
@@ -861,7 +872,7 @@
     }
     if (hasBlockingPrompt) return;
     // Mid-turn Enter routes through send() like a click; send() picks
-    // the enqueue path when `isTurnActive` is true. No mid-turn
+    // the enqueue path when `routesThroughQueue` is true. No mid-turn
     // keyboard block — it would diverge from both reference UIs and
     // from the click-to-queue affordance below.
     void send();

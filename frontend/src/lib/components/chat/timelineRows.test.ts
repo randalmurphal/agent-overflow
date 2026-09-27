@@ -42,6 +42,27 @@ describe('timelineRowDecorations', () => {
     expect(decorations.responsePillIndexes).toEqual(new Set([1]));
   });
 
+  // The turn is wire-complete (no active key) while the reveal gate still
+  // withholds its tail: the rows on screen end at an intermediate
+  // observation. The pill belongs to the final text and waits for it.
+  it('decides the final response on the whole structure, not the revealed rows', () => {
+    const structure = groupItemsBySubagent([
+      makeItem({ id: 'tool', kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
+      makeItem({ id: 'observation', itemIndex: 1, kind: 'assistant_text', summary: 'looking' }),
+      makeItem({ id: 'tool-2', itemIndex: 2, kind: 'tool_call', toolName: 'Bash', summary: 'cat' }),
+      makeItem({ id: 'answer', itemIndex: 3, kind: 'assistant_text', summary: 'done' }),
+    ]);
+    const revealed = structure.slice(0, 2);
+
+    const withheld = timelineRowDecorations(revealed, null, undefined, structure);
+    expect(withheld.responseDividerIndexes).toEqual(new Set([1]));
+    expect(withheld.responsePillIndexes).toEqual(new Set());
+
+    const released = timelineRowDecorations(structure, null, undefined, structure);
+    expect(released.responseDividerIndexes).toEqual(new Set([1, 3]));
+    expect(released.responsePillIndexes).toEqual(new Set([3]));
+  });
+
   it('does not render a response divider for direct user-to-assistant text', () => {
     const nodes = groupItemsBySubagent([
       makeItem({ id: 'user', kind: 'user_text', role: 'user' }),
