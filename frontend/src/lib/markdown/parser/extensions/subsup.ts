@@ -1,7 +1,7 @@
 import type { Token } from '../engine';
 import type { Extension } from '../index';
 const subRule = /^~([^~`\s]+)~(?!\d)/; // ~text~ — no spaces/backticks (code spans bind tighter); closing ~ not before a digit so approx-range prose like ~5~10 / ~50~100 stays plain instead of sub(5)
-const supRule = /^\^([^\^`\s](?:[^\^`]*[^\^`\s])?)\^/; // ^text^ — no backticks (code spans bind tighter)
+const supRule = /^\^([^\^`\s]+)\^/; // ^text^ — no spaces/backticks, so carets in prose like 2^53 ... 2^53 never pair across words
 export const markedSub: Extension = {
     name: 'sub',
     level: 'inline',

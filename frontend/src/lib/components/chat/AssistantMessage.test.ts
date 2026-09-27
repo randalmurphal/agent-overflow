@@ -628,6 +628,23 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression: `supRule` admitted spaces, so two unrelated carets in one
+  // paragraph (`2^53` ... `2^53`) paired up and superscripted all the prose
+  // between them. Superscript content is now a single space-free run, like
+  // `subRule`.
+  it('does not pair carets across words in prose', async () => {
+    const summary =
+      'Above 9 quadrillion (2^53) doubles skip values. That gap between 2^53 and int64 max, and a ^ b ^ c.';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain(summary);
+      expect(body.querySelector('sup')).toBeNull();
+    });
+  });
+
   // Regression: single-`$` inline math vs. agent prose. Agents emit
   // `$`-prefixed identifiers constantly — `$ref` (JSON Schema), `$PATH`
   // / `$HOME` (shell), jQuery `$el` — and inline code spans like
