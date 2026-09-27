@@ -198,6 +198,13 @@ export interface ThreadSwitchLoad {
   switchThread(newThread: Thread): Promise<void>;
   /** Re-fetch the visible window after a transport gap, without resetting pane UI state. */
   refreshFromBackend(requireItems?: boolean): Promise<void>;
+  /**
+   * A streaming row missed text (`ThreadStreamingRevealOptions.onStreamGap`).
+   * A window read in flight usually closes the gap itself: a row it holds
+   * places the held deltas. The pane re-reads once no read is in flight and
+   * a gap remains.
+   */
+  requestStreamRecovery(): void;
   /** Retry the failed initial history window without resetting the pane. */
   retryHistoryLoad(): Promise<void>;
   /** Drop every cached copy of a thread's window (L1, priors, replica, stamp). */
@@ -349,6 +356,10 @@ export function createThreadSwitchLoad(
   } | null = null;
   let historyRetryPromise: Promise<void> | null = null;
   let initialLoad: Promise<void> | null = null;
+  // A stream gap reported while a window read was in flight, and the count
+  // of refresh runs in flight (`requestStreamRecovery`).
+  let streamRecoveryPending = false;
+  let refreshRunsInFlight = 0;
   /**
    * Serialized single-flight for backend refreshes. The old hand-rolled
    * ++generation supersede was a livelock under a transport-gap storm:
@@ -1005,6 +1016,7 @@ export function createThreadSwitchLoad(
           options.getItems(),
           liveTouchedDuringSync ?? EMPTY_ID_SET,
           liveRemovedDuringSync ?? EMPTY_ID_SET,
+          options.streamingReveal.staleRowIds(),
         ),
         pageItems,
         page.runs,
@@ -1538,7 +1550,23 @@ export function createThreadSwitchLoad(
       }
       if (initialLoad === load) initialLoad = null;
       finishLoad();
+      settleStreamRecovery();
     }
+  }
+
+  function requestStreamRecovery(): void {
+    if (initialLoad || historyRetryPromise || refreshRunsInFlight > 0) {
+      streamRecoveryPending = true;
+      return;
+    }
+    refreshScheduler.request();
+  }
+
+  /** A window read ended: re-read if a gap it did not close remains. */
+  function settleStreamRecovery(): void {
+    if (!streamRecoveryPending || initialLoad || historyRetryPromise || refreshRunsInFlight > 0) return;
+    streamRecoveryPending = false;
+    if (options.streamingReveal.hasStreamGaps()) refreshScheduler.request();
   }
 
   /**
@@ -1569,12 +1597,15 @@ export function createThreadSwitchLoad(
     // the trailing run its own dirty bit guarantees.
     const claimedWaiters = refreshWaiters.splice(0, refreshWaiters.length);
     let outcome: RefreshRunOutcome = REFRESH_SETTLED;
+    refreshRunsInFlight += 1;
     try {
       outcome = await runBackendRefresh(token, claimedWaiters.some(waiter => waiter.requireItems));
     } catch (err) {
       outcome = { superseded: false, error: err };
       throw err;
     } finally {
+      refreshRunsInFlight -= 1;
+      settleStreamRecovery();
       if (outcome.superseded) {
         // Nothing was applied: the rerun reads the window that replaced
         // the one this run read, and answers these waiters.
@@ -1707,6 +1738,7 @@ export function createThreadSwitchLoad(
           currentItems,
           refreshMutations.ids,
           refreshMutations.removedIds,
+          options.streamingReveal.staleRowIds(),
         ),
         merged,
         paged.runs,
@@ -1829,6 +1861,7 @@ export function createThreadSwitchLoad(
     historyRetryPromise = retry;
     const releaseRetry = () => {
       if (historyRetryPromise === retry) historyRetryPromise = null;
+      settleStreamRecovery();
     };
     void retry.then(releaseRetry, releaseRetry);
     return retry;
@@ -1861,6 +1894,7 @@ export function createThreadSwitchLoad(
     liveMutationDuringRefresh = null;
     failedHistoryLoad = null;
     historyRetryPromise = null;
+    streamRecoveryPending = false;
     // Invalidate the in-flight refresh's token and drop any pending
     // trailing run; the pane is moving on. Waiters resolve rather than
     // hang — their refresh is moot, and callers only sequence on it.
@@ -1898,6 +1932,7 @@ export function createThreadSwitchLoad(
     },
     switchThread,
     refreshFromBackend,
+    requestStreamRecovery,
     retryHistoryLoad,
     dropCachedWindow,
     snapshotPaneForClose,

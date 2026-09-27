@@ -292,6 +292,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     armStructuralSpring: armLiveContentAppendSpring,
     onRevealSettled: syncRenderedFlushRows,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
+    // Declared below; called only once events flow.
+    onStreamGap: () => switchLoad.requestStreamRecovery(),
   });
   const timelineWindow = createThreadTimelineWindow({
     getItems,

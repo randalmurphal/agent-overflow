@@ -73,6 +73,7 @@ func decodeDelta(t *testing.T, e Event) leaseItemFrame {
 // text, and a renamed field on either side fails here rather than shipping
 // merged frames the frontend silently ignores.
 func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
+	offset := int64(7)
 	canonical, err := json.Marshal(triage.ItemStreamEvent{
 		Action:    "delta",
 		ThreadID:  "thread-A",
@@ -80,6 +81,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
+		Offset:    &offset,
 		UpdatedAt: 1234,
 	})
 	if err != nil {
@@ -92,6 +94,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
+		Offset:    &offset,
 		UpdatedAt: 1234,
 	})
 	if err != nil {
@@ -161,6 +164,49 @@ func TestDeltaCoalescerMergesPerRow(t *testing.T) {
 		if len(e.WireBytes) == 0 {
 			t.Fatalf("merged frame %d has no pre-encoded wire bytes", i)
 		}
+	}
+}
+
+// TestDeltaCoalescerMergesByOffset: a merged delta starts at its first
+// part's offset, and a frame that does not continue the pending text is not
+// merged into it. The pending rows flush first, so the channel stays in seq
+// order.
+func TestDeltaCoalescerMergesByOffset(t *testing.T) {
+	var out []Event
+	c := deltaCoalescer{window: time.Hour, emit: func(e Event) { out = append(out, e) }}
+	at := func(text string, offset int64) json.RawMessage {
+		buf, err := json.Marshal(triage.ItemStreamEvent{
+			Action: "delta", ThreadID: "thread-A", ItemID: "item-1",
+			Kind: "thinking", Delta: text, Offset: &offset,
+		})
+		if err != nil {
+			t.Fatalf("marshal delta: %v", err)
+		}
+		return buf
+	}
+	c.intercept(itemEvent(1, "thread-A", at("hé", 10)))
+	c.intercept(itemEvent(2, "thread-A", deltaPayload(t, "thread-A", "item-2", "other", 1)))
+	c.intercept(itemEvent(3, "thread-A", at("llo", 13)))
+	if len(out) != 0 {
+		t.Fatalf("contiguous frames emitted early: %d", len(out))
+	}
+	c.intercept(itemEvent(4, "thread-A", at("gap", 40)))
+	if len(out) != 2 {
+		t.Fatalf("frames flushed at the gap = %d, want both pending rows", len(out))
+	}
+	merged := decodeDelta(t, out[1])
+	if merged.Delta != "héllo" || merged.Offset == nil || *merged.Offset != 10 || out[1].Seq != 3 {
+		t.Fatalf("merge before the gap = %+v seq %d, want \"héllo\" at 10, seq 3", merged, out[1].Seq)
+	}
+	if other := decodeDelta(t, out[0]); other.Offset != nil {
+		t.Fatalf("unpositioned row gained an offset: %+v", other)
+	}
+	c.flushAll()
+	if len(out) != 3 {
+		t.Fatalf("frames = %d, want the gap frame on its own", len(out))
+	}
+	if gap := decodeDelta(t, out[2]); gap.Delta != "gap" || gap.Offset == nil || *gap.Offset != 40 {
+		t.Fatalf("gap frame = %+v, want \"gap\" at 40", gap)
 	}
 }
 

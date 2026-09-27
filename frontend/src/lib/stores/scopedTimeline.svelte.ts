@@ -22,7 +22,7 @@ import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { includesDigestItem, withinDigestExecution } from './timelineDigest';
 import { isWindowedTimelineRow } from './threadWindowDigest';
-import { compareItemsByTimelinePosition, isItemStatusRegression } from './threadItems';
+import { appendPositionedDelta, applyItemPatchFields, compareItemsByTimelinePosition, isItemStatusRegression, snapshotRowSupersedesLive } from './threadItems';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { parseJsonObject } from '../utils/parseJsonObject';
@@ -40,6 +40,9 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   let requestGeneration = 0;
   let contextVersion = 0;
   let missedStreamUpdate = false;
+  // A stream gap seen during a read waits for it: the read may reach the
+  // held text, and re-reading is owed only if it does not.
+  let streamGapDuringRead = false;
   let disposed = false;
   let attachment = $state.raw<ReturnType<typeof attachTimelineWindow> | null>(null);
   const reads = new Map<AbortSignal, Set<string>>();
@@ -74,6 +77,10 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     appendDirectAssistantLiteral, stampLiveContent: () => { lastLiveContentAt = nowForLiveContent(); },
     armStructuralSpring: scroll.armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rows.appendLivePayloadDeltaForItem,
+    onStreamGap: () => {
+      if (reads.size) streamGapDuringRead = true;
+      else contextRefresh.request();
+    },
   });
   const window = createThreadTimelineWindow({
     getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread, windowedRowCount: itemWindow.windowedRowCount,
@@ -179,9 +186,9 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     const update = (item: Item): Item => {
       if (item.id !== event.itemId) return item;
       if (mutation.kind === 'meta') return { ...item, meta: mutation.event.meta };
-      if (mutation.kind === 'delta') return { ...item, summary: item.summary + mutation.event.delta, updatedAt: mutation.event.updatedAt };
+      if (mutation.kind === 'delta') return appendPositionedDelta(item, mutation.event) ?? item;
       if (mutation.event.patch.status && isItemStatusRegression(item, { status: mutation.event.patch.status, updatedAt: mutation.event.patch.updatedAt })) return item;
-      return { ...item, ...mutation.event.patch };
+      return applyItemPatchFields(item, mutation.event.patch);
     };
     if (scope && [scope.root.id, scope.lifecycle.id, scope.completion?.id].includes(event.itemId)) {
       scope = { ...scope, root: update(scope.root as Item), lifecycle: update(scope.lifecycle as Item),
@@ -242,6 +249,8 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
         newLiveRows.push(item);
         continue;
       }
+      const read = next.get(id);
+      if (read && item && snapshotRowSupersedesLive(read, item, reveal.staleRowIds())) continue;
       if (item && includes(item)) next.set(id, item);
       else next.delete(id);
     }
@@ -339,8 +348,10 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
         unheldItems.delete(signal);
         if (reads.size === 0) {
           if (completed) loading = false;
-          if (missedStreamUpdate && !disposed && !gone) contextRefresh.request();
+          const gapOpen = streamGapDuringRead && reveal.hasStreamGaps();
+          if ((missedStreamUpdate || gapOpen) && !disposed && !gone) contextRefresh.request();
           missedStreamUpdate = false;
+          streamGapDuringRead = false;
         }
       },
     });

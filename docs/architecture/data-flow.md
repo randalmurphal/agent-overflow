@@ -34,8 +34,15 @@ Frontend "expand" click → Wails binding → SQLite payload read → render
 - Text and thinking deltas reach the frontend immediately and accumulate in a
   bounded persistence buffer. Command output is emitted when that buffer
   flushes.
-- Time, byte, hydration, and lifecycle boundaries flush accumulated deltas to
+- Time, byte, read, and lifecycle boundaries flush accumulated deltas to
   SQLite. Completion performs the final flush and settles the existing row.
+- Text, thinking, and compaction reasoning deltas carry `offset`, the UTF-8
+  byte length of the item's streamed text before the delta. A streaming row
+  carries `streamEnd`, where its summary ends in that stream. A history or
+  payload read first writes the thread's buffered deltas
+  (`App.readyThreadHistory`), so it holds every delta emitted before it. A
+  client places each delta by offset against the rows it read: it drops
+  text it holds and holds a delta past its text until a read reaches it.
 - Later provider facts may still enrich a settled row through explicit update
   paths. Item-granular persistence does not mean immutable rows.
 

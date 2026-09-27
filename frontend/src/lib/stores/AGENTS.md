@@ -150,9 +150,11 @@ items. Detailed scroll contracts live in
 While a smoother owns an assistant row, the published text is its reveal cursor.
 Every wholesale replacement passes through `prepareItemReplacement` before
 `commitTimelineItems` or `upsertItemsBatch`. A trailing persisted or replica
-summary must not rewind the cursor or dispose its smoother. For reasoning-tail
-rows, containment rather than prefix equality determines whether a summary
-trails. A genuinely divergent authoritative summary wins and may snap forward.
+summary must not rewind the cursor or dispose its smoother. Two streaming
+reads that carry `streamEnd` compare by position; otherwise, for
+reasoning-tail rows, containment rather than prefix equality determines
+whether a summary trails. A genuinely divergent authoritative summary wins and
+may snap forward.
 
 Provider completion and an empty reveal backlog do not release successor rows.
 The message must be terminal and its smoother drained. Exercise reveal ordering

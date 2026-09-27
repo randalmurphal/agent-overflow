@@ -26,12 +26,13 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
+	evt.Content = streamedText(evt.Content)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("compaction reasoning turn index: %w", err)
 	}
 	scope := provider.CompactionReasoningScope
-	firstBlock, itemID := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
+	firstBlock, itemID, offset := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
@@ -77,6 +78,7 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 		ItemID:    itemID,
 		Kind:      itemKindCompactionReasoning,
 		Delta:     evt.Content,
+		Offset:    offset,
 		UpdatedAt: now,
 	})
 	if flushAfterEmit {

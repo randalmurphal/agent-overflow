@@ -1,4 +1,4 @@
-import { isItemStatusRegression } from './threadItems';
+import { appendPositionedDelta, isItemStatusRegression } from './threadItems';
 import type { Item, Thread } from '../types/models';
 import type {
   ItemDeltaEvent,
@@ -298,11 +298,8 @@ export function createThreadItemStreamApply(
     // should stamp the spring latch here for parity with the upsert
     // path (eventsItemStream.ts providerUpsertAdvancesLiveContent).
     if (!isSmoothLiveContentKind(current.kind)) {
-      options.writeItemAt(index, {
-        ...current,
-        summary: current.summary + evt.delta,
-        updatedAt: evt.updatedAt,
-      });
+      const next = appendPositionedDelta(current, evt);
+      if (next !== null && next !== current) options.writeItemAt(index, next);
       return;
     }
 
@@ -311,9 +308,9 @@ export function createThreadItemStreamApply(
     // the per-item smoother. The smoother's onReveal callback owns all
     // subsequent writes to items[index].summary and to the live payload tail.
     streamingReveal.appendStreamingDelta(
-      evt.itemId,
-      current.summary,
+      current,
       evt.delta,
+      evt.offset,
       evt.updatedAt,
     );
   }

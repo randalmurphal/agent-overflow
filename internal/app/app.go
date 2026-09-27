@@ -766,7 +766,7 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 //
 //ao:scope threads:read
 func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return nil, err
 	}
 	items, err := a.store.ListItems(threadID)

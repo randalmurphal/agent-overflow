@@ -190,7 +190,8 @@ func (r *Router) emitItemPatch(threadID, itemID, parentID, kind string, rev int6
 // The push carries the row as a read serves it, not the caller's fields:
 // the stored meta holds no card key, a read merges an anchor's stamp into
 // it (subagent_aggregate_stamps.go), and the client must hold what a read
-// returns at that revision.
+// returns at that revision. A patch that leaves the summary alone names
+// the stream end item was read at (ItemPatchFields.StreamEnd).
 func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPartialUpdate) error {
 	var stored store.Item
 	err := r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
@@ -211,6 +212,9 @@ func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPar
 		patch := patchFromPartial(update)
 		if update.Meta != nil {
 			patch.Meta = &stored.Meta
+		}
+		if update.Summary == nil {
+			patch.StreamEnd = item.StreamEnd
 		}
 		r.emitItemPatch(stored.ThreadID, stored.ID, stored.ParentID, stored.Kind, stored.Rev, patch)
 	}

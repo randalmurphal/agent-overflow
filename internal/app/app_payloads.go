@@ -42,7 +42,7 @@ type PayloadContent struct {
 //
 //ao:scope threads:read
 func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int) (PayloadPreview, error) {
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return PayloadPreview{}, err
 	}
 	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
@@ -64,7 +64,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 
 //ao:scope threads:read
 func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, maxBytes int) (PayloadChunk, error) {
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return PayloadChunk{}, err
 	}
 	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
@@ -90,7 +90,7 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 //
 //ao:scope threads:read
 func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent, error) {
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return PayloadContent{}, err
 	}
 	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
@@ -129,7 +129,7 @@ func (a *App) resolveSavePayloadPicker() savePayloadPicker {
 
 //ao:scope host
 func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, error) {
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return "", err
 	}
 	picker := a.resolveSavePayloadPicker()
@@ -172,7 +172,12 @@ func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, erro
 	return path, nil
 }
 
-func (a *App) flushThreadPayloadBuffers(threadID string) error {
+// readyThreadHistory prepares a read of a thread's history or payloads:
+// the thread's fork copy is ready and its stream buffers are written. A
+// live client places the read against the deltas it received by stream
+// offset (store.Item.StreamEnd), so the read must hold the text of every
+// delta emitted before it; a delta still buffered would be in neither.
+func (a *App) readyThreadHistory(threadID string) error {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return err
 	}
@@ -180,7 +185,7 @@ func (a *App) flushThreadPayloadBuffers(threadID string) error {
 		return nil
 	}
 	if err := a.triage.FlushThread(threadID); err != nil {
-		return fmt.Errorf("flush live payload buffers for thread %s: %w", threadID, err)
+		return fmt.Errorf("flush live stream buffers for thread %s: %w", threadID, err)
 	}
 	return nil
 }

@@ -66,9 +66,10 @@ function makeReveal(initialItems: Item[]) {
       next[index] = item;
       items = next;
     },
-    appendDirectAssistantLiteral: (index, _itemId, append, updatedAt) => {
+    appendDirectAssistantLiteral: (index, _itemId, append, updatedAt, streamEnd) => {
       const current = items[index];
       current.summary = append.next;
+      current.streamEnd = streamEnd;
       current.updatedAt = Math.max(current.updatedAt, updatedAt);
     },
     stampLiveContent: () => {},
@@ -148,9 +149,9 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal, getItems, commit } = makeReveal([item]);
 
-    reveal.appendStreamingDelta(item.id, '', SNAPSHOT_26, 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, SNAPSHOT_26, undefined, 1);
     drainTo(clock, () => getItems()[0].summary, SNAPSHOT_26.length);
-    reveal.appendStreamingDelta(item.id, SNAPSHOT_26, SUFFIX_20, 2);
+    reveal.appendStreamingDelta({ ...item, summary: SNAPSHOT_26 }, SUFFIX_20, undefined, 2);
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
 
     const [prepared] = reveal.withReconciledItems([{
@@ -175,9 +176,9 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     const { reveal, getItems, commit } = makeReveal([item]);
     const full = CURSOR_46 + UNREVEALED_TAIL;
 
-    reveal.appendStreamingDelta(item.id, '', SNAPSHOT_26, 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, SNAPSHOT_26, undefined, 1);
     drainTo(clock, () => getItems()[0].summary, SNAPSHOT_26.length);
-    reveal.appendStreamingDelta(item.id, SNAPSHOT_26, SUFFIX_20 + UNREVEALED_TAIL, 2);
+    reveal.appendStreamingDelta({ ...item, summary: SNAPSHOT_26 }, SUFFIX_20 + UNREVEALED_TAIL, undefined, 2);
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
     expect(getItems()[0].summary.length).toBeLessThan(full.length);
 
@@ -209,7 +210,7 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal, getItems, commit } = makeReveal([item]);
 
-    reveal.appendStreamingDelta(item.id, '', CURSOR_46 + UNREVEALED_TAIL, 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, CURSOR_46 + UNREVEALED_TAIL, undefined, 1);
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
 
     const corrected = '[interrupted] the model rewrote this answer entirely.';

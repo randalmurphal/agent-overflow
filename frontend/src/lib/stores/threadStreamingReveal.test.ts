@@ -77,6 +77,7 @@ function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
       itemId,
       append,
       updatedAt,
+      streamEnd,
     ) => {
       const current = items[index];
       if (
@@ -87,6 +88,7 @@ function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
         throw new Error('test direct write mismatch');
       }
       current.summary = append.next;
+      current.streamEnd = streamEnd;
       current.updatedAt = Math.max(current.updatedAt, updatedAt);
     },
     stampLiveContent: () => {},
@@ -126,7 +128,7 @@ describe('streaming reveal live-updates toggle transitions', () => {
     let updatedAt = 1;
 
     const append = (delta: string): void => {
-      reveal.appendStreamingDelta(item.id, getItems()[0].summary, delta, ++updatedAt);
+      reveal.appendStreamingDelta({ ...item, summary: getItems()[0].summary }, delta, undefined, ++updatedAt);
       received += delta;
     };
     const drain = (): void => {
@@ -178,7 +180,7 @@ describe('thread streaming reveal cleanup', () => {
       { length: 120 },
       (_, index) => `word${String(index).padStart(3, '0')} `,
     ).join('');
-    reveal.appendStreamingDelta(item.id, '', received, 2);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, received, undefined, 2);
     clock.tick(100);
     const revealedAtCompletion = getItems()[0].summary;
     expect(revealedAtCompletion.length).toBeGreaterThan(0);
@@ -216,7 +218,7 @@ describe('thread streaming reveal cleanup', () => {
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal, getItems } = makeReveal([item]);
     const received = 'word '.repeat(120);
-    reveal.appendStreamingDelta(item.id, '', received, 2);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, received, undefined, 2);
     clock.tick(100);
     expect(getItems()[0].summary.length).toBeLessThan(received.length);
 
@@ -241,7 +243,7 @@ describe('thread streaming reveal cleanup', () => {
     __setSmoothingClockForTest(clock);
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal, failNextItemWrite } = makeReveal([item]);
-    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     failNextItemWrite(new Error('row commit failed'));
 
@@ -255,14 +257,14 @@ describe('thread streaming reveal cleanup', () => {
     __setSmoothingClockForTest(clock);
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal, getItems } = makeReveal([item]);
-    reveal.appendStreamingDelta(item.id, '', 'alpha ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'alpha ', undefined, 1);
     clock.tick(100);
 
     const previous = getItems()[0];
     const rewritten = { ...previous, summary: 'bravo ' };
     reveal.reconcileItemWrite(previous, rewritten);
     getItems()[0] = rewritten;
-    reveal.appendStreamingDelta(item.id, rewritten.summary, 'tail ', 2);
+    reveal.appendStreamingDelta({ ...item, summary: rewritten.summary }, 'tail ', undefined, 2);
     clock.tick(100);
 
     const finalSource = getItems()[0].summary;
@@ -281,9 +283,9 @@ describe('thread streaming reveal cleanup', () => {
       () => { throw new Error('preflight failed'); },
     ));
 
-    reveal.appendStreamingDelta(item.id, '', 'first ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'first ', undefined, 1);
     clock.tick(100);
-    reveal.appendStreamingDelta(item.id, 'first ', 'second ', 2);
+    reveal.appendStreamingDelta({ ...item, summary: 'first ' }, 'second ', undefined, 2);
     expect(() => clock.tick(100)).not.toThrow();
 
     expect(getItems()[0].summary).toBe('first second ');
@@ -303,7 +305,7 @@ describe('thread streaming reveal cleanup', () => {
       .mockImplementationOnce(() => { throw new Error('reset failed'); })
       .mockImplementation(() => {});
     reveal.registerAssistantRevealSink(item.id, sink(reset));
-    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
 
     expect(() => reveal.disposeSmootherFor(item.id)).toThrow(
       /smoother disposal failed/,
@@ -326,7 +328,7 @@ describe('thread streaming reveal cleanup', () => {
     reveal.registerAssistantRevealSink(item.id, sink(() => {
       throw new Error('settle reset failed');
     }));
-    reveal.appendStreamingDelta(item.id, '', 'reasoning words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'reasoning words ', undefined, 1);
 
     expect(() => reveal.__flushForTest()).toThrow(/smoother settle failed/);
     expect(reveal.smootherCount()).toBe(0);
@@ -347,7 +349,7 @@ describe('thread streaming reveal cleanup', () => {
     const { reveal, getItems } = makeReveal([item]);
     const reset = vi.fn(() => { throw new Error('settle reset failed'); });
     reveal.registerAssistantRevealSink(item.id, sink(reset));
-    reveal.appendStreamingDelta(item.id, '', 'reasoning words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'reasoning words ', undefined, 1);
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     getItems()[0].status = 'completed';
 
@@ -367,11 +369,11 @@ describe('thread streaming reveal cleanup', () => {
     });
     reveal.registerAssistantRevealSink(item.id, sink(reset));
 
-    reveal.appendStreamingDelta(item.id, '', 'first ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'first ', undefined, 1);
     clock.tick(100);
     expect(getItemWriteCount()).toBe(1);
 
-    reveal.appendStreamingDelta(item.id, 'first ', 'second ', 2);
+    reveal.appendStreamingDelta({ ...item, summary: 'first ' }, 'second ', undefined, 2);
     getItems()[0] = { ...getItems()[0], status: 'completed' };
     clock.tick(100);
 
@@ -392,7 +394,7 @@ describe('thread streaming reveal cleanup', () => {
     const { reveal, getItems } = makeReveal([item, command], () => {
       statusAtRelease = getItems()[0].status;
     });
-    reveal.appendStreamingDelta(item.id, '', 'hello ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'hello ', undefined, 1);
     for (let frame = 0; frame < 60; frame++) clock.tick(16);
     expect(reveal.revealBoundary).not.toBeNull();
     expect(statusAtRelease).toBeUndefined();
@@ -408,7 +410,7 @@ describe('thread streaming reveal cleanup', () => {
     __setSmoothingClockForTest(new FakeSmoothingClock());
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal } = makeReveal([item]);
-    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
     expect(reveal.revealBoundary).not.toBeNull();
     expect(() => reveal.withReconciledItems([{ ...item, status: 'killed' }], () => {
       throw new Error('commit refused');
@@ -423,7 +425,7 @@ describe('thread streaming reveal cleanup', () => {
     const { reveal } = makeReveal([item]);
     const reset = vi.fn(() => { throw new Error('patch reset failed'); });
     reveal.registerAssistantRevealSink(item.id, sink(reset));
-    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
     expect(() => reveal.applyPatch(item.id, {
@@ -442,7 +444,7 @@ describe('thread streaming reveal cleanup', () => {
     reveal.registerAssistantRevealSink(item.id, sink(() => {
       throw new Error('snap reset failed');
     }));
-    reveal.appendStreamingDelta(item.id, '', 'pending words ', 1);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
 
     expect(() => reveal.applyPatch(item.id, {
       rev: 0,
@@ -471,8 +473,8 @@ describe('thread streaming reveal cleanup', () => {
     reveal.registerAssistantRevealSink(first.id, sink(() => {
       throw new Error('visibility reset failed');
     }));
-    reveal.appendStreamingDelta(first.id, '', 'first pending ', 1);
-    reveal.appendStreamingDelta(second.id, '', 'second pending ', 1);
+    reveal.appendStreamingDelta({ ...first, summary: '' }, 'first pending ', undefined, 1);
+    reveal.appendStreamingDelta({ ...second, summary: '' }, 'second pending ', undefined, 1);
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     getItems()[0].status = 'completed';
 
@@ -502,8 +504,8 @@ describe('thread streaming reveal cleanup', () => {
       throw new Error('first upsert reset failed');
     }));
     reveal.registerAssistantRevealSink(second.id, sink(secondReset));
-    reveal.appendStreamingDelta(first.id, '', 'first pending ', 1);
-    reveal.appendStreamingDelta(second.id, '', 'second pending ', 1);
+    reveal.appendStreamingDelta({ ...first, summary: '' }, 'first pending ', undefined, 1);
+    reveal.appendStreamingDelta({ ...second, summary: '' }, 'second pending ', undefined, 1);
     // A DIVERGENT terminal summary is what forces disposal. A terminal
     // replacement whose summary is still a prefix of `received` keeps the
     // smoother draining instead (incident 2026-08-29: disposing on the
@@ -541,8 +543,8 @@ describe('thread streaming reveal cleanup', () => {
       throw new Error('first reset failed');
     }));
     reveal.registerAssistantRevealSink(second.id, sink(secondReset));
-    reveal.appendStreamingDelta(first.id, '', 'first words ', 1);
-    reveal.appendStreamingDelta(second.id, '', 'second words ', 1);
+    reveal.appendStreamingDelta({ ...first, summary: '' }, 'first words ', undefined, 1);
+    reveal.appendStreamingDelta({ ...second, summary: '' }, 'second words ', undefined, 1);
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     const generationBeforeDisposal = reveal.assistantRevealRegistrationGeneration;
 
@@ -587,7 +589,7 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     const item = makeItem({ id: 'think', kind: 'thinking', status: 'streaming', summary: '' });
     const { reveal, getItems } = makeReveal([item]);
     const received = longThinking();
-    reveal.appendStreamingDelta(item.id, '', received, 2);
+    reveal.appendStreamingDelta({ ...item, summary: '' }, received, undefined, 2);
     for (let frame = 0; frame < 120; frame++) clock.tick(16);
     const row = getItems()[0];
     expect(row.summary.length).toBe(400);
@@ -622,7 +624,7 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     expect(reveal.smootherCount()).toBe(1);
     expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
 
-    reveal.appendStreamingDelta(item.id, getItems()[0].summary, 'tail-end ', 3);
+    reveal.appendStreamingDelta({ ...item, summary: getItems()[0].summary }, 'tail-end ', undefined, 3);
     drainToCaughtUp(clock, reveal, item.id, `${received}tail-end `);
   });
 
@@ -643,7 +645,7 @@ describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
     expect(reveal.smootherCount()).toBe(1);
     expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
 
-    reveal.appendStreamingDelta(item.id, getItems()[0].summary, 'tail-end ', 4);
+    reveal.appendStreamingDelta({ ...item, summary: getItems()[0].summary }, 'tail-end ', undefined, 4);
     drainToCaughtUp(clock, reveal, item.id, `${received}tail-end `);
   });
 

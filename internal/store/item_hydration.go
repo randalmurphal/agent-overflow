@@ -9,15 +9,16 @@ import "fmt"
 // physical branches share one scanner contract without routing either
 // branch through the compound timeline_payloads view. A read passes
 // servedItemMetaFor(rev); a copy of the stored rows passes items.meta.
-func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta, rev string) string {
+func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta, streamEnd, rev string) string {
 	return fmt.Sprintf(`items.id, %s, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), %s, %s, %s,
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, %s, items.created_at, items.updated_at,
+    %s,
     %s`,
-		threadID, payloadKind, payloadMeta, previewSpans, meta, rev)
+		threadID, payloadKind, payloadMeta, previewSpans, meta, streamEnd, rev)
 }
 
 // localItemHydrationColumns is the projection of a local row, own or a
@@ -31,10 +32,13 @@ func localItemHydrationColumns(thread, rev string) string {
 		"COALESCE(payloads.meta, '')",
 		"COALESCE(payloads.preview_spans, '')",
 		servedItemMetaFor(rev),
+		streamEndSQL,
 		rev,
 	)
 }
 
+// importedItemHydrationColumns reads no stream end: imported history
+// never streams.
 func importedItemHydrationColumns(thread, rev string) string {
 	return itemHydrationColumns(
 		thread,
@@ -42,6 +46,7 @@ func importedItemHydrationColumns(thread, rev string) string {
 		"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
 		"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
 		servedItemMetaFor(rev),
+		"NULL",
 		rev,
 	)
 }

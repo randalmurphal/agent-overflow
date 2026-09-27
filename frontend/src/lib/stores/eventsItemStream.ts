@@ -23,7 +23,8 @@ import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { isSmoothLiveContentKind } from './threadPaneShared';
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
-import { isBoundedString, isFiniteNumber } from './eventsGuards';
+import { isBoundedString, isFiniteNumber, isStreamOffset } from './eventsGuards';
+import { utf8Length } from '../utils/utf8Offsets';
 import { compositeKey } from '../utils/compositeKey';
 import { isPendingFlushRow } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
@@ -196,6 +197,7 @@ function isValidItemForThread(item: Item | null | undefined, threadId: string): 
   if (item.meta !== undefined && !isBoundedString(item.meta)) return false;
   if (!isFiniteNumber(item.createdAt) || !isFiniteNumber(item.updatedAt)) return false;
   if (!Number.isInteger(item.rev)) return false;
+  if (item.streamEnd !== undefined && !isStreamOffset(item.streamEnd)) return false;
   return true;
 }
 
@@ -263,7 +265,7 @@ function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void
     for (const item of threadItems) {
       if (item.kind !== 'assistant_text' || item.parentId) continue;
       for (const handler of handlers) {
-        handler.applyTailUpsert(threadId, item.id, item.summary);
+        handler.applyTailUpsert(threadId, item.id, item.summary, item.streamEnd);
       }
     }
   }
@@ -406,7 +408,7 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
     const handlers = lookupDiscussionLiveTail(evt.threadId);
     if (handlers) {
       for (const handler of handlers) {
-        handler.applyTailDelta(evt.threadId, evt.itemId, evt.delta);
+        handler.applyTailDelta(evt.threadId, evt.itemId, evt.delta, evt.offset);
       }
     }
   }
@@ -440,6 +442,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
     if (evt.parentId !== undefined && !isBoundedString(evt.parentId, 512)) return;
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.delta) || evt.delta === '') return;
+    if (evt.offset !== undefined && !isStreamOffset(evt.offset)) return;
     if (!isFiniteNumber(evt.updatedAt)) return;
   } else if (evt.action === 'meta') {
     if (!isBoundedString(evt.threadId, 512)) return;
@@ -461,6 +464,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
     if (evt.patch.meta !== undefined && !isBoundedString(evt.patch.meta)) return;
     if (evt.patch.decision !== undefined && !isBoundedString(evt.patch.decision, 128)) return;
     if (evt.patch.updatedAt !== undefined && !isFiniteNumber(evt.patch.updatedAt)) return;
+    if (evt.patch.streamEnd !== undefined && !isStreamOffset(evt.patch.streamEnd)) return;
     // Required, unlike the fields above: the patch is what stamps a
     // settled streaming row's revision (types/events.ts ItemPatchEvent).
     if (!Number.isInteger(evt.patch.rev)) return;
@@ -486,7 +490,12 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
   scheduleItemEventFlush();
 }
 
-type CoalescedDelta = ItemDeltaEvent & { chunks: string[] };
+/**
+ * A row's consecutive deltas merged into one. `bytes` is the UTF-8 length
+ * of the chunks when the deltas are positioned, so the next delta merges
+ * only when it starts where they end.
+ */
+type CoalescedDelta = ItemDeltaEvent & { chunks: string[]; bytes: number };
 type DeferredDelta = { action: 'delta' } & CoalescedDelta;
 type ItemRowEvent = Extract<ItemStreamEvent, { action: 'meta' | 'patch' }>;
 type DeferredRowEvent = ItemRowEvent | DeferredDelta;
@@ -498,9 +507,28 @@ function coalescedDelta(evt: ItemDeltaEvent): CoalescedDelta {
     parentId: evt.parentId,
     kind: evt.kind,
     delta: '',
+    offset: evt.offset,
     updatedAt: evt.updatedAt,
     chunks: [evt.delta],
+    bytes: evt.offset === undefined ? 0 : utf8Length(evt.delta),
   };
+}
+
+/**
+ * Whether `evt` continues the text `delta` holds. A delta the transport
+ * could not merge (a gap, or a resend of text already sent) keeps its own
+ * position, and the pane places it by that position.
+ */
+function continuesCoalescedDelta(delta: CoalescedDelta, evt: ItemDeltaEvent): boolean {
+  if (delta.kind !== evt.kind) return false;
+  if (delta.offset === undefined || evt.offset === undefined) return delta.offset === evt.offset;
+  return delta.offset + delta.bytes === evt.offset;
+}
+
+function extendCoalescedDelta(delta: CoalescedDelta, evt: ItemDeltaEvent): void {
+  delta.chunks.push(evt.delta);
+  if (delta.offset !== undefined) delta.bytes += utf8Length(evt.delta);
+  delta.updatedAt = Math.max(delta.updatedAt, evt.updatedAt);
 }
 
 function applyCoalescedDelta(delta: CoalescedDelta): void {
@@ -510,6 +538,7 @@ function applyCoalescedDelta(delta: CoalescedDelta): void {
     parentId: delta.parentId,
     kind: delta.kind,
     delta: delta.chunks.join(''),
+    offset: delta.offset,
     updatedAt: delta.updatedAt,
   };
   applyItemDelta(coalesced);
@@ -606,9 +635,8 @@ export function flushItemEventQueue(): void {
 
   const deferDelta = (evt: ItemDeltaEvent, itemKey: string) => {
     const tail = deferredDeltaTails.get(itemKey);
-    if (tail?.kind === evt.kind) {
-      tail.chunks.push(evt.delta);
-      tail.updatedAt = Math.max(tail.updatedAt, evt.updatedAt);
+    if (tail && continuesCoalescedDelta(tail, evt)) {
+      extendCoalescedDelta(tail, evt);
       return;
     }
     deferRowEvent({ action: 'delta', ...coalescedDelta(evt) }, itemKey);
@@ -620,13 +648,18 @@ export function flushItemEventQueue(): void {
       pendingDeltas.set(itemKey, [coalescedDelta(evt)]);
       return;
     }
-    for (const lane of lanes) {
-      if (lane.kind !== evt.kind) continue;
-      lane.chunks.push(evt.delta);
-      lane.updatedAt = Math.max(lane.updatedAt, evt.updatedAt);
+    const lane = lanes.find((candidate) => candidate.kind === evt.kind);
+    if (!lane) {
+      lanes.push(coalescedDelta(evt));
       return;
     }
-    lanes.push(coalescedDelta(evt));
+    if (continuesCoalescedDelta(lane, evt)) {
+      extendCoalescedDelta(lane, evt);
+      return;
+    }
+    // The lane applies first, then this delta at its own position.
+    flushPendingDeltas();
+    pendingDeltas.set(itemKey, [coalescedDelta(evt)]);
   };
 
   const flushPendingDeltas = () => {

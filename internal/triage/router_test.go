@@ -2102,11 +2102,16 @@ func filterItemEventDeltas(emissions []emitted) []ItemDeltaEvent {
 		if !ok || event.Action != itemStreamActionDelta {
 			continue
 		}
+		offset := int64(-1)
+		if event.Offset != nil {
+			offset = *event.Offset
+		}
 		out = append(out, ItemDeltaEvent{
 			ThreadID:  event.ThreadID,
 			ItemID:    event.ItemID,
 			Kind:      event.Kind,
 			Delta:     event.Delta,
+			Offset:    offset,
 			UpdatedAt: event.UpdatedAt,
 		})
 	}

@@ -107,6 +107,7 @@ type leaseItemFrame struct {
 	ParentID  string             `json:"parentId,omitempty"`
 	Kind      string             `json:"kind,omitempty"`
 	Delta     string             `json:"delta,omitempty"`
+	Offset    *int64             `json:"offset,omitempty"`
 	UpdatedAt int64              `json:"updatedAt,omitempty"`
 }
 
@@ -145,7 +146,11 @@ type pendingDelta struct {
 	kind string
 	// parentID is the row's, the same on every frame merged for it.
 	parentID string
-	text     strings.Builder
+	// offset is the first merged frame's, the merged text's place in the
+	// row's stream; nil for a build that sends no offsets. A frame merges
+	// only where the text so far ends (contiguous).
+	offset *int64
+	text   strings.Builder
 	// updatedAt is the LAST merged frame's stamp — the merged frame claims
 	// the freshness of the newest text it carries, never the oldest.
 	updatedAt int64
@@ -236,11 +241,18 @@ func (c *deltaCoalescer) intercept(e Event) bool {
 // only when the stream pauses.
 func (c *deltaCoalescer) append(key deltaKey, frame *leaseItemFrame, e Event) {
 	p := c.pending[key]
+	if p != nil && !p.contiguous(frame.Offset) {
+		// A frame this row's pending text does not end at goes out on its
+		// own: the merge would misplace one of the two. Flushing all
+		// pending rows keeps the channel in seq order.
+		c.flushAll()
+		p = nil
+	}
 	if p == nil {
 		if c.pending == nil {
 			c.pending = make(map[deltaKey]*pendingDelta)
 		}
-		p = &pendingDelta{kind: frame.Kind, parentID: frame.ParentID, channel: e.Channel, entityKey: e.EntityKey, entityScope: e.EntityScope}
+		p = &pendingDelta{kind: frame.Kind, parentID: frame.ParentID, offset: frame.Offset, channel: e.Channel, entityKey: e.EntityKey, entityScope: e.EntityScope}
 		c.pending[key] = p
 		c.order = append(c.order, key)
 	} else {
@@ -259,6 +271,15 @@ func (c *deltaCoalescer) append(key deltaKey, frame *leaseItemFrame, e Event) {
 		c.timer.Reset(c.window)
 	}
 	c.armed = true
+}
+
+// contiguous reports whether a frame at offset continues the pending text.
+// Unpositioned frames continue unpositioned text only.
+func (p *pendingDelta) contiguous(offset *int64) bool {
+	if p.offset == nil || offset == nil {
+		return p.offset == nil && offset == nil
+	}
+	return *p.offset+int64(p.text.Len()) == *offset
 }
 
 // moveToTail keeps `order` sorted by each row's newest seq. Linear, over a
@@ -337,6 +358,7 @@ func mergedDeltaEvent(key deltaKey, p *pendingDelta) (Event, bool) {
 		ParentID:  p.parentID,
 		Kind:      p.kind,
 		Delta:     p.text.String(),
+		Offset:    p.offset,
 		UpdatedAt: p.updatedAt,
 	})
 	if err != nil {

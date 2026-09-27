@@ -191,6 +191,60 @@ describe('threadSwitchLoad', () => {
       expect(ids).toEqual(['load', 'streamed']);
     });
 
+    // A pane returning to a streaming thread receives live deltas while its
+    // window read is in flight. One past the text the pane holds waits for
+    // the read; the pane re-reads only if the read does not reach it.
+    describe('stream gaps during the load', () => {
+      const streamRow = (summary: string, streamEnd: number) => makeItem({
+        id: 'think', threadId: 't', turnIndex: 1, itemIndex: 0, kind: 'thinking',
+        status: 'streaming', summary, streamEnd, rev: -1,
+      });
+
+      const page = (row: ReturnType<typeof streamRow>) => {
+        const cursor = { turnIndex: row.turnIndex, itemIndex: row.itemIndex, itemId: row.id };
+        return {
+          items: [row], oldestCursor: cursor, newestCursor: cursor, oldestTurnIndex: 1, newestTurnIndex: 1,
+          hasMore: false, hasMoreOlder: false, hasMoreNewer: false, runs: [],
+        };
+      };
+
+      async function loadWithGap(firstRead: ReturnType<typeof streamRow>, laterRead: ReturnType<typeof streamRow>) {
+        const pane = createThreadPane();
+        setBindingMock('AutoResumeThread', async () => undefined);
+        let releaseLoad!: (value: unknown) => void;
+        const reads = vi.fn()
+          .mockImplementationOnce(() => new Promise((resolve) => { releaseLoad = resolve; }))
+          .mockImplementation(async () => page(laterRead));
+        setBindingMock('ListThreadSliceAround', reads);
+        const switching = pane.switchThread(makeThread({ id: 't' }));
+        await Promise.resolve();
+        await Promise.resolve();
+        pane.upsertItem(streamRow('w1 ', 3));
+        pane.applyItemDelta({ threadId: 't', itemId: 'think', kind: 'thinking', delta: 'w5 ', offset: 12, updatedAt: 5 });
+        expect(pane.getItemById('think')?.summary).toBe('w1 ');
+        releaseLoad(page(firstRead));
+        await switching;
+        return { pane, reads };
+      }
+
+      it('places the held delta after a read that reaches it, with no second read', async () => {
+        const { pane, reads } = await loadWithGap(streamRow('w1 w2 w3 w4 ', 12), streamRow('unused', 0));
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        pane.__flushItemSmoothersForTest();
+        expect(pane.getItemById('think')?.summary).toBe('w1 w2 w3 w4 w5 ');
+        expect(reads).toHaveBeenCalledOnce();
+      });
+
+      it('re-reads once the load ends when its read leaves the gap open', async () => {
+        const { pane, reads } = await loadWithGap(streamRow('w1 w2 ', 6), streamRow('w1 w2 w3 w4 ', 12));
+        await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+        await vi.waitFor(() => {
+          pane.__flushItemSmoothersForTest();
+          expect(pane.getItemById('think')?.summary).toBe('w1 w2 w3 w4 w5 ');
+        });
+      });
+    });
+
     it('a same-thread re-switch invalidates the in-flight load result', async () => {
       const pane = createThreadPane();
       // First switch: load hangs.

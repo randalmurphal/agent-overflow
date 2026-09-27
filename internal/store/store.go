@@ -670,6 +670,12 @@ type Item struct {
 	// UnstampedItemRev, which is the same refusal for a wire row an
 	// emitter altered on purpose).
 	Rev int64 `json:"rev"`
+	// StreamEnd is the UTF-8 byte length of the text a streaming
+	// assistant_text, thinking or compaction_reasoning row has persisted:
+	// the offset its next live delta starts at, and the offset its Summary
+	// ends at. It is set only on those rows while they stream. A live
+	// client places the deltas it holds against a read of the row by it.
+	StreamEnd *int64 `json:"streamEnd,omitempty"`
 	// SubagentCard is the card of the row's parent (OpenSubagentCard),
 	// never read back. A write of a visible row with a parent needs it,
 	// outside a bulk writer (ErrSubagentAnchor): the store feeds the row

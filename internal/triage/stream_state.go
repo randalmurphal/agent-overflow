@@ -21,6 +21,9 @@ type activeStreamBlock struct {
 	turnIndex int
 	scope     string
 	itemID    string
+	// streamed is the byte length of the text the block's deltas have
+	// carried: the next delta's ItemDeltaEvent.Offset.
+	streamed int64
 }
 
 func activeStreamKey(turnIndex int, scope, providerItemID string) string {
@@ -50,14 +53,21 @@ func withProviderItemMeta(existing string, providerItemID string) string {
 	return mergeItemMetaJSON(existing, json.RawMessage(meta))
 }
 
-func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string) (bool, string) {
+// ensureTextBlockStarted opens the stream's block unless it is open,
+// and reserves the next n bytes of its text for the delta being handled.
+// It returns whether the block is new, the row id, and the delta's offset.
+func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int) (bool, string, int64) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	counterKey := scopeCounterKey(turnIndex, scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.state(threadID)
 	if st.activeTextBlocks[key] {
-		return false, st.activeTextBlockRefs[key].itemID
+		ref := st.activeTextBlockRefs[key]
+		offset := ref.streamed
+		ref.streamed += int64(n)
+		st.activeTextBlockRefs[key] = ref
+		return false, ref.itemID, offset
 	}
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
@@ -74,19 +84,27 @@ func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, p
 		turnIndex: turnIndex,
 		scope:     scope,
 		itemID:    itemID,
+		streamed:  int64(n),
 	}
 	r.incStreamingCounts(threadID, scope)
-	return true, itemID
+	return true, itemID, 0
 }
 
-func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scope, providerItemID string) (bool, string) {
+// ensureThinkingBlockStarted opens the stream's block unless it is open,
+// and reserves the next n bytes of its text for the delta being handled.
+// It returns whether the block is new, the row id, and the delta's offset.
+func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int) (bool, string, int64) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	counterKey := scopeCounterKey(turnIndex, scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.state(threadID)
 	if st.activeThinkingBlocks[key] {
-		return false, st.activeThinkingBlockRefs[key].itemID
+		ref := st.activeThinkingBlockRefs[key]
+		offset := ref.streamed
+		ref.streamed += int64(n)
+		st.activeThinkingBlockRefs[key] = ref
+		return false, ref.itemID, offset
 	}
 	if st.blockIndexByScope == nil {
 		st.blockIndexByScope = make(map[string]int)
@@ -103,9 +121,10 @@ func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scop
 		turnIndex: turnIndex,
 		scope:     scope,
 		itemID:    itemID,
+		streamed:  int64(n),
 	}
 	r.incStreamingCounts(threadID, scope)
-	return true, itemID
+	return true, itemID, 0
 }
 
 func (r *Router) hasActiveStreamingItem(threadID string) bool {

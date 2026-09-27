@@ -97,7 +97,9 @@
     () => Boolean(item.payloadId),
   );
 
-  const isStreaming = $derived(item.status === 'streaming');
+  // A settled row's reveal can still be draining; the expanded body follows
+  // it until it catches up (reasoningBodyText).
+  const isStreaming = $derived(item.status === 'streaming' || (pane?.isItemSmoothing(item.id) ?? false));
 
   // Single source of truth: the expansion handle. No "default expanded while
   // streaming" — the row sits in the tail-clamped state through streaming,

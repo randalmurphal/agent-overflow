@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import {
+  appendPositionedDelta,
+  applyItemPatchFields,
   reconcileSnapshotPage,
+  snapshotRowSupersedesLive,
   compareItemsByTimelinePosition,
   cursorIsValid,
   itemsForThread,
@@ -711,6 +714,106 @@ describe('reconcileSnapshotPage', () => {
       makeItem({ id: 'a', threadId: 'thread-1', turnIndex: 1, itemIndex: 0 }),
     ];
     expect(reconcileSnapshotPage(rows, rows, new Set())).toBe(rows);
+  });
+
+  // A pane that returns to a streaming thread holds its cached row while
+  // live deltas arrive; the page read after them holds more of the stream.
+  it('takes a touched streaming row from a page that holds more of the stream', () => {
+    const live = makeItem({ id: 's', kind: 'thinking', status: 'streaming', summary: 'w1 w2 ', streamEnd: 6 });
+    const read = makeItem({ id: 's', kind: 'thinking', status: 'streaming', summary: 'w1 w2 w3 w4 ', streamEnd: 12 });
+    expect(reconcileSnapshotPage([read], [live], new Set(['s']))).toEqual([read]);
+  });
+
+  it('keeps a touched streaming row that holds as much of the stream as the page', () => {
+    const live = makeItem({ id: 's', kind: 'thinking', status: 'streaming', summary: 'w1 w2 w3 ', streamEnd: 9 });
+    const read = makeItem({ id: 's', kind: 'thinking', status: 'streaming', summary: 'w1 w2 ', streamEnd: 6 });
+    const current = [live];
+    expect(reconcileSnapshotPage([read], current, new Set(['s']))).toBe(current);
+    const equal = makeItem({ ...read, summary: 'other text', streamEnd: 9 });
+    expect(reconcileSnapshotPage([equal], current, new Set(['s']))).toBe(current);
+  });
+
+  it('keeps a touched row when either read lacks a position', () => {
+    const live = makeItem({ id: 's', status: 'streaming', summary: 'live' });
+    const read = makeItem({ id: 's', status: 'streaming', summary: 'read', streamEnd: 40 });
+    expect(reconcileSnapshotPage([read], [live], new Set(['s']))[0]).toBe(live);
+  });
+
+  it('takes a settled page over a touched row the pane knows is incomplete', () => {
+    const live = makeItem({ id: 's', status: 'completed', summary: 'w1 w3 ', updatedAt: 9 });
+    const read = makeItem({ id: 's', status: 'completed', summary: 'w1 w2 w3 ', updatedAt: 5 });
+    expect(reconcileSnapshotPage([read], [live], new Set(['s']), new Set(), new Set(['s']))).toEqual([read]);
+    expect(reconcileSnapshotPage([read], [live], new Set(['s']))[0]).toBe(live);
+  });
+});
+
+describe('snapshotRowSupersedesLive', () => {
+  it('lets a settled read supersede an older streaming observation', () => {
+    const live = makeItem({ id: 's', status: 'streaming', updatedAt: 1 });
+    expect(snapshotRowSupersedesLive(makeItem({ id: 's', status: 'completed', updatedAt: 2 }), live, new Set())).toBe(true);
+  });
+
+  it('keeps a settled row against a settled read unless it is stale', () => {
+    const live = makeItem({ id: 's', status: 'completed' });
+    const read = makeItem({ id: 's', status: 'completed' });
+    expect(snapshotRowSupersedesLive(read, live, new Set())).toBe(false);
+    expect(snapshotRowSupersedesLive(read, live, new Set(['s']))).toBe(true);
+  });
+
+  it('never lets a streaming read replace a settled row', () => {
+    const live = makeItem({ id: 's', status: 'completed', streamEnd: undefined });
+    const read = makeItem({ id: 's', status: 'streaming', streamEnd: 100 });
+    expect(snapshotRowSupersedesLive(read, live, new Set(['s']))).toBe(false);
+  });
+});
+
+describe('appendPositionedDelta', () => {
+  const row = makeItem({ id: 's', kind: 'assistant_text', status: 'streaming', summary: 'héllo', streamEnd: 6 });
+  const delta = (delta: string, offset?: number) => ({
+    threadId: row.threadId, itemId: 's', kind: 'assistant_text', delta, offset, updatedAt: 50,
+  });
+
+  it('appends a delta that continues the row and advances its end', () => {
+    expect(appendPositionedDelta(row, delta(' wörld', 6))).toMatchObject({ summary: 'héllo wörld', streamEnd: 13, updatedAt: 50 });
+  });
+
+  it('appends only the unseen part of an overlapping delta', () => {
+    expect(appendPositionedDelta(row, delta('llo there', 3))).toMatchObject({ summary: 'héllo there', streamEnd: 12 });
+  });
+
+  it('returns the row itself for a delta it already holds', () => {
+    expect(appendPositionedDelta(row, delta('llo', 3))).toBe(row);
+  });
+
+  it('refuses a delta past the row end', () => {
+    expect(appendPositionedDelta(row, delta(' later', 9))).toBeNull();
+  });
+
+  it('appends as it is without a position', () => {
+    expect(appendPositionedDelta(row, delta('!'))).toMatchObject({ summary: 'héllo!', streamEnd: 7 });
+    const unpositioned = makeItem({ ...row, streamEnd: undefined });
+    expect(appendPositionedDelta(unpositioned, delta('!', 6))).toMatchObject({ summary: 'héllo!', streamEnd: undefined });
+  });
+});
+
+describe('applyItemPatchFields', () => {
+  const row = makeItem({ id: 's', kind: 'thinking', status: 'streaming', summary: 'abc', streamEnd: 3, rev: 2 });
+
+  it('adopts the revision of a settle that ends where the row does', () => {
+    const next = applyItemPatchFields(row, { status: 'completed', streamEnd: 3, rev: 9 });
+    expect(next).toMatchObject({ status: 'completed', rev: 9, streamEnd: undefined, summary: 'abc' });
+  });
+
+  it('keeps its own revision when the stored row ends elsewhere', () => {
+    expect(applyItemPatchFields(row, { status: 'completed', streamEnd: 8, rev: 9 }).rev).toBe(2);
+  });
+
+  it('adopts a patched summary and its revision with no position', () => {
+    expect(applyItemPatchFields(row, { summary: 'final', rev: 9 })).toMatchObject({ summary: 'final', rev: 9, streamEnd: undefined });
+  });
+
+  it('keeps the row end through a streaming patch', () => {
+    expect(applyItemPatchFields(row, { meta: '{}', streamEnd: 2, rev: 9 })).toMatchObject({ streamEnd: 3, rev: 2 });
   });
 });
 

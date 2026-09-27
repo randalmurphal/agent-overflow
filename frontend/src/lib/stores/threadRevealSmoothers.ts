@@ -1,9 +1,10 @@
 // stores/threadRevealSmoothers.ts
 //
 // OWNS the per-item reveal RESOURCES of one thread pane: the smoother map,
-// the retained reasoning-tail texts and the summaries they settled with, and
-// the assistant-reveal sink registry they publish through. Every create,
-// settle and dispose of those resources happens here, so the lifetime rules
+// the retained reasoning-tail texts and the summaries they settled with, the
+// deltas held past their row's text, and the assistant-reveal sink registry
+// they publish through. Every create, settle and dispose of those resources
+// happens here, so the lifetime rules
 // (a tail outlives its smoother across a content-consistent settle; a
 // removal drops both; a store-side char budget bounds an unmounted pane)
 // live in one file.
@@ -37,12 +38,27 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
  */
 export interface ItemSmoothing {
   smoother: PerItemSmoother;
+  /**
+   * Where the smoother's received text ends in the row's stream
+   * (`Item.streamEnd`), or undefined when the row it was seeded from had
+   * no position. `append` keeps it in step with the received text.
+   */
+  readonly receivedEnd: number | undefined;
+  /** Append streamed text to the smoother. */
+  append(text: string): void;
   setLatestUpdatedAt(at: number): void;
   /**
    * Dispose the smoother and release its text from the live stream an
    * expanded row's payload may keep.
    */
   dispose(): void;
+}
+
+/** A positioned delta that starts past the text its row holds. */
+export interface HeldDelta {
+  offset: number;
+  delta: string;
+  updatedAt: number;
 }
 
 /** Statuses whose patch is the documented authoritative-summary handover. */
@@ -82,6 +98,27 @@ export interface RevealSmootherRegistry {
   readonly assistantReveal: ThreadAssistantReveal;
   /** Dispose a smoother and DROP the row's live tail (removal / overwrite). */
   disposeSmootherState(itemId: string): void;
+  /**
+   * The row left the window: its smoother state, and the deltas and
+   * staleness held for it.
+   */
+  disposeRemovedItem(itemId: string): void;
+  /**
+   * Hold a delta that starts past the row's text until a read of the row
+   * reaches it. Kept in offset order.
+   */
+  holdDelta(itemId: string, held: HeldDelta): void;
+  /** The row's held deltas in offset order, for the router to drain in place. */
+  heldDeltas(itemId: string): HeldDelta[] | undefined;
+  dropHeldDeltas(itemId: string): void;
+  hasHeldDeltas(): boolean;
+  /**
+   * Rows whose held text a patch proved incomplete: the stored row holds
+   * text this pane never received. A settled read of the row replaces it.
+   */
+  readonly staleIds: ReadonlySet<string>;
+  markStale(itemId: string): void;
+  clearStale(itemId: string): void;
   /** Dispose at settle, RETAINING the tail and recording its settle summary. */
   settleSmootherRetainingTail(itemId: string): void;
   /** Reveal everything the smoother holds, then drop it and its tail. */
@@ -193,6 +230,11 @@ export function createRevealSmootherRegistry(
   // reactive itself. Entries pair 1:1 with settled tail entries;
   // `deleteLiveTail` deletes both.
   const settledTailSummaries: Map<string, string> = new Map();
+  // Positioned deltas that arrived past their row's text, and rows known to
+  // hold incomplete text (see the interface). Both wait for a read of the
+  // row; a thread switch, the row's removal and its settle release them.
+  const heldDeltasById: Map<string, HeldDelta[]> = new Map();
+  const staleIds: Set<string> = new Set();
 
   function setLiveTail(itemId: string, tail: TextWindow): void {
     itemLiveThinkingTail.set(itemId, tail);
@@ -235,6 +277,31 @@ export function createRevealSmootherRegistry(
         `streaming reveal smoother disposal failed for ${itemId}`,
       );
     }
+  }
+
+  function disposeRemovedItem(itemId: string): void {
+    heldDeltasById.delete(itemId);
+    staleIds.delete(itemId);
+    disposeSmootherState(itemId);
+  }
+
+  function holdDelta(itemId: string, held: HeldDelta): void {
+    const list = heldDeltasById.get(itemId);
+    if (!list) {
+      heldDeltasById.set(itemId, [held]);
+      return;
+    }
+    let index = list.length;
+    while (index > 0 && list[index - 1].offset > held.offset) index -= 1;
+    list.splice(index, 0, held);
+  }
+
+  function heldDeltas(itemId: string): HeldDelta[] | undefined {
+    return heldDeltasById.get(itemId);
+  }
+
+  function dropHeldDeltas(itemId: string): void {
+    heldDeltasById.delete(itemId);
   }
 
   // Store-side bound on settled-tail retention, independent of any
@@ -340,6 +407,8 @@ export function createRevealSmootherRegistry(
       }
     }
     itemSmoothers.clear();
+    heldDeltasById.clear();
+    staleIds.clear();
     for (const itemId of itemLiveThinkingTail.keys()) liveTailSignals.drop(itemId);
     itemLiveThinkingTail.clear();
     settledTailSummaries.clear();
@@ -455,6 +524,14 @@ export function createRevealSmootherRegistry(
     smoothers: itemSmoothers,
     assistantReveal,
     disposeSmootherState,
+    disposeRemovedItem,
+    holdDelta,
+    heldDeltas,
+    dropHeldDeltas,
+    hasHeldDeltas: () => heldDeltasById.size > 0,
+    staleIds,
+    markStale: (itemId) => { staleIds.add(itemId); },
+    clearStale: (itemId) => { staleIds.delete(itemId); },
     settleSmootherRetainingTail,
     snapAndDisposeSmoother,
     disposeEverything,

@@ -6,6 +6,7 @@
 // never touches this module directly (see State Boundaries in
 // frontend/AGENTS.md).
 import { nowForLiveContent } from './threadPaneShared';
+import { streamedTextPast, utf8Length } from '../utils/utf8Offsets';
 import type {
   ChannelMessage,
   ChannelParticipantState,
@@ -75,6 +76,9 @@ export function createThreadChannelState(): ThreadChannelState {
   let currentSpeakerRole: string | null = $state(null);
   let participants: ChannelParticipantState[] = $state([]);
   let liveTail: ThreadChannelLiveTail | null = $state(null);
+  // Where the tail's text ends in the item's streamed text, when the
+  // wire positions it. Not rendered, so not reactive.
+  let liveTailEnd: number | undefined;
   let lastLiveContentAt = 0;
   let registeredRosterIds: Set<string> = new Set();
 
@@ -147,19 +151,33 @@ export function createThreadChannelState(): ThreadChannelState {
     // new currentSpeaker) BEFORE dispatching the turn prompt, so a
     // speaker's tail traffic always arrives after the state that
     // names them.
-    applyTailUpsert(threadId, itemId, fullText) {
+    applyTailUpsert(threadId, itemId, fullText, streamEnd) {
       if (threadId !== currentSpeakerThreadId) return;
+      // A row that ends before the tail's text is an older read of it.
+      if (liveTail?.threadId === threadId && liveTail.itemId === itemId
+        && streamEnd !== undefined && liveTailEnd !== undefined && streamEnd < liveTailEnd) return;
       liveTail = { threadId, itemId, text: fullText };
+      liveTailEnd = streamEnd;
       stampLiveContent();
     },
-    applyTailDelta(threadId, itemId, chunk) {
+    applyTailDelta(threadId, itemId, chunk, offset) {
       if (threadId !== currentSpeakerThreadId) return;
+      const end = offset === undefined ? undefined : offset + utf8Length(chunk);
       if (!liveTail || liveTail.threadId !== threadId || liveTail.itemId !== itemId) {
         // No tail yet, or a new assistant_text item supersedes the
         // previous one — start fresh rather than append cross-item.
         liveTail = { threadId, itemId, text: chunk };
-      } else {
+        liveTailEnd = end;
+      } else if (offset === undefined || liveTailEnd === undefined) {
         liveTail = { threadId, itemId, text: liveTail.text + chunk };
+        liveTailEnd = undefined;
+      } else {
+        const unseen = streamedTextPast(chunk, offset, liveTailEnd);
+        if (unseen === '') return;
+        // Text between the tail and this chunk never arrived: show the
+        // chunk rather than join text that does not meet.
+        liveTail = { threadId, itemId, text: unseen === null ? chunk : liveTail.text + unseen };
+        liveTailEnd = end;
       }
       stampLiveContent();
     },

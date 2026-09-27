@@ -62,7 +62,7 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 	}
 	// A streaming turn's payload writes may still sit in triage buffers;
 	// flush so an in-progress turn's edits are listable immediately.
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return EditDiffList{}, fmt.Errorf("%s: %w", action, err)
 	}
 	rows, err := a.store.ListEditDiffItems(threadID)
@@ -151,7 +151,7 @@ func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (TurnEditsDiff, e
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return TurnEditsDiff{}, fmt.Errorf("%s: %w", action, err)
 	}
-	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return TurnEditsDiff{}, fmt.Errorf("%s: %w", action, err)
 	}
 	patches, err := a.store.ListTurnEditDiffPatches(threadID, turnIndex)

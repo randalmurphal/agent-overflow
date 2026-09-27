@@ -294,13 +294,12 @@ describe('<ThinkingBlock>', () => {
     });
   });
 
-  it('does not duplicate the persisted prefix when the snapshot leads the live tail', async () => {
+  it('streams the expanded body at the reveal when the snapshot leads it', async () => {
     // Mid-stream expand where GetPayloadData's flush-before-read returns a body
     // AHEAD of the smoother's revealed tail, so the live tail is a strict PREFIX
-    // of the persisted snapshot. The render-time merge must recognise prefix
-    // containment and append nothing — not re-append the whole revealed prefix.
-    // A containment-blind merge renders 'The quick brown fox The quick '. The
-    // sibling tests above use disjoint strings and never exercise this path.
+    // of the persisted snapshot. The body ends at the reveal and grows with
+    // it: the snapshot's lead must not land as one block, and the revealed
+    // prefix must not be appended again ('The quick brown fox The quick ').
     const thinking = makeItem({
       id: 'think:0:0',
       kind: 'thinking',
@@ -310,18 +309,87 @@ describe('<ThinkingBlock>', () => {
       updatedAt: 1,
     });
     const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
-    setBindingMock('GetPayloadData', async () => ({ data: 'The quick brown fox ' }));
+    const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'The quick brown fox ' }));
 
-    const { container, getByRole } = render(ThinkingBlock, {
+    const { container, getByRole, rerender } = render(ThinkingBlock, {
       props: { pane, item: pane.items[0] },
     });
 
     await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await waitFor(() => expect(getPayloadData).toHaveBeenCalledTimes(1));
+    // Let the loaded payload reach the body before judging it.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await tick();
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('The quick');
 
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
-        .toBe('The quick brown fox');
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'think:0:0',
+      kind: 'thinking',
+      delta: 'brown fox ',
+      updatedAt: 2,
     });
+    pane.__flushItemSmoothersForTest();
+    await rerender({ pane, item: pane.items[0] });
+    await tick();
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('The quick brown fox');
+  });
+
+  it('keeps the expanded body at the reveal while a settled row drains', async () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const thinking = makeItem({
+        id: 'think:0:0',
+        kind: 'thinking',
+        status: 'streaming',
+        summary: 'one ',
+        payloadId: 'thinking-payload',
+        updatedAt: 1,
+      });
+      const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+      const full = `one ${Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ')} `;
+      const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: full }));
+      const { container, getByRole, rerender } = render(ThinkingBlock, {
+        props: { pane, item: pane.items[0] },
+      });
+      await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+      await waitFor(() => expect(getPayloadData).toHaveBeenCalledTimes(1));
+
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'think:0:0',
+        kind: 'thinking',
+        delta: full.slice('one '.length),
+        updatedAt: 2,
+      });
+      pane.applyItemPatch({
+        threadId: 'thread-1',
+        itemId: 'think:0:0',
+        kind: 'thinking',
+        patch: { status: 'completed', updatedAt: 3, rev: 7 },
+      });
+      clock.tickFrame(16);
+      clock.tickFrame(16);
+      await rerender({ pane, item: pane.items[0] });
+      // The settle changes the payload version: the expanded body re-reads
+      // the whole text while the reveal is still near its start.
+      await waitFor(() => expect(getPayloadData).toHaveBeenCalledTimes(2));
+      await tick();
+      expect(pane.items[0].status).toBe('completed');
+      expect(pane.isItemSmoothing('think:0:0')).toBe(true);
+      const body = () => container.querySelector('[data-testid="thinking-body"]')?.textContent ?? '';
+      expect(body().length).toBeGreaterThan(0);
+      expect(body().length).toBeLessThan(full.trimEnd().length);
+      expect(full.startsWith(body())).toBe(true);
+
+      for (let frame = 0; frame < 2_000 && pane.isItemSmoothing('think:0:0'); frame++) clock.tickFrame(16);
+      await rerender({ pane, item: pane.items[0] });
+      await tick();
+      expect(body()).toBe(full.trimEnd());
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('repairs a stale expanded streaming payload before appending the next live delta', async () => {

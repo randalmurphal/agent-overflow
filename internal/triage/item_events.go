@@ -33,12 +33,18 @@ const (
 // Non-nil pointer fields mean "set to this value"; nil means "unchanged".
 // It is what an emitter CHOOSES to change; the revision that write
 // produced is not a choice, so it is not here (see ItemPatch).
+//
+// StreamEnd rides a patch of a streaming text row that leaves its summary
+// to the deltas a client folded: it is the row's store.Item.StreamEnd as
+// the patch's write read it, so a client that holds less text knows its
+// row is not the stored one at the patch's revision.
 type ItemPatchFields struct {
 	Status    *string `json:"status,omitempty"`
 	Summary   *string `json:"summary,omitempty"`
 	Meta      *string `json:"meta,omitempty"`
 	Decision  *string `json:"decision,omitempty"`
 	UpdatedAt *int64  `json:"updatedAt,omitempty"`
+	StreamEnd *int64  `json:"streamEnd,omitempty"`
 }
 
 // ItemPatch is the wire patch: the fields an emitter changed plus the
@@ -72,6 +78,7 @@ type ItemStreamEvent struct {
 	ParentID  string      `json:"parentId,omitempty"`
 	Kind      string      `json:"kind,omitempty"`
 	Delta     string      `json:"delta,omitempty"`
+	Offset    *int64      `json:"offset,omitempty"`
 	Meta      string      `json:"meta,omitempty"`
 	Patch     *ItemPatch  `json:"patch,omitempty"`
 	UpdatedAt int64       `json:"updatedAt,omitempty"`
@@ -115,6 +122,7 @@ func newItemStreamRemove(threadID, itemID, kind string) ItemStreamEvent {
 }
 
 func newItemStreamDelta(evt ItemDeltaEvent) ItemStreamEvent {
+	offset := evt.Offset
 	return ItemStreamEvent{
 		Action:    itemStreamActionDelta,
 		ThreadID:  evt.ThreadID,
@@ -122,6 +130,7 @@ func newItemStreamDelta(evt ItemDeltaEvent) ItemStreamEvent {
 		ParentID:  evt.ParentID,
 		Kind:      evt.Kind,
 		Delta:     evt.Delta,
+		Offset:    &offset,
 		UpdatedAt: evt.UpdatedAt,
 	}
 }

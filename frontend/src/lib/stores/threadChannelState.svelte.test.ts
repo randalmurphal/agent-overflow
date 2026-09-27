@@ -131,6 +131,46 @@ describe('createThreadChannelState', () => {
       expect(state.liveTail?.text).toBe('Hello, world');
     });
 
+    it('places positioned deltas by offset: overlap trimmed, held text dropped', () => {
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload());
+      const handler = [...(lookupDiscussionLiveTail('advocate-thread') ?? [])][0];
+
+      handler.applyTailUpsert('advocate-thread', 'item-1', '', 0);
+      handler.applyTailDelta('advocate-thread', 'item-1', 'Héllo', 0);
+      handler.applyTailDelta('advocate-thread', 'item-1', 'llo, world', 3);
+      handler.applyTailDelta('advocate-thread', 'item-1', 'Hé', 0);
+      handler.applyTailDelta('advocate-thread', 'item-1', '!', 13);
+
+      expect(state.liveTail?.text).toBe('Héllo, world!');
+    });
+
+    it('shows a positioned delta past a gap on its own rather than joined', () => {
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload());
+      const handler = [...(lookupDiscussionLiveTail('advocate-thread') ?? [])][0];
+
+      handler.applyTailDelta('advocate-thread', 'item-1', 'first ', 0);
+      handler.applyTailDelta('advocate-thread', 'item-1', 'later', 40);
+      handler.applyTailDelta('advocate-thread', 'item-1', ' on', 45);
+
+      expect(state.liveTail?.text).toBe('later on');
+    });
+
+    it('keeps the tail over an upsert that ends before it', () => {
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload());
+      const handler = [...(lookupDiscussionLiveTail('advocate-thread') ?? [])][0];
+
+      handler.applyTailDelta('advocate-thread', 'item-1', 'one two', 0);
+      handler.applyTailUpsert('advocate-thread', 'item-1', 'one', 3);
+      expect(state.liveTail?.text).toBe('one two');
+      handler.applyTailUpsert('advocate-thread', 'item-1', 'one two three', 13);
+      expect(state.liveTail?.text).toBe('one two three');
+      handler.applyTailDelta('advocate-thread', 'item-1', ' four', 13);
+      expect(state.liveTail?.text).toBe('one two three four');
+    });
+
     it('a new assistant_text item id supersedes the previous tail instead of appending', () => {
       const state = createThreadChannelState();
       state.applyState(makeStatePayload());

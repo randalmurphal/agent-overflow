@@ -224,6 +224,79 @@ describe('item event flush', () => {
     ]);
     expect(deltas.filter(([id]) => id === 'b')).toEqual([['b', 'assistant_text', 'other']]);
   });
+
+  // The transport and the flush merge a row's deltas only while each starts
+  // where the merged text ends; the pane places the rest by their offsets.
+  it('coalesces positioned deltas only while they continue each other', async () => {
+    const applied: Array<[string, number | undefined]> = [];
+    const release = registerTimelineSurface({
+      threadId, backend: () => undefined, refresh: async () => {},
+      apply: (mutation: TimelineMutation) => {
+        if (mutation.kind === 'delta') applied.push([mutation.event.delta, mutation.event.offset]);
+      },
+    });
+    const delta = (value: string, offset: number): ItemStreamEvent =>
+      ({ action: 'delta', threadId, itemId: 'a', kind: 'thinking', delta: value, offset, updatedAt: 1 });
+    // 'é' is two bytes, so 'é1 ' ends at byte 4.
+    push(delta('é1 ', 0), delta('w2 ', 4), delta('w2 ', 4), delta('w3 ', 7), delta('w9 ', 30));
+
+    flushItemEventQueue();
+    release();
+
+    expect(applied).toEqual([['é1 w2 ', 0], ['w2 w3 ', 4], ['w9 ', 30]]);
+  });
+
+  it('coalesces positioned deltas behind a pending upsert the same way', async () => {
+    const applied: Array<[string, number | undefined]> = [];
+    const release = registerTimelineSurface({
+      threadId, backend: () => undefined, refresh: async () => {},
+      apply: (mutation: TimelineMutation) => {
+        if (mutation.kind === 'delta') applied.push([mutation.event.delta, mutation.event.offset]);
+      },
+    });
+    const row = makeItem({ id: 'a', threadId, turnIndex: 1, itemIndex: 1, kind: 'thinking', status: 'streaming', summary: '', streamEnd: 0 });
+    const delta = (value: string, offset: number): ItemStreamEvent =>
+      ({ action: 'delta', threadId, itemId: 'a', kind: 'thinking', delta: value, offset, updatedAt: 1 });
+    push(upsert(row), delta('w1 ', 0), delta('w2 ', 3), delta('w1 ', 0));
+
+    flushItemEventQueue();
+    release();
+
+    expect(applied).toEqual([['w1 w2 ', 0], ['w1 ', 0]]);
+  });
+
+  it('places a delta a pane row already holds part of', async () => {
+    const row = makeItem({ id: 'text', threadId, turnIndex: 1, itemIndex: 1, kind: 'assistant_text', status: 'streaming', summary: 'w1 w2 ', streamEnd: 6 });
+    const pane = await buildPane(makeThread({ id: threadId }), [row]);
+    push(
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'w2 w3 ', offset: 3, updatedAt: 2 },
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'w1 ', offset: 0, updatedAt: 3 },
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'w4 ', offset: 9, updatedAt: 4 },
+    );
+
+    flushItemEventQueue();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.getItemById('text')?.summary).toBe('w1 w2 w3 w4 ');
+  });
+
+  it('drops a delta or row whose position is not a byte offset', async () => {
+    const pane = await buildPane(makeThread({ id: threadId }), [
+      makeItem({ id: 'text', threadId, turnIndex: 1, itemIndex: 1, kind: 'assistant_text', status: 'streaming', summary: 'a', streamEnd: 1 }),
+    ]);
+    push(
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'b', offset: -1, updatedAt: 2 },
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'c', offset: 1.5, updatedAt: 3 },
+      upsert(makeItem({ id: 'other', threadId, turnIndex: 1, itemIndex: 2, kind: 'assistant_text', status: 'streaming', summary: '', streamEnd: -2 })),
+      { action: 'patch', threadId, itemId: 'text', kind: 'assistant_text', patch: { status: 'completed', streamEnd: 0.5, rev: 3 } },
+    );
+
+    flushItemEventQueue();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.getItemById('text')).toMatchObject({ summary: 'a', status: 'streaming' });
+    expect(pane.getItemById('other')).toBeUndefined();
+  });
 });
 
 describe('item event ingest', () => {

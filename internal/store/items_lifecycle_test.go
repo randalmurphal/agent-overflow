@@ -2302,6 +2302,12 @@ func TestAppendItemSummaryAndPayloadDataMatchesSequentialPair(t *testing.T) {
 		t.Fatalf("sequential payload append: %v", err)
 	}
 
+	// The pair's summary write returns before its payload write, so only
+	// the combined writer's row holds the stream end the payload reached.
+	if gotCombined.StreamEnd == nil || *gotCombined.StreamEnd != int64(len("base delta")) {
+		t.Errorf("combined stream end = %v, want %d", gotCombined.StreamEnd, len("base delta"))
+	}
+	gotCombined.StreamEnd, gotSequential.StreamEnd = nil, nil
 	if gotCombined != gotSequential {
 		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
 	}
@@ -2374,6 +2380,12 @@ func TestAppendItemSummaryTailAndPayloadDataMatchesSequentialPair(t *testing.T) 
 		t.Fatalf("sequential payload append: %v", err)
 	}
 
+	// The pair's summary write returns before its payload write, so only
+	// the combined writer's row holds the stream end the payload reached.
+	if gotCombined.StreamEnd == nil || *gotCombined.StreamEnd != int64(len("base delta")) {
+		t.Errorf("combined stream end = %v, want %d", gotCombined.StreamEnd, len("base delta"))
+	}
+	gotCombined.StreamEnd, gotSequential.StreamEnd = nil, nil
 	if gotCombined != gotSequential {
 		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
 	}

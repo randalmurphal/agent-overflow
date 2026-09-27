@@ -57,7 +57,7 @@ type TimelinePageOptions struct {
 //
 //ao:scope threads:read
 func (a *App) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount int, options TimelinePageOptions) (store.PagedItems, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
@@ -110,7 +110,7 @@ func clampPaginationItemBudget(itemBudget int) int {
 //
 //ao:scope threads:read
 func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
@@ -128,7 +128,7 @@ func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before
 //
 //ao:scope threads:read
 func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
@@ -145,7 +145,7 @@ func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after s
 //
 //ao:scope threads:read
 func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return nil, err
 	}
 	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
@@ -307,7 +307,7 @@ func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, 
 //
 //ao:scope threads:read
 func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.Item{}, err
 	}
 	items, err := a.store.ListWireItems(threadID, []string{itemID})

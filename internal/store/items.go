@@ -34,7 +34,24 @@ var itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, ` + servedItemMetaFor("items.rev") + `, items.created_at, items.updated_at,
+    ` + streamEndSQL + `,
     items.rev`
+
+// streamEndSQL is Item.StreamEnd over a projection that joins the row's
+// payload as `payloads`. A streaming text row's payload is its streamed
+// text, appended in the transaction that appends its summary, so the end
+// of its last append chunk (or of the base blob, before any chunk) is the
+// stream's byte length. The chunk primary key serves the lookup.
+const streamEndSQL = `CASE WHEN items.status = 'streaming'
+      AND items.kind IN ('assistant_text', 'thinking', 'compaction_reasoning')
+      AND payloads.id IS NOT NULL
+    THEN COALESCE(
+      (SELECT chunks.start_offset + length(chunks.data)
+         FROM payload_chunks AS chunks
+        WHERE chunks.thread_id = payloads.thread_id AND chunks.payload_id = payloads.id
+        ORDER BY chunks.chunk_index DESC LIMIT 1),
+      length(payloads.data))
+    END`
 
 // servedItemMetaFor is the meta column of an item projection on the arm
 // whose revision expression is revExpr: a local row's meta as a read
@@ -65,6 +82,7 @@ type sqlExecutor interface {
 func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var isBackground int
+	var streamEnd sql.NullInt64
 	if err := scanner.Scan(
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
 		&it.Kind, &it.Role, &it.Status, &it.Summary,
@@ -73,11 +91,16 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 		&it.InputPayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+		&streamEnd,
 		&it.Rev,
 	); err != nil {
 		return Item{}, err
 	}
 	it.IsBackground = isBackground != 0
+	if streamEnd.Valid {
+		end := streamEnd.Int64
+		it.StreamEnd = &end
+	}
 	return it, nil
 }
 

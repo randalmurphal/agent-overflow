@@ -28,24 +28,29 @@ export interface ReasoningBodyTextInput {
   /** Full payload loaded on expand (empty until the user expands). */
   persisted: string;
   expanded: boolean;
+  /** The row streams, or its reveal still drains after it settled. */
   isStreaming: boolean;
 }
 
 // reasoningBodyText picks the right body text for the row's current state:
 //   - collapsed: the live window (or the trimmed summary once settled);
-//   - expanded + streaming: the loaded snapshot merged with the live reveal
-//     into the longer view of the same canonical stream;
+//   - expanded + streaming: the loaded snapshot merged with the live reveal,
+//     ending where the reveal ends;
 //   - expanded + settled: whichever of payload / live is longer.
-// alignRevealed (textOverlap.ts) is containment-aware: when the flushed
-// snapshot already leads the reveal it appends nothing rather than duplicating
-// the prefix. The expansion handle appends each live reveal to the snapshot
-// (payloadExpansion's live appends), so the merge adds only text the handle
-// never received, such as a summary ahead of a stale snapshot.
+// alignRevealed (textOverlap.ts) places the reveal in the snapshot. The
+// snapshot can lead it (GetPayloadData flushes the stream before reading), and
+// the text past the reveal is not shown until the reveal reaches it, so the
+// expanded body streams at the collapsed tail's pace instead of landing ahead
+// of it in one block. The expansion handle appends each live reveal to the
+// snapshot (payloadExpansion's live appends), so the merge adds only text the
+// handle never received, such as a summary ahead of a stale snapshot.
 export function reasoningBodyText(input: ReasoningBodyTextInput): TextWindow {
   if (!input.expanded) return input.liveWindow ?? { text: input.summary, start: 0 };
   const live = input.liveText() ?? input.summary;
   if (input.isStreaming) {
-    return { text: input.persisted + alignRevealed(input.persisted, live).suffix, start: 0 };
+    if (live === '') return { text: '', start: 0 };
+    const { offset, suffix } = alignRevealed(input.persisted, live);
+    return { text: (input.persisted + suffix).slice(0, offset + live.length), start: 0 };
   }
   return { text: input.persisted.length > live.length ? input.persisted : live, start: 0 };
 }

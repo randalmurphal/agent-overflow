@@ -55,12 +55,27 @@ describe('reasoningBodyText', () => {
       ).toEqual({ text: 'reveal so far', start: 0 });
     });
 
-    it('appends nothing when the loaded snapshot already leads the reveal (snapshot ahead)', () => {
+    it('ends at the reveal when the loaded snapshot leads it (snapshot ahead)', () => {
       // GetPayloadData flushes the live buffer before reading, so the fetched
-      // body can lead the smoother reveal; the merge must not duplicate it.
+      // body can lead the smoother reveal. The text past the reveal waits
+      // for it rather than landing in one block.
       expect(
         reasoningBodyText(input({ liveText: () => 'AB', persisted: 'ABC', expanded: true })),
-      ).toEqual({ text: 'ABC', start: 0 });
+      ).toEqual({ text: 'AB', start: 0 });
+    });
+
+    it('ends at the reveal when a reseeded reveal sits inside the snapshot', () => {
+      // A smoother reseeded from the row's trimmed tail reveals an interior
+      // slice of the whole text: the body is the snapshot up to its end.
+      expect(
+        reasoningBodyText(input({ liveText: () => 'CD', persisted: 'ABCDEF', expanded: true })),
+      ).toEqual({ text: 'ABCD', start: 0 });
+    });
+
+    it('shows nothing past an empty reveal', () => {
+      expect(
+        reasoningBodyText(input({ summary: '', persisted: 'ABC', expanded: true })),
+      ).toEqual({ text: '', start: 0 });
     });
 
     it('appends the summary to a stale snapshot when no live text is held', () => {

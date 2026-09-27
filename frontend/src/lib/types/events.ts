@@ -178,6 +178,12 @@ export interface ItemDeltaEvent {
   parentId?: string;
   kind: string;
   delta: string;
+  /**
+   * Where `delta` starts in the row's streamed text, in UTF-8 bytes
+   * (`Item.streamEnd`). Absent from a backend that does not position
+   * deltas; such a delta appends to the row as it is.
+   */
+  offset?: number;
   updatedAt: number;
 }
 
@@ -212,6 +218,13 @@ export interface ItemPatchEvent {
     meta?: string;
     decision?: Item['decision'];
     updatedAt?: number;
+    /**
+     * The row's stream end after the patching write, present when the
+     * patch carries no summary and the row streamed (`Item.streamEnd`).
+     * `rev` describes the stored row, so a pane adopts it only while its
+     * own text ends at the same position.
+     */
+    streamEnd?: number;
     /**
      * The row revision the patching write produced
      * (docs/architecture/thread-replica-sync.md §3.1). Required, not

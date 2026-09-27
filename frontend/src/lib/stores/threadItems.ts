@@ -1,5 +1,7 @@
 import type { Item } from '../types/models';
+import type { ItemDeltaEvent, ItemPatchEvent } from '../types/events';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
+import { streamedTextPast, utf8Length } from '../utils/utf8Offsets';
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
@@ -9,6 +11,67 @@ export function isItemStatusRegression(previous: Item, incoming: Pick<Item, 'sta
     || previous.status === 'declined' || previous.status === 'killed')
     && (incoming.status === 'streaming' || incoming.status === 'running')
     && (incoming.updatedAt ?? previous.updatedAt) <= previous.updatedAt;
+}
+
+/**
+ * Whether a read's row replaces the row a pane changed while the read was
+ * in flight. A settled read supersedes an older live observation of the
+ * row. So does a settled read of a row whose text the pane knows is
+ * incomplete (`staleIds`), and a read of a streaming row that holds more
+ * of the stream than the live row does.
+ */
+export function snapshotRowSupersedesLive(
+  page: Item,
+  live: Item,
+  staleIds: ReadonlySet<string>,
+): boolean {
+  if (isItemStatusRegression(page, live)) return true;
+  if (page.status !== 'streaming') return staleIds.has(live.id);
+  return live.status === 'streaming'
+    && page.streamEnd !== undefined && live.streamEnd !== undefined
+    && page.streamEnd > live.streamEnd;
+}
+
+/**
+ * `item` with a streaming delta placed by its offset: the part past the
+ * row's text appended, or `item` itself when the row already holds it.
+ * Null when the delta starts past the row's text, which the row never
+ * received. A delta or row without a position appends as it is, like the
+ * reveal router's (`threadRevealRouting.ts`).
+ */
+export function appendPositionedDelta(item: Item, evt: ItemDeltaEvent): Item | null {
+  let text = evt.delta;
+  if (evt.offset !== undefined && item.streamEnd !== undefined) {
+    const unseen = streamedTextPast(evt.delta, evt.offset, item.streamEnd);
+    if (unseen === null) return null;
+    if (unseen === '') return item;
+    text = unseen;
+  }
+  return {
+    ...item,
+    summary: item.summary + text,
+    streamEnd: item.streamEnd === undefined ? undefined : item.streamEnd + utf8Length(text),
+    updatedAt: evt.updatedAt,
+  };
+}
+
+/**
+ * `item` with a field patch applied, for a row no reveal owns. The patch's
+ * revision describes the stored row, so the row adopts it only while its
+ * text ends where the stored row's does (`ItemPatchEvent.patch.streamEnd`).
+ * A patched summary or a settle leaves the row without a stream end.
+ */
+export function applyItemPatchFields(item: Item, patch: ItemPatchEvent['patch']): Item {
+  const holdsStoredText = patch.summary !== undefined || patch.streamEnd === undefined
+    || item.streamEnd === patch.streamEnd;
+  return {
+    ...item,
+    ...patch,
+    rev: holdsStoredText ? patch.rev : item.rev,
+    streamEnd: (patch.status ?? item.status) === 'streaming' && patch.summary === undefined
+      ? item.streamEnd
+      : undefined,
+  };
 }
 
 export interface TimelineCursorLike {
@@ -261,6 +324,9 @@ export function itemsRenderEqual(a: Item, b: Item): boolean {
     && a.decision === b.decision
     && a.meta === b.meta
     && a.isBackground === b.isBackground
+    // Not rendered, but where the next delta lands: an equal row at
+    // another stream end is a different read of the stream.
+    && a.streamEnd === b.streamEnd
     // `payloadPreviewSpans` is deliberately absent. `UpdatePayloadSpans`
     // on the server bumps only the thread stamp, never the row: spans are
     // a derived highlight cache the client version-checks
@@ -374,8 +440,9 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  *    subsequent write-back safe: everything persisted descends from the
  *    attested page (docs/architecture/thread-replica-sync.md §6.1 step 4).
  *  - Rows touched during the read survive missing snapshot rows and win
- *    overlaps, except that a settled snapshot supersedes an old start or
- *    delta for the same item. Delivery time alone does not prove freshness.
+ *    overlaps, except where the page's row supersedes them
+ *    (`snapshotRowSupersedesLive`). Delivery time alone does not prove
+ *    freshness.
  *
  * Unchanged rows keep their existing reference so the reconcile does not
  * re-render them, and MUTATE their `rev` in place to the page's
@@ -388,6 +455,7 @@ export function reconcileSnapshotPage(
   current: readonly Item[],
   liveTouchedIds: ReadonlySet<string>,
   liveRemovedIds: ReadonlySet<string> = EMPTY_ID_SET,
+  staleIds: ReadonlySet<string> = EMPTY_ID_SET,
 ): Item[] {
   if (page.length === 0 && current.length === 0) return current as Item[];
 
@@ -407,9 +475,8 @@ export function reconcileSnapshotPage(
       next.push(item);
       continue;
     }
-    // Delivery time alone cannot make an old start newer than completion.
-    const settlesExisting = isItemStatusRegression(item, existing);
-    if ((!settlesExisting && liveTouchedIds.has(item.id)) || adoptRevIfEqual(existing, item)) {
+    const supersedes = snapshotRowSupersedesLive(item, existing, staleIds);
+    if ((!supersedes && liveTouchedIds.has(item.id)) || adoptRevIfEqual(existing, item)) {
       next.push(existing);
       continue;
     }

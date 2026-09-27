@@ -354,7 +354,9 @@ because a client builds its held window out of the rows it was pushed:
   so the text can arrive as deltas, and that wire row is not the stored
   row; claiming the stored revision beside altered content is the one way
   to earn a false `fresh`. The settle patch closes the sequence with the
-  real revision.
+  real revision. A settle patch without a summary also carries
+  `streamEnd`, where the stored text ends: a client whose text ends
+  elsewhere missed deltas, keeps its own revision and re-reads the row.
 
 The mid-stream `meta` action still carries no revision. It only reaches
 rows that are streaming, and those settle through a patch that does, so a

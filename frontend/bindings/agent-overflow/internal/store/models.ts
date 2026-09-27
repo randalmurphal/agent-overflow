@@ -1035,6 +1035,15 @@ export class Item {
      */
     "rev": number;
 
+    /**
+     * StreamEnd is the UTF-8 byte length of the text a streaming
+     * assistant_text, thinking or compaction_reasoning row has persisted:
+     * the offset its next live delta starts at, and the offset its Summary
+     * ends at. It is set only on those rows while they stream. A live
+     * client places the deltas it holds against a read of the row by it.
+     */
+    "streamEnd"?: number | null;
+
     /** Creates a new Item instance. */
     constructor($$source: Partial<Item> = {}) {
         if (!("id" in $$source)) {

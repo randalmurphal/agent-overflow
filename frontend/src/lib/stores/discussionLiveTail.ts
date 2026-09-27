@@ -21,10 +21,12 @@ import { refreshWatchedThreads, registerWatchedThreadSource } from './watchedThr
 
 export interface DiscussionLiveTailHandler {
   /** Upserts carry the full accumulated text — replaces, doesn't append.
-   * Also self-repairs a mid-turn mount that missed earlier deltas. */
-  applyTailUpsert(threadId: string, itemId: string, fullText: string): void;
-  /** Deltas carry an incremental chunk — appends to the current tail. */
-  applyTailDelta(threadId: string, itemId: string, chunk: string): void;
+   * Also self-repairs a mid-turn mount that missed earlier deltas.
+   * `streamEnd` is where that text ends (`Item.streamEnd`). */
+  applyTailUpsert(threadId: string, itemId: string, fullText: string, streamEnd?: number): void;
+  /** Deltas carry an incremental chunk — appends to the current tail at
+   * its `offset` (`ItemDeltaEvent.offset`). */
+  applyTailDelta(threadId: string, itemId: string, chunk: string, offset?: number): void;
 }
 
 const registry = new Map<string, Set<DiscussionLiveTailHandler>>();

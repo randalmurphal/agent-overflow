@@ -23,7 +23,7 @@ import type { Item } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
 import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
 import type { TextWindow } from '../utils/liveText';
-import { classifyRevealText } from './threadRevealText';
+import { classifyRevealText, classifyStreamedText } from './threadRevealText';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { isSmoothLiveContentKind, isReasoningTailKind } from './threadPaneShared';
 import {
@@ -105,6 +105,7 @@ export interface ThreadStreamingRevealOptions {
     itemId: string,
     append: ProvenAppend,
     updatedAt: number,
+    streamEnd: number | undefined,
   ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(item: Item): void;
@@ -128,23 +129,36 @@ export interface ThreadStreamingRevealOptions {
     end: number,
     payloadVersion?: unknown,
   ): void;
+  /**
+   * A streaming row missed text (`RevealRoutingOptions.onStreamGap`): the
+   * owner re-reads its window.
+   */
+  onStreamGap?(itemId: string): void;
 }
 
 export interface ThreadStreamingReveal {
   /** Reveal gate position; null = render everything. */
   readonly revealBoundary: RevealBoundary | null;
-  /** applyItemDelta's smooth-kind path: get-or-create smoother seeded with
-   *  currentSummary, push wire updatedAt, append the delta, recompute the gate. */
+  /** applyItemDelta's smooth-kind path: place the delta at `offset` in the
+   *  row's stream, get-or-create the smoother seeded with the row, append,
+   *  recompute the gate (`threadRevealRouting.ts`). */
   appendStreamingDelta(
-    itemId: string,
-    currentSummary: string,
+    current: Item,
     delta: string,
+    offset: number | undefined,
     updatedAt: number,
   ): void;
   /** Reconcile text and commit the row before deriving the gate, including on failure. */
   applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null;
   /** True while a smoother owns the row's displayed text. */
   isSmoothing(itemId: string): boolean;
+  /**
+   * Rows a patch proved to hold incomplete text. A settled read of one
+   * supersedes the pane's row (`snapshotRowSupersedesLive`).
+   */
+  staleRowIds(): ReadonlySet<string>;
+  /** A row holds deltas past its text, or is stale: a re-read is owed. */
+  hasStreamGaps(): boolean;
   /** Bumped whenever pane-wide disposal clears every mounted DOM sink. */
   readonly assistantRevealRegistrationGeneration: number;
   registerAssistantRevealSink(
@@ -246,6 +260,7 @@ export function createThreadStreamingReveal(
     appendDirectAssistantLiteral: options.appendDirectAssistantLiteral,
     stampLiveContent: options.stampLiveContent,
     appendLivePayloadDeltaForItem: options.appendLivePayloadDeltaForItem,
+    onStreamGap: (itemId) => options.onStreamGap?.(itemId),
   });
 
   function disposeAll(): void {
@@ -318,8 +333,15 @@ export function createThreadStreamingReveal(
 
   function prepareItemReplacementRaw(incoming: Item): Item {
     const entry = itemSmoothers.get(incoming.id);
-    if (!entry) return incoming;
     const current = options.getItemById(incoming.id);
+    if (registry.staleIds.has(incoming.id) && incoming.status !== 'streaming' && incoming !== current) {
+      // A settled read of a row whose text this pane knows is incomplete
+      // wins the row outright, over the smoother's received text too.
+      registry.clearStale(incoming.id);
+      if (entry) registry.disposeSmootherState(incoming.id);
+      return incoming;
+    }
+    if (!entry) return keepFurtherStream(incoming, current);
     if (!current) {
       registry.disposeSmootherState(incoming.id);
       return incoming;
@@ -338,14 +360,20 @@ export function createThreadStreamingReveal(
     }
 
     const received = entry.smoother.getReceived();
-    const relation = classifyRevealText(incoming.kind, incoming.summary, received);
+    // Two streaming reads with positions compare by position; any other
+    // pair by text.
+    const placed = incoming.status === 'streaming' && incoming.streamEnd !== undefined
+      && entry.receivedEnd !== undefined
+      ? classifyStreamedText(incoming.summary, incoming.streamEnd, entry.receivedEnd)
+      : undefined;
+    const relation = placed?.relation ?? classifyRevealText(incoming.kind, incoming.summary, received);
     if (relation === 'replacement') {
       registry.disposeSmootherState(incoming.id);
       return incoming;
     }
     if (relation === 'extension') {
       entry.setLatestUpdatedAt(incoming.updatedAt);
-      entry.smoother.appendDelta(incoming.summary.slice(received.length));
+      entry.append(placed ? placed.suffix : incoming.summary.slice(received.length));
     }
     // A snapshot may be a prefix, or a reasoning preview from inside received
     // text. Preserve the displayed cursor even if that snapshot is terminal.
@@ -367,23 +395,50 @@ export function createThreadStreamingReveal(
       // first. Fall through to the current-summary return instead.
       if (!trailsTheCursor) return incoming;
     }
+    // The published text is the cursor's, so is its position.
+    const streamEnd = incoming.status === 'streaming' ? current.streamEnd : undefined;
     if (
       incoming.summary === current.summary &&
+      incoming.streamEnd === streamEnd &&
       incoming.updatedAt >= current.updatedAt
     ) return incoming;
     return {
       ...incoming,
       summary: current.summary,
+      streamEnd,
+      updatedAt: Math.max(incoming.updatedAt, current.updatedAt),
+    };
+  }
+
+  /**
+   * A row with no smoother never goes back to less of its stream: a read of
+   * a streaming row that ends before the text the pane holds keeps the
+   * pane's text, position and revision.
+   */
+  function keepFurtherStream(incoming: Item, current: Item | undefined): Item {
+    if (
+      current === undefined || incoming === current ||
+      incoming.status !== 'streaming' || current.status !== 'streaming' ||
+      incoming.streamEnd === undefined || current.streamEnd === undefined ||
+      incoming.streamEnd >= current.streamEnd
+    ) return incoming;
+    return {
+      ...incoming,
+      summary: current.summary,
+      streamEnd: current.streamEnd,
+      rev: current.rev,
       updatedAt: Math.max(incoming.updatedAt, current.updatedAt),
     };
   }
 
   function prepareItemReplacements(incoming: readonly Item[]): Item[] {
-    if (incoming.length === 0 || itemSmoothers.size === 0) return incoming as Item[];
+    if (incoming.length === 0) return incoming as Item[];
+    const staleIds = registry.staleIds;
     let prepared: Item[] | null = null;
     const errors: unknown[] = [];
     for (let index = 0; index < incoming.length; index++) {
       const item = incoming[index];
+      if (item.streamEnd === undefined && !itemSmoothers.has(item.id) && !staleIds.has(item.id)) continue;
       try {
         const next = prepareItemReplacement(item);
         if (next !== item) {
@@ -401,7 +456,9 @@ export function createThreadStreamingReveal(
   function withReconciledItems<T>(incoming: readonly Item[], commit: (items: Item[]) => T): T {
     let result!: T;
     gate.mutateSmoothersAndRecompute('timeline item reconciliation', () => {
-      result = commit(prepareItemReplacements(incoming));
+      const prepared = prepareItemReplacements(incoming);
+      result = commit(prepared);
+      routing.afterRowsCommitted(prepared);
     });
     return result;
   }
@@ -507,6 +564,8 @@ export function createThreadStreamingReveal(
     appendStreamingDelta: routing.appendStreamingDelta,
     applyPatch: routing.applyPatch,
     isSmoothing,
+    staleRowIds: () => registry.staleIds,
+    hasStreamGaps: () => registry.hasHeldDeltas() || registry.staleIds.size > 0,
     get assistantRevealRegistrationGeneration() {
       return assistantReveal.registrationGeneration;
     },

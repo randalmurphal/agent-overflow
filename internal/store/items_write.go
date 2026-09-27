@@ -52,6 +52,11 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 			if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
 				return nil, err
 			}
+			// The row was read before its payload grew.
+			if updated.StreamEnd != nil && payloadID == updated.PayloadID {
+				end := *updated.StreamEnd + int64(len(payloadDelta))
+				updated.StreamEnd = &end
+			}
 		}
 		return nil, nil
 	})

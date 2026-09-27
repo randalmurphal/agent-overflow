@@ -203,7 +203,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
   function disposeSmootherFor(itemId: string): void {
     mutateSmoothersAndRecompute(
       `streaming reveal smoother disposal for ${itemId}`,
-      () => registry.disposeSmootherState(itemId),
+      () => registry.disposeRemovedItem(itemId),
     );
   }
 
@@ -213,7 +213,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
       const errors: unknown[] = [];
       for (const item of items) {
         try {
-          registry.disposeSmootherState(item.id);
+          registry.disposeRemovedItem(item.id);
         } catch (error) {
           errors.push(error);
         }

@@ -28,13 +28,16 @@ const (
 )
 
 // ItemDeltaEvent is one streaming chunk of a row. ParentID is the row's
-// parent (see ItemStreamEvent).
+// parent (see ItemStreamEvent). Offset is the byte offset of Delta in the
+// row's streamed text, the scale of store.Item.StreamEnd: a client places
+// the chunk by it against a read of the row, whichever arrived first.
 type ItemDeltaEvent struct {
 	ThreadID  string `json:"threadId"`
 	ItemID    string `json:"itemId"`
 	ParentID  string `json:"parentId,omitempty"`
 	Kind      string `json:"kind"`
 	Delta     string `json:"delta"`
+	Offset    int64  `json:"offset"`
 	UpdatedAt int64  `json:"updatedAt"`
 }
 

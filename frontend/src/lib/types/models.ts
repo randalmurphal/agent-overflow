@@ -269,6 +269,16 @@ export interface Item {
   createdAt: number;
   updatedAt: number;
   /**
+   * Where a streaming `assistant_text`, `thinking` or
+   * `compaction_reasoning` row's text ends, in UTF-8 bytes of the whole
+   * streamed text: the offset its next delta starts at. `summary` ends
+   * there, so a tail-trimmed summary starts at `streamEnd` minus its own
+   * byte length. Absent on every other row, on a settled row, and from a
+   * backend that does not position deltas. The pane places deltas and
+   * reconciles reads of the row by it (`threadRevealRouting.ts`).
+   */
+  streamEnd?: number;
+  /**
    * The owning thread's `history_rev` at the moment this row's read
    * result last changed (docs/architecture/thread-replica-sync.md §3.1).
    * Two reads of the same `(id, rev)` are byte-identical except for

@@ -24,3 +24,8 @@ export function isBoundedString(
 ): value is string {
   return typeof value === 'string' && value.length <= maxChars;
 }
+
+/** A streaming text position: a byte offset or a row's stream end. */
+export function isStreamOffset(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}

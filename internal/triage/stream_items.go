@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -29,12 +30,13 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
+	evt.Content = streamedText(evt.Content)
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("text delta turn index: %w", err)
 	}
 	scope := eventParentID(evt)
-	firstBlock, itemID := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
+	firstBlock, itemID, offset := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
@@ -76,6 +78,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		ParentID:  scope,
 		Kind:      itemKindAssistantText,
 		Delta:     evt.Content,
+		Offset:    offset,
 		UpdatedAt: now,
 	})
 	if flushTextAfterEmit {
@@ -104,12 +107,13 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			evt.Timestamp,
 		)
 	}
+	evt.Content = streamedText(evt.Content)
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("thinking turn index: %w", err)
 	}
 	scope := eventParentID(evt)
-	firstBlock, itemID := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
+	firstBlock, itemID, offset := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
@@ -156,6 +160,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		ParentID:  scope,
 		Kind:      itemKindThinking,
 		Delta:     evt.Content,
+		Offset:    offset,
 		UpdatedAt: now,
 	})
 	if flushThinkingAfterEmit {
@@ -179,10 +184,10 @@ func eventMetaBool(meta json.RawMessage, key string) bool {
 }
 
 // blankedStreamingWireRow is the wire copy of a row whose text the client
-// is about to receive as deltas: no summary, streaming status, and no
-// revision stamp.
+// is about to receive as deltas: no summary, a stream end of 0, streaming
+// status, and no revision stamp.
 //
-// The three go together, which is why they are one helper. Blanking the
+// These go together, which is why they are one helper. Blanking the
 // summary is what routes the content through the delta path so it
 // animates; the row is then NOT what a read of SQLite returns, and a wire
 // row that is not the stored row must not carry the stored row's revision
@@ -191,10 +196,22 @@ func eventMetaBool(meta json.RawMessage, key string) bool {
 // patch lands with the real revision; until then a held window containing
 // this row must not be provable fresh.
 func blankedStreamingWireRow(persisted store.Item) store.Item {
+	var start int64
 	persisted.Summary = ""
+	persisted.StreamEnd = &start
 	persisted.Status = statusStreaming
 	persisted.Rev = store.UnstampedItemRev
 	return persisted
+}
+
+// streamedText is a streaming chunk as the wire carries it. Delta offsets
+// count the bytes of the persisted text, and the JSON encoder replaces
+// invalid UTF-8, so a chunk is made valid before either sees it.
+func streamedText(content string) string {
+	if utf8.ValidString(content) {
+		return content
+	}
+	return strings.ToValidUTF8(content, "\uFFFD")
 }
 
 // emitStreamingBlockStart persists a new streaming text/thinking row (with

@@ -234,6 +234,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     itemId: string,
     append: ProvenAppend,
     updatedAt: number,
+    streamEnd: number | undefined,
   ): void {
     if (!Number.isInteger(index) || index < 0 || index >= items.length) {
       throw new RangeError(`direct assistant reveal index ${index} is outside the loaded window`);
@@ -255,6 +256,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     // remain at the source the router still knows how to render.
     options.switchLoad().noteItemMutation(itemId);
     current.summary = append.next;
+    current.streamEnd = streamEnd;
     current.updatedAt = Math.max(updatedAt, current.updatedAt);
   }
 

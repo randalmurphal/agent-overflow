@@ -233,6 +233,70 @@ describe('independent agent timeline', () => {
     expect(view.pane.newestLoadedCursor?.itemId).toBe('appended');
   });
 
+  describe('positioned stream text across a read', () => {
+    const streaming = (summary: string, extra: Partial<Item> = {}) =>
+      row('stream', 1, { kind: 'assistant_text', status: 'streaming', summary, streamEnd: new TextEncoder().encode(summary).length, ...extra });
+    const delta = (text: string, offset: number) => applyTimelineMutation(threadId, {
+      kind: 'delta', event: { threadId, itemId: 'stream', kind: 'assistant_text', delta: text, offset, updatedAt: 3 } });
+    async function readWith(pages: PagedItems[], during: () => void = () => {}, opened: (view: AgentScopeView) => void = () => {}) {
+      const pane = await setup([root]); const view = await open(pane);
+      opened(view);
+      push(streaming('w1 '));
+      let reads = 0;
+      let resolve!: (value: unknown) => void;
+      setBindingMock('SyncThreadWindow', () => {
+        const next = pages[Math.min(reads++, pages.length - 1)];
+        if (reads > 1) return Promise.resolve({ status: 'stale', page: next });
+        return new Promise(done => { resolve = () => done({ status: 'stale', page: next }); });
+      });
+      const refresh = view.pane.refreshFromBackend();
+      await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+      during();
+      resolve(undefined);
+      await refresh;
+      return { view, reads: () => reads };
+    }
+
+    it('drops deltas the read already holds when they arrive after it', async () => {
+      const { view } = await readWith([page([streaming('w1 w2 w3 ')])]);
+      // Emitted before the read's flush, delivered after its page.
+      delta('w2 ', 3); delta('w3 ', 6); delta('w4 ', 9);
+      view.pane.__flushItemSmoothersForTest();
+      expect(view.pane.getItemById('stream')?.summary).toBe('w1 w2 w3 w4 ');
+    });
+
+    it('takes a read past a delta held across a gap and places it with no second read', async () => {
+      // 'w2 ' reaches the live row during the read; 'w3 ' never arrives.
+      let view!: AgentScopeView;
+      const read = await readWith([page([streaming('w1 w2 w3 ')])], () => {
+        delta('w2 ', 3); view.pane.__flushItemSmoothersForTest(); delta('w4 ', 9);
+      }, opened => { view = opened; });
+      const reads = read.reads;
+      view.pane.__flushItemSmoothersForTest();
+      expect(view.pane.getItemById('stream')?.summary).toBe('w1 w2 w3 w4 ');
+      await new Promise(done => setTimeout(done, 300));
+      expect(reads()).toBe(1);
+    });
+
+    it('re-reads once the read ends when it leaves the gap open', async () => {
+      const { view, reads } = await readWith([page([streaming('w1 w2 ')]), page([streaming('w1 w2 w3 ')])], () => delta('w4 ', 9));
+      await vi.waitFor(() => expect(reads()).toBe(2));
+      await vi.waitFor(() => {
+        view.pane.__flushItemSmoothersForTest();
+        expect(view.pane.getItemById('stream')?.summary).toBe('w1 w2 w3 w4 ');
+      });
+    });
+
+    it('takes a settled read over a row whose settle ended past its text', async () => {
+      const settled = row('stream', 1, { kind: 'assistant_text', status: 'completed', summary: 'w1 w2 w3 ', rev: 7 });
+      const { view, reads } = await readWith([page([settled])], () => applyTimelineMutation(threadId, {
+        kind: 'patch', event: { threadId, itemId: 'stream', kind: 'assistant_text', patch: { status: 'completed', streamEnd: 9, rev: 7, updatedAt: 4 } } }));
+      expect(view.pane.getItemById('stream')).toMatchObject({ status: 'completed', summary: 'w1 w2 w3 ', rev: 7 });
+      await new Promise(done => setTimeout(done, 300));
+      expect(reads()).toBe(1);
+    });
+  });
+
   it('keeps a live child while an opening carrier resolves to its transcript root', async () => {
     const carrier = { ...root, id: 'resume', meta: `{"transcript_root_id":"${root.id}"}` };
     const pane = await setup([root, carrier]);

@@ -79,7 +79,7 @@ func (r ActivityRunMembersRequest) storeRequest(limit int) store.ActivityRunMemb
 //
 //ao:scope threads:read
 func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (store.ActivityRunMembers, error) {
-	if err := a.store.CheckForkReady(threadID); err != nil {
+	if err := a.readyThreadHistory(threadID); err != nil {
 		return store.ActivityRunMembers{}, err
 	}
 	shape := req.Shape.normalize()

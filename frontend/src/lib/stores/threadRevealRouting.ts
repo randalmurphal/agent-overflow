@@ -35,6 +35,7 @@ import {
 import type { ProvenAppend } from '../markdown';
 import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
 import { LiveTextWindow } from '../utils/liveText';
+import { streamedTextPast, utf8Length } from '../utils/utf8Offsets';
 import type { RevealGate } from './threadRevealGate.svelte';
 import {
   isSnapStatus,
@@ -60,6 +61,7 @@ export interface RevealRoutingOptions {
     itemId: string,
     append: ProvenAppend,
     updatedAt: number,
+    streamEnd: number | undefined,
   ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(item: Item): void;
@@ -72,6 +74,12 @@ export interface RevealRoutingOptions {
     end: number,
     payloadVersion?: unknown,
   ): void;
+  /**
+   * A streaming row missed text: a delta or a patch named a position past
+   * the text the pane holds. The owner re-reads its window; the read's row
+   * and the held deltas close the gap.
+   */
+  onStreamGap?(itemId: string): void;
 }
 
 /**
@@ -97,12 +105,14 @@ class SmootherRevealStream implements LiveRevealStream {
 
 export interface RevealRouting {
   appendStreamingDelta(
-    itemId: string,
-    currentSummary: string,
+    current: Item,
     delta: string,
+    offset: number | undefined,
     updatedAt: number,
   ): void;
   applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null;
+  /** A wholesale commit installed `rows`: place the deltas held for them. */
+  afterRowsCommitted(rows: readonly Item[]): void;
 }
 
 export function createRevealRouting(options: RevealRoutingOptions): RevealRouting {
@@ -152,11 +162,18 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
   function getOrCreateSmoothing(
     itemId: string,
     initialReceived: string,
+    seedEnd: number | undefined,
   ): ItemSmoothing {
     const existing = itemSmoothers.get(itemId);
     if (existing) return existing;
 
+    // A retained tail the seed resumes from ends where the row's summary
+    // does, so `seedEnd` positions either seed.
     const seeded = registry.seedFromRetainedTail(itemId, initialReceived);
+    let receivedEnd = seedEnd;
+    // Where the revealed text ends, which every row write publishes as the
+    // row's `streamEnd` while the row streams.
+    let revealedStreamEnd = seedEnd;
 
     // Closure state for this item's smoother. Updated by each delta
     // and read inside `onReveal` so the row's `updatedAt` stays close
@@ -213,6 +230,8 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
         // makes the end-of-turn tail spring instead of jump.
         const current = options.getItems()[idx];
         options.stampLiveContent(current);
+        if (revealedStreamEnd !== undefined) revealedStreamEnd += utf8Length(delta);
+        const streamEnd = current.status === 'streaming' ? revealedStreamEnd : undefined;
         const prevRevealed = previousRevealed;
         // Reasoning-tail rows (thinking + compaction_reasoning) keep the
         // summary tail-trimmed for memory; assistant_text keeps the full
@@ -241,12 +260,14 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
                     itemId,
                     append,
                     updatedAt,
+                    streamEnd,
                   );
                   break;
                 case 'authoritative':
                   options.setItemAt(idx, {
                     ...current,
                     summary: nextSummary,
+                    streamEnd,
                     updatedAt,
                   });
                   break;
@@ -276,6 +297,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
                 options.setItemAt(idx, {
                   ...current,
                   summary: revealed,
+                  streamEnd,
                   updatedAt,
                 });
               },
@@ -297,6 +319,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
             const nextItem = {
               ...current,
               summary: reasoning.summary,
+              streamEnd,
               updatedAt,
             };
             options.setItemAt(idx, nextItem);
@@ -316,6 +339,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
             options.setItemAt(idx, {
               ...current,
               summary: revealed,
+              streamEnd,
               updatedAt,
             });
           }
@@ -348,6 +372,13 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
 
     const entry: ItemSmoothing = {
       smoother,
+      get receivedEnd() {
+        return receivedEnd;
+      },
+      append(text) {
+        smoother.appendDelta(text);
+        if (receivedEnd !== undefined) receivedEnd += utf8Length(text);
+      },
       setLatestUpdatedAt(at) {
         latestUpdatedAt = at;
       },
@@ -363,20 +394,78 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     return entry;
   }
 
-  /** applyItemDelta's smooth-kind path: get-or-create smoother seeded with
-   *  currentSummary, push wire updatedAt, append the delta, recompute the gate. */
+  /**
+   * applyItemDelta's smooth-kind path: place the delta at its offset in the
+   * row's stream, get-or-create the smoother seeded with the row, push wire
+   * updatedAt, append, recompute the gate.
+   *
+   * Text the row already holds is dropped, and a delta that overlaps it
+   * appends only its unseen part: a read of the row can hold deltas that
+   * arrive after it. A delta that starts past the row's text is held, and
+   * the owner re-reads the row (`onStreamGap`); joining it would drop the
+   * text between. A delta or row without a position appends as it is.
+   */
   function appendStreamingDelta(
-    itemId: string,
-    currentSummary: string,
+    current: Item,
     delta: string,
+    offset: number | undefined,
     updatedAt: number,
   ): void {
-    const entry = getOrCreateSmoothing(itemId, currentSummary);
+    const itemId = current.id;
+    const existing = itemSmoothers.get(itemId);
+    const end = existing ? existing.receivedEnd : current.streamEnd;
+    let text = delta;
+    if (offset !== undefined && end !== undefined) {
+      const unseen = streamedTextPast(delta, offset, end);
+      if (unseen === null) {
+        registry.holdDelta(itemId, { offset, delta, updatedAt });
+        options.onStreamGap?.(itemId);
+        return;
+      }
+      if (unseen === '') return;
+      text = unseen;
+    }
+    const entry = existing ?? getOrCreateSmoothing(itemId, current.summary, current.streamEnd);
     entry.setLatestUpdatedAt(updatedAt);
-    entry.smoother.appendDelta(delta);
+    entry.append(text);
+    drainHeldDeltas(itemId);
     // A new smoothed row (or fresh lag on the frontier) may move the gate;
     // recompute so a withheld successor pauses behind the frontier.
     gate.recomputeReveal();
+  }
+
+  /**
+   * Append the row's held deltas that now continue its text, in offset
+   * order, up to the first that still starts past it. A row with no
+   * position can place none of them.
+   */
+  function drainHeldDeltas(itemId: string): void {
+    const held = registry.heldDeltas(itemId);
+    if (!held) return;
+    while (held.length > 0) {
+      const current = options.getItemById(itemId);
+      const entry = itemSmoothers.get(itemId);
+      const end = entry ? entry.receivedEnd : current?.streamEnd;
+      if (current === undefined || end === undefined) break;
+      const next = held[0];
+      const unseen = streamedTextPast(next.delta, next.offset, end);
+      if (unseen === null) return;
+      held.shift();
+      if (unseen === '') continue;
+      const target = entry ?? getOrCreateSmoothing(itemId, current.summary, current.streamEnd);
+      target.setLatestUpdatedAt(next.updatedAt);
+      target.append(unseen);
+    }
+    registry.dropHeldDeltas(itemId);
+  }
+
+  function afterRowsCommitted(rows: readonly Item[]): void {
+    if (!registry.hasHeldDeltas()) return;
+    for (const row of rows) {
+      if (!registry.heldDeltas(row.id)) continue;
+      if (options.getItemById(row.id)?.status === 'streaming') drainHeldDeltas(row.id);
+      else registry.dropHeldDeltas(row.id);
+    }
   }
 
   function applyPatchState(itemId: string, patch: ItemPatchEvent['patch']): void {
@@ -395,7 +484,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       );
       if (relation === 'extension') {
         if (patch.updatedAt !== undefined) smoothing.setLatestUpdatedAt(patch.updatedAt);
-        smoothing.smoother.appendDelta(patch.summary.slice(received.length));
+        smoothing.append(patch.summary.slice(received.length));
         return;
       }
       if (relation !== 'same') {
@@ -420,10 +509,12 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     gate.mutateSmoothersAndRecompute(`streaming reveal patch for ${itemId}`, () => {
       const index = options.getItemIndex(itemId);
       if (index === undefined) {
-        registry.disposeSmootherState(itemId);
+        registry.disposeRemovedItem(itemId);
         return;
       }
       const current = options.getItems()[index];
+      const smoothing = itemSmoothers.get(itemId);
+      const heldEnd = smoothing ? smoothing.receivedEnd : current.streamEnd;
       applyPatchState(itemId, patch);
       // Snap may have published text synchronously. Always read its result;
       // spreading the pre-snap row would silently restore the shorter text.
@@ -436,10 +527,27 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       // The patching write moved the row's revision; carrying it is what
       // makes a settled streaming row describable again — its upsert
       // arrived at `rev: -1` because the wire row was altered
-      // (docs/architecture/thread-replica-sync.md §3.1).
-      next.rev = patch.rev;
+      // (docs/architecture/thread-replica-sync.md §3.1). The revision
+      // describes the stored row, so a row whose text ends elsewhere keeps
+      // its own: a later open would verify the held text as the stored one.
+      const holdsStoredText = patch.summary !== undefined || patch.streamEnd === undefined
+        || heldEnd === patch.streamEnd;
+      next.rev = holdsStoredText ? patch.rev : current.rev;
+      if (patch.summary === undefined && patch.streamEnd !== undefined
+        && heldEnd !== undefined && heldEnd < patch.streamEnd) {
+        registry.markStale(itemId);
+        options.onStreamGap?.(itemId);
+      }
       if (itemSmoothers.has(itemId)) {
         next.summary = options.getItems()[index].summary;
+      } else if (patch.summary !== undefined) {
+        // The patch's text owns the row, at a position it does not name.
+        next.streamEnd = undefined;
+        registry.clearStale(itemId);
+      }
+      if (next.status !== 'streaming') {
+        next.streamEnd = undefined;
+        registry.dropHeldDeltas(itemId);
       }
       // A patch that moves only the revision (a re-persist of an
       // unchanged row) is absorbed onto the held row: no replacement,
@@ -455,5 +563,6 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
   return {
     appendStreamingDelta,
     applyPatch,
+    afterRowsCommitted,
   };
 }
