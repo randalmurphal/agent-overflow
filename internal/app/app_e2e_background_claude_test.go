@@ -78,8 +78,8 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 	// for the matching control_response; the fake emits both the
 	// response and a follow-up task_updated{killed} so triage lands
 	// the sibling row.
-	if err := app.StopClaudeTask(thread.ID, "task-bg-1"); err != nil {
-		t.Fatalf("StopClaudeTask: %v", err)
+	if stopped, err := app.StopClaudeTask(thread.ID, "task-bg-1"); err != nil || !stopped {
+		t.Fatalf("StopClaudeTask = %v, %v; want true, nil", stopped, err)
 	}
 
 	// Inspect the captured stdin: the stop_task envelope must match

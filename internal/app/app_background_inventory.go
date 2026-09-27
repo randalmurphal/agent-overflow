@@ -230,10 +230,7 @@ func (a *App) stopBackgroundWorkItem(ctx context.Context, row RunningBackgroundW
 		_, err := a.CancelThreadRemoteCommand(ctx, row.ThreadID, computerID, requestID)
 		return err == nil, err
 	case BackgroundWorkClaudeTask:
-		if err := a.StopClaudeTask(row.ThreadID, row.StopID); err != nil {
-			return false, err
-		}
-		return true, nil
+		return a.StopClaudeTask(row.ThreadID, row.StopID)
 	case BackgroundWorkCodexSubagent:
 		return a.StopCodexSubagent(row.ThreadID, row.StopID)
 	case BackgroundWorkCodexTerminal:

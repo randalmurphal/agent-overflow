@@ -667,3 +667,44 @@ func TestConvertFlaggedLaunchClassifiesOnTheCompletion(t *testing.T) {
 		})
 	}
 }
+
+// A foreground Bash the CLI moved to the background answers with a moved
+// ack and no toolUseResult on a sidechain. The converter serves both
+// session import and the live transcript_mirror projection of a
+// backgrounded agent's tail, which never sees the wire's
+// is_backgrounded patch, so the ack text classifies it here too. The
+// running-in-background ack still needs a requested launch, and a
+// non-Bash result never reads as an ack.
+func TestConvertMovedAckOfForegroundBashClassifies(t *testing.T) {
+	const timeoutAck = "Command did not complete within its 300s timeout and was moved to the background (ID: bjppz119i). Output is being written to: /tmp/tasks/bjppz119i.output."
+	cases := []struct {
+		name       string
+		tool       string
+		content    string
+		background bool
+		taskID     string
+	}{
+		{"timeout ack", "Bash", timeoutAck, true, "bjppz119i"},
+		{"manual ack", "Bash", "Command was manually backgrounded by user with ID: bjppz119i.", true, "bjppz119i"},
+		{"unrequested running ack", "Bash", "Command running in background with ID: bjppz119i.", false, ""},
+		{"real output", "Bash", "ok  agent-overflow/internal/store 12.1s", false, ""},
+		{"non-Bash tool", "Read", timeoutAck, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := assistantRow("a1", "u1", "msg_1", []any{
+				toolUseBlock("toolu_1", tc.tool, map[string]any{"command": "go test ./...", "timeout": 300000}),
+			}, "2026-01-01T00:00:01.000Z")
+			events, _ := convertFixture(t, ConvertOptions{},
+				userRow("u1", "", "run", "2026-01-01T00:00:00.000Z"), launch,
+				toolResultRow("r1", "a1", "toolu_1", tc.content, "2026-01-01T00:00:02.000Z"))
+			meta := decodeMeta(t, eventsOfKind(events, provider.EventToolComplete)[0].Meta)
+			if _, got := meta["is_background"]; got != tc.background {
+				t.Errorf("is_background present = %v, want %v (meta %v)", got, tc.background, meta)
+			}
+			if got, _ := meta["task_id"].(string); got != tc.taskID {
+				t.Errorf("task_id = %q, want %q", got, tc.taskID)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // noCompletionSiblingSQL is the "this launch has not been settled yet" probe:
@@ -616,4 +617,48 @@ func (s *Store) listRecoverableClaudeBackgroundLaunches(threadID string) ([]Item
 		return items[i].ItemIndex < items[j].ItemIndex
 	})
 	return items, nil
+}
+
+// EndedClaudeTask reports whether the store records the end of every
+// tool call bound to a Claude task, and names those calls. A call is
+// running while its status is `running`, unless it is a background launch
+// the schema marked inactive or a completion sibling settled (a parked
+// stop settles nothing). A task no call names is not known to have ended:
+// its row may not have landed yet. Served by idx_items_meta_task_id.
+func (s *Store) EndedClaudeTask(threadID, taskID string) (bool, []string, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return false, nil, nil
+	}
+	rows, err := s.reader().Query(
+		`SELECT items.id,
+		        items.status = 'running'
+		        AND (items.is_background = 0
+		             OR (COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		                 AND `+noCompletionSiblingSQL+`))
+		   FROM items
+		  WHERE items.thread_id = ?
+		    AND json_extract(items.meta, '$.task_id') = ?
+		    AND items.kind = 'tool_call'`,
+		threadID, taskID,
+	)
+	if err != nil {
+		return false, nil, fmt.Errorf("store: ended claude task %s/%s: %w", threadID, taskID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		var running bool
+		if err := rows.Scan(&id, &running); err != nil {
+			return false, nil, fmt.Errorf("store: scan ended claude task %s/%s: %w", threadID, taskID, err)
+		}
+		if running {
+			return false, nil, nil
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return false, nil, fmt.Errorf("store: iterate ended claude task %s/%s: %w", threadID, taskID, err)
+	}
+	return len(ids) > 0, ids, nil
 }

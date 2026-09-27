@@ -45,7 +45,7 @@ describe('Stop All in the background tray', () => {
       { launchItemId: 'b', outcome: 'stopping' },
       { launchItemId: 'c', outcome: 'ended' },
     ]);
-    setBindingMock('StopClaudeTask', async () => {});
+    setBindingMock('StopClaudeTask', async () => true);
     const view = renderBody([a, b, c, d]);
 
     await fireEvent.click(view.getByRole('button', { name: 'Stop All Running Background Tasks' }));

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/provider"
@@ -182,12 +184,31 @@ func (a *App) GetClaudeSkills(workspacePath string) ([]claudeconfig.Skill, error
 //   - timeout / provider error: surfaced verbatim so the UI can render
 //     the CLI-supplied message.
 //
+// It reports whether a stop was sent. A task whose end the store already
+// records is not sent one: the CLI answers `success` for a task it no
+// longer holds and emits nothing after (claude-wire.md §stop_task), so the
+// call would change nothing. Its launches are announced to the tray
+// instead, so a client still listing one as running drops it.
+//
 //ao:scope threads:operate
-func (a *App) StopClaudeTask(threadID, taskID string) error {
+func (a *App) StopClaudeTask(threadID, taskID string) (bool, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return false, ErrShuttingDown
 	}
-	return a.claudeAppService().StopTask(threadID, taskID)
+	ended, launches, err := a.store.EndedClaudeTask(threadID, taskID)
+	if err != nil {
+		return false, fmt.Errorf("stop claude task %s: %w", taskID, err)
+	}
+	if ended {
+		if a.triage != nil {
+			a.triage.AnnounceBackgroundTray(threadID, launches...)
+		}
+		return false, nil
+	}
+	if err := a.claudeAppService().StopTask(threadID, taskID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // BackgroundClaudeTask moves an in-flight FOREGROUND Claude task (a

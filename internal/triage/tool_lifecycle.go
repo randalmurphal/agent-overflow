@@ -525,13 +525,18 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 		// write the sibling completion row when it arrives.
 		return nil
 	}
-	if launch.IsBackground {
-		// Flagged from its input, but the result is not a backgrounding
-		// ack: no task ever started, so nothing will ever settle this row
-		// but the result in hand. Clear the flag (column AND meta — the
-		// tray, the reaper and the flush queue read the column; the
-		// stored meta is what a re-discovered launch merges from) and
-		// settle in place below like any inline tool.
+	// leftBackground: the row was a background launch and settles here as
+	// an ordinary call, so it leaves the tray with this write.
+	leftBackground := launch.IsBackground
+	if leftBackground {
+		// Flagged from its input, or moved by the CLI's is_backgrounded
+		// patch (handleSubagentBackgrounded), but the result is not a
+		// backgrounding ack: the command was refused, or it finished as
+		// it was moved. Nothing will ever settle this row but the result
+		// in hand. Clear the flag (column AND meta — the tray, the reaper
+		// and the flush queue read the column; the stored meta is what a
+		// re-discovered launch merges from) and settle in place below
+		// like any inline tool.
 		launch.IsBackground = false
 		launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"is_background":false}`))
 	}
@@ -619,6 +624,12 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 	persisted, err := r.persistItemWithEmit(launch, payload, inputPayload, true)
 	if err != nil {
 		return err
+	}
+	if leftBackground {
+		// The push of an ordinary settled call names no tray launch
+		// (appendTrayLaunches reads the row as written), and a tray that
+		// listed this one would keep it running.
+		r.emitBackgroundTray(evt.ThreadID, launch.ID)
 	}
 	// This row just went terminal. An AWAITED agent launch settles HERE
 	// and nowhere else — no completion sibling, no child terminal — so
@@ -1338,11 +1349,9 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		//
 		// This also skips the `provider:background_task_state{drained}`
 		// emit below, but that is safe: the event is a pure UI nudge
-		// (BackgroundTaskStateEvent doc comment, turn_events.go) and
-		// Store.ListLiveBackgroundTasks — the tray's source of truth —
-		// filters on `is_background = 1` in every branch, so a
-		// foreground launch was never tray-visible and has no stale
-		// tray state to refresh.
+		// (BackgroundTaskStateEvent doc comment, turn_events.go), and a
+		// launch that was a tray row before it settled in place was
+		// announced leaving the tray by that settle (persistToolCallCompletion).
 		return nil
 	}
 	// The sibling reads the card its launch ends with.

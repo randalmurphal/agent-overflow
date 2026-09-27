@@ -14,6 +14,7 @@
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { StopClaudeTask, StopCodexSubagent } from '../../stores/bindings';
+  import { addToast } from '../../stores/toast.svelte';
   import { extractClaudeTaskID } from '../../utils/claudeTaskMeta';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { formatTokens } from '../../utils/format';
@@ -165,8 +166,10 @@
     stopping = true;
     stopError = '';
     try {
-      if (codexInfo) await StopCodexSubagent(threadId, taskId);
-      else await StopClaudeTask(threadId, taskId);
+      const stopped = codexInfo
+        ? await StopCodexSubagent(threadId, taskId)
+        : await StopClaudeTask(threadId, taskId);
+      if (!stopped) addToast('info', 'That task had already ended.');
     } catch (err) {
       stopError = err instanceof Error ? err.message : String(err);
     } finally {

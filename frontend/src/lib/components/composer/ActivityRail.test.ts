@@ -65,7 +65,7 @@ describe('<ActivityRail>', () => {
     __resetActivityRailUiPrefsForTest();
     for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
-    setBindingMock('StopClaudeTask', async () => {});
+    setBindingMock('StopClaudeTask', async () => true);
     setBindingMock('StopBackgroundTasks', async (_threadId: unknown, launchIds: string[]) =>
       launchIds.map((launchItemId) => ({ launchItemId, outcome: 'stopping' })));
     setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
@@ -630,6 +630,7 @@ describe('<ActivityRail>', () => {
     const calls: unknown[][] = [];
     setBindingMock('StopClaudeTask', async (...args: unknown[]) => {
       calls.push(args);
+      return true;
     });
 
     const pane = await buildPane();
@@ -643,6 +644,26 @@ describe('<ActivityRail>', () => {
     await tick();
 
     expect(calls).toEqual([[pane.thread!.id, 'tsk-99']]);
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('says so when a per-row Stop finds the task already ended', async () => {
+    const launch = backgroundLaunch({ id: 'ended-launch', meta: JSON.stringify({ task_id: 'tsk-ended' }) });
+    setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
+    setBindingMock('StopClaudeTask', async () => false);
+
+    const pane = await buildPane();
+    pane.upsertItem(launch);
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
+    await tick();
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
+    await tick();
+    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
+    await tick();
+    await tick();
+
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([['info', 'That task had already ended.']]);
   });
 
   it('Stop All on a Claude thread is one StopBackgroundTasks call naming each stoppable launch', async () => {
@@ -651,7 +672,7 @@ describe('<ActivityRail>', () => {
     const unnamed = backgroundLaunch({ id: 'no-task-id' });
     setBindingMock('ListLiveBackgroundTasks', async () => [a, b, unnamed]);
     let perTask = 0;
-    setBindingMock('StopClaudeTask', async () => { perTask++; });
+    setBindingMock('StopClaudeTask', async () => { perTask++; return true; });
     const calls: unknown[][] = [];
     setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
       calls.push(args);
@@ -686,7 +707,7 @@ describe('<ActivityRail>', () => {
     setBindingMock('ListLiveBackgroundTasks', async () => [exec]);
     let claudeCalls = 0;
     const codexCalls: unknown[][] = [];
-    setBindingMock('StopClaudeTask', async () => { claudeCalls++; });
+    setBindingMock('StopClaudeTask', async () => { claudeCalls++; return true; });
     setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
       codexCalls.push(args);
       return [{ launchItemId: 'exec', outcome: 'stopping' }];
@@ -744,7 +765,7 @@ describe('<ActivityRail>', () => {
       return true;
     });
     let claudeCalls = 0;
-    setBindingMock('StopClaudeTask', async () => { claudeCalls++; });
+    setBindingMock('StopClaudeTask', async () => { claudeCalls++; return true; });
 
     const { pane, findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
     await fireEvent.click(await findByTestId('background-task-tray-row-stop'));

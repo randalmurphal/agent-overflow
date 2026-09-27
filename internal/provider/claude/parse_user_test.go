@@ -1219,3 +1219,93 @@ func TestAppendToolResultBlock_SidechainAckTextMarksBackgroundAndBindsTaskID(t *
 		})
 	}
 }
+
+// A subagent's FOREGROUND Bash that outlives its timeout is moved to the
+// background by the CLI: `task_updated{is_backgrounded:true}`, then the
+// sidechain ack with no `tool_use_result` (claude-wire.md §E2b, 2.1.280).
+// The input carries no run_in_background, so only the ack text says the
+// command still runs; reading it as an ordinary result settled the row
+// in place and dropped the command's real terminal.
+func TestAppendToolResultBlock_SidechainMovedAckOfForegroundBashMarksBackground(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"timeout", "Command did not complete within its 300s timeout and was moved to the background (ID: bjppz119i). Output is being written to: /tmp/tasks/bjppz119i.output. You will be notified when it completes. To check interim output, use Read on that file path."},
+		{"assistant budget", "Command exceeded the assistant-mode blocking budget (30s) and was moved to the background with ID: bjppz119i. It is still running."},
+		{"manual", "Command was manually backgrounded by user with ID: bjppz119i. Output is being written to: /tmp/tasks/bjppz119i.output"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			meta := parseForegroundSidechainBashResult(t, parser, "Bash", tc.content)
+			if meta["is_background"] != true || meta["task_id"] != "bjppz119i" {
+				t.Fatalf("moved ack must classify as backgrounded with its task id; meta=%v", meta)
+			}
+			if ref := parser.taskToolUseRef("bjppz119i"); ref.ToolUseID != "tool-fg" || ref.ParentToolUseID != "tool-agent" {
+				t.Fatalf("task map must bind the ack's id to the launch; got %+v", ref)
+			}
+			if parser.bashToolUses["tool-fg"] {
+				t.Fatal("the result must release the Bash tool_use entry")
+			}
+		})
+	}
+}
+
+// What a moved-ack reading must not promote: the command's own output
+// after the is_backgrounded patch (it finished as it was moved), the
+// running-in-background ack on a launch that never asked for it, and a
+// non-Bash result whose text happens to read like an ack.
+func TestAppendToolResultBlock_SidechainForegroundResultsThatAreNotAcksSettle(t *testing.T) {
+	cases := []struct {
+		name    string
+		tool    string
+		content string
+	}{
+		{"real output after the patch", "Bash", "load elapsed 930s"},
+		{"unrequested running ack", "Bash", "Command running in background with ID: bjppz119i. Output is being written to: /tmp/tasks/bjppz119i.output."},
+		{"non-Bash tool", "Read", "Command did not complete within its 300s timeout and was moved to the background (ID: bjppz119i)."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := parseForegroundSidechainBashResult(t, NewParser(), tc.tool, tc.content)
+			if meta["is_background"] == true {
+				t.Fatalf("result must settle in place; meta=%v", meta)
+			}
+		})
+	}
+}
+
+// parseForegroundSidechainBashResult feeds the wire order of a moved
+// command under agent tool-agent: the tool_use (no run_in_background),
+// its task_started, the is_backgrounded patch, then the sidechain result
+// with content. It returns the result's completion meta.
+func parseForegroundSidechainBashResult(t *testing.T, parser *Parser, tool, content string) map[string]any {
+	t.Helper()
+	lines := []string{
+		`{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-fg","name":"` + tool + `","input":{"command":"go test ./...","timeout":300000}}]}}`,
+		`{"type":"system","subtype":"task_started","task_id":"bjppz119i","owned_by_subagent":true,"tool_use_id":"tool-fg","description":"go test ./...","task_type":"local_bash"}`,
+		`{"type":"system","subtype":"task_updated","task_id":"bjppz119i","patch":{"is_backgrounded":true}}`,
+	}
+	for _, line := range lines {
+		if _, err := parser.ParseLine(testThread, []byte(line)); err != nil {
+			t.Fatalf("parse %s: %v", line, err)
+		}
+	}
+	blob, _ := json.Marshal(content)
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"user","parent_tool_use_id":"tool-agent","message":{"role":"user","content":[{"tool_use_id":"tool-fg","type":"tool_result","content":`+string(blob)+`,"is_error":false}]}}`))
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventToolComplete && evt.ItemID == "tool-fg" {
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			return meta
+		}
+	}
+	t.Fatalf("no EventToolComplete for tool-fg in %+v", events)
+	return nil
+}

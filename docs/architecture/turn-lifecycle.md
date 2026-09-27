@@ -38,8 +38,9 @@ invocation the agent makes produces exactly one `tool_call` row.
 
 - Inline tools (Read, Grep, Edit, inline Bash): completion carries
   the exit/stdout result.
-- Backgrounded Claude tools (Bash with `run_in_background:true`,
-  Task subagent): completion is the **placeholder** tool_result
+- Backgrounded Claude tools (Bash with `run_in_background:true`, a
+  foreground Bash the CLI moved to the background, Task subagent):
+  completion is the **placeholder** tool_result
   (`backgroundTaskId: ...`, or on a sidechain the text-only ack of
   claude-wire.md §E2b); actual task result lands via the task
   lifecycle (below). The launch flag is a hint: a flagged command the

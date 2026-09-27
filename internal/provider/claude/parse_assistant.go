@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionimport"
 )
 
 // assistantContentBlock is the subset of fields every block type on an
@@ -504,6 +505,9 @@ func (p *Parser) appendToolUseEvent(
 	}
 	if isAgentLaunchToolName(block.Name) {
 		p.markAgentLaunchTool(block.ID)
+	}
+	if block.Name == sessionimport.BashToolName {
+		p.markBashTool(block.ID)
 	}
 
 	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID)

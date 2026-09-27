@@ -149,7 +149,10 @@
         await CancelThreadRemoteCommand(threadId, remote.computerId, remote.requestId);
         keepMark = true;
       } else if (backgroundStop === 'claude-task') {
-        await StopClaudeTask(threadId, stopTarget);
+        // False: the task had already ended, so no stop was sent. The
+        // backend announced the end, which takes the row out of the tray.
+        const stopped = await StopClaudeTask(threadId, stopTarget);
+        if (!stopped) addToast('info', 'That task had already ended.');
       } else if (backgroundStop === 'codex-background-terminals') {
         if (isCodexSubagentTask(task)) {
           const stopped = await StopCodexSubagent(threadId, stopTarget);

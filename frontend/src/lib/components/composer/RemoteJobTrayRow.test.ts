@@ -124,7 +124,7 @@ describe('remote jobs in the background tray', () => {
 
   it.each(['claude', 'codex'] as const)('stops a remote-only job without calling %s provider controls or scrolling', async (provider) => {
     const cancel = setBindingMock('CancelThreadRemoteCommand', async () => ({}));
-    const claude = setBindingMock('StopClaudeTask', async () => {});
+    const claude = setBindingMock('StopClaudeTask', async () => true);
     const stopAll = setBindingMock('StopBackgroundTasks', async () => []);
     const pane = { requestScrollToItem: vi.fn() };
     const task = remoteTask();

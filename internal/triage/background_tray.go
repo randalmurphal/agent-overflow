@@ -74,6 +74,13 @@ func (r *Router) emitBackgroundTray(threadID string, launchIDs ...string) {
 	r.emitBackgroundTrayRows(threadID, ids)
 }
 
+// AnnounceBackgroundTray announces the tray rows of launches a caller
+// found ended while a client may still list them running: a Stop that
+// named an ended task. A launch with no row leaves every tray showing it.
+func (r *Router) AnnounceBackgroundTray(threadID string, launchIDs ...string) {
+	r.emitBackgroundTray(threadID, launchIDs...)
+}
+
 // emitBackgroundTrayRows reads and pushes the rows of ids, a Claude
 // thread's launches.
 func (r *Router) emitBackgroundTrayRows(threadID string, ids []string) {

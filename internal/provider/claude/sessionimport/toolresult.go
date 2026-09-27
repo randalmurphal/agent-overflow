@@ -146,13 +146,18 @@ func externalisedOutputPath(content string) string {
 	return strings.TrimSpace(rest)
 }
 
-// backgroundAckPrefix and backgroundAckTaskIDMarker pin the Bash
-// backgrounding ack's text. The CLI (BashTool.tsx, 2.1.88 source; the
-// "running in background" literal is still present in the 2.1.257
-// binary) has three variants, one per trigger, and all three open with
-// "Command " and name the task as ` with ID: <id>` on their first line:
+// The Bash backgrounding ack's text. Every variant opens with "Command "
+// and names the task on its first line, as ` with ID: <id>` or
+// `(ID: <id>)`. One variant answers a launch that asked for backgrounding
+// (`run_in_background: true`):
 //
 //	Command running in background with ID: b20hid1oz. Output is being written to: …
+//
+// The others answer a FOREGROUND command the CLI moved to the background
+// while it ran (BashTool.tsx, 2.1.88 source; the timeout wording is the
+// 2.1.280 one):
+//
+//	Command did not complete within its 300s timeout and was moved to the background (ID: bjppz119i). Output is being written to: …
 //	Command exceeded the assistant-mode blocking budget (…) and was moved to the background with ID: …
 //	Command was manually backgrounded by user with ID: …
 //
@@ -160,37 +165,49 @@ func externalisedOutputPath(content string) string {
 // contains — quoted output does not classify), and the id is what the
 // later `system/task_updated` / `task_notification` terminal carries as
 // `task_id`.
-const backgroundAckPrefix = "Command "
-const backgroundAckTaskIDMarker = " with ID: "
+const (
+	// BashToolName is the tool whose results can be backgrounding acks.
+	BashToolName = "Bash"
+
+	backgroundAckPrefix         = "Command "
+	backgroundAckRequestedStart = "Command running in background "
+)
+
+var backgroundAckTaskIDMarkers = []string{" with ID: ", " (ID: "}
 
 // BackgroundAckTaskID recognises the Bash backgrounding ack from the
 // tool_result TEXT alone and recovers the task id it names
-// (claude-wire.md §E2b). It exists for a SIDECHAIN Bash launch, where
+// (claude-wire.md §E2b). It exists for a SIDECHAIN Bash result, where
 // Claude omits the `toolUseResult` envelope and therefore the
 // `backgroundTaskId` marker, and it is the one rule the live parser and
-// this reader share: both consult it only when no structured sibling is
-// present AND the launch asked for backgrounding.
+// the transcript converter share: both consult it only for a Bash
+// tool_use with no structured sibling.
+//
+// requested says the launch asked for backgrounding. The "running in
+// background" ack confirms only such a launch: a requested launch can be
+// refused (hook deny, permission denial), and the request alone is never
+// a verdict. The "moved to the background" acks answer only a foreground
+// command, so they need no request.
 //
 // Returning ("", false) means "not a backgrounding ack": the launch
-// settles in place with the result it actually got. That is the correct
-// reading of a refused command (hook deny, permission denial) and the
-// tolerable reading of a reworded ack — an instantly-done row is
-// recoverable, a permanently-running one blocks the reaper and the
-// flush queue.
-func BackgroundAckTaskID(text string) (taskID string, ok bool) {
+// settles in place with the result it actually got.
+func BackgroundAckTaskID(text string, requested bool) (taskID string, ok bool) {
 	if !strings.HasPrefix(text, backgroundAckPrefix) {
+		return "", false
+	}
+	if strings.HasPrefix(text, backgroundAckRequestedStart) && !requested {
 		return "", false
 	}
 	first := text
 	if idx := strings.IndexByte(first, '\n'); idx >= 0 {
 		first = first[:idx]
 	}
-	_, rest, found := strings.Cut(first, backgroundAckTaskIDMarker)
-	if !found {
-		return "", false
-	}
-	if id := leadingTaskID(rest); id != "" {
-		return id, true
+	for _, marker := range backgroundAckTaskIDMarkers {
+		if _, rest, found := strings.Cut(first, marker); found {
+			if id := leadingTaskID(rest); id != "" {
+				return id, true
+			}
+		}
 	}
 	return "", false
 }
@@ -199,7 +216,7 @@ func BackgroundAckTaskID(text string) (taskID string, ok bool) {
 // a Claude task id is spelled with (lowercase alphanumerics, `-`, `_`).
 // Observed ids are nine lowercase alphanumerics (`b20hid1oz`), but the
 // wire promises no length, and the terminator is whatever punctuation
-// the ack puts after the id (`.` today).
+// the ack puts after the id (`.` or `)`).
 func leadingTaskID(s string) string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

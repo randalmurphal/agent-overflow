@@ -135,10 +135,11 @@ type converter struct {
 	// a message from the user) and stamps ParentToolUseID on every event.
 	subagentScope string
 	emittedAgents map[string]bool
-	// backgroundHints holds the tool_use ids whose input asked for
-	// `run_in_background`. A hint is never a verdict (a flagged command
-	// can be refused); it only opens the text-only ack reading in
-	// convertToolResult for a sidechain result with no `toolUseResult`.
+	// backgroundHints holds the conversion's Bash tool_use ids, each with
+	// whether its input asked for `run_in_background`. It opens the
+	// text-only ack reading in convertToolResult for a sidechain result
+	// with no `toolUseResult` (BackgroundAckTaskID). A request is never a
+	// verdict: a requested command can be refused.
 	backgroundHints map[string]bool
 	// openingPromptByScope gives the first user-role row in each subagent a
 	// launch-scoped identity. Live Claude can render that prompt from the
@@ -364,13 +365,13 @@ func (c *converter) convertToolResult(row Row, block map[string]any) {
 		if id := strings.TrimSpace(rawString(rawMapValue(toolUseResult), "backgroundTaskId")); id != "" {
 			fields["task_id"] = id
 		}
-	} else if toolUseResult == nil && c.backgroundHints[toolUseID] {
+	} else if requested, bash := c.backgroundHints[toolUseID]; bash && toolUseResult == nil {
 		// A sidechain ack carries no `toolUseResult`, so the text is the
 		// only evidence. Same gate as the live parser (claude-wire.md
-		// §E2b): flagged launch, no structured sibling, ack text naming
-		// a task. Anything else (a hook deny, a permission refusal)
-		// settles in place with the result it actually got.
-		if id, ok := BackgroundAckTaskID(content); ok {
+		// §E2b): a Bash launch, no structured sibling, ack text naming a
+		// task. Anything else (a hook deny, a permission refusal, the
+		// command's own output) settles in place with the result it got.
+		if id, ok := BackgroundAckTaskID(content, requested); ok {
 			fields["is_background"] = true
 			fields["task_id"] = id
 		}

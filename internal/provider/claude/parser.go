@@ -42,6 +42,15 @@ type Parser struct {
 	// (a hint the result must confirm) or a task_started resume rebind
 	// (a verdict). See backgroundOrigin.
 	backgroundToolUses map[string]backgroundOrigin
+	// bashToolUses flags the Bash tool_use ids awaiting their result. A
+	// sidechain Bash result carries no `tool_use_result`, so its text is
+	// the only evidence that the CLI moved the command to the background
+	// (claude-wire.md §E2b), and only a Bash result may be read that way.
+	// One-shot: the result releases the entry. Bounded by
+	// parserTaskMapCap with wholesale reset, which costs a command lost
+	// that way its ack reading, the tolerable outcome BackgroundAckTaskID
+	// documents.
+	bashToolUses map[string]bool
 	// todoWriteToolUses flags tool_use IDs for the `TodoWrite` tool. The
 	// tool_use itself emits an EventTodoUpdate (not a generic tool start)
 	// so the matching tool_result must be dropped — there is no tool-call
@@ -388,6 +397,7 @@ func (p *Parser) Close() {
 		return
 	}
 	p.backgroundToolUses = nil
+	p.bashToolUses = nil
 	p.todoWriteToolUses = nil
 	p.pendingTaskMutations = nil
 	p.worktreeToolUses = nil
@@ -591,6 +601,27 @@ func (p *Parser) clearBackground(toolUseID string) {
 		return
 	}
 	delete(p.backgroundToolUses, toolUseID)
+}
+
+// markBashTool records that toolUseID's tool_use block was a Bash call.
+func (p *Parser) markBashTool(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	if p.bashToolUses == nil || len(p.bashToolUses) >= parserTaskMapCap {
+		p.bashToolUses = make(map[string]bool)
+	}
+	p.bashToolUses[toolUseID] = true
+}
+
+// takeBashTool reports whether toolUseID was observed as a Bash tool_use
+// and releases the entry.
+func (p *Parser) takeBashTool(toolUseID string) bool {
+	if toolUseID == "" || !p.bashToolUses[toolUseID] {
+		return false
+	}
+	delete(p.bashToolUses, toolUseID)
+	return true
 }
 
 // markTodoWrite records that the given tool_use ID was a `TodoWrite`

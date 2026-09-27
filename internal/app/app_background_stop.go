@@ -75,13 +75,28 @@ func (a *App) StopBackgroundTasks(threadID string, launchIDs []string) ([]Backgr
 	if err != nil {
 		return nil, fmt.Errorf("stop background tasks: list live background tasks: %w", err)
 	}
+	var results []BackgroundTaskStop
 	switch kind {
 	case string(provider.Claude):
-		return a.stopClaudeBackgroundTasks(threadID, rows, named)
+		if results, err = a.stopClaudeBackgroundTasks(threadID, rows, named); err != nil {
+			return nil, err
+		}
 	case string(provider.Codex):
-		return a.stopCodexBackgroundTasks(threadID, rows, named), nil
+		results = a.stopCodexBackgroundTasks(threadID, rows, named)
+	default:
+		return nil, fmt.Errorf("stop background tasks: thread %s has provider %q", threadID, kind)
 	}
-	return nil, fmt.Errorf("stop background tasks: thread %s has provider %q", threadID, kind)
+	// A launch named here that has ended was still listed running by the
+	// caller, so its tray missed that end: announce it, and every tray
+	// showing it drops it.
+	var ended []string
+	for _, result := range results {
+		if result.Outcome == BackgroundStopEnded {
+			ended = append(ended, result.LaunchItemID)
+		}
+	}
+	a.triage.AnnounceBackgroundTray(threadID, ended...)
+	return results, nil
 }
 
 func (a *App) stopClaudeBackgroundTasks(threadID string, rows []store.Item, named []string) ([]BackgroundTaskStop, error) {

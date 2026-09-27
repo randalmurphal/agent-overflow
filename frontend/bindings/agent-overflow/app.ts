@@ -5040,8 +5040,14 @@ export function StopBackgroundTasks(threadID: string, launchIDs: string[]): $Can
  *     branch on provider before reaching for this.
  *   - timeout / provider error: surfaced verbatim so the UI can render
  *     the CLI-supplied message.
+ * 
+ * It reports whether a stop was sent. A task whose end the store already
+ * records is not sent one: the CLI answers `success` for a task it no
+ * longer holds and emits nothing after (claude-wire.md §stop_task), so the
+ * call would change nothing. Its launches are announced to the tray
+ * instead, so a client still listing one as running drops it.
  */
-export function StopClaudeTask(threadID: string, taskID: string): $CancellablePromise<void> {
+export function StopClaudeTask(threadID: string, taskID: string): $CancellablePromise<boolean> {
     return $Call.ByID(536320598, threadID, taskID);
 }
 

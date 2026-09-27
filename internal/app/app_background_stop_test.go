@@ -53,8 +53,15 @@ done
 
 func newClaudeStopFixture(t *testing.T, refused string) (*agentKillFixture, string) {
 	t.Helper()
+	return newClaudeStopFixtureEmitting(t, refused, func(eventchan.Channel, any) {})
+}
+
+// newClaudeStopFixtureEmitting is newClaudeStopFixture with the router's
+// emissions going to emit.
+func newClaudeStopFixtureEmitting(t *testing.T, refused string, emit func(eventchan.Channel, any)) (*agentKillFixture, string) {
+	t.Helper()
 	app, dbPath := newTestAppWithStorePath(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	app.triage = triage.NewRouter(app.store, emit)
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
@@ -243,5 +250,121 @@ func TestRunBoundedKeepsTheBound(t *testing.T) {
 	})
 	if len(ran) != 40 || peak.Load() > 4 || peak.Load() < 2 {
 		t.Fatalf("ran %d calls with a peak of %d in flight, want 40 with at most 4", len(ran), peak.Load())
+	}
+}
+
+// trayFrameRecorder keeps the provider:background_tray frames a router
+// emits.
+type trayFrameRecorder struct {
+	mu     sync.Mutex
+	frames []triage.BackgroundTrayEvent
+}
+
+func (r *trayFrameRecorder) emit(name eventchan.Channel, data any) {
+	if name != eventchan.ProviderBackgroundTray {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.frames = append(r.frames, data.(triage.BackgroundTrayEvent))
+}
+
+func (r *trayFrameRecorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.frames = nil
+}
+
+// named reports whether a frame since the last reset answers for id,
+// and whether that frame carried id's launch row.
+func (r *trayFrameRecorder) named(id string) (named, carriedRow bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, frame := range r.frames {
+		if !slices.Contains(frame.LaunchIDs, id) {
+			continue
+		}
+		named = true
+		for _, row := range frame.Rows {
+			carriedRow = carriedRow || row.ID == id
+		}
+	}
+	return named, carriedRow
+}
+
+// A per-row Stop of a task whose end the store records sends the CLI
+// nothing: the CLI acks a stop_task for a task it no longer holds and
+// emits nothing after, so the click changed nothing. The call says so and
+// announces the launch, so a tray still listing it drops it. A running
+// task, a parked agent, and a task the store has no row for yet are sent
+// their stop.
+func TestStopClaudeTaskOfAnEndedTaskSendsNothingAndAnnouncesIt(t *testing.T) {
+	var recorder trayFrameRecorder
+	f, stopLog := newClaudeStopFixtureEmitting(t, "", recorder.emit)
+	f.launchShell(t, "done-sh", "task-done-sh", "")
+	f.stopAgent(t, "done-sh", "task-done-sh")
+	// A foreground Bash the CLI moved and that then settled in place: a
+	// completed ordinary call that still carries its task id.
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventToolStart, ItemID: "moved-sh", ParentToolUseID: ""},
+		map[string]any{"task_id": "task-moved-sh", "task_type": "local_bash"})
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventToolStart, ItemID: "moved-sh", ItemType: "Bash"},
+		map[string]any{"toolName": "Bash", "input": map[string]any{"command": "go test ./..."}})
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventSubagentBackgrounded, ItemID: "moved-sh"},
+		map[string]any{"task_id": "task-moved-sh"})
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventToolComplete, ItemID: "moved-sh", Content: "ok"},
+		map[string]any{"exit_code": 0})
+	f.launchShell(t, "live-sh", "task-live-sh", "")
+	// A parked agent is live: its parked stop settles nothing.
+	f.launchAgent(t, "parked", "task-parked", "")
+	f.launchShell(t, "parked-sh", "task-parked-sh", "parked")
+	f.stopAgent(t, "parked", "task-parked")
+
+	for _, ended := range []struct{ launch, task string }{{"done-sh", "task-done-sh"}, {"moved-sh", "task-moved-sh"}} {
+		recorder.reset()
+		stopped, err := f.app.StopClaudeTask(f.thread.ID, ended.task)
+		if err != nil || stopped {
+			t.Fatalf("StopClaudeTask(%s) = %v, %v; want false, nil", ended.task, stopped, err)
+		}
+		if named, carried := recorder.named(ended.launch); !named || carried && ended.launch == "moved-sh" {
+			t.Fatalf("%s: tray frame named=%v carried=%v, want the ended launch announced", ended.launch, named, carried)
+		}
+	}
+	if tasks := stoppedTasks(t, stopLog); len(tasks) != 0 {
+		t.Fatalf("stop_task sent for ended tasks %v", tasks)
+	}
+
+	for _, task := range []string{"task-live-sh", "task-not-landed", "task-parked"} {
+		stopped, err := f.app.StopClaudeTask(f.thread.ID, task)
+		if err != nil || !stopped {
+			t.Fatalf("StopClaudeTask(%s) = %v, %v; want true, nil", task, stopped, err)
+		}
+	}
+	if tasks := stoppedTasks(t, stopLog); !slices.Equal(tasks, []string{"task-live-sh", "task-not-landed", "task-parked"}) {
+		t.Fatalf("stop_task sent for %v, want the live, the unknown and the parked task", tasks)
+	}
+}
+
+// Stop All's ended launches were listed running by the caller, so their
+// ends are announced to every tray.
+func TestStopBackgroundTasksAnnouncesEndedLaunches(t *testing.T) {
+	var recorder trayFrameRecorder
+	f, _ := newClaudeStopFixtureEmitting(t, "", recorder.emit)
+	f.launchAgent(t, "finished", "task-finished", "")
+	f.stopAgent(t, "finished", "task-finished")
+	f.launchShell(t, "live-sh", "task-live-sh", "")
+
+	recorder.reset()
+	results, err := f.app.StopBackgroundTasks(f.thread.ID, []string{"finished", "live-sh"})
+	if err != nil {
+		t.Fatalf("StopBackgroundTasks: %v", err)
+	}
+	if len(results) != 2 || results[0].Outcome != BackgroundStopEnded || results[1].Outcome != BackgroundStopStopping {
+		t.Fatalf("results = %+v, want finished ended and live-sh stopping", results)
+	}
+	if named, _ := recorder.named("finished"); !named {
+		t.Fatal("the ended launch must be announced to the tray")
+	}
+	if named, _ := recorder.named("live-sh"); named {
+		t.Fatal("a launch being stopped settles through its terminal, not an announcement")
 	}
 }

@@ -25,6 +25,7 @@ import { makePanelContext, type PanelContext } from '../../stores/panelContext.s
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 
 const THREAD_ID = 'thread-agent';
 
@@ -67,6 +68,7 @@ describe('<AgentPane>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
     resetBindingMocks();
+    for (const toast of [...getToasts()]) removeToast(toast.id);
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
@@ -214,7 +216,7 @@ describe('<AgentPane>', () => {
   });
 
   it('shows Stop only for a running Claude launch that carries a task_id', async () => {
-    const stop = vi.fn(async () => {});
+    const stop = vi.fn(async () => true);
     setBindingMock('StopClaudeTask', stop);
     const { ctx } = await setup([
       launchItem({
@@ -229,6 +231,22 @@ describe('<AgentPane>', () => {
     // The stop control is the real SendButton in its stop variant.
     await fireEvent.click(getByTestId('composer-interrupt'));
     await waitFor(() => expect(stop).toHaveBeenCalledWith(THREAD_ID, 'task-9'));
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('says so when Stop finds the task already ended', async () => {
+    setBindingMock('StopClaudeTask', vi.fn(async () => false));
+    const { ctx } = await setup([
+      launchItem({ isBackground: true, meta: JSON.stringify({ task_id: 'task-9' }) }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const { getByTestId, queryByTestId } = await renderAgent({ props: { ctx } });
+
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    await waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message]))
+      .toEqual([['info', 'That task had already ended.']]));
+    expect(queryByTestId('agent-pane-stop-error')).toBeNull();
   });
 
   it('offers no Stop for a forked skill (no task lifecycle on the wire)', async () => {
@@ -380,7 +398,7 @@ describe('<AgentPane>', () => {
   });
 
   it('times the working chip from the resume, and stops the CURRENT round', async () => {
-    const stop = vi.fn(async () => {});
+    const stop = vi.fn(async () => true);
     setBindingMock('StopClaudeTask', stop);
     const now = Date.now();
     const { ctx } = await setup([
@@ -539,7 +557,7 @@ describe('<AgentPane>', () => {
   // crumb already carries the model-chosen task name, so the header must
   // not append it a second time as a description.
   it('runs and stops a Codex follow-up independently of an older answer', async () => {
-    const stop=vi.fn(async()=>{});
+    const stop=vi.fn(async()=>true);
     setBindingMock('StopCodexSubagent',stop);
     const {ctx}=await setup([
       launchItem({toolName:'collab_agent',status:'completed',meta:JSON.stringify({input:{tool:'spawn_agent',receiverThreadIds:['child'],agentPath:'/root/worker'},live_background_active:true,codex_runtime:{turnId:'B',status:'running',startedAt:1000,updatedAt:2000,activeFlags:['waitingOnApproval']}}),payloadMeta:undefined}),

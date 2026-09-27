@@ -1629,7 +1629,9 @@ backgrounded. Do NOT key off `input.run_in_background` alone:
    `{command, description}`), so the launch-time hint is absent and
    `backgroundTaskId` is the only signal. The sibling additionally
    carries `"assistantAutoBackgrounded": false`. Captured 2026-06-20 from
-   a real session (thread `d920dc89`, command `make check`).
+   a real session (thread `d920dc89`, command `make check`). A subagent's
+   moved command acks on the sidechain with no `tool_use_result`; see
+   §E2b.
 3. **Assistant-initiated**: the model backgrounds a running command
    mid-execution. The sibling's `assistantAutoBackgrounded` boolean is the
    field that distinguishes this trigger (captured = `false` in the timeout
@@ -1680,22 +1682,38 @@ A backgrounded Bash launched by a SUBAGENT acks on the sidechain
    "is_error": false}]}}
 ```
 
-Three CLI variants (BashTool.tsx), one per trigger, all opening with
-`Command ` and naming the task as ` with ID: <id>` on the first line:
-"Command running in background with ID: …", "Command exceeded the
-assistant-mode blocking budget (…) and was moved to the background with
-ID: …", "Command was manually backgrounded by user with ID: …".
+Every variant opens with `Command ` and names the task on its first
+line, as ` with ID: <id>` or `(ID: <id>)`. One answers a launch flagged
+`run_in_background: true`: "Command running in background with ID: …".
+The others answer a FOREGROUND command the CLI moved to the background
+while it ran (BashTool.tsx; the timeout wording is from 2.1.280):
+"Command did not complete within its 300s timeout and was moved to the
+background (ID: …)", "Command exceeded the assistant-mode blocking
+budget (…) and was moved to the background with ID: …", "Command was
+manually backgrounded by user with ID: …".
+
+A moved sidechain command also gets `task_updated{is_backgrounded:true}`
+about 60ms before its ack. The patch is not a verdict on the result: a
+command that finishes as it is moved answers with its real output after
+the patch (observed on the main thread, 2026-09-26, where the structured
+result settled it).
 
 **Parser behavior**: `sessionimport.BackgroundAckTaskID` (one rule,
-shared with the session importer) recognises the ack from the text and
-recovers the id. It is consulted ONLY when the launch was flagged
-`run_in_background: true` AND no `tool_use_result` is present, and it
+shared by the live parser and the transcript converter, which serves
+session import and the `transcript_mirror` projection of a backgrounded
+agent's tail) recognises the ack from the text and recovers the id. It
+is consulted only for a Bash tool_use with no `tool_use_result`, and it
 matches a PREFIX on the first line, never a substring, so quoted output
-cannot classify. On a hit the completion carries `is_background: true`
-and `task_id: <id>`, and the task map binds the id to the tool_use so the
-sidechain's `task_updated` / `task_notification` terminal resolves and
-the tray row has a Stop target. A miss settles the launch in place with
-whatever result it got.
+cannot classify. The "running in background" ack classifies only a
+flagged launch, so a refused launch (hook deny, permission denial) is
+never read as running; the moved acks need no flag. On a hit the
+completion carries `is_background: true` and `task_id: <id>`, and the
+task map binds the id to the tool_use so the sidechain's
+`task_updated` / `task_notification` terminal resolves and the tray row
+has a Stop target. A miss settles the launch in place with whatever
+result it got. Reading a moved ack as an ordinary result would settle a
+command that still runs, drop its terminal, and end a background agent
+that stops during it instead of parking it.
 
 ### E3: TaskOutput `tool_result`
 
@@ -3428,6 +3446,13 @@ Error form:
  "task_id":"<same id>",
  "patch":{"status":"killed","end_time":<unix ms>}}
 ```
+
+A `stop_task` for a task the CLI no longer holds (it ended earlier) also
+answers `success` with an empty response, and nothing follows (2.1.280,
+2026-09-26). Success is not evidence that anything stopped, so
+`App.StopClaudeTask` sends no stop for a task whose end the store
+records; it reports that no stop was sent and announces the task's
+launches to the background tray.
 
 Unifies across task types. `task_started.task_type` is `local_bash`
 for a backgrounded Bash, `local_agent` for a Task subagent, but

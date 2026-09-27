@@ -276,11 +276,15 @@ func (p *Parser) appendToolResultBlock(
 	// signal is POSITIVE evidence; the launch-time `run_in_background:
 	// true` INPUT flag is never a verdict on its own:
 	//
-	//   1. bashAcked — the launch was flagged `run_in_background:true`
-	//      (`backgroundToolUses`, recorded at assistant-parse time), NO
-	//      `tool_use_result` is present, and the result TEXT is the Bash
-	//      backgrounding ack naming a task id (`sessionimport.BackgroundAckTaskID`,
-	//      claude-wire.md §E2b). The flag alone used to suffice, which is
+	//   1. bashAcked — the launch was a Bash call (`bashToolUses`) or was
+	//      flagged `run_in_background:true` (`backgroundToolUses`), both
+	//      recorded at assistant-parse time, NO `tool_use_result` is
+	//      present, and the result TEXT is the Bash backgrounding ack
+	//      naming a task id (`sessionimport.BackgroundAckTaskID`,
+	//      claude-wire.md §E2b). The "running in background" ack confirms
+	//      only a flagged launch; the "moved to the background" acks
+	//      (timeout, blocking budget, manual) answer a FOREGROUND command,
+	//      which carries no flag. The flag alone used to suffice, which is
 	//      how a flagged launch the CLI REFUSED (hook deny, permission
 	//      denial in don't-ask mode — `is_error:true`, no task ever
 	//      started) read as "running in the background" and sat in the
@@ -360,11 +364,15 @@ func (p *Parser) appendToolResultBlock(
 	// below: no structured sibling (a present one is the sole authority,
 	// and a present one WITHOUT `backgroundTaskId` — the permission-denial
 	// string, an ordinary inline result — is a verdict of "not
-	// backgrounded"), the launch asked for backgrounding, and the text
-	// names the task id the later terminal routes by.
+	// backgrounded"), a Bash or flagged launch, and the text names the
+	// task id the later terminal routes by. The CLI's
+	// `task_updated{is_backgrounded:true}` for a moved command is not
+	// consulted: a command that finishes as it is moved answers with its
+	// real output after that patch.
+	bash := p.takeBashTool(toolUseID)
 	bashAcked := false
-	if !markedOnWire && flaggedAtLaunch && len(toolUseResultRaw) == 0 {
-		backgroundTaskID, bashAcked = sessionimport.BackgroundAckTaskID(content)
+	if !markedOnWire && (bash || flaggedAtLaunch) && len(toolUseResultRaw) == 0 {
+		backgroundTaskID, bashAcked = sessionimport.BackgroundAckTaskID(content, flaggedAtLaunch)
 	}
 	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
 	// §E5b — the sidechain async-launch ack. A subagent launching its
