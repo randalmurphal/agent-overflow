@@ -254,6 +254,17 @@ func TestReconcileProjectWorktreesLeavesAThreadExitingItsOwnWorktree(t *testing.
 		t.Errorf("notices on the exiting thread = %q, want none", notices)
 	}
 	f.assertAtRoot(t, sibling.ID)
+	assertRemovedByClaudeNotice(t, f, sibling.ID)
+}
+
+// assertRemovedByClaudeNotice checks that a sibling moved by a sweep that
+// left an exiting Claude thread alone is told Claude removed the worktree.
+func assertRemovedByClaudeNotice(t *testing.T, f watchFixture, threadID string) {
+	t.Helper()
+	notices := f.notices(t, threadID)
+	if len(notices) != 1 || !strings.Contains(notices[0], removedByClaudeCause) {
+		t.Errorf("sibling notices = %q, want one saying the worktree %s", notices, removedByClaudeCause)
+	}
 }
 
 // exitWorktreeStart is the tool start the Claude parser emits for a
@@ -304,6 +315,7 @@ func TestReconcileProjectWorktreesLeavesAThreadWithExitWorktreeInFlight(t *testi
 		t.Errorf("notices on the exiting thread = %q, want none", notices)
 	}
 	f.assertAtRoot(t, sibling.ID)
+	assertRemovedByClaudeNotice(t, f, sibling.ID)
 }
 
 // A pending `ExitWorktree` that ends without a removal the app follows

@@ -178,7 +178,7 @@ func (a *App) resolveProviderWorkspaceTarget(project, cwd string) (GitWorkspaceS
 // failure is reported on the exiting thread, whose tool
 // result this reaction belongs to.
 func (a *App) reclaimProviderRemovedWorktree(projectID, project, worktreePath, exitingThreadID string) {
-	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath, cause: "was removed by Claude in another thread"}
+	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath, cause: removedByClaudeCause}
 	a.reclaimRemovedWorktree(removal, exitingThreadID, true, func(_ []string, problem string) {
 		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but %s", worktreePath, problem))
 	})

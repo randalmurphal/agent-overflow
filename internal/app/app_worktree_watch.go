@@ -174,7 +174,7 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 	for _, canonical := range canonicals {
 		path := gone[canonical]
 		_, announce := announced[canonical]
-		removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: path, cause: "was removed outside Agent Overflow"}
+		removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: path, cause: removedOutsideCause}
 		if a.appWorktreeRemovals.contains(path) {
 			// The app is removing it (removeWorkflowWorktree) and reacts
 			// the same way; this sweep only got there first.
@@ -247,11 +247,17 @@ func (a *App) reclaimRemovedWorktree(removal *worktreeRemoval, exitingThreadID s
 		unlocks = append(unlocks, unlock)
 	}
 	others = slices.DeleteFunc(others, func(id string) bool {
-		if a.providerExitingWorktree(id, worktreePath) {
-			return true
+		exiting := a.providerExitingWorktree(id, worktreePath)
+		if !exiting {
+			current, ok := a.sessionManager().get(id)
+			exiting = ok && a.pendingWorktreeExits.claim(id, current.Token)
 		}
-		current, ok := a.sessionManager().get(id)
-		return ok && a.pendingWorktreeExits.claim(id, current.Token)
+		if exiting && removal.cause == removedOutsideCause {
+			// The registry showed the removal before the app read the
+			// exiting thread's ExitWorktree result: Claude removed it.
+			removal.cause = removedByClaudeCause
+		}
+		return exiting
 	})
 	mutable, err := a.mutableWorkspaceThreads(others)
 	if err != nil {

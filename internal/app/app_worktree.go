@@ -515,6 +515,12 @@ func (a *App) mutableWorkspaceThreads(attached []string) ([]string, error) {
 	return mutable, nil
 }
 
+// The causes a moved thread's notice names.
+const (
+	removedOutsideCause  = "was removed outside Agent Overflow"
+	removedByClaudeCause = "was removed by Claude in another thread"
+)
+
 // worktreeRemoval names one removed worktree for the reactions every removal
 // shares, and remembers the project root's branch once it is read.
 type worktreeRemoval struct {
@@ -522,8 +528,8 @@ type worktreeRemoval struct {
 	project   string
 	path      string
 	// cause is empty for a removal the app performed on request. Otherwise
-	// it says who removed the worktree ("was removed outside Agent
-	// Overflow"), and every thread the removal moves is told so.
+	// it says who removed the worktree (removedOutsideCause,
+	// removedByClaudeCause), and every thread the removal moves is told so.
 	cause string
 
 	branch     string
