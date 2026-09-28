@@ -1,13 +1,17 @@
 import { withBackendTarget } from '../transport/backends';
 import { workspaceKeyBackend } from '../utils/workspaceKey';
-// Merge-conflict state, keyed by PR.
+// Merge-conflict state, keyed by PR and checkout.
 //
 // The merged tree and every conflicted file's content belong to the pull
-// request: one merge-tree run and one set of file reads serve every pane
-// looking at it. Like the CI cache next door it is not SOURCED by the PR
-// subscription — nothing computes a tree until a pane opens the conflict
-// view — so it lives beside the snapshot store and is dropped through
-// that store's `onDrop` when the last holder of the PR goes.
+// request as computed in one local checkout: one merge-tree run and one set
+// of file reads serve every pane on that PR in that checkout. Panes in
+// different checkouts get separate entries, so each computes against a
+// clone it can address and none depends on another's checkout staying
+// registered. Like the CI cache next door it is not SOURCED by the PR
+// subscription (nothing computes a tree until a pane opens the conflict
+// view), so it lives beside the snapshot store, and every checkout's entry
+// is dropped through that store's `onDrop` when the last holder of the PR
+// goes.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { GetMergeConflictFile, GetPRMergeConflicts } from './bindings';
@@ -36,6 +40,13 @@ export interface PRConflicts {
 }
 
 class PRConflictEntry {
+  constructor(
+    readonly prKey: string,
+    /** The checkout that computes the tree. merge-tree needs a local clone,
+     * and a head move recomputes without an attacher present to supply one. */
+    readonly workspace: WorkspaceRef,
+  ) {}
+
   state = $state<PRConflicts | null>(null);
   loading = $state(false);
   /** The merge-tree computation's own failure. */
@@ -49,10 +60,6 @@ class PRConflictEntry {
   /** In-flight per-path content loads, so N panes expanding the same file
    * share one read. */
   readonly inFlight = new Map<string, Promise<void>>();
-  /** The checkout that computed the tree — merge-tree needs a local clone,
-   * and a head move has to recompute without an attacher present to supply
-   * one. Null until the first load names it. */
-  workspace: WorkspaceRef | null = null;
   /** The (base, head) pair that moved WHILE a load was running. The view is
    * open, so it has to converge on it once the in-flight load settles —
    * dropping it left the pane pinned to a superseded merge forever, because
@@ -97,53 +104,66 @@ const EMPTY_CONFLICTS: PRConflictsView = Object.freeze({
   error: null,
   contentByPath: EMPTY_CONFLICT_CONTENT,
 });
+// Entries by `entryKey(prKey, workspace)`.
 const conflictsByKey = new SvelteMap<string, PRConflictEntry>();
 
-// Keys whose conflict view is on screen somewhere. Only those reconcile a
-// head move eagerly: recomputing a merged tree runs `git merge-tree` and
-// then one read per conflicted file, and doing that for a surface nobody
-// is looking at turns a background poll into work nobody asked for.
-// Refcounted — two panes can have the view open on one PR — and a closed
-// view is not a correctness hole: openPRConflicts recomputes whenever the
-// entry's (base, head) pair no longer matches the detail it is handed.
+// Entry keys whose conflict view is on screen somewhere. Only those
+// reconcile a head move eagerly: recomputing a merged tree runs
+// `git merge-tree` and then one read per conflicted file, and doing that for
+// a surface nobody is looking at turns a background poll into work nobody
+// asked for. Refcounted, since two panes can have the view open on one
+// entry, and a closed view is not a correctness hole: openPRConflicts
+// recomputes whenever the entry's (base, head) pair no longer matches the
+// detail it is handed.
 const viewHolds = new Map<string, number>();
 
+// The PR key already names the computer, so the checkout is identified by
+// the ref's own fields.
+function entryKey(prKey: string, workspace: WorkspaceRef): string {
+  return JSON.stringify([prKey, workspace.projectId, workspace.workspacePath]);
+}
+
 /**
- * Declare that a conflict view is on screen for this PR. Held for exactly
- * as long as the surface renders; the returned release is idempotent.
+ * Declare that a conflict view is on screen for this PR in this checkout.
+ * Held for exactly as long as the surface renders; the returned release is
+ * idempotent.
  */
-export function permitPRConflictReconcile(key: string): () => void {
-  viewHolds.set(key, (viewHolds.get(key) ?? 0) + 1);
+export function permitPRConflictReconcile(key: string, workspace: WorkspaceRef): () => void {
+  const holdKey = entryKey(key, workspace);
+  viewHolds.set(holdKey, (viewHolds.get(holdKey) ?? 0) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const remaining = (viewHolds.get(key) ?? 1) - 1;
-    if (remaining > 0) viewHolds.set(key, remaining);
-    else viewHolds.delete(key);
+    const remaining = (viewHolds.get(holdKey) ?? 1) - 1;
+    if (remaining > 0) viewHolds.set(holdKey, remaining);
+    else viewHolds.delete(holdKey);
   };
 }
 
-function ensureConflicts(key: string): PRConflictEntry {
-  let entry = conflictsByKey.get(key);
+function ensureConflicts(key: string, workspace: WorkspaceRef): PRConflictEntry {
+  const id = entryKey(key, workspace);
+  let entry = conflictsByKey.get(id);
   if (!entry) {
-    entry = new PRConflictEntry();
-    conflictsByKey.set(key, entry);
+    entry = new PRConflictEntry(key, workspace);
+    conflictsByKey.set(id, entry);
   }
   return entry;
 }
 
-/** Reactive read; a PR whose conflicts were never opened reads as empty. */
-export function peekPRConflicts(key: string | null): PRConflictsView {
+/** Reactive read; a PR whose conflicts were never opened in this checkout
+ *  reads as empty. */
+export function peekPRConflicts(key: string | null, workspace: WorkspaceRef): PRConflictsView {
   if (key === null) return EMPTY_CONFLICTS;
-  return conflictsByKey.get(key) ?? EMPTY_CONFLICTS;
+  return conflictsByKey.get(entryKey(key, workspace)) ?? EMPTY_CONFLICTS;
 }
 
 /**
- * Compute (or reuse) the merged tree for a PR and fetch every conflicted
- * file's content. Reuses a tree already computed for the same base/head —
- * a second pane opening the view pays nothing, and so does a view
- * reopening onto a PR that has not moved since it was closed.
+ * Compute (or reuse) the merged tree for a PR in a checkout and fetch every
+ * conflicted file's content. Reuses a tree already computed there for the
+ * same base/head: a second pane in the checkout opening the view pays
+ * nothing, and so does a view reopening onto a PR that has not moved since
+ * it was closed.
  */
 export async function openPRConflicts(
   key: string,
@@ -151,25 +171,23 @@ export async function openPRConflicts(
   ref: PRRef,
   detail: PRDetail,
 ): Promise<void> {
-  const entry = ensureConflicts(key);
+  const entry = ensureConflicts(key, workspace);
   const headSHA = String(detail.headSHA ?? '');
   const baseRefName = String(detail.baseRefName ?? '');
   if (entry.loading) return;
   if (entry.state && entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
     return;
   }
-  await loadPRConflicts(entry, key, workspace, ref, detail);
+  await loadPRConflicts(entry, ref, detail);
 }
 
 async function loadPRConflicts(
   entry: PRConflictEntry,
-  key: string,
-  workspace: WorkspaceRef,
   ref: PRRef,
   detail: PRDetail,
 ): Promise<void> {
+  const { prKey, workspace } = entry;
   const seq = ++entry.seq;
-  entry.workspace = workspace;
   entry.loading = true;
   entry.treeError = null;
   entry.errorByPath.clear();
@@ -178,7 +196,7 @@ async function loadPRConflicts(
   entry.contentByPath.clear();
   entry.inFlight.clear();
   try {
-    const result = await withBackendTarget(workspaceKeyBackend(key), () => GetPRMergeConflicts(
+    const result = await withBackendTarget(workspaceKeyBackend(prKey), () => GetPRMergeConflicts(
       workspace,
       prReferenceWire(ref),
       detail.baseRefName,
@@ -199,7 +217,7 @@ async function loadPRConflicts(
     // Conflict files render expanded, so their content is fetched here
     // (one local git read per file, in parallel). A file whose read fails
     // keeps its error and is the one thing a pane leaves collapsed.
-    await Promise.all(entry.state.paths.map((path) => ensurePRConflictFile(key, path)));
+    await Promise.all(entry.state.paths.map((path) => loadConflictFile(entry, path)));
   } catch (err) {
     if (seq !== entry.seq) return;
     entry.treeError = errString(err);
@@ -211,16 +229,20 @@ async function loadPRConflicts(
       // completed load already satisfied costs nothing.
       const pending = entry.takePending();
       if (pending) {
-        reconcileConflictsWithHead(key, pending.ref, pending.detail, String(pending.detail.headSHA ?? ''));
+        reconcileEntryWithHead(entry, pending.ref, pending.detail, String(pending.detail.headSHA ?? ''));
       }
     }
   }
 }
 
 /** Load one conflicted file's merged content; a no-op once it is present. */
-export async function ensurePRConflictFile(key: string, path: string): Promise<void> {
-  const entry = conflictsByKey.get(key);
-  if (!entry || entry.contentByPath.has(path)) return;
+export async function ensurePRConflictFile(key: string, workspace: WorkspaceRef, path: string): Promise<void> {
+  const entry = conflictsByKey.get(entryKey(key, workspace));
+  if (entry) await loadConflictFile(entry, path);
+}
+
+async function loadConflictFile(entry: PRConflictEntry, path: string): Promise<void> {
+  if (entry.contentByPath.has(path)) return;
   const inFlight = entry.inFlight.get(path);
   if (inFlight) {
     await inFlight;
@@ -228,12 +250,10 @@ export async function ensurePRConflictFile(key: string, path: string): Promise<v
   }
   const seq = entry.seq;
   const treeOID = entry.state?.treeOID ?? '';
-  const workspace = entry.workspace;
-  // A tree exists only after a load, and a load records its checkout.
-  if (workspace === null) return;
+  const { prKey, workspace } = entry;
   const load = (async () => {
     try {
-      const content = await withBackendTarget(workspaceKeyBackend(key), () => GetMergeConflictFile(workspace, treeOID, path));
+      const content = await withBackendTarget(workspaceKeyBackend(prKey), () => GetMergeConflictFile(workspace, treeOID, path));
       if (seq !== entry.seq) return;
       entry.contentByPath.set(path, String(content ?? ''));
       // Only THIS path's failure is resolved. The reads run in parallel, so
@@ -270,9 +290,19 @@ export function reconcileConflictsWithHead(
   detail: PRDetail | null,
   liveHeadSHA: string,
 ): void {
-  if (!viewHolds.has(key)) return;
-  const entry = conflictsByKey.get(key);
-  if (!entry || !detail || !ref) return;
+  if (!detail || !ref) return;
+  for (const entry of conflictsByKey.values()) {
+    if (entry.prKey === key) reconcileEntryWithHead(entry, ref, detail, liveHeadSHA);
+  }
+}
+
+function reconcileEntryWithHead(
+  entry: PRConflictEntry,
+  ref: PRRef,
+  detail: PRDetail,
+  liveHeadSHA: string,
+): void {
+  if (!viewHolds.has(entryKey(entry.prKey, entry.workspace))) return;
   const headSHA = String(detail.headSHA ?? liveHeadSHA ?? '');
   const baseRefName = String(detail.baseRefName ?? '');
   if (headSHA === '' && baseRefName === '') return;
@@ -296,24 +326,24 @@ export function reconcileConflictsWithHead(
   } else if (entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
     return;
   }
-  if (entry.workspace === null) return;
-  void loadPRConflicts(entry, key, entry.workspace, ref, detail);
+  void loadPRConflicts(entry, ref, detail);
 }
 
 /**
- * Drop a PR's conflict state. The token is bumped BEFORE the delete so
- * in-flight loads drop their results instead of resurrecting an entry
- * nobody holds.
+ * Drop a PR's conflict state in every checkout. The token is bumped BEFORE
+ * the delete so in-flight loads drop their results instead of resurrecting
+ * an entry nobody holds.
  */
 export function dropPRConflicts(key: string): void {
-  const entry = conflictsByKey.get(key);
-  if (!entry) return;
-  entry.seq += 1;
-  conflictsByKey.delete(key);
+  for (const [id, entry] of conflictsByKey) {
+    if (entry.prKey !== key) continue;
+    entry.seq += 1;
+    conflictsByKey.delete(id);
+  }
 }
 
 /** Test seam: drop every entry and permit, as a fresh module load would. */
 export function __resetPRConflictsForTest(): void {
-  for (const key of [...conflictsByKey.keys()]) dropPRConflicts(key);
+  for (const entry of [...conflictsByKey.values()]) dropPRConflicts(entry.prKey);
   viewHolds.clear();
 }

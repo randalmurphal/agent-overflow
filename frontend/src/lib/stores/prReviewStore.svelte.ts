@@ -2,11 +2,12 @@
 //
 // Doctrine (frontend/CLAUDE.md → State Boundaries): state is keyed by its
 // ENTITY. A pull request is one entity — its detail, review threads, head
-// SHA, CI pipeline, and merge-conflict tree describe the PR, not the pane
-// looking at it. Two panes reviewing one PR (a worktree thread and the
-// pr-anchor thread it spawned; a split view of the same thread) therefore
-// observe one snapshot, one poll pump, and one merge-tree computation
-// instead of private copies that drift apart.
+// SHA and CI pipeline describe the PR, not the pane looking at it. Two
+// panes reviewing one PR (a worktree thread and the pr-anchor thread it
+// spawned; a split view of the same thread) therefore observe one snapshot
+// and one poll pump instead of private copies that drift apart. The
+// merge-conflict tree is computed in a local clone, so it is shared per
+// PR and checkout.
 //
 // This module owns the POLLED snapshot. The two caches derived from the
 // same entity but sourced separately — the CI pipeline

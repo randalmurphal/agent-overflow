@@ -458,8 +458,9 @@ function createReviewPaneState(
   let loadedPRHead = $state<{ key: string; sha: string } | null>(null);
   let refreshingPRData = $state(false);
   // This pane's reference on the shared PR entity — held exactly while the
-  // pane is in pr scope. The subscription, poll pump, CI pipeline and
-  // conflict tree under it are shared with every other pane on the PR.
+  // pane is in pr scope. The subscription, poll pump and CI pipeline under
+  // it are shared with every other pane on the PR, and the conflict tree
+  // with every pane on the PR in this checkout.
   let prAttachment: PRAttachment | null = null;
   let conflictView = $state(false);
   // The conflict view's reconcile permit, held for exactly as long as the
@@ -635,7 +636,7 @@ function createReviewPaneState(
     return count;
   });
   const ciState = $derived(peekPRCI(prEntityKey));
-  const conflictsState = $derived(peekPRConflicts(prEntityKey));
+  const conflictsState = $derived(peekPRConflicts(prEntityKey, workspace));
   // The loaded head, but only while it still describes the PR on screen.
   // Everything anchored to the diff — the stale banner, span context,
   // draft commitSha, sent-marks — reads this rather than the raw stamp, so
@@ -868,12 +869,12 @@ function createReviewPaneState(
     conflictView = open;
     if (!open) return;
     const key = prEntityKey;
-    if (key) conflictReconcilePermit = permitPRConflictReconcile(key);
+    if (key) conflictReconcilePermit = permitPRConflictReconcile(key, workspace);
   }
 
   // Only the pane's VIEW of the conflicts resets on a scope switch: the
-  // merged tree belongs to the PR and may still be on screen in another
-  // pane. It is released with this pane's reference.
+  // merged tree belongs to the PR in this checkout and may still be on
+  // screen in another pane. It is released with this pane's reference.
   function resetConflictView(): void {
     setConflictView(false);
     conflictCollapsedPaths = new SvelteSet<string>();
@@ -1692,8 +1693,9 @@ function createReviewPaneState(
   }
 
   // The merged tree and every conflicted file's content belong to the PR
-  // (one merge-tree run serves every pane); what this pane owns is
-  // whether the surface is showing and which files it has collapsed.
+  // in this checkout (one merge-tree run serves every pane there); what
+  // this pane owns is whether the surface is showing and which files it
+  // has collapsed.
   async function openConflictView(): Promise<void> {
     const detail = prSnapshot?.detail;
     const key = prEntityKey;
@@ -1713,7 +1715,7 @@ function createReviewPaneState(
     // diff. A file whose content read failed and that carries no notes has
     // nothing to render, so it stays collapsed (the error is in the
     // banner) — the same outcome the per-path expand loop produced.
-    const conflicts = peekPRConflicts(key);
+    const conflicts = peekPRConflicts(key, workspace);
     conflictCollapsedPaths = new SvelteSet<string>(
       (conflicts.state?.paths ?? []).filter((path) => !conflictFileHasBody(path)),
     );
@@ -1735,7 +1737,7 @@ function createReviewPaneState(
       conflictCollapsedPaths.add(path);
       return;
     }
-    await ensurePRConflictFile(key, path);
+    await ensurePRConflictFile(key, workspace, path);
     // A note-bearing file expands even when its content load failed —
     // the notes are the conflict's only signal (the path may not exist
     // in the merged tree). The load error still surfaces in the banner.
