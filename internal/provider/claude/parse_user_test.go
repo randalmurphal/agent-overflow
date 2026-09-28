@@ -1245,7 +1245,7 @@ func TestAppendToolResultBlock_SidechainMovedAckOfForegroundBashMarksBackground(
 			if ref := parser.taskToolUseRef("bjppz119i"); ref.ToolUseID != "tool-fg" || ref.ParentToolUseID != "tool-agent" {
 				t.Fatalf("task map must bind the ack's id to the launch; got %+v", ref)
 			}
-			if parser.bashToolUses["tool-fg"] {
+			if parser.ackToolUses["tool-fg"] != "" {
 				t.Fatal("the result must release the Bash tool_use entry")
 			}
 		})
@@ -1307,5 +1307,83 @@ func parseForegroundSidechainBashResult(t *testing.T, parser *Parser, tool, cont
 		}
 	}
 	t.Fatalf("no EventToolComplete for tool-fg in %+v", events)
+	return nil
+}
+
+// A subagent's Monitor ack arrives with no `tool_use_result` (claude-wire.md
+// §E7; every sidechain Monitor ack in the wire logs), so its text is the
+// only evidence the watch runs. Read as an ordinary result, the watch
+// settled at launch: no tray row, and a stop of an agent parked only on it
+// counted nothing to wait on.
+func TestAppendToolResultBlock_SidechainMonitorAckTextMarksWatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"timeout", "Monitor started (task bw5d5fao4, timeout 3600000ms). You will be notified on each event."},
+		{"expiry", "Monitor started (task bw5d5fao4, expires in 30m unless the source ends first; you get one notice at expiry). Keep working."},
+		{"persistent", "Monitor started (task bw5d5fao4, persistent — runs until TaskStop or session end)."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			meta := parseSidechainResult(t, parser, "Monitor", tc.content)
+			if meta["is_background"] != true || meta["watch_task"] != true || meta["task_id"] != "bw5d5fao4" {
+				t.Fatalf("Monitor ack must classify as a background watch with its task id; meta=%v", meta)
+			}
+			if ref := parser.taskToolUseRef("bw5d5fao4"); ref.ToolUseID != "tool-watch" || ref.ParentToolUseID != "tool-agent" {
+				t.Fatalf("task map must bind the ack's id to the launch; got %+v", ref)
+			}
+			if parser.ackToolUses["tool-watch"] != "" {
+				t.Fatal("the result must release the Monitor tool_use entry")
+			}
+		})
+	}
+}
+
+// What the Monitor text reading must not promote: a refused launch, and
+// another tool's result that reads like the ack.
+func TestAppendToolResultBlock_SidechainResultsThatAreNotMonitorAcksSettle(t *testing.T) {
+	cases := []struct {
+		name    string
+		tool    string
+		content string
+	}{
+		{"refused Monitor", "Monitor", "InputValidationError: command is required"},
+		{"non-Monitor tool", "Read", "Monitor started (task bw5d5fao4, timeout 3600000ms)."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := parseSidechainResult(t, NewParser(), tc.tool, tc.content)
+			if meta["is_background"] == true || meta["watch_task"] == true {
+				t.Fatalf("result must settle in place; meta=%v", meta)
+			}
+		})
+	}
+}
+
+// parseSidechainResult feeds a tool_use of tool under agent tool-agent and
+// its sidechain result with content and no `tool_use_result`, and returns
+// the result's completion meta.
+func parseSidechainResult(t *testing.T, parser *Parser, tool, content string) map[string]any {
+	t.Helper()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-watch","name":"`+tool+`","input":{"command":"until done; do sleep 5; done","timeout_ms":1800000}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	blob, _ := json.Marshal(content)
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"user","parent_tool_use_id":"tool-agent","message":{"role":"user","content":[{"tool_use_id":"tool-watch","type":"tool_result","content":`+string(blob)+`,"is_error":false}]}}`))
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventToolComplete && evt.ItemID == "tool-watch" {
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			return meta
+		}
+	}
+	t.Fatalf("no EventToolComplete for tool-watch in %+v", events)
 	return nil
 }

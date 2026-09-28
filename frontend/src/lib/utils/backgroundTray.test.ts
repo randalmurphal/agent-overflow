@@ -14,6 +14,7 @@ import {
   statusLabel,
   trayRowStopTarget,
   trayTaskLabel,
+  scopedTrayTasks,
   type TrayTask,
 } from './backgroundTray';
 
@@ -697,5 +698,44 @@ describe('applyTrayDelta', () => {
     const next = applyTrayDelta(items, [], [], 2_000, 200);
     expect(ids(next)).toEqual(['fresh', 'fresh:done', 'live']);
     expect(deriveTrayTasks(next, 2_000, 200)).toEqual(deriveTrayTasks(items, 2_000, 200));
+  });
+});
+
+describe('scopedTrayTasks', () => {
+  // main › outer (bg agent) › { shell, inner (bg agent) › deep shell },
+  // plus a main-thread shell and a shell under a foreground agent inside
+  // outer, which the tray lists as a root.
+  const rows = [
+    makeItem({ id: 'outer', createdAt: 1 }),
+    makeItem({ id: 'shell', parentId: 'outer', createdAt: 2 }),
+    makeItem({ id: 'inner', parentId: 'outer', createdAt: 3 }),
+    makeItem({ id: 'deep', parentId: 'inner', createdAt: 4 }),
+    makeItem({ id: 'main-shell', createdAt: 5 }),
+    makeItem({ id: 'under-fg', parentId: 'fg-agent', createdAt: 6 }),
+  ];
+  const tasks = deriveTrayTasks(rows, 10, 200);
+  const view = (scope: string) => scopedTrayTasks(tasks, scope).map((t) => [t.rowId, t.depth]);
+
+  it('lists the rows under the agent with depth counted from it, without the agent itself', () => {
+    expect(view('outer')).toEqual([['shell', 0], ['inner', 0], ['deep', 1]]);
+    expect(view('inner')).toEqual([['deep', 0]]);
+  });
+
+  it('lists nothing for an agent with no rows under it, or no scope', () => {
+    expect(view('deep')).toEqual([]);
+    expect(view('')).toEqual([]);
+  });
+
+  it('keeps the main tray tasks unchanged', () => {
+    const before = tasks.map((t) => [t.rowId, t.depth]);
+    view('outer');
+    expect(tasks.map((t) => [t.rowId, t.depth])).toEqual(before);
+    expect(before).toContainEqual(['under-fg', 0]);
+  });
+
+  it('keeps a finished row under its agent through its retention window', () => {
+    const done = makeItem({ id: 'complete:shell', kind: 'tool_completion', completionOf: 'shell', parentId: 'outer', status: 'completed', createdAt: 8 });
+    const withDone = deriveTrayTasks([...rows.filter((r) => r.id !== 'shell'), done], 10, 200);
+    expect(scopedTrayTasks(withDone, 'outer').map((t) => t.rowId)).toContain('complete:shell');
   });
 });

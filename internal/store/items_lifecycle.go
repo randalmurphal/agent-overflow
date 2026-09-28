@@ -662,3 +662,47 @@ func (s *Store) EndedClaudeTask(threadID, taskID string) (bool, []string, error)
 	}
 	return len(ids) > 0, ids, nil
 }
+
+// LiveAgentRunRows names the rows through which the Claude agent whose
+// transcript root is rootID still runs: the root, and every resume
+// carrier stamped with it, that is a running tool call. A background one
+// runs while no ending sibling settled it and the schema did not mark it
+// inactive; a parked stop settles nothing. No rows means the agent's last
+// run has ended.
+func (s *Store) LiveAgentRunRows(threadID, rootID string) ([]string, error) {
+	if strings.TrimSpace(rootID) == "" {
+		return nil, nil
+	}
+	const running = `items.kind = 'tool_call'
+		       AND items.status = 'running'
+		       AND (items.is_background = 0
+		            OR (COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		                AND ` + noCompletionSiblingSQL + `))`
+	rows, err := s.reader().Query(
+		`SELECT items.id FROM items
+		  WHERE items.thread_id = ?1 AND items.id = ?2
+		    AND `+running+`
+		 UNION ALL
+		 SELECT items.id FROM items INDEXED BY idx_items_transcript_root
+		  WHERE items.thread_id = ?1
+		    AND json_extract(items.meta, '$.transcript_root_id') = ?2
+		    AND `+running,
+		threadID, rootID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: live runs of agent %s/%s: %w", threadID, rootID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan live run of agent %s/%s: %w", threadID, rootID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate live runs of agent %s/%s: %w", threadID, rootID, err)
+	}
+	return ids, nil
+}

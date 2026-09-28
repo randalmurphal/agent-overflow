@@ -109,6 +109,13 @@ their own siblings, so its cards follow the launch's, and nothing keyed on
 the task id merges the runs of a launch and its carriers. An agent's stop
 rings no bell, and nothing hides a stop's card later.
 
+A nested agent's stop files under the nearest enclosing agent that still
+runs (parked counts as running), whose next card holds it, and at top
+level when none does. A nested async agent is a task of the main session
+and can outlive the agent that launched it, whose last card ends at its
+own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
+`e2e/tests/agent-nested-outlives.spec.ts`).
+
 ## Key decisions
 
 - Card = today's inline subagent card for every kind. Awaited vs background
@@ -123,6 +130,13 @@ rings no bell, and nothing hides a stop's card later.
   as the card, and its open button opens the agent pane at every width.
   The tray never scrolls the timeline. Transcript launch rows retain their
   tool gutter and open button.
+- An agent pane's rail has its own Background segment while background
+  rows run under the agent it shows: the rows the thread's tray nests
+  under that agent, depth counted from it (`scopedTrayTasks`). A listed
+  agent's open button descends the pane into it. Its Stop All stops only
+  the listed rows; a Codex pane stops its terminals one by one, because the
+  thread's bulk stop cleans every terminal of the thread
+  (`agent-pane-tray.spec.ts`).
 - The initial prompt is a plain user-side message row nested under the
   launch (ruling 2026-08-23), not a bespoke shape: `user_text` with
   `meta.wire_only`, so it renders as a user bubble with no edit / fork /
@@ -186,8 +200,9 @@ rings no bell, and nothing hides a stop's card later.
   launch appears as a normal agent row without its descendants.
   Opening a child from inside swaps the scope and pushes a breadcrumb
   (`main › code-review › Angle B`); no stacking (Q4, Q4b).
-- Pane keeps the composer shell, non-interactive, with Stop (= kill
-  where the wire can) as its only live control; background button and
+- Pane keeps the composer shell with a read-only input; its live
+  controls are Stop (= kill where the wire can) and the rail's Background
+  segment (see the tray decision above); background button and
   status/elapsed sit in the pane header beside the breadcrumb (Q20).
   While the agent runs, the shell's top row is the working chip: the
   agent's own spinner sprite / LED chase, verb and elapsed timer, keyed
@@ -274,7 +289,8 @@ rings no bell, and nothing hides a stop's card later.
   ever a card. Each execution's card (status, duration, tool count,
   tokens, the expandable transcript, open-in-pane) renders AT its
   completion sibling (`SubagentGroupNode.anchor`): top-level, inside the
-  parent card for a nested node, or under the `wait_agent` group that
+  parent card for a nested node whose parent still ran at the stop
+  ([§Agent runs and stops](#agent-runs-and-stops)), or under the `wait_agent` group that
   claimed a Codex completion (`WaitGroupNode.children` are nodes), after
   everything the main thread wrote while the agent ran. A Codex card
   summarizes the completed execution; the answer is a normal message
@@ -348,8 +364,9 @@ rings no bell, and nothing hides a stop's card later.
       never goes backwards.
 - [ ] A Codex child's answer appears exactly once, as its own message.
 - [ ] Every stop of a top-level agent is a card in the main timeline and a
-      nested agent's is inside its parent's card; no agent stop rings a
-      bell.
+      nested agent's is inside its parent's card, or its own card when its
+      parent had already ended (`agent-nested-outlives.spec.ts`); no agent
+      stop rings a bell.
 - [x] The scale bar holds at 100 Claude agents: launch, stream and
       settle (`e2e/tests/agent-scale.spec.ts`); a Stop of 100 agents
       with 3 shells each, launched in an earlier turn, settles every row

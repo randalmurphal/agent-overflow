@@ -210,6 +210,8 @@
       <AgentPaneComposerShell
         threadId={ctx.threadId}
         pane={sourcePane}
+        scopeId={scopeItemId}
+        onOpenAgent={(id, label) => agent?.pushScope(id, label)}
         {launch}
         lifecycle={lifecycleItem}
         lifecycleCompletion={lifecycleCompletionItem}

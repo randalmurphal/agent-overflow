@@ -87,7 +87,7 @@ func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 		usageByModel:         map[string]*provider.TokenUsage{},
 		unknownSystem:        map[string]int{},
 		emittedAgents:        map[string]bool{},
-		backgroundHints:      map[string]bool{},
+		backgroundHints:      map[string]backgroundHint{},
 		openingPromptByScope: map[string]bool{},
 		compactSummaries:     map[string]string{},
 		consumedSummary:      map[string]bool{},
@@ -104,6 +104,15 @@ func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 		Warnings: c.warnings,
 		Profile:  c.profile,
 	}
+}
+
+// backgroundHint is a tool_use whose result text can be a background
+// ack: its tool (Bash or Monitor) and whether its input asked for
+// `run_in_background`. A request is never a verdict: a requested command
+// can be refused.
+type backgroundHint struct {
+	tool      string
+	requested bool
 }
 
 type converter struct {
@@ -135,12 +144,11 @@ type converter struct {
 	// a message from the user) and stamps ParentToolUseID on every event.
 	subagentScope string
 	emittedAgents map[string]bool
-	// backgroundHints holds the conversion's Bash tool_use ids, each with
-	// whether its input asked for `run_in_background`. It opens the
-	// text-only ack reading in convertToolResult for a sidechain result
-	// with no `toolUseResult` (BackgroundAckTaskID). A request is never a
-	// verdict: a requested command can be refused.
-	backgroundHints map[string]bool
+	// backgroundHints holds the conversion's Bash and Monitor tool_use
+	// ids. It opens the text-only ack reading in convertToolResult for a
+	// sidechain result with no `toolUseResult` (BackgroundAckTaskID,
+	// MonitorAckTaskID).
+	backgroundHints map[string]backgroundHint
 	// openingPromptByScope gives the first user-role row in each subagent a
 	// launch-scoped identity. Live Claude can render that prompt from the
 	// launch input before async stdout would ever echo it; the transcript uuid
@@ -364,16 +372,29 @@ func (c *converter) convertToolResult(row Row, block map[string]any) {
 		fields["is_background"] = true
 		if id := strings.TrimSpace(rawString(rawMapValue(toolUseResult), "backgroundTaskId")); id != "" {
 			fields["task_id"] = id
+		} else if id := monitorLaunchTaskID(toolUseResult); id != "" {
+			fields["task_id"] = id
+			fields["watch_task"] = true
 		}
-	} else if requested, bash := c.backgroundHints[toolUseID]; bash && toolUseResult == nil {
+	} else if hint, ok := c.backgroundHints[toolUseID]; ok && toolUseResult == nil {
 		// A sidechain ack carries no `toolUseResult`, so the text is the
 		// only evidence. Same gate as the live parser (claude-wire.md
-		// §E2b): a Bash launch, no structured sibling, ack text naming a
-		// task. Anything else (a hook deny, a permission refusal, the
-		// command's own output) settles in place with the result it got.
-		if id, ok := BackgroundAckTaskID(content, requested); ok {
-			fields["is_background"] = true
-			fields["task_id"] = id
+		// §E2b, §E7): a Bash or Monitor launch, no structured sibling,
+		// ack text naming a task. Anything else (a hook deny, a
+		// permission refusal, the command's own output) settles in place
+		// with the result it got.
+		switch hint.tool {
+		case BashToolName:
+			if id, ok := BackgroundAckTaskID(content, hint.requested); ok {
+				fields["is_background"] = true
+				fields["task_id"] = id
+			}
+		case MonitorToolName:
+			if id, ok := MonitorAckTaskID(content); ok {
+				fields["is_background"] = true
+				fields["task_id"] = id
+				fields["watch_task"] = true
+			}
 		}
 	}
 	if agentID, commandName, ok := skillForkResult(toolUseResult); ok {

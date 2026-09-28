@@ -47,3 +47,27 @@ func TestBackgroundAckTaskID_MovedAcksNeedNoRequest(t *testing.T) {
 		t.Fatalf("an unrequested launch must not read the running-in-background ack (got %q)", id)
 	}
 }
+
+// Every observed Monitor ack wording names its task first; a refusal or
+// a result that only quotes the ack does not classify.
+func TestMonitorAckTaskID(t *testing.T) {
+	for _, text := range []string{
+		"Monitor started (task bs7ev9m4y, timeout 3600000ms). You will be notified on each event.",
+		"Monitor started (task bs7ev9m4y, expires in 30m unless the source ends first; you get one notice at expiry). Keep working.",
+		"Monitor started (task bs7ev9m4y, persistent — runs until TaskStop or session end). You will be notified on each event.",
+	} {
+		if id, ok := MonitorAckTaskID(text); !ok || id != "bs7ev9m4y" {
+			t.Fatalf("%q: got (%q, %v), want (bs7ev9m4y, true)", text, id, ok)
+		}
+	}
+	for _, text := range []string{
+		"",
+		"InputValidationError: command is required",
+		"See: Monitor started (task bs7ev9m4y, timeout 3600000ms).", // not a prefix
+		"Monitor started (task , timeout 3600000ms).",               // empty id
+	} {
+		if id, ok := MonitorAckTaskID(text); ok {
+			t.Errorf("%q must not classify (got id %q)", text, id)
+		}
+	}
+}

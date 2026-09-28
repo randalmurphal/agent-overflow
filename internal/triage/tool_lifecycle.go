@@ -1396,6 +1396,15 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	}
 	launchTurnIndex := launch.TurnIndex
 	parentID := stringsx.FirstNonEmptyTrimmed(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
+	if store.IsAgentTranscriptLaunch(launch) {
+		// An agent's stop files where its first write placed it
+		// (agentStopScope); a later write keeps that scope.
+		if existing != nil {
+			parentID = existing.ParentID
+		} else if parentID, err = r.agentStopScope(evt.ThreadID, parentID); err != nil {
+			return err
+		}
+	}
 	toolName := launch.ToolName
 	launchSummary := launch.Summary
 	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launchTurnIndex, parentID)

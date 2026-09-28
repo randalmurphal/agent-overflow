@@ -83,6 +83,24 @@ func (r *Router) rowWrittenOrQueued(threadID, id string) (bool, error) {
 	return found, nil
 }
 
+// rowQueued reports whether row id waits in the thread's queue behind an
+// open stream.
+func (r *Router) rowQueued(threadID, id string) bool {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	defer lock.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for _, queued := range st.interruptQueue {
+			if queued.item.ID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // newestStopRow is the newest completion-shaped sibling of launchID,
 // parked or ending, where its write waits: queued behind an open stream,
 // else in the store (Store.NewestAgentStop). A queued row is newer than

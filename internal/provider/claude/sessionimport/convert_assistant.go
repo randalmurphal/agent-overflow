@@ -104,8 +104,11 @@ func (c *converter) convertAssistant(row Row) {
 			if id == "" {
 				continue
 			}
-			if name := rawString(block, "name"); name == BashToolName {
-				c.backgroundHints[id] = rawBool(rawMapValue(block["input"]), "run_in_background")
+			if name := rawString(block, "name"); name == BashToolName || name == MonitorToolName {
+				c.backgroundHints[id] = backgroundHint{
+					tool:      name,
+					requested: rawBool(rawMapValue(block["input"]), "run_in_background"),
+				}
 			}
 			c.emit(provider.ProviderEvent{
 				Kind:     provider.EventToolStart,

@@ -205,7 +205,10 @@ func (r *Router) writeParkedStop(evt provider.ProviderEvent, meta backgroundTask
 	if err != nil {
 		return err
 	}
-	parentID := stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
+	parentID, err := r.agentStopScope(evt.ThreadID, stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID))
+	if err != nil {
+		return err
+	}
 	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex, parentID)
 	if err != nil {
 		log.Printf("triage: parked stop turn index %s: %v", id, err)
@@ -294,4 +297,49 @@ func parkedStopSummary(launch store.Item) string {
 		return summary + " -> " + store.ItemStatusParked
 	}
 	return store.ItemStatusParked
+}
+
+// agentStopScope is the scope a stop of an agent launched under parentID
+// files its card in. A nested async agent is a task of the main session
+// (claude-wire.md §Background task ownership): it can outlive the agent
+// that launched it, and that agent's last card is a snapshot up to its
+// own stop that never shows a later row. So the stop files under the
+// nearest enclosing agent still running, whose next card holds it, and
+// at top level when none is.
+func (r *Router) agentStopScope(threadID, parentID string) (string, error) {
+	for hops := 0; parentID != "" && hops < maxAgentScopeHops; hops++ {
+		parent, found, err := r.store.GetThreadItem(threadID, parentID)
+		if err != nil {
+			return "", fmt.Errorf("triage: read the agent %s/%s a stop files under: %w", threadID, parentID, err)
+		}
+		if !found || !store.IsAgentTranscriptLaunch(parent) {
+			return parentID, nil
+		}
+		live, err := r.agentRunLive(threadID, parent.ID)
+		if err != nil || live {
+			return parentID, err
+		}
+		parentID = parent.ParentID
+	}
+	return parentID, nil
+}
+
+// maxAgentScopeHops bounds agentStopScope's walk, so a parent cycle in
+// provider data ends it.
+const maxAgentScopeHops = 16
+
+// agentRunLive reports whether the agent whose transcript root is rootID
+// still runs: a row of its runs is running and no ending sibling of that
+// row waits behind an open stream to be written.
+func (r *Router) agentRunLive(threadID, rootID string) (bool, error) {
+	ids, err := r.store.LiveAgentRunRows(threadID, rootID)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if !r.rowQueued(threadID, ToolCompletionID(id)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -48,9 +48,26 @@
     /** Source pane: the agent rows' digests read from it and the open
      * button opens its agent companion. Absent on surfaces with no pane. */
     pane?: ThreadPane;
+    /** An agent pane's tray lists only that agent's rows, so Stop All
+     * stops only the listed rows. */
+    scoped?: boolean;
+    /** Opens a listed agent in place of the companion (an agent pane
+     * descends into it). */
+    onOpenAgent?: (scopeId: string, label: string) => void;
+    /** Prefix of the body's id and test ids, distinct per rail. */
+    idPrefix?: string;
   }
 
-  let { tasks, provider, threadId, runningCount, pane }: Props = $props();
+  let {
+    tasks,
+    provider,
+    threadId,
+    runningCount,
+    pane,
+    scoped = false,
+    onOpenAgent,
+    idPrefix = 'activity-rail',
+  }: Props = $props();
 
   // The open button opens the companion and nothing else. The tray never
   // moves the timeline: the launch row there is immutable and a reader
@@ -59,7 +76,9 @@
     if (!pane || !threadId) return;
     const info = trayTaskAgentInfo(task);
     if (!info) return;
-    openAgentCompanion(pane.paneId, threadId, trayTaskScopeId(task), info.name || trayTaskLabel(task));
+    const label = info.name || trayTaskLabel(task);
+    if (onOpenAgent) onOpenAgent(trayTaskScopeId(task), label);
+    else openAgentCompanion(pane.paneId, threadId, trayTaskScopeId(task), label);
   }
 
   // Rows whose digest is open. Dropped when the row leaves the list, so
@@ -227,7 +246,12 @@
   async function onStopAll() {
     if (!threadId) return;
     const id = threadId;
-    const named = stopAllTasks;
+    // Codex cleans background terminals thread-wide, so a scoped tray
+    // stops its own terminals one by one and names only the rest.
+    const oneByOne = scoped && backgroundStop === 'codex-background-terminals'
+      ? stopAllTasks.filter((task) => !isCodexSubagentTask(task))
+      : [];
+    const named = stopAllTasks.filter((task) => !oneByOne.includes(task));
     const remotes = remoteTasks;
     const rowIds = named.map((task) => task.rowId);
     stopAllInFlight = true;
@@ -237,7 +261,8 @@
       const providerStop = named.length === 0
         ? Promise.resolve<BackgroundTaskStop[]>([])
         : StopBackgroundTasks(id, named.map((task) => task.launch!.id));
-      const [stops, cancels] = await Promise.allSettled([providerStop, cancelRemoteJobs(id, remotes)]);
+      const rowStops = oneByOne.map((task) => onStopRow(task.rowId, trayRowStopTarget(task, backgroundStop)!));
+      const [stops, cancels] = await Promise.allSettled([providerStop, cancelRemoteJobs(id, remotes), ...rowStops]);
       if (stops.status === 'rejected') addToast('error', `Failed to stop tasks: ${errString(stops.reason)}`);
       else renderStopResults(named, stops.value ?? []);
       const remoteFailures = cancels.status === 'rejected' ? [cancels.reason] : cancels.value;
@@ -252,12 +277,12 @@
 </script>
 
 <div
-  id="activity-rail-background-body"
+  id="{idPrefix}-background-body"
   class="border-t border-border-subtle px-3 py-2"
-  data-testid="activity-rail-background-body"
+  data-testid="{idPrefix}-background-body"
 >
   <div class="mb-1.5 flex items-center gap-2 font-mono text-[0.65625rem] text-fg-hint/70">
-    <span data-testid="activity-rail-background-running-label">
+    <span data-testid="{idPrefix}-background-running-label">
       {runningCount > 0 ? `${runningCount} running` : 'idle'}
     </span>
     {#if canStopAll}
@@ -266,7 +291,7 @@
         class="ml-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
         onclick={onStopAll}
         disabled={stopAllInFlight}
-        data-testid="activity-rail-background-stop-all"
+        data-testid="{idPrefix}-background-stop-all"
         aria-label="Stop All Running Background Tasks"
       >
         {stopAllInFlight ? 'Stopping…' : 'Stop All'}

@@ -94,4 +94,31 @@ describe('Stop All in the background tray', () => {
     expect(stopAll).toHaveBeenCalledWith('thread', ['a']);
     expect(toasts()).toEqual([]);
   });
+
+  // Codex cleans terminals thread-wide, so an agent pane's tray must not
+  // name its terminals in the bulk call: that would stop the thread's
+  // other terminals too.
+  it('stops a scoped Codex tray’s terminals one by one and names only its subagents', async () => {
+    const terminal = shell('term', { meta: JSON.stringify({ process_id: 'pid-7' }) });
+    const agent = shell('agent', { toolName: 'collab_agent', meta: JSON.stringify({ input: { tool: 'spawn_agent' } }) });
+    const stopAll = setBindingMock('StopBackgroundTasks', async (_thread: string, ids: string[]) =>
+      ids.map((launchItemId) => ({ launchItemId, outcome: 'stopping' })));
+    const terminate = setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
+    const tasks = trayTasks([terminal, agent]);
+    const props = { tasks, provider: 'codex' as const, threadId: 'thread', runningCount: 2 };
+
+    const scopedView = render(ActivityRailBackgroundBody, { ...props, scoped: true, idPrefix: 'agent-pane' });
+    await fireEvent.click(scopedView.getByTestId('agent-pane-background-stop-all'));
+    await waitFor(() => expect(terminate).toHaveBeenCalledWith('thread', 'pid-7'));
+    expect(stopAll).toHaveBeenCalledTimes(1);
+    expect(stopAll).toHaveBeenCalledWith('thread', ['agent']);
+    scopedView.unmount();
+
+    const threadView = render(ActivityRailBackgroundBody, props);
+    await fireEvent.click(threadView.getByTestId('activity-rail-background-stop-all'));
+    await waitFor(() => expect(stopAll).toHaveBeenCalledTimes(2));
+    expect(stopAll).toHaveBeenLastCalledWith('thread', ['term', 'agent']);
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(toasts()).toEqual([]);
+  });
 });

@@ -2364,6 +2364,17 @@ with `persistent`/`timeoutMs`; `toolResultMonitorLaunch` in
 `parse_user.go` accepts either sibling key so a future CLI dropping one
 still classifies.
 
+**A subagent's Monitor acks with text only.** Like every sidechain
+result (§E2b), its ack carries no `tool_use_result`, so the marker above
+never appears (5 of 5 sidechain Monitor acks in the wire logs,
+2026-09-14 to 2026-09-19). Every wording opens with the task id:
+"Monitor started (task <id>, timeout 1800000ms)", "(task <id>, expires
+in 30m unless the source ends first; …)", "(task <id>, persistent — …)".
+For a Monitor tool_use with no structured sibling, the live parser and
+the session converter read the id from that prefix
+(`sessionimport.MonitorAckTaskID`). A refused launch answers with other
+text and settles in place.
+
 Lifecycle correlation is standard: `system/task_started` fires with
 `task_type: "local_bash"` binding `taskId ↔ tool_use_id` (~ms before
 the ack), each Monitor event arrives via `system/task_notification` (or

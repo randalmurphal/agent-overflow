@@ -708,3 +708,51 @@ func TestConvertMovedAckOfForegroundBashClassifies(t *testing.T) {
 		})
 	}
 }
+
+// A subagent's Monitor answers with its ack text and no toolUseResult, so
+// the text is the only evidence the watch runs; a structured ack names it
+// directly. Either way the row is a background watch with its task id,
+// and nothing else reads as a Monitor ack.
+func TestConvertMonitorAckClassifiesAsWatch(t *testing.T) {
+	const ack = "Monitor started (task bw5d5fao4, expires in 30m unless the source ends first). You will be notified on each event."
+	cases := []struct {
+		name          string
+		tool          string
+		content       string
+		toolUseResult any
+		watch         bool
+	}{
+		{"sidechain ack text", "Monitor", ack, nil, true},
+		{"structured ack", "Monitor", ack, map[string]any{"taskId": "bw5d5fao4", "timeoutMs": 1800000, "persistent": false}, true},
+		{"refused launch", "Monitor", "InputValidationError: command is required", nil, false},
+		{"non-Monitor tool", "Bash", ack, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := assistantRow("a1", "u1", "msg_1", []any{
+				toolUseBlock("toolu_1", tc.tool, map[string]any{"command": "until done; do sleep 5; done"}),
+			}, "2026-01-01T00:00:01.000Z")
+			var opts []rowOpt
+			if tc.toolUseResult != nil {
+				opts = append(opts, with("toolUseResult", tc.toolUseResult))
+			}
+			events, _ := convertFixture(t, ConvertOptions{},
+				userRow("u1", "", "run", "2026-01-01T00:00:00.000Z"), launch,
+				toolResultRow("r1", "a1", "toolu_1", tc.content, "2026-01-01T00:00:02.000Z", opts...))
+			meta := decodeMeta(t, eventsOfKind(events, provider.EventToolComplete)[0].Meta)
+			wantTaskID := ""
+			if tc.watch {
+				wantTaskID = "bw5d5fao4"
+			}
+			if got := meta["is_background"] == true; got != tc.watch {
+				t.Errorf("is_background = %v, want %v (meta %v)", got, tc.watch, meta)
+			}
+			if got := meta["watch_task"] == true; got != tc.watch {
+				t.Errorf("watch_task = %v, want %v (meta %v)", got, tc.watch, meta)
+			}
+			if got, _ := meta["task_id"].(string); got != wantTaskID {
+				t.Errorf("task_id = %q, want %q", got, wantTaskID)
+			}
+		})
+	}
+}

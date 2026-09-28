@@ -72,14 +72,22 @@ func backgroundToolResult(toolUseResult any) bool {
 	if rawBool(m, "isAsync") || rawString(m, "status") == "async_launched" {
 		return true
 	}
-	if strings.TrimSpace(rawString(m, "taskId")) != "" {
-		_, persistent := m["persistent"]
-		_, timeout := m["timeoutMs"]
-		if persistent || timeout {
-			return true
-		}
+	return monitorLaunchTaskID(toolUseResult) != ""
+}
+
+// monitorLaunchTaskID returns the task id of a structured Monitor launch
+// ack, or "" for any other result.
+func monitorLaunchTaskID(toolUseResult any) string {
+	m := rawMapValue(toolUseResult)
+	if m == nil {
+		return ""
 	}
-	return false
+	_, persistent := m["persistent"]
+	_, timeout := m["timeoutMs"]
+	if !persistent && !timeout {
+		return ""
+	}
+	return strings.TrimSpace(rawString(m, "taskId"))
 }
 
 func skillForkResult(toolUseResult any) (agentID, commandName string, ok bool) {
@@ -210,6 +218,36 @@ func BackgroundAckTaskID(text string, requested bool) (taskID string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// The Monitor launch ack's text (claude-wire.md §E7). Every observed
+// wording opens with the task id and differs only after it:
+//
+//	Monitor started (task bs7ev9m4y, timeout 3600000ms). You will be notified …
+//	Monitor started (task bw5d5fao4, expires in 30m unless the source ends first; …
+//	Monitor started (task bpzc8uiti, persistent — runs until TaskStop or session end). …
+const (
+	// MonitorToolName is Claude's watch-task tool, whose results can be
+	// launch acks.
+	MonitorToolName = "Monitor"
+
+	monitorAckPrefix = "Monitor started (task "
+)
+
+// MonitorAckTaskID recognises the Monitor launch ack from the tool_result
+// TEXT alone and recovers the task id it names. Like BackgroundAckTaskID
+// it exists for a SIDECHAIN result, where Claude omits the
+// `toolUseResult` envelope that carries the structured `{taskId,
+// timeoutMs, persistent}` ack, and callers consult it only for a Monitor
+// tool_use with no structured sibling. A refused launch (input
+// validation, hook deny) answers with other text and settles in place.
+func MonitorAckTaskID(text string) (taskID string, ok bool) {
+	rest, found := strings.CutPrefix(text, monitorAckPrefix)
+	if !found {
+		return "", false
+	}
+	id := leadingTaskID(rest)
+	return id, id != ""
 }
 
 // leadingTaskID returns the longest prefix of s made of the characters

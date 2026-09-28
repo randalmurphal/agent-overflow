@@ -661,3 +661,76 @@ func TestAgentReportFromNotification(t *testing.T) {
 		}
 	}
 }
+
+// A nested async agent is a task of the main session, so it can outlive
+// the agent that launched it (claude-wire.md fixture D). That agent's last
+// card is a snapshot up to its own stop, so a later stop of the child
+// files at top level, where its card can show; while the parent still
+// runs or is parked, its next card holds the child's stop.
+func TestNestedAgentStopFilesUnderItsParentOnlyWhileTheParentRuns(t *testing.T) {
+	launch := func(t *testing.T) (*Router, *store.Store) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "parent", "task-parent", "")
+		parkLaunchAgent(t, router, "t1", "child", "task-child", "parent")
+		return router, st
+	}
+	childStopScope := func(t *testing.T, st *store.Store) string {
+		t.Helper()
+		stop, ok := parkCompletions(t, st, "t1")["child"]
+		if !ok {
+			t.Fatal("the child's stop was not written")
+		}
+		return stop.ParentID
+	}
+
+	t.Run("parent running", func(t *testing.T) {
+		router, st := launch(t)
+		parkStop(t, router, "t1", "child", "task-child", "CHILD DONE", "u-child")
+		if got := childStopScope(t, st); got != "parent" {
+			t.Fatalf("child stop scope = %q, want the running parent", got)
+		}
+	})
+	t.Run("parent parked", func(t *testing.T) {
+		router, st := launch(t)
+		parkLaunchShell(t, router, "t1", "shell", "task-shell", "parent")
+		parkStop(t, router, "t1", "parent", "task-parent", "WAITING", "u-parent")
+		if len(parkedStops(t, st, "t1", "parent")) != 1 {
+			t.Fatal("the parent must park on its shell")
+		}
+		parkStop(t, router, "t1", "child", "task-child", "CHILD DONE", "u-child")
+		if got := childStopScope(t, st); got != "parent" {
+			t.Fatalf("child stop scope = %q, want the parked parent, whose next card holds it", got)
+		}
+	})
+	t.Run("parent ended", func(t *testing.T) {
+		router, st := launch(t)
+		parkStop(t, router, "t1", "parent", "task-parent", "PARENT DONE", "u-parent")
+		parkStop(t, router, "t1", "child", "task-child", "CHILD DONE", "u-child")
+		if got := childStopScope(t, st); got != "" {
+			t.Fatalf("child stop scope = %q, want top level after the parent ended", got)
+		}
+	})
+	t.Run("parent end queued behind a stream", func(t *testing.T) {
+		router, st := launch(t)
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Main is talking"})
+		parkStop(t, router, "t1", "parent", "task-parent", "PARENT DONE", "u-parent")
+		parkStop(t, router, "t1", "child", "task-child", "CHILD DONE", "u-child")
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+		router.WaitForPendingSettles()
+		if got := childStopScope(t, st); got != "" {
+			t.Fatalf("child stop scope = %q, want top level: the parent's end was already queued", got)
+		}
+	})
+	t.Run("parked child after the parent ended", func(t *testing.T) {
+		router, st := launch(t)
+		parkStop(t, router, "t1", "parent", "task-parent", "PARENT DONE", "u-parent")
+		parkLaunchShell(t, router, "t1", "child-shell", "task-child-shell", "child")
+		parkStop(t, router, "t1", "child", "task-child", "CHILD WAITING", "u-child")
+		stops := parkedStops(t, st, "t1", "child")
+		if len(stops) != 1 || stops[0].ParentID != "" {
+			t.Fatalf("child parked stops = %+v, want one at top level", stops)
+		}
+	})
+}

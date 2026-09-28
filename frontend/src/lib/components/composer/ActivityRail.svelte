@@ -58,11 +58,11 @@
   import WorkingChip from './WorkingChip.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
+  import ActivityRailBackgroundToggle from './ActivityRailBackgroundToggle.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ListTodo from '@lucide/svelte/icons/list-todo';
-  import SendToBack from '@lucide/svelte/icons/send-to-back';
 
   interface Props {
     pane: ThreadPane;
@@ -252,35 +252,13 @@
       {#if inputRequest || showWorking || liveTodo}
         <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
       {/if}
-      <button
-        type="button"
-        class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
-        onclick={() => pane.toggleActivityRailBackground()}
-        aria-controls="activity-rail-background-body"
-        aria-expanded={backgroundOpen}
-        aria-label={`Background ${bg.count}`}
-        title="Background"
-        data-testid="activity-rail-background-toggle"
-      >
-        <Icon
-          icon={SendToBack}
-          size={11}
-          strokeWidth={2.25}
-          class="shrink-0 text-fg-hint/70"
-        />
-        <span data-activity-rail-name>Background</span>
-        <span
-          class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
-          data-testid="activity-rail-background-count"
-        >{bg.count}</span>
-        {#if bg.runningCount > 0}
-          <span
-            class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
-            aria-hidden="true"
-            data-testid="activity-rail-background-pulse"
-          ></span>
-        {/if}
-      </button>
+      <ActivityRailBackgroundToggle
+        count={bg.count}
+        running={bg.runningCount > 0}
+        open={backgroundOpen}
+        onToggle={() => pane.toggleActivityRailBackground()}
+        controls="activity-rail-background-body"
+      />
     {/if}
 
     {#if isCompactLayout()}

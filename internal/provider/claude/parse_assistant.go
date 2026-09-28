@@ -506,8 +506,8 @@ func (p *Parser) appendToolUseEvent(
 	if isAgentLaunchToolName(block.Name) {
 		p.markAgentLaunchTool(block.ID)
 	}
-	if block.Name == sessionimport.BashToolName {
-		p.markBashTool(block.ID)
+	if block.Name == sessionimport.BashToolName || block.Name == sessionimport.MonitorToolName {
+		p.markAckTool(block.ID, block.Name)
 	}
 
 	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID)

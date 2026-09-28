@@ -15,7 +15,8 @@
 // clock gate; a Claude agent's served run state goes to the shared registry
 // (`stores/subagentRunState.svelte.ts`), which the rows read per launch.
 //
-// Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
+// Owned by `Composer.svelte`, not the rail (an agent pane owns its own,
+// read through `scopedTrayTasks`): the composer's `railVisible`
 // predicate reads `count`, and the rail + height-reservation spacer must
 // render as complements of that one predicate — a controller living
 // inside the rail would be torn down by the very unmount its count
@@ -66,7 +67,9 @@ export interface BackgroundController {
 }
 
 export function createBackgroundController(
-  getPane: () => ThreadPane,
+  /** The pane whose thread the tray lists: the composer's, or an agent
+   *  pane's source pane, which can be absent while it restores. */
+  getPane: () => Pick<ThreadPane, 'thread' | 'hasDraftPlaceholder'> | undefined,
   getNow: () => number,
 ): BackgroundController {
   // Raw: every writer replaces the snapshot, and rows are read, never
@@ -149,8 +152,11 @@ export function createBackgroundController(
   // A draft pane's thread is a synthetic placeholder no computer owns.
   // There is nothing to read until it materializes, and asking would route
   // an id that no entity index can resolve.
-  const threadId = $derived(getPane().hasDraftPlaceholder ? null : getPane().thread?.id ?? null);
-  const provider = $derived(asProviderID(getPane().thread?.provider));
+  const threadId = $derived.by(() => {
+    const pane = getPane();
+    return !pane || pane.hasDraftPlaceholder ? null : pane.thread?.id ?? null;
+  });
+  const provider = $derived(asProviderID(getPane()?.thread?.provider));
 
   // The scheduler owns staleness: its token flips false the moment a run is
   // superseded, the thread switches (reset) or the controller unmounts

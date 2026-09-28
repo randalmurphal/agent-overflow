@@ -10,6 +10,12 @@
   import ComposerWorkspaceStrip from '../composer/ComposerWorkspaceStrip.svelte';
   import WorkingChip from '../composer/WorkingChip.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from '../composer/activityRailClasses';
+  import { createBackgroundController } from '../composer/activityRailBackground.svelte';
+  import ActivityRailBackgroundToggle from '../composer/ActivityRailBackgroundToggle.svelte';
+  import ActivityRailBackgroundBody from '../composer/ActivityRailBackgroundBody.svelte';
+  import { scopedTrayTasks } from '../../utils/backgroundTray';
+  import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
+  import { onMount } from 'svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
@@ -37,6 +43,8 @@
   let {
     threadId,
     pane,
+    scopeId,
+    onOpenAgent,
     launch,
     lifecycle,
     lifecycleCompletion,
@@ -45,6 +53,10 @@
     threadId: string;
     /** Source thread pane — the workspace strip renders ITS facts. */
     pane: ThreadPane | undefined;
+    /** The agent the pane shows; its tray lists the rows under it. */
+    scopeId: string;
+    /** Descends into an agent listed on the tray. */
+    onOpenAgent: (scopeId: string, label: string) => void;
     /**
      * The scope root: what the agent IS. Name, model, effort and the
      * provider chip read this row. Undefined when the pane restored onto
@@ -123,7 +135,21 @@
   // clock (one interval for every running timer in the app). The scope's
   // turn facet (agentScopeView) settles the pane's turn on the same
   // start/end pair, so the chip and the response pill never disagree.
-  const clock = createSharedNowClock(() => isRunning);
+  const clock = createSharedNowClock(() => isRunning || trayNeedsClock);
+
+  // The agent's own background tray: the thread's tray rows under this
+  // agent (scopedTrayTasks), read by a controller of the pane's own, so
+  // the tray does not depend on the source composer being mounted. The
+  // clock above runs the rows' elapsed labels and completion retention.
+  const bg = createBackgroundController(() => pane, () => clock.now);
+  onMount(() => bg.mount());
+  let trayTasks = $derived(scopedTrayTasks(bg.tasks, scopeId));
+  let trayRunningCount = $derived(
+    trayTasks.filter((task) => task.status === 'running'
+      && liveSubagentRunState(bg.threadId, task.launch?.id)?.state !== 'parked').length,
+  );
+  let trayNeedsClock = $derived(trayTasks.some((task) => task.status === 'running' || task.completion !== null));
+  let trayOpen = $state(false);
   let elapsedLabel = $derived.by(() => {
     const start = subagentExecutionItem(lifecycle)?.createdAt ?? 0;
     if (!Number.isFinite(start) || start <= 0) return '0s';
@@ -194,7 +220,6 @@
   <div
     class="select-none overflow-hidden rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet"
     data-testid="agent-pane-composer-shell"
-    aria-disabled="true"
   >
     <div
       class="relative border-b border-border-subtle"
@@ -225,6 +250,16 @@
                the shell's height is the same whether the agent runs or not. -->
           <span class="{activityRailChipClasses} shrink-0" aria-hidden="true" data-testid="agent-pane-activity-reserve">{'\u200B'}</span>
         {/if}
+        {#if trayTasks.length > 0}
+          <ActivityRailBackgroundToggle
+            count={trayTasks.length}
+            running={trayRunningCount > 0}
+            open={trayOpen}
+            onToggle={() => (trayOpen = !trayOpen)}
+            controls="agent-pane-background-body"
+            testIdPrefix="agent-pane"
+          />
+        {/if}
         {#if isCompactLayout() && tokensLabel}
           <!-- The strip does not mount under compact; the subagent's spend
                takes the rail's right end, as the thread's chip does in the
@@ -232,8 +267,21 @@
           <span class="{activityRailChipClasses} ml-auto shrink-0 tabular-nums text-fg-muted" data-testid="agent-pane-usage">{tokensLabel}</span>
         {/if}
       </div>
+      {#if trayOpen && trayTasks.length > 0}
+        <ActivityRailBackgroundBody
+          tasks={trayTasks}
+          provider={bg.provider}
+          threadId={bg.threadId}
+          runningCount={trayRunningCount}
+          {pane}
+          scoped
+          {onOpenAgent}
+          idPrefix="agent-pane"
+        />
+      {/if}
     </div>
-    <div class="px-4 pt-3 pb-2 text-sm text-fg-hint">
+    <!-- The input is read-only; the rail's tray and Stop stay live. -->
+    <div class="px-4 pt-3 pb-2 text-sm text-fg-hint" aria-disabled="true" data-testid="agent-pane-input">
       Read-only agent transcript.
     </div>
     <div class="flex items-center gap-0.5 px-2.5 pb-2 pt-1">

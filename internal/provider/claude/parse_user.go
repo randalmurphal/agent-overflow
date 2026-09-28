@@ -276,7 +276,7 @@ func (p *Parser) appendToolResultBlock(
 	// signal is POSITIVE evidence; the launch-time `run_in_background:
 	// true` INPUT flag is never a verdict on its own:
 	//
-	//   1. bashAcked — the launch was a Bash call (`bashToolUses`) or was
+	//   1. bashAcked — the launch was a Bash call (`ackToolUses`) or was
 	//      flagged `run_in_background:true` (`backgroundToolUses`), both
 	//      recorded at assistant-parse time, NO `tool_use_result` is
 	//      present, and the result TEXT is the Bash backgrounding ack
@@ -315,8 +315,9 @@ func (p *Parser) appendToolResultBlock(
 	//      (`{taskId, timeoutMs, persistent}`, §E7). Like (3) it carries
 	//      no `run_in_background` and no `backgroundTaskId`; its `taskId`
 	//      is the `local_bash` task the later `task_updated` terminal
-	//      routes by. Missing this signal is how a live Monitor-watched
-	//      session read as reap-idle (2026-07-28, thread b44a738d).
+	//      routes by. On a sidechain the ack has no `tool_use_result`,
+	//      so for a Monitor launch the ack TEXT is the evidence
+	//      (`sessionimport.MonitorAckTaskID`).
 	//   5. liveAgentTask — this tool_use's local_agent task is still
 	//      LIVE (`system/task_started` seen, no terminal `task_updated`
 	//      yet). The wire-TYPED twin of (3)'s §E5b text fallback, and
@@ -369,9 +370,9 @@ func (p *Parser) appendToolResultBlock(
 	// `task_updated{is_backgrounded:true}` for a moved command is not
 	// consulted: a command that finishes as it is moved answers with its
 	// real output after that patch.
-	bash := p.takeBashTool(toolUseID)
+	ackTool := p.takeAckTool(toolUseID)
 	bashAcked := false
-	if !markedOnWire && (bash || flaggedAtLaunch) && len(toolUseResultRaw) == 0 {
+	if !markedOnWire && (ackTool == sessionimport.BashToolName || flaggedAtLaunch) && len(toolUseResultRaw) == 0 {
 		backgroundTaskID, bashAcked = sessionimport.BackgroundAckTaskID(content, flaggedAtLaunch)
 	}
 	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
@@ -409,6 +410,14 @@ func (p *Parser) appendToolResultBlock(
 		asyncAgentID, asyncLaunched = asyncLaunchAckAgentID(content)
 	}
 	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
+	// §E7 on a sidechain: the Monitor ack text, under the same gate as
+	// §E2b (a Monitor launch, no structured sibling, text naming a task).
+	if !monitorLaunched && ackTool == sessionimport.MonitorToolName && len(toolUseResultRaw) == 0 {
+		monitorTaskID, monitorLaunched = sessionimport.MonitorAckTaskID(content)
+	}
+	if monitorLaunched && backgroundTaskID == "" {
+		backgroundTaskID = monitorTaskID
+	}
 	liveAgentTask := len(toolUseResultRaw) == 0 && p.hasLiveAgentTask(toolUseID)
 	isBackground := resumeCarrier || bashAcked || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
 	// §E9 — a FORKED skill's completion. A skill whose frontmatter forks

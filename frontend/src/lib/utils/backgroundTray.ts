@@ -369,6 +369,35 @@ export function deriveTrayTasks(
 }
 
 /**
+ * The tray rows under agent `scopeId`, for that agent's own pane: every
+ * row whose parent chain through the tray set reaches the agent, in tray
+ * order, with its depth counted from the agent. The agent's own row is not
+ * one of them. A row reached only through an ancestor the tray does not
+ * list (a foreground agent) is not either: the tray lists by backgrounded
+ * ancestry, as `deriveTrayTasks` does.
+ */
+export function scopedTrayTasks(tasks: readonly TrayTask[], scopeId: string): TrayTask[] {
+  if (!scopeId) return [];
+  const byRow = new Map(tasks.map((task) => [task.rowId, task] as const));
+  const parentOf = (task: TrayTask) => (task.launch ?? task.anchor).parentId ?? '';
+  const out: TrayTask[] = [];
+  for (const task of tasks) {
+    let depth = 0;
+    for (let pid = parentOf(task), hops = 0; pid && hops < 64; hops++) {
+      if (pid === scopeId) {
+        out.push(depth === task.depth ? task : { ...task, depth });
+        break;
+      }
+      const parent = byRow.get(pid);
+      if (!parent) break;
+      depth++;
+      pid = parentOf(parent);
+    }
+  }
+  return out;
+}
+
+/**
  * Apply a `provider:background_tray` delta to a tray snapshot. The delta
  * answers for every launch it names and every launch one of its rows
  * belongs to: that launch's rows in the snapshot are replaced by the
