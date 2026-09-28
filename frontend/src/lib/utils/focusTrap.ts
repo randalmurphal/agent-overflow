@@ -212,8 +212,15 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
     const idx = trapStack.lastIndexOf(instance);
     if (idx >= 0) trapStack.splice(idx, 1);
 
+    // A trap is destroyed only after its exit transition, and focus may have
+    // moved on meanwhile (a click or a programmatic focus behind the fading
+    // scrim). Restore only focus nothing else has claimed: still inside the
+    // trap, or dropped to <body> when the focused control went inert or was
+    // removed.
+    const active = document.activeElement;
+    const unclaimed = active === null || active === document.body || node.contains(active);
     const restoreFocus = opts?.restoreFocus ?? true;
-    if (restoreFocus && instance.previousFocus instanceof HTMLElement) {
+    if (restoreFocus && unclaimed && instance.previousFocus instanceof HTMLElement) {
       // preventScroll: the opener can live in the horizontally-scrolled
       // pane strip, and the strip may have moved while the trap was up —
       // a bare focus() would snap it back. DOM focus must never scroll

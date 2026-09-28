@@ -132,6 +132,47 @@ describe('focusTrap', () => {
     host.remove();
   });
 
+  it('leaves focus that moved elsewhere after close where it is', async () => {
+    const trigger = document.createElement('button');
+    const other = document.createElement('textarea');
+    document.body.append(trigger, other);
+    trigger.focus();
+    const host = document.createElement('div');
+    host.innerHTML = '<button id="a">A</button>';
+    document.body.appendChild(host);
+    const handle = focusTrap(host, { active: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.activeElement?.id).toBe('a');
+
+    // The exit transition runs before destroy; focus moves on meanwhile.
+    other.focus();
+    handle!.destroy!();
+    expect(document.activeElement).toBe(other);
+    trigger.remove();
+    other.remove();
+    host.remove();
+  });
+
+  it('restores focus that fell to the body during the exit transition', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const host = document.createElement('div');
+    host.innerHTML = '<button id="a">A</button>';
+    document.body.appendChild(host);
+    const handle = focusTrap(host, { active: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+
+    handle!.destroy!();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+    host.remove();
+  });
+
   it('nested traps: inner handles Tab, outer resumes after inner closes', async () => {
     const outer = mountTrap('<button id="outer-a">OA</button><button id="outer-b">OB</button>');
     await Promise.resolve();
