@@ -30,7 +30,7 @@ func TestPackageManagerPinsMatchAcrossBuildRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(pkg.PackageManager, "pnpm@") {
-			t.Fatalf("%s must pin pnpm before Corepack dispatches --dir", path)
+			t.Fatalf("%s must pin pnpm, which switches versions before applying --dir", path)
 		}
 		if want == "" {
 			want = pkg.PackageManager

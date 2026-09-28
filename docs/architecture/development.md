@@ -8,8 +8,8 @@ manifests define their current arguments and versions.
 
 Use the Go version required by `go.mod`, Node as declared by
 `frontend/package.json`, and the pnpm version pinned in `packageManager`.
-Keep the root, frontend and mobile package-manager pins identical; Corepack
-selects pnpm before applying `--dir`.
+Keep the root, frontend, mobile and e2e package-manager pins identical; pnpm
+switches to the pinned version before applying `--dir`.
 
 Linux GUI builds need `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`
 and `gcc`. Wails uses GTK4/WebKitGTK 6.0. The SQLite driver is pure Go;
