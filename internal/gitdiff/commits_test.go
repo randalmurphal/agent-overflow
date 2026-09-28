@@ -186,14 +186,14 @@ func TestListCommitsRangeToExplicitHeadSHA(t *testing.T) {
 	}
 }
 
-func TestCommitDiffRegularCommit(t *testing.T) {
+func TestOpenCommitDiffRegularCommit(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "a.txt", "one\n", "add a")
 	commitFile(t, repo, "a.txt", "one\ntwo\n", "extend a")
 
-	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo), Options{})
+	patch, err := commitPatch(t, repo, headSHA(t, repo), Options{})
 	if err != nil {
-		t.Fatalf("CommitDiff: %v", err)
+		t.Fatalf("commitPatch: %v", err)
 	}
 	text := string(patch)
 	if !strings.Contains(text, "+two") {
@@ -204,23 +204,23 @@ func TestCommitDiffRegularCommit(t *testing.T) {
 	}
 }
 
-func TestCommitDiffRootCommit(t *testing.T) {
+func TestOpenCommitDiffRootCommit(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	root, _, _, err := runGit(context.Background(), repo, nil, false, "rev-list", "--max-parents=0", "HEAD")
 	if err != nil {
 		t.Fatalf("find root commit: %v", err)
 	}
 
-	patch, err := CommitDiff(context.Background(), repo, strings.TrimSpace(root), Options{})
+	patch, err := commitPatch(t, repo, strings.TrimSpace(root), Options{})
 	if err != nil {
-		t.Fatalf("CommitDiff root: %v", err)
+		t.Fatalf("commitPatch root: %v", err)
 	}
 	if !strings.Contains(string(patch), "+hello") {
 		t.Fatalf("expected the initial commit's content as additions, got:\n%s", patch)
 	}
 }
 
-func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
+func TestOpenCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "feature.txt", "from feature\n", "feature work")
@@ -228,9 +228,9 @@ func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	commitFile(t, repo, "main.txt", "from main\n", "main work")
 	testutil.RunGit(t, repo, "merge", "--no-ff", "-m", "merge feature", "feature")
 
-	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo), Options{})
+	patch, err := commitPatch(t, repo, headSHA(t, repo), Options{})
 	if err != nil {
-		t.Fatalf("CommitDiff merge: %v", err)
+		t.Fatalf("commitPatch merge: %v", err)
 	}
 	text := string(patch)
 	if !strings.Contains(text, "from feature") {
@@ -241,10 +241,10 @@ func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	}
 }
 
-func TestCommitDiffRejectsNonSHA(t *testing.T) {
+func TestOpenCommitDiffRejectsNonSHA(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	for _, sha := range []string{"", "HEAD", "main", "--all", "zzzzzzzz"} {
-		if _, err := CommitDiff(context.Background(), repo, sha, Options{}); err == nil {
+		if _, err := commitPatch(t, repo, sha, Options{}); err == nil {
 			t.Errorf("expected error for sha %q", sha)
 		}
 	}

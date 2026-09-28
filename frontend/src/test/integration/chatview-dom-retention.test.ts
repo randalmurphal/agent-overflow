@@ -61,7 +61,7 @@ import {
   setProviderAccount,
 } from '../../lib/stores/accountInfo.svelte';
 import type { Thread } from '../../lib/types/models';
-import { setBindingMock, resetBindingMocks } from '../mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock, resetBindingMocks } from '../mocks/bindings-app';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
 import { idleWorkspaceActivity } from '../helpers/workspaceLock';
@@ -198,14 +198,15 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
     ].join('\n');
     setBindingMock('GetThread', async () => ({ id: 'thread-rev-1', workspacePath: '/repo' }));
     setBindingMock('GetGitStatus', async () => ({}));
-    setBindingMock('GetWorkspaceCurrentDiff', async () => diff);
-    setBindingMock('GetBranchBaseDiff', async () => '');
+    setReviewDiffMock('OpenWorkspaceDiff', async () => diff);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => '');
     setBindingMock('ListBranchCommits', async () => []);
-    setBindingMock('GetCommitDiff', async () => '');
+    setReviewDiffMock('OpenCommitDiff', async () => '');
     setBindingMock('ListPRCommits', async () => []);
-    setBindingMock('GetPRCommitDiff', async () => '');
+    setReviewDiffMock('OpenPRCommitDiff', async () => '');
     setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: '' }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => '');
+    setReviewDiffMock('OpenEditDiff', async () => '');
     setBindingMock('GetPayloadData', async () => ({ data: '' }));
     setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
     setBindingMock('ListDiffReviewComments', async () => []);

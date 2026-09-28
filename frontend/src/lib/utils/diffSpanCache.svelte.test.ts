@@ -8,7 +8,10 @@ import {
   adoptDiffSpanOwner,
   evictDiffSpansForThread,
   getSpansForLine,
+  getSpansForReviewLine,
+  HIGHLIGHT_MAX_PATCH_CHARS,
   requestFileSpans,
+  requestReviewFileSpans,
   resetDiffSpanCacheForTest,
   seedPayloadPatchSpans,
   PaintedSpans,
@@ -18,6 +21,7 @@ import {
 import { applyContextExpansion, nextExpansionVersion } from './diffContextExpansion';
 import { contentKey } from './fnv1a';
 import { parsePatchFiles, type PatchFile, type PatchLine } from './patchFiles';
+import { parseReviewFiles } from './patchStore';
 import { resetSyntaxClassNamesForTest } from './syntaxSpans';
 
 function makeFile(path: string, bodies: string[]): PatchFile {
@@ -93,6 +97,55 @@ describe('requestFileSpans', () => {
     // Second request (windowing remount) is a cache hit — no RPC.
     await requestFileSpans(file, 'thread-1');
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends a patch over the backend cap and records it as plain', async () => {
+    const file = makeFile('src/huge.ts', ['x'.repeat(HIGHLIGHT_MAX_PATCH_CHARS)]);
+    const rpc = setBindingMock('HighlightPatch', async () => keywordResult(file));
+
+    await requestFileSpans(file, 'thread-1');
+    await requestFileSpans(file, 'thread-1');
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(getSpansForLine(file, file.lines[2])).toBeNull();
+  });
+
+  it('serves review files by line index and shares entries across identical content', async () => {
+    const patch = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      '@@ -1,1 +1,2 @@',
+      '+const x = 1;',
+      '+const y = 2;',
+    ].join('\n');
+    const [file] = parseReviewFiles(patch);
+    const rpc = setBindingMock('HighlightPatch', async () => keywordResult(makeFile('src/a.ts', ['const x = 1;', 'const y = 2;'])));
+
+    await requestReviewFileSpans(file, 'thread-1');
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc.mock.calls[0][0]).toEqual({ path: 'src/a.ts', patch });
+    const line = { content: '+const y = 2;', type: 'add' } as const;
+    expect(getSpansForReviewLine(file, 3, line)?.r).toEqual(['const y = 2;'.length, 1]);
+
+    // The same content parsed again (a reload) is the same entry.
+    const [again] = parseReviewFiles(patch);
+    await requestReviewFileSpans(again, 'thread-1');
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(getSpansForReviewLine(again, 3, line)?.r).toEqual(['const y = 2;'.length, 1]);
+  });
+
+  it('never sends a review file over the backend cap', async () => {
+    const [file] = parseReviewFiles([
+      'diff --git a/src/huge.ts b/src/huge.ts',
+      '@@ -1,1 +1,1 @@',
+      `+${'x'.repeat(HIGHLIGHT_MAX_PATCH_CHARS)}`,
+    ].join('\n'));
+    const rpc = setBindingMock('HighlightPatch', async () => ({ lang: 'plaintext', lines: [], truncated: false }));
+
+    await requestReviewFileSpans(file, 'thread-1');
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(getSpansForReviewLine(file, 2, { content: '+x', type: 'add' })).toBeNull();
   });
 
   it('dedupes concurrent requests for the same content', async () => {
@@ -439,25 +492,25 @@ describe('requestFileSpans', () => {
       '-const removed = 2;',
       '+const added = 2;',
     ].join('\n');
-    const file = parsePatchFiles(patchText)[0];
+    const file = parseReviewFiles(patchText)[0];
     const stateA = { lines: new Map([[4, 'above()']]), eofLine: null, version: nextExpansionVersion() };
     const expandedA = applyContextExpansion(file, stateA);
     setBindingMock('HighlightPatch', async () => ({
       lang: 'typescript',
-      lines: expandedA.lines.map(() => ({ r: [1, 1] })),
+      lines: Array.from({ length: expandedA.body.lineCount }, () => ({ r: [1, 1] })),
       truncated: false,
     }));
-    await requestFileSpans(expandedA, 'thread-1');
+    await requestReviewFileSpans(expandedA, 'thread-1');
 
-    // Same expansion content under a NEW state (post-reload): new
-    // array identity, identical patch text.
+    // Same expansion content under a NEW state (post-reload): a new
+    // body, identical patch text.
     const stateB = { lines: new Map([[4, 'above()']]), eofLine: null, version: nextExpansionVersion() };
     const expandedB = applyContextExpansion(file, stateB);
     expect(expandedB).not.toBe(expandedA);
-    expect(expandedB.lines).not.toBe(expandedA.lines);
+    expect(expandedB.body).not.toBe(expandedA.body);
 
-    const fetched = expandedB.lines.find((line) => line.content === ' above()')!;
-    expect(getSpansForLine(expandedB, fetched)?.r).toEqual([1, 1]);
+    const lineIndex = expandedB.body.toPatchLines().findIndex((line) => line.content === ' above()');
+    expect(getSpansForReviewLine(expandedB, lineIndex, { content: ' above()', type: 'context' })?.r).toEqual([1, 1]);
   });
 
   it('a new lines-array identity (gap expansion) is a new content key', async () => {

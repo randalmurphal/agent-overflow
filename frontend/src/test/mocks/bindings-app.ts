@@ -33,6 +33,35 @@ export function setBindingMock(
 }
 
 /**
+ * Mocks an Open*Diff binding with a function that answers the whole patch
+ * text. The mock returns it as one final chunk, so the caller holds no
+ * handle and never reads. Returns the vi.fn that receives the Open call's
+ * arguments.
+ */
+export function setReviewDiffMock(
+  name:
+    | 'OpenWorkspaceDiff'
+    | 'OpenBranchBaseDiff'
+    | 'OpenCommitDiff'
+    | 'OpenPRDiff'
+    | 'OpenPRCommitDiff'
+    | 'OpenEditDiff'
+    | 'OpenTurnEditsDiff',
+  impl: (...args: never[]) => string | Promise<string>,
+  opts: { headSha?: string; payloadIds?: string[] } = {},
+): MockedFn {
+  return setBindingMock(name, async (...args: never[]) => {
+    const data = String((await impl(...args)) ?? '');
+    return {
+      id: '',
+      chunk: { data, offset: 0, nextOffset: new TextEncoder().encode(data).length, eof: true },
+      headSha: opts.headSha ?? '',
+      payloadIds: opts.payloadIds ?? [],
+    };
+  });
+}
+
+/**
  * Direct read for assertions (call counts, args).
  */
 export function getBindingMock(name: string): MockedFn | undefined {
@@ -552,13 +581,17 @@ export const UpdateKeybindings = dispatch('UpdateKeybindings');
 export const ResetKeybindings = dispatch('ResetKeybindings');
 
 // Review pane diffs
-export const GetBranchBaseDiff = dispatch('GetBranchBaseDiff');
-export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
+export const OpenWorkspaceDiff = dispatch('OpenWorkspaceDiff');
+export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
+export const OpenCommitDiff = dispatch('OpenCommitDiff');
+export const ReadReviewDiff = dispatch('ReadReviewDiff');
+export const ReleaseReviewDiff = dispatch('ReleaseReviewDiff');
 export const ListBranchCommits = dispatch('ListBranchCommits');
 export const ListRecentCommits = dispatch('ListRecentCommits');
-export const GetCommitDiff = dispatch('GetCommitDiff');
 export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
-export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');
+export const OpenEditDiff = dispatch('OpenEditDiff');
+export const OpenTurnEditsDiff = dispatch('OpenTurnEditsDiff');
+export const GetPayloadPatchSpans = dispatch('GetPayloadPatchSpans');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
 export const GetEditDiffContextLines = dispatch('GetEditDiffContextLines');
 export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
@@ -653,9 +686,9 @@ export const DeleteDiffReviewComment = dispatch('DeleteDiffReviewComment');
 export const MarkDiffReviewCommentsSent = dispatch('MarkDiffReviewCommentsSent');
 export const SendDiffReviewComments = dispatch('SendDiffReviewComments');
 export const GetPRDetail = dispatch('GetPRDetail');
-export const GetPRDiff = dispatch('GetPRDiff');
+export const OpenPRDiff = dispatch('OpenPRDiff');
 export const ListPRCommits = dispatch('ListPRCommits');
-export const GetPRCommitDiff = dispatch('GetPRCommitDiff');
+export const OpenPRCommitDiff = dispatch('OpenPRCommitDiff');
 export const GetPRMergeConflicts = dispatch('GetPRMergeConflicts');
 export const GetMergeConflictFile = dispatch('GetMergeConflictFile');
 export const GetPRCIJobs = dispatch('GetPRCIJobs');

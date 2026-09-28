@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
-import { parsePatchFiles } from './patchFiles';
+import { parseReviewFiles } from './patchStore';
 import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
   REVIEW_SURFACE_END_PX,
+  BlockRowsCache,
   buildReviewRows,
   reviewRowEstimate,
   type CommentAnchor,
@@ -70,7 +71,7 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
 
 describe('buildReviewRows', () => {
   it('splits line blocks at REVIEW_LINE_BLOCK_MAX_LINES', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', REVIEW_LINE_BLOCK_MAX_LINES + 1));
+    const files = parseReviewFiles(addedPatch('src/file.ts', REVIEW_LINE_BLOCK_MAX_LINES + 1));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -80,7 +81,9 @@ describe('buildReviewRows', () => {
     });
 
     const blocks = lineBlocks(result.rows);
-    expect(blocks.map((block) => block.rows.length)).toEqual([32, 1]);
+    expect(blocks.map((block) => block.count)).toEqual([32, 1]);
+    const cache = new BlockRowsCache();
+    expect(blocks.map((block) => cache.get(files[0], block).rows.length)).toEqual([32, 1]);
     expect(result.rowKeys[0]).toBe('h:src/file.ts');
     expect(result.rowKeys.slice(1, -1).every((key) => key.startsWith('b:src/file.ts:'))).toBe(true);
     expect(result.rowKeys.at(-1)).toBe('end');
@@ -88,7 +91,7 @@ describe('buildReviewRows', () => {
   });
 
   it('ends a line block at anchors and inserts comment/editor rows immediately after it', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 12));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 12));
     const editor: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
     const result = buildReviewRows({
       files,
@@ -106,7 +109,7 @@ describe('buildReviewRows', () => {
       'line-block',
       'surface-end',
     ]);
-    expect(lineBlocks(result.rows).map((block) => [block.startLine, block.rows.length])).toEqual([
+    expect(lineBlocks(result.rows).map((block) => [block.startLine, block.count])).toEqual([
       [1, 10],
       [11, 2],
     ]);
@@ -116,7 +119,7 @@ describe('buildReviewRows', () => {
   });
 
   it('keeps later fixed chunk keys stable when an earlier block splits', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 70));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 70));
     const plain = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -158,7 +161,7 @@ describe('buildReviewRows', () => {
       '+new line 2',
     ].join('\n');
     const result = buildReviewRows({
-      files: parsePatchFiles(patch),
+      files: parseReviewFiles(patch),
       viewMode: 'stacked',
       collapsedPaths: new Set(),
       drafts: [draft({ id: 'split-1', side: 'old', oldLine: 1, newLine: undefined })],
@@ -181,7 +184,7 @@ describe('buildReviewRows', () => {
     // The deleted row reports line 1 (oldLine) and the added row reports
     // line 1 (newLine); the draft must land after the first and not repeat.
     const result = buildReviewRows({
-      files: parsePatchFiles(patch),
+      files: parseReviewFiles(patch),
       viewMode: 'stacked',
       collapsedPaths: new Set(),
       drafts: [draft({ id: 'once-1', newLine: 1 })],
@@ -193,7 +196,7 @@ describe('buildReviewRows', () => {
   });
 
   it('renders an orphaned draft at the end of its file instead of dropping it', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 3));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -209,7 +212,7 @@ describe('buildReviewRows', () => {
   });
 
   it('places anchored PR threads after the line block containing the anchor', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 4));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 4));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -227,7 +230,7 @@ describe('buildReviewRows', () => {
   });
 
   it('groups outdated and unanchored PR threads under the file header', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 2));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -247,7 +250,7 @@ describe('buildReviewRows', () => {
   });
 
   it('collapses resolved PR threads by default and expands from store state', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 2));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const collapsed = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -272,7 +275,7 @@ describe('buildReviewRows', () => {
   });
 
   it('uses stable file keys across collapse and expand', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 3));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 3));
     const expanded = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -301,7 +304,7 @@ describe('buildReviewRows', () => {
   });
 
   it('populates fileOfRow and firstRowOfFile for expanded and collapsed files', () => {
-    const files = parsePatchFiles(twoFilePatch());
+    const files = parseReviewFiles(twoFilePatch());
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -321,7 +324,7 @@ describe('buildReviewRows', () => {
   });
 
   it('builds splitRows for split mode line blocks', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 2));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
       viewMode: 'split',
@@ -330,13 +333,84 @@ describe('buildReviewRows', () => {
       openEditors: [],
     });
 
-    expect(lineBlocks(result.rows)[0]?.splitRows).toHaveLength(2);
+    const [block] = lineBlocks(result.rows);
+    expect(block.splitCount).toBe(2);
+    const cache = new BlockRowsCache();
+    const materialized = cache.get(files[0], block);
+    expect(materialized.splitRows).toHaveLength(2);
+    // Built once per block position: the renderer and the reading anchor
+    // share it, and a rebuilt row model's block reuses its row objects.
+    expect(cache.get(files[0], block)).toBe(materialized);
+    const rebuilt = lineBlocks(buildReviewRows({ files, viewMode: 'split', collapsedPaths: new Set(), drafts: [], openEditors: [] }).rows)[0];
+    expect(rebuilt).not.toBe(block);
+    expect(cache.get(files[0], rebuilt)).toBe(materialized);
+  });
+
+  it('reuses a file\'s block layout per view mode across rebuilds', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 40));
+    const build = (viewMode: 'stacked' | 'split', drafts: DiffReviewComment[] = []) =>
+      buildReviewRows({ files, viewMode, collapsedPaths: new Set(), drafts, openEditors: [] });
+    const stacked = build('stacked');
+    const split = build('split');
+    expect(lineBlocks(stacked.rows).every((block) => block.splitCount === undefined)).toBe(true);
+    expect(lineBlocks(split.rows).map((block) => block.splitCount)).toEqual([32, 8]);
+    // An insert splits the file's blocks; without it the layout returns.
+    expect(build('stacked', [draft({ id: 'd-1', newLine: 10 })]).rowKeys).toContain('t:d-1');
+    expect(build('stacked').rowKeys).toEqual(stacked.rowKeys);
+    expect(build('split').rowKeys).toEqual(split.rowKeys);
+  });
+
+  it('holds only the blocks of the files a surface shows, up to its bound', () => {
+    const files = parseReviewFiles([addedPatch('src/one.ts', 40 * 32), addedPatch('src/two.ts', 2)].join('\n'));
+    const result = buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [] });
+    const cache = new BlockRowsCache();
+    for (const block of lineBlocks(result.rows)) cache.get(files[block.fileIndex], block);
+    expect(cache.size).toBe(41);
+    cache.retain([files[1]]);
+    expect(cache.size).toBe(1);
+    cache.retain([]);
+    expect(cache.size).toBe(0);
+
+    const many = parseReviewFiles(addedPatch('src/many.ts', 600 * 32));
+    const manyBlocks = lineBlocks(buildReviewRows({ files: many, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [] }).rows);
+    const first = cache.get(many[0], manyBlocks[0]);
+    for (const block of manyBlocks) cache.get(many[0], block);
+    expect(cache.size).toBe(512);
+    // The oldest block was evicted and is rebuilt on its next render.
+    expect(cache.get(many[0], manyBlocks[0])).not.toBe(first);
+  });
+
+  it('counts split rows the way the split builder pairs them', () => {
+    // Deletions paired with additions share rows; the surplus of either
+    // side takes its own. A block boundary never splits a pair's count.
+    const patch = [
+      'diff --git a/src/file.ts b/src/file.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/file.ts',
+      '+++ b/src/file.ts',
+      '@@ -1,6 +1,5 @@',
+      ' keep',
+      '-old 1',
+      '-old 2',
+      '-old 3',
+      '+new 1',
+      ' middle',
+      '+added 1',
+      '+added 2',
+      '-gone',
+      ' tail',
+    ].join('\n');
+    const files = parseReviewFiles(patch);
+    const result = buildReviewRows({ files, viewMode: 'split', collapsedPaths: new Set(), drafts: [], openEditors: [] });
+    for (const block of lineBlocks(result.rows)) {
+      expect(block.splitCount).toBe(new BlockRowsCache().get(files[0], block).splitRows?.length);
+    }
   });
 });
 
 describe('reviewRowEstimate', () => {
   it('reports exact fixed rows when word wrap is disabled and inexact rows when enabled', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 2));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',
@@ -370,7 +444,7 @@ describe('reviewRowEstimate', () => {
   });
 
   it('renders a collapsed file as its header row alone', () => {
-    const files = parsePatchFiles(addedPatch('src/file.ts', 2));
+    const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
       viewMode: 'stacked',

@@ -26,11 +26,15 @@ type Options struct {
 // patchFlags returns the flags shared by every patch-producing invocation
 // in this package: a plain unified patch with no color, no repo-defined
 // external diff driver, and no textconv filter — the same reasons gitEnv
-// scrubs GIT_EXTERNAL_DIFF/GIT_DIFF_OPTS. Options-driven flags append
-// after them.
+// scrubs GIT_EXTERNAL_DIFF/GIT_DIFF_OPTS. Rename detection, the a/ b/
+// prefixes and repository-root paths are pinned so neither user
+// configuration (diff.renames, diff.noprefix, diff.mnemonicPrefix,
+// diff.relative) nor plumbing's different defaults change the patch
+// shape callers parse. Options-driven flags append after them.
 func (o Options) patchFlags() []string {
-	flags := make([]string, 0, 6)
-	flags = append(flags, "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv")
+	flags := make([]string, 0, 10)
+	flags = append(flags, "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/")
 	if o.IgnoreWhitespace {
 		flags = append(flags, "-w")
 	}
@@ -40,7 +44,7 @@ func (o Options) patchFlags() []string {
 // gitArgs builds a full argv: the subcommand, this Options' patch flags,
 // then the caller's revision/path arguments.
 func (o Options) gitArgs(subcommand string, rest ...string) []string {
-	args := make([]string, 0, 2+len(rest)+6)
+	args := make([]string, 0, 2+len(rest)+10)
 	args = append(args, subcommand)
 	args = append(args, o.patchFlags()...)
 	return append(args, rest...)

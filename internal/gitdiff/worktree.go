@@ -16,11 +16,12 @@ import (
 type syntheticWorktreeTree struct {
 	oid string
 	env []string
-	// hasHead records whether HEAD resolved when the snapshot was taken, so
-	// callers picking the old diff side reuse the probe the snapshot already
-	// ran instead of forking a second identical `git rev-parse`.
-	hasHead bool
-	cleanup func()
+	// head is the commit HEAD named when the snapshot was taken, or ""
+	// when HEAD has no commit yet. The old side of a worktree diff is this
+	// OID rather than HEAD, so a commit made while the diff is read cannot
+	// change what a re-read returns.
+	head    string
+	release func() error
 }
 
 // IsGitRepository reports whether workspace is inside a (non-bare) git work
@@ -35,46 +36,39 @@ func IsGitRepository(ctx context.Context, workspace string) bool {
 	return strings.TrimSpace(stdout) == "true"
 }
 
-// hasHeadCommit reports whether HEAD resolves to a commit. False on
-// fresh-init repos with no commits yet.
-func hasHeadCommit(ctx context.Context, workspace string) (bool, error) {
-	_, _, code, err := runGit(ctx, workspace, nil, true, "rev-parse", "--verify", "HEAD")
+// headCommit returns the commit HEAD names, or "" on a fresh-init repo
+// with no commits yet.
+func headCommit(ctx context.Context, workspace string) (string, error) {
+	stdout, _, code, err := runGit(ctx, workspace, nil, true, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	return code == 0, nil
+	if code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(stdout), nil
 }
 
-// DiffWorkspaceVsHead returns the unified patch for everything currently
-// uncommitted in the workspace: tracked changes against HEAD plus
-// untracked-not-ignored files, in one diff stream. Mirrors `git status`
-// semantics — the caller wants to see manual edits alongside agent
-// work. On a fresh-init repo with no HEAD the diff runs against the
-// empty tree, so untracked files still show.
-func DiffWorkspaceVsHead(ctx context.Context, workspace string, opts Options) ([]byte, error) {
-	worktreeTree, err := captureSyntheticWorktreeTree(ctx, workspace)
+// OpenWorktreeDiff opens the patch of everything currently uncommitted in
+// the workspace: tracked changes against HEAD plus untracked-not-ignored
+// files, in one diff stream. Mirrors `git status` semantics — the caller
+// wants to see manual edits alongside agent work. On a fresh-init repo with
+// no HEAD the diff runs against the empty tree, so untracked files still
+// show. The snapshot lives in a directory under tempRoot until Close.
+func OpenWorktreeDiff(ctx context.Context, workspace, tempRoot string, opts Options) (*Diff, error) {
+	snapshot, err := captureSyntheticWorktreeTree(ctx, workspace, tempRoot)
 	if err != nil {
 		return nil, err
 	}
-	defer worktreeTree.cleanup()
-
-	oldSide := "HEAD"
-	if !worktreeTree.hasHead {
-		var err error
-		oldSide, err = emptyTreeOID(ctx, workspace, worktreeTree.env)
+	oldSide := snapshot.head
+	if oldSide == "" {
+		oldSide, err = emptyTreeOID(ctx, workspace, snapshot.env)
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(err, snapshot.release())
 		}
 	}
-	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
-		opts.gitArgs("diff", oldSide, worktreeTree.oid, "--")...)
-	if errors.Is(err, errGitOutputTooLarge) {
-		return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: diff workspace vs HEAD: %w", err)
-	}
-	return []byte(stdout), nil
+	return newDiff(workspace, snapshot.env, snapshot.release,
+		opts.gitArgs("diff", oldSide, snapshot.oid, "--")), nil
 }
 
 // emptyTreeOID writes (into the temp object dir the env points at) and
@@ -91,93 +85,89 @@ func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, 
 	return oid, nil
 }
 
-// DiffBranchBaseToWorktree returns the patch a PR from HEAD plus the current
+// OpenBranchBaseDiff opens the patch a PR from HEAD plus the current
 // worktree would carry onto baseBranch. It diffs the merge-base of
 // baseBranch and HEAD against a synthetic tree of the current worktree so
-// committed changes, unstaged/staged changes, and untracked-not-ignored files
-// all share one patch stream.
-func DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string, opts Options) ([]byte, error) {
-	baseBranch, err := resolveBaseRef(ctx, workspace, baseBranch)
+// committed changes, unstaged/staged changes, and untracked-not-ignored
+// files all share one patch stream.
+func OpenBranchBaseDiff(ctx context.Context, workspace, tempRoot, baseBranch string, opts Options) (*Diff, error) {
+	base, err := resolveBaseRef(ctx, workspace, baseBranch)
 	if err != nil {
 		return nil, err
 	}
-	mergeBase, _, _, err := runGit(ctx, workspace, nil, false, "merge-base", baseBranch, "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: merge-base %s HEAD: %w", baseBranch, err)
-	}
-	mergeBase = strings.TrimSpace(mergeBase)
-	if mergeBase == "" {
-		return nil, fmt.Errorf("gitdiff: merge-base %s HEAD returned empty oid", baseBranch)
-	}
-
-	worktreeTree, err := captureSyntheticWorktreeTree(ctx, workspace)
+	snapshot, err := captureSyntheticWorktreeTree(ctx, workspace, tempRoot)
 	if err != nil {
 		return nil, err
 	}
-	defer worktreeTree.cleanup()
-	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
-		opts.gitArgs("diff", mergeBase, worktreeTree.oid, "--")...)
-	if errors.Is(err, errGitOutputTooLarge) {
-		return nil, fmt.Errorf("gitdiff: branch-base diff exceeds %d byte limit", maxDiffOutputBytes)
+	if snapshot.head == "" {
+		return nil, errors.Join(
+			fmt.Errorf("gitdiff: HEAD has no commit to measure against %s", base),
+			snapshot.release())
 	}
+	mergeBase, err := mergeBaseOID(ctx, workspace, base, snapshot.head)
 	if err != nil {
-		return nil, fmt.Errorf("gitdiff: diff branch-base worktree: %w", err)
+		return nil, errors.Join(err, snapshot.release())
 	}
-	return []byte(stdout), nil
+	return newDiff(workspace, snapshot.env, snapshot.release,
+		opts.gitArgs("diff", mergeBase, snapshot.oid, "--")), nil
 }
 
-func captureSyntheticWorktreeTree(ctx context.Context, workspace string) (syntheticWorktreeTree, error) {
-	tempDir, err := os.MkdirTemp("", "agent-overflow-gitdiff-")
-	if err != nil {
-		return syntheticWorktreeTree{}, fmt.Errorf("gitdiff: create temp index dir: %w", err)
+func captureSyntheticWorktreeTree(ctx context.Context, workspace, tempRoot string) (syntheticWorktreeTree, error) {
+	if tempRoot == "" {
+		return syntheticWorktreeTree{}, errors.New("gitdiff: snapshot directory is required")
 	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	tempDir, err := os.MkdirTemp(tempRoot, "snapshot-")
+	if err != nil {
+		return syntheticWorktreeTree{}, fmt.Errorf("gitdiff: create snapshot dir: %w", err)
+	}
+	release := func() error {
+		if err := os.RemoveAll(tempDir); err != nil {
+			return fmt.Errorf("gitdiff: remove snapshot dir: %w", err)
+		}
+		return nil
+	}
+	fail := func(err error) (syntheticWorktreeTree, error) {
+		return syntheticWorktreeTree{}, errors.Join(err, release())
+	}
 
 	indexPath := filepath.Join(tempDir, "index")
 	objectPath := filepath.Join(tempDir, "objects")
 	if err := os.MkdirAll(objectPath, 0o755); err != nil {
-		cleanup()
-		return syntheticWorktreeTree{}, fmt.Errorf("gitdiff: create temp object dir: %w", err)
+		return fail(fmt.Errorf("gitdiff: create temp object dir: %w", err))
 	}
 	repoObjectPath, err := gitObjectPath(ctx, workspace)
 	if err != nil {
-		cleanup()
-		return syntheticWorktreeTree{}, err
+		return fail(err)
 	}
 	env := []string{
 		"GIT_INDEX_FILE=" + indexPath,
 		"GIT_OBJECT_DIRECTORY=" + objectPath,
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + repoObjectPath,
 	}
-	// Probe HEAD once for the whole snapshot: writeWorktreeTree needs it to
-	// decide index seeding, and DiffWorkspaceVsHead reuses it for the old
-	// diff side rather than re-forking the identical rev-parse.
-	hasHead, err := hasHeadCommit(ctx, workspace)
+	head, err := headCommit(ctx, workspace)
 	if err != nil {
-		cleanup()
-		return syntheticWorktreeTree{}, fmt.Errorf("gitdiff: probe HEAD: %w", err)
+		return fail(fmt.Errorf("gitdiff: probe HEAD: %w", err))
 	}
-	treeOID, err := writeWorktreeTree(ctx, workspace, env, hasHead)
+	treeOID, err := writeWorktreeTree(ctx, workspace, env, head)
 	if err != nil {
-		cleanup()
-		return syntheticWorktreeTree{}, err
+		return fail(err)
 	}
 	return syntheticWorktreeTree{
 		oid:     treeOID,
 		env:     env,
-		hasHead: hasHead,
-		cleanup: cleanup,
+		head:    head,
+		release: release,
 	}, nil
 }
 
-func writeWorktreeTree(ctx context.Context, workspace string, env []string, hasHead bool) (string, error) {
+func writeWorktreeTree(ctx context.Context, workspace string, env []string, head string) (string, error) {
 	if !hasGitIndexFileEnv(env) {
 		return "", errors.New("gitdiff: refusing to snapshot without temporary GIT_INDEX_FILE")
 	}
 	// Seed the temp index from HEAD so the snapshot includes tracked files that
 	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
-	if hasHead {
-		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", "HEAD"); err != nil {
+	if head != "" {
+		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", head); err != nil {
 			return "", fmt.Errorf("gitdiff: read-tree HEAD: %w", err)
 		}
 	}

@@ -16,7 +16,8 @@ import (
 // The canonical flags every patch-producing invocation carries. Spelled
 // out here rather than referenced from options.go so silently dropping
 // one (--no-ext-diff, say — an execution surface) fails this test.
-var canonicalPatchFlags = []string{"--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv"}
+var canonicalPatchFlags = []string{"--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+	"--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"}
 
 func TestOptionsGitArgs(t *testing.T) {
 	tests := []struct {
@@ -43,9 +44,9 @@ func TestOptionsGitArgs(t *testing.T) {
 			name: "diff-tree keeps its own flags after -w",
 			opts: Options{IgnoreWhitespace: true},
 			sub:  "diff-tree",
-			rest: []string{"--root", "--find-renames", "abc123", "--"},
+			rest: []string{"--root", "--no-commit-id", "abc123", "--"},
 			want: append(append([]string{"diff-tree"}, canonicalPatchFlags...),
-				"-w", "--root", "--find-renames", "abc123", "--"),
+				"-w", "--root", "--no-commit-id", "abc123", "--"),
 		},
 	}
 	for _, tc := range tests {
@@ -128,7 +129,6 @@ func hasDashW(argv string) bool {
 }
 
 func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
-	ctx := context.Background()
 	// Each producer gets its own repo: the traced run and the fixture must
 	// not share state across subtests.
 	producers := []struct {
@@ -136,26 +136,35 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 		run  func(t *testing.T, repo string, opts Options)
 	}{
 		{
-			name: "DiffWorkspaceVsHead",
+			name: "OpenWorktreeDiff",
 			run: func(t *testing.T, repo string, opts Options) {
-				if _, err := DiffWorkspaceVsHead(ctx, repo, opts); err != nil {
-					t.Fatalf("DiffWorkspaceVsHead: %v", err)
+				if _, err := worktreePatch(t, repo, opts); err != nil {
+					t.Fatalf("worktreePatch: %v", err)
 				}
 			},
 		},
 		{
-			name: "DiffBranchBaseToWorktree",
+			name: "OpenBranchBaseDiff",
 			run: func(t *testing.T, repo string, opts Options) {
-				if _, err := DiffBranchBaseToWorktree(ctx, repo, "main", opts); err != nil {
-					t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+				if _, err := branchBasePatch(t, repo, "main", opts); err != nil {
+					t.Fatalf("branchBasePatch: %v", err)
 				}
 			},
 		},
 		{
-			name: "CommitDiff",
+			name: "OpenCommitDiff",
 			run: func(t *testing.T, repo string, opts Options) {
-				if _, err := CommitDiff(ctx, repo, headSHA(t, repo), opts); err != nil {
-					t.Fatalf("CommitDiff: %v", err)
+				if _, err := commitPatch(t, repo, headSHA(t, repo), opts); err != nil {
+					t.Fatalf("commitPatch: %v", err)
+				}
+			},
+		},
+		{
+			name: "OpenMergeBaseDiff",
+			run: func(t *testing.T, repo string, opts Options) {
+				diff, err := OpenMergeBaseDiff(context.Background(), repo, "main~1", headSHA(t, repo), opts)
+				if _, err := openAndRead(t, diff, err); err != nil {
+					t.Fatalf("OpenMergeBaseDiff: %v", err)
 				}
 			},
 		},
@@ -186,24 +195,23 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceHidesIndentationOnlyChange(t *testing.T) {
-	ctx := context.Background()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "func main() {\nsetup()\nrun()\n}\n", "add code")
 	// The shape this feature exists for: a block wrapped in an `if`, so
 	// every body line is re-indented and nothing else changed.
 	writeFile(t, repo, "code.txt", "func main() {\n    setup()\n    run()\n}\n")
 
-	canonical, err := DiffWorkspaceVsHead(ctx, repo, Options{})
+	canonical, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead(canonical): %v", err)
+		t.Fatalf("worktreePatch(canonical): %v", err)
 	}
 	if !strings.Contains(string(canonical), "+    setup()") {
 		t.Fatalf("canonical patch should carry the re-indent, got:\n%s", canonical)
 	}
 
-	ignored, err := DiffWorkspaceVsHead(ctx, repo, Options{IgnoreWhitespace: true})
+	ignored, err := worktreePatch(t, repo, Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead(ignore whitespace): %v", err)
+		t.Fatalf("worktreePatch(ignore whitespace): %v", err)
 	}
 	if len(ignored) != 0 {
 		t.Fatalf("a whitespace-only change should produce an empty patch, got:\n%s", ignored)
@@ -211,15 +219,14 @@ func TestIgnoreWhitespaceHidesIndentationOnlyChange(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceKeepsRealEditsFromReindentedBlock(t *testing.T) {
-	ctx := context.Background()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n", "add code")
 	// Re-indent three lines and make one real edit.
 	writeFile(t, repo, "code.txt", "alpha\n    beta\n    gamma\n    delta\nEPSILON\n")
 
-	ignored, err := DiffWorkspaceVsHead(ctx, repo, Options{IgnoreWhitespace: true})
+	ignored, err := worktreePatch(t, repo, Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	text := string(ignored)
 	if !strings.Contains(text, "+EPSILON") || !strings.Contains(text, "-epsilon") {
@@ -236,23 +243,22 @@ func TestIgnoreWhitespaceKeepsRealEditsFromReindentedBlock(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceAppliesToBranchBaseAndCommitDiffs(t *testing.T) {
-	ctx := context.Background()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "alpha\nbeta\n", "add code")
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "code.txt", "alpha\n    beta\n", "re-indent only")
 
-	branchPatch, err := DiffBranchBaseToWorktree(ctx, repo, "main", Options{IgnoreWhitespace: true})
+	branchPatch, err := branchBasePatch(t, repo, "main", Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+		t.Fatalf("branchBasePatch: %v", err)
 	}
 	if len(branchPatch) != 0 {
 		t.Fatalf("branch-base -w patch should be empty for a whitespace-only branch, got:\n%s", branchPatch)
 	}
 
-	commitPatch, err := CommitDiff(ctx, repo, headSHA(t, repo), Options{IgnoreWhitespace: true})
+	commitPatch, err := commitPatch(t, repo, headSHA(t, repo), Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("CommitDiff: %v", err)
+		t.Fatalf("commitPatch: %v", err)
 	}
 	if len(commitPatch) != 0 {
 		t.Fatalf("commit -w patch should be empty for a whitespace-only commit, got:\n%s", commitPatch)
@@ -270,9 +276,9 @@ func TestIgnoreWhitespaceOnRootCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rev-list root: %v", err)
 	}
-	patch, err := CommitDiff(ctx, repo, strings.TrimSpace(rootSHA), Options{IgnoreWhitespace: true})
+	patch, err := commitPatch(t, repo, strings.TrimSpace(rootSHA), Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("CommitDiff(root, ignore whitespace): %v", err)
+		t.Fatalf("commitPatch(root, ignore whitespace): %v", err)
 	}
 	if !strings.Contains(string(patch), "+hello") {
 		t.Fatalf("root commit patch lost its content under -w:\n%s", patch)
@@ -346,7 +352,6 @@ func anchorsByContent(t *testing.T, patch string) map[string]anchoredLine {
 // If a future git ever changed that, this test fails and the frontend's
 // "comments work under -w" assumption has to be revisited.
 func TestIgnoreWhitespaceKeepsCanonicalLineNumbers(t *testing.T) {
-	ctx := context.Background()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo,
 		"code.txt",
@@ -357,13 +362,13 @@ func TestIgnoreWhitespaceKeepsCanonicalLineNumbers(t *testing.T) {
 		"code.txt",
 		"package main\n\nfunc main() {\n    setup()\n    launch()\n    teardown()\n}\n\nfunc helper() {}\n")
 
-	canonical, err := DiffWorkspaceVsHead(ctx, repo, Options{})
+	canonical, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead(canonical): %v", err)
+		t.Fatalf("worktreePatch(canonical): %v", err)
 	}
-	ignored, err := DiffWorkspaceVsHead(ctx, repo, Options{IgnoreWhitespace: true})
+	ignored, err := worktreePatch(t, repo, Options{IgnoreWhitespace: true})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead(ignore whitespace): %v", err)
+		t.Fatalf("worktreePatch(ignore whitespace): %v", err)
 	}
 
 	// Guard against a vacuous pass: if -w stopped reaching git the two

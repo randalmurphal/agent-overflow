@@ -27,8 +27,8 @@ const (
 )
 
 // maxCILogBytes caps a fetched CI job log/trace. Traces beyond this are
-// rare; the runner errors past the cap (same discipline as
-// maxPRDiffBytes) and the UI falls back to "open in browser".
+// rare; the runner errors past the cap and the UI falls back to "open in
+// browser".
 const maxCILogBytes = 16 * 1024 * 1024
 
 type CIPipeline struct {

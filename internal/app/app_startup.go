@@ -717,6 +717,11 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.attachments = attachmentStore
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
+	endPhase = a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")
+	if err := a.sweepReviewDiffSnapshots(); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	endPhase()
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush

@@ -7,7 +7,7 @@ import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
@@ -81,15 +81,15 @@ beforeEach(() => {
   setBindingMock('GetGitStatus', async () => ({}));
   // Seeding a workspace status runs the shared store's branch reconciliation.
   setBindingMock('UpdateThreadBranch', async () => []);
-  setBindingMock('GetWorkspaceCurrentDiff', async () => patch());
-  setBindingMock('GetBranchBaseDiff', async () => '');
+  setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
+  setReviewDiffMock('OpenBranchBaseDiff', async () => '');
   setBindingMock('ListBranchCommits', async () => []);
-  setBindingMock('GetCommitDiff', async () => '');
+  setReviewDiffMock('OpenCommitDiff', async () => '');
   setBindingMock('ListPRCommits', async () => []);
-  setBindingMock('GetPRCommitDiff', async () => '');
+  setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
-  setBindingMock('GetTurnEditsDiff', async () => ({ data: '' }));
-  setBindingMock('GetPayloadData', async () => ({ data: '' }));
+  setReviewDiffMock('OpenTurnEditsDiff', async () => '');
+  setReviewDiffMock('OpenEditDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -254,7 +254,7 @@ describe('<ReviewPane>', () => {
 
   it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {
     const calls: boolean[] = [];
-    setBindingMock('GetWorkspaceCurrentDiff', async (...args: never[]) => {
+    setReviewDiffMock('OpenWorkspaceDiff', async (...args: never[]) => {
       const [, ignoreWhitespace] = args as unknown as [string, boolean];
       calls.push(ignoreWhitespace);
       // The -w patch drops the whitespace-only file.
@@ -309,7 +309,7 @@ describe('<ReviewPane>', () => {
       }],
       turnLabels: [{ turnIndex: 0, label: 'turn' }],
     }));
-    setBindingMock('GetPayloadData', async () => ({ data: patch() }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => patch());
     setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
 
     const view = render(ReviewPane, { ctx: makeCtx() });
@@ -477,7 +477,7 @@ describe('<ReviewPane>', () => {
       headSHA: 'sha-a',
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
 
     seedSourcePanePR();
@@ -536,7 +536,7 @@ describe('<ReviewPane>', () => {
       headSHA: 'sha-a',
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
     // A pending PR-scope draft makes the send strip (and verdict buttons) render.
     setBindingMock('ListDiffReviewComments', async (_threadId: never, scope: never) =>
@@ -615,12 +615,12 @@ describe('<ReviewPane>', () => {
       headSHA: 'sha-a',
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
     setBindingMock('ListPRCommits', async () => [
       { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetPRCommitDiff', async () => patch());
+    setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     // Echo the requested sourceKey so a draft exists (and the send strip
     // renders) in both the whole-PR and single-commit views.
     setBindingMock('ListDiffReviewComments', async (_threadId: never, scope: string, sourceKey: string) =>
@@ -691,8 +691,8 @@ describe('<ReviewPane>', () => {
         { turnIndex: 2, label: 'now the lexer' },
       ],
     }));
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: patch() }));
-    const payload = setBindingMock('GetPayloadData', async () => ({ data: patch() }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => patch());
+    const payload = setReviewDiffMock('OpenEditDiff', async () => patch());
 
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {
@@ -724,9 +724,9 @@ describe('<ReviewPane>', () => {
       headSHA: 'sha-a',
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    // The PR diff never resolves — a hung gh/glab call must not lock
+    // The PR diff never resolves — a hung fetch must not lock
     // the user out of switching back to a local scope.
-    setBindingMock('GetPRDiff', () => new Promise<string>(() => {}));
+    setReviewDiffMock('OpenPRDiff', () => new Promise<string>(() => {}));
     setBindingMock('ListPRReviewThreads', async () => []);
 
     seedSourcePanePR();
@@ -776,7 +776,7 @@ describe('<ReviewPane>', () => {
       headSHA: 'sha-a',
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('ListPRReviewThreads', async () => []);
 
     seedSourcePanePR();
@@ -1021,7 +1021,7 @@ async function openColoredConflicts(view: Awaited<ReturnType<typeof renderPRScop
 describe('<ReviewPane> syntax colors across rebuilds', () => {
   it.each(['stacked', 'split'] as const)('keeps colored lines colored through an expansion burst (%s)', async (mode) => {
     const hold = installFakeHighlighter();
-    setBindingMock('GetWorkspaceCurrentDiff', async () => [
+    setReviewDiffMock('OpenWorkspaceDiff', async () => [
       'diff --git a/src/app.ts b/src/app.ts',
       'index 1111111..2222222 100644',
       '--- a/src/app.ts',
@@ -1079,7 +1079,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
 
   it('keeps colored lines colored while a conflict fold expands', async () => {
     const hold = installFakeHighlighter();
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('GetPRMergeConflicts', async () => CONFLICT_TREE);
     setBindingMock('GetMergeConflictFile', async () => conflictContent('return theirs(1);'));
     const view = await renderPRScope();
@@ -1111,7 +1111,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
 
   it('keeps colored conflict lines colored while a push recomputes the merge', async () => {
     const hold = installFakeHighlighter();
-    setBindingMock('GetPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRDiff', async () => patch());
     setBindingMock('GetPRMergeConflicts', async () => CONFLICT_TREE);
     setBindingMock('GetMergeConflictFile', async () => conflictContent('return theirs(1);'));
     const view = await renderPRScope();
@@ -1152,7 +1152,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       '-export const unused = 1;',
       '+export const used = 2;',
     ].join('\n');
-    setBindingMock('GetPRDiff', async () => diffAt('let added = gamma();'));
+    setReviewDiffMock('OpenPRDiff', async () => diffAt('let added = gamma();'));
     const view = await renderPRScope();
     await waitFor(() => {
       expect(rowTexts(view.container)).toContain('+let added = gamma();');
@@ -1162,7 +1162,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
 
     // The push changes one line of one file. Primed spans are keyed by
     // the head, so the reload misses every file's exact result.
-    setBindingMock('GetPRDiff', async () => diffAt('let added = delta();'));
+    setReviewDiffMock('OpenPRDiff', async () => diffAt('let added = delta();'));
     pushTo('sha-b');
     await waitFor(() => {
       expect(view.getByTestId('review-pr-stale')).toBeInTheDocument();
@@ -1197,7 +1197,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       `+${secondHunkAdd}`,
       ` ${sourceLine(42)}`,
     ].join('\n');
-    setBindingMock('GetWorkspaceCurrentDiff', async () => diffWith('return modern(total);'));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => diffWith('return modern(total);'));
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {
       expect(rowTexts(view.container)).toContain('+return modern(total);');
@@ -1205,7 +1205,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
     });
     const colored = coloredTexts(view.container);
 
-    setBindingMock('GetWorkspaceCurrentDiff', async () => diffWith('return modern(total, cap);'));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => diffWith('return modern(total, cap);'));
     const release = hold();
     await fireEvent.click(view.getByTestId('review-reload'));
     await waitFor(() => {
@@ -1220,7 +1220,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
 
   it('keeps colored lines colored while hide-whitespace re-highlights the diff', async () => {
     const hold = installFakeHighlighter();
-    setBindingMock('GetWorkspaceCurrentDiff', async (...args: never[]) => {
+    setReviewDiffMock('OpenWorkspaceDiff', async (...args: never[]) => {
       const [, ignoreWhitespace] = args as unknown as [unknown, boolean];
       return [
         'diff --git a/src/app.ts b/src/app.ts',

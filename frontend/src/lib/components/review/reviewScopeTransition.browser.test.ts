@@ -3,7 +3,7 @@ import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 
@@ -22,7 +22,7 @@ beforeEach(() => {
   document.body.append(target);
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
   setBindingMock('GetGitStatus', async () => ({}));
-  setBindingMock('GetWorkspaceCurrentDiff', async () => patch('workspace.ts', 'workspace content'));
+  setReviewDiffMock('OpenWorkspaceDiff', async () => patch('workspace.ts', 'workspace content'));
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: true, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('ListThreadEditDiffs', async () => ({
@@ -30,9 +30,7 @@ beforeEach(() => {
       title: 'Edit', paths: ['repeated.ts'], insertions: 1, deletions: 1, createdAt: i })),
     turnLabels: [{ turnIndex: 1, label: 'Edit twice' }],
   }));
-  setBindingMock('GetTurnEditsDiff', async () => ({
-    data: patch('repeated.ts', 'first edit') + patch('repeated.ts', 'second edit'),
-  }));
+  setReviewDiffMock('OpenTurnEditsDiff', async () => patch('repeated.ts', 'first edit') + patch('repeated.ts', 'second edit'));
   setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
   setBindingMock('HighlightSchemaVersion', async () => 'test-schema');
   setBindingMock('HighlightClassNames', async () => ['none']);
@@ -61,7 +59,7 @@ for (const width of [400, 1100]) {
       await vi.waitFor(() => expect(target.textContent).toContain('second edit'));
       let resolve!: (value: string) => void;
       const pending = new Promise<string>(done => { resolve = done; });
-      const read = setBindingMock('GetWorkspaceCurrentDiff', () => pending);
+      const read = setReviewDiffMock('OpenWorkspaceDiff', () => pending);
       select('workspace');
       try {
         await vi.waitFor(() => expect(read).toHaveBeenCalled());

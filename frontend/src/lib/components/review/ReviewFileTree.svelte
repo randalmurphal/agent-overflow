@@ -12,7 +12,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
-  import type { PatchFile } from '../../utils/patchFiles';
+  import type { DiffFileSummary } from '../../utils/patchStore';
   import {
     buildReviewTree,
     fileExtensionLabel,
@@ -25,7 +25,7 @@
   // component fills whatever width the rail gives it.
 
   interface Props {
-    files: PatchFile[];
+    files: readonly DiffFileSummary[];
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
     /** Per-file comment/draft counts for the badge pills. */

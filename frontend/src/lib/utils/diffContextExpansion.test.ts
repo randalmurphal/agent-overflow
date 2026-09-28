@@ -5,7 +5,9 @@ import {
   expansionFetchRange,
   type ContextExpansionState,
 } from './diffContextExpansion';
-import { buildPatchDisplayRows, filePatchDisplayRows, parsePatchFiles, type DiffGap, type PatchFile } from './patchFiles';
+import type { DiffGap, PatchDisplayRow } from './patchFiles';
+import { displayRowCount, FILE_START, materializeRows } from './patchRows';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
 
 // Two hunks with a known between-gap (new-side 14..41), a leading gap
 // (1..9), and an unknown-size trailing gap starting at 44. Hunk 1 nets
@@ -26,14 +28,22 @@ const midFilePatch = `diff --git a/app.ts b/app.ts
 +new2
 `;
 
-function fileOf(patch: string): PatchFile {
-  return parsePatchFiles(patch)[0];
+function fileOf(patch: string): ReviewFile {
+  return parseReviewFiles(patch)[0];
 }
 
-function gapsOf(file: PatchFile): DiffGap[] {
-  return buildPatchDisplayRows(file.lines, file.newSideTotal)
+function rowsOf(file: ReviewFile): PatchDisplayRow[] {
+  return materializeRows(file, FILE_START, displayRowCount(file));
+}
+
+function gapsOf(file: ReviewFile): DiffGap[] {
+  return rowsOf(file)
     .filter((row) => row.gap)
     .map((row) => row.gap!);
+}
+
+function contents(file: ReviewFile): string[] {
+  return file.body.toPatchLines().map((line) => line.content);
 }
 
 function state(entries: [number, string][], eofLine: number | null = null, version = 1): ContextExpansionState {
@@ -81,7 +91,7 @@ describe('applyContextExpansion', () => {
     const expanded = applyContextExpansion(file, state(range(14, 18)));
     expect(expanded).not.toBe(file);
 
-    const rows = buildPatchDisplayRows(expanded.lines, expanded.newSideTotal);
+    const rows = rowsOf(expanded);
     const merged = rows.filter((row) => row.line.content.startsWith(' src '));
     // Unchanged lines continue hunk 1's numbering: old runs 2 behind new.
     expect(merged.map((row) => [row.oldLine, row.newLine])).toEqual(
@@ -95,7 +105,7 @@ describe('applyContextExpansion', () => {
     const file = fileOf(midFilePatch);
     const expanded = applyContextExpansion(file, state(range(37, 41)));
 
-    const rows = buildPatchDisplayRows(expanded.lines, expanded.newSideTotal);
+    const rows = rowsOf(expanded);
     const merged = rows.filter((row) => row.line.content.startsWith(' src '));
     // Second hunk was old 40 / new 42; prepending 5 lines shifts both.
     expect(merged.map((row) => [row.oldLine, row.newLine])).toEqual(
@@ -109,7 +119,7 @@ describe('applyContextExpansion', () => {
     const file = fileOf(midFilePatch);
     const expanded = applyContextExpansion(file, state(range(14, 41)));
 
-    const rows = buildPatchDisplayRows(expanded.lines, expanded.newSideTotal);
+    const rows = rowsOf(expanded);
     const merged = rows.filter((row) => row.line.content.startsWith(' src '));
     expect(merged).toHaveLength(28);
     expect(merged[0]).toMatchObject({ oldLine: 12, newLine: 14 });
@@ -121,7 +131,7 @@ describe('applyContextExpansion', () => {
     const file = fileOf(midFilePatch);
     const expanded = applyContextExpansion(file, state(range(1, 9)));
 
-    const rows = buildPatchDisplayRows(expanded.lines, expanded.newSideTotal);
+    const rows = rowsOf(expanded);
     expect(rows.find((row) => row.newLine === 1)?.line.content).toBe(' src 1');
     expect(gapsOf(expanded).map((gap) => gap.location)).toEqual(['between', 'trailing']);
   });
@@ -131,7 +141,7 @@ describe('applyContextExpansion', () => {
     const expanded = applyContextExpansion(file, state(range(44, 50), 50));
 
     expect(expanded.newSideTotal).toBe(50);
-    const rows = buildPatchDisplayRows(expanded.lines, expanded.newSideTotal);
+    const rows = rowsOf(expanded);
     expect(rows.at(-1)).toMatchObject({ oldLine: 48, newLine: 50 });
     expect(gapsOf(expanded).some((gap) => gap.location === 'trailing')).toBe(false);
   });
@@ -149,9 +159,8 @@ describe('applyContextExpansion', () => {
   });
 
   it('keeps two expansion states on the same base array fully independent', () => {
-    // parsePatchFilesCached shares one base array per patch text, so
-    // two panes expanding identical content hit applyContextExpansion
-    // with the SAME base but different states. Each state must keep
+    // Two panes expanding identical content hit applyContextExpansion
+    // with the SAME base file but different states. Each state must keep
     // its own memo slot (no rebuild ping-pong).
     const file = fileOf(midFilePatch);
     const paneA = state(range(14, 16), null, 21);
@@ -178,12 +187,12 @@ describe('applyContextExpansion', () => {
     const file = fileOf(midFilePatch);
     const expansion = state(range(14, 16), null, 41);
     const expanded = applyContextExpansion(file, expansion);
-    expect(filePatchDisplayRows(expanded).some((row) => row.gap)).toBe(true);
+    expect(rowsOf(expanded).some((row) => row.gap)).toBe(true);
 
     const retired = applyContextExpansion({ ...file, suppressGaps: true }, expansion);
     expect(retired.suppressGaps).toBe(true);
-    expect(retired.lines.map((line) => line.content)).toEqual(expanded.lines.map((line) => line.content));
-    expect(filePatchDisplayRows(retired).some((row) => row.gap)).toBe(false);
+    expect(contents(retired)).toEqual(contents(expanded));
+    expect(rowsOf(retired).some((row) => row.gap)).toBe(false);
   });
 
   it('leaves added files and conflict pseudo-content untouched', () => {
@@ -197,13 +206,46 @@ new file mode 100644
 `);
     expect(applyContextExpansion(added, state(range(1, 2)))).toBe(added);
 
-    const conflict: PatchFile = {
+    const conflict = reviewFileFromPatchFile({
       path: 'x',
       kind: 'conflict',
       additions: 0,
       deletions: 0,
       lines: [{ content: '<<<<<<<', type: 'marker' }],
-    };
+    });
     expect(applyContextExpansion(conflict, state(range(1, 2), null, 2))).toBe(conflict);
+  });
+
+  it('keeps the original lines, preamble and trailing markers in place', () => {
+    const file = fileOf(`diff --git a/app.ts b/app.ts
+index 1111111..2222222 100644
+--- a/app.ts
++++ b/app.ts
+@@ -10,2 +10,2 @@ function first()
+ ctx1
+-old1
++new1
+\\ No newline at end of file
+`);
+    const expanded = applyContextExpansion(file, state([...range(7, 9), ...range(12, 13)]));
+    expect(contents(expanded)).toEqual([
+      'diff --git a/app.ts b/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/app.ts',
+      '+++ b/app.ts',
+      '@@ -7,7 +7,7 @@ function first()',
+      ' src 7',
+      ' src 8',
+      ' src 9',
+      ' ctx1',
+      '-old1',
+      '+new1',
+      '\\ No newline at end of file',
+      ' src 12',
+      ' src 13',
+    ]);
+    expect(expanded.body.patchText()).toBe(contents(expanded).join('\n'));
+    // The original lines are read from the parsed store, not copied.
+    expect(expanded.body.segments.some((segment) => segment.store === file.body.segments[0].store)).toBe(true);
   });
 });

@@ -555,13 +555,6 @@ func (c *Core) runLocaleC(cwd string, args ...string) (commandResult, error) {
 	return c.runSpec(commandSpec{binary: "git", cwd: cwd, extraEnv: localeCEnv, args: args})
 }
 
-// runWithLimit runs a git command with an explicit stdout/stderr cap
-// (0 = Core default). PR diffs can exceed the shared default, so their
-// callers raise the ceiling rather than truncating.
-func (c *Core) runWithLimit(cwd string, maxBytes int64, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{binary: "git", cwd: cwd, maxBytes: maxBytes, args: args})
-}
-
 func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, error) {
 	return c.runSpec(commandSpec{binary: binary, cwd: cwd, args: args})
 }

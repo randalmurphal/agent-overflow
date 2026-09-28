@@ -132,13 +132,14 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	go func() {
 		defer wg.Done()
 		// Tracked churn measured against HEAD with the same diff the panel's
-		// DiffWorkspaceVsHead produces (HEAD, --minimal --no-ext-diff --no-textconv):
+		// gitdiff.OpenWorktreeDiff produces (HEAD, --minimal --no-ext-diff
+		// --no-textconv --find-renames):
 		// numstat's per-file insertion/deletion counts equal the '+'/'-' content
 		// lines the panel parses from --patch, so the header badge and the panel
 		// report the same numbers. On a fresh repo with no HEAD this exits non-zero
 		// with empty output (runBinary surfaces that as a result, not an error),
 		// yielding zero tracked churn — which is exactly what the panel shows there.
-		numstat, numstatErr = c.run(cwd, "diff", "--numstat", "--minimal", "--no-ext-diff", "--no-textconv", "HEAD", "--")
+		numstat, numstatErr = c.run(cwd, "diff", "--numstat", "--minimal", "--no-ext-diff", "--no-textconv", "--find-renames", "HEAD", "--")
 	}()
 
 	go func() {

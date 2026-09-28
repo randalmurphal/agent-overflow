@@ -9,40 +9,6 @@ import (
 
 var treeOIDPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
 
-// maxPRDiffBytes caps a locally computed PR diff to bound memory. Matches
-// the checkpoint store's diff ceiling.
-const maxPRDiffBytes = 10 * 1024 * 1024
-
-// DiffMergeBase returns the unified diff from the merge base of base and
-// head to head: the three-dot PR diff, computed from local objects. Both
-// refs must already exist locally (fetch the PR head ref and the base
-// branch first).
-func (c *Core) DiffMergeBase(cwd, base, head string) (string, error) {
-	base = strings.TrimSpace(base)
-	head = strings.TrimSpace(head)
-	if base == "" {
-		return "", fmt.Errorf("git diff base is required")
-	}
-	if head == "" {
-		return "", fmt.Errorf("git diff head is required")
-	}
-	// Trailing `--` so a ref that resembles a flag can't inject options.
-	result, err := c.runWithLimit(cwd, maxPRDiffBytes,
-		"diff", "--merge-base", "--no-color", "--no-ext-diff", "--no-textconv",
-		base, head, "--")
-	if err != nil {
-		return "", err
-	}
-	if result.exitCode != 0 {
-		message := strings.TrimSpace(result.stderr)
-		if message == "" {
-			message = fmt.Sprintf("git diff exit code %d", result.exitCode)
-		}
-		return "", fmt.Errorf("git diff failed: %s", message)
-	}
-	return result.stdout, nil
-}
-
 type MergeTreeResult struct {
 	Conflicted bool     `json:"conflicted"`
 	TreeOID    string   `json:"treeOID"`

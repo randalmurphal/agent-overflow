@@ -9,45 +9,45 @@
 // selection resolvers and the diff-source switch testable on their own.
 
 import {
-  GetBranchBaseDiff,
-  GetCommitDiff,
-  GetPRCommitDiff,
-  GetPRDiff,
-  GetPayloadData,
-  GetTurnEditsDiff,
-  GetWorkspaceCurrentDiff,
+  GetPayloadPatchSpans,
   GitListBranches,
   ListBranchCommits,
   ListPRCommits,
   ListThreadEditDiffs,
+  OpenBranchBaseDiff,
+  OpenCommitDiff,
+  OpenEditDiff,
+  OpenPRCommitDiff,
+  OpenPRDiff,
+  OpenTurnEditsDiff,
+  OpenWorkspaceDiff,
 } from './bindings';
 import type { PRSnapshot } from './prReviewStore.svelte';
+import { ReviewDiffSource } from './reviewDiffStream';
+import { withBackendTarget } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
 import type { BranchCommit, GitBranch, WorkspaceRef } from '../types/git';
 import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../types/models';
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
-import { filePatchDisplayRows, type PatchFile } from '../utils/patchFiles';
+import { mergePatchFilesByPath } from '../utils/patchFiles';
+import { anchorRow, displayRowCount } from '../utils/patchRows';
+import { patchFileFromReviewFile, reviewFileFromPatchFile, type ReviewFile } from '../utils/patchStore';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import { SvelteSet } from 'svelte/reactivity';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
- * only source that can apply `-w`:
- *
- * - workspace / branch — `GetWorkspaceCurrentDiff` / `GetBranchBaseDiff`.
- * - any selected commit, including in pr scope — `GetCommitDiff` /
- *   `GetPRCommitDiff`.
- * - pr whole-diff — NO. `GetPRDiff` runs `git diff --merge-base` in
- *   `internal/git`, which takes no `-w`.
- * - edits — NO. Those are persisted tool-call patches replayed verbatim,
- *   never a git recomputation.
+ * only source that can apply `-w`: every scope but edits, whose patches
+ * are persisted tool-call output replayed verbatim, never a git
+ * recomputation.
  *
  * Shared by the toolbar's enablement and by loadPatch, so the control can
- * never offer a mode the load path won't deliver. */
+ * never offer a mode the load path won't deliver. The selected commit is
+ * part of the signature because the orphan check asks per selection. */
 export function supportsIgnoreWhitespace(
   scope: DiffReviewScope,
-  selectedCommitSHA: string | null,
+  _selectedCommitSHA: string | null,
 ): boolean {
-  if (selectedCommitSHA) return scope === 'branch' || scope === 'pr';
-  return scope === 'workspace' || scope === 'branch';
+  return scope !== 'edits';
 }
 
 /** One edit tool call in the Edits selector — metadata only, the diff
@@ -76,7 +76,13 @@ export function editSelectionKey(selection: EditSelection | null): string | null
 }
 
 export interface LoadedPatch {
-  patchText: string;
+  /** The diff to read from the backend; null when there is nothing to
+   * show (an Edits view with no edits). A source that is not read must be
+   * abandoned. */
+  patch: ReviewDiffSource | null;
+  /** Edits: sections that repeat a path show as one file per path
+   * (EditFileMerge). */
+  mergesPaths?: boolean;
   /** Commit selector rows for the loaded range; omitted → empty. */
   commits?: BranchCommit[];
   /** The commit the diff was actually computed for — a stale selection
@@ -186,6 +192,8 @@ export const EDITS_NEEDS_THREAD =
 export interface DiffSubject {
   workspace: WorkspaceRef;
   threadId: string | null;
+  /** The computer that serves the subject's diffs. */
+  backend: BackendKey;
 }
 
 export async function loadPatch(
@@ -205,15 +213,15 @@ export async function loadPatch(
   ignoreWhitespace: boolean,
   existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
-  const { workspace, threadId } = subject;
+  const { workspace, threadId, backend } = subject;
+  const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1]) => new ReviewDiffSource(backend, open);
   switch (scope) {
     case 'pr': {
       const detail = prSnapshot?.detail;
       if (!prRef || !detail) throw new Error('No PR or MR is available for this thread.');
       const pr = prReferenceWire(prRef);
-      // The detail's baseRefName is what lets the backend compute a local
-      // three-dot diff (gh/glab's PR-diff API caps at 20k lines; large PRs
-      // must go through the local-clone path).
+      // The backend diffs the PR head against the detail's base ref in the
+      // local clone.
       const baseRef = detail.baseRefName ?? '';
       const headSHA = String(prSnapshot.headSHA || detail.headSHA || '');
       // Per-commit PR review needs the local clone; without one the backend
@@ -226,15 +234,13 @@ export async function loadPatch(
               []) as BranchCommit[])
           : [];
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-      const patchText = commitSHA
-        ? String((await GetPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace)) ?? '')
-        : String((await GetPRDiff(workspace, pr, baseRef)) ?? '');
-      return { patchText, commits, selectedCommitSHA: commitSHA, prHeadSHA: headSHA };
+      const patch = commitSHA
+        ? diff(() => OpenPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace))
+        : diff(() => OpenPRDiff(workspace, pr, baseRef, ignoreWhitespace));
+      return { patch, commits, selectedCommitSHA: commitSHA, prHeadSHA: headSHA };
     }
     case 'workspace':
-      return {
-        patchText: ((await GetWorkspaceCurrentDiff(workspace, ignoreWhitespace)) ?? '') as string,
-      };
+      return { patch: diff(() => OpenWorkspaceDiff(workspace, ignoreWhitespace)) };
     case 'edits': {
       if (threadId === null) throw new Error(EDITS_NEEDS_THREAD);
       let entries = existing?.edits;
@@ -254,45 +260,39 @@ export async function loadPatch(
         turnLabels = new Map((list?.turnLabels ?? []).map((label) => [Number(label.turnIndex), String(label.label ?? '')]));
       }
       const selection = resolveEditSelection(editDesire, entries);
-      let patchText = '';
-      if (selection?.kind === 'item') {
-        const payload = await GetPayloadData(threadId, selection.payloadId);
-        patchText = String(payload?.data ?? '');
-        // Persist-time spans travel with the data (primed when the file
-        // still matched at edit time) — seed them so the first paint is
-        // colored without the RPC path. Fire-and-forget cache warmer.
-        void seedPayloadPatchSpans(threadId, payload?.patchSpans);
-      } else if (selection) {
-        const turnDiff = await GetTurnEditsDiff(threadId, selection.turnIndex);
-        patchText = String(turnDiff?.data ?? '');
-        void seedPayloadPatchSpans(threadId, turnDiff?.patchSpans);
-      }
-      return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
+      const patch = selection?.kind === 'item'
+        ? diff(() => OpenEditDiff(threadId, selection.payloadId))
+        : selection
+          ? diff(() => OpenTurnEditsDiff(threadId, selection.turnIndex))
+          : null;
+      return { patch, mergesPaths: true, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
     }
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(workspace);
+      const branchDiff = (commitSHA: string | null) => commitSHA
+        ? diff(() => OpenCommitDiff(workspace, commitSHA, ignoreWhitespace))
+        : diff(() => OpenBranchBaseDiff(workspace, branch, ignoreWhitespace));
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
-        const patchText = commitSHA
-          ? ((await GetCommitDiff(workspace, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(workspace, branch, ignoreWhitespace)) ?? '') as string;
-        return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits: existing.commits, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
         const commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
-        const patchText = commitSHA
-          ? ((await GetCommitDiff(workspace, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(workspace, branch, ignoreWhitespace)) ?? '') as string;
-        return { patchText, commits, selectedCommitSHA: commitSHA };
+        return { patch: branchDiff(commitSHA), commits, selectedCommitSHA: commitSHA };
       }
-      const [commits, patchText] = await Promise.all([
-        ListBranchCommits(workspace, branch).then((rows) => (rows ?? []) as BranchCommit[]),
-        GetBranchBaseDiff(workspace, branch, ignoreWhitespace).then((patch) => (patch ?? '') as string),
-      ]);
-      return { patchText, commits, selectedCommitSHA: null };
+      // The diff opens while the commit list loads.
+      const patch = branchDiff(null).start();
+      let commits: BranchCommit[];
+      try {
+        commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
+      } catch (err) {
+        patch.abandon();
+        throw err;
+      }
+      return { patch, commits, selectedCommitSHA: null };
     }
   }
 }
@@ -306,14 +306,76 @@ export async function defaultBaseBranch(workspace: WorkspaceRef): Promise<string
   return defaultBranch.name;
 }
 
-export function defaultCollapsedPaths(files: readonly PatchFile[]): SvelteSet<string> {
-  const collapsed = new SvelteSet<string>();
-  for (const file of files) {
-    if (isLockfileish(file.path) || filePatchDisplayRows(file).length > 400) {
-      collapsed.add(file.path);
+/** Whether a file starts collapsed: lockfiles and files over 400 rows. */
+export function collapsedByDefault(file: ReviewFile): boolean {
+  return isLockfileish(file.path) || displayRowCount(file) > 400;
+}
+
+interface EditFileGroup {
+  sections: ReviewFile[];
+  file: ReviewFile;
+}
+
+/**
+ * The edits scope's files. A whole-turn diff repeats a path when a file was
+ * edited more than once in the turn; those sections merge into one
+ * file-ordered section per path (the review surface keys rows, tree and
+ * collapse state by path; see mergePatchFilesByPath). Fed a parser's files
+ * as they grow, a path's merge is rebuilt only when a section joins it.
+ */
+export class EditFileMerge {
+  private sections: readonly ReviewFile[] = [];
+  private seen = 0;
+  private groups = new Map<string, EditFileGroup>();
+
+  files(sections: readonly ReviewFile[]): ReviewFile[] {
+    if (sections !== this.sections) {
+      // A retried read fills a new parser.
+      this.sections = sections;
+      this.seen = 0;
+      this.groups = new Map();
     }
+    const joined = new Set<EditFileGroup>();
+    for (; this.seen < sections.length; this.seen += 1) {
+      const section = sections[this.seen];
+      const group = this.groups.get(section.path);
+      if (group) {
+        group.sections.push(section);
+        joined.add(group);
+      } else {
+        this.groups.set(section.path, { sections: [section], file: section });
+      }
+    }
+    for (const group of joined) {
+      group.file = reviewFileFromPatchFile(mergePatchFilesByPath(group.sections.map(patchFileFromReviewFile))[0]);
+    }
+    return Array.from(this.groups.values(), (group) => group.file);
   }
-  return collapsed;
+}
+
+/**
+ * Seeds the highlight cache with each edit payload's persisted spans,
+ * primed when the file still matched at edit time, so the first paint is
+ * colored without the RPC path. One payload at a time until `cancelled`;
+ * a seed that does not arrive leaves its file on the RPC path.
+ */
+export async function seedEditPatchSpans(
+  threadId: string,
+  backend: BackendKey,
+  payloadIds: readonly string[],
+  cancelled: () => boolean,
+): Promise<void> {
+  for (const payloadId of payloadIds) {
+    if (cancelled()) return;
+    let spans;
+    try {
+      spans = await withBackendTarget(backend, () => GetPayloadPatchSpans(threadId, payloadId));
+    } catch (err) {
+      reportFrontendDiagnostic('review diff: edit span seeds failed', err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await seedPayloadPatchSpans(threadId, spans);
+  }
 }
 
 export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLineComment | null {
@@ -332,17 +394,11 @@ export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLin
   return null;
 }
 
-export function draftAnchorExists(files: readonly PatchFile[], comment: DiffReviewComment): boolean {
+export function draftAnchorExists(files: readonly ReviewFile[], comment: DiffReviewComment): boolean {
   if (comment.side === 'file') return files.some((file) => file.path === comment.filePath);
   const file = files.find((candidate) => candidate.path === comment.filePath);
   if (!file) return false;
-  const rows = filePatchDisplayRows(file);
-  return rows.some((row) => {
-    if (row.gap) return false;
-    if (comment.side === 'old') return row.side === 'old' && row.oldLine === comment.oldLine;
-    if (comment.side === 'new') return row.side === 'new' && row.newLine === comment.newLine;
-    return row.oldLine === comment.oldLine && row.newLine === comment.newLine;
-  });
+  return anchorRow(file, comment) >= 0;
 }
 
 function isLockfileish(path: string): boolean {

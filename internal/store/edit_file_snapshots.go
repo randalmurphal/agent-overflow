@@ -92,7 +92,7 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 
 // GetLatestTurnEditFileSnapshot returns the decompressed snapshot of
 // path from the LAST edit payload of a turn that touched it — the same
-// item order ListTurnEditDiffPatches concatenates in, so the snapshot
+// item order ListTurnEditDiffPayloads lists, so the snapshot
 // matches the final merged section the whole-turn Edits view renders.
 // The turn's rows drive the read; each probes its payload's snapshot of
 // path, so the thread's other snapshots are never read.

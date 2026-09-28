@@ -8,7 +8,7 @@
   import ReviewFileTree from './ReviewFileTree.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { ReviewVerdict } from '../../types/models';
-  import type { PatchFile } from '../../utils/patchFiles';
+  import type { DiffFileSummary } from '../../utils/patchStore';
   import type { CommentFileGroup, CommentListItem } from '../../utils/reviewComments';
 
   // The review pane's left rail: Files | Comments tabs over a shared
@@ -19,7 +19,7 @@
   interface Props {
     tab: ReviewRailTab;
     onTabChange: (tab: ReviewRailTab) => void;
-    files: PatchFile[];
+    files: readonly DiffFileSummary[];
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
     commentCounts: ReadonlyMap<string, number>;

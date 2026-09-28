@@ -185,12 +185,15 @@ func TestSharedImportHistoryEditDiffReadsHonorPayloadOverlays(t *testing.T) {
 		if len(items) != 1 || items[0].ItemID != "item-tool" || items[0].PayloadMeta != wantMeta {
 			t.Fatalf("edit items = %+v, want imported item with meta %s", items, wantMeta)
 		}
-		patches, err := s.ListTurnEditDiffPatches("shared-edits", 1)
+		ids, err := s.ListTurnEditDiffPayloads("shared-edits", 1)
 		if err != nil {
-			t.Fatalf("list turn edit patches: %v", err)
+			t.Fatalf("list turn edit payloads: %v", err)
 		}
-		if len(patches) != 1 || patches[0].PayloadID != "payload-out" || string(patches[0].Data) != wantData {
-			t.Fatalf("edit patches = %+v, want payload-out %q", patches, wantData)
+		if len(ids) != 1 || ids[0] != "payload-out" {
+			t.Fatalf("edit payloads = %v, want payload-out", ids)
+		}
+		if data, err := s.GetPayloadData("shared-edits", ids[0]); err != nil || string(data) != wantData {
+			t.Fatalf("edit payload data = %q (%v), want %q", data, err, wantData)
 		}
 	}
 

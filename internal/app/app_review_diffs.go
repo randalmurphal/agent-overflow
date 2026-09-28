@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -27,56 +28,57 @@ func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
 	return workspace, nil
 }
 
-// GetWorkspaceCurrentDiff returns the unified patch of everything
-// currently uncommitted in the referenced workspace (tracked changes
-// against HEAD plus untracked-not-ignored files). Empty for non-git
-// workspaces.
+// OpenWorkspaceDiff opens the unified patch of everything currently
+// uncommitted in the referenced workspace (tracked changes against HEAD
+// plus untracked-not-ignored files), as a snapshot taken now. Empty for
+// non-git workspaces. The rest of a patch longer than the first chunk
+// reads through ReadReviewDiff.
 //
 // ignoreWhitespace is the review pane's "hide whitespace changes"
 // toggle (`-w`); see gitdiff.Options.
 //
 //ao:scope files:read
-func (a *App) GetWorkspaceCurrentDiff(ws WorkspaceRef, ignoreWhitespace bool) (string, error) {
-	const action = "get workspace current diff"
+func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	const action = "open workspace diff"
+	if a.shuttingDown.Load() {
+		return ReviewDiffOpened{}, ErrShuttingDown
+	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
-	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return "", nil
+	if !gitdiff.IsGitRepository(ctx, workspace) {
+		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	patch, err := gitdiff.DiffWorkspaceVsHead(context.Background(), workspace,
-		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	return string(patch), nil
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenWorktreeDiff(ctx, workspace, tempRoot, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	})
 }
 
-// GetBranchBaseDiff returns the combined diff of the referenced workspace
+// OpenBranchBaseDiff opens the combined diff of the referenced workspace
 // (committed work since merge-base plus uncommitted changes) against the
 // merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
 // baseBranch would contain.
 //
 //ao:scope files:read
-func (a *App) GetBranchBaseDiff(ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (string, error) {
-	const action = "get branch base diff"
+func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	const action = "open branch base diff"
+	if a.shuttingDown.Load() {
+		return ReviewDiffOpened{}, ErrShuttingDown
+	}
 	if strings.TrimSpace(baseBranch) == "" {
-		return "", fmt.Errorf("%s: base branch is required", action)
+		return ReviewDiffOpened{}, fmt.Errorf("%s: base branch is required", action)
 	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
-	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return "", nil
+	if !gitdiff.IsGitRepository(ctx, workspace) {
+		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
 	}
-	patch, err := gitdiff.DiffBranchBaseToWorktree(context.Background(), workspace, baseBranch,
-		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	return string(patch), nil
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(tempRoot string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenBranchBaseDiff(ctx, workspace, tempRoot, baseBranch, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	})
 }
 
 // BranchCommit is the wire shape of one row in the review pane's
@@ -133,25 +135,25 @@ func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 	return commits, nil
 }
 
-// GetCommitDiff returns the unified patch a single local commit
-// introduced (first-parent diff; empty-tree diff for a root commit).
+// OpenCommitDiff opens the unified patch a single local commit introduced
+// (first-parent diff; empty-tree diff for a root commit).
 //
 //ao:scope files:read
-func (a *App) GetCommitDiff(ws WorkspaceRef, sha string, ignoreWhitespace bool) (string, error) {
-	const action = "get commit diff"
+func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	const action = "open commit diff"
+	if a.shuttingDown.Load() {
+		return ReviewDiffOpened{}, ErrShuttingDown
+	}
 	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
-	if !gitdiff.IsGitRepository(context.Background(), workspace) {
-		return "", fmt.Errorf("%s: workspace is not a git repository", action)
+	if !gitdiff.IsGitRepository(ctx, workspace) {
+		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha,
-		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	return string(patch), nil
+	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, func(string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	})
 }
 
 // DiffContextRequest identifies one hunk-gap slice of a review diff's
@@ -410,7 +412,7 @@ func (a *App) diffContextContent(action, workspace, threadID string, req DiffCon
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
-		// The fetched head commit is present locally after GetPRDiff's
+		// The fetched head commit is present locally after OpenPRDiff's
 		// FetchRefOID (and with it every commit the PR carries). A selected
 		// per-commit diff reads that commit's tree instead of the head.
 		sha := strings.TrimSpace(req.CommitSHA)

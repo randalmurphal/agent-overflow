@@ -192,13 +192,13 @@ func TestListCommitsWithoutARemoteUsesTheLocalBase(t *testing.T) {
 	}
 }
 
-func TestDiffBranchBaseToWorktreeMeasuresAgainstTheRemoteBase(t *testing.T) {
+func TestBranchBaseDiffMeasuresAgainstTheRemoteBase(t *testing.T) {
 	repo := unpushedMainClone(t)
 	writeFile(t, repo, "dirty.txt", "uncommitted\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{})
+	patch, err := branchBasePatch(t, repo, "main", Options{})
 	if err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+		t.Fatalf("branchBasePatch: %v", err)
 	}
 	text := string(patch)
 	for _, want := range []string{"main-only.txt", "feature.txt", "dirty.txt"} {

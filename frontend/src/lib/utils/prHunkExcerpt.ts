@@ -1,39 +1,55 @@
-import {
-  filePatchDisplayRows,
-  type PatchDisplayRow,
-  type PatchFile,
-} from './patchFiles';
+import { RowWalker } from './patchRows';
+import type { ReviewFile } from './patchStore';
 import type { DiffReviewComment } from '../types/models';
 
+interface ExcerptRow {
+  lineIndex: number;
+  oldLine: number;
+  newLine: number;
+}
+
 export function hunkExcerptForComment(
-  files: readonly PatchFile[],
+  files: readonly ReviewFile[],
   comment: Pick<DiffReviewComment, 'filePath' | 'oldLine' | 'newLine' | 'side'>,
   context = 3,
 ): string {
   const file = files.find((candidate) => candidate.path === comment.filePath);
-  if (!file) return '';
+  if (!file || comment.side === 'file') return '';
   // Gap rows are UI affordances, not content — an excerpt line for one
   // would render as a blank row in the posted comment.
-  const rows = filePatchDisplayRows(file).filter((row) => !row.gap);
-  const index = rows.findIndex((row) => rowMatchesComment(row, comment));
-  if (index < 0) return '';
-  const start = Math.max(0, index - context);
-  const end = Math.min(rows.length, index + context + 1);
-  return rows.slice(start, end).map(formatRow).join('\n');
+  const before: ExcerptRow[] = [];
+  const excerpt: ExcerptRow[] = [];
+  let after = -1;
+  const walker = new RowWalker(file);
+  while (walker.next() && after !== 0) {
+    if (walker.type === 'gap') continue;
+    const row = { lineIndex: walker.lineIndex, oldLine: walker.oldLine, newLine: walker.newLine };
+    if (after > 0) {
+      excerpt.push(row);
+      after -= 1;
+    } else if (rowMatchesComment(walker, comment)) {
+      excerpt.push(...before, row);
+      after = context;
+    } else {
+      before.push(row);
+      if (before.length > context) before.shift();
+    }
+  }
+  if (after < 0) return '';
+  return excerpt.map((row) => formatRow(file, row)).join('\n');
 }
 
 function rowMatchesComment(
-  row: PatchDisplayRow,
+  walker: RowWalker,
   comment: Pick<DiffReviewComment, 'oldLine' | 'newLine' | 'side'>,
 ): boolean {
-  if (comment.side === 'file') return false;
-  if (comment.side === 'old') return row.side === 'old' && row.oldLine === comment.oldLine;
-  if (comment.side === 'new') return row.side === 'new' && row.newLine === comment.newLine;
-  return row.oldLine === comment.oldLine && row.newLine === comment.newLine;
+  if (comment.side === 'old') return walker.type === 'del' && walker.oldLine === comment.oldLine;
+  if (comment.side === 'new') return walker.type === 'add' && walker.newLine === comment.newLine;
+  return walker.oldLine === comment.oldLine && walker.newLine === comment.newLine;
 }
 
-function formatRow(row: PatchDisplayRow): string {
+function formatRow(file: ReviewFile, row: ExcerptRow): string {
   const oldLine = row.oldLine > 0 ? String(row.oldLine).padStart(4, ' ') : '    ';
   const newLine = row.newLine > 0 ? String(row.newLine).padStart(4, ' ') : '    ';
-  return `${oldLine} ${newLine} ${row.line.content}`;
+  return `${oldLine} ${newLine} ${file.body.text(row.lineIndex)}`;
 }

@@ -421,17 +421,24 @@ export {
   PutSoundFile,
   DeleteSoundFile,
 
-  // Review pane diffs (workspace / branch / per-commit / edits)
-  GetBranchBaseDiff,
-  GetWorkspaceCurrentDiff,
+  // Review pane diffs (workspace / branch / per-commit / edits). An Open*
+  // call returns a connection-owned handle and the first chunk; the rest
+  // is read by offset and the handle released at the end
+  // (stores/reviewDiffStream.ts).
+  OpenWorkspaceDiff,
+  OpenBranchBaseDiff,
+  OpenCommitDiff,
+  ReadReviewDiff,
+  ReleaseReviewDiff,
   ListBranchCommits,
   ListRecentCommits,
-  GetCommitDiff,
   GetDiffContextLines,
   GetEditDiffContextLines,
   VerifyEditDiffs,
   ListThreadEditDiffs,
-  GetTurnEditsDiff,
+  OpenEditDiff,
+  OpenTurnEditsDiff,
+  GetPayloadPatchSpans,
 
   // Syntax-highlight span metadata (backend tree-sitter)
   HighlightClassNames,
@@ -455,8 +462,6 @@ export {
 
   // Idle renderer memory trim (utils/idleMemoryTrim.ts)
   RequestWebviewMemoryTrim,
-
-  // PR-based thread creation
 
   // Turn lifecycle
   ListRecentTurns,
@@ -484,9 +489,9 @@ export {
   MarkDiffReviewCommentsSent,
   SendDiffReviewComments,
   GetPRDetail,
-  GetPRDiff,
+  OpenPRDiff,
   ListPRCommits,
-  GetPRCommitDiff,
+  OpenPRCommitDiff,
   GetPRMergeConflicts,
   GetMergeConflictFile,
   GetPRCIJobs,

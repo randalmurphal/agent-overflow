@@ -6,6 +6,43 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * Chunk is the patch bytes [Offset, NextOffset) of a Diff. EOF reports
+ * that NextOffset is the end of the patch.
+ */
+export class Chunk {
+    "data": string;
+    "offset": number;
+    "nextOffset": number;
+    "eof": boolean;
+
+    /** Creates a new Chunk instance. */
+    constructor($$source: Partial<Chunk> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("offset" in $$source)) {
+            this["offset"] = 0;
+        }
+        if (!("nextOffset" in $$source)) {
+            this["nextOffset"] = 0;
+        }
+        if (!("eof" in $$source)) {
+            this["eof"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Chunk instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Chunk {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Chunk($$parsedSource as Partial<Chunk>);
+    }
+}
+
+/**
  * Commit is one row of the review pane's per-commit selector.
  */
 export class Commit {

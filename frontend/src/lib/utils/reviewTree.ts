@@ -1,4 +1,4 @@
-import type { PatchFile } from './patchFiles';
+import type { DiffFileSummary } from './patchStore';
 
 export type ReviewTreeNode = ReviewTreeDirectoryNode | ReviewTreeFileNode;
 
@@ -14,7 +14,7 @@ export interface ReviewTreeFileNode {
   name: string;
   path: string;
   fileIndex: number;
-  /** PatchFile.kind: modified | added | deleted | renamed. */
+  /** DiffFileSummary.kind: modified | added | deleted | renamed. */
   fileKind: string;
   additions: number;
   deletions: number;
@@ -39,7 +39,7 @@ interface MutableDirectory {
  * jump + active-file highlight). Omitted, positions are the indexes.
  */
 export function buildReviewTree(
-  files: readonly PatchFile[],
+  files: readonly DiffFileSummary[],
   fileIndexes?: readonly number[],
 ): ReviewTreeNode[] {
   const root: MutableDirectory = {
@@ -106,7 +106,7 @@ export function comparePathsTreeOrder(a: string, b: string): number {
 
 /** Copy of `files` sorted into tree display order (input untouched —
  * parse results are shared immutable arrays). */
-export function sortFilesTreeOrder(files: readonly PatchFile[]): PatchFile[] {
+export function sortFilesTreeOrder<T extends DiffFileSummary>(files: readonly T[]): T[] {
   return [...files].sort((a, b) => comparePathsTreeOrder(a.path, b.path));
 }
 
@@ -122,20 +122,20 @@ export function fileExtensionLabel(path: string): string {
   return name.slice(dot);
 }
 
-export interface FilteredReviewFiles {
-  files: PatchFile[];
+export interface FilteredReviewFiles<T extends DiffFileSummary = DiffFileSummary> {
+  files: T[];
   /** Original (unfiltered) index of each kept file, for buildReviewTree. */
   fileIndexes: number[];
 }
 
 /** Case-insensitive path substring + extension-chip filter for the tree. */
-export function filterReviewFiles(
-  files: readonly PatchFile[],
+export function filterReviewFiles<T extends DiffFileSummary>(
+  files: readonly T[],
   query: string,
   extensions: ReadonlySet<string>,
-): FilteredReviewFiles {
+): FilteredReviewFiles<T> {
   const needle = query.trim().toLowerCase();
-  const out: FilteredReviewFiles = { files: [], fileIndexes: [] };
+  const out: FilteredReviewFiles<T> = { files: [], fileIndexes: [] };
   files.forEach((file, index) => {
     if (needle && !file.path.toLowerCase().includes(needle)) return;
     if (extensions.size > 0 && !extensions.has(fileExtensionLabel(file.path))) return;

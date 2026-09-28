@@ -36,6 +36,7 @@ import { contentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
+import type { ReviewFile } from './patchStore';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,
@@ -93,6 +94,12 @@ interface SpanEntry {
  * full parse budget), so retries ride the natural request-effect
  * re-runs at a damped cadence rather than firing on every bump. */
 export const INCOMPLETE_RETRY_MS = 30_000;
+
+/** The backend's highlight input cap (`internal/highlight` MaxRequestBytes).
+ * A longer patch comes back all plain whatever is sent, so it is never
+ * sent: its lines render plain without a request. UTF-16 length is a
+ * lower bound on the UTF-8 bytes the backend counts. */
+export const HIGHLIGHT_MAX_PATCH_CHARS = 4 * 1024 * 1024;
 
 /** Byte budget for cached span runs. Spans are compact (plain lines
  * carry no runs at all), so this comfortably covers many large diffs;
@@ -334,12 +341,36 @@ export async function requestFileSpans(
   context?: PatchScopeContext | null,
 ): Promise<void> {
   if (file.lines.length === 0) return;
+  await requestSpans(ensureFileKey(file), file.path, () => patchTextOf(file), owner, context);
+}
+
+/**
+ * requestFileSpans for a review file: keyed by its body's content key,
+ * and never sent when its patch is over the backend's input cap. Result
+ * lines index 1:1 with the body's lines.
+ */
+export async function requestReviewFileSpans(
+  file: ReviewFile,
+  owner: string,
+  context?: PatchScopeContext | null,
+): Promise<void> {
+  const body = file.body;
+  if (body.lineCount === 0 || body.textLength > HIGHLIGHT_MAX_PATCH_CHARS) return;
+  await requestSpans(`${file.path} ${body.contentKey()}`, file.path, () => body.patchText(), owner, context);
+}
+
+async function requestSpans(
+  base: string,
+  path: string,
+  patchOf: () => string,
+  owner: string,
+  context?: PatchScopeContext | null,
+): Promise<void> {
   // A context naming no subject (a pr-anchor review with no local clone)
   // has nothing to prime from: take the unprimed path directly rather
   // than spending one refused RPC per file to learn the same thing.
   const subject = context ? scopeSubjectKey(context) : '';
   const primed = subject === '' ? null : context;
-  const base = ensureFileKey(file);
   const key = primed ? scopedKey(base, subject, primed) : base;
   registerThread(key, owner);
 
@@ -368,11 +399,17 @@ export async function requestFileSpans(
     if (!retry) return;
   }
   if (inFlight.has(key)) return;
+  const patch = patchOf();
+  if (patch.length > HIGHLIGHT_MAX_PATCH_CHARS) {
+    // Over the backend's cap: its answer is all plain, final for this
+    // content, so record that instead of re-sending it on every retry.
+    insert(key, [], false, false);
+    return;
+  }
   const flight = {};
   inFlight.set(key, flight);
 
   try {
-    const patch = patchTextOf(file);
     let result: { lines: EncodedLine[] | null; incomplete: boolean; primed?: boolean } | null =
       null;
     if (primed) {
@@ -380,7 +417,7 @@ export async function requestFileSpans(
         scope: primed.scope,
         commitSHA: primed.commitSHA,
         headSHA: primed.headSHA,
-        path: file.path,
+        path,
         patch,
         editPayloadId: primed.editPayloadId ?? '',
         editTurnIndex: primed.editTurnIndex ?? -1,
@@ -400,7 +437,7 @@ export async function requestFileSpans(
       }
     }
     if (!result) {
-      result = await withHighlightService(() => HighlightPatch({ path: file.path, patch }));
+      result = await withHighlightService(() => HighlightPatch({ path, patch }));
     }
     // Never render spans against an empty class-name table: the id →
     // class map loads once per page and this await is free afterwards.
@@ -425,7 +462,7 @@ export async function requestFileSpans(
     }
   } catch (err) {
     if (inFlight.get(key) !== flight) return;
-    reportSpanFailure(file.path, err);
+    reportSpanFailure(path, err);
     const entry = entries.get(key);
     if (!entry) {
       // No entry landed: drop the ownership record too, or a
@@ -574,14 +611,9 @@ function seedPatchFileSpans(
   insert(key, spans, false, primed);
 }
 
-/** A file's colors as its surface last painted them. */
-interface PaintedFile {
-  lines: PatchLine[];
-  spans: EncodedLine[];
-  /** Line content (diff prefix included) → the spans its first colored
-   * occurrence was painted with. */
-  byContent: Map<string, EncodedLine>;
-}
+/** Lines per path a PaintedSpans keeps: far more than one screen of
+ * rows, and a bound however far a reader scrolls through a large file. */
+const PAINTED_LINES_PER_PATH = 4096;
 
 /** Only add, del and context rows carry spans: meta and marker rows
  * (fold rows included) go to the backend as non-content lines, so no
@@ -600,33 +632,36 @@ function carriesSpans(line: PatchLine): boolean {
  * painted with in that file, and the exact result replaces them when it
  * lands. The path fixes the language (backend LangFromPath).
  *
- * Owned by the surface's state, which retains only the paths it shows
- * and clears it when the surface or pane closes. Records share their
- * spans and content strings with the cache entries and parsed lines
- * they were built from.
+ * Records the lines that rendered, newest paint winning, up to
+ * PAINTED_LINES_PER_PATH per path. Owned by the surface's state, which
+ * retains only the paths it shows and clears it when the surface or pane
+ * closes. Records share their spans with the cache entries they came
+ * from.
  */
 export class PaintedSpans {
-  private readonly files = new Map<string, PaintedFile>();
+  private readonly files = new Map<string, Map<string, EncodedLine>>();
 
-  /** Records `spans` (index-aligned with `file.lines`) as `file`'s
-   * painted colors, replacing an earlier paint of its path. */
-  record(file: PatchFile, spans: EncodedLine[]): void {
-    const prior = this.files.get(file.path);
-    if (prior && prior.lines === file.lines && prior.spans === spans) return;
-    const byContent = new Map<string, EncodedLine>();
-    for (let index = 0; index < file.lines.length; index += 1) {
-      const line = file.lines[index];
-      const span = spans[index];
-      if (!span?.r || span.r.length < 2 || byContent.has(line.content)) continue;
-      byContent.set(line.content, span);
+  /** Records the spans `line` rendered with in `path`. */
+  note(path: string, line: PatchLine, span: EncodedLine | null): void {
+    if (!span?.r || span.r.length < 2 || !carriesSpans(line)) return;
+    let byContent = this.files.get(path);
+    if (!byContent) {
+      byContent = new Map();
+      this.files.set(path, byContent);
     }
-    this.files.set(file.path, { lines: file.lines, spans, byContent });
+    if (byContent.get(line.content) === span) return;
+    byContent.delete(line.content);
+    if (byContent.size >= PAINTED_LINES_PER_PATH) {
+      const oldest = byContent.keys().next().value;
+      if (oldest !== undefined) byContent.delete(oldest);
+    }
+    byContent.set(line.content, span);
   }
 
   /** The spans `line`'s text was last painted with in `path`. */
   lookup(path: string, line: PatchLine): EncodedLine | null {
     if (!carriesSpans(line)) return null;
-    return this.files.get(path)?.byContent.get(line.content) ?? null;
+    return this.files.get(path)?.get(line.content) ?? null;
   }
 
   /** Drops every path the surface no longer shows. */
@@ -662,9 +697,10 @@ function entryForKey(base: string, context?: PatchScopeContext | null): SpanEntr
  * flight.
  *
  * A surface that passes its `painted` colors (the review pane) records
- * every exact result it paints there, and until a file's exact result
- * lands its lines keep the colors their text was last painted with (see
- * PaintedSpans). Only lines whose text was never painted render plain.
+ * the exact spans each line renders with, and until a file's exact
+ * result lands its lines keep the colors their text was last painted
+ * with (see PaintedSpans). Only lines whose text never rendered colored
+ * render plain.
  */
 export function getSpansForLine(
   file: PatchFile,
@@ -681,9 +717,34 @@ export function getSpansForLine(
   // no later repaint to fix a miss here.
   const direct = entryForKey(ensureFileKey(file), context);
   if (direct) {
-    painted?.record(file, direct.spans);
     const index = lineIndexes.get(file.lines)?.get(line);
-    return index === undefined ? null : (direct.spans[index] ?? null);
+    const span = index === undefined ? null : (direct.spans[index] ?? null);
+    painted?.note(file.path, line, span);
+    return span;
+  }
+  return painted?.lookup(file.path, line) ?? null;
+}
+
+/**
+ * getSpansForLine for a review file's row: `lineIndex` is the row's
+ * index in the file's lines (PatchDisplayRow.lineIndex).
+ */
+export function getSpansForReviewLine(
+  file: ReviewFile,
+  lineIndex: number,
+  line: PatchLine,
+  context?: PatchScopeContext | null,
+  painted?: PaintedSpans | null,
+): EncodedLine | null {
+  void generation;
+  const body = file.body;
+  if (body.textLength <= HIGHLIGHT_MAX_PATCH_CHARS) {
+    const direct = entryForKey(`${file.path} ${body.contentKey()}`, context);
+    if (direct) {
+      const span = direct.spans[lineIndex] ?? null;
+      painted?.note(file.path, line, span);
+      return span;
+    }
   }
   return painted?.lookup(file.path, line) ?? null;
 }

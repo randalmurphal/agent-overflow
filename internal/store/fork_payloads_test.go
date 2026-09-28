@@ -314,19 +314,24 @@ func TestPointerForkDiffReaders(t *testing.T) {
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%+v: %v", list, err)
 	}
-	patches, err := s.ListTurnEditDiffPatches("fork", 0)
-	if err != nil || len(patches) != 1 || !bytes.Equal(patches[0].Data, patch) {
-		t.Fatalf("patches=%+v: %v", patches, err)
+	assertTurnPatch := func(when string) {
+		t.Helper()
+		ids, err := s.ListTurnEditDiffPayloads("fork", 0)
+		if err != nil || len(ids) != 1 || ids[0] != "patch" {
+			t.Fatalf("turn payloads %s=%v: %v", when, ids, err)
+		}
+		if data, err := s.GetPayloadData("fork", ids[0]); err != nil || !bytes.Equal(data, patch) {
+			t.Fatalf("turn payload data %s=%q: %v", when, data, err)
+		}
 	}
+	assertTurnPatch("before source deletion")
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
 	if list, err := s.ListEditDiffItems("fork"); err != nil || len(list) != 1 {
 		t.Fatalf("list after source deletion=%+v: %v", list, err)
 	}
-	if patches, err := s.ListTurnEditDiffPatches("fork", 0); err != nil || len(patches) != 1 || !bytes.Equal(patches[0].Data, patch) {
-		t.Fatalf("patches after source deletion=%+v: %v", patches, err)
-	}
+	assertTurnPatch("after source deletion")
 }
 
 // SQLite must answer preview byte counts from record headers. Evaluating

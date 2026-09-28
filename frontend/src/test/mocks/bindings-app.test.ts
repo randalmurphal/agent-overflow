@@ -20,6 +20,7 @@ import * as mockBindings from './bindings-app';
 // Exports that are the mock's own machinery, not fakes of generated bindings.
 const mockMachinery = new Set([
   'setBindingMock',
+  'setReviewDiffMock',
   'getBindingMock',
   'resetBindingMocks',
   '__bindingMocksInternal',

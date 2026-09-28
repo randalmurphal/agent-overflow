@@ -7,7 +7,7 @@
     REVIEW_FILE_HEADER_BAR_PX,
     REVIEW_FILE_HEADER_PX,
   } from '../../utils/reviewRows';
-  import type { PatchFile } from '../../utils/patchFiles';
+  import type { DiffFileSummary } from '../../utils/patchStore';
 
   // File header row — rendered both as a virtualized row and as the
   // sticky overlay copy. The virtualized row paints the between-files
@@ -21,7 +21,7 @@
   // and its background must stay opaque over content.
 
   interface Props {
-    file: PatchFile;
+    file: DiffFileSummary;
     collapsed: boolean;
     onToggle: () => void;
     /** First file on the surface: no previous slab to close, so the

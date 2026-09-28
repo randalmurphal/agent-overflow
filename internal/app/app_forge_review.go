@@ -174,42 +174,50 @@ func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 	return a.gitCore().GetPRDetail("", pr)
 }
 
-// GetPRDiff returns the PR's three-dot diff (merge base of the base branch
+// OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
 // to the PR head), computed in the referenced clone after fetching the PR
-// head and base branch.
+// head and base branch. The result names the head the diff was computed at.
 //
 //ao:scope git:operate
-func (a *App) GetPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string) (string, error) {
-	const action = "get PR diff"
+func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, baseRef string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	const action = "open PR diff"
 	if a.shuttingDown.Load() {
-		return "", ErrShuttingDown
+		return ReviewDiffOpened{}, ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)
 	if baseRef == "" {
-		return "", errors.New("base branch is required")
+		return ReviewDiffOpened{}, errors.New("base branch is required")
 	}
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
 	workspace, err := a.prCloneWorkspace(action, ws)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
 	headOID, err := a.fetchPRHeadAndBase(workspace, pr, baseRef)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
-	return a.gitCore().DiffMergeBase(workspace, "origin/"+baseRef, headOID)
+	opened, err := a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenMergeBaseDiff(ctx, workspace, "origin/"+baseRef, headOID,
+			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	})
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
+	opened.HeadSHA = headOID
+	return opened, nil
 }
 
 // ListPRCommits returns the commits a PR carries (`origin/base..head`,
 // newest first), computed from the referenced clone.
 //
 // headSHA is an optimization contract, not a filter: when the caller
-// already knows the PR head OID (GetPRDiff fetched it moments earlier)
+// already knows the PR head OID (OpenPRDiff fetched it moments earlier)
 // and that commit plus the base branch are present locally, the fetch
 // round-trips are skipped. Empty, unknown, or not-yet-fetched values
 // fall back to a full fetch.
@@ -248,41 +256,38 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, hea
 	return commits, nil
 }
 
-// GetPRCommitDiff returns the unified patch a single PR commit
-// introduced (first-parent diff), read from the referenced clone.
+// OpenPRCommitDiff opens the unified patch a single PR commit introduced
+// (first-parent diff), read from the referenced clone.
 //
 //ao:scope git:operate
-func (a *App) GetPRCommitDiff(ws WorkspaceRef, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
-	const action = "get PR commit diff"
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	const action = "open PR commit diff"
 	if a.shuttingDown.Load() {
-		return "", ErrShuttingDown
+		return ReviewDiffOpened{}, ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
 	workspace, err := a.prCloneWorkspace(action, ws)
 	if err != nil {
-		return "", err
+		return ReviewDiffOpened{}, err
 	}
 	// The commit almost always sits in the clone already (ListPRCommits
 	// just fetched the head), so only fetch the PR head — the case where
 	// this call races a push or lands in a fresh session — when the
 	// commit is missing locally.
-	if !gitdiff.RevisionsExist(context.Background(), workspace, sha) {
+	if !gitdiff.RevisionsExist(ctx, workspace, sha) {
 		headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
 		if err != nil {
-			return "", err
+			return ReviewDiffOpened{}, err
 		}
 		if _, err := a.gitCore().FetchRefOID(workspace, "origin", headRef); err != nil {
-			return "", fmt.Errorf("fetch PR head: %w", err)
+			return ReviewDiffOpened{}, fmt.Errorf("fetch PR head: %w", err)
 		}
 	}
-	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha,
-		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
-	if err != nil {
-		return "", err
-	}
-	return string(patch), nil
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
+	})
 }
 
 // prCloneWorkspace resolves the clone a PR read runs in: the caller's

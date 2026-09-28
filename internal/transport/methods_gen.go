@@ -127,14 +127,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace"},                        // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin", Route: "home"},                                // main.App.GetAccessOverview
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read", Route: "thread"},                         // main.App.GetAttachmentThumbnail
-	{Name: "GetBranchBaseDiff", ID: 1342635161, Scope: "files:read", Route: "workspace"},                             // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866, Scope: "threads:read", Route: "selected"},                           // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883, Scope: "threads:read", Route: "selected"},                              // main.App.GetChannelState
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                           // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                       // main.App.GetClaudeSlashCommands
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin", Route: "home"},                             // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                            // main.App.GetCodexSkills
-	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "workspace"},                                 // main.App.GetCommitDiff
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                  // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
 	{Name: "GetConversationMutationState", ID: 3307838728, Scope: "threads:operate", Route: "thread"},                // main.App.GetConversationMutationState
@@ -155,12 +153,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                               // main.App.GetNetworkSettings
 	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate", Route: "selected"},                                 // main.App.GetPRCIJobLog
 	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate", Route: "selected"},                                   // main.App.GetPRCIJobs
-	{Name: "GetPRCommitDiff", ID: 1737292419, Scope: "git:operate", Route: "workspace"},                              // main.App.GetPRCommitDiff
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                   // main.App.GetPRDetail
-	{Name: "GetPRDiff", ID: 1867413234, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRDiff
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                           // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                  // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                 // main.App.GetPayloadData
+	{Name: "GetPayloadPatchSpans", ID: 3582798556, Scope: "threads:read", Route: "thread"},                           // main.App.GetPayloadPatchSpans
 	{Name: "GetPayloadPreview", ID: 4070214921, Scope: "threads:read", Route: "thread"},                              // main.App.GetPayloadPreview
 	{Name: "GetProjectWorktreeSetup", ID: 471350242, Scope: "terminal:operate", Route: "project"},                    // main.App.GetProjectWorktreeSetup
 	{Name: "GetProviderLoginState", ID: 84914540, Scope: "access:admin", Route: "home"},                              // main.App.GetProviderLoginState
@@ -191,13 +188,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read", Route: "thread"},                       // main.App.GetThreadUserMessageTicks
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                       // main.App.GetThreadWorktreeSetup
 	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                    // main.App.GetTimelineUserMessageTicks
-	{Name: "GetTurnEditsDiff", ID: 2905371438, Scope: "threads:read", Route: "thread"},                               // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host", Route: "home"},                                     // main.App.GetUIRenderTracePath
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                            // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                     // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host", Route: "home"},                                    // main.App.GetWSLDistroPreference
 	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate", Route: "selected"},                           // main.App.GetWorkspaceActivity
-	{Name: "GetWorkspaceCurrentDiff", ID: 736820142, Scope: "files:read", Route: "workspace"},                        // main.App.GetWorkspaceCurrentDiff
 	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate", Route: "workspace"},                                  // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "workspace"},                                    // main.App.GitCommit
 	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate", Route: "workspace"},                           // main.App.GitCreateBranchFrom
@@ -285,11 +280,18 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MoveDraftToThread", ID: 913927214, Scope: "threads:operate", Route: "thread"},                            // main.App.MoveDraftToThread
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                        // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                    // main.App.NotificationActivated
+	{Name: "OpenBranchBaseDiff", ID: 2513613347, Scope: "files:read", Route: "workspace"},                            // main.App.OpenBranchBaseDiff
+	{Name: "OpenCommitDiff", ID: 1949392079, Scope: "files:read", Route: "workspace"},                                // main.App.OpenCommitDiff
 	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.OpenComputerPairing
+	{Name: "OpenEditDiff", ID: 2268491610, Scope: "threads:read", Route: "thread"},                                   // main.App.OpenEditDiff
 	{Name: "OpenExternalURL", ID: 3362740399, Scope: "host", Route: "home"},                                          // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523, Scope: "host", Route: "home"},                                             // main.App.OpenInEditor
 	{Name: "OpenOwnComputerPairing", ID: 767864574, Scope: "access:admin", Route: "home", StepUp: true},              // main.App.OpenOwnComputerPairing
+	{Name: "OpenPRCommitDiff", ID: 110447601, Scope: "git:operate", Route: "workspace"},                              // main.App.OpenPRCommitDiff
+	{Name: "OpenPRDiff", ID: 4075510992, Scope: "git:operate", Route: "workspace"},                                   // main.App.OpenPRDiff
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                               // main.App.OpenTerminal
+	{Name: "OpenTurnEditsDiff", ID: 4078889536, Scope: "threads:read", Route: "thread"},                              // main.App.OpenTurnEditsDiff
+	{Name: "OpenWorkspaceDiff", ID: 3558532873, Scope: "files:read", Route: "workspace"},                             // main.App.OpenWorkspaceDiff
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true},              // main.App.PairAgentComputer
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                   // main.App.PinThread
 	{Name: "PinThreadGroup", ID: 842795367, Scope: "threads:operate", Route: "home"},                                 // main.App.PinThreadGroup
@@ -309,6 +311,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalResize
 	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate", Route: "thread"},                 // main.App.ProviderTerminalSetControl
 	{Name: "PutSoundFile", ID: 2418838611, Scope: "settings:write", Route: "home"},                                   // main.App.PutSoundFile
+	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home"},                                        // main.App.ReadReviewDiff
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                        // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                             // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                               // main.App.RecheckCodexAccount
@@ -322,6 +325,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RegisterOwnDevice", ID: 111779378, Scope: "session", Route: "home"},                                      // main.App.RegisterOwnDevice
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home"},                                     // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
+	{Name: "ReleaseReviewDiff", ID: 504085501, Scope: "session", Route: "home"},                                      // main.App.ReleaseReviewDiff
 	{Name: "RemoteCommandArtifact", ID: 3940492954, Scope: "terminal:operate", Route: "selected"},                    // main.App.RemoteCommandArtifact
 	{Name: "RemoteCommandCancel", ID: 235246962, Scope: "terminal:operate", Route: "selected"},                       // main.App.RemoteCommandCancel
 	{Name: "RemoteCommandEnvironment", ID: 753690041, Scope: "terminal:operate", Route: "selected"},                  // main.App.RemoteCommandEnvironment

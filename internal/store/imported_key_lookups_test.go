@@ -411,7 +411,7 @@ func keyedLookups(th string) []keyedLookup {
 			}
 		}},
 		{name: "turn edit reads", turn: true, run: func(t *testing.T, s *Store) {
-			must[[]TurnEditDiffPatch](t, "patches")(s.ListTurnEditDiffPatches(th, 1))
+			must[[]string](t, "payloads")(s.ListTurnEditDiffPayloads(th, 1))
 			if _, _, err := s.GetLatestTurnEditFileSnapshot(th, 1, "f"); err != nil {
 				t.Errorf("latest snapshot: %v", err)
 			}

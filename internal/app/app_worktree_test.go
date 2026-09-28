@@ -304,8 +304,8 @@ func TestSwitchThreadWorkspaceKeepsMessageAnchors(t *testing.T) {
 	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
 }
 
-func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenWorkspaceDiffUsesLinkedWorktree(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	repo := testutil.InitGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -335,9 +335,9 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 	}
 
 	worktreeRef := WorkspaceRef{ProjectID: project.ID, WorkspacePath: worktreePath}
-	diff, err := app.GetWorkspaceCurrentDiff(worktreeRef, false)
+	diff, err := openWorkspacePatch(t, app, worktreeRef)
 	if err != nil {
-		t.Fatalf("GetWorkspaceCurrentDiff() error = %v", err)
+		t.Fatalf("OpenWorkspaceDiff() error = %v", err)
 	}
 	if !strings.Contains(diff, "linked-worktree-change") {
 		t.Fatalf("diff did not include linked worktree change:\n%s", diff)
@@ -349,17 +349,17 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 	testutil.RunGit(t, worktreePath, "add", "README.txt")
 	testutil.RunGit(t, worktreePath, "commit", "-m", "commit linked worktree change")
 
-	diff, err = app.GetWorkspaceCurrentDiff(worktreeRef, false)
+	diff, err = openWorkspacePatch(t, app, worktreeRef)
 	if err != nil {
-		t.Fatalf("GetWorkspaceCurrentDiff(clean worktree) error = %v", err)
+		t.Fatalf("OpenWorkspaceDiff(clean worktree) error = %v", err)
 	}
 	if strings.TrimSpace(diff) != "" {
 		t.Fatalf("diff after committing linked worktree = %q, want empty", diff)
 	}
 }
 
-func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	repo := testutil.InitGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-diff")
 
@@ -376,9 +376,9 @@ func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
 		t.Fatalf("write untracked file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "main", false)
+	diff, err := openBranchBasePatch(t, app, workspaceRefForThread(thread), "main", false)
 	if err != nil {
-		t.Fatalf("GetBranchBaseDiff() error = %v", err)
+		t.Fatalf("OpenBranchBaseDiff() error = %v", err)
 	}
 	for _, want := range []string{
 		"committed.txt",
@@ -393,8 +393,8 @@ func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
 	}
 }
 
-func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	repo := testutil.InitGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-current")
 
@@ -407,9 +407,9 @@ func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
 		t.Fatalf("write workspace file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "main", false)
+	diff, err := openBranchBasePatch(t, app, workspaceRefForThread(thread), "main", false)
 	if err != nil {
-		t.Fatalf("GetBranchBaseDiff() error = %v", err)
+		t.Fatalf("OpenBranchBaseDiff() error = %v", err)
 	}
 	if strings.Contains(diff, "committed.txt") || strings.Contains(diff, "+main work") {
 		t.Fatalf("diff included committed current-branch work:\n%s", diff)
@@ -419,16 +419,16 @@ func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
 	}
 }
 
-func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenBranchBaseDiffMissingBranchErrors(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	repo := testutil.InitGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-missing")
 
-	_, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "missing-branch", false)
+	_, err := openBranchBasePatch(t, app, workspaceRefForThread(thread), "missing-branch", false)
 	if err == nil {
-		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
+		t.Fatal("OpenBranchBaseDiff() error = nil, want missing branch error")
 	}
-	if !strings.Contains(err.Error(), `get branch base diff: gitdiff: branch "missing-branch" not found locally or on any remote`) {
+	if !strings.Contains(err.Error(), `open branch base diff: gitdiff: branch "missing-branch" not found locally or on any remote`) {
 		t.Fatalf("error = %v, want wrapped branch-not-found context", err)
 	}
 }

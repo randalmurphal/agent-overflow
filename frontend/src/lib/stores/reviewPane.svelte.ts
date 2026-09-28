@@ -54,18 +54,22 @@ import {
   type PRConflicts,
 } from './prReviewConflicts.svelte';
 import {
+  collapsedByDefault,
   defaultBaseBranch,
-  defaultCollapsedPaths,
   draftAnchorExists,
   EDITS_NEEDS_THREAD,
+  EditFileMerge,
   editSelectionFromKey,
   editSelectionKey,
   loadPatch,
   reviewLineCommentForDraft,
+  seedEditPatchSpans,
   supportsIgnoreWhitespace,
   type EditDiffEntryView,
   type EditSelection,
+  type LoadedPatch,
 } from './reviewPaneLoad';
+import type { PatchParser } from '../utils/patchStore';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
@@ -82,7 +86,6 @@ import type {
   SubmitPRReviewResult,
   Thread,
 } from '../types/models';
-import { diffSourceKey } from '../utils/diffSourceKey';
 import { PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
@@ -101,12 +104,8 @@ import {
   type ContextExpansionState,
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
-import {
-  mergePatchFilesByPath,
-  parsePatchFilesCached,
-  type DiffGap,
-  type PatchFile,
-} from '../utils/patchFiles';
+import type { DiffGap } from '../utils/patchFiles';
+import { reviewFileFromPatchFile, type ReviewFile } from '../utils/patchStore';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
@@ -132,9 +131,11 @@ export interface ReviewPaneState {
   readonly baseBranch: string | null;
   readonly prRef: PRRef | null;
   readonly prScopeLabel: string | null;
-  readonly patchText: string;
   readonly sourceKey: string;
-  readonly files: PatchFile[];
+  /** The loaded diff's files in tree order. A load into an empty pane
+   * publishes them as they arrive; a reload keeps the previous files
+   * until the new diff is complete. */
+  readonly files: ReviewFile[];
   readonly comments: readonly DiffReviewComment[];
   readonly drafts: readonly DiffReviewComment[];
   readonly openEditors: readonly CommentAnchor[];
@@ -184,7 +185,7 @@ export interface ReviewPaneState {
   readonly conflictsError: string | null;
   readonly conflictContentByPath: SvelteMap<string, string>;
   readonly conflictCollapsedPaths: SvelteSet<string>;
-  readonly conflictFiles: PatchFile[];
+  readonly conflictFiles: ReviewFile[];
   /** The colors the diff surface and the conflict surface last painted,
    * served to their lines while exact spans are in flight. */
   readonly paintedSpans: PaintedSpans;
@@ -492,7 +493,11 @@ function createReviewPaneState(
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
-  let patchText = $state('');
+  // The loaded diff's files, tree-sorted (edits: merged by path), and the
+  // content key of the whole patch for the scopes that key comments by
+  // content. The key is set once the patch is complete.
+  let loadedFiles: ReviewFile[] = $state.raw([]);
+  let patchKey = $state('');
   let loading = $state(false);
   let error: string | null = $state(null);
   // Hunk-gap expansions, per file path. The map itself is plain state:
@@ -649,32 +654,26 @@ function createReviewPaneState(
       // draft's commitSha records the head SHA it was anchored to.
       return prSourceKey(prRef);
     }
-    return patchText ? diffSourceKey(patchText) : '';
+    return patchKey;
   });
-  // Tree display order (dirs first, alphabetical), so the diff body,
-  // rail tree, j/k nav, and comment grouping all read top-to-bottom in
-  // the same sequence. Git's raw patch order is plain lexicographic,
-  // which interleaves root files between directories.
-  //
-  // Parsed once per patch text. Expansion clicks and edit gap gating
-  // re-run only the `files` overlay below, so each file keeps its lines
-  // identity across clicks even when the shared parse cache skips or
-  // evicts this patch. The expansion rebuild memo and every per-array
-  // memo downstream (display rows, span keys) depend on that identity:
-  // a fresh parse per click would rebuild and rehash every file.
-  const parsedFiles = $derived.by(() => {
-    if (scope !== 'edits') return sortFilesTreeOrder(parsePatchFilesCached(patchText));
-    // A whole-turn concatenation repeats a path when a file was edited
-    // more than once in the turn — merge those sections into one
-    // renumbered file-ordered section per path (the review surface
-    // keys rows/tree/collapse by path; see mergePatchFilesByPath),
-    // BEFORE tree sorting.
-    return sortFilesTreeOrder(mergePatchFilesByPath(parsePatchFilesCached(patchText)));
-  });
+  // One gap-suppressed copy per loaded file, so a file keeps its identity
+  // across rebuilds of the overlay below.
+  const suppressedFiles = new WeakMap<ReviewFile, ReviewFile>();
+  function gapsSuppressed(file: ReviewFile): ReviewFile {
+    let copy = suppressedFiles.get(file);
+    if (!copy) {
+      copy = { ...file, suppressGaps: true };
+      suppressedFiles.set(file, copy);
+    }
+    return copy;
+  }
   // Hunk-gap expansions overlay per file, keyed by the version counter.
+  // Expansion clicks and edit gap gating re-run only this overlay, so
+  // every unexpanded file keeps its identity and the per-file memos
+  // downstream (display rows, span keys) stay warm.
   const files = $derived.by(() => {
     void contextExpansionVersion;
-    let parsed = parsedFiles;
+    let parsed = loadedFiles;
     if (scope === 'edits') {
       // Gap arrows are verification-gated (merged files included): a
       // file's gaps render only after the load-time VerifyEditDiffs
@@ -689,7 +688,7 @@ function createReviewPaneState(
       parsed = parsed.map((file) =>
         editExpandablePaths.has(file.path) && !unexpandableEditPaths.has(file.path)
           ? file
-          : { ...file, suppressGaps: true },
+          : gapsSuppressed(file),
       );
     }
     if (contextExpansions.size === 0) return parsed;
@@ -705,14 +704,14 @@ function createReviewPaneState(
       // A structural conflict's content can be unfetchable (the path may
       // not exist in the merged tree at all) — its notes still render.
       if (content !== undefined || pathNotes?.length) {
-        return conflictPatchFile(path, content ?? '', {
+        return reviewFileFromPatchFile(conflictPatchFile(path, content ?? '', {
           baseLabel,
           headLabel,
           notes: pathNotes,
           expandedFolds: conflictExpandedFolds.get(path),
-        });
+        }));
       }
-      return { path, kind: 'conflict', additions: 0, deletions: 0, lines: [] };
+      return reviewFileFromPatchFile({ path, kind: 'conflict', additions: 0, deletions: 0, lines: [] });
     });
   });
   // The colors each surface last painted (see PaintedSpans), retained
@@ -929,7 +928,8 @@ function createReviewPaneState(
   // A new subject cannot reuse the previous patch under its new scope,
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
-    patchText = '';
+    loadedFiles = [];
+    patchKey = '';
     clearContextExpansions();
   }
 
@@ -951,9 +951,8 @@ function createReviewPaneState(
     loading = true;
     error = null;
     try {
-      // The diff needs the PR detail's base ref (a local three-dot diff is
-      // the only source without gh/glab's 20k-line cap), so the shared
-      // snapshot is awaited before the patch call. Attaching is what
+      // The diff needs the PR detail's base ref, so the shared snapshot is
+      // awaited before the patch call. Attaching is what
       // starts the poll pump — and re-attaching for a PR this pane already
       // holds costs nothing.
       let snapshot: PRSnapshot | null = null;
@@ -981,7 +980,7 @@ function createReviewPaneState(
         awaitingPRRef = true;
       }
       const loaded = await loadPatch(
-        { workspace, threadId },
+        { workspace, threadId, backend },
         scope,
         baseBranch,
         selectedCommitSHA,
@@ -994,42 +993,47 @@ function createReviewPaneState(
         ignoreWhitespace && canIgnoreWhitespace,
         selectionOnly ? { commits, edits, editTurnLabels } : undefined,
       );
-      if (seq !== loadSeq || disposed) return;
-      commits = loaded.commits ?? [];
-      edits = loaded.edits ?? [];
-      editTurnLabels = loaded.editTurnLabels ?? new Map();
-      if (loaded.selectedEdit !== undefined) {
-        selectedEdit = loaded.selectedEdit;
+      if (seq !== loadSeq || disposed) {
+        loaded.patch?.abandon();
+        return;
       }
-      if (loaded.selectedCommitSHA !== undefined) {
-        selectedCommitSHA = loaded.selectedCommitSHA;
-      }
-      clearContextExpansions();
-      patchText = loaded.patchText;
-      // Fire-and-forget: arrows appear when verification lands; the
-      // diff itself renders immediately (gaps just aren't expandable
-      // yet).
-      if (scope === 'edits') void verifyEditExpandability(seq);
+      const arrival: Arrival = { loaded, applied: false };
+      const read = await readPatch(seq, arrival);
+      if (!read) return;
+      // Everything the complete diff decides lands in this synchronous
+      // step, so no frame shows its files with another load's collapse
+      // state, patch key or head.
+      showFiles(arrival, read.files);
+      patchKey = read.patchKey;
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
-      const nextCollapsed = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
+      const nextCollapsed = new SvelteSet<string>();
+      for (const file of loadedFiles) {
+        if (collapsedByDefault(file)) nextCollapsed.add(file.path);
+      }
       for (const [path, collapsed] of collapseOverrides) {
         if (collapsed) nextCollapsed.add(path);
         else nextCollapsed.delete(path);
       }
       collapsedPaths = nextCollapsed;
+      // Fire-and-forget: arrows appear when verification lands; the
+      // diff itself renders immediately (gaps just aren't expandable
+      // yet).
+      if (scope === 'edits') void verifyEditExpandability(seq);
       if (scope === 'pr' && loadingPRKey && loadingPRRef) {
         // The anchor staleness is measured against: this diff describes
         // this head OF THIS PULL REQUEST, so the banner clears until the PR
         // moves again — for THIS pane, without touching what another pane
         // loaded, and without a switch to a different PR being compared
-        // against a head that was never its own.
-        loadedPRHead = { key: loadingPRKey, sha: loaded.prHeadSHA ?? loadedPRHeadSHA };
+        // against a head that was never its own. The backend reports the
+        // head it computed the diff at, which its fetch can move past the
+        // snapshot's.
+        loadedPRHead = { key: loadingPRKey, sha: read.headSha || (loaded.prHeadSHA ?? loadedPRHeadSHA) };
         // The fast path didn't refresh the PR snapshot, so CI state
         // hasn't moved either — the subscription pump covers it.
         if (!selectionOnly) void loadPRCIJobs(loadingPRKey, loadingPRRef);
       }
-      // patchText and selectedCommitSHA are already updated above, so
+      // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
       const nextSourceKey = sourceKey;
       if (threadId === null) {
@@ -1056,7 +1060,8 @@ function createReviewPaneState(
     } catch (err) {
       if (seq !== loadSeq || disposed) return;
       clearContextExpansions();
-      patchText = '';
+      loadedFiles = [];
+      patchKey = '';
       openEditors = [];
       draftBodies.clear();
       collapsedPaths = new SvelteSet<string>();
@@ -1065,6 +1070,85 @@ function createReviewPaneState(
     } finally {
       if (seq === loadSeq) loading = false;
     }
+  }
+
+  // Interval between publishes of a diff still arriving.
+  const PROGRESS_PUBLISH_MS = 100;
+  // One VerifyEditDiffs call: the files the backend verifies per call,
+  // and patch characters that stay far under a transport frame.
+  const VERIFY_BATCH_FILES = 200;
+  const VERIFY_BATCH_CHARS = 8 * 1024 * 1024;
+
+  /** One load's files on their way to the screen. */
+  interface Arrival {
+    loaded: LoadedPatch;
+    /** Whether the load's selection state has been applied. */
+    applied: boolean;
+  }
+
+  // The load's selection state is applied with its first files, so the
+  // selectors never describe a diff that is not on screen.
+  function showFiles(arrival: Arrival, next: readonly ReviewFile[]): void {
+    if (!arrival.applied) {
+      arrival.applied = true;
+      const { loaded } = arrival;
+      commits = loaded.commits ?? [];
+      edits = loaded.edits ?? [];
+      editTurnLabels = loaded.editTurnLabels ?? new Map();
+      if (loaded.selectedEdit !== undefined) selectedEdit = loaded.selectedEdit;
+      if (loaded.selectedCommitSHA !== undefined) selectedCommitSHA = loaded.selectedCommitSHA;
+      clearContextExpansions();
+    }
+    loadedFiles = sortFilesTreeOrder(next);
+  }
+
+  /**
+   * Reads a loaded patch. A pane with no files shows the diff as it
+   * arrives; a pane showing a diff keeps it until the caller commits the
+   * complete one. Returns null when a newer load or dispose cancelled it.
+   */
+  async function readPatch(
+    seq: number,
+    arrival: Arrival,
+  ): Promise<{ files: readonly ReviewFile[]; patchKey: string; headSha: string } | null> {
+    const { patch, mergesPaths } = arrival.loaded;
+    if (patch === null) return { files: [], patchKey: '', headSha: '' };
+    const merge = mergesPaths ? new EditFileMerge() : null;
+    const view = (sections: readonly ReviewFile[]): readonly ReviewFile[] => merge?.files(sections) ?? sections;
+    const cancelled = (): boolean => seq !== loadSeq || disposed;
+    const progressive = loadedFiles.length === 0;
+    let sectionsShown = 0;
+    let filesShown = 0;
+    let publishedAt = 0;
+    // Files arriving in an empty pane take their default collapse state
+    // as they land; the complete load recomputes it for every file.
+    const onProgress = (parser: PatchParser): void => {
+      if (!progressive || parser.files.length === sectionsShown) return;
+      const now = performance.now();
+      if (sectionsShown > 0 && now - publishedAt < PROGRESS_PUBLISH_MS) return;
+      if (sectionsShown === 0) collapsedPaths = new SvelteSet<string>();
+      const files = view(parser.files);
+      for (let index = filesShown; index < files.length; index += 1) {
+        const file = files[index];
+        const collapsed = collapseOverrides.get(file.path) ?? collapsedByDefault(file);
+        if (collapsed) collapsedPaths.add(file.path);
+      }
+      sectionsShown = parser.files.length;
+      filesShown = files.length;
+      publishedAt = now;
+      showFiles(arrival, files);
+    };
+    const read = await patch.read({
+      cancelled,
+      onProgress,
+      onOpened: (opened) => {
+        if (threadId !== null && opened.payloadIds?.length) {
+          void seedEditPatchSpans(threadId, patch.backend, opened.payloadIds, cancelled);
+        }
+      },
+    });
+    if (!read) return null;
+    return { files: view(read.parser.files), patchKey: read.parser.sourceKey(), headSha: read.headSha };
   }
 
   if (!deferInitialLoad) void reload();
@@ -1122,8 +1206,8 @@ function createReviewPaneState(
   // way an edits-scope verifyPatch is built. The load-time verification
   // batch and the click-time expansion request both call this, so the
   // two verdicts compare the same bytes by construction.
-  function filePatchText(file: PatchFile): string {
-    return file.lines.map((line) => line.content).join('\n');
+  function filePatchText(file: ReviewFile): string {
+    return file.body.patchText();
   }
 
   // The historical patch text of one edits-scope file, for the
@@ -1140,7 +1224,7 @@ function createReviewPaneState(
   // proves which files an expansion click would actually serve, and
   // only those get gap arrows (editExpandablePaths gates the files
   // derived). Candidates come from the unsuppressed merge
-  // (`parsedFiles`), NOT the files derived — that one already
+  // (`loadedFiles`), NOT the files derived — that one already
   // suppresses everything still unverified. Any failure (a session
   // without `files:read` included) just leaves paths unverified: no
   // arrows, no error banner, exactly what clicking would have found
@@ -1163,30 +1247,42 @@ function createReviewPaneState(
   }
 
   async function verifyEditExpandability(seq: number): Promise<void> {
-    if (scope !== 'edits' || threadId === null || !patchText) return;
-    // Added files are fully present — no gaps to gate, so no reason to
+    if (scope !== 'edits' || threadId === null) return;
+    // Added and deleted files are whole: no gaps to gate, so no reason to
     // resolve them.
-    const candidates = parsedFiles.filter(
-      (file) => !file.suppressGaps && file.kind !== 'added' && !file.path.startsWith('/'),
+    const candidates = loadedFiles.filter(
+      (file) => !file.suppressGaps && file.kind !== 'added' && file.kind !== 'deleted' && !file.path.startsWith('/'),
     );
-    if (candidates.length === 0) return;
     const context = patchScopeContext();
-    try {
-      const result = await VerifyEditDiffs(threadId, {
-        editPayloadId: context.editPayloadId ?? '',
-        editTurnIndex: context.editTurnIndex ?? -1,
-        files: candidates.map((file) => ({
-          path: file.path,
-          verifyPatch: filePatchText(file),
-        })),
-      });
-      if (seq !== loadSeq || disposed) return;
-      for (const path of result.expandablePaths ?? []) {
-        editExpandablePaths.add(path);
+    // Batches in turn, so one request's patches stay far under a frame
+    // and within the files the backend verifies per call.
+    for (let start = 0; start < candidates.length;) {
+      let end = start + 1;
+      let chars = candidates[start].body.textLength;
+      while (end < candidates.length && end - start < VERIFY_BATCH_FILES
+        && chars + candidates[end].body.textLength <= VERIFY_BATCH_CHARS) {
+        chars += candidates[end].body.textLength;
+        end += 1;
       }
-    } catch {
-      if (seq !== loadSeq || disposed) return;
-      // Unverified stays unexpandable — the honest degrade.
+      const batch = candidates.slice(start, end);
+      start = end;
+      try {
+        const result = await VerifyEditDiffs(threadId, {
+          editPayloadId: context.editPayloadId ?? '',
+          editTurnIndex: context.editTurnIndex ?? -1,
+          files: batch.map((file) => ({
+            path: file.path,
+            verifyPatch: filePatchText(file),
+          })),
+        });
+        if (seq !== loadSeq || disposed) return;
+        for (const path of result.expandablePaths ?? []) {
+          editExpandablePaths.add(path);
+        }
+      } catch {
+        if (seq !== loadSeq || disposed) return;
+        // Unverified stays unexpandable — the honest degrade.
+      }
     }
   }
 
@@ -1740,7 +1836,6 @@ function createReviewPaneState(
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
     get prScopeLabel() { return prRef ? prScopeLabel(prRef) : null; },
-    get patchText() { return patchText; },
     get sourceKey() { return sourceKey; },
     get files() { return files; },
     get comments() { return comments; },

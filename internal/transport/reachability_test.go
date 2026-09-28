@@ -41,9 +41,9 @@ func grantsFor(scopes ...Scope) []string {
 // is a single-use URL rather than 10 MiB of base64, and the bytes follow
 // on their own connection.
 var workspaceContentMethods = map[string]Scope{
-	"GetBranchBaseDiff":            ScopeFilesRead,
-	"GetWorkspaceCurrentDiff":      ScopeFilesRead,
-	"GetCommitDiff":                ScopeFilesRead,
+	"OpenBranchBaseDiff":           ScopeFilesRead,
+	"OpenWorkspaceDiff":            ScopeFilesRead,
+	"OpenCommitDiff":               ScopeFilesRead,
 	"GetDiffContextLines":          ScopeFilesRead,
 	"VerifyEditDiffs":              ScopeFilesRead,
 	"HighlightPatchWithContext":    ScopeFilesRead,
@@ -304,6 +304,10 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		"MintOwnDeviceIntroduction":   "requires active sponsor and target generations, binds redemption to the target key",
 		"IntroduceOwnDevice":          "derives the recipient key from the admitted caller and uses only an active group destination",
 		"AcceptOwnDeviceIntroduction": "requires personal membership and catalog-bound target identity/address/pin; target verifies this host's key",
+		// Review-diff handles are connection-owned, and each records the
+		// scope its Open method required; a read requires it again.
+		"ReadReviewDiff":    "reads only a handle the calling connection opened, under the scope its Open required",
+		"ReleaseReviewDiff": "releases only a handle the calling connection opened",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

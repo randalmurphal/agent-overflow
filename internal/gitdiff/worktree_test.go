@@ -20,14 +20,14 @@ func TestIsGitRepository(t *testing.T) {
 	}
 }
 
-func TestDiffWorkspaceVsHeadCombinesTrackedAndUntracked(t *testing.T) {
+func TestWorktreeDiffCombinesTrackedAndUntracked(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "README.txt", "hello\nedited\n")
 	writeFile(t, repo, "new.txt", "brand new\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	text := string(patch)
 	if !strings.Contains(text, "+edited") {
@@ -38,56 +38,56 @@ func TestDiffWorkspaceVsHeadCombinesTrackedAndUntracked(t *testing.T) {
 	}
 }
 
-func TestDiffWorkspaceVsHeadCleanTreeIsEmpty(t *testing.T) {
+func TestWorktreeDiffCleanTreeIsEmpty(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	if len(patch) != 0 {
 		t.Fatalf("expected an empty patch for a clean tree, got:\n%s", patch)
 	}
 }
 
-func TestDiffWorkspaceVsHeadFreshInitRepo(t *testing.T) {
+func TestWorktreeDiffFreshInitRepo(t *testing.T) {
 	repo := t.TempDir()
 	testutil.RunGit(t, repo, "init", "-b", "main")
 	writeFile(t, repo, "new.txt", "no commits yet\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	if !strings.Contains(string(patch), "+no commits yet") {
 		t.Fatalf("expected the untracked file even without a HEAD, got:\n%s", patch)
 	}
 }
 
-func TestDiffWorkspaceVsHeadShowsDeletions(t *testing.T) {
+func TestWorktreeDiffShowsDeletions(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "doomed.txt", "was here\n", "add doomed")
 	if err := os.Remove(filepath.Join(repo, "doomed.txt")); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	if !strings.Contains(string(patch), "-was here") {
 		t.Fatalf("expected the deletion in the diff, got:\n%s", patch)
 	}
 }
 
-func TestDiffWorkspaceVsHeadStagesSymlinks(t *testing.T) {
+func TestWorktreeDiffStagesSymlinks(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	if err := os.Symlink("README.txt", filepath.Join(repo, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	text := string(patch)
 	if !strings.Contains(text, "120000") || !strings.Contains(text, "+README.txt") {
@@ -95,21 +95,21 @@ func TestDiffWorkspaceVsHeadStagesSymlinks(t *testing.T) {
 	}
 }
 
-func TestDiffWorkspaceVsHeadRespectsGitignore(t *testing.T) {
+func TestWorktreeDiffRespectsGitignore(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, ".gitignore", "ignored.txt\n", "add gitignore")
 	writeFile(t, repo, "ignored.txt", "should not appear\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
+	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
-		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+		t.Fatalf("worktreePatch: %v", err)
 	}
 	if strings.Contains(string(patch), "should not appear") {
 		t.Fatalf("ignored file leaked into the diff:\n%s", patch)
 	}
 }
 
-func TestDiffBranchBaseToWorktreeSpansCommittedStagedAndUntracked(t *testing.T) {
+func TestBranchBaseDiffSpansCommittedStagedAndUntracked(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "committed.txt", "committed change\n", "feature commit")
@@ -117,9 +117,9 @@ func TestDiffBranchBaseToWorktreeSpansCommittedStagedAndUntracked(t *testing.T) 
 	testutil.RunGit(t, repo, "add", "staged.txt")
 	writeFile(t, repo, "untracked.txt", "untracked change\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{})
+	patch, err := branchBasePatch(t, repo, "main", Options{})
 	if err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+		t.Fatalf("branchBasePatch: %v", err)
 	}
 	text := string(patch)
 	for _, want := range []string{"committed change", "staged change", "untracked change"} {
@@ -129,13 +129,13 @@ func TestDiffBranchBaseToWorktreeSpansCommittedStagedAndUntracked(t *testing.T) 
 	}
 }
 
-func TestDiffBranchBaseToWorktreeLeavesUserIndexUntouched(t *testing.T) {
+func TestBranchBaseDiffLeavesUserIndexUntouched(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	writeFile(t, repo, "untracked.txt", "untracked change\n")
 
-	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{}); err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+	if _, err := branchBasePatch(t, repo, "main", Options{}); err != nil {
+		t.Fatalf("branchBasePatch: %v", err)
 	}
 
 	staged, _, _, err := runGit(context.Background(), repo, nil, false, "diff", "--cached", "--name-only")
@@ -150,7 +150,7 @@ func TestDiffBranchBaseToWorktreeLeavesUserIndexUntouched(t *testing.T) {
 	}
 }
 
-func TestDiffBranchBaseToWorktreeSkipsCleanFilters(t *testing.T) {
+func TestBranchBaseDiffSkipsCleanFilters(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	// A repo-defined clean filter that would fail loudly if executed. The
 	// snapshot must hash with --no-filters, so the diff still succeeds and
@@ -160,29 +160,29 @@ func TestDiffBranchBaseToWorktreeSkipsCleanFilters(t *testing.T) {
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	writeFile(t, repo, "payload.dat", "raw bytes\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{})
+	patch, err := branchBasePatch(t, repo, "main", Options{})
 	if err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
+		t.Fatalf("branchBasePatch: %v", err)
 	}
 	if !strings.Contains(string(patch), "raw bytes") {
 		t.Fatalf("expected the unfiltered file content, got:\n%s", patch)
 	}
 }
 
-func TestDiffBranchBaseToWorktreeRequiresBase(t *testing.T) {
+func TestBranchBaseDiffRequiresBase(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
-	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "  ", Options{}); err == nil {
+	if _, err := branchBasePatch(t, repo, "  ", Options{}); err == nil {
 		t.Fatal("expected error for an empty base branch")
 	}
 }
 
-func TestDiffBranchBaseToWorktreeResolvesRemoteOnlyBaseBranch(t *testing.T) {
+func TestBranchBaseDiffResolvesRemoteOnlyBaseBranch(t *testing.T) {
 	clone := cloneWithRemoteOnlyBranch(t)
 	writeFile(t, clone, "untracked.txt", "uncommitted too\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), clone, "release", Options{})
+	patch, err := branchBasePatch(t, clone, "release", Options{})
 	if err != nil {
-		t.Fatalf("DiffBranchBaseToWorktree with remote-only base: %v", err)
+		t.Fatalf("branchBasePatch with remote-only base: %v", err)
 	}
 	text := string(patch)
 	if !strings.Contains(text, "local work") || !strings.Contains(text, "uncommitted too") {

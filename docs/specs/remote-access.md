@@ -616,7 +616,7 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
-| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), `GetUIState` (own bucket only) |
+| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), `GetUIState` (own bucket only), review-diff handle reads (the opening method's scope, re-checked per read) |
 
 Rationale for the splits: answering an approval authorizes host command
 execution, and a thread in `full-access` mode needs no approval at all,
@@ -949,6 +949,11 @@ waves:
   device label/platform, deriving the device ID from its session. It cannot
   rename another device or change keys/grants. Renaming the host itself
   uses `SetDeviceName` and requires `access:admin`.
+  `ReadReviewDiff` and `ReleaseReviewDiff` act only on a review-diff handle
+  the calling connection opened. The handle records the scope its `Open*`
+  method required (`files:read`, `git:operate` or `threads:read`), and every
+  read requires that scope again, so a session narrowed after the open
+  stops reading.
 - **One write path per key, closed as a class**: a settings key with
   a dedicated RPC is refused by the generic patch. `network`,
   `claudeCustomEnv`/`codexCustomEnv`, and `remoteEndpoints` already

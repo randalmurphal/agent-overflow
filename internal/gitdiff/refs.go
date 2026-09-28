@@ -140,6 +140,22 @@ func validateRefArg(ref, label string) error {
 	return nil
 }
 
+// mergeBaseOID returns the best common ancestor of two revisions.
+func mergeBaseOID(ctx context.Context, workspace, a, b string) (string, error) {
+	stdout, stderr, code, err := runGit(ctx, workspace, nil, true, "merge-base", a, b)
+	if err != nil {
+		return "", fmt.Errorf("gitdiff: merge-base %s %s: %w", a, b, err)
+	}
+	if code == 1 && strings.TrimSpace(stderr) == "" {
+		return "", fmt.Errorf("gitdiff: %s and %s have no common ancestor", a, b)
+	}
+	oid := strings.TrimSpace(stdout)
+	if code != 0 || oid == "" {
+		return "", fmt.Errorf("gitdiff: merge-base %s %s: exit=%d: %s", a, b, code, strings.TrimSpace(stderr))
+	}
+	return oid, nil
+}
+
 // revisionExists reports whether rev resolves to a commit in the
 // workspace's repository. rev is caller-controlled (flag-guarded base
 // names or fully-qualified refs), never raw user input.

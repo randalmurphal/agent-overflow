@@ -19,7 +19,7 @@ Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
 branch has the PR; it fetches the PR head and diffs it against the
-merge base (`GetPRDiff`).
+merge base (`OpenPRDiff`).
 
 ## Goal
 

@@ -12,7 +12,7 @@ import (
 
 // prCloneFixture builds an "origin" repo carrying refs/pull/5/head with
 // two commits beyond main, clones it, and registers the clone as a project —
-// the shape ListPRCommits/GetPRCommitDiff resolve through prCloneWorkspace.
+// the shape ListPRCommits/OpenPRCommitDiff resolve through prCloneWorkspace.
 func prCloneFixture(t *testing.T, app *App) (ref WorkspaceRef, clone string, prSHAs []string) {
 	t.Helper()
 
@@ -74,7 +74,7 @@ func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
 }
 
 func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
-	app := newTestAppWithStore(t)
+	app := newReviewDiffTestApp(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
 	// Break the remote: any fetch now fails, so a passing listing proves
 	// the known-head fast path skipped the network entirely.
@@ -88,11 +88,11 @@ func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 		t.Fatalf("expected the local listing from the known head, got %+v", commits)
 	}
 
-	// GetPRCommitDiff takes the same no-fetch fast path when the commit
+	// OpenPRCommitDiff takes the same no-fetch fast path when the commit
 	// is already local.
-	patch, err := app.GetPRCommitDiff(ref, prRef(), prSHAs[0], false)
+	patch, err := openPRCommitPatch(t, app, ref, prSHAs[0])
 	if err != nil {
-		t.Fatalf("GetPRCommitDiff() with local commit error = %v", err)
+		t.Fatalf("OpenPRCommitDiff() with local commit error = %v", err)
 	}
 	if !strings.Contains(patch, "+second.txt content") {
 		t.Fatalf("expected the commit diff from local objects, got:\n%s", patch)
@@ -108,13 +108,13 @@ func TestListPRCommitsRequiresBaseRef(t *testing.T) {
 	}
 }
 
-func TestGetPRCommitDiffFromLocalClone(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenPRCommitDiffFromLocalClone(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	ref, _, prSHAs := prCloneFixture(t, app)
 
-	patch, err := app.GetPRCommitDiff(ref, prRef(), prSHAs[0], false)
+	patch, err := openPRCommitPatch(t, app, ref, prSHAs[0])
 	if err != nil {
-		t.Fatalf("GetPRCommitDiff() error = %v", err)
+		t.Fatalf("OpenPRCommitDiff() error = %v", err)
 	}
 	if !strings.Contains(patch, "+second.txt content") {
 		t.Fatalf("expected the newest commit's own addition, got:\n%s", patch)
@@ -124,12 +124,12 @@ func TestGetPRCommitDiffFromLocalClone(t *testing.T) {
 	}
 }
 
-func TestGetPRCommitDiffWithoutCloneErrors(t *testing.T) {
-	app := newTestAppWithStore(t)
+func TestOpenPRCommitDiffWithoutCloneErrors(t *testing.T) {
+	app := newReviewDiffTestApp(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir())
 
-	_, err := app.GetPRCommitDiff(noClone, prRef(), strings.Repeat("a", 40), false)
+	_, err := openPRCommitPatch(t, app, noClone, strings.Repeat("a", 40))
 	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
-		t.Fatalf("GetPRCommitDiff() error = %v, want the not-a-repository refusal", err)
+		t.Fatalf("OpenPRCommitDiff() error = %v, want the not-a-repository refusal", err)
 	}
 }

@@ -17,7 +17,7 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import { isCompanionOpen, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { __resetAgentPaneStateForTest, openAgentCompanion } from '../../stores/agentPane.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 
 describe('CompanionPane across a source-pane thread switch', () => {
   beforeEach(() => {
@@ -30,7 +30,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     __resetAgentPaneStateForTest();
     // Review-state creation kicks off a workspace-scope diff load; give
     // it the minimal backend surface so mount side effects resolve.
-    setBindingMock('GetWorkspaceCurrentDiff', async () => '');
+    setReviewDiffMock('OpenWorkspaceDiff', async () => '');
     setBindingMock('GetGitStatus', async () => ({}));
     setBindingMock('GetThread', async () => makeThread());
     setBindingMock('GitListBranches', async () => []);
@@ -107,7 +107,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
   });
 
   it('rebinds an open review when the same conversation changes ownership or checkout', async () => {
-    const read = setBindingMock('GetWorkspaceCurrentDiff', vi.fn(async () => ''));
+    const read = setReviewDiffMock('OpenWorkspaceDiff', vi.fn(async () => ''));
     const thread = makeThread({ id: 'moving-thread', projectId: 'source-project', workspacePath: '/source', ownershipEpoch: 0 });
     const pane = createThreadPane({ paneId: 'main' });
     registerPaneForTest('main', pane);

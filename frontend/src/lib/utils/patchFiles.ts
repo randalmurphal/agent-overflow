@@ -40,6 +40,11 @@ export interface PatchDisplayRow {
    * lines hidden between hunks. `line` is an empty context line so
    * non-gap-aware consumers render a blank instead of crashing. */
   gap?: DiffGap;
+  /** The row's line index in its file's patch lines — the index its
+   * highlight spans are aligned with. Set by the review store's
+   * materializer (`patchRows.ts`); PatchFile rows look lines up by
+   * identity instead. */
+  lineIndex?: number;
 }
 
 export interface SplitDisplayRow {
@@ -80,17 +85,6 @@ export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): st
 }
 
 export function parsePatchFiles(patch: string): PatchFile[] {
-  return parsePatch(patch, true);
-}
-
-// Parses only the file-level data needed by lightweight lists. This follows
-// the same path/count rules as parsePatchFiles without retaining one object per
-// patch line, so callers can keep large diffs bounded until a file is opened.
-export function parsePatchFileSummaries(patch: string): PatchFile[] {
-  return parsePatch(patch, false);
-}
-
-function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
   if (!patch.trim()) return [];
   const files: PatchFile[] = [];
   let current: PatchFile | null = null;
@@ -119,7 +113,7 @@ function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
         kind: 'modified',
         additions: 0,
         deletions: 0,
-        lines: includeLines ? [{ content: line, type: 'meta' }] : [],
+        lines: [{ content: line, type: 'meta' }],
       };
       continue;
     }
@@ -136,23 +130,22 @@ function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
     // and the header badge must match it. Go mirrors this rule in
     // internal/git/status.go (countAddedLines, for the badge's untracked
     // tally) and its test twin countPatchAddsDels. If you change the add/del
-    // rule here — the +++/--- header skips especially — update countAddedLines
-    // and the badge==panel tests in status_test.go, or the badge will silently
-    // diverge from this panel.
+    // rule here — the +++/--- header skips especially — update countAddedLines,
+    // the badge==panel tests in status_test.go and the review pane's streaming
+    // twin (PatchParser in patchStore.ts), or the badge will silently diverge
+    // from this panel.
     if (line.startsWith('+') && !line.startsWith('+++')) current.additions += 1;
     if (line.startsWith('-') && !line.startsWith('---')) current.deletions += 1;
-    if (includeLines) {
-      current.lines.push({
-        content: line,
-        type: line.startsWith('+') && !line.startsWith('+++')
-          ? 'add'
-          : line.startsWith('-') && !line.startsWith('---')
-            ? 'del'
-            : isPatchMetaLine(line)
-              ? 'meta'
-              : 'context',
-      });
-    }
+    current.lines.push({
+      content: line,
+      type: line.startsWith('+') && !line.startsWith('+++')
+        ? 'add'
+        : line.startsWith('-') && !line.startsWith('---')
+          ? 'del'
+          : isPatchMetaLine(line)
+            ? 'meta'
+            : 'context',
+    });
   }
   finish();
   return files;
@@ -507,36 +500,6 @@ export function __parsePatchCacheStatsForTest(): { entries: number; chars: numbe
   return { entries: parsePatchCache.size, chars: parsePatchCacheTotalChars };
 }
 
-export function extractPatchFile(patch: string, filePath: string): string | null {
-  if (!patch.trim() || !filePath) return null;
-
-  const blocks: string[] = [];
-  let currentBlock: string[] = [];
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
-      currentBlock = [line];
-      continue;
-    }
-    if (currentBlock.length > 0) currentBlock.push(line);
-  }
-  if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
-
-  for (let index = 0; index < blocks.length; index += 1) {
-    const block = blocks[index];
-    if (parsePatchFiles(block)[0]?.path !== filePath) continue;
-    // A type change is two adjacent sections that parse to ONE file
-    // (see isTypeChangePair); the file's patch is both of them.
-    const next = blocks[index + 1];
-    if (next !== undefined) {
-      const pair = `${block}\n${next}`;
-      if (parsePatchFiles(pair).length === 1) return pair;
-    }
-    return block;
-  }
-  return null;
-}
-
 // Identity-keyed memo: the review surface derives display rows for
 // every file on every row-model rebuild (buildReviewRows AND
 // buildInsertsByFile AND anchor checks), always from the same parsed
@@ -747,7 +710,7 @@ export function buildSplitDisplayRows(rows: PatchDisplayRow[]): SplitDisplayRow[
   return splitRows;
 }
 
-function cleanPath(raw: string): string {
+export function cleanPath(raw: string): string {
   return raw.replace(/^"|"$/g, '').replace(/^[ab]\//, '');
 }
 
@@ -781,29 +744,36 @@ export function formatHunkHeader(
   return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${suffix}`;
 }
 
+/** Prefixes of the patch lines that belong to neither side. The review
+ * store's streaming parser (`patchStore.ts`) classifies with the same
+ * list, so both parsers agree on every line. */
+export const PATCH_META_PREFIXES: readonly string[] = [
+  '@@',
+  // `\ No newline at end of file`: git's annotation on the line
+  // above, never a line of either side. Read as context it took a
+  // number on both sides and shifted every row after it by one —
+  // a comment anchored on the last line of a file with no trailing
+  // newline landed one line off (`internal/highlight/patch.go` has
+  // always skipped it; this is the frontend's matching rule).
+  '\\',
+  'diff ',
+  '---',
+  '+++',
+  'index ',
+  'new file mode ',
+  'deleted file mode ',
+  'old mode ',
+  'new mode ',
+  'similarity index ',
+  'dissimilarity index ',
+  'rename from ',
+  'rename to ',
+  'copy from ',
+  'copy to ',
+];
+
 function isPatchMetaLine(line: string): boolean {
-  return line.startsWith('@@')
-    // `\ No newline at end of file`: git's annotation on the line
-    // above, never a line of either side. Read as context it took a
-    // number on both sides and shifted every row after it by one —
-    // a comment anchored on the last line of a file with no trailing
-    // newline landed one line off (`internal/highlight/patch.go` has
-    // always skipped it; this is the frontend's matching rule).
-    || line.startsWith('\\')
-    || line.startsWith('diff ')
-    || line.startsWith('---')
-    || line.startsWith('+++')
-    || line.startsWith('index ')
-    || line.startsWith('new file mode ')
-    || line.startsWith('deleted file mode ')
-    || line.startsWith('old mode ')
-    || line.startsWith('new mode ')
-    || line.startsWith('similarity index ')
-    || line.startsWith('dissimilarity index ')
-    || line.startsWith('rename from ')
-    || line.startsWith('rename to ')
-    || line.startsWith('copy from ')
-    || line.startsWith('copy to ');
+  return PATCH_META_PREFIXES.some((prefix) => line.startsWith(prefix));
 }
 
 /**

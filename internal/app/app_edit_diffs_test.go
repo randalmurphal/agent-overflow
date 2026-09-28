@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -200,44 +201,206 @@ func TestListThreadEditDiffsEmptyThread(t *testing.T) {
 	}
 }
 
-func TestGetTurnEditsDiffConcatenatesInOrder(t *testing.T) {
+// fixturePatch is editDiffFixture's patch for one edit.
+func fixturePatch(path, oldLine, newLine string) string {
+	return "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path +
+		"\n@@ -1 +1 @@\n-" + oldLine + "\n+" + newLine + "\n"
+}
+
+func TestOpenTurnEditsDiffJoinsTheTurnsPayloadsInOrder(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
+	ctx, _ := reviewDiffConn(t)
 
-	turnDiff, err := app.GetTurnEditsDiff(threadID, 2)
+	opened, err := app.OpenTurnEditsDiff(ctx, threadID, 2)
 	if err != nil {
-		t.Fatalf("GetTurnEditsDiff() error = %v", err)
+		t.Fatalf("OpenTurnEditsDiff() error = %v", err)
 	}
-	combined := turnDiff.Data
-	// Both same-file edits appear as separate sequential sections.
-	betaOut := strings.Index(combined, "-alpha")
-	gammaIn := strings.Index(combined, "+gamma")
-	if betaOut == -1 || gammaIn == -1 || betaOut > gammaIn {
-		t.Fatalf("expected sequential sections (alpha edit before gamma edit), got:\n%s", combined)
+	// Both same-file edits appear as sequential sections, with no blank
+	// line between them and nothing from turn 1.
+	want := fixturePatch("lexer.go", "alpha", "beta") + fixturePatch("lexer.go", "beta", "gamma")
+	if opened.ID != "" || !opened.Chunk.EOF || opened.Chunk.Data != want {
+		t.Fatalf("opened = %+v, want one final chunk %q", opened, want)
 	}
-	if strings.Contains(combined, "parser.go") {
-		t.Fatalf("turn 2 diff must not include turn 1 content:\n%s", combined)
-	}
-	if strings.Count(combined, "diff --git") != 2 {
-		t.Fatalf("expected 2 patch sections, got:\n%s", combined)
+	if got := strings.Join(opened.PayloadIDs, ","); got != "pl-edit-2,pl-edit-3" {
+		t.Fatalf("PayloadIDs = %q, want the turn's two edit payloads in order", got)
 	}
 
-	// A turn with no edits yields an empty patch, not an error.
-	empty, err := app.GetTurnEditsDiff(threadID, 7)
+	// A turn with no edits is an empty diff, not an error.
+	empty, err := app.OpenTurnEditsDiff(ctx, threadID, 7)
 	if err != nil {
-		t.Fatalf("GetTurnEditsDiff(no edits) error = %v", err)
+		t.Fatalf("OpenTurnEditsDiff(no edits) error = %v", err)
 	}
-	if empty.Data != "" {
-		t.Fatalf("expected empty diff for edit-less turn, got %q", empty.Data)
+	if empty.ID != "" || !empty.Chunk.EOF || empty.Chunk.Data != "" || len(empty.PayloadIDs) != 0 {
+		t.Fatalf("edit-less turn = %+v, want an empty final chunk", empty)
+	}
+	if n := openReviewDiffCount(app); n != 0 {
+		t.Fatalf("%d diffs held for patches that fit their first chunk", n)
 	}
 }
 
-func TestGetTurnEditsDiffAttachesPersistedSpans(t *testing.T) {
+func TestOpenEditDiffReadsOnePayloadOfTheThread(t *testing.T) {
+	app := newTestAppWithStore(t)
+	threadID := editDiffFixture(t, app)
+	ctx, _ := reviewDiffConn(t)
+
+	opened, err := app.OpenEditDiff(ctx, threadID, "pl-legacy")
+	if err != nil {
+		t.Fatalf("OpenEditDiff() error = %v", err)
+	}
+	if want := fixturePatch("legacy.go", "before", "after"); opened.Chunk.Data != want || !opened.Chunk.EOF {
+		t.Fatalf("chunk = %+v, want %q", opened.Chunk, want)
+	}
+	if len(opened.PayloadIDs) != 1 || opened.PayloadIDs[0] != "pl-legacy" {
+		t.Fatalf("PayloadIDs = %v", opened.PayloadIDs)
+	}
+
+	other := testThread("thread-other")
+	if err := app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if _, err := app.OpenEditDiff(ctx, other.ID, "pl-legacy"); err == nil {
+		t.Fatal("another thread opened this thread's payload")
+	}
+	if _, err := app.OpenEditDiff(ctx, threadID, "pl-missing"); err == nil {
+		t.Fatal("an unknown payload opened")
+	}
+}
+
+// seedEditPayloads adds one turn of edit payloads with the given bodies to
+// a new thread.
+func seedEditPayloads(t *testing.T, app *App, turnIndex int, bodies ...string) string {
+	t.Helper()
+	thread := testThread("thread-large-edits")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	for i, body := range bodies {
+		id := fmt.Sprintf("edit-%d", i)
+		item := store.Item{
+			ID: "tool:" + id, ThreadID: thread.ID, TurnIndex: turnIndex, ItemIndex: i + 1,
+			Kind: "tool_call", Role: "assistant", Status: "completed", PayloadID: id,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		payload := store.Payload{ID: id, Kind: "tool_result", Meta: "{}", Data: []byte(body)}
+		if err := app.store.InsertItemWithPayload(item, payload); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	return thread.ID
+}
+
+// generatedPatch is a patch of one added file with lines lines.
+func generatedPatch(path string, lines int) string {
+	var b strings.Builder
+	b.WriteString("diff --git a/" + path + " b/" + path + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + path + "\n")
+	fmt.Fprintf(&b, "@@ -0,0 +1,%d @@\n", lines)
+	for i := range lines {
+		fmt.Fprintf(&b, "+%s line %d, long enough to fill a chunk before long\n", path, i)
+	}
+	return b.String()
+}
+
+func TestEditsDiffReadsALargeTurnInChunks(t *testing.T) {
+	app := newTestAppWithStore(t)
+	big := generatedPatch("big.go", 60000)
+	bodies := []string{
+		generatedPatch("a.go", 3) + "\n\n\n",
+		big,
+		"\n\n",
+		strings.TrimSuffix(generatedPatch("c.go", 2), "\n"),
+		generatedPatch("d.go", 20000) + strings.Repeat("\n", editsDiffTailBytes+10),
+	}
+	threadID := seedEditPayloads(t, app, 4, bodies...)
+	want := generatedPatch("a.go", 3) + big + generatedPatch("c.go", 2) + generatedPatch("d.go", 20000)
+	if len(want) < 3*reviewDiffFirstChunkBytes {
+		t.Fatalf("fixture is %d bytes, want several chunks", len(want))
+	}
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenTurnEditsDiff(ctx, threadID, 4)
+	if err != nil {
+		t.Fatalf("OpenTurnEditsDiff() error = %v", err)
+	}
+	if got := strings.Join(opened.PayloadIDs, ","); got != "edit-0,edit-1,edit-3,edit-4" {
+		t.Fatalf("PayloadIDs = %q, want every payload with a diff", got)
+	}
+	if opened.ID == "" {
+		t.Fatal("a patch past its first chunk must hold a handle")
+	}
+
+	var chunks []ReviewDiffChunk
+	patch := opened.Chunk.Data
+	for chunk := opened.Chunk; !chunk.EOF; {
+		chunk, err = app.ReadReviewDiff(ctx, opened.ID, chunk.NextOffset, 256<<10)
+		if err != nil {
+			t.Fatalf("ReadReviewDiff() error = %v", err)
+		}
+		if !chunk.EOF && !strings.HasSuffix(chunk.Data, "\n") {
+			t.Fatalf("chunk at %d ends inside a line", chunk.Offset)
+		}
+		chunks = append(chunks, chunk)
+		patch += chunk.Data
+	}
+	if patch != want {
+		t.Fatalf("joined patch is %d bytes, want %d; payloads must join without blank lines", len(patch), len(want))
+	}
+
+	// A chunk read again from its offset is the same chunk.
+	again, err := app.ReadReviewDiff(ctx, opened.ID, chunks[1].Offset, 256<<10)
+	if err != nil || again != chunks[1] {
+		t.Fatalf("re-read = %+v, %v; want the chunk served first", again.Offset, err)
+	}
+	if _, err := app.ReadReviewDiff(ctx, opened.ID, chunks[1].Offset+1, 256<<10); err == nil {
+		t.Fatal("a read from inside a chunk was served")
+	}
+	if err := app.ReleaseReviewDiff(ctx, opened.ID); err != nil {
+		t.Fatalf("ReleaseReviewDiff() error = %v", err)
+	}
+	if n := openReviewDiffCount(app); n != 0 {
+		t.Fatalf("%d diffs held after release", n)
+	}
+}
+
+func TestEditsDiffRefusesAPayloadThatChangedSinceTheOpen(t *testing.T) {
+	app := newTestAppWithStore(t)
+	body := generatedPatch("big.go", 60000)
+	threadID := seedEditPayloads(t, app, 1, body)
+	ctx, _ := reviewDiffConn(t)
+	opened, err := app.OpenTurnEditsDiff(ctx, threadID, 1)
+	if err != nil || opened.ID == "" {
+		t.Fatalf("OpenTurnEditsDiff() = %+v, %v", opened.ID, err)
+	}
+	next, err := app.ReadReviewDiff(ctx, opened.ID, opened.Chunk.NextOffset, 256<<10)
+	if err != nil {
+		t.Fatalf("ReadReviewDiff() error = %v", err)
+	}
+
+	// The same length with other bytes: the first read of the rest cannot
+	// tell, but the chunk already served can.
+	changed := []byte(strings.ReplaceAll(body, "line", "LINE"))
+	if err := app.store.ReplacePayloadData(threadID, "edit-0", changed, "{}", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("ReplacePayloadData() error = %v", err)
+	}
+	if _, err := app.ReadReviewDiff(ctx, opened.ID, next.Offset, 256<<10); err == nil || !strings.Contains(err.Error(), "the diff changed since it was opened") {
+		t.Fatalf("re-read of a changed chunk: err = %v, want a changed diff", err)
+	}
+
+	// A new length fails every read.
+	if err := app.store.ReplacePayloadData(threadID, "edit-0", []byte(body+body), "{}", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("ReplacePayloadData() error = %v", err)
+	}
+	if _, err := app.ReadReviewDiff(ctx, opened.ID, next.NextOffset, 256<<10); err == nil || !strings.Contains(err.Error(), "the diff changed since it was opened") {
+		t.Fatalf("read of a resized payload: err = %v, want a changed diff", err)
+	}
+}
+
+func TestGetPayloadPatchSpansReturnsThePersistedSeeds(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 
 	// One of turn 2's payloads has persist-time spans; the other never
-	// got a blob (dropped burst) — only the stored seeds attach.
+	// got a blob (dropped burst).
 	seed := PatchSpanSeed{
 		Path:       "lexer.go",
 		ContentKey: "ck-lexer",
@@ -252,15 +415,17 @@ func TestGetTurnEditsDiffAttachesPersistedSpans(t *testing.T) {
 		t.Fatalf("UpdatePayloadSpans() error = %v", err)
 	}
 
-	turnDiff, err := app.GetTurnEditsDiff(threadID, 2)
+	spans, err := app.GetPayloadPatchSpans(threadID, "pl-edit-2")
 	if err != nil {
-		t.Fatalf("GetTurnEditsDiff() error = %v", err)
+		t.Fatalf("GetPayloadPatchSpans() error = %v", err)
 	}
-	if len(turnDiff.PatchSpans) != 1 {
-		t.Fatalf("PatchSpans = %+v, want the one persisted seed", turnDiff.PatchSpans)
+	if len(spans) != 1 || spans[0].Path != "lexer.go" || spans[0].ContentKey != "ck-lexer" || !spans[0].Primed {
+		t.Fatalf("spans = %+v, want the one persisted seed", spans)
 	}
-	got := turnDiff.PatchSpans[0]
-	if got.Path != "lexer.go" || got.ContentKey != "ck-lexer" || !got.Primed {
-		t.Fatalf("seed = %+v", got)
+	if spans, err := app.GetPayloadPatchSpans(threadID, "pl-edit-3"); err != nil || len(spans) != 0 {
+		t.Fatalf("payload without spans = %+v, %v", spans, err)
+	}
+	if _, err := app.GetPayloadPatchSpans(threadID, "pl-missing"); err == nil {
+		t.Fatal("an unknown payload answered")
 	}
 }

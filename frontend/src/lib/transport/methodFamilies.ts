@@ -83,12 +83,14 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2618043580: 'terminal', // RefreshTerminal
   2702963191: 'terminal', // CloseTerminal
   4152403588: 'terminal', // RestartTerminal
-  // Subscription ids, which are meaningful ONLY on the connection that
-  // minted them. Every caller pins that computer (withBackendTarget); an
-  // unpinned call resolves no owner.
+  // Subscription and review-diff handle ids, which are meaningful ONLY on
+  // the connection that minted them. Every caller pins that computer
+  // (withBackendTarget); an unpinned call resolves no owner.
   1078249699: 'subscription', // SetPRUpdatesActive
   2888550814: 'subscription', // UnsubscribePRUpdates
   3263989430: 'subscription', // GitStatusUnsubscribe
+  2473150982: 'subscription', // ReadReviewDiff
+  504085501: 'subscription', // ReleaseReviewDiff
 
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so

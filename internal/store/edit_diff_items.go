@@ -8,9 +8,9 @@ import (
 // EditDiffItem is one tool call whose persisted payload carries a
 // unified diff — an Edit/Write/apply_patch or captured command inline
 // diff (payload kind `tool_result`), or a legacy Claude EventDiff
-// attach (kind `diff`). Metadata only: the diff bytes load on
-// selection via GetPayloadData, keeping the review pane's edit list
-// as cheap as the commit list.
+// attach (kind `diff`). Metadata only: the diff bytes are read on
+// selection, keeping the review pane's edit list as cheap as the commit
+// list.
 type EditDiffItem struct {
 	ItemID      string
 	PayloadID   string
@@ -110,21 +110,14 @@ func listEditDiffItems(q sqlQueryer, threadID string) ([]EditDiffItem, error) {
 	return entries, nil
 }
 
-// TurnEditDiffPatch is one edit payload's diff bytes plus the payload
-// id, so callers can pair the patch with its persisted span blob.
-type TurnEditDiffPatch struct {
-	PayloadID string
-	Data      []byte
-}
-
-// ListTurnEditDiffPatches returns the diff payloads of one turn's
-// edit-diff tool calls in item order — the sequential story of what
-// the turn changed. Callers concatenate; nothing here is merged or
-// deduplicated (the same file edited twice yields two patch sections).
-func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
+// ListTurnEditDiffPayloads returns the payload ids of one turn's
+// edit-diff tool calls in item order: the sequential story of what the
+// turn changed. Callers read and join the payloads; nothing here is merged
+// or deduplicated (the same file edited twice yields two patch sections).
+func (s *Store) ListTurnEditDiffPayloads(threadID string, turnIndex int) ([]string, error) {
 	rows, err := s.reader().Query(`
 		WITH edit_items AS (
-			SELECT items.payload_id, items.item_index, payloads.kind, payloads.data
+			SELECT items.payload_id, items.item_index, payloads.kind, length(payloads.data) AS data_length
 			  FROM items AS items
 			  JOIN payloads AS payloads
 			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
@@ -132,7 +125,7 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			UNION ALL
 			SELECT items.payload_id, items.item_index,
 			       COALESCE(local_payloads.kind, imported_payloads.kind),
-			       COALESCE(local_payloads.data, imported_payloads.data)
+			       COALESCE(length(local_payloads.data), length(imported_payloads.data))
 			  FROM thread_import_chunks AS refs
 			  CROSS JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
 			  LEFT JOIN payloads AS local_payloads
@@ -144,7 +137,7 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			 WHERE refs.thread_id = ? AND `+importedTurnRange("?")+`
 			   AND items.turn_index = ? AND overrides.item_id IS NULL
 			UNION ALL
-			SELECT items.payload_id, items.item_index, payloads.kind, payloads.data
+			SELECT items.payload_id, items.item_index, payloads.kind, length(payloads.data) AS data_length
 			  FROM thread_fork_lineage AS l
 			  CROSS JOIN items AS items ON items.thread_id = l.ancestor_id
 			  JOIN payloads AS payloads
@@ -154,7 +147,7 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			UNION ALL
 			SELECT items.payload_id, items.item_index,
 			       COALESCE(local_payloads.kind, imported_payloads.kind),
-			       COALESCE(local_payloads.data, imported_payloads.data)
+			       COALESCE(length(local_payloads.data), length(imported_payloads.data))
 			  FROM thread_fork_lineage AS l
 			  CROSS JOIN thread_import_chunks AS refs ON refs.thread_id = l.ancestor_id
 			  CROSS JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
@@ -168,31 +161,31 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			   AND items.turn_index = ? AND overrides.item_id IS NULL
 			   AND `+inheritedItemVisibleSQL+`
 		)
-		SELECT payload_id, data
+		SELECT payload_id
 		  FROM edit_items
-		 WHERE kind IN ('tool_result', 'diff') AND length(data) > 0
+		 WHERE kind IN ('tool_result', 'diff') AND data_length > 0
 		 ORDER BY item_index ASC`,
 		threadID, turnIndex, threadID, turnIndex, turnIndex, turnIndex,
 		threadID, turnIndex, turnIndex,
 		threadID, turnIndex, turnIndex, turnIndex, turnIndex,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)
+		return nil, fmt.Errorf("store: list turn edit diff payloads for %s/%d: %w", threadID, turnIndex, err)
 	}
 	defer rows.Close()
 
-	var patches []TurnEditDiffPatch
+	var payloadIDs []string
 	for rows.Next() {
-		var patch TurnEditDiffPatch
-		if err := rows.Scan(&patch.PayloadID, &patch.Data); err != nil {
-			return nil, fmt.Errorf("store: scan turn edit diff patch for %s/%d: %w", threadID, turnIndex, err)
+		var payloadID string
+		if err := rows.Scan(&payloadID); err != nil {
+			return nil, fmt.Errorf("store: scan turn edit diff payload for %s/%d: %w", threadID, turnIndex, err)
 		}
-		patches = append(patches, patch)
+		payloadIDs = append(payloadIDs, payloadID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)
+		return nil, fmt.Errorf("store: iterate turn edit diff payloads for %s/%d: %w", threadID, turnIndex, err)
 	}
-	return patches, nil
+	return payloadIDs, nil
 }
 
 // TurnUserSummary labels a turn with its first user prompt's summary,

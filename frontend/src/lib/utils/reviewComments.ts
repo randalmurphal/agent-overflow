@@ -1,5 +1,5 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
-import type { PatchFile } from './patchFiles';
+import type { DiffFileSummary } from './patchStore';
 
 // Pure list model behind the review rail's Comments tab: every PR
 // review thread (file-anchored AND PR-level conversation) and local
@@ -145,7 +145,7 @@ function stateRank(state: CommentItemState): number {
 }
 
 export function buildCommentGroups(input: {
-  files: readonly PatchFile[];
+  files: readonly DiffFileSummary[];
   prThreads: readonly ReviewThread[];
   drafts: readonly DiffReviewComment[];
   orphanedDraftIds: ReadonlySet<string>;

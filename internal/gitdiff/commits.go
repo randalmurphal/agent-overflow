@@ -157,12 +157,12 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 	return commits, nil
 }
 
-// CommitDiff returns the unified patch a single commit introduced:
-// against its first parent for regular and merge commits, against the
-// empty tree for a root commit. The SHA must be hex — it always comes
-// from a commit list this package produced or a forge API response,
-// never free-form user input.
-func CommitDiff(ctx context.Context, workspace, sha string, opts Options) ([]byte, error) {
+// OpenCommitDiff opens the patch a single commit introduced: against its
+// first parent for regular and merge commits, against the empty tree for a
+// root commit. The SHA must be hex — it always comes from a commit list
+// this package produced or a forge API response, never free-form user
+// input.
+func OpenCommitDiff(ctx context.Context, workspace, sha string, opts Options) (*Diff, error) {
 	sha = strings.TrimSpace(sha)
 	if !commitSHAPattern.MatchString(sha) {
 		return nil, fmt.Errorf("gitdiff: invalid commit sha %q", sha)
@@ -175,24 +175,38 @@ func CommitDiff(ctx context.Context, workspace, sha string, opts Options) ([]byt
 	if len(hashes) == 0 {
 		return nil, fmt.Errorf("gitdiff: rev-list returned nothing for %s", sha)
 	}
-
-	var stdout string
 	if len(hashes) > 1 {
 		// First-parent diff: for merge commits this matches how GitHub
 		// and GitLab render a commit's changes.
-		stdout, _, _, err = runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
-			opts.gitArgs("diff", hashes[1], hashes[0], "--")...)
-	} else {
-		stdout, _, _, err = runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
-			opts.gitArgs("diff-tree", "--root", "--find-renames", sha, "--")...)
+		return newDiff(workspace, nil, nil, opts.gitArgs("diff", hashes[1], hashes[0], "--")), nil
 	}
-	if errors.Is(err, errGitOutputTooLarge) {
-		return nil, fmt.Errorf("gitdiff: commit diff exceeds %d byte limit", maxDiffOutputBytes)
+	return newDiff(workspace, nil, nil,
+		opts.gitArgs("diff-tree", "--root", "--no-commit-id", hashes[0], "--")), nil
+}
+
+// OpenMergeBaseDiff opens the three-dot patch from the merge base of base
+// and head to head, the diff a pull request from head onto base shows. base
+// is a revision (a remote-tracking branch); head must be a commit OID. Both
+// must already exist locally.
+func OpenMergeBaseDiff(ctx context.Context, workspace, base, head string, opts Options) (*Diff, error) {
+	base = strings.TrimSpace(base)
+	if err := validateRefArg(base, "base ref"); err != nil {
+		return nil, err
 	}
+	head = strings.TrimSpace(head)
+	if !commitSHAPattern.MatchString(head) {
+		return nil, fmt.Errorf("gitdiff: invalid head %q", head)
+	}
+	headOID, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--verify", head+"^{commit}")
 	if err != nil {
-		return nil, fmt.Errorf("gitdiff: diff commit %s: %w", sha, err)
+		return nil, fmt.Errorf("gitdiff: resolve head %s: %w", head, err)
 	}
-	return []byte(stdout), nil
+	headOID = strings.TrimSpace(headOID)
+	mergeBase, err := mergeBaseOID(ctx, workspace, base, headOID)
+	if err != nil {
+		return nil, err
+	}
+	return newDiff(workspace, nil, nil, opts.gitArgs("diff", mergeBase, headOID, "--")), nil
 }
 
 // ShowFileAtCommit returns the full content of path as of the given

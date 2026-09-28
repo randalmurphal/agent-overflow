@@ -5,10 +5,8 @@ import {
   __resetParsePatchCacheForTest,
   buildPatchDisplayRows,
   buildSplitDisplayRows,
-  extractPatchFile,
   filePatchDisplayRows,
   mergePatchFilesByPath,
-  parsePatchFileSummaries,
   parsePatchFiles,
   parsePatchFilesCached,
   patchFileRowId,
@@ -16,28 +14,6 @@ import {
 } from './patchFiles';
 
 describe('parsePatchFiles', () => {
-  it('builds file summaries without retaining hunk lines', () => {
-    const summaries = parsePatchFileSummaries(`diff --git a/app.ts b/app.ts
---- a/app.ts
-+++ b/app.ts
-@@ -1 +1,2 @@
--old
-+new
-+added
-diff --git a/new.ts b/new.ts
-new file mode 100644
---- /dev/null
-+++ b/new.ts
-@@ -0,0 +1 @@
-+created
-`);
-
-    expect(summaries).toMatchObject([
-      { path: 'app.ts', kind: 'modified', additions: 2, deletions: 1, lines: [] },
-      { path: 'new.ts', kind: 'added', additions: 1, deletions: 0, lines: [] },
-    ]);
-  });
-
   it('builds aligned split rows for replacement hunks', () => {
     const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
 --- a/app.ts
@@ -91,28 +67,6 @@ index 1111111..2222222 100644
       '-old',
       '+new',
     ]);
-  });
-
-  it('extracts a single file patch without changing its content', () => {
-    const patch = `diff --git a/first.ts b/first.ts
---- a/first.ts
-+++ b/first.ts
-@@ -1 +1 @@
--old
-+new
-diff --git a/second.ts b/second.ts
---- a/second.ts
-+++ b/second.ts
-@@ -1 +1 @@
--before
-+after
-`;
-
-    const extracted = extractPatchFile(patch, 'second.ts');
-
-    expect(extracted).toContain('diff --git a/second.ts b/second.ts');
-    expect(extracted).toContain('+after');
-    expect(extracted).not.toContain('first.ts');
   });
 
   it('builds distinct row ids for duplicate file paths', () => {
@@ -184,10 +138,6 @@ diff --git a/other.ts b/other.ts
       ['old', 2, 0],
       ['new', 0, 1],
     ]);
-    expect(parsePatchFileSummaries(typeChangePatch)).toMatchObject([
-      { path: 'apps/demo/CLAUDE.md', kind: 'modified', additions: 1, deletions: 2, lines: [] },
-      { path: 'other.ts', kind: 'modified' },
-    ]);
   });
 
   it('does not fold a deletion followed by an unrelated re-creation of another path', () => {
@@ -208,15 +158,6 @@ new file mode 100644
       ['a.ts', 'deleted'],
       ['b.ts', 'added'],
     ]);
-  });
-
-  it('extracts both sections of a type change as that file’s patch', () => {
-    const extracted = extractPatchFile(typeChangePatch, 'apps/demo/CLAUDE.md');
-    expect(extracted).not.toBeNull();
-    expect(extracted!.match(/^diff --git /gm)).toHaveLength(2);
-    expect(extracted).toContain('+AGENTS.md');
-    expect(extracted).not.toContain('other.ts');
-    expect(extractPatchFile(typeChangePatch, 'other.ts')).toContain('+b');
   });
 
   it('treats the no-newline marker as metadata, not a numbered line', () => {

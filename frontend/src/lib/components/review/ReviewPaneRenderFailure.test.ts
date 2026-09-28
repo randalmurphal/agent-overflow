@@ -11,7 +11,7 @@ import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import {
   frontendErrorCaptureStateForTest,
   resetFrontendErrorCaptureForTest,
@@ -38,15 +38,15 @@ beforeEach(() => {
   resetFrontendErrorCaptureForTest();
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
   setBindingMock('GetGitStatus', async () => ({}));
-  setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
-  setBindingMock('GetBranchBaseDiff', async () => '');
+  setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
+  setReviewDiffMock('OpenBranchBaseDiff', async () => '');
   setBindingMock('ListBranchCommits', async () => []);
-  setBindingMock('GetCommitDiff', async () => '');
+  setReviewDiffMock('OpenCommitDiff', async () => '');
   setBindingMock('ListPRCommits', async () => []);
-  setBindingMock('GetPRCommitDiff', async () => '');
+  setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
-  setBindingMock('GetTurnEditsDiff', async () => ({ data: '' }));
-  setBindingMock('GetPayloadData', async () => ({ data: '' }));
+  setReviewDiffMock('OpenTurnEditsDiff', async () => '');
+  setReviewDiffMock('OpenEditDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');

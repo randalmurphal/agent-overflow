@@ -7,13 +7,15 @@
   import type { DiffReviewComment, ReviewThread } from '../../types/models';
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
-  import type { DiffGap, PatchFile } from '../../utils/patchFiles';
+  import type { DiffGap } from '../../utils/patchFiles';
+  import type { ReviewFile } from '../../utils/patchStore';
   import {
     captureReadingAnchor,
     resolveReadingAnchor,
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import {
+    BlockRowsCache,
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
     REVIEW_SURFACE_END_PX,
@@ -49,7 +51,7 @@
     subjectId: string;
     /** Review scope key segment for scroll-position memory. */
     scope: string;
-    files: PatchFile[];
+    files: readonly ReviewFile[];
     viewMode: 'stacked' | 'split';
     wordWrap: boolean;
     collapsedPaths: ReadonlySet<string>;
@@ -116,6 +118,11 @@
     buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
+  // The rows of the blocks this surface renders, for the files it shows.
+  const blockRows = new BlockRowsCache();
+  $effect.pre(() => {
+    blockRows.retain(files);
+  });
   // Stable identity for the engine's constructor; reads live through
   // the deriveds above (see the coherence note in the header block).
   const estimate: RowEstimate = {
@@ -218,13 +225,13 @@
 
   function captureAnchor(offset: number): void {
     const ref = listRef;
-    readingAnchor = ref ? captureReadingAnchor(built, files, ref, offset, wordWrap) : null;
+    readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset, wordWrap) : null;
   }
 
   function restoreAnchor(target: ReadingAnchor): void {
     const ref = listRef;
     if (!ref) return;
-    const top = resolveReadingAnchor(built, files, ref, target, wordWrap);
+    const top = resolveReadingAnchor(built, files, blockRows, ref, target, wordWrap);
     if (top !== null) scroll.applyScrollTarget(top);
   }
 
@@ -383,22 +390,9 @@
   // where numbering is non-monotonic and the last row can carry a
   // smaller number than rows above it — sizing from it cramps every
   // wider number.
-  const gutterChars = $derived.by(() => {
-    const maxByFile = new Map<number, number>();
-    for (const row of built.rows) {
-      if (row.kind !== 'line-block') continue;
-      let maxLine = maxByFile.get(row.fileIndex) ?? 0;
-      for (const displayRow of row.rows) {
-        maxLine = Math.max(maxLine, displayRow.oldLine, displayRow.newLine);
-      }
-      if (maxLine > 0) maxByFile.set(row.fileIndex, maxLine);
-    }
-    const widths = new Map<number, number>();
-    for (const [fileIndex, maxLine] of maxByFile) {
-      widths.set(fileIndex, Math.max(2, String(maxLine).length));
-    }
-    return widths;
-  });
+  function gutterChars(file: ReviewFile): number {
+    return Math.max(2, String(file.body.maxLine).length);
+  }
 </script>
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
@@ -461,16 +455,17 @@
               <div class="mx-2 h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
             </div>
           {:else if row.kind === 'line-block'}
+            {@const materialized = blockRows.get(file, row)}
             <ReviewLineBlockRow
-              rows={row.rows}
-              splitRows={row.splitRows}
+              rows={materialized.rows}
+              splitRows={materialized.splitRows}
               {file}
               path={file.path}
               {subjectId}
               {spanContext}
               {painted}
               {wordWrap}
-              gutterCh={gutterChars.get(row.fileIndex) ?? 2}
+              gutterCh={gutterChars(file)}
               {onAddComment}
               {onExpandFold}
               {onExpandGap}

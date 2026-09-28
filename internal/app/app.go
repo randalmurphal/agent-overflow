@@ -407,6 +407,9 @@ type App struct {
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
+	// reviewDiffs holds the review diffs clients are reading
+	// (`app_review_diff_handles.go`).
+	reviewDiffs appReviewDiffState
 	// providerDiscovery owns bounded provider probe/model caches and the
 	// separate Claude, Codex, status, and custom-environment coordinators.
 	// This shell retains the stable Wails façades and account/event adapters.

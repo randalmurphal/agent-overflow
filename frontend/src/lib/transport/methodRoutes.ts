@@ -98,14 +98,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
 	3414107538: 'thread', // GetAttachmentThumbnail
-	1342635161: 'workspace', // GetBranchBaseDiff
 	3595031866: 'selected', // GetChannelMessages
 	3664812883: 'selected', // GetChannelState
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
-	3399370629: 'workspace', // GetCommitDiff
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
@@ -126,12 +124,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1026796858: 'home', // GetNetworkSettings
 	2411810578: 'selected', // GetPRCIJobLog
 	2370852281: 'selected', // GetPRCIJobs
-	1737292419: 'workspace', // GetPRCommitDiff
 	2443547196: 'selected', // GetPRDetail
-	1867413234: 'workspace', // GetPRDiff
 	106351482: 'workspace', // GetPRMergeConflicts
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData
+	3582798556: 'thread', // GetPayloadPatchSpans
 	4070214921: 'thread', // GetPayloadPreview
 	471350242: 'project', // GetProjectWorktreeSetup
 	84914540: 'home', // GetProviderLoginState
@@ -162,13 +159,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	556088547: 'thread', // GetThreadUserMessageTicks
 	49371251: 'thread', // GetThreadWorktreeSetup
 	3815301456: 'thread', // GetTimelineUserMessageTicks
-	2905371438: 'thread', // GetTurnEditsDiff
 	1009213933: 'home', // GetUIRenderTracePath
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
 	294719565: 'home', // GetWSLDistroPreference
 	673985705: 'selected', // GetWorkspaceActivity
-	736820142: 'workspace', // GetWorkspaceCurrentDiff
 	1598126927: 'workspace', // GitCheckout
 	1971060042: 'workspace', // GitCommit
 	429779991: 'workspace', // GitCreateBranchFrom
@@ -256,11 +251,18 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	913927214: 'thread', // MoveDraftToThread
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
+	2513613347: 'workspace', // OpenBranchBaseDiff
+	1949392079: 'workspace', // OpenCommitDiff
 	3980787304: 'home', // OpenComputerPairing
+	2268491610: 'thread', // OpenEditDiff
 	3362740399: 'home', // OpenExternalURL
 	3994295523: 'home', // OpenInEditor
 	767864574: 'home', // OpenOwnComputerPairing
+	110447601: 'workspace', // OpenPRCommitDiff
+	4075510992: 'workspace', // OpenPRDiff
 	2247958725: 'thread', // OpenTerminal
+	4078889536: 'thread', // OpenTurnEditsDiff
+	3558532873: 'workspace', // OpenWorkspaceDiff
 	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
 	842795367: 'home', // PinThreadGroup
@@ -280,6 +282,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
 	2418838611: 'home', // PutSoundFile
+	2473150982: 'home', // ReadReviewDiff
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount
@@ -293,6 +296,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
+	504085501: 'home', // ReleaseReviewDiff
 	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel
 	753690041: 'selected', // RemoteCommandEnvironment

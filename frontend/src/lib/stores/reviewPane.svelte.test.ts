@@ -16,6 +16,7 @@ import {
 } from './reviewPane.svelte';
 import {
   draftAnchorExists,
+  EditFileMerge,
   reviewLineCommentForDraft,
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
@@ -29,15 +30,25 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.
 import type { DiffReviewComment, PRDetail, ReviewThread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import {
-  PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
-  filePatchDisplayRows,
-  parsePatchFilesCached,
-  type PatchFile,
-} from '../utils/patchFiles';
+import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
+import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
+import { parseReviewFiles, type ReviewFile } from '../utils/patchStore';
 import { buildReviewRows } from '../utils/reviewRows';
-import type { PaintedSpans } from '../utils/diffSpanCache.svelte';
-import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import {
+  getSpansForReviewLine,
+  resetDiffSpanCacheForTest,
+  type PaintedSpans,
+} from '../utils/diffSpanCache.svelte';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
+import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
+
+function rowsOf(file: ReviewFile): PatchDisplayRow[] {
+  return materializeRows(file, FILE_START, displayRowCount(file));
+}
+
+function linesOf(file: ReviewFile | undefined): PatchLine[] | undefined {
+  return file?.body.toPatchLines();
+}
 
 function patchFor(path: string, lines: number): string {
   return [
@@ -57,9 +68,8 @@ async function waitLoaded(state: ReturnType<typeof reviewStateForPane>): Promise
   });
 }
 
-/** `target` plus an added filler file that takes the whole patch past
- * the parse cache's entry cap, so every parsePatchFilesCached call on it
- * returns a fresh parse, as for any large review diff. */
+/** `target` plus an added filler file large enough to stand for any large
+ * review diff. */
 function oversizedPatch(target: string): string {
   const fillerLines = Math.ceil(PATCH_PARSE_CACHE_MAX_ENTRY_CHARS / 32);
   const patch = [
@@ -129,12 +139,12 @@ function installDefaultMocks(): void {
   // cache. Unmocked it only produces console noise, but noise in a passing
   // suite is where a real failure goes to hide.
   setBindingMock('UpdateThreadBranch', async () => []);
-  setBindingMock('GetWorkspaceCurrentDiff', async () => '');
-  setBindingMock('GetBranchBaseDiff', async () => '');
+  setReviewDiffMock('OpenWorkspaceDiff', async () => '');
+  setReviewDiffMock('OpenBranchBaseDiff', async () => '');
   setBindingMock('ListBranchCommits', async () => []);
-  setBindingMock('GetCommitDiff', async () => '');
+  setReviewDiffMock('OpenCommitDiff', async () => '');
   setBindingMock('ListPRCommits', async () => []);
-  setBindingMock('GetPRCommitDiff', async () => '');
+  setReviewDiffMock('OpenPRCommitDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'develop', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -199,14 +209,14 @@ describe('reviewPane store', () => {
   });
 
   it('detects drafts orphaned by a vanished line', () => {
-    const files = parsePatchFilesCached(patchFor('src/app.ts', 2));
+    const files = parseReviewFiles(patchFor('src/app.ts', 2));
     expect(draftAnchorExists(files, draft({ newLine: 2 }))).toBe(true);
     expect(draftAnchorExists(files, draft({ newLine: 99 }))).toBe(false);
   });
 
   it('keeps the old subject coherent during branch lookup and ignores a superseded lookup', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('workspace.go', 1));
-    const branchDiff = setBindingMock('GetBranchBaseDiff', async () => patchFor('branch.go', 1));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
+    const branchDiff = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     let finish!: (branches: unknown[]) => void;
@@ -225,24 +235,24 @@ describe('reviewPane store', () => {
 
   it('retains content during same-subject refresh but retires it before a commit selection', async () => {
     const patch = patchFor('workspace.go', 1);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     let finish!: (patch: string) => void;
-    setBindingMock('GetWorkspaceCurrentDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    setReviewDiffMock('OpenWorkspaceDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const refresh = state.reload();
     await tick();
-    expect(state.patchText).toBe(patch);
+    expect(state.files.map((f) => f.path)).toEqual(['workspace.go']);
     finish(patch);
     await refresh;
 
-    setBindingMock('GetBranchBaseDiff', async () => patch);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patch);
     setBindingMock('ListBranchCommits', async () => [{ sha: 'commit-a', subject: 'change' }]);
     await state.setScope('branch', { baseBranch: 'main' });
-    setBindingMock('GetCommitDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    setReviewDiffMock('OpenCommitDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const selecting = state.selectCommit('commit-a');
     await tick();
-    expect(state.patchText).toBe('');
+    expect(state.files).toEqual([]);
     expect(state.files).toEqual([]);
     finish(patchFor('commit.go', 1));
     await selecting;
@@ -250,8 +260,8 @@ describe('reviewPane store', () => {
   });
 
   it('loads the binding for each scope', async () => {
-    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
-    const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
+    const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
     setBindingMock('ListBranchCommits', async () => [
       { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
       { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'r', authoredAt: 2 },
@@ -267,7 +277,7 @@ describe('reviewPane store', () => {
     await state.setScope('branch');
     expect(branch).toHaveBeenCalledWith(REVIEW_WS, 'develop', false);
     expect(state.baseBranch).toBe('develop');
-    expect(state.patchText).toBe('branch patch');
+    expect(state.files.map((f) => f.path)).toEqual(['branch.go']);
     expect(state.commits.map((commit) => commit.shortSha)).toEqual(['aaaaaaa', 'bbbbbbb']);
     expect(state.selectedCommitSHA).toBeNull();
   });
@@ -283,7 +293,7 @@ describe('reviewPane store', () => {
     }));
 
     disposeReviewStateForPane('pane-1');
-    const branch = setBindingMock('GetBranchBaseDiff', async () => 'release patch');
+    const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('release.go', 1));
     const restored = reviewStateForPane('pane-2', subjectFor());
     await waitLoaded(restored);
 
@@ -293,23 +303,23 @@ describe('reviewPane store', () => {
   });
 
   it('defaults first open to workspace scope', async () => {
-    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
+    const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.scope).toBe('workspace');
-    expect(state.patchText).toBe('workspace patch');
+    expect(state.files.map((f) => f.path)).toEqual(['workspace.go']);
     expect(workspace).toHaveBeenCalledTimes(1);
   });
 
   it('selects a single commit in branch scope and keys comments by its SHA', async () => {
     const sha = 'a'.repeat(40);
-    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
     setBindingMock('ListBranchCommits', async () => [
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    const commitDiff = setBindingMock('GetCommitDiff', async () => 'commit patch');
+    const commitDiff = setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -318,44 +328,44 @@ describe('reviewPane store', () => {
     await state.selectCommit(sha);
     expect(state.scope).toBe('branch');
     expect(state.selectedCommitSHA).toBe(sha);
-    expect(state.patchText).toBe('commit patch');
+    expect(state.files.map((f) => f.path)).toEqual(['commit.go']);
     expect(state.sourceKey).toBe(`commit:${sha}`);
     expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, sha, false);
 
     // Back to the full range.
     await state.selectCommit(null);
     expect(state.selectedCommitSHA).toBeNull();
-    expect(state.patchText).toBe('branch patch');
+    expect(state.files.map((f) => f.path)).toEqual(['branch.go']);
   });
 
   it('drops a selected commit that left the range and reloads the full diff', async () => {
     const sha = 'a'.repeat(40);
-    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
     setBindingMock('ListBranchCommits', async () => [
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetCommitDiff', async () => 'commit patch');
+    setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('branch');
     await state.selectCommit(sha);
-    expect(state.patchText).toBe('commit patch');
+    expect(state.files.map((f) => f.path)).toEqual(['commit.go']);
 
     // Rebase: the SHA is gone from base..HEAD.
     setBindingMock('ListBranchCommits', async () => []);
     await state.reload();
     expect(state.selectedCommitSHA).toBeNull();
-    expect(state.patchText).toBe('branch patch');
+    expect(state.files.map((f) => f.path)).toEqual(['branch.go']);
   });
 
   it('resets the selected commit when the scope changes', async () => {
     const sha = 'a'.repeat(40);
-    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
     setBindingMock('ListBranchCommits', async () => [
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetCommitDiff', async () => 'commit patch');
+    setReviewDiffMock('OpenCommitDiff', async () => patchFor('commit.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -369,7 +379,7 @@ describe('reviewPane store', () => {
 
   it('openReviewCompanion applies scope and pending jump target', async () => {
     setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
-    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
 
     const state = await openReviewCompanion('pane-1', subjectFor(), {
       scope: 'branch',
@@ -393,7 +403,7 @@ describe('reviewPane store', () => {
       patchFor('pnpm-lock.yaml', 2),
       patchFor('src/large.ts', 401),
     ].join('\n');
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -405,7 +415,7 @@ describe('reviewPane store', () => {
 
   it('jumpToComment expands the file and thread and stages the row-key jump', async () => {
     const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -455,7 +465,7 @@ describe('reviewPane store', () => {
 
   it('toggleCollapseAll flips every file and allCollapsed tracks the set', async () => {
     const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -473,16 +483,16 @@ describe('reviewPane store', () => {
   });
 
   it('surfaces binding errors and clears them on successful reload', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => {
       throw new Error('diff exploded');
     });
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.error).toBe('diff exploded');
-    expect(state.patchText).toBe('');
+    expect(state.files).toEqual([]);
 
-    setBindingMock('GetWorkspaceCurrentDiff', async () => 'diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n+ok');
+    setReviewDiffMock('OpenWorkspaceDiff', async () => 'diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n+ok');
     await state.reload();
 
     expect(state.error).toBeNull();
@@ -491,7 +501,7 @@ describe('reviewPane store', () => {
 
   it('restores a persisted scope before the first load', async () => {
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'branch', baseBranch: 'develop' }));
-    const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -504,7 +514,7 @@ describe('reviewPane store', () => {
     // 'turn' and 'session' were removed with the checkpoint machinery;
     // stale persisted entries must not wedge the pane.
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'turn', baseBranch: null }));
-    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
+    const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('workspace.go', 1));
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -519,7 +529,7 @@ describe('reviewPane store', () => {
     const listComments = setBindingMock('ListDiffReviewComments', async () => [
       draft({ sourceKey }),
     ]);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -537,7 +547,7 @@ describe('reviewPane store', () => {
   it('createComment success closes the draft editor', async () => {
     const patch = patchFor('src/app.ts', 1);
     const sourceKey = diffSourceKey(patch);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
     setBindingMock('CreateDiffReviewComment', async () => draft({ sourceKey, body: 'Looks good.' }));
     setBindingMock('ListDiffReviewComments', async () => [draft({ sourceKey, body: 'Looks good.' })]);
 
@@ -555,7 +565,7 @@ describe('reviewPane store', () => {
 
   it('createComment failure keeps the editor open and sets error', async () => {
     const patch = patchFor('src/app.ts', 1);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
     setBindingMock('CreateDiffReviewComment', async () => {
       throw new Error('create failed');
     });
@@ -573,7 +583,7 @@ describe('reviewPane store', () => {
 
   it('keeps draft-editor text in the store and focuses exactly once per open', async () => {
     const patch = patchFor('src/app.ts', 1);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
@@ -603,7 +613,7 @@ describe('reviewPane store', () => {
   it('sendComments no-ops while a turn is active', async () => {
     const patch = patchFor('src/app.ts', 1);
     const sourceKey = diffSourceKey(patch);
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
     const send = setBindingMock('SendDiffReviewComments', async () => ({}));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -681,7 +691,7 @@ function installPRMocks(): {
     headSHA: 'sha-a',
   }));
   const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
-  setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+  setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
   setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
@@ -692,18 +702,19 @@ function installPRMocks(): {
 describe('reviewPane store — PR scope', () => {
   it('enter subscribes and loads the PR diff; leaving unsubscribes exactly once', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
-    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
     await state.setScope('pr');
     expect(subscribe).toHaveBeenCalledTimes(1);
-    // The diff is fetched with the thread id + base ref from the detail so
-    // the backend can compute a local diff (past gh/glab's 20k-line cap).
+    // The diff is opened with the base ref from the detail, which the
+    // backend diffs the PR head against in the local clone.
     expect(diff).toHaveBeenCalledWith(
       REVIEW_WS,
       expect.objectContaining({ Number: 5 }),
       'main',
+      false,
     );
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
     expect(state.prDetail?.number).toBe(5);
@@ -721,7 +732,7 @@ describe('reviewPane store — PR scope', () => {
     const list = setBindingMock('ListPRCommits', async () => [
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    const commitDiff = setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
@@ -749,7 +760,7 @@ describe('reviewPane store — PR scope', () => {
     const list = setBindingMock('ListPRCommits', async () => [
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
@@ -772,7 +783,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('ListPRCommits', async () => [
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
 
     const state = reviewStateForPane('pane-1', prSubject());
@@ -799,8 +810,8 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('ListPRCommits', async () => [
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
-    const fullDiff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const fullDiff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
 
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
@@ -828,14 +839,14 @@ describe('reviewPane store — PR scope', () => {
 
   it('switching scope away mid-PR-load lands on the new scope and closes the late subscription', async () => {
     // The scope selector stays enabled while a PR loads, so a slow
-    // gh/glab call must not pin the pane: the superseded load's
+    // PR fetch must not pin the pane: the superseded load's
     // subscription has to be closed when it finally resolves.
     const { unsubscribe } = installPRMocks();
     let releaseDiff!: (patch: string) => void;
-    setBindingMock('GetPRDiff', () => new Promise<string>((resolve) => {
+    setReviewDiffMock('OpenPRDiff', () => new Promise<string>((resolve) => {
       releaseDiff = resolve;
     }));
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('src/app.ts', 2));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
@@ -857,7 +868,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('a diff failure surfaces the error and keeps the PR subscription for the retry', async () => {
     const { unsubscribe } = installPRMocks();
-    setBindingMock('GetPRDiff', async () => {
+    setReviewDiffMock('OpenPRDiff', async () => {
       throw new Error('diff exploded');
     });
     const state = reviewStateForPane('pane-1', prSubject());
@@ -994,7 +1005,7 @@ describe('reviewPane store — PR scope', () => {
       openPrNumber: 7,
     });
     let releaseDiff!: (patch: string) => void;
-    setBindingMock('GetPRDiff', () => new Promise<string>((resolve) => {
+    setReviewDiffMock('OpenPRDiff', () => new Promise<string>((resolve) => {
       releaseDiff = resolve;
     }));
 
@@ -1128,7 +1139,7 @@ describe('reviewPane store — PR scope', () => {
     expect(state.conflictCollapsedPaths.has('main.go')).toBe(false);
     // Pseudo-diff shape: hunk header, then ours as del / theirs as add
     // between visible marker rows, relabeled with base/head labels.
-    expect(state.conflictFiles[0]?.lines.map((line) => line.type)).toEqual([
+    expect(linesOf(state.conflictFiles[0])?.map((line) => line.type)).toEqual([
       'meta',
       'context',
       'marker',
@@ -1138,8 +1149,8 @@ describe('reviewPane store — PR scope', () => {
       'marker',
       'context',
     ]);
-    expect(state.conflictFiles[0]?.lines[2]?.content).toBe('<<<<<<< origin/main');
-    expect(state.conflictFiles[0]?.lines[6]?.content).toBe('>>>>>>> feature');
+    expect(linesOf(state.conflictFiles[0])?.[2]?.content).toBe('<<<<<<< origin/main');
+    expect(linesOf(state.conflictFiles[0])?.[6]?.content).toBe('>>>>>>> feature');
     expect(state.conflictFiles[0]?.conflicts).toBe(1);
 
     // Collapse/re-expand round-trip reuses the cached content.
@@ -1214,7 +1225,7 @@ describe('reviewPane store — PR scope', () => {
     // body is the note row, and the badge carries the conflict type.
     expect(state.conflictCollapsedPaths.has('other.go')).toBe(false);
     const structural = state.conflictFiles.find((file) => file.path === 'other.go');
-    expect(structural?.lines).toEqual([{ content: note, type: 'marker' }]);
+    expect(linesOf(structural)).toEqual([{ content: note, type: 'marker' }]);
     expect(structural?.conflictLabel).toBe('modify/delete');
     // The load failure is not swallowed.
     expect(state.conflictsError).toContain('path not in merged tree');
@@ -1243,18 +1254,18 @@ describe('reviewPane store — PR scope', () => {
     await state.setScope('pr');
 
     await state.openConflictView();
-    expect(state.conflictFiles[0]?.lines[0]?.fold).toEqual({ id: 0, lines: 7 });
+    expect(linesOf(state.conflictFiles[0])?.[0]?.fold).toEqual({ id: 0, lines: 7 });
 
     state.expandConflictFold('main.go', 0);
     const expanded = state.conflictFiles[0];
-    expect(expanded?.lines.some((line) => line.fold)).toBe(false);
-    expect(expanded?.lines[1]?.content).toBe(' c1');
+    expect(linesOf(expanded)?.some((line) => line.fold)).toBe(false);
+    expect(linesOf(expanded)?.[1]?.content).toBe(' c1');
 
     // Closing and reopening the view resets expansion state.
     await state.setScope('workspace');
     await state.setScope('pr');
     await state.openConflictView();
-    expect(state.conflictFiles[0]?.lines[0]?.fold).toEqual({ id: 0, lines: 7 });
+    expect(linesOf(state.conflictFiles[0])?.[0]?.fold).toEqual({ id: 0, lines: 7 });
   });
 
   it('shows no-conflicts state without setting an error when mergeability was stale', async () => {
@@ -1662,6 +1673,172 @@ describe('reviewPane store — PR scope', () => {
   });
 });
 
+/**
+ * A diff the backend serves in `size`-character chunks: Open returns the
+ * first under handle `id`, ReadReviewDiff the rest by offset. `hold`
+ * delays the read at that offset until the returned release runs.
+ */
+function installChunkedDiff(
+  name: 'OpenWorkspaceDiff' | 'OpenBranchBaseDiff' | 'OpenPRDiff' | 'OpenTurnEditsDiff',
+  patch: string,
+  size: number,
+  opts: { id?: string; hold?: number; headSha?: string } = {},
+) {
+  const id = opts.id ?? 'diff-1';
+  const chunkAt = (offset: number) => {
+    const next = Math.min(patch.length, offset + size);
+    return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+  };
+  let unblock!: () => void;
+  const held = new Promise<void>((resolve) => { unblock = resolve; });
+  const open = setBindingMock(name, async () => ({ id, chunk: chunkAt(0), headSha: opts.headSha ?? '' }));
+  const read = setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+    if (handle !== id) throw new Error('review diff: not open');
+    if (offset === opts.hold) await held;
+    return chunkAt(offset);
+  });
+  const release = setBindingMock('ReleaseReviewDiff', async () => undefined);
+  return { open, read, release, unblock };
+}
+
+describe('reviewPane store — streamed diffs', () => {
+  const patch = [patchFor('src/a.ts', 3), patchFor('src/b.ts', 3), patchFor('src/c.ts', 3)].join('\n');
+
+  it('reads a diff across chunks and releases its handle at the end', async () => {
+    const { open, read, release } = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls.map((call) => call[1])).toEqual(
+      Array.from({ length: Math.ceil(patch.length / 40) - 1 }, (_, index) => (index + 1) * 40),
+    );
+    expect(read.mock.calls.every((call) => call[0] === 'diff-1' && call[2] === REVIEW_DIFF_READ_BYTES)).toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith('diff-1');
+    expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(state.sourceKey).toBe(diffSourceKey(patch));
+    expect(state.error).toBeNull();
+  });
+
+  it('shows the files that arrived while the rest of the diff loads', async () => {
+    const second = patch.indexOf('diff --git a/src/c.ts');
+    const { unblock, release } = installChunkedDiff('OpenWorkspaceDiff', patch, second, { hold: second });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    // A file is published once the next section header proves it
+    // complete, so the chunk ending before c.ts shows a.ts only.
+    await vi.waitFor(() => {
+      expect(state.files.map((file) => file.path)).toEqual(['src/a.ts']);
+    });
+    expect(state.loading).toBe(true);
+    // Comments key by the whole patch, which is not known yet.
+    expect(state.sourceKey).toBe('');
+
+    unblock();
+    await waitLoaded(state);
+    expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(state.sourceKey).toBe(diffSourceKey(patch));
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the previous diff on screen until a reload completes', async () => {
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('old.ts', 1));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const previous = state.files;
+
+    // The first chunk completes a.ts, which an empty pane would show.
+    const boundary = patch.indexOf('diff --git a/src/c.ts');
+    const { unblock } = installChunkedDiff('OpenWorkspaceDiff', patch, boundary, { hold: boundary });
+    const reloading = state.reload();
+    await vi.waitFor(() => {
+      expect(getBindingMock('ReadReviewDiff')).toHaveBeenCalled();
+    });
+    expect(state.files).toBe(previous);
+    expect(state.sourceKey).toBe(diffSourceKey(patchFor('old.ts', 1)));
+
+    unblock();
+    await reloading;
+    expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  });
+
+  it('stops reading and releases the handle when a newer load supersedes it', async () => {
+    const { read, release, unblock } = installChunkedDiff('OpenWorkspaceDiff', patch, 40, { hold: 80 });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await vi.waitFor(() => {
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('branch.go', 1));
+    await state.setScope('branch');
+    unblock();
+    await vi.waitFor(() => {
+      expect(release).toHaveBeenCalledWith('diff-1');
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(state.files.map((file) => file.path)).toEqual(['branch.go']);
+  });
+
+  it('releases the handle of a diff read by a disposed pane', async () => {
+    const { read, release, unblock } = installChunkedDiff('OpenWorkspaceDiff', patch, 40, { hold: 40 });
+    reviewStateForPane('pane-1', subjectFor());
+    await vi.waitFor(() => {
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    disposeReviewStateForPane('pane-1');
+    unblock();
+    await vi.waitFor(() => {
+      expect(release).toHaveBeenCalledWith('diff-1');
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the diff again once when its handle was lost mid-read', async () => {
+    const chunked = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    let lost = false;
+    setBindingMock('ReadReviewDiff', async (handle: string, offset: number) => {
+      if (!lost) {
+        lost = true;
+        throw new Error('review diff: not open');
+      }
+      return chunked.read(handle as never, offset as never);
+    });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    expect(chunked.open).toHaveBeenCalledTimes(2);
+    expect(state.error).toBeNull();
+    expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(state.sourceKey).toBe(diffSourceKey(patch));
+  });
+
+  it('surfaces a read failure that a fresh open does not fix', async () => {
+    installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    const read = setBindingMock('ReadReviewDiff', async () => {
+      throw new Error('review diff: not open');
+    });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(state.error).toBe('review diff: not open');
+    expect(state.files).toEqual([]);
+  });
+
+  it('does not retry an ordinary read failure', async () => {
+    const { open } = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    setBindingMock('ReadReviewDiff', async () => {
+      throw new Error('read review diff: git exited 128');
+    });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(state.error).toBe('read review diff: git exited 128');
+  });
+});
+
 describe('hunk-gap context expansion', () => {
   // Leading gap 1..9; trailing gap of unknown size starting at 12.
   const gappedPatch = `diff --git a/src/app.ts b/src/app.ts
@@ -1674,7 +1851,7 @@ describe('hunk-gap context expansion', () => {
 `;
 
   it('fetches the gap slice and merges it into the derived files', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => gappedPatch);
     const fetchLines = setBindingMock('GetDiffContextLines', async (_ws, req) => {
       const { startLine, endLine } = req as { startLine: number; endLine: number };
       return {
@@ -1687,7 +1864,7 @@ describe('hunk-gap context expansion', () => {
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
-    const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+    const leading = rowsOf(state.files[0]).find((row) => row.gap)?.gap;
     expect(leading).toMatchObject({ location: 'leading', startNew: 1, endNew: 9 });
 
     await state.expandDiffContext('src/app.ts', leading!, 'all');
@@ -1698,14 +1875,14 @@ describe('hunk-gap context expansion', () => {
       endLine: 9,
     }));
 
-    const rows = filePatchDisplayRows(state.files[0]);
+    const rows = rowsOf(state.files[0]);
     expect(rows.some((row) => row.gap?.location === 'leading')).toBe(false);
     expect(rows.find((row) => row.newLine === 1)?.line.content).toBe(' src 1');
     expect(state.error).toBeNull();
   });
 
   it('retires the trailing gap on an EOF response', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => gappedPatch);
     setBindingMock('GetDiffContextLines', async () => ({
       lines: ['src 12', 'src 13', 'src 14'],
       startLine: 12,
@@ -1715,13 +1892,13 @@ describe('hunk-gap context expansion', () => {
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
-    const trailing = filePatchDisplayRows(state.files[0])
+    const trailing = rowsOf(state.files[0])
       .find((row) => row.gap?.location === 'trailing')?.gap;
     expect(trailing).toMatchObject({ startNew: 12, endNew: -1 });
 
     await state.expandDiffContext('src/app.ts', trailing!, 'down');
 
-    const rows = filePatchDisplayRows(state.files[0]);
+    const rows = rowsOf(state.files[0]);
     expect(state.files[0].newSideTotal).toBe(14);
     expect(rows.some((row) => row.gap)).toBe(true); // leading gap remains
     expect(rows.some((row) => row.gap?.location === 'trailing')).toBe(false);
@@ -1729,14 +1906,14 @@ describe('hunk-gap context expansion', () => {
   });
 
   it('surfaces a fetch failure and clears expansions on reload', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    setReviewDiffMock('OpenWorkspaceDiff', async () => gappedPatch);
     setBindingMock('GetDiffContextLines', async () => {
       throw new Error('no clone available');
     });
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
-    const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+    const leading = rowsOf(state.files[0]).find((row) => row.gap)?.gap;
 
     await state.expandDiffContext('src/app.ts', leading!, 'all');
     expect(state.error).toBe('no clone available');
@@ -1750,16 +1927,16 @@ describe('hunk-gap context expansion', () => {
       totalLines: 0,
     }));
     await state.expandDiffContext('src/app.ts', leading!, 'all');
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(false);
+    expect(rowsOf(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(false);
 
     await state.reload();
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(true);
+    expect(rowsOf(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(true);
   });
 });
 
 describe('collapse overrides across reloads', () => {
   it('keeps user collapse/expand choices through a reload, resets on scope switch', async () => {
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('src/app.ts', 2));
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.collapsedPaths.has('src/app.ts')).toBe(false);
@@ -1772,7 +1949,7 @@ describe('collapse overrides across reloads', () => {
 
     // Overrides beat fresh defaults in BOTH directions: a lockfile-ish
     // file the user expanded stays expanded after reload.
-    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('go.sum', 2));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patchFor('go.sum', 2));
     await state.reload();
     expect(state.collapsedPaths.has('go.sum')).toBe(true); // default
     state.toggleCollapsed('go.sum');
@@ -1780,7 +1957,7 @@ describe('collapse overrides across reloads', () => {
     expect(state.collapsedPaths.has('go.sum')).toBe(false); // override held
 
     // Scope switch is a new subject: overrides reset, defaults return.
-    setBindingMock('GetBranchBaseDiff', async () => patchFor('go.sum', 2));
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('go.sum', 2));
     await state.setScope('branch');
     await state.reload();
     expect(state.collapsedPaths.has('go.sum')).toBe(true);
@@ -1790,7 +1967,7 @@ describe('collapse overrides across reloads', () => {
 describe('comments-only PR refresh', () => {
   it('refreshes detail + threads without reloading the diff', async () => {
     installPRMocks();
-    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub());
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
@@ -1810,7 +1987,7 @@ describe('comments-only PR refresh', () => {
 
   it('a moved head raises the stale banner instead of swapping the diff', async () => {
     installPRMocks();
-    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
@@ -1864,8 +2041,8 @@ describe('reviewPane store — edits scope', () => {
         { turnIndex: 2, label: 'now the lexer' },
       ],
     }));
-    const payload = setBindingMock('GetPayloadData', async () => ({ data: gappyPatch() }));
-    const turnDiff = setBindingMock('GetTurnEditsDiff', async () => ({ data: gappyPatch() }));
+    const payload = setReviewDiffMock('OpenEditDiff', async () => gappyPatch());
+    const turnDiff = setReviewDiffMock('OpenTurnEditsDiff', async () => gappyPatch());
     // Load-time expandability pass: by default every candidate verifies,
     // so gap arrows appear once the (fire-and-forget) result lands.
     const verify = setBindingMock('VerifyEditDiffs', async (_threadId, req) => ({
@@ -1913,7 +2090,7 @@ describe('reviewPane store — edits scope', () => {
     // any live scope — once the load-time verification pass proves the
     // backend can serve it (snapshot or still-matching workspace).
     await waitGapsVerified(state, 'x.go');
-    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    const gapRow = rowsOf(state.files[0]).find((row) => row.gap);
     expect(gapRow).toBeDefined();
 
     await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
@@ -1936,7 +2113,7 @@ describe('reviewPane store — edits scope', () => {
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
 
-    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    const gapRow = rowsOf(state.files[0]).find((row) => row.gap);
     expect(gapRow).toBeDefined();
 
     await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
@@ -1945,7 +2122,7 @@ describe('reviewPane store — edits scope', () => {
     // still fully valid, so no banner.
     expect(state.error).toBeNull();
     expect(state.files[0].suppressGaps).toBe(true);
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+    expect(rowsOf(state.files[0]).some((row) => row.gap)).toBe(false);
   });
 
   it('retires a file\'s gaps when a refusal follows a successful expansion', async () => {
@@ -1961,9 +2138,9 @@ describe('reviewPane store — edits scope', () => {
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
 
-    await state.expandDiffContext('x.go', filePatchDisplayRows(state.files[0]).find((row) => row.gap)!.gap!, 'up');
+    await state.expandDiffContext('x.go', rowsOf(state.files[0]).find((row) => row.gap)!.gap!, 'up');
     expect(contextLines).toHaveBeenCalledTimes(1);
-    const gap = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+    const gap = rowsOf(state.files[0]).find((row) => row.gap)?.gap;
     expect(gap).toBeDefined();
 
     // The file drifted after the first click: the next one is refused.
@@ -1974,8 +2151,42 @@ describe('reviewPane store — edits scope', () => {
     expect(state.error).toBeNull();
     expect(state.files[0].suppressGaps).toBe(true);
     // The fetched context stays; the arrows go.
-    expect(state.files[0].lines.some((line) => line.content === ' top 4')).toBe(true);
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+    expect(state.files[0].body.toPatchLines().some((line) => line.content === ' top 4')).toBe(true);
+    expect(rowsOf(state.files[0]).some((row) => row.gap)).toBe(false);
+  });
+
+  it('verifies a large turn in bounded batches', async () => {
+    installEditMocks();
+    const modified = (path: string, filler = 0) => [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -5,2 +5,2 @@',
+      ` ${'x'.repeat(filler)}`,
+      '-old',
+      '+new',
+    ].join('\n');
+    const sections = Array.from({ length: 450 }, (_, index) => modified(`src/f${String(index).padStart(3, '0')}.go`));
+    // Two files large enough that each fills a batch on its own.
+    sections.push(modified('src/big1.go', 5 * 1024 * 1024), modified('src/big2.go', 5 * 1024 * 1024));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => sections.join('\n'));
+    const verify = setBindingMock('VerifyEditDiffs', async (_threadId, req) => ({
+      expandablePaths: (req as { files: { path: string }[] }).files.map((file) => file.path),
+    }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    await vi.waitFor(() => {
+      expect(state.files.every((file) => file.suppressGaps === undefined)).toBe(true);
+    });
+    const batches = verify.mock.calls.map((call) => (call[1] as { files: { path: string; verifyPatch: string }[] }).files);
+    expect(batches.flat().map((file) => file.path).sort()).toEqual(state.files.map((file) => file.path).sort());
+    for (const batch of batches) {
+      expect(batch.length).toBeLessThanOrEqual(200);
+      expect(batch.reduce((chars, file) => chars + file.verifyPatch.length, 0)).toBeLessThanOrEqual(8 * 1024 * 1024);
+    }
+    expect(batches.length).toBe(4);
   });
 
   it('gates gap arrows on load-time verification', async () => {
@@ -1989,7 +2200,7 @@ describe('reviewPane store — edits scope', () => {
     // affordance must never render (drifted pre-snapshot history,
     // remote clients whose ungranted RPC rejects).
     expect(state.files[0].suppressGaps).toBe(true);
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+    expect(rowsOf(state.files[0]).some((row) => row.gap)).toBe(false);
     // The batch carried the edit selection and per-file verify patch.
     expect(verify).not.toHaveBeenCalled();
     const batch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1);
@@ -2065,7 +2276,7 @@ describe('reviewPane store — edits scope', () => {
       ' ctx2',
       '+later',
     ].join('\n');
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => twiceEdited);
 
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
@@ -2078,8 +2289,8 @@ describe('reviewPane store — edits scope', () => {
     // meta block with hunks in final-file order — so the merged file
     // verifies, primes, and gap-expands like a single-section diff.
     await waitGapsVerified(state, 'x.go');
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
-    const contents = state.files[0].lines.map((line) => line.content);
+    expect(rowsOf(state.files[0]).some((row) => row.gap)).toBe(true);
+    const contents = state.files[0].body.toPatchLines().map((line) => line.content);
     expect(contents.filter((content) => content.startsWith('diff --git'))).toHaveLength(1);
     expect(contents.filter((content) => content.startsWith('@@'))).toEqual([
       '@@ -5,2 +5,2 @@',
@@ -2095,30 +2306,31 @@ describe('reviewPane store — edits scope', () => {
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
-    const patch = state.patchText;
+    const files = state.files;
+    expect(files).not.toEqual([]);
     await state.selectEdit(state.selectedEditKey);
-    expect(state.patchText).toBe(patch);
-    let finish!: (payload: { data: string }) => void;
-    setBindingMock('GetPayloadData', () => new Promise((resolve) => { finish = resolve; }));
+    expect(state.files).toBe(files);
+    let finish!: (patch: string) => void;
+    setReviewDiffMock('OpenEditDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const selecting = state.selectEdit('item:tool:1');
     await tick();
-    expect(state.patchText).toBe('');
     expect(state.files).toEqual([]);
-    finish({ data: patchFor('selected.go', 1) });
+    expect(state.files).toEqual([]);
+    finish(patchFor('selected.go', 1));
     await selecting;
     expect(state.files.map((f) => f.path)).toEqual(['selected.go']);
   });
 
   it('retires the old diff before a pending scope switch can reinterpret repeated edit paths', async () => {
     installEditMocks();
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: `${gappyPatch()}\n${gappyPatch()}` }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => `${gappyPatch()}\n${gappyPatch()}`);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
     expect(state.files).toHaveLength(1);
 
     let finish!: (patch: string) => void;
-    setBindingMock('GetWorkspaceCurrentDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
+    setReviewDiffMock('OpenWorkspaceDiff', () => new Promise<string>((resolve) => { finish = resolve; }));
     const switching = state.setScope('workspace');
     await tick();
     try {
@@ -2151,7 +2363,7 @@ describe('reviewPane store — edits scope', () => {
       '-old',
       '+new',
     ].join('\n');
-    setBindingMock('GetTurnEditsDiff', async () => ({ data: outsideEdit }));
+    setReviewDiffMock('OpenTurnEditsDiff', async () => outsideEdit);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
@@ -2163,7 +2375,7 @@ describe('reviewPane store — edits scope', () => {
     const outside = state.files.find((file) => file.path.startsWith('/'));
     expect(outside).toBeDefined();
     expect(outside!.suppressGaps).toBe(true);
-    expect(filePatchDisplayRows(outside!).some((row) => row.gap)).toBe(false);
+    expect(rowsOf(outside!).some((row) => row.gap)).toBe(false);
     const verifyBatch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1)?.[1] as {
       files: { path: string }[];
     };
@@ -2171,7 +2383,7 @@ describe('reviewPane store — edits scope', () => {
     // Workspace-relative files keep their gap affordances.
     const inside = state.files.find((file) => file.path === 'x.go');
     expect(inside!.suppressGaps).toBeUndefined();
-    expect(filePatchDisplayRows(inside!).some((row) => row.gap)).toBe(true);
+    expect(rowsOf(inside!).some((row) => row.gap)).toBe(true);
   });
 
   it('parses an oversized merged diff once across expansion rebuilds', async () => {
@@ -2180,8 +2392,8 @@ describe('reviewPane store — edits scope', () => {
     // the expanded file: every other file keeps its lines identity and
     // with it every per-array memo (display rows, span keys).
     installEditMocks();
-    setBindingMock('GetTurnEditsDiff', async () => ({
-      data: oversizedPatch([
+    setReviewDiffMock('OpenTurnEditsDiff', async () => (
+      oversizedPatch([
         'diff --git a/x.go b/x.go',
         '--- a/x.go',
         '+++ b/x.go',
@@ -2195,8 +2407,8 @@ describe('reviewPane store — edits scope', () => {
         '@@ -9,2 +9,3 @@',
         ' ctx2',
         '+later',
-      ].join('\n')),
-    }));
+      ].join('\n'))
+    ));
     setBindingMock('GetEditDiffContextLines', async () => ({
       lines: ['l1', 'l2', 'l3', 'l4'],
       startLine: 1,
@@ -2208,14 +2420,14 @@ describe('reviewPane store — edits scope', () => {
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
 
-    const fillerLines = state.files.find((file) => file.path === 'zz-filler.txt')!.lines;
+    const filler = state.files.find((file) => file.path === 'zz-filler.txt')!;
     const x = state.files.find((file) => file.path === 'x.go')!;
-    const gapRow = filePatchDisplayRows(x).find((row) => row.gap);
+    const gapRow = rowsOf(x).find((row) => row.gap);
     expect(gapRow?.gap?.location).toBe('leading');
     await state.expandDiffContext('x.go', gapRow!.gap!, 'all');
 
-    expect(state.files.find((file) => file.path === 'x.go')!.lines).not.toBe(x.lines);
-    expect(state.files.find((file) => file.path === 'zz-filler.txt')!.lines).toBe(fillerLines);
+    expect(state.files.find((file) => file.path === 'x.go')!.body).not.toBe(x.body);
+    expect(state.files.find((file) => file.path === 'zz-filler.txt')).toBe(filler);
   });
 
   it('shows an empty surface for a thread with no edits', async () => {
@@ -2229,6 +2441,148 @@ describe('reviewPane store — edits scope', () => {
     expect(state.sourceKey).toBe('');
     expect(state.files.length).toBe(0);
     expect(state.error).toBeNull();
+  });
+
+  function editSection(path: string, start: number, text: string): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -${start},1 +${start},1 @@`,
+      `-old ${text}`,
+      `+new ${text}`,
+    ].join('\n');
+  }
+
+  it('merges repeated paths incrementally, rebuilding only a path that gained a section', () => {
+    const all = parseReviewFiles([
+      editSection('x.go', 1, 'a'),
+      editSection('y.go', 1, 'b'),
+      editSection('x.go', 9, 'c'),
+      editSection('z.go', 1, 'd'),
+    ].join('\n'));
+    const merge = new EditFileMerge();
+    const sections: ReviewFile[] = [all[0], all[1]];
+
+    const first = merge.files(sections);
+    expect(first.map((file) => file.path)).toEqual(['x.go', 'y.go']);
+    expect(first[0]).toBe(all[0]);
+
+    sections.push(all[2]);
+    const second = merge.files(sections);
+    expect(second.map((file) => file.path)).toEqual(['x.go', 'y.go']);
+    expect(second[0].additions).toBe(2);
+    expect(second[1]).toBe(all[1]);
+
+    sections.push(all[3]);
+    const third = merge.files(sections);
+    expect(third.map((file) => file.path)).toEqual(['x.go', 'y.go', 'z.go']);
+    expect(third[0]).toBe(second[0]);
+
+    // A retried read fills a new parser, and its files start over.
+    expect(merge.files([all[1]]).map((file) => file.path)).toEqual(['y.go']);
+  });
+
+  it('streams a whole turn with one file per path at every publish', async () => {
+    installEditMocks();
+    const patch = [
+      editSection('x.go', 1, 'a'),
+      editSection('y.go', 1, 'b'),
+      editSection('x.go', 9, 'c'),
+      editSection('z.go', 1, 'd'),
+    ].join('\n');
+    const lineEnd = (header: string, from = 0) => patch.indexOf('\n', patch.indexOf(header, from)) + 1;
+    // Each chunk ends after the header that completes the section before it.
+    const firstCut = lineEnd('diff --git a/x.go', 1);
+    const secondCut = lineEnd('diff --git a/z.go');
+    const chunkAt = (offset: number) => {
+      const next = offset === 0 ? firstCut : offset === firstCut ? secondCut : patch.length;
+      return { data: patch.slice(offset, next), offset, nextOffset: next, eof: next === patch.length };
+    };
+    let unblock!: () => void;
+    const held = new Promise<void>((resolve) => { unblock = resolve; });
+    setBindingMock('OpenTurnEditsDiff', async () => ({ id: 'edits-1', chunk: chunkAt(0) }));
+    setBindingMock('ReadReviewDiff', async (_id: string, offset: number) => {
+      if (offset === secondCut) await held;
+      return chunkAt(offset);
+    });
+    setBindingMock('ReleaseReviewDiff', async () => undefined);
+    // Every chunk publishes: the throttle measures a clock that always
+    // moves past it.
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 1000));
+    try {
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      void state.setScope('edits');
+
+      await vi.waitFor(() => {
+        expect(state.files.find((file) => file.path === 'x.go')?.additions).toBe(2);
+      });
+      expect(state.loading).toBe(true);
+      expect(state.files.map((file) => file.path)).toEqual(['x.go', 'y.go']);
+
+      unblock();
+      await waitLoaded(state);
+      expect(state.files.map((file) => file.path)).toEqual(['x.go', 'y.go', 'z.go']);
+      expect(state.files[0].additions).toBe(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  function spanSeed(file: ReviewFile) {
+    return {
+      path: file.path,
+      contentKey: file.body.contentKey(),
+      lines: Array.from({ length: file.body.lineCount }, () => ({ r: [0, 1] })),
+    };
+  }
+
+  it("seeds each joined payload's persisted spans in patch order", async () => {
+    resetDiffSpanCacheForTest();
+    installEditMocks();
+    const turn = [patchFor('src/a.ts', 2), patchFor('src/b.ts', 2)].join('\n');
+    const sections = parseReviewFiles(turn);
+    setReviewDiffMock('OpenTurnEditsDiff', async () => turn, { payloadIds: ['pl-2a', 'pl-2b'] });
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
+    setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
+    const seeds = setBindingMock('GetPayloadPatchSpans', async (_threadId: string, payloadId: string) => (
+      [spanSeed(sections[payloadId === 'pl-2a' ? 0 : 1])]
+    ));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    await vi.waitFor(() => {
+      for (const file of state.files) {
+        expect(getSpansForReviewLine(file, 1, linesOf(file)![1])).toEqual({ r: [0, 1] });
+      }
+    });
+    expect(seeds.mock.calls).toEqual([['thread-1', 'pl-2a'], ['thread-1', 'pl-2b']]);
+  });
+
+  it('stops seeding spans when a newer load replaces the diff', async () => {
+    resetDiffSpanCacheForTest();
+    installEditMocks();
+    const turn = [patchFor('src/a.ts', 2), patchFor('src/b.ts', 2)].join('\n');
+    setReviewDiffMock('OpenTurnEditsDiff', async () => turn, { payloadIds: ['pl-2a', 'pl-2b'] });
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
+    setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
+    let finish!: () => void;
+    const seeds = setBindingMock('GetPayloadPatchSpans', () => new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+    await vi.waitFor(() => expect(seeds).toHaveBeenCalledTimes(1));
+
+    await state.selectEdit('item:tool:1');
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seeds).toHaveBeenCalledTimes(1);
+    expect(state.files.map((file) => file.path)).toEqual(['x.go']);
   });
 });
 
@@ -2265,8 +2619,7 @@ const IGNORED_PATCH = [
 
 describe('reviewPane hide-whitespace toggle', () => {
   it('is off by default and re-requests the diff on each flip', async () => {
-    const workspace = setBindingMock(
-      'GetWorkspaceCurrentDiff',
+    const workspace = setReviewDiffMock('OpenWorkspaceDiff',
       async (_threadId: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
@@ -2282,7 +2635,6 @@ describe('reviewPane hide-whitespace toggle', () => {
     expect(state.ignoreWhitespace).toBe(true);
     // The flip is a full re-request, not a client-side filter.
     expect(workspace).toHaveBeenLastCalledWith(REVIEW_WS, true);
-    expect(state.patchText).toBe(IGNORED_PATCH);
     expect(state.files.map((file) => file.path)).toEqual(['src/real.ts']);
 
     await state.setIgnoreWhitespace(false);
@@ -2293,7 +2645,7 @@ describe('reviewPane hide-whitespace toggle', () => {
   });
 
   it('ignores a flip to the value already set', async () => {
-    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => CANONICAL_PATCH);
+    const workspace = setReviewDiffMock('OpenWorkspaceDiff', async () => CANONICAL_PATCH);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(workspace).toHaveBeenCalledTimes(1);
@@ -2308,8 +2660,7 @@ describe('reviewPane hide-whitespace toggle', () => {
     expect(supportsIgnoreWhitespace('branch', null)).toBe(true);
     expect(supportsIgnoreWhitespace('branch', 'a'.repeat(40))).toBe(true);
     expect(supportsIgnoreWhitespace('pr', 'a'.repeat(40))).toBe(true);
-    // The PR whole-diff can come from the forge API, which has no -w.
-    expect(supportsIgnoreWhitespace('pr', null)).toBe(false);
+    expect(supportsIgnoreWhitespace('pr', null)).toBe(true);
     // Edits replay persisted tool-call patches, never a git recomputation.
     expect(supportsIgnoreWhitespace('edits', null)).toBe(false);
     expect(supportsIgnoreWhitespace('edits', 'a'.repeat(40))).toBe(false);
@@ -2329,7 +2680,7 @@ describe('reviewPane hide-whitespace toggle', () => {
       }],
       turnLabels: [{ turnIndex: 0, label: 'turn' }],
     }));
-    const payload = setBindingMock('GetPayloadData', async () => ({ data: CANONICAL_PATCH }));
+    const turnDiff = setReviewDiffMock('OpenTurnEditsDiff', async () => CANONICAL_PATCH);
     setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
 
     const state = reviewStateForPane('pane-1', subjectFor());
@@ -2345,7 +2696,8 @@ describe('reviewPane hide-whitespace toggle', () => {
     // again) but the edits load can't honor it and isn't asked to.
     expect(state.ignoreWhitespace).toBe(true);
     expect(state.canIgnoreWhitespace).toBe(false);
-    for (const call of payload.mock.calls) {
+    expect(turnDiff).toHaveBeenCalledTimes(1);
+    for (const call of turnDiff.mock.calls) {
       expect(call).not.toContain(true);
     }
   });
@@ -2363,8 +2715,7 @@ describe('reviewPane hide-whitespace toggle', () => {
   // across a patch change. These two tests pin both halves.
 
   it('re-keys drafts by patch content, so a flip cannot re-anchor them', async () => {
-    setBindingMock(
-      'GetWorkspaceCurrentDiff',
+    setReviewDiffMock('OpenWorkspaceDiff',
       async (_threadId: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
@@ -2405,12 +2756,11 @@ describe('reviewPane hide-whitespace toggle', () => {
     // patch — it must be reported orphaned rather than silently vanish
     // from the diff body while still counting toward the tally.
     const sha = 'a'.repeat(40);
-    setBindingMock('GetBranchBaseDiff', async () => CANONICAL_PATCH);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => CANONICAL_PATCH);
     setBindingMock('ListBranchCommits', async () => [
       { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
-    setBindingMock(
-      'GetCommitDiff',
+    setReviewDiffMock('OpenCommitDiff',
       async (_threadId: string, _sha: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
@@ -2654,17 +3004,17 @@ describe('reviewPane store — conversation section and resolve', () => {
 });
 
 describe('reviewPane store: painted span retention', () => {
-  function paint(spans: PaintedSpans, file: PatchFile): void {
-    spans.record(file, file.lines.map(() => ({ r: [1, 1] })));
+  function paint(spans: PaintedSpans, file: ReviewFile): void {
+    for (const line of file.body.toPatchLines()) spans.note(file.path, line, { r: [1, 1] });
   }
 
-  function colored(spans: PaintedSpans, file: PatchFile): boolean {
-    return file.lines.some((line) => spans.lookup(file.path, line) !== null);
+  function colored(spans: PaintedSpans, file: ReviewFile): boolean {
+    return file.body.toPatchLines().some((line) => spans.lookup(file.path, line) !== null);
   }
 
   it('keeps each surface\'s colors for the files it shows and releases them when it closes', async () => {
     installPRMocks();
-    setBindingMock('GetPRDiff', async () => [patchFor('src/a.ts', 2), patchFor('src/b.ts', 2)].join('\n'));
+    setReviewDiffMock('OpenPRDiff', async () => [patchFor('src/a.ts', 2), patchFor('src/b.ts', 2)].join('\n'));
     const tree = {
       conflicted: true,
       treeOID: 'tree-1',
@@ -2683,7 +3033,7 @@ describe('reviewPane store: painted span retention', () => {
     paint(state.paintedSpans, b);
 
     // A reload that drops a file drops that file's colors only.
-    setBindingMock('GetPRDiff', async () => patchFor('src/a.ts', 2));
+    setReviewDiffMock('OpenPRDiff', async () => patchFor('src/a.ts', 2));
     await state.reload();
     await vi.waitFor(() => {
       expect(colored(state.paintedSpans, b)).toBe(false);

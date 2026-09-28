@@ -1,6 +1,13 @@
-import type { PatchDisplayRow, PatchFile } from './patchFiles';
+import type { PatchDisplayRow } from './patchFiles';
+import { nearestLineRow } from './patchRows';
+import type { ReviewFile } from './patchStore';
 import { comparePathsTreeOrder } from './reviewTree';
-import { REVIEW_LINE_HEIGHT_PX, type ReviewRow, type ReviewRowsResult } from './reviewRows';
+import {
+  REVIEW_LINE_HEIGHT_PX,
+  type BlockRowsCache,
+  type LineBlockRow,
+  type ReviewRowsResult,
+} from './reviewRows';
 
 // Reading-anchor math for the review diff body: capture the content
 // position under the viewport top as (file, line, pixel delta) and
@@ -24,14 +31,13 @@ export interface RowGeometry {
   getItemOffset(index: number): number;
 }
 
-type LineBlockRow = Extract<ReviewRow, { kind: 'line-block' }>;
-
-function visualDisplayRow(row: LineBlockRow, index: number): PatchDisplayRow | null {
-  if (row.splitRows) {
-    const pair = row.splitRows[index];
+function visualDisplayRow(blocks: BlockRowsCache, file: ReviewFile, row: LineBlockRow, index: number): PatchDisplayRow | null {
+  const { rows, splitRows } = blocks.get(file, row);
+  if (splitRows) {
+    const pair = splitRows[index];
     return pair?.right ?? pair?.left ?? null;
   }
-  return row.rows[index] ?? null;
+  return rows[index] ?? null;
 }
 
 function lineAnchorOf(display: PatchDisplayRow | null): { line: number; side: 'new' | 'old' } | null {
@@ -50,7 +56,8 @@ function lineAnchorOf(display: PatchDisplayRow | null): { line: number; side: 'n
  */
 export function captureReadingAnchor(
   built: ReviewRowsResult,
-  files: readonly PatchFile[],
+  files: readonly ReviewFile[],
+  blocks: BlockRowsCache,
   geometry: RowGeometry,
   offset: number,
   wordWrap: boolean,
@@ -62,12 +69,12 @@ export function captureReadingAnchor(
   if (!row || !file) return null;
   const rowTop = geometry.getItemOffset(rowIndex);
   if (row.kind === 'line-block') {
-    const visualCount = (row.splitRows ?? row.rows).length;
+    const visualCount = row.splitCount ?? row.count;
     const inner = wordWrap
       ? 0
       : Math.max(0, Math.min(visualCount - 1, Math.floor((offset - rowTop) / REVIEW_LINE_HEIGHT_PX)));
     for (let index = inner; index < visualCount; index += 1) {
-      const lineAnchor = lineAnchorOf(visualDisplayRow(row, index));
+      const lineAnchor = lineAnchorOf(visualDisplayRow(blocks, file, row, index));
       if (lineAnchor) {
         const lineTop = rowTop + (wordWrap ? 0 : index * REVIEW_LINE_HEIGHT_PX);
         return { path: file.path, ...lineAnchor, delta: offset - lineTop };
@@ -78,30 +85,34 @@ export function captureReadingAnchor(
   return { path: file.path, line: 0, side: 'new', delta: offset - rowTop };
 }
 
+/**
+ * The block and visual row that hold the row nearest `target` in a file:
+ * the display row is found from line numbers alone, and only the block
+ * that holds it is materialized (to find its split-view pair).
+ */
 function findNearestLine(
   built: ReviewRowsResult,
+  blocks: BlockRowsCache,
+  file: ReviewFile,
   fileIndex: number,
   headerRow: number,
   target: ReadingAnchor,
 ): { rowIndex: number; inner: number } | null {
-  let best: { rowIndex: number; inner: number; dist: number } | null = null;
+  const displayRow = nearestLineRow(file, target.side, target.line);
+  if (displayRow < 0) return null;
   for (let rowIndex = headerRow + 1; rowIndex < built.rows.length; rowIndex += 1) {
     const row = built.rows[rowIndex];
     if (!row || row.fileIndex !== fileIndex) break;
     if (row.kind !== 'line-block') continue;
-    const visualCount = (row.splitRows ?? row.rows).length;
-    for (let inner = 0; inner < visualCount; inner += 1) {
-      const info = lineAnchorOf(visualDisplayRow(row, inner));
-      if (!info || info.side !== target.side) continue;
-      const dist = Math.abs(info.line - target.line);
-      if (!best || dist < best.dist) best = { rowIndex, inner, dist };
-      if (dist === 0) return best;
-      // Line numbers are monotonic per side within a file: once past
-      // the target and no longer improving, the best cannot change.
-      if (info.line > target.line && best.dist < dist) return best;
-    }
+    if (displayRow < row.start.row || displayRow >= row.start.row + row.count) continue;
+    const offset = displayRow - row.start.row;
+    if (row.splitCount === undefined) return { rowIndex, inner: offset };
+    const { rows, splitRows } = blocks.get(file, row);
+    const id = rows[offset]?.id;
+    const inner = splitRows?.findIndex((pair) => pair.left?.id === id || pair.right?.id === id) ?? -1;
+    return { rowIndex, inner: Math.max(0, inner) };
   }
-  return best;
+  return null;
 }
 
 /**
@@ -113,7 +124,8 @@ function findNearestLine(
  */
 export function resolveReadingAnchor(
   built: ReviewRowsResult,
-  files: readonly PatchFile[],
+  files: readonly ReviewFile[],
+  blocks: BlockRowsCache,
   geometry: RowGeometry,
   target: ReadingAnchor,
   wordWrap: boolean,
@@ -128,7 +140,7 @@ export function resolveReadingAnchor(
   const headerRow = built.firstRowOfFile[fileIndex] ?? -1;
   if (headerRow < 0) return null;
   if (fileSurvived && target.line > 0) {
-    const best = findNearestLine(built, fileIndex, headerRow, target);
+    const best = findNearestLine(built, blocks, files[fileIndex], fileIndex, headerRow, target);
     if (best) {
       const lineTop = geometry.getItemOffset(best.rowIndex)
         + (wordWrap ? 0 : best.inner * REVIEW_LINE_HEIGHT_PX);

@@ -6,13 +6,16 @@
   // "Open full review" opens the review companion on the phase's own thread,
   // which closes the overlay (R3).
   //
-  // The whole patch is fetched once and each file's hunks are sliced out of it
-  // on expand, so opening three files costs one RPC, not four.
+  // The whole patch is read once into compact storage and each file's lines
+  // are materialized on expand, so opening three files costs one read, not
+  // four.
 
   import WorkflowDiff from './WorkflowDiff.svelte';
   import type { PatchFile } from '../../utils/patchFiles';
-  import { extractPatchFile, parsePatchFileSummaries, parsePatchFiles } from '../../utils/patchFiles';
-  import { GetBranchBaseDiff } from '../../stores/bindings';
+  import { patchFileFromReviewFile, type ReviewFile } from '../../utils/patchStore';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { OpenBranchBaseDiff } from '../../stores/bindings';
+  import { ReviewDiffSource } from '../../stores/reviewDiffStream';
   import type { WorkspaceRef } from '../../types/git';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
@@ -34,7 +37,8 @@
   // Both controls read workspace content — the branch-base diff, and the
   // review companion opened over it.
   let ungranted = $derived(!projectHasScope('files:read', workspace?.projectId));
-  let patch = $state('');
+  // The parsed files; `files` is their summaries for the list.
+  let parsed: ReviewFile[] = [];
   let files = $state<PatchFile[]>([]);
   let loading = $state(false);
   let loaded = $state(false);
@@ -47,7 +51,7 @@
     const key = `${workspace?.projectId ?? ''}\n${workspace?.workspacePath ?? ''}\n${baseBranch}`;
     if (key === loadedKey) return;
     loadedKey = key;
-    patch = '';
+    parsed = [];
     files = [];
     loaded = false;
     error = '';
@@ -57,26 +61,38 @@
     if (loading || ungranted || !workspace) return;
     loading = true;
     error = '';
+    const key = loadedKey;
+    const ws = workspace;
+    const base = baseBranch;
     try {
       // Never ignore whitespace here: a gate decision is made against the
       // exact change, and this surface has no toggle to say otherwise.
-      const raw = String((await GetBranchBaseDiff(workspace, baseBranch, false)) ?? '');
-      patch = raw;
-      files = parsePatchFileSummaries(raw);
+      const source = new ReviewDiffSource(
+        threadMachine(threadId, ws.projectId),
+        () => OpenBranchBaseDiff(ws, base, false),
+      );
+      const read = await source.read({ cancelled: () => loadedKey !== key });
+      if (!read) return;
+      parsed = read.parser.files;
+      files = parsed.map((file) => ({
+        path: file.path,
+        kind: file.kind,
+        additions: file.additions,
+        deletions: file.deletions,
+        lines: [],
+      }));
       loaded = true;
     } catch (err) {
-      error = userFacingError(err, 'Could not load the changes.');
+      if (loadedKey === key) error = userFacingError(err, 'Could not load the changes.');
     } finally {
       loading = false;
     }
   }
 
   async function loadFile(path: string): Promise<PatchFile> {
-    const single = extractPatchFile(patch, path);
-    const parsed = single ? parsePatchFiles(single) : [];
-    const file = parsed.find((entry) => entry.path === path) ?? parsed[0];
+    const file = parsed.find((entry) => entry.path === path);
     if (!file) throw new Error(`No hunks for ${path}`);
-    return file;
+    return patchFileFromReviewFile(file);
   }
 
   async function openFullReview(): Promise<void> {

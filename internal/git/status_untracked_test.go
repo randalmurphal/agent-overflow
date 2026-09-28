@@ -490,7 +490,7 @@ func TestStatusInsertionsIncludeUntracked(t *testing.T) {
 
 	// The definitive check for the original complaint (badge != panel): the badge
 	// must equal what the panel actually shows. panelWorkspaceTotal parses the
-	// same patch DiffWorkspaceVsHead produces using the frontend's algorithm - a
+	// same patch gitdiff.OpenWorktreeDiff produces using the frontend's algorithm - a
 	// separate code path from the badge's numstat + countAddedLines - so this
 	// closes the transitivity gap a numstat-only oracle would leave. The fixture
 	// avoids content lines beginning with '+++'/'---' (the one case where the

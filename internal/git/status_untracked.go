@@ -17,11 +17,10 @@ import (
 // gitwatch hot path. The file *count* is unaffected by the cap; only the line
 // tally stops once the budget is spent.
 //
-// This bound differs from the panel's on purpose: DiffWorkspaceVsHead errors
-// out at its 10MB patch cap, whereas the badge degrades (caps the line tally,
-// keeps the file count). On a pathological tree the panel shows an error while
-// the badge shows a bounded number - but the panel isn't displaying a count to
-// match in that state anyway, so the divergence is invisible in practice.
+// The panel has no such bound: it reads a patch of any size on demand, while
+// this scan runs on every gitwatch edge. On a pathological tree the badge's
+// line tally therefore stops short of the panel's count; the file count still
+// matches.
 const maxUntrackedScanBytes = 64 * 1024 * 1024
 
 // untrackedCacheTTL bounds how long a workspace's line cache survives

@@ -4,8 +4,9 @@
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
-  import { diffSpanCacheGeneration, getSpansForLine, requestFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
-  import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchFile, type SplitDisplayRow } from '../../utils/patchFiles';
+  import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
+  import type { ReviewFile } from '../../utils/patchStore';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
 
   // One review line block (≤ REVIEW_LINE_BLOCK_MAX_LINES display rows).
@@ -20,16 +21,17 @@
   // span request per block (the shared cache dedupes across the file's
   // blocks); rows re-render as spans land. Until then a line shows the
   // colors its text was last painted with in this file (`painted`), or
-  // plain tinted text. Gap expansion produces a new lines-array identity
-  // → new content key → re-request; the backend's cache absorbs the
-  // overlap.
+  // plain tinted text. Gap expansion produces a new body → new content
+  // key → re-request; the backend's cache absorbs the overlap.
 
   interface Props {
+    /** The block's rows, materialized from the file's body by the
+     * surface (BlockRowsCache). */
     rows: PatchDisplayRow[];
-    /** Present in split view mode (precomputed by buildReviewRows). */
+    /** Present in split view mode. */
     splitRows?: SplitDisplayRow[];
     /** The owning file — span requests are file-level. */
-    file: PatchFile;
+    file: ReviewFile;
     path: string;
     /** The review SUBJECT's identity — the thread row id, or a draft
      * placeholder's synthetic one. It owns this file's span-cache
@@ -64,7 +66,7 @@
     const context = spanContext;
     const owner = subjectId;
     untrack(() => {
-      void requestFileSpans(fileNow, owner, context);
+      void requestReviewFileSpans(fileNow, owner, context);
     });
   });
 
@@ -233,14 +235,14 @@
           {#if pair.left}
             {@render actionCell(sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForLine(file, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
         <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
           {#if pair.right}
             {@render actionCell(sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForLine(file, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
@@ -262,7 +264,7 @@
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>
-          <span class="min-w-0 flex-1 {contentClass} pr-3"><DiffLineContent line={row.line} spans={getSpansForLine(file, row.line, spanContext, painted)} intraline={row.intraline ?? null} /></span>
+          <span class="min-w-0 flex-1 {contentClass} pr-3"><DiffLineContent line={row.line} spans={getSpansForReviewLine(file, row.lineIndex ?? -1, row.line, spanContext, painted)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}
