@@ -106,8 +106,8 @@ exec git upload-pack --strict '${root}'"$repo"
 /**
  * Publish the seeded `workspace` as `repo`'s first pull request and seed
  * the fake forge with `repo`. The workspace gets a `feature` branch one
- * commit ahead of `main` (the fixture's default head and base refs), and
- * an origin that publishes it the way the forge does. The origin URL is
+ * commit ahead of `main` (the fixture's default head and base refs) that
+ * writes `files`, and an origin that publishes it the way the forge does. The origin URL is
  * `git://<forge host>/<project>.git`, so forge detection sees the forge's
  * own host, and the workspace's `core.gitProxy` answers every connection
  * from a bare repository under the harness data root: git opens no socket.
@@ -115,7 +115,12 @@ exec git upload-pack --strict '${root}'"$repo"
  * the branch's PR up as soon as the workspace has a forge origin, and
  * caches a miss. Git runs with the harness home, never the developer's.
  */
-export async function publishPullRequest(harness: HarnessApp, workspace: string, repo: ForgeRepo): Promise<void> {
+export async function publishPullRequest(
+  harness: HarnessApp,
+  workspace: string,
+  repo: ForgeRepo,
+  files: Record<string, string> = { 'feature.md': 'Feature work.\n' },
+): Promise<void> {
   const [pull, ...rest] = repo.pulls ?? [];
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -129,8 +134,11 @@ export async function publishPullRequest(harness: HarnessApp, workspace: string,
 
   const baseSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'checkout', '--quiet', '-b', 'feature');
-  await writeFile(path.join(workspace, 'feature.md'), 'Feature work.\n');
-  git(workspace, 'add', 'feature.md');
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(workspace, name)), { recursive: true });
+    await writeFile(path.join(workspace, name), content);
+  }
+  git(workspace, 'add', '--', ...Object.keys(files));
   git(workspace, 'commit', '--quiet', '-m', 'feature work');
   const headSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
