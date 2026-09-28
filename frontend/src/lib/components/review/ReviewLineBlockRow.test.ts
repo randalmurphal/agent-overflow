@@ -26,7 +26,7 @@ describe('<ReviewLineBlockRow>', () => {
       rows: [row('r1', 1, '+one'), row('r2', 2, '', true)],
       file,
       path: 'src/a.ts',
-      subjectId: 'thread-1',
+      spanOwner: 'thread-1',
       wordWrap: false,
       gutterCh: 2,
       onAddComment,

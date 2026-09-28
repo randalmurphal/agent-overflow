@@ -100,7 +100,12 @@ const REVIEW_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: REVIEW_
  */
 function subjectFor(threadId: string | null = 'thread-1'): ReviewSubject {
   const thread = { id: threadId ?? 'draft:pane-1', projectId: REVIEW_WS.projectId } as Thread;
-  return { identity: companionSubjectKey({ thread, workspace: REVIEW_WS }), threadId, workspace: REVIEW_WS };
+  return {
+    identity: companionSubjectKey({ thread, workspace: REVIEW_WS }),
+    threadId,
+    rowId: thread.id,
+    workspace: REVIEW_WS,
+  };
 }
 
 /**

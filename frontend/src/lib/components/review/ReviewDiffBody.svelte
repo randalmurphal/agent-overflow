@@ -52,10 +52,13 @@
     && typeof window !== 'undefined' && 'happyDOM' in window;
 
   interface Props {
-    /** The review SUBJECT's identity — the thread row id, or a draft
-     * placeholder's synthetic one. Keys scroll-position memory and owns
-     * the span-cache entries this body requests. */
+    /** The review subject's identity (conversation, owner epoch and
+     * checkout). Keys scroll-position memory. */
     subjectId: string;
+    /** The thread row id, or a draft placeholder's synthetic one. Owns the
+     * span-cache entries this body requests, which thread switch, delete
+     * and draft materialization address by row id. */
+    spanOwner: string;
     /** Review scope key segment for scroll-position memory. */
     scope: string;
     files: readonly ReviewFile[];
@@ -96,6 +99,7 @@
 
   let {
     subjectId,
+    spanOwner,
     scope,
     files,
     viewMode,
@@ -480,7 +484,7 @@
               splitRows={materialized.splitRows}
               {file}
               path={file.path}
-              {subjectId}
+              {spanOwner}
               {spanContext}
               {painted}
               {wordWrap}

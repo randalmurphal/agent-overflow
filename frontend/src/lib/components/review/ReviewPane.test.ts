@@ -7,10 +7,10 @@ import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
-import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
-import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
+import { adoptDiffSpanOwner, evictDiffSpansForThread, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
@@ -1073,6 +1073,38 @@ async function openColoredConflicts(view: Awaited<ReturnType<typeof renderPRScop
     expectOwnColors(view.container);
   });
 }
+
+describe('<ReviewPane> span-cache ownership', () => {
+  const DRAFT_ID = 'draft:source-pane:project-1:chat:1';
+  const draftCtx = () => makeStubPanelContext({
+    threadId: null,
+    thread: { id: DRAFT_ID, projectId: 'project-1', workspacePath: '/repo' } as Thread,
+  });
+
+  // Thread switch, delete and draft materialization address the cache by
+  // row id, so the diff body must file its entries under that id.
+  it.each([
+    ['a thread row', makeCtx, 'thread-1', null],
+    ['a draft placeholder', draftCtx, DRAFT_ID, null],
+    ['a materialized draft', draftCtx, 'thread-real', DRAFT_ID],
+  ] as const)('evicts the spans of %s by row id', async (_label, ctx, evictId, adoptFrom) => {
+    installFakeHighlighter();
+    const view = render(ReviewPane, { ctx: ctx() });
+    await waitFor(() => {
+      expectOwnColors(view.container);
+    });
+    const highlight = getBindingMock('HighlightPatchWithContext')!;
+    const requests = highlight.mock.calls.length;
+    expect(requests).toBeGreaterThan(0);
+
+    if (adoptFrom) adoptDiffSpanOwner(adoptFrom, evictId);
+    evictDiffSpansForThread(evictId);
+
+    await waitFor(() => {
+      expect(highlight.mock.calls.length).toBeGreaterThan(requests);
+    });
+  });
+});
 
 describe('<ReviewPane> syntax colors across rebuilds', () => {
   it.each(['stacked', 'split'] as const)('keeps colored lines colored through an expansion burst (%s)', async (mode) => {

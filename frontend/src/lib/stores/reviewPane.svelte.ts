@@ -127,6 +127,8 @@ export interface ReviewPaneState {
   /** Subject this state was created for — the registry's staleness check.
    *  Conversation/draft identity, ownership epoch and checkout. */
   readonly identity: string;
+  /** Span-cache owner for this review's diff bodies (`ReviewSubject.rowId`). */
+  readonly rowId: string;
   readonly scope: ReviewScope;
   /** The computer this review's PR and workspace reads are routed to. */
   readonly backend: BackendKey;
@@ -332,15 +334,19 @@ const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
 
 /**
- * What a review pane is looking at. The three values travel together
- * because they answer different questions and only agree by accident:
+ * What a review pane is looking at. The values travel together because
+ * they answer different questions and only agree by accident:
  * `identity` keys the registry (a draft placeholder has one without a row),
- * `threadId` is the REAL row and is null until the draft materializes, and
- * `workspace` is the checkout every workspace-scoped RPC addresses.
+ * `threadId` is the REAL row and is null until the draft materializes,
+ * `rowId` is the pane's thread row id (a draft placeholder's synthetic one)
+ * and owns the diff span-cache entries, which thread switch, delete and
+ * draft materialization address by row id, and `workspace` is the checkout
+ * every workspace-scoped RPC addresses.
  */
 export interface ReviewSubject {
   readonly identity: string;
   readonly threadId: string | null;
+  readonly rowId: string;
   readonly workspace: WorkspaceRef;
 }
 
@@ -356,6 +362,7 @@ export function reviewSubjectForPane(pane: {
   return {
     identity: companionSubjectKey(pane),
     threadId: pane.threadId,
+    rowId: pane.thread.id,
     workspace,
   };
 }
@@ -424,7 +431,7 @@ function createReviewPaneState(
   subject: ReviewSubject,
   deferInitialLoad: boolean,
 ): ReviewPaneState {
-  const { identity, threadId, workspace } = subject;
+  const { identity, threadId, rowId, workspace } = subject;
   const backend = threadMachine(threadId ?? '', workspace.projectId);
   function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
   // Scope persistence is keyed on a real row; a draft placeholder has no
@@ -1886,6 +1893,7 @@ function createReviewPaneState(
 
   return {
     identity,
+    rowId,
     get scope() { return scope; },
     backend,
     get baseBranch() { return baseBranch; },

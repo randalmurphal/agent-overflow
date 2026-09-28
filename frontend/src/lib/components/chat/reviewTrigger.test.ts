@@ -16,6 +16,7 @@ const THREAD = { id: 'thread-1', workspacePath: '/repo', projectId: 'project-1' 
 const SUBJECT = {
   identity: expect.any(String),
   threadId: 'thread-1',
+  rowId: 'thread-1',
   workspace: { projectId: 'project-1', workspacePath: '/repo' },
 };
 

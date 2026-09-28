@@ -61,6 +61,7 @@ async function mountBody() {
   const topFiles: number[] = [];
   const props = rawProps({
     subjectId: 'subject',
+    spanOwner: 'thread-1',
     scope: 'workspace',
     files: readFiles(),
     viewMode: 'stacked' as 'stacked' | 'split',

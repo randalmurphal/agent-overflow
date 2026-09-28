@@ -137,6 +137,7 @@ const PANE_SUBJECT = {
   // companion tests. This card's contract is the actual thread and workspace.
   identity: expect.any(String),
   threadId: 'thread-1',
+  rowId: 'thread-1',
   workspace: { projectId: 'project-1', workspacePath: '/tmp/workspace' },
 };
 

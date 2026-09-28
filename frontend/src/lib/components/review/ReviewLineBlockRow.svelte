@@ -33,10 +33,10 @@
     /** The owning file — span requests are file-level. */
     file: ReviewFile;
     path: string;
-    /** The review SUBJECT's identity — the thread row id, or a draft
-     * placeholder's synthetic one. It owns this file's span-cache
-     * entries for eviction; the RPC subject comes from `spanContext`. */
-    subjectId: string;
+    /** The thread row id, or a draft placeholder's synthetic one. It owns
+     * this file's span-cache entries for eviction; the RPC subject comes
+     * from `spanContext`. */
+    spanOwner: string;
     /** Diff view: scope fields for parse-priming file content above
      * each hunk, and the subject the priming RPC resolves it from.
      * Absent on the conflict surface, whose pseudo-files have no file
@@ -54,7 +54,7 @@
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, file, path, subjectId, spanContext = null, painted = null, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
+  let { rows, splitRows, file, path, spanOwner, spanContext = null, painted = null, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
 
   $effect(() => {
     // Generation dependency: an eviction (LRU pressure, same-thread
@@ -64,7 +64,7 @@
     diffSpanCacheGeneration();
     const fileNow = file;
     const context = spanContext;
-    const owner = subjectId;
+    const owner = spanOwner;
     untrack(() => {
       void requestReviewFileSpans(fileNow, owner, context);
     });

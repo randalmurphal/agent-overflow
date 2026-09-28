@@ -79,11 +79,9 @@
       ? { pr: review.prRef, backend: review.backend, webBase: review.prDetail?.url ?? '' }
       : null,
   );
-  // The diff body identifies itself by `review.identity` — the subject's
-  // conversation, owner epoch and checkout. It is a plain string on the
-  // state, available in exactly the branches that render a body, so scroll
-  // memory and span-cache ownership are per-review rather than collapsing
-  // every placeholder onto one shared bucket.
+  // The diff body keys scroll memory by `review.identity` (conversation,
+  // owner epoch and checkout) and files its span-cache entries under
+  // `review.rowId`, the row id that thread eviction and draft adoption use.
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
@@ -630,6 +628,7 @@
                keep the conflict surface scoped to the marker-bearing files. -->
           <ReviewDiffBody
             subjectId={review.identity}
+            spanOwner={review.rowId}
             scope={`${review.scope}:conflicts`}
             files={review.conflictFiles}
             viewMode={review.viewMode}
@@ -677,6 +676,7 @@
         {:else}
         <ReviewDiffBody
           subjectId={review.identity}
+          spanOwner={review.rowId}
           scope={review.scope}
           files={diffFiles}
           viewMode={review.viewMode}
