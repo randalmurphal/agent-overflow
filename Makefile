@@ -170,7 +170,8 @@ test-race:
 # revertable. It SPENDS REAL MODEL TOKENS: one trivial turn per provider, four
 # for the imported-branch scenario, three Haiku turns for the merge scenario,
 # and four answered turns plus one early interrupt per provider for the revert
-# flow, and two per provider for the external worktree removal scenario.
+# flow, four for the Claude worktree follow scenario, and five per provider
+# for the external worktree removal scenario (one cut mid-command).
 # Both CLIs must be installed and authenticated.
 #
 # The `providersmoke` build tag keeps these tests out of `make go-test`.
@@ -183,15 +184,15 @@ test-race:
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, 6m for the merge scenario, 6m per revert leg,
-# 5m for the worktree follow scenario, 5m per external-removal leg,
-# plus auth probes) with
+# 3m per queue leg, 8m per fork leg, 5m for the worktree follow scenario,
+# 6m per external-removal leg, plus auth probes) with
 # headroom, so a wedged turn fails through the gate's own diagnostics rather
 # than as a bare test-binary timeout panic.
 provider-smoke-compile:
 	go test -tags providersmoke -run '^$$' ./internal/app
 
 provider-smoke:
-	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 40m ./internal/app
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 90m ./internal/app
 
 # Focused real-provider rollback/resume gate; also included in provider-smoke.
 provider-smoke-revert:
