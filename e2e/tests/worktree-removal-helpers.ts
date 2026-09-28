@@ -99,7 +99,8 @@ export const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
 /** Runs git with the harness home, so no developer configuration applies. */
 export function harnessGit(harness: HarnessApp, cwd: string, ...args: string[]): string {
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
-  return execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
+  // stderr is piped so an expected failure carries it on the error, not the log.
+  return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
 /** Open the thread titled `title` in the page's focused pane. */
