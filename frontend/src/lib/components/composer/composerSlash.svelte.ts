@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { withBackendTarget } from '../../transport/backends';
 import { composeWorkspaceKey } from '../../utils/workspaceKey';
 import { threadMachine } from '../../stores/attachedBackends.svelte';
@@ -107,7 +108,7 @@ export interface ComposerSlashHandle {
 export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHandle {
   const pane = $derived(opts.getPane());
 
-  let trigger: OpenTrigger | null = $state(null);
+  let trigger = $state<OpenTrigger | null>(null);
   let slashActiveIndex = $state(0);
   let commandError = $state('');
   // Set while the menu is deliberately dismissed (Escape) for a draft that
@@ -115,6 +116,8 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   // `/` types a fresh menu rather than staying suppressed forever.
   let dismissed = $state(false);
   let reviewGit = $state.raw<ReviewGitData | null>(null);
+  // Bumped by every `/review` load; a reply from an older load is dropped.
+  let reviewGeneration = 0;
 
   const workspacePath = $derived(paneWorkspacePath(pane));
   // `/review` reads branches and commits out of a CHECKOUT, so a draft
@@ -134,7 +137,8 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
         buildReviewSections({
           branches: git?.branches ?? [],
           commits: git?.commits ?? [],
-          loading: git?.loading ?? true,
+          // A pane with no checkout has no git rows to wait for.
+          loading: git?.loading ?? workspace !== null,
           error: git?.error ?? '',
         }),
         trigger.query,
@@ -161,11 +165,18 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     dismissed = true;
   }
 
+  // `/review` rows reload once per menu open and again when the pane's
+  // checkout changes under an open menu. Keystrokes within an open menu keep
+  // `reviewMenuOpen` true, so they do not refetch.
+  const reviewMenuOpen = $derived(trigger?.level === 'review');
+  $effect(() => {
+    if (!reviewMenuOpen) return;
+    const key = reviewKey;
+    untrack(() => loadReviewGit(key));
+  });
+
   function warmSources(next: OpenTrigger): void {
-    if (next.level === 'review') {
-      void loadReviewGit();
-      return;
-    }
+    if (next.level === 'review') return;
     if (!next.atStart) return;
     if (provider === 'codex') {
       void ensureCodexSkills(workspacePath, false, threadMachine(pane.threadId ?? '', pane.thread?.projectId));
@@ -175,12 +186,14 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     }
   }
 
-  async function loadReviewGit(): Promise<void> {
+  async function loadReviewGit(key: string): Promise<void> {
+    const generation = ++reviewGeneration;
     const ws = workspace;
-    if (!ws) return;
-    const key = reviewKey;
+    if (!ws) {
+      reviewGit = null;
+      return;
+    }
     const target = backend;
-    if (reviewGit?.key === key) return;
     reviewGit = { key, branches: [], commits: [], loading: true, error: '' };
     try {
       // Commits are the workspace's recent commits (plain `git log` from
@@ -191,10 +204,10 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
         withBackendTarget(target, () => GitListBranches(ws)).then((b) => (b ?? []) as GitBranch[]),
         withBackendTarget(target, () => ListRecentCommits(ws)).then((c) => (c ?? []) as BranchCommit[]),
       ]);
-      if (reviewKey !== key) return;
+      if (generation !== reviewGeneration) return;
       reviewGit = { key, branches, commits, loading: false, error: '' };
     } catch (err) {
-      if (reviewKey !== key) return;
+      if (generation !== reviewGeneration) return;
       reviewGit = {
         key,
         branches: [],

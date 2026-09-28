@@ -573,6 +573,105 @@ describe('composer command menu', () => {
       );
     });
 
+    it('reloads /review targets once per menu open, not per keystroke', async () => {
+      let commits = [
+        { sha: 'abc1234000', shortSha: 'abc1234', subject: 'First', author: 'a', authoredAt: 0 },
+      ];
+      const branches = setBindingMock('GitListBranches', async () => []);
+      setBindingMock('ListRecentCommits', async () => commits);
+      const pane = await buildPane(makeThread({ provider: 'codex' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('commit abc1234'));
+      await typeInto(textarea, '/review c');
+      await typeInto(textarea, '/review co');
+      expect(branches).toHaveBeenCalledTimes(1);
+
+      commits = [
+        { sha: 'def5678000', shortSha: 'def5678', subject: 'Second', author: 'a', authoredAt: 0 },
+        ...commits,
+      ];
+      await typeInto(textarea, '');
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('commit def5678'));
+      expect(branches).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a failed /review load when the menu reopens', async () => {
+      let fail = true;
+      setBindingMock('GitListBranches', async () => {
+        if (fail) throw new Error('git unavailable');
+        return [{ name: 'main', isCurrent: false, isDefault: true }];
+      });
+      setBindingMock('ListRecentCommits', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'codex' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('git-error'));
+
+      fail = false;
+      await typeInto(textarea, '');
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('branch main'));
+      expect(optionNames(getAllByTestId)).not.toContain('git-error');
+    });
+
+    it('loads the new checkout when the workspace changes under an open /review menu', async () => {
+      const branches = setBindingMock('GitListBranches', async (ws: { workspacePath: string }) => [
+        { name: ws.workspacePath === '/tmp/other' ? 'other-branch' : 'main', isCurrent: false, isDefault: false },
+      ]);
+      setBindingMock('ListRecentCommits', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'codex' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('branch main'));
+
+      pane.replaceThread({ ...pane.thread!, workspacePath: '/tmp/other' });
+
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('branch other-branch'));
+      expect(optionNames(getAllByTestId)).not.toContain('git-loading');
+      expect(branches).toHaveBeenLastCalledWith({ projectId: 'project-1', workspacePath: '/tmp/other' });
+    });
+
+    it('drops a /review reply that lands after the workspace changed', async () => {
+      let resolveFirst: ((rows: unknown[]) => void) | undefined;
+      setBindingMock('GitListBranches', (ws: { workspacePath: string }) => {
+        if (ws.workspacePath === '/tmp/other') {
+          return Promise.resolve([{ name: 'other-branch', isCurrent: false, isDefault: false }]);
+        }
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      });
+      setBindingMock('ListRecentCommits', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'codex' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(resolveFirst).toBeDefined());
+      pane.replaceThread({ ...pane.thread!, workspacePath: '/tmp/other' });
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('branch other-branch'));
+
+      resolveFirst!([{ name: 'stale-branch', isCurrent: false, isDefault: false }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+      expect(optionNames(getAllByTestId)).toContain('branch other-branch');
+      expect(optionNames(getAllByTestId)).not.toContain('branch stale-branch');
+    });
+
+    it('does not show /review as loading for a pane with no checkout', async () => {
+      const branches = setBindingMock('GitListBranches', async () => []);
+      const pane = await buildPane(makeThread({ provider: 'codex', projectId: '' }));
+      const { textarea, getAllByTestId } = await mountComposer(pane);
+
+      await typeInto(textarea, '/review ');
+      await waitFor(() => expect(optionNames(getAllByTestId)).toContain('uncommitted'));
+      await tick();
+      expect(optionNames(getAllByTestId)).not.toContain('git-loading');
+      expect(branches).not.toHaveBeenCalled();
+    });
+
     it('surfaces a review send failure instead of swallowing it', async () => {
       setBindingMock('GitListBranches', async () => []);
       setBindingMock('SendMessageWithOptions', async () => {
