@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/flushqueue"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -1298,6 +1299,105 @@ func TestThreadSpawnCutsAWorktreeFromTheBaseItIsGiven(t *testing.T) {
 		}
 	}
 	if after := countRequests(); after != before {
+		t.Errorf("refused spawns left %d request rows behind", after-before)
+	}
+}
+
+// TestThreadSpawnRunsOnAnExistingBranchWhereverItIsCheckedOut pins the
+// worktree door for a branch that already exists: one only origin has, and
+// was pushed after the last fetch, is checked out tracking origin; one
+// already checked out runs where it is, the root included; and a worktree
+// made outside the app is a checkout workspace_path names.
+func TestThreadSpawnRunsOnAnExistingBranchWhereverItIsCheckedOut(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "feature/mr")
+	testutil.RunGit(t, sibling, "commit", "--allow-empty", "-m", "mr work")
+	testutil.RunGit(t, sibling, "push", "origin", "feature/mr")
+	mrTip := gitRevParse(t, sibling, "HEAD")
+	runGit(t, repo, "branch", "scratch")
+	handMade := filepath.Join(t.TempDir(), "hand-made")
+	runGit(t, repo, "worktree", "add", "-b", "hand", handMade)
+
+	f := newRequestFixtureIn(t, repo)
+	f.mockClaude(t, "on it")
+	spawn := func(call threadtools.SpawnCall) store.Thread {
+		t.Helper()
+		call.Prompt = "review"
+		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), call)
+		if err != nil {
+			t.Fatalf("Spawn(%+v): %v", call, err)
+		}
+		spawned, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		return spawned
+	}
+
+	mr := spawn(threadtools.SpawnCall{WorktreeBranch: "feature/mr"})
+	if mr.WorktreePath == "" || mr.Branch != "feature/mr" {
+		t.Fatalf("origin-only branch: worktree %q branch %q, want a fresh checkout of feature/mr", mr.WorktreePath, mr.Branch)
+	}
+	if head := gitRevParse(t, mr.WorktreePath, "HEAD"); head != mrTip {
+		t.Errorf("origin-only branch HEAD = %s, want origin's tip %s", head, mrTip)
+	}
+	if upstream, _, err := gitops.NewCore().Execute(mr.WorktreePath, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil || strings.TrimSpace(upstream) != "origin/feature/mr" {
+		t.Errorf("origin-only branch upstream = %q, want origin/feature/mr", upstream)
+	}
+	again := spawn(threadtools.SpawnCall{WorktreeBranch: "feature/mr"})
+	if !gitops.SameFilesystemPath(again.WorktreePath, mr.WorktreePath) || again.Branch != "feature/mr" {
+		t.Errorf("checked-out branch: worktree %q branch %q, want the existing %q", again.WorktreePath, again.Branch, mr.WorktreePath)
+	}
+
+	scratch := spawn(threadtools.SpawnCall{WorktreeBranch: "scratch"})
+	if scratch.WorktreePath == "" || scratch.Branch != "scratch" {
+		t.Errorf("local branch: worktree %q branch %q, want a fresh checkout of scratch", scratch.WorktreePath, scratch.Branch)
+	}
+	if head, want := gitRevParse(t, scratch.WorktreePath, "HEAD"), gitRevParse(t, repo, "scratch"); head != want {
+		t.Errorf("local branch HEAD = %s, want %s", head, want)
+	}
+
+	root := spawn(threadtools.SpawnCall{WorktreeBranch: "main"})
+	if root.WorktreePath != "" || !gitops.SameFilesystemPath(root.WorkspacePath, repo) || root.Branch != "main" {
+		t.Errorf("root's branch: workspace %q worktree %q branch %q, want the project root", root.WorkspacePath, root.WorktreePath, root.Branch)
+	}
+
+	for name, call := range map[string]threadtools.SpawnCall{
+		"workspace_path": {WorkspacePath: handMade},
+		"worktree":       {WorktreeBranch: "hand"},
+	} {
+		got := spawn(call)
+		if !gitops.SameFilesystemPath(got.WorktreePath, handMade) || !gitops.SameFilesystemPath(got.WorkspacePath, handMade) || got.Branch != "hand" {
+			t.Errorf("hand-made worktree by %s: workspace %q worktree %q branch %q, want %s on hand", name, got.WorkspacePath, got.WorktreePath, got.Branch, handMade)
+		}
+	}
+
+	rows := func() int {
+		requests, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 100, 0)
+		if err != nil {
+			t.Fatalf("ListThreadRequestsByCaller: %v", err)
+		}
+		return len(requests)
+	}
+	runGit(t, repo, "branch", "local-only")
+	before := rows()
+	for name, tc := range map[string]struct {
+		call threadtools.SpawnCall
+		want string
+	}{
+		"base for a checked-out branch": {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "hand", WorktreeBase: "main"}, "is checked out at"},
+		"base_local for a local branch": {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "local-only", WorktreeBaseLocal: true}, "already exists"},
+		"base for a local branch":       {threadtools.SpawnCall{Prompt: "x", WorktreeBranch: "local-only", WorktreeBase: "main"}, "already exists"},
+		"unknown checkout":              {threadtools.SpawnCall{Prompt: "x", WorkspacePath: filepath.Join(t.TempDir(), "nowhere")}, "hand-made"},
+	} {
+		_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), tc.call)
+		if code := publicCode(t, err); code != threadtools.CodeInvalidRequest || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: code %q, error %v, want an invalid request naming %q", name, code, err, tc.want)
+		}
+	}
+	if after := rows(); after != before {
 		t.Errorf("refused spawns left %d request rows behind", after-before)
 	}
 }

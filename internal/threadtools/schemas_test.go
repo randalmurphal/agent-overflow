@@ -179,9 +179,9 @@ func TestRuntimeModeEnumTracksTheCanonicalList(t *testing.T) {
 	}
 }
 
-// TestSpawnWorktreeIsABranchName: the app's worktree path is created on a
-// branch, so there is no worktree without a name and no separate branch
-// parameter to contradict it.
+// TestSpawnWorktreeIsABranchName: worktree names the branch the thread
+// runs on, existing or new, so there is no separate branch parameter to
+// contradict it, and the description says which of the two it is doing.
 func TestSpawnWorktreeIsABranchName(t *testing.T) {
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		properties := schemaProperties(t, toolsByName(t, shape)["thread_spawn"])
@@ -193,16 +193,22 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 			t.Errorf("paired=%v: worktree is %v, want a branch name string", shape.Paired(), worktree["type"])
 		}
 		description, _ := worktree["description"].(string)
-		for _, want := range []string{"Branch name", "starts from base", "origin's head", "project_id"} {
+		for _, want := range []string{"Branch to run on", "already checked out", "exists locally or on origin", "checked out as it is", "created in a fresh worktree from base", "project_id"} {
 			if !strings.Contains(description, want) {
 				t.Errorf("paired=%v: the worktree description does not say %q: %q", shape.Paired(), want, description)
 			}
 		}
 		// The base is chosen by name and by side: origin's head unless
-		// base_local asks for this computer's.
+		// base_local asks for this computer's, and only for a new branch.
 		base, _ := properties["base"].(map[string]any)
 		if base["type"] != "string" {
 			t.Errorf("paired=%v: base = %v, want a branch name string", shape.Paired(), base)
+		}
+		baseDescription, _ := base["description"].(string)
+		for _, want := range []string{"origin's head", "does not exist yet"} {
+			if !strings.Contains(baseDescription, want) {
+				t.Errorf("paired=%v: the base description does not say %q: %q", shape.Paired(), want, baseDescription)
+			}
 		}
 		baseLocal, _ := properties["base_local"].(map[string]any)
 		if baseLocal["type"] != "boolean" {

@@ -339,8 +339,9 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 }
 
 // AttachWorktree creates a new worktree at path pointing at an existing
-// branch. Fails if the branch already has a worktree (git's own
-// invariant — one branch checked out in one place at a time).
+// branch, a local one or one only origin has. Fails if the branch already
+// has a worktree (git's own invariant — one branch checked out in one
+// place at a time).
 func (c *Core) AttachWorktree(cwd, path, branch string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("git worktree path is required")
@@ -352,7 +353,18 @@ func (c *Core) AttachWorktree(cwd, path, branch string) error {
 	if err := validateBranchName(branch); err != nil {
 		return err
 	}
-	_, stderr, err := c.Execute(cwd, "worktree", "add", "--", path, branch)
+	args := []string{"worktree", "add", "--", path, branch}
+	// A branch only origin has is checked out as a new local branch tracking
+	// origin's, named explicitly: git's own guess needs exactly one remote
+	// to have the name, and a fork's second remote often does too.
+	local, err := c.branchExistsChecked(cwd, branch)
+	if err != nil {
+		return err
+	}
+	if remoteRef, ok := c.originTrackingRef(cwd, branch); !local && ok {
+		args = []string{"worktree", "add", "--track", "-b", branch, "--", path, remoteRef}
+	}
+	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
 		message := strings.TrimSpace(stderr)
 		if message == "" {

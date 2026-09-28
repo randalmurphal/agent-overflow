@@ -275,7 +275,10 @@ already keeps and never from a hand-written list: per computer, the
 providers, each provider's models (slug, name, reasoning efforts with
 the default marked, context windows, catalog provenance), the runtime
 modes with a one-line meaning each, and the projects with their
-worktrees. A provider added later appears the moment it registers a
+worktrees: every checkout git lists for the project, the list the
+composer's picker shows, whether or not a thread runs there. A project
+git cannot list keeps its root and states why in `worktrees_error`.
+A provider added later appears the moment it registers a
 catalog. Also per computer: whether it is reachable now, its operating system,
 its projects' workspace paths as that computer sees them (a WSL path is
 not a caller path), and the thread groups in each project with their
@@ -293,9 +296,17 @@ Creates a normal sidebar thread, sends `prompt` as its first user
 message, starts the turn, and returns the thread id, its computer, and
 a request token. Locally it inherits the caller's project, workspace,
 provider, model, effort, mode, and runtime mode; each has an override
-param, plus `title`. `worktree` (optional branch name) creates a fresh
-worktree through the existing draft-worktree path instead of inheriting
-the workspace. `base` names the branch it starts from, default the
+param, plus `title`. `workspace_path` names a checkout git has for the
+project, the root or any linked worktree, including one made outside the
+app. `worktree` (optional branch name) runs the thread on that branch
+instead of inheriting the workspace. A branch already checked out runs in
+that checkout, the project root included, because git checks a branch out
+in one place. A branch that exists locally, or on origin after a fetch,
+gets a fresh worktree that checks it out as it is (tracking origin's when
+only origin has it), the same checkout the composer's branch picker makes;
+`base` and `base_local` are refused for an existing branch. A branch that
+does not exist is created in a fresh worktree through the existing
+draft-worktree path. `base` names the branch it starts from, default the
 project's current branch; the cut starts from origin's head of that
 branch after a fetch, so unpushed local commits are not in the
 worktree, unless `base_local` asks for the local head with no fetch.
@@ -535,9 +546,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 >
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
-> history first, `worktree` cuts it a fresh checkout on that branch,
-> starting from `base` (origin's head of it unless `base_local`), and
-> `group` files it in a sidebar group beside the threads of one sweep.
+> history first, `worktree` runs it on that branch, checked out as it
+> is when the branch exists here or on origin and otherwise created from
+> `base` (origin's head of it unless `base_local`), and `group` files it
+> in a sidebar group beside the threads of one sweep.
 > `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
 > asks a question of a hidden, read-only, throwaway copy of a thread, so

@@ -231,7 +231,7 @@ func projectSection(projects []ProjectOption, what string) []ProjectOption {
 	for _, project := range projects {
 		switch what {
 		case OptionsGroups:
-			project.Path, project.Workspaces = "", nil
+			project.Path, project.Workspaces, project.WorktreesError = "", nil, ""
 		case OptionsProjects:
 			project.Groups = nil
 		}

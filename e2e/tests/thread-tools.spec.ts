@@ -2055,7 +2055,8 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
     projects: [
       {
         name: 'tt-spawn-extra',
-        repo: {},
+        // A branch no checkout holds, as a merge request's branch is.
+        repo: { branches: ['review/existing'] },
         threads: [{ title: 'Spawn options caller', provider: 'claude' }],
       },
       {
@@ -2131,6 +2132,38 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
           ],
           text: 'Fork opened.',
         },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'Review the existing branch as it is.',
+                  title: 'Existing branch',
+                  worktree: 'review/existing',
+                  wait_seconds: 0,
+                },
+              },
+            },
+          ],
+          text: 'Existing branch opened.',
+        },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'Keep going on the experiment branch.',
+                  title: 'Same branch again',
+                  worktree: 'agent/experiment',
+                  wait_seconds: 0,
+                },
+              },
+            },
+          ],
+          text: 'Same branch opened.',
+        },
       ],
     }),
   );
@@ -2195,6 +2228,40 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   expect(
     items.some((item) => (item.summary ?? '').includes('Take the same history and try the channel version')),
   ).toBe(true);
+
+  // A branch that exists is checked out as it is in a fresh worktree,
+  // not cut as a new branch, and the thread runs there.
+  await awaitTurnCompleted(harness, caller);
+  await harness.rpc('SendMessage', caller, 'review the existing branch', null);
+  const existingSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
+    tool: 'thread_spawn',
+    timeoutMs: 60_000,
+  });
+  expect(existingSpawn.isError, existingSpawn.text).toBe(false);
+  const existingRow = (await threadRows(harness)).find((row) => row.id === existingSpawn.value!.thread_id)!;
+  expect(existingRow.branch).toBe('review/existing');
+  expect(existingRow.worktreePath).toBeTruthy();
+  expect(existingRow.worktreePath).not.toBe(callerPath);
+  expect(existingRow.worktreePath).not.toBe(worktreeRow.worktreePath);
+  const inExisting = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === existingRow.worktreePath,
+    60_000,
+  );
+  expect(inExisting.report.input).toContain('Review the existing branch');
+
+  // A branch already checked out runs in the checkout that has it.
+  await awaitTurnCompleted(harness, caller);
+  await harness.rpc('SendMessage', caller, 'continue on the experiment branch', null);
+  const againSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
+    tool: 'thread_spawn',
+    timeoutMs: 60_000,
+  });
+  expect(againSpawn.isError, againSpawn.text).toBe(false);
+  const againRow = (await threadRows(harness)).find((row) => row.id === againSpawn.value!.thread_id)!;
+  expect(againRow.branch).toBe('agent/experiment');
+  expect(againRow.worktreePath).toBe(worktreeRow.worktreePath);
+  expect(againRow.workspacePath).toBe(worktreeRow.worktreePath);
 });
 
 test('thread_spawn forks a live Codex thread on a process of its own, and the fork runs', async ({

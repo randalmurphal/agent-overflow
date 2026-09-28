@@ -19,8 +19,10 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
@@ -106,6 +108,20 @@ func newThreadToolsFixture(t *testing.T) *threadToolsFixture {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	return &threadToolsFixture{app: app, adapter: app.threadToolsAdapter(), project: project}
+}
+
+// gitProject makes the fixture's project a repository with one commit and
+// adds a linked worktree made the way a terminal makes one, outside the
+// app, returning its path.
+func (f *threadToolsFixture) gitProject(t *testing.T, branch string) string {
+	t.Helper()
+	testutil.RunGit(t, f.project.Path, "init", "-b", "main")
+	testutil.RunGit(t, f.project.Path, "config", "user.name", "Agent Overflow")
+	testutil.RunGit(t, f.project.Path, "config", "user.email", "agent-overflow@example.com")
+	testutil.RunGit(t, f.project.Path, "commit", "--allow-empty", "-m", "initial commit")
+	worktree := filepath.Join(t.TempDir(), "hand-made")
+	testutil.RunGit(t, f.project.Path, "worktree", "add", "-b", branch, worktree)
+	return worktree
 }
 
 func (f *threadToolsFixture) thread(t *testing.T, id string, apply ...func(*store.Thread)) store.Thread {
@@ -737,9 +753,11 @@ func TestThreadToolsAdapterExportsAWindowToAFile(t *testing.T) {
 // app's real provider catalogs and project rows.
 func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 	f := newThreadToolsFixture(t)
+	handMade := f.gitProject(t, "topic")
+	// A thread row naming a directory git does not list is not a checkout.
 	f.thread(t, "catalog-thread", func(th *store.Thread) {
-		th.WorktreePath = f.project.Path + "/wt-1"
-		th.Branch = "topic"
+		th.WorktreePath = f.project.Path + "/wt-gone"
+		th.Branch = "gone"
 	})
 	if _, err := f.app.store.CreateThreadGroup(f.project.ID, "Batch"); err != nil {
 		t.Fatalf("CreateThreadGroup: %v", err)
@@ -787,15 +805,30 @@ func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 	if project.ID != f.project.ID || project.Path != f.project.Path {
 		t.Fatalf("project = %#v", project)
 	}
-	// The root plus the worktree a thread actually runs in.
-	if len(project.Workspaces) != 2 || project.Workspaces[0].Path != f.project.Path {
-		t.Fatalf("workspaces = %#v", project.Workspaces)
+	// The root plus every worktree git lists, one no thread runs in
+	// included, as the sidebar's picker lists them.
+	if len(project.Workspaces) != 2 || project.Workspaces[0].Path != f.project.Path || project.WorktreesError != "" {
+		t.Fatalf("workspaces = %#v (error %q)", project.Workspaces, project.WorktreesError)
 	}
-	if !project.Workspaces[1].Worktree || project.Workspaces[1].Branch != "topic" {
-		t.Fatalf("worktree workspace = %#v", project.Workspaces[1])
+	if !project.Workspaces[1].Worktree || project.Workspaces[1].Branch != "topic" ||
+		!gitops.SameFilesystemPath(project.Workspaces[1].Path, handMade) {
+		t.Fatalf("worktree workspace = %#v, want %s on topic", project.Workspaces[1], handMade)
 	}
 	if len(project.Groups) != 1 || project.Groups[0].Name != "Batch" {
 		t.Fatalf("groups = %#v", project.Groups)
+	}
+
+	// A project git cannot read keeps its root and says why.
+	broken := store.Project{ID: "tt-not-a-repo", Path: t.TempDir(), Name: "Not a repo", CreatedAt: 1, UpdatedAt: 1}
+	if _, err := f.app.store.CreateProject(broken); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	unreadable, err := f.adapter.Catalog(t.Context(), threadtools.CatalogQuery{ProjectID: broken.ID, What: threadtools.OptionsProjects})
+	if err != nil {
+		t.Fatalf("Catalog(not a repo): %v", err)
+	}
+	if len(unreadable.Projects) != 1 || len(unreadable.Projects[0].Workspaces) != 1 || unreadable.Projects[0].WorktreesError == "" {
+		t.Fatalf("not-a-repo project = %#v, want its root and the reason its worktrees are missing", unreadable.Projects)
 	}
 }
 
@@ -1458,31 +1491,30 @@ func TestThreadToolsExportWalksTheWindowInBoundedBatches(t *testing.T) {
 }
 
 // TestThreadToolsCatalogReadsOnlyTheSectionAsked: a group lookup does not
-// probe the model catalogs or list every worktree, and a model lookup does
-// not read the projects.
+// probe the model catalogs or ask git for worktrees, and a model lookup
+// does not read the projects.
 func TestThreadToolsCatalogReadsOnlyTheSectionAsked(t *testing.T) {
 	f := newThreadToolsFixture(t)
-	f.thread(t, "catalog-worktree", func(th *store.Thread) { th.WorktreePath, th.Branch = t.TempDir(), "feature" })
+	f.gitProject(t, "feature")
 	ctx := t.Context()
 
-	reads := func(what string) (threadtools.Catalog, uint64) {
+	read := func(what string) threadtools.Catalog {
 		t.Helper()
-		before := f.app.store.ReadCount()
-		catalog, err := f.adapter.Catalog(ctx, threadtools.CatalogQuery{What: what})
+		catalog, err := f.adapter.Catalog(ctx, threadtools.CatalogQuery{What: what, ProjectID: f.project.ID})
 		if err != nil {
 			t.Fatalf("Catalog(%q): %v", what, err)
 		}
-		return catalog, f.app.store.ReadCount() - before
+		return catalog
 	}
-	whole, wholeReads := reads("")
-	groups, groupReads := reads(threadtools.OptionsGroups)
-	models, _ := reads(threadtools.OptionsModels)
+	whole := read("")
+	groups := read(threadtools.OptionsGroups)
+	models := read(threadtools.OptionsModels)
 
-	if len(whole.Providers) == 0 || len(whole.Projects) == 0 {
+	if len(whole.Providers) == 0 || len(whole.Projects) != 1 || len(whole.Projects[0].Workspaces) != 2 {
 		t.Fatalf("the whole catalog is missing a section: %+v", whole)
 	}
-	if len(groups.Providers) != 0 || len(groups.Projects) == 0 || groupReads >= wholeReads {
-		t.Errorf("what groups read %d statements against %d for everything, providers %v", groupReads, wholeReads, groups.Providers)
+	if len(groups.Providers) != 0 || len(groups.Projects) == 0 {
+		t.Errorf("what groups probed providers %v or lost projects", groups.Providers)
 	}
 	for _, project := range groups.Projects {
 		if len(project.Workspaces) > 1 {

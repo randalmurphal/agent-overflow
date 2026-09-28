@@ -30,11 +30,13 @@ type ModelPolicy interface {
 	DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool)
 }
 
-// WorktreeCut describes one fresh worktree. Branch is the new branch, or
-// empty for a generated name. Base is the branch it starts from, empty for
-// the project's current branch. BaseLocal starts from Base's local head
-// with no fetch; otherwise the cut starts from origin's head of Base when
-// origin can be reached and has it.
+// WorktreeCut describes one fresh worktree. Branch is the branch it checks
+// out, or empty for a generated name. With no Base and no BaseLocal, a
+// Branch that already exists, locally or on origin, is checked out as it
+// is. Otherwise Branch is created from Base, empty for the project's
+// current branch. BaseLocal starts from Base's local head with no fetch;
+// otherwise the cut starts from origin's head of Base when origin can be
+// reached and has it.
 type WorktreeCut struct {
 	Branch    string
 	Base      string
@@ -46,8 +48,8 @@ type WorktreeCut struct {
 type Workspace interface {
 	CurrentBranch(workspacePath string) string
 	FindWorktree(projectPath, candidate string) (path, branch string, found bool, err error)
-	// CreateWorktree cuts a fresh worktree for cut.Branch and reports where
-	// it is and the branch name it settled on.
+	// CreateWorktree cuts a fresh worktree for cut and reports where it is
+	// and the branch it checks out.
 	CreateWorktree(ctx context.Context, projectPath string, cut WorktreeCut) (path, resolvedBranch string, err error)
 	// ObserveOrigin reads the workspace's git coordinates as they stand right
 	// now. It has no error return because every failure, no repository, no

@@ -146,6 +146,7 @@ func TestOptionsWhatNarrowsToOneSection(t *testing.T) {
 	app := newFakeApp("Laptop")
 	app.catalog = catalogOf("laptop")
 	app.catalog.Projects[0].Groups = []GroupOption{{ID: "g1", Name: "MR Reviews"}}
+	app.catalog.Projects[0].WorktreesError = "git worktree list failed"
 	app.addThread(Thread{ID: "caller-thread", Provider: "claude"})
 	server := New(app)
 
@@ -156,8 +157,8 @@ func TestOptionsWhatNarrowsToOneSection(t *testing.T) {
 		}
 	}
 	project := rows(t, groups["projects"])[0].(map[string]any)
-	if _, present := project["workspaces"]; present || project["path"] != nil {
-		t.Errorf("what groups carries workspaces or a path: %v", project)
+	if _, present := project["workspaces"]; present || project["path"] != nil || project["worktrees_error"] != nil {
+		t.Errorf("what groups carries workspaces, a path or a worktree error: %v", project)
 	}
 	if len(rows(t, project["groups"])) != 1 || app.catalogs[0].What != OptionsGroups {
 		t.Errorf("groups = %v, the App was asked for %q", project["groups"], app.catalogs[0].What)
@@ -169,7 +170,7 @@ func TestOptionsWhatNarrowsToOneSection(t *testing.T) {
 	}
 	projects := call(t, server, localCaller(), "thread_options", `{"what":"projects"}`)
 	project = rows(t, projects["projects"])[0].(map[string]any)
-	if _, present := project["groups"]; present || len(rows(t, project["workspaces"])) != 1 {
+	if _, present := project["groups"]; present || len(rows(t, project["workspaces"])) != 1 || project["worktrees_error"] != "git worktree list failed" {
 		t.Errorf("what projects = %v", project)
 	}
 	// An empty section kept by what is still stated, as an answer.

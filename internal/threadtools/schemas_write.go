@@ -28,19 +28,19 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"workspace_path": map[string]any{
 			"type":        "string",
-			"description": "Checkout to run in, as the OWNING computer spells it. Defaults to your workspace locally. Use worktree instead to cut a fresh one.",
+			"description": "Checkout to run in: the project root or any worktree git has for it, as the OWNING computer spells it. Defaults to your workspace locally. To work on a branch, pass worktree instead.",
 		},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The new branch starts from base, or from the project's current branch when base is omitted: from origin's head of that branch after a fetch, or from the local head when origin cannot be reached or does not have it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
+			"description": "Branch to run on. A branch already checked out runs in that checkout; one that exists locally or on origin (after a fetch) is checked out as it is in a fresh worktree, tracking origin's when only origin has it, so this is how to work on or review an existing branch such as a merge request's. A branch that does not exist yet is created in a fresh worktree from base, or from the project's current branch when base is omitted. On another computer it is resolved in project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
 		},
 		"base": map[string]any{
 			"type":        "string",
-			"description": "Branch the worktree starts from, for example main or release/2.4. Omit to start from the project's current branch. Only with worktree. Use it to review or continue an existing branch: name that branch here and give worktree a new name.",
+			"description": "Branch a new worktree branch starts from, for example main or release/2.4: from origin's head of it after a fetch, or from the local head when origin cannot be reached or does not have it. Omit to start from the project's current branch. Only with worktree naming a branch that does not exist yet; an existing branch is checked out as it is and base is refused for it.",
 		},
 		"base_local": map[string]any{
 			"type":        "boolean",
-			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. Only with worktree. Default false, which starts from origin's head so the thread works on what was pushed.",
+			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. Only with worktree naming a new branch. Default false, which starts from origin's head so the thread works on what was pushed.",
 		},
 		"group": map[string]any{
 			"type":        "string",

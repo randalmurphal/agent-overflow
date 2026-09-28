@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -345,7 +346,7 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 }
 
 // Catalog answers thread_options from the catalogs the app already keeps.
-func (t threadToolsApp) Catalog(_ context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
+func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		if q.What == threadtools.OptionsProjects || q.What == threadtools.OptionsGroups {
@@ -368,7 +369,7 @@ func (t threadToolsApp) Catalog(_ context.Context, q threadtools.CatalogQuery) (
 	if q.What == threadtools.OptionsModels {
 		return catalog, nil
 	}
-	projects, err := t.projectOptions(q.ProjectID, q.What != threadtools.OptionsGroups)
+	projects, err := t.projectOptions(ctx, q.ProjectID, q.What != threadtools.OptionsGroups)
 	if err != nil {
 		return threadtools.Catalog{}, err
 	}
@@ -414,14 +415,14 @@ func threadToolsProviderName(name string) string {
 }
 
 // projectOptions lists this computer's projects with the workspaces and
-// groups a spawn can name. Workspaces come from the thread rows' own
-// workspace and worktree paths, which is where this app records them:
-// there is no worktree table, and asking git for a listing would be a
-// subprocess per project on a read a model makes to see its choices.
+// groups a spawn can name. Workspaces are each project's checkouts as git
+// lists them, the list the sidebar's picker shows, so a worktree made
+// outside the app is listed too. A project whose checkouts cannot be read
+// keeps its root and says why.
 //
 // withWorkspaces false skips the worktree listing for an answer that names
 // only groups.
-func (t threadToolsApp) projectOptions(projectID string, withWorkspaces bool) ([]threadtools.ProjectOption, error) {
+func (t threadToolsApp) projectOptions(ctx context.Context, projectID string, withWorkspaces bool) ([]threadtools.ProjectOption, error) {
 	projects, err := t.app.store.ListProjects()
 	if err != nil {
 		return nil, err
@@ -429,13 +430,6 @@ func (t threadToolsApp) projectOptions(projectID string, withWorkspaces bool) ([
 	groups, err := t.app.store.ListThreadGroups()
 	if err != nil {
 		return nil, err
-	}
-	var worktrees []store.ThreadWorktreeWorkspace
-	if withWorkspaces {
-		worktrees, err = t.app.store.ListThreadWorktreeWorkspaces()
-		if err != nil {
-			return nil, err
-		}
 	}
 	out := []threadtools.ProjectOption{}
 	for _, project := range projects {
@@ -447,11 +441,17 @@ func (t threadToolsApp) projectOptions(projectID string, withWorkspaces bool) ([
 		}
 		option := threadtools.ProjectOption{ID: project.ID, Name: project.Name, Path: project.Path}
 		option.Workspaces = []threadtools.WorkspaceOption{{Path: project.Path}}
-		for _, worktree := range worktrees {
-			if worktree.ProjectID != project.ID || worktree.Path == project.Path {
-				continue
+		if withWorkspaces {
+			worktrees, err := t.app.gitCore().ListWorktreesContext(ctx, project.Path)
+			if err != nil {
+				option.WorktreesError = err.Error()
 			}
-			option.Workspaces = append(option.Workspaces, threadtools.WorkspaceOption{Path: worktree.Path, Branch: worktree.Branch, Worktree: true})
+			for _, worktree := range worktrees {
+				if gitops.SameFilesystemPath(worktree.Path, project.Path) {
+					continue
+				}
+				option.Workspaces = append(option.Workspaces, threadtools.WorkspaceOption{Path: worktree.Path, Branch: worktree.Branch, Worktree: true})
+			}
 		}
 		for _, group := range groups {
 			if group.ProjectID != project.ID {

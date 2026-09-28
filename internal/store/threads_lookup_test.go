@@ -353,55 +353,6 @@ func TestFirstTurnIndexAtOrAfterPastAnyListingCap(t *testing.T) {
 	}
 }
 
-// TestListThreadWorktreeWorkspacesNamesEachCheckoutOnce pins the spawn
-// catalog's workspace source: one row per checkout, the newest thread's
-// branch, archived threads left out.
-func TestListThreadWorktreeWorkspacesNamesEachCheckoutOnce(t *testing.T) {
-	s := newTestStore(t)
-	seedLookupThread(t, s, "wt-old", func(th *Thread) {
-		th.WorktreePath = "/tmp/wt-a"
-		th.Branch = "old-branch"
-		th.UpdatedAt = 1_000
-	})
-	seedLookupThread(t, s, "wt-new", func(th *Thread) {
-		th.WorktreePath = "/tmp/wt-a"
-		th.Branch = "new-branch"
-		th.UpdatedAt = 2_000
-	})
-	seedLookupThread(t, s, "wt-second", func(th *Thread) {
-		th.WorktreePath = "/tmp/wt-b"
-		th.Branch = "second"
-		th.UpdatedAt = 3_000
-	})
-	seedLookupThread(t, s, "wt-archived", func(th *Thread) {
-		th.WorktreePath = "/tmp/wt-gone"
-		th.Branch = "gone"
-		th.UpdatedAt = 4_000
-	})
-	if _, _, err := s.ArchiveThread("wt-archived"); err != nil {
-		t.Fatalf("ArchiveThread: %v", err)
-	}
-	seedLookupThread(t, s, "wt-none", nil)
-
-	rows, err := s.ListThreadWorktreeWorkspaces()
-	if err != nil {
-		t.Fatalf("ListThreadWorktreeWorkspaces: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("workspaces = %#v, want one per live checkout", rows)
-	}
-	if rows[0].Path != "/tmp/wt-b" || rows[0].Branch != "second" {
-		t.Errorf("newest checkout = %#v", rows[0])
-	}
-	// One row for the shared checkout, carrying the newest thread's branch.
-	if rows[1].Path != "/tmp/wt-a" || rows[1].Branch != "new-branch" {
-		t.Errorf("shared checkout = %#v", rows[1])
-	}
-	if rows[0].ProjectID != defaultTestProjectID {
-		t.Errorf("project = %q", rows[0].ProjectID)
-	}
-}
-
 // seedCompletedOutgoingMove writes the transfer row that takes a thread
 // out of `owned_threads`. It writes the row directly because the
 // production path is a multi-step handshake with a peer, and what this

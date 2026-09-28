@@ -84,6 +84,26 @@ func (p threadWorkspacePort) CreateWorktree(
 	projectPath string,
 	cut threadapp.WorktreeCut,
 ) (string, string, error) {
+	if existing := strings.TrimSpace(cut.Branch); existing != "" && cut.Base == "" && !cut.BaseLocal {
+		exists, fetchErr, err := p.app.gitCore().BranchToCheckOut(ctx, projectPath, existing)
+		if fetchErr != nil {
+			log.Printf("create worktree %s: fetch origin for branch %q: %v (reading the tracking refs as they stand)",
+				projectPath, existing, fetchErr)
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if exists {
+			worktreePath, err := p.app.defaultWorktreePath(projectPath, existing)
+			if err != nil {
+				return "", "", err
+			}
+			if err := p.app.gitCore().AttachWorktree(projectPath, worktreePath, existing); err != nil {
+				return "", "", err
+			}
+			return worktreePath, existing, nil
+		}
+	}
 	resolvedBranch := p.app.resolveWorktreeBranch(cut.Branch)
 	worktreePath, err := p.app.defaultWorktreePath(projectPath, resolvedBranch)
 	if err != nil {

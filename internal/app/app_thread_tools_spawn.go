@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/errorsx"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
@@ -274,6 +275,73 @@ func threadToolsModelSlugs(models []threadtools.ModelOption) []string {
 	return slugs
 }
 
+// applySpawnWorktree runs the thread in the worktree of call's branch. A
+// branch already checked out runs where it is, because git checks a branch
+// out in one place at a time; that place is the project root when the
+// root has it. Any other branch gets a fresh worktree through thread
+// creation, which checks out a branch that exists locally or on origin and
+// creates one that does not from base.
+func (t threadToolsApp) applySpawnWorktree(opts *CreateThreadOptions, call threadtools.SpawnCall) error {
+	project, worktrees, err := t.spawnCheckouts(opts.ProjectID)
+	if err != nil {
+		return err
+	}
+	newBranch := call.WorktreeBase != "" || call.WorktreeBaseLocal
+	for _, worktree := range worktrees {
+		if worktree.Branch != call.WorktreeBranch {
+			continue
+		}
+		if newBranch {
+			return spawnBranchExists(call, "is checked out at "+worktree.Path)
+		}
+		opts.WorkspaceOverride = worktree.Path
+		if !gitops.SameFilesystemPath(worktree.Path, project.Path) {
+			opts.WorktreePath = worktree.Path
+			opts.Branch = worktree.Branch
+		}
+		return nil
+	}
+	if newBranch {
+		exists, fetchErr, err := t.app.gitCore().BranchToCheckOut(t.app.lifeCtx(), project.Path, call.WorktreeBranch)
+		if fetchErr != nil {
+			log.Printf("thread tools: spawn worktree %q: fetch origin: %v (reading the tracking refs as they stand)", call.WorktreeBranch, fetchErr)
+		}
+		if err != nil {
+			return err
+		}
+		if exists {
+			return spawnBranchExists(call, "already exists")
+		}
+	}
+	opts.WorktreeBranch = call.WorktreeBranch
+	opts.WorktreeBase = call.WorktreeBase
+	opts.WorktreeBaseLocal = call.WorktreeBaseLocal
+	return t.checkSpawnWorktreeBase(opts.ProjectID, call)
+}
+
+// spawnBranchExists refuses base or base_local for a branch that exists:
+// they describe where a new branch starts, and this one has its commits.
+func spawnBranchExists(call threadtools.SpawnCall, where string) error {
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		fmt.Sprintf("Branch %q %s, so worktree checks it out as it is and base and base_local do not apply. Drop them to work on that branch, or name a new branch to start one from base.",
+			call.WorktreeBranch, where), nil)
+}
+
+// spawnCheckouts reads a project's checkouts from git: the root first,
+// then its linked worktrees.
+func (t threadToolsApp) spawnCheckouts(projectID string) (store.Project, []gitops.Worktree, error) {
+	project, err := t.app.store.GetProject(projectID)
+	if err != nil {
+		return store.Project{}, nil, err
+	}
+	worktrees, err := t.app.gitCore().ListWorktrees(project.Path)
+	if err != nil {
+		return store.Project{}, nil, errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("The checkouts of %s cannot be read: %v", project.Path, err), err)
+	}
+	return project, worktrees, nil
+}
+
 // checkSpawnWorktreeBase refuses a named base the project does not have
 // before the request exists, naming what would have worked. A base that is
 // only on origin cannot seed a base_local cut, so that case is refused too.
@@ -301,44 +369,38 @@ func (t threadToolsApp) checkSpawnWorktreeBase(projectID string, call threadtool
 		fmt.Sprintf("Neither this computer nor origin has a branch %q as of the last fetch. Name an existing branch as base.", call.WorktreeBase), nil)
 }
 
-// applySpawnWorkspace picks the checkout the new thread runs in: a fresh
-// worktree on a named branch, a named checkout of the project, or the
-// caller's own.
+// applySpawnWorkspace picks the checkout the new thread runs in: the
+// worktree of a named branch, a named checkout of the project, or the
+// caller's own. Checkouts are read from git, as the sidebar's picker reads
+// them, so a worktree made outside the app is one too.
 func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller store.Thread, call threadtools.SpawnCall) error {
 	if call.WorktreeBranch != "" {
-		// The sidebar's own door: thread creation cuts the worktree and
-		// records its path and branch. Nothing here may name a path as well,
-		// or the two would describe different checkouts.
-		opts.WorktreeBranch = call.WorktreeBranch
-		opts.WorktreeBase = call.WorktreeBase
-		opts.WorktreeBaseLocal = call.WorktreeBaseLocal
-		return t.checkSpawnWorktreeBase(opts.ProjectID, call)
+		return t.applySpawnWorktree(opts, call)
 	}
 	if call.WorkspacePath != "" {
-		projects, err := t.projectOptions(opts.ProjectID, true)
+		project, worktrees, err := t.spawnCheckouts(opts.ProjectID)
 		if err != nil {
 			return err
 		}
-		paths := []string{}
-		for _, project := range projects {
-			if project.ID != opts.ProjectID {
+		paths := []string{project.Path}
+		if gitops.SameFilesystemPath(call.WorkspacePath, project.Path) {
+			opts.WorkspaceOverride = project.Path
+			return nil
+		}
+		for _, worktree := range worktrees {
+			if gitops.SameFilesystemPath(worktree.Path, project.Path) {
 				continue
 			}
-			for _, workspace := range project.Workspaces {
-				paths = append(paths, workspace.Path)
-				if workspace.Path != call.WorkspacePath {
-					continue
-				}
-				opts.WorkspaceOverride = workspace.Path
-				if workspace.Worktree {
-					opts.WorktreePath = workspace.Path
-					opts.Branch = workspace.Branch
-				}
+			paths = append(paths, worktree.Path)
+			if gitops.SameFilesystemPath(worktree.Path, call.WorkspacePath) {
+				opts.WorkspaceOverride = worktree.Path
+				opts.WorktreePath = worktree.Path
+				opts.Branch = worktree.Branch
 				return nil
 			}
 		}
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("That project has no checkout at %s. It has: %s. Pass worktree to cut a fresh one instead.",
+			fmt.Sprintf("That project has no checkout at %s. It has: %s. Pass worktree with a branch name to check that branch out in a fresh worktree instead.",
 				call.WorkspacePath, strings.Join(paths, ", ")), nil)
 	}
 	// Inherit the caller's checkout, worktree included: a spawn that names no

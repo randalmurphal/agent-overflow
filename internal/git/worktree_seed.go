@@ -183,6 +183,29 @@ func (c *Core) BaseBranchKnown(cwd, branch string, localOnly bool) (bool, error)
 	return remote, nil
 }
 
+// BranchToCheckOut reports whether branch already exists for a worktree to
+// check out: as a local branch, or as origin's once origin is refreshed. The
+// refresh is the one a fresh-base cut makes, shared and bounded the same
+// way, so a branch pushed since the last fetch is found and a cut that
+// follows does not fetch again. A local branch answers without a fetch.
+//
+// fetchErr is diagnostics only: a failed or timed-out fetch leaves the
+// tracking refs as they stand and the answer is read from them. A name git
+// would refuse as a branch names no existing branch.
+func (c *Core) BranchToCheckOut(ctx context.Context, cwd, branch string) (exists bool, fetchErr error, err error) {
+	branch = strings.TrimSpace(branch)
+	if validateBranchName(branch) != nil {
+		return false, nil, nil
+	}
+	local, err := c.branchExistsChecked(cwd, branch)
+	if err != nil || local {
+		return local, nil, err
+	}
+	_, fetchErr = c.fetchOriginForSeed(ctx, cwd)
+	_, remote := c.originTrackingRef(cwd, branch)
+	return remote, fetchErr, nil
+}
+
 // originTrackingRef reports origin's tracking ref for branch
 // ("origin/<branch>") when it exists as a commit. The lookup is
 // fully-qualified (`refs/remotes/...`) so a local branch or tag of the same

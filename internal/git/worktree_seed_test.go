@@ -400,3 +400,61 @@ func TestBaseBranchKnownSeesLocalAndOriginBranches(t *testing.T) {
 		t.Fatal("a flag-shaped base was accepted")
 	}
 }
+
+// originOnlyBranch pushes branch to origin from another clone and leaves
+// repo without it: no local branch and, until repo fetches, no tracking ref.
+func originOnlyBranch(t *testing.T, bare, branch string) {
+	t.Helper()
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", branch)
+	testutil.RunGit(t, sibling, "commit", "--allow-empty", "-m", "on "+branch)
+	testutil.RunGit(t, sibling, "push", "origin", branch)
+}
+
+func TestBranchToCheckOutFetchesToFindABranchPushedSinceTheLastFetch(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	originOnlyBranch(t, bare, "feature/mr")
+	testutil.RunGit(t, repo, "branch", "scratch")
+
+	core := NewCore()
+	for _, tc := range []struct {
+		branch string
+		want   bool
+	}{
+		{"scratch", true},
+		{"feature/mr", true},
+		{"nowhere", false},
+		{"--output=/tmp/x", false},
+	} {
+		got, fetchErr, err := core.BranchToCheckOut(t.Context(), repo, tc.branch)
+		if err != nil || fetchErr != nil {
+			t.Fatalf("BranchToCheckOut(%q): fetchErr=%v err=%v", tc.branch, fetchErr, err)
+		}
+		if got != tc.want {
+			t.Errorf("BranchToCheckOut(%q) = %v, want %v", tc.branch, got, tc.want)
+		}
+	}
+}
+
+func TestAttachWorktreeChecksOutABranchOnlyOriginHasTrackingOrigin(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	originOnlyBranch(t, bare, "feature/mr")
+	testutil.RunGit(t, repo, "fetch", "origin")
+	// A second remote with the same branch name defeats git's own guess,
+	// which needs exactly one remote to have it.
+	testutil.RunGit(t, repo, "remote", "add", "fork", bare)
+	testutil.RunGit(t, repo, "fetch", "fork")
+
+	core := NewCore()
+	worktree := filepath.Join(t.TempDir(), "mr")
+	if err := core.AttachWorktree(repo, worktree, "feature/mr"); err != nil {
+		t.Fatalf("AttachWorktree: %v", err)
+	}
+	if head := revParse(t, worktree, "HEAD"); head != revParse(t, repo, "origin/feature/mr") {
+		t.Fatalf("worktree HEAD = %s, want origin/feature/mr", head)
+	}
+	if upstream := upstreamOf(t, repo, "feature/mr"); upstream != "origin/feature/mr" {
+		t.Fatalf("upstream = %q, want origin/feature/mr", upstream)
+	}
+}

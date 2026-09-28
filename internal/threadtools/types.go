@@ -473,7 +473,10 @@ type ProjectOption struct {
 	Name       string            `json:"project"`
 	Path       string            `json:"path,omitempty"`
 	Workspaces []WorkspaceOption `json:"workspaces,omitempty"`
-	Groups     []GroupOption     `json:"groups,omitempty"`
+	// WorktreesError says why the linked worktrees are missing when git
+	// could not list them; Workspaces then holds only the root.
+	WorktreesError string        `json:"worktrees_error,omitempty"`
+	Groups         []GroupOption `json:"groups,omitempty"`
 }
 
 // WorkspaceOption is a project root or one of its linked worktrees.
