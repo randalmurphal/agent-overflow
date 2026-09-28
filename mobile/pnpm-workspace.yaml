@@ -1,2 +1,10 @@
 patchedDependencies:
   '@capacitor/android@8.5.2': patches/@capacitor__android@8.5.2.patch
+
+auditConfig:
+  ignoreGhsas:
+    # uuid buffer bounds check, reached here only through
+    # @capacitor/cli > xcode, which the CLI loads for iOS project edits
+    # (`cap migrate`). This app has no iOS project, and xcode calls
+    # uuid.v4() without a buffer. Drop when the CLI moves off xcode 3.
+    - GHSA-w5hq-g745-h8pq
