@@ -37,7 +37,7 @@
     applyToDraftPlaceholdersInWorkspace,
     placeholderWorkspaceOf,
   } from '../../../stores/draftWorkspaceSync';
-  import { workspaceRefForProject } from '../../../utils/workspaceKey';
+  import { workspaceKeyForRef, workspaceRefForProject } from '../../../utils/workspaceKey';
   import { addToast } from '../../../stores/toast.svelte';
   import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
   import { userFacingError } from '../../../utils/userFacingError';
@@ -75,6 +75,11 @@
   let branches: GitBranch[] = $state([]);
   let query = $state('');
   let loading = $state(false);
+  // Why the open list is empty; cleared by the next successful list.
+  let loadError = $state<string | null>(null);
+  // A failed remote fetch leaves ahead/behind counts at the last fetch. Shown
+  // only while the picker still lists the workspace that failed.
+  let fetchError = $state<{ workspaceKey: string | null; message: string } | null>(null);
   let applying = $state(false);
   // Non-null while the prune preview dialog is up; captures the WORKSPACE
   // at open so a pane switch mid-dialog can't retarget the deletion.
@@ -154,10 +159,20 @@
   // suggest "checkout the local working copy", which isn't a thing.
   let showLocalRow = $derived(workspaceDirty && intent.creatingBranch);
 
+  let visibleFetchError = $derived(
+    fetchError && fetchError.workspaceKey === workspaceKeyForRef(workspace)
+      ? fetchError.message
+      : null,
+  );
+
   let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
-  function branchRefreshKey(threadIdentity: string | undefined, branch: string): string {
-    return `${threadIdentity ?? ''}\0${branch}`;
+  function branchRefreshKey(
+    threadIdentity: string | undefined,
+    ws: WorkspaceRef | null,
+    branch: string,
+  ): string {
+    return `${threadIdentity ?? ''}\0${workspaceKeyForRef(ws) ?? ''}\0${branch}`;
   }
 
   async function refreshBranches(threadIdentity: string, ws: WorkspaceRef): Promise<void> {
@@ -167,10 +182,12 @@
       if (seq !== branchRefreshSeq) return;
       if (pane.thread?.id !== threadIdentity || !open) return;
       branches = Array.isArray(res) ? res : [];
+      loadError = null;
     } catch (err) {
-      console.error('GitListBranches failed:', err);
       if (seq !== branchRefreshSeq) return;
-      if (pane.thread?.id === threadIdentity && open) branches = [];
+      if (pane.thread?.id !== threadIdentity || !open) return;
+      branches = [];
+      loadError = userFacingError(err);
     }
   }
 
@@ -181,20 +198,28 @@
     const ws = workspace;
     if (!ws) return;
     const threadIdentity = pane.thread.id;
-    lastOpenBranchKey = branchRefreshKey(threadIdentity, currentBranch);
+    const fetchedKey = workspaceKeyForRef(ws);
+    lastOpenBranchKey = branchRefreshKey(threadIdentity, ws, currentBranch);
     refreshMru();
     loading = true;
+    loadError = null;
+    fetchError = null;
     // The dirty bit streams in through the shared workspace-keyed git-status
     // store for every pane, placeholder included — nothing to fetch here.
     const fetchBranches = refreshBranches(threadIdentity, ws);
     void (async () => {
+      let fetched: boolean;
       try {
-        if (!(await GitMaybeFetchRemotes(ws))) return;
-        if (pane.thread?.id !== threadIdentity || !open) return;
-        await refreshBranches(threadIdentity, ws);
+        fetched = !!(await GitMaybeFetchRemotes(ws));
       } catch (err) {
-        console.error('background fetch failed:', err);
+        if (open) fetchError = { workspaceKey: fetchedKey, message: userFacingError(err) };
+        return;
       }
+      // Refresh what the picker lists now: the pane may have moved to
+      // another workspace while the fetch ran.
+      const current = workspace;
+      if (!fetched || !open || !pane.thread || !current) return;
+      await refreshBranches(pane.thread.id, current);
     })();
     try {
       await fetchBranches;
@@ -207,7 +232,7 @@
     const branch = currentBranch;
     const threadIdentity = pane.thread?.id;
     const ws = workspace;
-    const key = branchRefreshKey(threadIdentity, branch);
+    const key = branchRefreshKey(threadIdentity, ws, branch);
     if (!open || !threadIdentity || !ws) {
       lastOpenBranchKey = key;
       return;
@@ -581,7 +606,16 @@
         />
         <MenuDivider />
       {/if}
-      {#if filteredBranches.length === 0}
+      {#if loadError}
+        <div
+          class="line-clamp-3 max-w-72 break-words px-3 py-1.5 text-xs text-error"
+          role="presentation"
+          title={loadError}
+          data-testid="branch-picker-error"
+        >
+          Failed to load branches: {loadError}
+        </div>
+      {:else if filteredBranches.length === 0}
         <div
           class="px-3 py-1.5 text-xs text-text-secondary/60"
           role="presentation"
@@ -608,6 +642,16 @@
               onAction={() => handleSync(branch)}
             />
           {/each}
+        </div>
+      {/if}
+      {#if visibleFetchError}
+        <div
+          class="line-clamp-3 max-w-72 break-words px-3 py-1.5 text-xs text-text-secondary/60"
+          role="presentation"
+          title={visibleFetchError}
+          data-testid="branch-picker-fetch-error"
+        >
+          Fetch failed, ahead/behind counts may be out of date: {visibleFetchError}
         </div>
       {/if}
     {/if}

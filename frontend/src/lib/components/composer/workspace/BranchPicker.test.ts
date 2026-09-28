@@ -864,6 +864,92 @@ describe('<BranchPicker>', () => {
     expect(listCallCount).toBe(1);
   });
 
+  it('shows a failed branch list in the menu and clears it on the next successful load', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitMaybeFetchRemotes', async () => false);
+    let fail = true;
+    setBindingMock('GitListBranches', async () => {
+      if (fail) throw new Error('not a git repository');
+      return [{ name: 'main', isCurrent: true, isDefault: true }];
+    });
+
+    const { getByTestId, findByTestId, findByRole, queryByTestId } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const error = await findByTestId('branch-picker-error');
+    expect(error.textContent ?? '').toMatch(/not a git repository/i);
+    expect(queryByTestId('branch-picker-empty')).toBeNull();
+
+    // The open list reloads for the new workspace and the error clears.
+    fail = false;
+    pane.replaceThread({ ...pane.thread!, workspacePath: '/wt' });
+    await findByRole('menuitem', { name: /main/ });
+    expect(queryByTestId('branch-picker-error')).toBeNull();
+  });
+
+  it('refetches an open list when only the workspace changes', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitMaybeFetchRemotes', async () => false);
+    const list = setBindingMock('GitListBranches', async (ws: { workspacePath: string }) => [
+      { name: ws.workspacePath === '/wt' ? 'wt-branch' : 'repo-branch', isCurrent: false, isDefault: false },
+    ]);
+
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await findByRole('menuitem', { name: /repo-branch/ });
+
+    pane.replaceThread({ ...pane.thread!, workspacePath: '/wt' });
+
+    expect(await findByRole('menuitem', { name: /wt-branch/ })).toBeTruthy();
+    expect(list.mock.calls.at(-1)).toEqual([{ projectId: 'project-1', workspacePath: '/wt' }]);
+  });
+
+  it('refreshes the current workspace after a background fetch outlives a workspace change', async () => {
+    const pane = await buildPane('main');
+    let resolveFetch: ((fetched: boolean) => void) | undefined;
+    setBindingMock('GitMaybeFetchRemotes', () => new Promise<boolean>((resolve) => {
+      resolveFetch = resolve;
+    }));
+    const list = setBindingMock('GitListBranches', async (ws: { workspacePath: string }) => [
+      { name: ws.workspacePath === '/wt' ? 'wt-branch' : 'repo-branch', isCurrent: false, isDefault: false },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(BranchPicker, { props: { pane } });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await findByRole('menuitem', { name: /repo-branch/ });
+    pane.replaceThread({ ...pane.thread!, workspacePath: '/wt' });
+    await findByRole('menuitem', { name: /wt-branch/ });
+
+    resolveFetch!(true);
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+    expect(list.mock.calls[2]).toEqual([{ projectId: 'project-1', workspacePath: '/wt' }]);
+    await Promise.resolve();
+    expect(queryByRole('menuitem', { name: /repo-branch/ })).toBeNull();
+    expect(await findByRole('menuitem', { name: /wt-branch/ })).toBeTruthy();
+  });
+
+  it('notes a failed background fetch only while its workspace is listed', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitMaybeFetchRemotes', async () => {
+      throw new Error('could not resolve host');
+    });
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+    ]);
+
+    const { getByTestId, findByTestId, queryByTestId } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const note = await findByTestId('branch-picker-fetch-error');
+    expect(note.textContent ?? '').toMatch(/could not resolve host/i);
+
+    pane.replaceThread({ ...pane.thread!, workspacePath: '/wt' });
+    await waitFor(() => expect(queryByTestId('branch-picker-fetch-error')).toBeNull());
+  });
+
   it('opens the prune preview dialog from the menu and closes the popover', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
