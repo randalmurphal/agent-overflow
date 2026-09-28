@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // LoopBound is a loop route's `max:`. It is either a literal count authored in

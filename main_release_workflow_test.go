@@ -15,7 +15,7 @@ import (
 
 	"agent-overflow/internal/bundle"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestPackageManagerPinsMatchAcrossBuildRoots(t *testing.T) {
