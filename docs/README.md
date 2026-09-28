@@ -121,6 +121,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides and per-provider tool toggles. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows-overlay UI spec (rev 2). Cited as `UI-SPEC §N` across the frontend. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
+| [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
 
 ## References
 
