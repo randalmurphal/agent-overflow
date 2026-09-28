@@ -2,23 +2,13 @@
 # settings here.
 engineStrict: true
 
-# ws: @vitest/browser 4.x pins a ws range with known advisories (fragment
-# DoS < 8.21.0, uninitialized-memory disclosure < 8.20.1); dev-only test
-# server, but override until vitest moves its pin.
 overrides:
-  # @ungap/structured-clone: 1.3.0 is deprecated and carries a prototype-
-  # pollution advisory (CWE-502). It sits under mermaid (hast-util-*), which
-  # renders diagrams straight out of model output — the one dependency path in
-  # this app whose input is attacker-influenced by construction. Override until
-  # mermaid's transitive pin moves.
-  '@ungap/structured-clone': '>=1.3.1'
   # katex: mermaid pins ^0.16 while the app is on 0.18, which ships TWO
   # lazily-loaded katex chunks (+258 kB raw / +77 kB gzip of dead weight).
   # Forcing one copy is safe for mermaid: it invokes katex only for `$$`
   # labels and defaults to MathML output, which the 0.18 CSS class renames
   # do not touch. Drop when mermaid's own range reaches 0.18.
   katex: '0.18.9'
-  ws: '>=8.21.0'
 
 patchedDependencies:
   '@lucide/svelte@1.28.0': patches/@lucide__svelte@1.28.0.patch

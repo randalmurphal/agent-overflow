@@ -50,16 +50,15 @@
     "@testing-library/svelte": "5.4.2",
     "@tsconfig/svelte": "5.0.8",
     "@types/node": "24.19.0",
-    "@vitest/browser-playwright": "4.1.10",
-    "@vitest/ui": "4.1.10",
+    "@vitest/browser-playwright": "5.0.2",
+    "@vitest/ui": "5.0.2",
     "fake-indexeddb": "6.2.5",
     "happy-dom": "20.11.1",
-    "modern-screenshot": "4.7.0",
     "playwright": "1.63.0",
     "svelte-check": "4.7.6",
     "tailwindcss": "4.3.3",
     "typescript": "6.0.2",
     "vite": "8.3.1",
-    "vitest": "4.1.10"
+    "vitest": "5.0.2"
   }
 }

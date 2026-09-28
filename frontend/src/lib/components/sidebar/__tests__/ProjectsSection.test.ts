@@ -24,6 +24,7 @@ import {
 } from '../../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import type { Project, ProjectWithCounts } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
@@ -174,7 +175,7 @@ describe('<ProjectsSection>', () => {
       await tick();
       expect(getByTestId('sidebar-catalog-loading')).toHaveAttribute('data-status', 'starting');
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Applying migration 3 of 7 add_index');
-      expect(getByTestId('sidebar-catalog-loading-meta')).toHaveTextContent(/^Step 3 of 7$/);
+      expect(normalizedTextContent(getByTestId('sidebar-catalog-loading-meta'))).toMatch(/^Step 3 of 7$/);
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
       __setTransportStatusForTest({
@@ -194,7 +195,7 @@ describe('<ProjectsSection>', () => {
       await refreshThreads();
       const { getByTestId, queryByTestId, findByTestId } = render(ProjectsSection, { props: { pane: null } });
       await tick();
-      expect(getByTestId('sidebar-catalog-failed')).toHaveTextContent(/database disk image is malformed/i);
+      expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/database disk image is malformed/i);
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
       setBindingMock('ListProjects', async () => [

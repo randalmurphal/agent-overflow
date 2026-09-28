@@ -87,7 +87,7 @@ it('protects both controls and holds the row height across sprites, widths and l
     setCompactLayoutForTest(true);
     usage = await view.findByTestId('usage-chip-trigger');
     await fireEvent.click(usage);
-    expect(await screen.findByTestId('usage-chip-cost')).toHaveTextContent('$5.49');
+    expect(await screen.findByTestId('usage-chip-cost')).toMatchTextContent('$5.49');
   } finally {
     view.unmount();
     target.remove();

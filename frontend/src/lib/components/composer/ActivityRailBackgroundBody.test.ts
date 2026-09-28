@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
 import { makeItem } from '../../../test/helpers/chat';
+import { normalizedTextContent } from '../../../test/helpers/textContent';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks } from '../../utils/backgroundTray';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -59,7 +60,7 @@ describe('Stop All in the background tray', () => {
       ['error', 'Failed to stop 2 tasks: refused'],
       ['info', 'A task had already ended.'],
     ]);
-    for (const id of ['a', 'b', 'c', 'd']) expect(rowStop(view, id)).toHaveTextContent(/^Stop$/);
+    for (const id of ['a', 'b', 'c', 'd']) expect(normalizedTextContent(rowStop(view, id))).toMatch(/^Stop$/);
 
     // Stopping the row again clears its error; settling clears the rest.
     await fireEvent.click(rowStop(view, 'd'));
@@ -79,7 +80,7 @@ describe('Stop All in the background tray', () => {
     await waitFor(() => expect(rowStop(view, 'a')).toHaveTextContent('Stopping…'));
     expect(rowStop(view, 'b')).toBeDisabled();
     fail(new Error('computer offline'));
-    await waitFor(() => expect(rowStop(view, 'a')).toHaveTextContent(/^Stop$/));
+    await waitFor(() => expect(normalizedTextContent(rowStop(view, 'a'))).toMatch(/^Stop$/));
     expect(rowStop(view, 'b')).toBeEnabled();
     expect(stopError(view, 'a')).toBeNull();
     expect(toasts()).toEqual([['error', 'Failed to stop tasks: computer offline']]);

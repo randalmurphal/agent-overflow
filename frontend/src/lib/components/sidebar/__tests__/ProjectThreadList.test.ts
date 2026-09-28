@@ -7,6 +7,7 @@ import type { Thread, ThreadGroup } from '../../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import {
   beginThreadRowDrag,
   endThreadRowDrag,
@@ -46,7 +47,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId } = render(ProjectThreadList, {
       props: { projectId: 'p1', threads: [], pane },
     });
-    expect(getByTestId('project-thread-list-empty')).toHaveTextContent(
+    expect(normalizedTextContent(getByTestId('project-thread-list-empty'))).toMatch(
       /New thread/i,
     );
   });

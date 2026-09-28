@@ -107,12 +107,12 @@ expect.extend({
 });
 
 declare module 'vitest' {
-  interface Matchers<T = any> {
+  interface Matchers<R extends void | Promise<void> = void | Promise<void>, T = unknown> {
     /**
      * `toEqual`, but a failure reports the first differing character with
      * ~80 chars of context each side instead of dumping both bodies.
      * For whole-document and whole-token-tree comparisons.
      */
-    toEqualWithFirstDivergence(expected: unknown): T;
+    toEqualWithFirstDivergence(expected: unknown): R;
   }
 }
