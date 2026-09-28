@@ -339,7 +339,7 @@
       </Menu>
     {/snippet}
   </Popover>
-  <GitActionsControl {pane} trigger={false} bind:this={gitControl} />
+  <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
 {:else}
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
   <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />

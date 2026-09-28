@@ -50,8 +50,13 @@
   // `trigger` false renders no split button: the compact chat header
   // rolls every action into one menu and opens this menu from a row in
   // it through `openMenu`, so the dialogs and the popover stay mounted
-  // here, outside that menu, and survive its close.
-  let { pane, trigger = true }: { pane: ThreadPane; trigger?: boolean } = $props();
+  // here, outside that menu, and survive its close. `menuAnchor` is the
+  // element that menu dropped from; this menu drops from it too.
+  let { pane, trigger = true, menuAnchor }: {
+    pane: ThreadPane;
+    trigger?: boolean;
+    menuAnchor?: HTMLElement;
+  } = $props();
 
   // Removing this thread's own worktree reattaches it to the project root —
   // the same self-move the EnvPicker blocks while the thread is busy. Gate
@@ -193,7 +198,7 @@
 
   function closeMenu(reason?: PopoverCloseReason): void {
     showDropdown = false;
-    restorePickerFocus(reason, { triggerEl: menuTriggerEl });
+    restorePickerFocus(reason, { triggerEl: menuTriggerEl ?? menuAnchor });
   }
 
   /** Open the actions menu from outside (the compact header's menu). */
@@ -249,7 +254,7 @@
 
   {@const menuStatus = status}
   <Popover
-    anchor={menuTriggerEl}
+    anchor={menuTriggerEl ?? menuAnchor}
     open={showDropdown}
     onClose={closeMenu}
     placement="bottom-end"
