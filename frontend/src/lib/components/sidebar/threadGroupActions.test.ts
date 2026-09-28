@@ -7,13 +7,9 @@ import {
   createThreadGroupAndMoveAction,
   deleteThreadGroupAction,
   moveThreadsToGroupAction,
-  pinThreadGroupAction,
   removeThreadsFromGroupAction,
   renameThreadGroupAction,
-  setThreadGroupPinGroupAction,
-  unpinThreadGroupAction,
 } from './threadGroupActions';
-import { PIN_GROUP_BACK } from './threadRowActions';
 import {
   consumePendingGroupRename,
   getThreadGroupById,
@@ -158,6 +154,17 @@ describe('threadGroupActions', () => {
       expect(getThreadById('t2')?.groupId).toBe('other');
     });
 
+    it('clears the pins of the deleted group members, as the backend does', async () => {
+      setBindingMock('DeleteThreadGroup', async () => null);
+      prependThread(mkThread('t1', { groupId: 'g1', pinnedAt: 10, pinGroup: 1 }));
+      prependThread(mkThread('t2', { groupId: 'other', pinnedAt: 20 }));
+
+      expect(await deleteThreadGroupAction('g1')).toBe(true);
+      expect(getThreadById('t1')?.pinnedAt).toBeUndefined();
+      expect(getThreadById('t1')?.pinGroup).toBeUndefined();
+      expect(getThreadById('t2')?.pinnedAt).toBe(20);
+    });
+
     it('keeps the membership when the delete fails', async () => {
       setBindingMock('DeleteThreadGroup', async () => {
         throw new Error('nope');
@@ -169,38 +176,9 @@ describe('threadGroupActions', () => {
     });
   });
 
-  describe('pin actions', () => {
-    it('pins, unpins, and moves burner, reconciling from each response', async () => {
-      setBindingMock('PinThreadGroup', async () => mkGroup('g1', { pinnedAt: 500 }));
-      await pinThreadGroupAction('g1');
-      expect(getThreadGroupById('g1')?.pinnedAt).toBe(500);
-
-      const moveMock = setBindingMock(
-        'SetThreadGroupPinGroup',
-        async () => mkGroup('g1', { pinnedAt: 500, pinGroup: 1 }),
-      );
-      await setThreadGroupPinGroupAction('g1', PIN_GROUP_BACK);
-      expect(moveMock.mock.calls[0]).toEqual(['g1', PIN_GROUP_BACK]);
-      expect(getThreadGroupById('g1')?.pinGroup).toBe(1);
-
-      setBindingMock('UnpinThreadGroup', async () => mkGroup('g1'));
-      await unpinThreadGroupAction('g1');
-      expect(getThreadGroupById('g1')?.pinnedAt).toBeUndefined();
-      expect(getThreadGroupById('g1')?.pinGroup).toBeUndefined();
-    });
-
-    it('toasts a pin failure without changing the row', async () => {
-      setBindingMock('PinThreadGroup', async () => {
-        throw new Error('gone');
-      });
-      expect(await pinThreadGroupAction('g1')).toBeNull();
-      expect(errorToasts()).toContain('gone');
-    });
-  });
-
   describe('membership', () => {
     it('moves threads in, taking group and pin state from the response rows', async () => {
-      // The row comes back unpinned: a grouped thread cannot hold a pin.
+      // The row comes back unpinned: a thread starts unpinned in its group.
       const mock = setBindingMock('SetThreadGroup', async () => [
         mkThread('root', { groupId: 'g1' }),
         mkThread('child', { groupId: 'g1', parentThreadId: 'root' }),

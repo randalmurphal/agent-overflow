@@ -95,11 +95,8 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so
   // the index learns the owner from the list answer.
-  48743460: 'threadGroup', // UnpinThreadGroup
   723690026: 'threadGroup', // RenameThreadGroup
-  842795367: 'threadGroup', // PinThreadGroup
   4104302889: 'threadGroup', // DeleteThreadGroup
-  4218979176: 'threadGroup', // SetThreadGroupPinGroup
 
   // A batch of thread ids; the atomic write must belong to one backend.
   2514763466: 'threadList', // SetThreadGroup

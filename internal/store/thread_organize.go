@@ -73,11 +73,11 @@ type ThreadOrganizeResult struct {
 // ApplyThreadOrganize writes a title, a group move, a pin tier and the
 // archive flag as one change.
 //
-// Order is load-bearing rather than incidental: grouping strips a thread's
-// own pin and pinning refuses a grouped row, so the group move runs before
-// the pin. Any refusal (a group that is gone, a pin the move just made
-// impossible, a thread handed to another computer) rolls back everything,
-// including a group this call created.
+// Order is load-bearing rather than incidental: a group move clears the
+// pin of a row that changes group, so the move runs before the pin and a
+// pin in the same write lands inside the new group. Any refusal (a group
+// that is gone, a thread handed to another computer) rolls back
+// everything, including a group this call created.
 func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) (ThreadOrganizeResult, error) {
 	if threadID == "" {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: organize thread: thread id is required")

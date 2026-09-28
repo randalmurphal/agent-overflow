@@ -112,7 +112,7 @@ type App interface {
 	// stopping the other ids in the call.
 	UpdateThreads(ctx context.Context, caller Caller, call UpdateCall) (UpdateReport, error)
 
-	// UpdateGroup renames, deletes or pins one group of this computer.
+	// UpdateGroup renames or deletes one group of this computer.
 	UpdateGroup(ctx context.Context, caller Caller, call GroupCall) (GroupReport, error)
 
 	// PairedComputers lists the computers this one is paired with, never

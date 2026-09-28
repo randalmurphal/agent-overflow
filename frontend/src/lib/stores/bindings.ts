@@ -81,9 +81,6 @@ export {
   CreateThreadGroup,
   RenameThreadGroup,
   DeleteThreadGroup,
-  PinThreadGroup,
-  UnpinThreadGroup,
-  SetThreadGroupPinGroup,
   SetThreadGroup,
 
   // Session management

@@ -6,13 +6,17 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 //
 // Sort order (highest first):
-//   1. Pinned front-burner block, then pinned back-burner block.
+//   0. Drafts, newest first.
+//   1. Groups, a section of their own at the top level. Groups are not
+//      pinnable; within the section they take the normal comparator below.
+//   2. Pinned front-burner block, then pinned back-burner block.
 //      Within each block: the normal status/activity/id comparator below.
-//   2. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
-//   3. running (any mode — Working / Planning / Designing / Discussing)
+//      A group's members pin the same way inside their group.
+//   3. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
+//   4. running (any mode — Working / Planning / Designing / Discussing)
 //      and completed (idle + unread).
-//   4. paused (reserved for future; no current source emits it).
-//   5. idle + read (no pill).
+//   5. paused (reserved for future; no current source emits it).
+//   6. idle + read (no pill).
 // Within each tier (after pinned): latestActivityAt desc, then thread.id
 // localeCompare for stability.
 //
@@ -81,7 +85,8 @@ const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
  * Fields every sidebar row carries, whatever it is a row FOR. A group has
  * no status of its own — `ownLiveStatus` is always 'idle' and `ownStatus`
  * null — but it does carry a bubbled display status, a sort tier and an
- * activity timestamp, because those are exactly what the sort reads.
+ * activity timestamp, because those are exactly what the sort reads
+ * inside the group section.
  */
 export interface SidebarTreeNodeBase {
   depth: number;
@@ -189,20 +194,9 @@ function getStatusSortGroup(
   return getNormalStatusSortGroup(liveStatus, status);
 }
 
-/** The pin fields a row carries. Thread and ThreadGroup both satisfy it. */
-export interface SidebarPinnable {
-  pinnedAt?: number;
-  pinGroup?: number;
-}
-
-export function sidebarPinGroup(row: SidebarPinnable): SidebarPinGroup {
-  if (row.pinnedAt == null) return null;
-  return row.pinGroup === 1 ? 'back' : 'front';
-}
-
-/** The row a node renders: its thread, or its group. Both carry pin fields. */
-export function sidebarNodeRow(node: SidebarTreeNode): Thread | ThreadGroup {
-  return node.kind === 'thread' ? node.thread : node.group;
+export function sidebarPinGroup(thread: Pick<Thread, 'pinnedAt' | 'pinGroup'>): SidebarPinGroup {
+  if (thread.pinnedAt == null) return null;
+  return thread.pinGroup === 1 ? 'back' : 'front';
 }
 
 /** Stable id for a node of either kind — the each-block key and sort tie-break. */
@@ -210,8 +204,21 @@ export function sidebarTreeNodeId(node: SidebarTreeNode): string {
   return node.kind === 'thread' ? node.thread.id : node.group.id;
 }
 
+/** A group is never pinned; a thread node's burner is its thread's. */
 export function sidebarNodePinGroup(node: SidebarTreeNode): SidebarPinGroup {
-  return sidebarPinGroup(sidebarNodeRow(node));
+  return node.kind === 'thread' ? sidebarPinGroup(node.thread) : null;
+}
+
+/**
+ * The top-level section a node sorts and renders in. Drafts sit above
+ * every section and belong to none, so they draw no section divider.
+ */
+export type SidebarSection = 'groups' | 'front' | 'back' | 'unpinned';
+
+export function sidebarNodeSection(node: SidebarTreeNode): SidebarSection | null {
+  if (isDraftNode(node)) return null;
+  if (node.kind === 'group') return 'groups';
+  return sidebarNodePinGroup(node) ?? 'unpinned';
 }
 
 /** A thread node the user is actively composing. Groups are never drafts. */
@@ -248,13 +255,14 @@ function resolveDisplay(
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
   }
 
-  // Single-pass max — highest sort tier first, then highest live-status
-  // priority within that tier, without allocating a sorted copy.
+  // Single-pass max — highest status tier first, then highest live-status
+  // priority within that tier, without allocating a sorted copy. The tier
+  // ignores pins: a pinned idle group member must not mask a running one.
   let topChild: SidebarTreeNode | null = null;
   let topGroupPriority = -1;
   let topPriority = -1;
   for (const child of children) {
-    const groupPriority = SORT_GROUP_PRIORITY[child.sortGroup];
+    const groupPriority = SORT_GROUP_PRIORITY[child.normalSortGroup];
     const priority = statusPriority(child.displayLiveStatus);
     if (groupPriority > topGroupPriority || (groupPriority === topGroupPriority && priority > topPriority)) {
       topGroupPriority = groupPriority;
@@ -266,7 +274,7 @@ function resolveDisplay(
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
   }
 
-  const childGroup = topChild.sortGroup;
+  const childGroup = topChild.normalSortGroup;
   const ownIsPassive = ownGroup === 'paused' || ownGroup === 'completed' || ownGroup === 'idle';
   if (SORT_GROUP_PRIORITY[ownGroup] > SORT_GROUP_PRIORITY[childGroup] && !ownIsPassive) {
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
@@ -276,10 +284,10 @@ function resolveDisplay(
 
 /**
  * compareTreeNodes — drafts pinned to the very top (newest createdAt
- * first), then front/back pin blocks (normal comparator within each),
- * then sort group, activity desc, and id for stability. Drafts
- * outrank pinned because the user is actively composing them and needs
- * them surfaced regardless of pin state.
+ * first), then groups, then front/back pin blocks (normal comparator
+ * within each), then sort group, activity desc, and id for stability.
+ * Drafts outrank everything because the user is actively composing them
+ * and needs them surfaced regardless of pin state.
  */
 function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number {
   // Drafts are a THREAD concept: a group is a container the user curates,
@@ -294,6 +302,10 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     if (left.thread.id === right.thread.id) return 0;
     return left.thread.id < right.thread.id ? 1 : -1;
   }
+
+  // Groups form their own section above the pin blocks. Only the top level
+  // holds groups, so inside a group or discussion this never decides.
+  if (left.kind !== right.kind) return left.kind === 'group' ? -1 : 1;
 
   const leftPinGroup = sidebarNodePinGroup(left);
   const rightPinGroup = sidebarNodePinGroup(right);
@@ -335,9 +347,10 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  * Groups: a top-level thread whose `groupId` names one of `input.groups`
  * is built at depth 1 under that group's node instead (its own discussion
  * children then land at depth 2 — the three-row render depth the spec
- * allows inside a group). Group nodes sort among top-level rows by the
- * same comparator, so a group with a running member rises exactly the way
- * a discussion parent does.
+ * allows inside a group). Group nodes sort above every top-level thread
+ * and among themselves by the normal comparator, so a group with a running
+ * member rises within the group section the way a discussion parent does.
+ * Members sort by the same comparator, their own pins included.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const maxDepth = input.maxDepth ?? DEFAULT_SIDEBAR_TREE_MAX_DEPTH;
@@ -404,9 +417,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: null,
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
-      sortGroup: group.pinnedAt != null
-        ? 'pinned'
-        : getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      sortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       // An empty group has nothing to bubble, so it sorts on its own last
       // write — which is when it was created or renamed.

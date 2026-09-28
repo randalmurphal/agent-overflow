@@ -21,7 +21,7 @@ import (
 // Both go through the bindings the sidebar itself calls, so every change a
 // model makes shows up live in every attached client: one thread:updated
 // frame per patched thread, a thread-group:updated frame for a group this
-// call created, renamed, pinned or deleted, and the archive path's own
+// call created, renamed or deleted, and the archive path's own
 // session teardown. Nothing here writes a row the sidebar does not already
 // know how to render.
 //
@@ -167,7 +167,7 @@ func organizeThreadAction(result threadapp.OrganizeResult) string {
 	return triage.ThreadActionListed
 }
 
-// UpdateGroup renames, deletes or pins one group of this computer.
+// UpdateGroup renames or deletes one group of this computer.
 func (t threadToolsApp) UpdateGroup(_ context.Context, caller threadtools.Caller, call threadtools.GroupCall) (threadtools.GroupReport, error) {
 	if err := validateGroupCall(call); err != nil {
 		return threadtools.GroupReport{}, err
@@ -190,18 +190,12 @@ func (t threadToolsApp) UpdateGroup(_ context.Context, caller threadtools.Caller
 			return threadtools.GroupReport{}, threadToolsOrganizeError(group.ID, err)
 		}
 		report.Action, report.Ungrouped = "deleted", ungrouped
-	case call.Rename != "":
+	default:
 		renamed, err := t.app.RenameThreadGroup(group.ID, call.Rename)
 		if err != nil {
 			return threadtools.GroupReport{}, threadToolsOrganizeError(group.ID, err)
 		}
 		report.Group, report.Action = renamed.Name, "renamed"
-	default:
-		pinned, err := t.applyGroupPin(group, call.Pin)
-		if err != nil {
-			return threadtools.GroupReport{}, threadToolsOrganizeError(group.ID, err)
-		}
-		report.Group, report.Action, report.Pin = pinned.Name, "pinned", call.Pin
 	}
 	return report, nil
 }
@@ -219,23 +213,8 @@ func validateGroupCall(call threadtools.GroupCall) error {
 	if named != 1 {
 		return errorsx.Public(threadtools.CodeInvalidRequest, "Name the group with group plus project_id, or with group_id, and not both.", nil)
 	}
-	actions := 0
-	if strings.TrimSpace(call.Rename) != "" {
-		actions++
-	}
-	if strings.TrimSpace(call.Pin) != "" {
-		actions++
-	}
-	if call.Delete {
-		actions++
-	}
-	if actions != 1 {
-		return errorsx.Public(threadtools.CodeInvalidRequest, "Pass exactly one of rename, pin or delete.", nil)
-	}
-	switch call.Pin {
-	case "", threadtools.PinFront, threadtools.PinBack, threadtools.PinNone:
-	default:
-		return errorsx.Public(threadtools.CodeInvalidRequest, "pin must be front, back or none.", nil)
+	if (strings.TrimSpace(call.Rename) != "") == call.Delete {
+		return errorsx.Public(threadtools.CodeInvalidRequest, "Pass exactly one of rename or delete.", nil)
 	}
 	return nil
 }
@@ -279,27 +258,6 @@ func (t threadToolsApp) resolveToolGroup(caller threadtools.Caller, call threadt
 	return group, nil
 }
 
-// applyGroupPin writes one group's pin tier through the same bindings the
-// sidebar's pin affordance calls, including its two-step for the back
-// burner: a group is pinned first and moved between burners second, because
-// the store refuses a burner on an unpinned row.
-func (t threadToolsApp) applyGroupPin(group store.ThreadGroup, tier string) (store.ThreadGroup, error) {
-	switch tier {
-	case threadtools.PinNone:
-		return t.app.UnpinThreadGroup(group.ID)
-	case threadtools.PinFront:
-		return t.app.PinThreadGroup(group.ID)
-	case threadtools.PinBack:
-		if group.PinnedAt == nil {
-			if _, err := t.app.PinThreadGroup(group.ID); err != nil {
-				return store.ThreadGroup{}, err
-			}
-		}
-		return t.app.SetThreadGroupPinGroup(group.ID, store.PinGroupBack)
-	}
-	return store.ThreadGroup{}, errorsx.Public(threadtools.CodeInvalidRequest, "pin must be front, back or none.", nil)
-}
-
 // organizeRefusal renders one thread's refusal for its result row: a code
 // the model can act on and prose that says what to do instead.
 func organizeRefusal(threadID string, err error) (message, code string) {
@@ -322,9 +280,6 @@ func threadToolsOrganizeError(threadID string, err error) error {
 	}
 	var moved *store.ThreadTransferError
 	switch {
-	case errors.Is(err, store.ErrThreadGrouped), errors.Is(err, threadapp.ErrOrganizeGroupAndPin):
-		return errorsx.Public(threadtools.CodeGrouped,
-			"A grouped thread cannot carry its own pin, because its group carries it. Ungroup it first, or pin the group with thread_group.", err)
 	case errors.Is(err, threadapp.ErrEmptyThreadTitle):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"A title is trimmed, and an empty title is refused. Omit title to leave it alone.", err)

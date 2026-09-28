@@ -25,16 +25,9 @@
   import {
     deleteThreadGroupAction,
     newThreadInGroupAction,
-    pinThreadGroupAction,
     removeThreadsFromGroupAction,
-    setThreadGroupPinGroupAction,
-    unpinThreadGroupAction,
   } from './threadGroupActions';
-  import {
-    archiveThreadAction,
-    PIN_GROUP_BACK,
-    PIN_GROUP_FRONT,
-  } from './threadRowActions';
+  import { archiveThreadAction } from './threadRowActions';
   import { projectHasScope } from '../../transport/entityScopes';
 
   interface Props {
@@ -64,8 +57,6 @@
       .map((t) => t.id),
   );
   let memberCount = $derived(memberThreadIds.length);
-  let isPinned = $derived(group.pinnedAt != null);
-  let isBackBurner = $derived(isPinned && group.pinGroup === PIN_GROUP_BACK);
   // Every row writes the group or its members on the project's computer;
   // all of it rides `threads:operate`. Inert with a reason, never hidden.
   let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
@@ -133,39 +124,6 @@
             onRename();
           }}
         />
-        {#if isPinned}
-          <MenuItem
-            label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
-            disabled={operateUngranted}
-            title={ungrantedTitle}
-            onSelect={() => {
-              onClose();
-              void setThreadGroupPinGroupAction(
-                group.id,
-                isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
-              );
-            }}
-          />
-          <MenuItem
-            label="Unpin Group"
-            disabled={operateUngranted}
-            title={ungrantedTitle}
-            onSelect={() => {
-              onClose();
-              void unpinThreadGroupAction(group.id);
-            }}
-          />
-        {:else}
-          <MenuItem
-            label="Pin Group"
-            disabled={operateUngranted}
-            title={ungrantedTitle}
-            onSelect={() => {
-              onClose();
-              void pinThreadGroupAction(group.id);
-            }}
-          />
-        {/if}
         <MenuItem
           label={`Archive Threads (${memberCount})`}
           disabled={memberCount === 0 || operateUngranted}

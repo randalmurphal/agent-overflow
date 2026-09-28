@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Per-row pin/unpin affordance, shared by ThreadRow and ThreadGroupRow.
+  // Per-row pin/unpin affordance for ThreadRow.
   // Sits in the row's leading pin slot (the gutter between the project rail
   // and the row content). Pinned state is rendered at rest as a filled pin;
   // unpinned rows reveal an outlined pin only on row hover or keyboard focus
@@ -9,15 +9,12 @@
   // plain mouse click focuses it and `:focus-within` would leave the pin
   // stuck on.
   //
-  // The two burners are the same control for both kinds of row, so the
-  // WRITES are props: the thread row hands closures over threadRowActions,
-  // the group row closures over threadGroupActions. This component owns the
-  // affordance, never the entity.
+  // The WRITES are props: the row hands closures over threadRowActions.
+  // This component owns the affordance, never the entity.
   //
   // Render-time guard: rows that can hold a pin only. A discussion child
   // doesn't pin individually (the parent thread is the pin target for that
-  // whole subtree) and a grouped thread cannot pin at all (the group carries
-  // the one pin). Both guards live in ThreadRow.
+  // whole subtree); ProjectThreadList decides which rows are pin targets.
 
   import Pin from '@lucide/svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';
@@ -30,9 +27,6 @@
     onToggle: () => void;
     /** Right-click on a pinned affordance: front burner ⇄ back burner. */
     onCycleBurner: () => void;
-    /** "Pin Thread" / "Pin Group" — the row names its own entity. */
-    pinLabel: string;
-    unpinLabel: string;
     /** The session lacks `threads:operate` for the row's computer: the
      *  affordance stays where it is, inert, and says why. */
     disabled?: boolean;
@@ -43,13 +37,20 @@
     pinGroup,
     onToggle,
     onCycleBurner,
-    pinLabel,
-    unpinLabel,
     disabled = false,
   }: Props = $props();
 
   let isBackBurner = $derived(isPinned && pinGroup === PIN_GROUP_BACK);
-  let label = $derived(isPinned ? unpinLabel : pinLabel);
+  let label = $derived(isPinned ? 'Unpin Thread' : 'Pin Thread');
+  // The hover text teaches the right-click burner toggle, which nothing
+  // else on screen reveals.
+  let hoverText = $derived(
+    disabled
+      ? 'Not granted to this device'
+      : !isPinned
+        ? 'Pin Thread\nOnce pinned, right-click toggles front/back burner'
+        : `Unpin Thread\nRight-click to move to ${isBackBurner ? 'front' : 'back'} burner`,
+  );
 
   function handleToggle(e: MouseEvent): void {
     e.stopPropagation();
@@ -76,7 +77,7 @@
   data-pin-group={isPinned ? (isBackBurner ? 'back' : 'front') : undefined}
   aria-label={label}
   aria-pressed={isPinned}
-  title={disabled ? 'Not granted to this device' : label}
+  title={hoverText}
   class={
     'flex items-center justify-center h-4 w-4 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
     'hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +

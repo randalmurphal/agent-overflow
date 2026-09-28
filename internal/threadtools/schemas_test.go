@@ -120,6 +120,19 @@ func TestPairedShapeCarriesComputerParameters(t *testing.T) {
 	}
 }
 
+// TestGroupSchemaOffersNoPin: a group is not pinned, so thread_group
+// takes no pin in either shape; its threads pin through thread_update.
+func TestGroupSchemaOffersNoPin(t *testing.T) {
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		if _, ok := schemaProperties(t, toolsByName(t, shape)["thread_group"])["pin"]; ok {
+			t.Error("thread_group offers a pin")
+		}
+		if _, ok := schemaProperties(t, toolsByName(t, shape)["thread_update"])["pin"]; !ok {
+			t.Error("thread_update lost its pin")
+		}
+	}
+}
+
 // TestSpawnDescriptionsStateLiveDefaults: the common case needs no
 // discovery call, so the schema itself says what a spawn inherits.
 func TestSpawnDescriptionsStateLiveDefaults(t *testing.T) {

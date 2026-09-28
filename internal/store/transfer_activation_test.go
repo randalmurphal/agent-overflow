@@ -86,6 +86,18 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 	if _, err := s.db.Exec(`UPDATE threads SET history_rev = 100, history_epoch = 50 WHERE id = 'returning'`); err != nil {
 		t.Fatal(err)
 	}
+	// Grouped and pinned inside the group when it left: it comes back
+	// ungrouped, and a thread leaving a group loses its pin.
+	group, err := s.CreateThreadGroup(defaultTestProjectID, "Away")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetThreadGroup([]string{"returning"}, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PinThread("returning"); err != nil {
+		t.Fatal(err)
+	}
 	outgoing := transferRequest("returning", "move", "outgoing")
 	if _, err := s.CreateThreadTransfer(outgoing); err != nil {
 		t.Fatal(err)
@@ -138,6 +150,13 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 	got, err := s.GetThread(child.ID)
 	if err != nil || got.ParentThreadID != target.ID || got.ForkedFromThreadID != target.ID {
 		t.Fatalf("local fork links lost: %+v %v", got, err)
+	}
+	returned, err := s.GetThread(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if returned.GroupID != "" || returned.PinnedAt != nil || returned.PinGroup != nil {
+		t.Fatalf("returned thread = group %q pin %v/%v, want it ungrouped and unpinned", returned.GroupID, returned.PinnedAt, returned.PinGroup)
 	}
 	photo, found, err := s.GetAttachment(oldAttachment.ID)
 	if err != nil || !found || photo != oldAttachment {

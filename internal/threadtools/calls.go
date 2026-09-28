@@ -124,14 +124,13 @@ func (c UpdateCall) Patched() bool {
 	return c.Title != nil || c.Archived != nil || c.Pin != nil || c.Group != nil
 }
 
-// GroupCall renames, deletes or pins one group.
+// GroupCall renames or deletes one group.
 type GroupCall struct {
 	GroupID   string `json:"group_id,omitempty"`
 	Group     string `json:"group,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
-	// Exactly one of the three is set.
+	// Exactly one of the two is set.
 	Rename string `json:"rename,omitempty"`
-	Pin    string `json:"pin,omitempty"`
 	Delete bool   `json:"delete,omitempty"`
 }
 
@@ -290,9 +289,8 @@ type GroupReport struct {
 	ProjectID  string `json:"project_id,omitempty"`
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
-	// Action is renamed, deleted or pinned.
+	// Action is renamed or deleted.
 	Action string `json:"action"`
-	Pin    string `json:"pin,omitempty"`
 	// Ungrouped counts the threads a delete took out of the group.
 	Ungrouped int `json:"ungrouped,omitempty"`
 }

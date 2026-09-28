@@ -57,6 +57,7 @@
     pruneSidebarDiscussionExpansion,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
+  import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
   import {
     canDropThreadInGroup,
     canUngroupDroppedThread,
@@ -356,11 +357,11 @@
       <!-- role="presentation" keeps the animated wrapper transparent to the
            list > listitem structure now that the divider shares it. -->
       <div role="presentation" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
-        {#if node.startsBackBurnerBlock}
+        {#if node.startsSection}
           <div
             role="separator"
             aria-hidden="true"
-            data-testid="thread-pin-group-divider"
+            data-testid="thread-section-divider"
             class="mx-2 my-1 border-t border-border-subtle/60"
           ></div>
         {/if}
@@ -369,7 +370,6 @@
             <ThreadGroupRow
               group={node.group}
               {pane}
-              indent={node.depth + 1}
               expanded={isGroupExpanded(node.group.id)}
               memberThreadIds={node.children.filter((child) => child.kind === 'thread').map((child) => child.thread.id)}
               dropActive={dropTargetGroupId === node.group.id && dropTargetAccepts}
@@ -379,8 +379,8 @@
         {:else}
           <!--
             A group member sits behind its own rail, dropped from the centre
-            of the group row's chevron (pin gutter 24px + half the 16px
-            chevron = ml-8), so "inside the group" is a line and not an
+            of the group row's chevron (GROUP_RAIL_LEFT_PX), so "inside the
+            group" is a line and not an
             indent the eye has to measure. Rows are siblings in one animated list (no
             wrapper per group), so each member draws its own segment; the
             1px pad-and-pull-back carries the border across the list's
@@ -389,7 +389,8 @@
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
             role="listitem"
-            class={node.ownerGroupId ? 'ml-8 border-l border-border-subtle/60 pb-px -mb-px' : ''}
+            class={node.ownerGroupId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
+            style:margin-left={node.ownerGroupId ? `${GROUP_RAIL_LEFT_PX}px` : null}
             data-group-member={node.ownerGroupId ? '' : null}
             ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); }}
             ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
@@ -400,6 +401,7 @@
               {pane}
               indent={node.depth + 1}
               inGroup={node.ownerGroupId !== null}
+              pinnable={node.isPinTarget}
               hasChildren={node.isExpandable}
               expanded={node.isExpanded}
               displayLiveStatus={node.displayLiveStatus}

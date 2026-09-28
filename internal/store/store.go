@@ -506,9 +506,10 @@ type Thread struct {
 	PinGroup *int `json:"pinGroup,omitempty"`
 	// GroupID names the sidebar thread group this row belongs to
 	// (migration v76), or "" for a top-level thread. SetThreadGroup is its
-	// ONE writer; a schema CHECK refuses a group and a pin on the same row
-	// ("one pin per visible row"), and the FK's ON DELETE SET NULL is what
-	// makes deleting a group ungroup its members instead of deleting them.
+	// ONE writer. A grouped row pins like any other; a row that joins or
+	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
+	// the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
+	// members instead of deleting them.
 	// Discussion children follow their root, so the frontend reads it on
 	// top-level nodes only.
 	GroupID string `json:"groupId,omitempty"`

@@ -74,7 +74,12 @@
     THREAD_ROW_DRAG_MIME,
     type ThreadDragPayload,
   } from '../../utils/threadDragPayload';
-  import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
+  import {
+    GROUP_MEMBER_PIN_SLOT_LEFT_PX,
+    sidebarGroupMemberPaddingLeftPx,
+    sidebarRowPaddingLeftPx,
+    sidebarTimeLabel,
+  } from '../../utils/sidebarRowMetrics';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { threadHasScope } from '../../transport/entityScopes';
@@ -86,6 +91,7 @@
     onSelectClick,
     indent = 0,
     inGroup = false,
+    pinnable = true,
     hasChildren = false,
     expanded = false,
     onToggleExpand,
@@ -105,8 +111,15 @@
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
     /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
     indent?: number;
-    /** Rendered inside a group's rail: no pin gutter (see sidebarRowMetrics). */
+    /** Rendered inside a group's rail. Such a row is never a jump target. */
     inGroup?: boolean;
+    /**
+     * The row is a pin target: a top-level thread or a group's direct
+     * member. A discussion child pins through its parent, so the owner of
+     * the tree decides; the row cannot tell from its indent alone. Both
+     * sidebar callers pass it; the default is a standalone top-level row.
+     */
+    pinnable?: boolean;
     /** True when this row represents a parent with at least one child below it. */
     hasChildren?: boolean;
     /** Controls the chevron direction when hasChildren is true. */
@@ -274,19 +287,13 @@
     }
   }
 
-  // The pin affordance only shows for top-level rows that are not in a
-  // group. Nested discussion children don't pin individually — the parent
-  // thread is the pin target for that whole subtree — and a grouped thread
-  // cannot hold a pin at all (one pin per visible row: the GROUP carries it,
-  // and the schema refuses a pin on a grouped row).
-  let showPinAffordance = $derived(indent <= 1 && !thread.groupId);
   let isPinned = $derived(thread.pinnedAt != null);
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
   // gives its rows.
   let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
   let isJumpTarget = $derived(
-    showPinAffordance && !inGroup && sidebarPinGroup(thread) === 'front',
+    pinnable && !inGroup && sidebarPinGroup(thread) === 'front',
   );
 
   // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
@@ -364,7 +371,11 @@
 
   // Indent + pin gutter come from utils/sidebarRowMetrics so a group row and
   // the member rows under it line up to the pixel.
-  let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent, inGroup));
+  let rowPaddingLeftPx = $derived(
+    inGroup ? sidebarGroupMemberPaddingLeftPx(indent) : sidebarRowPaddingLeftPx(indent),
+  );
+  // Inside a group the pin centres under the group's folder glyph.
+  let pinSlotLeftPx = $derived(inGroup ? GROUP_MEMBER_PIN_SLOT_LEFT_PX : 0);
 
   // A thread on an attached machine this client cannot reach right now
   // dims in place and stays readable from the replica (spec §10). Home is
@@ -461,7 +472,7 @@
     data-effective-status={effectiveStatus}
     data-machine-unreachable={machineUnreachable || undefined}
   >
-  {#if showPinAffordance}
+  {#if pinnable}
     <!--
       Leading pin slot. Absolutely positioned inside the row's reserved
       pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
@@ -469,12 +480,10 @@
       contributing a flex gap of its own. The wrapper is non-interactive;
       the button inside opts back in to pointer events when visible.
     -->
-    <div class="absolute inset-y-0 left-0 flex items-center justify-center w-6 pointer-events-none">
+    <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
       <ThreadRowPinButton
         {isPinned}
         pinGroup={thread.pinGroup}
-        pinLabel="Pin Thread"
-        unpinLabel="Unpin Thread"
         disabled={operateUngranted}
         onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
         onCycleBurner={() => void setThreadPinGroupAction(

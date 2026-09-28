@@ -876,7 +876,7 @@ func TestCreateThreadInGroupPublishesGroupedDraft(t *testing.T) {
 		t.Fatalf("listed frames = %d, want 1", listed)
 	}
 	rec.reset()
-	if err := app.store.DeleteThreadGroup(group.ID); err != nil {
+	if _, err := app.store.DeleteThreadGroup(group.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, GroupID: group.ID}); !errors.Is(err, store.ErrThreadGroupGone) {

@@ -89,11 +89,10 @@ func updateResultFor(t *testing.T, report threadtools.UpdateReport, threadID str
 func stringPtr(value string) *string { return &value }
 func boolPtr(value bool) *bool       { return &value }
 
-// A refusal is per thread: the grouped row keeps its title and its group,
-// and the thread beside it in the same call is still pinned and renamed.
-// The refused thread's rename must not land either, which is the whole
-// point of validating the resulting state before the first write.
-func TestThreadToolsUpdateRefusesOneThreadAndAppliesTheRest(t *testing.T) {
+// A grouped thread pins like any other: one call pins and renames a
+// grouped and an ungrouped thread alike, and the grouped one keeps its
+// group.
+func TestThreadToolsUpdatePinsGroupedAndUngroupedThreads(t *testing.T) {
 	f := newOrganizeFixture(t)
 	plain := f.thread(t, "plain-thread")
 	grouped := f.thread(t, "grouped-thread")
@@ -114,26 +113,27 @@ func TestThreadToolsUpdateRefusesOneThreadAndAppliesTheRest(t *testing.T) {
 		t.Fatalf("UpdateThreads: %v", err)
 	}
 
-	if row := updateResultFor(t, report, plain.ID); !row.Updated || row.Error != "" {
-		t.Fatalf("the ungrouped thread = %+v, want updated", row)
+	for _, id := range []string{plain.ID, grouped.ID} {
+		if row := updateResultFor(t, report, id); !row.Updated || row.Error != "" {
+			t.Fatalf("thread %s = %+v, want updated", id, row)
+		}
+		applied := f.reload(t, id)
+		if applied.Title != "Burner work" || applied.PinnedAt == nil || applied.PinGroup == nil || *applied.PinGroup != store.PinGroupBack {
+			t.Errorf("applied row = %+v, want the renamed back-burner thread", applied)
+		}
 	}
-	refused := updateResultFor(t, report, grouped.ID)
-	if refused.Updated || refused.ErrorCode != threadtools.CodeGrouped {
-		t.Fatalf("the grouped thread = %+v, want a %s refusal", refused, threadtools.CodeGrouped)
-	}
-
-	applied := f.reload(t, plain.ID)
-	if applied.Title != "Burner work" || applied.PinnedAt == nil || applied.PinGroup == nil || *applied.PinGroup != store.PinGroupBack {
-		t.Errorf("applied row = %+v, want the renamed back-burner thread", applied)
-	}
-	untouched := f.reload(t, grouped.ID)
-	if untouched.Title != grouped.Title || untouched.GroupID != group.ID || untouched.PinnedAt != nil {
-		t.Errorf("refused row = %+v, want it exactly as it was", untouched)
+	if got := f.reload(t, grouped.ID); got.GroupID != group.ID {
+		t.Errorf("the grouped thread left its group: %q", got.GroupID)
 	}
 
 	frames := f.threadFrames(t)
-	if len(frames) != 1 || frames[0].Thread == nil || frames[0].Thread.ID != plain.ID || frames[0].Action != triage.ThreadActionFull {
-		t.Fatalf("frames = %+v, want one full frame for %s", frames, plain.ID)
+	if len(frames) != 2 {
+		t.Fatalf("frames = %+v, want one full frame per thread", frames)
+	}
+	for _, frame := range frames {
+		if frame.Thread == nil || frame.Action != triage.ThreadActionFull || frame.Thread.PinnedAt == nil {
+			t.Errorf("frame = %+v, want a full frame carrying the pinned row", frame)
+		}
 	}
 }
 
@@ -206,17 +206,8 @@ func TestThreadToolsUpdateValidatesThePatchAndTheIds(t *testing.T) {
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
 		t.Fatalf("blank title code = %q, want %q (%+v)", code, threadtools.CodeInvalidRequest, blank)
 	}
-	both, err := f.adapter.UpdateThreads(t.Context(), caller("caller-thread"), threadtools.UpdateCall{
-		ThreadIDs: []string{thread.ID}, Group: stringPtr("Release"), Pin: stringPtr(threadtools.PinFront),
-	})
-	if code := publicCode(t, err); code != threadtools.CodeGrouped {
-		t.Fatalf("group and pin code = %q, want %q (%+v)", code, threadtools.CodeGrouped, both)
-	}
-	if groups, err := f.app.store.ListThreadGroups(); err != nil || len(groups) != 0 {
-		t.Fatalf("groups after a refused patch = %+v (err %v), want none created", groups, err)
-	}
 	if got := f.reload(t, thread.ID); got.Title != thread.Title {
-		t.Errorf("title = %q after two refused calls, want it untouched", got.Title)
+		t.Errorf("title = %q after a refused call, want it untouched", got.Title)
 	}
 	if frames := f.threadFrames(t); len(frames) != 0 {
 		t.Fatalf("a refused patch emitted %+v", frames)
@@ -350,8 +341,52 @@ func TestConcurrentSpawnsNamingOneNewGroupShareIt(t *testing.T) {
 	}
 }
 
-// Ungrouping and pinning in one call: the group move has to land first,
-// because a grouped row cannot hold a pin.
+// Grouping and pinning in one call: the group move lands first and clears
+// the pin of a row that changes group, and the pin then lands inside the
+// new group, even when it restates the tier the row held before the move.
+func TestThreadToolsUpdateGroupsAndPinsInOneCall(t *testing.T) {
+	f := newOrganizeFixture(t)
+	thread := f.thread(t, "group-pin-thread")
+	if _, _, err := f.app.store.PinThread(thread.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+
+	report, err := f.adapter.UpdateThreads(t.Context(), caller("caller-thread"), threadtools.UpdateCall{
+		ThreadIDs: []string{thread.ID}, Group: stringPtr("Release"), Pin: stringPtr(threadtools.PinFront),
+	})
+	if err != nil {
+		t.Fatalf("UpdateThreads: %v", err)
+	}
+	if row := updateResultFor(t, report, thread.ID); !row.Updated {
+		t.Fatalf("group and pin = %+v", row)
+	}
+	got := f.reload(t, thread.ID)
+	if got.GroupID == "" || got.PinnedAt == nil || (got.PinGroup != nil && *got.PinGroup != store.PinGroupFront) {
+		t.Fatalf("row = %+v, want it grouped and on the front burner", got)
+	}
+	if frames := f.groupFrames(t); len(frames) != 1 || frames[0].Action != "create" {
+		t.Fatalf("group frames = %+v, want the created group announced", frames)
+	}
+	frames := f.threadFrames(t)
+	if len(frames) != 1 || frames[0].Thread.GroupID != got.GroupID || frames[0].Thread.PinnedAt == nil {
+		t.Fatalf("thread frames = %+v, want one row grouped and pinned", frames)
+	}
+
+	// Moving to another group alone leaves the pin behind.
+	f.events.reset()
+	if _, err := f.adapter.UpdateThreads(t.Context(), caller("caller-thread"), threadtools.UpdateCall{
+		ThreadIDs: []string{thread.ID}, Group: stringPtr("Later"),
+	}); err != nil {
+		t.Fatalf("UpdateThreads move: %v", err)
+	}
+	moved := f.reload(t, thread.ID)
+	if moved.GroupID == got.GroupID || moved.GroupID == "" || moved.PinnedAt != nil || moved.PinGroup != nil {
+		t.Fatalf("row after a move between groups = %+v, want it unpinned in the new group", moved)
+	}
+}
+
+// Ungrouping and pinning in one call: leaving the group clears the pin the
+// row held inside it, and the pin in the call then lands on the top level.
 func TestThreadToolsUpdateUngroupsBeforeItPins(t *testing.T) {
 	f := newOrganizeFixture(t)
 	thread := f.thread(t, "regroup-thread")
@@ -361,6 +396,12 @@ func TestThreadToolsUpdateUngroupsBeforeItPins(t *testing.T) {
 	}
 	if _, err := f.app.store.SetThreadGroup([]string{thread.ID}, group.ID); err != nil {
 		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	if _, _, err := f.app.store.PinThread(thread.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	if _, _, err := f.app.store.SetThreadPinGroup(thread.ID, store.PinGroupBack); err != nil {
+		t.Fatalf("SetThreadPinGroup: %v", err)
 	}
 
 	report, err := f.adapter.UpdateThreads(t.Context(), caller("caller-thread"), threadtools.UpdateCall{
@@ -373,17 +414,17 @@ func TestThreadToolsUpdateUngroupsBeforeItPins(t *testing.T) {
 		t.Fatalf("ungroup and pin = %+v", row)
 	}
 	got := f.reload(t, thread.ID)
-	if got.GroupID != "" || got.PinnedAt == nil {
-		t.Fatalf("row = %+v, want it ungrouped and pinned", got)
+	if got.GroupID != "" || got.PinnedAt == nil || (got.PinGroup != nil && *got.PinGroup != store.PinGroupFront) {
+		t.Fatalf("row = %+v, want it ungrouped and on the front burner", got)
 	}
 	if frames := f.threadFrames(t); len(frames) != 1 {
 		t.Fatalf("frames = %+v, want one frame for one thread", frames)
 	}
 }
 
-// thread_group renames, pins and deletes, and a delete ungroups its members
-// rather than deleting them.
-func TestThreadToolsGroupRenamesPinsAndDeletes(t *testing.T) {
+// thread_group renames and deletes, and a delete ungroups its members
+// rather than deleting them, clearing the pins they held inside it.
+func TestThreadToolsGroupRenamesAndDeletes(t *testing.T) {
 	f := newOrganizeFixture(t)
 	callerThread := f.thread(t, "caller-thread")
 	member := f.thread(t, "member-thread")
@@ -394,6 +435,11 @@ func TestThreadToolsGroupRenamesPinsAndDeletes(t *testing.T) {
 	}
 	if _, err := f.app.store.SetThreadGroup([]string{member.ID, archivedMember.ID}, group.ID); err != nil {
 		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	for _, id := range []string{member.ID, archivedMember.ID} {
+		if _, _, err := f.app.store.PinThread(id); err != nil {
+			t.Fatalf("PinThread(%s): %v", id, err)
+		}
 	}
 	if _, _, err := f.app.store.ArchiveThread(archivedMember.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
@@ -415,39 +461,6 @@ func TestThreadToolsGroupRenamesPinsAndDeletes(t *testing.T) {
 		t.Fatalf("rename frames = %+v, want one patch carrying the new name", frames)
 	}
 
-	// Pinning an unpinned group to the back burner takes the sidebar's own
-	// two steps, and the group ends up on the back burner.
-	f.events.reset()
-	pinned, err := f.adapter.UpdateGroup(t.Context(), caller(callerThread.ID), threadtools.GroupCall{
-		GroupID: group.ID, Pin: threadtools.PinBack,
-	})
-	if err != nil {
-		t.Fatalf("UpdateGroup pin: %v", err)
-	}
-	if pinned.Action != "pinned" || pinned.Pin != threadtools.PinBack {
-		t.Fatalf("pin report = %+v", pinned)
-	}
-	row, err := f.app.store.GetThreadGroup(group.ID)
-	if err != nil {
-		t.Fatalf("GetThreadGroup: %v", err)
-	}
-	if row.PinnedAt == nil || row.PinGroup == nil || *row.PinGroup != store.PinGroupBack {
-		t.Fatalf("group row = %+v, want it on the back burner", row)
-	}
-	if frames := f.groupFrames(t); len(frames) == 0 {
-		t.Fatal("pinning a group said nothing")
-	}
-
-	// Unpinning clears both fields.
-	if _, err := f.adapter.UpdateGroup(t.Context(), caller(callerThread.ID), threadtools.GroupCall{
-		GroupID: group.ID, Pin: threadtools.PinNone,
-	}); err != nil {
-		t.Fatalf("UpdateGroup unpin: %v", err)
-	}
-	if row, err := f.app.store.GetThreadGroup(group.ID); err != nil || row.PinnedAt != nil || row.PinGroup != nil {
-		t.Fatalf("group row after unpin = %+v (err %v)", row, err)
-	}
-
 	// Delete counts the members it ungroups, archived ones included, and
 	// leaves every thread in place.
 	f.events.reset()
@@ -465,8 +478,8 @@ func TestThreadToolsGroupRenamesPinsAndDeletes(t *testing.T) {
 		t.Fatalf("delete frames = %+v, want one delete carrying the row", frames)
 	}
 	for _, id := range []string{member.ID, archivedMember.ID} {
-		if got := f.reload(t, id); got.GroupID != "" {
-			t.Errorf("thread %s still grouped as %q after the delete", id, got.GroupID)
+		if got := f.reload(t, id); got.GroupID != "" || got.PinnedAt != nil || got.PinGroup != nil {
+			t.Errorf("thread %s = group %q pin %v after the delete, want ungrouped and unpinned", id, got.GroupID, got.PinnedAt)
 		}
 	}
 }
@@ -502,10 +515,10 @@ func TestThreadToolsGroupRefusals(t *testing.T) {
 		t.Errorf("two actions code = %q, want %q", code, threadtools.CodeInvalidRequest)
 	}
 	_, err = f.adapter.UpdateGroup(t.Context(), caller(callerThread.ID), threadtools.GroupCall{
-		GroupID: group.ID, Pin: "sideways",
+		GroupID: group.ID,
 	})
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
-		t.Errorf("unknown pin code = %q, want %q", code, threadtools.CodeInvalidRequest)
+		t.Errorf("no action code = %q, want %q", code, threadtools.CodeInvalidRequest)
 	}
 	if frames := f.groupFrames(t); len(frames) != 0 {
 		t.Fatalf("a refused group call emitted %+v", frames)

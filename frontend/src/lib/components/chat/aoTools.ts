@@ -380,8 +380,9 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
   thread_group: {
     label: 'group',
     what: (input) => {
-      // The schema takes exactly one of rename, pin or delete, and names
-      // the group by `group` or `group_id`.
+      // The schema takes exactly one of rename or delete, and names the
+      // group by `group` or `group_id`. `pin` stays for calls recorded in
+      // history before groups stopped being pinnable.
       const name = str(input, 'group') || str(input, 'group_id');
       const rename = str(input, 'rename');
       if (rename) return `rename ${name || 'group'} → ${rename}`;

@@ -1877,22 +1877,28 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
                 args: { thread_ids: sweep, archived: true },
               },
             },
-            // A group carries the pin, so the two together are refused for
-            // the whole call.
+            // A thread inside a group pins like any other; the pin lands
+            // after the group move.
             {
               call: {
                 tool: 'thread_update',
                 args: { thread_ids: [beta], group: 'Release work', pin: 'front' },
               },
             },
+            // A group is not pinned: thread_group has no pin argument.
             {
               call: {
                 tool: 'thread_group',
                 args: { group: 'Release work', project_id: projectId, pin: 'front' },
               },
             },
+            {
+              call: {
+                tool: 'thread_group',
+                args: { group: 'Release work', project_id: projectId, rename: 'Release 27' },
+              },
+            },
             { capture: { var: 'GROUP', from: '${MCP_RESULT}', pattern: '"group_id":"([^"]+)"' } },
-            { call: { tool: 'thread_group', args: { group_id: '${GROUP}', rename: 'Release 27' } } },
           ],
           text: 'Sorted.',
         },
@@ -1945,27 +1951,26 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   expect(archivedFive.value!.results.every((row) => row.updated)).toBe(true);
   expect(archivedFive.value!.results.every((row) => !row.error)).toBe(true);
 
-  const contradictory = await awaitToolAnswer<UpdateAnswer>(harness, { tool: 'thread_update' });
-  expect(contradictory.isError).toBe(true);
-  expect(contradictory.text).toContain('thread_grouped');
+  const groupedAndPinned = await awaitToolAnswer<UpdateAnswer>(harness, { tool: 'thread_update' });
+  expect(groupedAndPinned.isError, groupedAndPinned.text).toBe(false);
+  expect(groupedAndPinned.value!.results[0]).toMatchObject({ thread_id: beta, updated: true });
 
   interface GroupAnswer {
     group_id: string;
     group: string;
     action: string;
-    pin?: string;
     ungrouped?: number;
     note?: string;
   }
-  const pinned = await awaitToolAnswer<GroupAnswer>(harness, { tool: 'thread_group' });
-  expect(pinned.isError, pinned.text).toBe(false);
-  expect(pinned.value!.action).toBe('pinned');
-  expect(pinned.value!.pin).toBe('front');
-  const groupId = pinned.value!.group_id;
+  const groupPin = await awaitToolAnswer<GroupAnswer>(harness, { tool: 'thread_group' });
+  expect(groupPin.isError).toBe(true);
+  expect(groupPin.text).toContain('Unknown argument');
 
   const renamedGroup = await awaitToolAnswer<GroupAnswer>(harness, { tool: 'thread_group' });
+  expect(renamedGroup.isError, renamedGroup.text).toBe(false);
   expect(renamedGroup.value!.action).toBe('renamed');
   expect(renamedGroup.value!.group).toBe('Release 27');
+  const groupId = renamedGroup.value!.group_id;
 
   // The sidebar is the same surface the user organizes by hand, and it
   // shows every one of those writes without a reload.
@@ -1983,7 +1988,9 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   expect(byId.get(alpha)!.title).toBe('Renamed by the agent');
   expect(byId.get(alpha)!.pinnedAt).toBeTruthy();
   expect(byId.get(beta)!.groupId).toBe(groupId);
+  expect(byId.get(beta)!.pinnedAt).toBeTruthy();
   expect(byId.get(gamma)!.groupId).toBe(groupId);
+  expect(byId.get(gamma)!.pinnedAt).toBeFalsy();
   // The row listing skips archived threads, so the archived one is simply
   // gone from it and the caller, which refused to archive itself, is not.
   expect(byId.has(delta)).toBe(false);
@@ -2008,8 +2015,10 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
 
   await expect(page.getByTestId('thread-group-row')).toHaveCount(0);
   await expect(page.getByTestId('thread-row').filter({ hasText: 'Beta notes' })).toBeVisible();
+  // Leaving the group clears the pin Beta held inside it.
   const after = await threadRows(harness);
   expect(after.find((row) => row.id === beta)!.groupId).toBeFalsy();
+  expect(after.find((row) => row.id === beta)!.pinnedAt).toBeFalsy();
 });
 
 test('thread_spawn cuts a worktree and forks an existing thread when asked to', async ({

@@ -10,7 +10,7 @@ import (
 //
 // Three actions, and the payload is the whole row in all of them:
 //   - "create" — a group that did not exist,
-//   - "patch"  — a rename or a pin move,
+//   - "patch"  — a rename,
 //   - "delete" — the group is gone; the row is the one that was removed,
 //     so a client that never saw it can still resolve the id.
 //
@@ -51,7 +51,7 @@ func (a *App) CreateThreadGroup(projectID string, name string) (store.ThreadGrou
 	return group, nil
 }
 
-// The five id-keyed group mutators below all route `home`: group ids join
+// The id-keyed group mutators below all route `home`: group ids join
 // the client's id-family index (methodFamilies.ts), so a group on another
 // machine resolves to that machine, and home is the fallback for an id the
 // index has never seen.
@@ -71,68 +71,32 @@ func (a *App) RenameThreadGroup(id string, name string) (store.ThreadGroup, erro
 }
 
 // DeleteThreadGroup removes the group and ungroups its members, active and
-// archived alike. It never deletes a thread.
+// archived alike. It never deletes a thread. A member leaving the group
+// loses its pin.
 //
-// The members' own rows are not re-emitted: a client that drops the group
-// on this frame has nowhere left to render a member under, and the next
-// ListThreads (or the row's own next update) carries the cleared groupId.
+// Each former member is announced with a thread:updated "full" frame before
+// the group's own "delete" frame, so no client holds a row naming a group
+// it has already dropped, and the cleared pins reach every client.
 //
 //ao:scope threads:operate
 //ao:route home
 func (a *App) DeleteThreadGroup(id string) error {
-	group, err := a.threadApplication().DeleteGroup(id)
+	group, members, err := a.threadApplication().DeleteGroup(id)
 	if err != nil {
 		return err
 	}
+	for _, thread := range members {
+		a.broadcastThreadRow(triage.ThreadActionFull, thread)
+	}
 	a.emitThreadGroup("delete", group)
 	return nil
-}
-
-// PinThreadGroup places the group on the front burner.
-//
-//ao:scope threads:operate
-//ao:route home
-func (a *App) PinThreadGroup(id string) (store.ThreadGroup, error) {
-	group, err := a.threadApplication().PinGroup(id)
-	if err != nil {
-		return store.ThreadGroup{}, err
-	}
-	a.emitThreadGroup("patch", group)
-	return group, nil
-}
-
-// UnpinThreadGroup clears the group's pin fields.
-//
-//ao:scope threads:operate
-//ao:route home
-func (a *App) UnpinThreadGroup(id string) (store.ThreadGroup, error) {
-	group, err := a.threadApplication().UnpinGroup(id)
-	if err != nil {
-		return store.ThreadGroup{}, err
-	}
-	a.emitThreadGroup("patch", group)
-	return group, nil
-}
-
-// SetThreadGroupPinGroup moves an already-pinned group between the front
-// and back burners.
-//
-//ao:scope threads:operate
-//ao:route home
-func (a *App) SetThreadGroupPinGroup(id string, group int) (store.ThreadGroup, error) {
-	updated, err := a.threadApplication().SetGroupPinGroup(id, group)
-	if err != nil {
-		return store.ThreadGroup{}, err
-	}
-	a.emitThreadGroup("patch", updated)
-	return updated, nil
 }
 
 // SetThreadGroup moves threads into groupID, or out of any group when it
 // is empty. It returns every row the call touched — the discussion
 // children that travelled with a named root included — and emits one
 // thread:updated "full" frame per row, because a move rewrites the
-// group and strips the pin together.
+// group and clears the pin of a row that changes group.
 //
 // The client routes this from the thread ids (methodFamilies.ts); home is
 // the single-backend fallback.

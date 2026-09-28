@@ -444,7 +444,7 @@ func (t threadToolsApp) projectOptions(projectID string) ([]threadtools.ProjectO
 			if group.ProjectID != project.ID {
 				continue
 			}
-			option.Groups = append(option.Groups, threadtools.GroupOption{ID: group.ID, Name: group.Name, Pin: threadPin(group.PinnedAt, group.PinGroup)})
+			option.Groups = append(option.Groups, threadtools.GroupOption{ID: group.ID, Name: group.Name})
 		}
 		out = append(out, option)
 	}

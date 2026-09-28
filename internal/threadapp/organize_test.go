@@ -122,12 +122,18 @@ func TestApplyOrganizePatchLeavesTheThreadUntouchedWhenAWriteFails(t *testing.T)
 	}
 }
 
-// TestApplyOrganizePatchRefusesTheWholePatchBeforeItWrites keeps the
-// planning refusals where they are: a pin on a thread its group already
-// pins is refused with nothing written, including the rename beside it.
-func TestApplyOrganizePatchRefusesTheWholePatchBeforeItWrites(t *testing.T) {
+// TestApplyOrganizePatchPinsGroupedThreads: a grouped thread takes a pin,
+// and a patch that sets a group and a pin lands the pin inside the new
+// group, including the tier the row already held before the move cleared
+// it. Leaving a group clears the pin.
+func TestApplyOrganizePatchPinsGroupedThreads(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
-	thread, err := service.Create(CreateOptions{ProjectID: "project"})
+	grouped, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	service.deps.NewID = func() string { return "moving" }
+	moving, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -135,25 +141,42 @@ func TestApplyOrganizePatchRefusesTheWholePatchBeforeItWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThreadGroup: %v", err)
 	}
-	if _, err := database.SetThreadGroup([]string{thread.ID}, group.ID); err != nil {
+	if _, err := database.SetThreadGroup([]string{grouped.ID}, group.ID); err != nil {
 		t.Fatalf("SetThreadGroup: %v", err)
 	}
 
-	_, err = service.ApplyOrganizePatch(thread.ID, OrganizePatch{
+	result, err := service.ApplyOrganizePatch(grouped.ID, OrganizePatch{
 		Title: patchString("Renamed"),
+		Pin:   patchString(PinBack),
+	})
+	if err != nil {
+		t.Fatalf("pin a grouped thread: %v", err)
+	}
+	if result.Thread.Title != "Renamed" || result.Thread.GroupID != group.ID || currentPinTier(result.Thread) != PinBack {
+		t.Errorf("grouped thread = %+v, want renamed and on the back burner inside its group", result.Thread)
+	}
+
+	// Pinned front before the move; the move clears it, so the same tier
+	// in the patch is a write, not a no-op.
+	if _, _, err := database.PinThread(moving.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	result, err = service.ApplyOrganizePatch(moving.ID, OrganizePatch{
+		Group: patchString("Release"),
 		Pin:   patchString(PinFront),
 	})
-	if !errors.Is(err, store.ErrThreadGrouped) {
-		t.Fatalf("error = %v, want store.ErrThreadGrouped", err)
-	}
-	after, err := database.GetThread(thread.ID)
 	if err != nil {
-		t.Fatalf("GetThread: %v", err)
+		t.Fatalf("group and pin: %v", err)
 	}
-	if after.Title == "Renamed" {
-		t.Error("the refused patch renamed the thread anyway")
+	if result.Thread.GroupID != group.ID || currentPinTier(result.Thread) != PinFront {
+		t.Errorf("moved thread = %+v, want it pinned front inside the group", result.Thread)
 	}
-	if after.PinnedAt != nil {
-		t.Errorf("the refused patch pinned the grouped row: %+v", after)
+
+	result, err = service.ApplyOrganizePatch(moving.ID, OrganizePatch{Group: patchString("")})
+	if err != nil {
+		t.Fatalf("ungroup: %v", err)
+	}
+	if result.Thread.GroupID != "" || currentPinTier(result.Thread) != PinNone || !result.Changed {
+		t.Errorf("ungrouped thread = %+v (changed %v), want it out of the group and unpinned", result.Thread, result.Changed)
 	}
 }

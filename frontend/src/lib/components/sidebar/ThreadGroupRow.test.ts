@@ -64,7 +64,6 @@ function renderRow(props: Record<string, unknown> = {}) {
     props: {
       group: mkGroup(),
       pane: createThreadPane(),
-      indent: 1,
       expanded: true,
       memberThreadIds: ['t1', 't2'],
       ...props,
@@ -348,37 +347,9 @@ describe('<ThreadGroupRow>', () => {
     expect(inFlightPayload()).toBeNull();
   });
 
-  it('names the pin affordance for a group, not a thread', () => {
+  it('renders no pin affordance: groups are not pinnable', () => {
     const { container } = renderRow();
-    const pin = container.querySelector('[data-testid="thread-row-pin"]') as HTMLElement;
-    expect(pin.getAttribute('aria-label')).toBe('Pin Group');
-  });
-
-  it('names the pinned affordance Unpin Group', () => {
-    const { container } = renderRow({ group: mkGroup({ pinnedAt: 1 }) });
-    const pin = container.querySelector('[data-testid="thread-row-pin"]') as HTMLElement;
-    expect(pin.getAttribute('aria-label')).toBe('Unpin Group');
-  });
-
-  it('pins and unpins the group from the gutter affordance', async () => {
-    const pin = setBindingMock('PinThreadGroup', vi.fn(async () => mkGroup({ pinnedAt: 1 })));
-    const { getByTestId } = renderRow();
-    await fireEvent.click(getByTestId('thread-row-pin'));
-    await flush();
-    expect(pin).toHaveBeenCalledWith('group-1');
-  });
-
-  it('right-clicking a pinned gutter affordance cycles the burner', async () => {
-    const move = setBindingMock(
-      'SetThreadGroupPinGroup',
-      vi.fn(async () => mkGroup({ pinnedAt: 1, pinGroup: 1 })),
-    );
-    const { getByTestId } = renderRow({ group: mkGroup({ pinnedAt: 1, pinGroup: 0 }) });
-
-    await fireEvent.contextMenu(getByTestId('thread-row-pin'));
-    await flush();
-
-    expect(move).toHaveBeenCalledWith('group-1', 1);
+    expect(container.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
   });
 
   it('a left click on the row itself closes its open context menu', async () => {
@@ -424,14 +395,8 @@ describe('<ThreadGroupRow> without threads:operate', () => {
     expect(queryByLabelText('Rename Group')).toBeNull();
   });
 
-  it('renders the pin and New Thread in Group controls inert with the reason', async () => {
-    const pin = setBindingMock('PinThreadGroup', vi.fn());
-    const { getByTestId, getByRole } = renderRow();
-    const pinBtn = getByTestId('thread-row-pin') as HTMLButtonElement;
-    expect(pinBtn.disabled).toBe(true);
-    await fireEvent.click(pinBtn);
-    await flush();
-    expect(pin).not.toHaveBeenCalled();
+  it('renders the New Thread in Group control inert with the reason', async () => {
+    const { getByRole } = renderRow();
     const create = getByRole('button', { name: 'New Thread in Group' }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
     expect(create.title).toBe(INERT);

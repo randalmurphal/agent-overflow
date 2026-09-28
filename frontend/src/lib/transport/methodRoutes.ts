@@ -265,7 +265,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3558532873: 'workspace', // OpenWorkspaceDiff
 	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
-	842795367: 'home', // PinThreadGroup
 	1315440605: 'selected', // PostChannelMessage
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
@@ -361,7 +360,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
 	2514763466: 'home', // SetThreadGroup
-	4218979176: 'home', // SetThreadGroupPinGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	3978807241: 'home', // SetWSLDistroPreference
@@ -401,7 +399,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2561521885: 'project', // UnarchiveProject
 	3655125512: 'thread', // UnarchiveThread
 	3175043037: 'thread', // UnpinThread
-	48743460: 'home', // UnpinThreadGroup
 	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
 	3406073706: 'home', // UpdateClientDeviceName

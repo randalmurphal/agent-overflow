@@ -103,7 +103,6 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
     for (const label of [
       'New Thread',
       'Rename Group',
-      'Pin Group',
       'Archive Threads (2)',
       'Ungroup All',
       'Delete Group',
@@ -112,7 +111,7 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
       expect(row.getAttribute('aria-disabled'), label).toBe('true');
       expect(row.getAttribute('title'), label).toBe(INERT);
     }
-    expect(visibleLabels(baseElement)).toHaveLength(6);
+    expect(visibleLabels(baseElement)).toHaveLength(5);
     await fireEvent.click(getByRole('menuitem', { name: 'Delete Group' }));
     await flush();
     expect(rename).not.toHaveBeenCalled();
@@ -146,34 +145,15 @@ describe('<ThreadGroupContextMenu>', () => {
     expect(getFocusedPaneOrNull()?.thread?.groupId).toBe(group.id);
   });
 
-  it('renders the unpinned item set in order', () => {
+  it('renders the item set in order, with no pin items', () => {
     const { baseElement } = renderMenu();
     expect(visibleLabels(baseElement)).toEqual([
       'New Thread',
       'Rename Group',
-      'Pin Group',
       'Archive Threads (2)',
       'Ungroup All',
       'Delete Group',
     ]);
-  });
-
-  it('swaps in the burner move and unpin once the group is pinned', () => {
-    const { baseElement } = renderMenu(mkGroup({ pinnedAt: 1, pinGroup: 0 }));
-    expect(visibleLabels(baseElement)).toEqual([
-      'New Thread',
-      'Rename Group',
-      'Move to Back Burner',
-      'Unpin Group',
-      'Archive Threads (2)',
-      'Ungroup All',
-      'Delete Group',
-    ]);
-  });
-
-  it('offers the front burner from the back one', () => {
-    const { baseElement } = renderMenu(mkGroup({ pinnedAt: 1, pinGroup: 1 }));
-    expect(visibleLabels(baseElement)).toContain('Move to Front Burner');
   });
 
   it('disables the member actions on an empty group rather than hiding them', () => {

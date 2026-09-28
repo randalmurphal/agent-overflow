@@ -437,11 +437,11 @@ describe('activityOf', () => {
 
 // ── Thread groups ────────────────────────────────────────────────────────
 //
-// A group is a row in the NORMAL sort, not a third pin tier: it bubbles
-// its members' status and activity exactly the way a discussion parent
-// does, and it can be pinned to either burner like a thread. Its top row
-// is not a thread, so every helper that used to read `node.thread`
-// discriminates on `node.kind` instead.
+// Groups are a section of their own above the pin blocks and are never
+// pinned. Inside that section a group bubbles its members' status and
+// activity the way a discussion parent does, and its members pin like any
+// top-level thread. Its top row is not a thread, so every helper that used
+// to read `node.thread` discriminates on `node.kind` instead.
 
 describe('buildSidebarThreadTree with groups', () => {
   it('nests a top-level member under its group and leaves others alone', () => {
@@ -486,7 +486,7 @@ describe('buildSidebarThreadTree with groups', () => {
       groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({}),
     });
-    expect(nodeIds(tree)).toEqual(['orphan', 'g1']);
+    expect(nodeIds(tree)).toEqual(['g1', 'orphan']);
   });
 
   it('gives a group no status of its own and bubbles its members', () => {
@@ -506,16 +506,28 @@ describe('buildSidebarThreadTree with groups', () => {
     expect(group.latestActivityAt).toBe(20);
   });
 
-  it('sorts a group by its bubbled status and activity, among thread rows', () => {
-    const member = mkThread('member', { groupId: 'g1', updatedAt: 10 });
-    const running = mkThread('running', { updatedAt: 9000 });
-    const idle = mkThread('idle', { updatedAt: 8000 });
+  it('sorts groups by bubbled status and activity within their own section', () => {
+    const quiet = mkThread('quiet-member', { groupId: 'g-quiet', updatedAt: 9000 });
+    const blocked = mkThread('blocked-member', { groupId: 'g-blocked', updatedAt: 10 });
     const tree = buildSidebarThreadTree({
-      threads: [member, running, idle],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({ member: 'error', running: 'running' }),
+      threads: [quiet, blocked],
+      groups: [mkGroup('g-quiet'), mkGroup('g-blocked'), mkGroup('g-empty', { updatedAt: 5000 })],
+      liveStatusOf: liveStatusMap({ 'blocked-member': 'error' }),
     });
-    expect(nodeIds(tree)).toEqual(['g1', 'running', 'idle']);
+    expect(nodeIds(tree)).toEqual(['g-blocked', 'g-quiet', 'g-empty']);
+  });
+
+  it('puts every group above pinned and needs-attention threads', () => {
+    const idleMember = mkThread('idle-member', { groupId: 'g1', updatedAt: 1 });
+    const front = mkThread('front', { pinnedAt: 5, updatedAt: 99_000 });
+    const back = mkThread('back', { pinnedAt: 6, pinGroup: 1, updatedAt: 99_000 });
+    const blocked = mkThread('blocked', { updatedAt: 99_000 });
+    const tree = buildSidebarThreadTree({
+      threads: [idleMember, front, back, blocked],
+      groups: [mkGroup('g1'), mkGroup('g-empty')],
+      liveStatusOf: liveStatusMap({ blocked: 'pending-approval' }),
+    });
+    expect(nodeIds(tree)).toEqual(['g1', 'g-empty', 'front', 'back', 'blocked']);
   });
 
   it('falls back to the group updatedAt for activity when it is empty', () => {
@@ -524,21 +536,39 @@ describe('buildSidebarThreadTree with groups', () => {
       groups: [mkGroup('g1', { updatedAt: 900 })],
       liveStatusOf: liveStatusMap({}),
     });
-    expect(nodeIds(tree)).toEqual(['g1', 'other']);
     expect(tree[0].latestActivityAt).toBe(900);
   });
 
-  it('puts a pinned group in its burner block, ordered by bubbled status', () => {
-    const front = mkThread('front-thread', { pinnedAt: 5, updatedAt: 10 });
-    const backMember = mkThread('back-member', { groupId: 'gb', updatedAt: 10 });
-    const plain = mkThread('plain', { updatedAt: 99_000 });
+  it('orders members front burner, back burner, then unpinned by status', () => {
     const tree = buildSidebarThreadTree({
-      threads: [front, backMember, plain],
-      groups: [mkGroup('gb', { pinnedAt: 7, pinGroup: 1 })],
-      liveStatusOf: liveStatusMap({}),
+      threads: [
+        mkThread('loose-blocked', { groupId: 'g1', updatedAt: 99_000 }),
+        mkThread('back', { groupId: 'g1', pinnedAt: 2, pinGroup: 1, updatedAt: 50 }),
+        mkThread('loose-idle', { groupId: 'g1', updatedAt: 98_000 }),
+        mkThread('front', { groupId: 'g1', pinnedAt: 1, pinGroup: 0, updatedAt: 1 }),
+      ],
+      groups: [mkGroup('g1')],
+      liveStatusOf: liveStatusMap({ 'loose-blocked': 'error' }),
     });
-    expect(nodeIds(tree)).toEqual(['front-thread', 'gb', 'plain']);
-    expect(tree[1].sortGroup).toBe('pinned');
+    expect(nodeIds(tree[0].children)).toEqual(['front', 'back', 'loose-blocked', 'loose-idle']);
+  });
+
+  it('bubbles a running member past a pinned idle one', () => {
+    // A member's pin orders it inside the group; it must not stand in for
+    // the group's status, or a pinned idle member would sink a group
+    // whose other member is blocked.
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('pinned-idle', { groupId: 'g1', pinnedAt: 1, updatedAt: 10 }),
+        mkThread('blocked', { groupId: 'g1', updatedAt: 5 }),
+        mkThread('other-running', { groupId: 'g2', updatedAt: 1 }),
+      ],
+      groups: [mkGroup('g1'), mkGroup('g2')],
+      liveStatusOf: liveStatusMap({ blocked: 'pending-approval', 'other-running': 'running' }),
+    });
+    expect(tree[0].kind === 'group' && tree[0].group.id).toBe('g1');
+    expect(tree[0].displayLiveStatus).toBe('pending-approval');
+    expect(tree[0].sortGroup).toBe('needs-attention');
   });
 
   it('never lets a group win the draft block', () => {

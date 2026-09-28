@@ -133,15 +133,22 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	if got := rec.snapshot(); len(got) != 0 {
 		t.Fatalf("a refused move emitted %+v", got)
 	}
-	if _, err := app.PinThread("t-root"); !errors.Is(err, store.ErrThreadGrouped) {
-		t.Fatalf("pinning a grouped row: error = %v, want ErrThreadGrouped", err)
+	// A grouped row pins like any other.
+	pinned, err := app.PinThread("t-root")
+	if err != nil {
+		t.Fatalf("pinning a grouped row: %v", err)
 	}
-	if got := rec.snapshot(); len(got) != 0 {
-		t.Fatalf("a refused pin emitted %+v", got)
+	if pinned.PinnedAt == nil || pinned.GroupID != group.ID {
+		t.Fatalf("pinned grouped row = %+v, want pinned inside the group", pinned)
+	}
+	if rows := emittedThreadRows(rec); len(rows) != 1 || rows[0].PinnedAt == nil {
+		t.Fatalf("pin on a grouped row emitted %+v, want the pinned row", rows)
 	}
 
-	// Delete carries the row as it was, so the frame still names the group,
-	// and emits no thread rows: the client drops the membership itself.
+	// Delete announces every former member, ungrouped and unpinned, before
+	// the group frame, which carries the row as it was so it still names
+	// the group.
+	rec.reset()
 	if err := app.DeleteThreadGroup(group.ID); err != nil {
 		t.Fatalf("DeleteThreadGroup: %v", err)
 	}
@@ -149,8 +156,17 @@ func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) 
 	if len(frames) != 1 || frames[0].Action != "delete" || frames[0].Group.Name != "Port work" {
 		t.Fatalf("delete frames = %+v, want one delete carrying the row", frames)
 	}
-	if rows := emittedThreadRows(rec); len(rows) != 0 {
-		t.Fatalf("delete emitted thread rows %+v", rows)
+	rows = emittedThreadRows(rec)
+	if len(rows) != 2 {
+		t.Fatalf("delete emitted thread rows %+v, want the root and its child", rows)
+	}
+	for _, row := range rows {
+		if row.GroupID != "" || row.PinnedAt != nil || row.PinGroup != nil {
+			t.Errorf("emitted member %s = %+v, want ungrouped and unpinned", row.ID, row)
+		}
+	}
+	if calls := rec.snapshot(); calls[len(calls)-1].Channel != eventchan.ThreadGroupUpdated.String() {
+		t.Errorf("the group frame is not last: %+v", calls)
 	}
 	after, err := app.store.GetThread("t-child")
 	if err != nil {

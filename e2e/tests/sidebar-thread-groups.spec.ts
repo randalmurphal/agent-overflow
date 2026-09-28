@@ -1,9 +1,12 @@
 // Sidebar thread groups across the real SQLite -> App RPC -> transport ->
 // Svelte path. The first case proves the two drag gestures the spec names
 // (onto a group row = move in, onto the list outside any group = ungroup),
-// plus the collapsed member count. The second proves the menu path: New
-// Group… from a thread row opens inline rename, the rename persists, the
-// group pins, and deleting the group returns its members to the list.
+// the collapsed member count, and that a member pins inside its group and
+// loses the pin on leaving it. The second proves the menu path: New Group…
+// from a thread row opens inline rename, the rename persists, a member pins
+// from its menu while the group offers no pin, the group section sits above
+// the pin blocks behind a divider, and deleting the group returns its
+// members to the list unpinned.
 // Spec: docs/specs/sidebar-thread-groups.md.
 // Collapse keeps only the focused member visible across pane switches,
 // backend updates and reload.
@@ -20,7 +23,6 @@ interface ThreadRow {
 interface ThreadGroup {
   id: string;
   name: string;
-  pinnedAt?: number;
 }
 
 function seedProject(name: string, titles: string[]) {
@@ -55,10 +57,22 @@ test('drag onto a group moves in, drag onto the list outside it moves out', asyn
   await harness.open(page);
   const groupRow = page.getByTestId('thread-group-row');
   await expect(groupRow).toHaveCount(1);
-  // Grouping stripped Alpha's pin: the group carries the only pin affordance.
-  await expect(groupRow.getByTestId('thread-row-pin')).toHaveAttribute('aria-label', 'Pin Group');
+  // Groups are not pinnable, and grouping stripped Alpha's pin: a thread
+  // starts unpinned in its group and pins there on its own.
+  await expect(groupRow.getByTestId('thread-row-pin')).toHaveCount(0);
   const alphaRow = page.getByTestId('thread-row').filter({ hasText: 'Alpha' });
-  await expect(alphaRow.getByTestId('thread-row-pin')).toHaveCount(0);
+  const alphaPin = alphaRow.getByTestId('thread-row-pin');
+  await expect(alphaPin).toHaveAttribute('aria-label', 'Pin Thread');
+  await alphaRow.hover();
+  await alphaPin.click();
+  await expect(alphaPin).toHaveAttribute('data-pin-group', 'front');
+  await alphaPin.click({ button: 'right' });
+  await expect(alphaPin).toHaveAttribute('data-pin-group', 'back');
+  await expect.poll(async () => {
+    const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+    const alpha = rows.find((row) => row.id === alphaId);
+    return [alpha?.groupId, alpha?.pinnedAt != null];
+  }).toEqual([group.id, true]);
 
   // Drag Beta onto the group row.
   const betaRow = page.getByTestId('thread-row').filter({ hasText: 'Beta' });
@@ -82,11 +96,15 @@ test('drag onto a group moves in, drag onto the list outside it moves out', asyn
     const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
     return rows.find((row) => row.id === alphaId)?.groupId ?? null;
   }).toBeNull();
-  // Leaving a group does not restore the pin.
-  await expect(alphaRow.getByTestId('thread-row-pin')).toHaveAttribute('aria-label', 'Pin Thread');
+  // Leaving a group clears the pin it held there.
+  await expect(alphaPin).toHaveAttribute('aria-label', 'Pin Thread');
+  await expect.poll(async () => {
+    const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+    return rows.find((row) => row.id === alphaId)?.pinnedAt ?? null;
+  }).toBeNull();
 });
 
-test('New Group… from a thread row renames inline, pins, and deletes back to the list', async ({
+test('New Group… from a thread row renames inline, pins a member, and deletes back to the list', async ({
   harness,
   page,
 }) => {
@@ -118,19 +136,28 @@ test('New Group… from a thread row renames inline, pins, and deletes back to t
     return Boolean(rows.find((row) => row.id === oneId)?.groupId);
   }).toBe(true);
 
-  // Grouped rows lose the pin items; the group gains them.
+  // A grouped row keeps its own pin items; the group has none.
   await oneRow.click({ button: 'right' });
-  await expect(page.getByRole('menuitem', { name: 'Pin Thread' })).toHaveCount(0);
   await expect(page.getByRole('menuitem', { name: 'Remove from Group' })).toHaveCount(1);
+  await page.getByRole('menuitem', { name: 'Pin Thread' }).click();
+  await expect(oneRow.getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
+  await groupRow.click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Pin Group' })).toHaveCount(0);
   await page.keyboard.press('Escape');
 
-  await groupRow.click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Pin Group' }).click();
-  await expect(groupRow.getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
-  await expect.poll(async () => {
-    const groups = await harness.rpc<ThreadGroup[]>('ListThreadGroups');
-    return groups[0]?.pinnedAt != null;
-  }).toBe(true);
+  // The group section sits above a pinned top-level thread, a divider
+  // between them, and a front-burner member is not a numbered jump target.
+  const twoRow = page.getByTestId('thread-row').filter({ hasText: 'Two' });
+  await twoRow.hover();
+  await twoRow.getByTestId('thread-row-pin').click();
+  await expect(twoRow.getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
+  const list = page.getByTestId('project-thread-list');
+  await expect.poll(async () => list.locator('[data-sidebar-group-id], [data-sidebar-thread-id]').evaluateAll(
+    (rows) => rows.map((row) => row.textContent?.includes('Release prep') ? 'group' : row.textContent?.includes('Two') ? 'two' : 'one'),
+  )).toEqual(['group', 'one', 'two']);
+  await expect(list.getByTestId('thread-section-divider')).toHaveCount(1);
+  await expect(oneRow).not.toHaveAttribute('data-sidebar-jump-target');
+  await expect(twoRow).toHaveAttribute('data-sidebar-jump-target', '');
 
   // Delete returns the member to the top level and keeps the thread.
   await groupRow.click({ button: 'right' });
@@ -143,8 +170,15 @@ test('New Group… from a thread row renames inline, pins, and deletes back to t
   await expect(page.getByTestId('thread-row')).toHaveCount(2);
   await expect.poll(async () => {
     const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
-    return rows.map((row) => row.groupId ?? null);
-  }).toEqual([null, null]);
+    return rows.find((row) => row.id === oneId)?.groupId ?? null;
+  }).toBeNull();
+  // The member's in-group pin left with the group; Two keeps its own.
+  await expect.poll(async () => {
+    const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+    return rows.find((row) => row.id === oneId)?.pinnedAt ?? null;
+  }).toBeNull();
+  await expect(oneRow.getByTestId('thread-row-pin')).toHaveAttribute('aria-label', 'Pin Thread');
+  await expect(twoRow.getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
 });
 
 test('a collapsed group keeps only its focused member through focus changes and reload', async ({ harness, page }) => {

@@ -99,34 +99,130 @@ describe('flattenSidebarThreadTree', () => {
     expect(flat[0].isExpanded).toBe(false);
   });
 
-  it('marks exactly the first back-burner top-level row when both pin blocks exist', () => {
-    const tree = buildSidebarThreadTree({
+  // One row per case: the threads/groups present, and the [id, startsSection]
+  // pairs the flatten must produce. Sections run groups, front, back,
+  // unpinned; a divider opens each one after the first that has rows.
+  it.each<{ name: string; threads: Thread[]; groups?: ThreadGroup[]; want: [string, boolean][] }>([
+    {
+      name: 'all four sections',
+      threads: [
+        mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
+        mkThread('back', { pinnedAt: 2, pinGroup: 1 }),
+        mkThread('loose-a', { updatedAt: 2 }),
+        mkThread('loose-b', { updatedAt: 1 }),
+      ],
+      groups: [mkGroup('g1', { updatedAt: 2 }), mkGroup('g2', { updatedAt: 1 })],
+      want: [['g1', false], ['g2', false], ['front', true], ['back', true], ['loose-a', true], ['loose-b', false]],
+    },
+    {
+      name: 'groups straight onto unpinned',
+      threads: [mkThread('loose')],
+      groups: [mkGroup('g1')],
+      want: [['g1', false], ['loose', true]],
+    },
+    {
+      name: 'back burner onto unpinned, no groups or front burner',
+      threads: [mkThread('back', { pinnedAt: 1, pinGroup: 1 }), mkThread('loose')],
+      want: [['back', false], ['loose', true]],
+    },
+    {
+      name: 'front burner onto back burner',
       threads: [
         mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
         mkThread('back-a', { pinnedAt: 2, pinGroup: 1, updatedAt: 2 }),
         mkThread('back-b', { pinnedAt: 3, pinGroup: 1, updatedAt: 1 }),
       ],
+      want: [['front', false], ['back-a', true], ['back-b', false]],
+    },
+    {
+      name: 'a single section',
+      threads: [mkThread('back-a', { pinnedAt: 1, pinGroup: 1, updatedAt: 2 }), mkThread('back-b', { pinnedAt: 2, pinGroup: 1, updatedAt: 1 })],
+      want: [['back-a', false], ['back-b', false]],
+    },
+    {
+      name: 'a draft above everything opens no section',
+      threads: [mkThread('draft', { isDraft: true, createdAt: 5 }), mkThread('front', { pinnedAt: 1 })],
+      groups: [mkGroup('g1')],
+      want: [['draft', false], ['g1', false], ['front', true]],
+    },
+  ])('marks section dividers: $name', ({ threads, groups, want }) => {
+    const tree = buildSidebarThreadTree({ threads, groups, liveStatusOf: liveStatusMap({}) });
+    const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
+    expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual(want);
+  });
+
+  it('never marks a divider inside a group, pinned members included', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('m-front', { groupId: 'g1', pinnedAt: 1, pinGroup: 0 }),
+        mkThread('m-back', { groupId: 'g1', pinnedAt: 2, pinGroup: 1 }),
+        mkThread('m-loose', { groupId: 'g1' }),
+        mkThread('loose'),
+      ],
+      groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({}),
     });
     const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
+    expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
+      ['g1', false],
+      ['m-front', false],
+      ['m-back', false],
+      ['m-loose', false],
+      ['loose', true],
+    ]);
+  });
+});
 
-    expect(flat.map((node) => [nodeId(node), node.startsBackBurnerBlock])).toEqual([
-      ['front', false],
-      ['back-a', true],
-      ['back-b', false],
+describe('flattenSidebarThreadTree isPinTarget', () => {
+  const tree = () => buildSidebarThreadTree({
+    threads: [
+      mkThread('top'),
+      mkThread('child', { parentThreadId: 'top' }),
+      mkThread('member', { groupId: 'g1' }),
+      mkThread('member-child', { parentThreadId: 'member' }),
+    ],
+    groups: [mkGroup('g1')],
+    liveStatusOf: liveStatusMap({}),
+  });
+
+  it('is true for top-level threads and direct group members only', () => {
+    const flat = flattenSidebarThreadTree({
+      nodes: tree(),
+      expandedThreadIds: new Set(['top', 'member']),
+    });
+    expect(flat.map((node) => [nodeId(node), node.isPinTarget])).toEqual([
+      ['g1', false],
+      ['member', true],
+      ['member-child', false],
+      ['top', true],
+      ['child', false],
     ]);
   });
 
-  it('does not mark a divider when only one pin block exists', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        mkThread('back-a', { pinnedAt: 1, pinGroup: 1 }),
-        mkThread('back-b', { pinnedAt: 2, pinGroup: 1 }),
-      ],
-      liveStatusOf: liveStatusMap({}),
+  it.each([
+    ['member', true],
+    ['member-child', false],
+  ])('keeps the tree answer for %s previewed under a collapsed group', (active, want) => {
+    const flat = flattenSidebarThreadTree({
+      nodes: tree(),
+      expandedThreadIds: new Set(),
+      collapsedGroupIds: new Set(['g1']),
+      activeThreadId: active,
     });
-    const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
-    expect(flat.every((node) => !node.startsBackBurnerBlock)).toBe(true);
+    const row = flat.find((node) => nodeId(node) === active);
+    // The preview row renders one level below the group whatever its tree
+    // depth, so `depth` alone would call the nested child a member.
+    expect(row?.depth).toBe(1);
+    expect(row?.isPinTarget).toBe(want);
+  });
+
+  it('is false for a discussion child previewed under its collapsed parent', () => {
+    const flat = flattenSidebarThreadTree({
+      nodes: tree(),
+      expandedThreadIds: new Set(),
+      activeThreadId: 'child',
+    });
+    expect(flat.find((node) => nodeId(node) === 'child')?.isPinTarget).toBe(false);
   });
 });
 
@@ -492,16 +588,16 @@ describe('flattenSidebarThreadTree with groups', () => {
     expect(flat[0].children).toHaveLength(2);
   });
 
-  it('marks the back-burner block start on a pinned group row', () => {
+  it('sorts groups above the pin blocks with a divider between', () => {
     const tree = buildSidebarThreadTree({
-      threads: [mkThread('front', { pinnedAt: 1 })],
-      groups: [mkGroup('gb', { pinnedAt: 2, pinGroup: 1 })],
+      threads: [mkThread('front', { pinnedAt: 1, updatedAt: 100 })],
+      groups: [mkGroup('gb', { updatedAt: 1 })],
       liveStatusOf: liveStatusMap({}),
     });
     const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
-    expect(flat.map((node) => [nodeId(node), node.startsBackBurnerBlock])).toEqual([
-      ['front', false],
-      ['gb', true],
+    expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
+      ['gb', false],
+      ['front', true],
     ]);
   });
 });
@@ -525,17 +621,32 @@ describe('previewSidebarThreads with groups', () => {
     expect(nodeIds(result.hiddenNodes)).toEqual(['t7', 't8']);
   });
 
-  it('counts a pinned group as one preview slot', () => {
-    const rest = Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+  it('keeps every group visible above the cut, each counting one slot', () => {
+    // Groups sit above the always-visible pins, so none can fall under
+    // "Show more"; like pins they spend the slots the unpinned tail would.
+    const groups = Array.from({ length: 4 }, (_, i) => mkGroup(`g${i}`, { updatedAt: i }));
+    const pins = Array.from({ length: 2 }, (_, i) => mkThread(`p${i}`, { pinnedAt: 1, updatedAt: 50 - i }));
+    const rest = Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 1000 - i }));
     const tree = buildSidebarThreadTree({
-      threads: [mkThread('m', { groupId: 'g1', updatedAt: 1 }), ...rest],
-      groups: [mkGroup('g1', { pinnedAt: 3 })],
+      threads: [...pins, ...rest],
+      groups,
       liveStatusOf: liveStatusMap({}),
     });
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
-    expect(nodeId(result.visibleNodes[0])).toBe('g1');
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
-    expect(nodeIds(result.hiddenNodes)).toEqual(['t7', 't8', 't9', 't10', 't11']);
+    expect(nodeIds(result.visibleNodes)).toEqual(['g3', 'g2', 'g1', 'g0', 'p0', 'p1', 't0', 't1']);
+    expect(result.hiddenNodes.every((node) => node.kind === 'thread')).toBe(true);
+  });
+
+  it('keeps groups visible even when they alone exceed the limit', () => {
+    const groups = Array.from({ length: THREAD_PREVIEW_LIMIT + 2 }, (_, i) => mkGroup(`g${i}`));
+    const tree = buildSidebarThreadTree({
+      threads: [mkThread('loose')],
+      groups,
+      liveStatusOf: liveStatusMap({}),
+    });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
+    expect(result.visibleNodes.filter((node) => node.kind === 'group')).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
+    expect(nodeIds(result.hiddenNodes)).toEqual(['loose']);
   });
 
   it('floats a group whose member is open in a pane', () => {

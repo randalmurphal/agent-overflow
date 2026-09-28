@@ -235,8 +235,7 @@ func TestThreadToolsAdapterReadsAThreadRow(t *testing.T) {
 	}
 
 	// Pinned to the back burner: pinned_at is what makes a row pinned at
-	// all, and pin_group is only the tier. A grouped row holds no pin of
-	// its own, so the pin fixture is a second thread.
+	// all, and pin_group is only the tier.
 	pinned := f.thread(t, "pinned-thread")
 	if _, _, err := f.app.store.PinThread(pinned.ID); err != nil {
 		t.Fatalf("PinThread: %v", err)

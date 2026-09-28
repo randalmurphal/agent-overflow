@@ -6,8 +6,9 @@
 // of "await the RPC, then reconcile the store".
 //
 // Every action reconciles from the RPC's OWN response rather than from
-// what the caller asked for — the backend trims names and strips a pin on
-// grouping, so the returned row is the only truthful copy. The matching
+// what the caller asked for — the backend trims names and clears a pin when
+// a thread enters or leaves a group, so the returned row is the only
+// truthful copy. The matching
 // `thread-group:updated` / `thread:updated` events arrive right after and
 // re-apply the same values, which is a no-op.
 //
@@ -17,11 +18,8 @@
 import {
   CreateThreadGroup,
   DeleteThreadGroup,
-  PinThreadGroup,
   RenameThreadGroup,
   SetThreadGroup,
-  SetThreadGroupPinGroup,
-  UnpinThreadGroup,
 } from '../../stores/bindings';
 import {
   removeThreadGroup,
@@ -41,7 +39,6 @@ import { threadBackend } from '../../transport/entityIndex';
 import type { BackendKey } from '../../transport/backendKey';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Thread, ThreadGroup } from '../../types/models';
-import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
 
 /** The name a group is born with; the row opens inline rename on top of it. */
 export const NEW_THREAD_GROUP_NAME = 'New Group';
@@ -157,46 +154,10 @@ export async function deleteThreadGroupAction(groupId: string): Promise<boolean>
   }
 }
 
-export async function pinThreadGroupAction(groupId: string): Promise<ThreadGroup | null> {
-  try {
-    const pinned = await PinThreadGroup(groupId) as ThreadGroup;
-    upsertThreadGroup(pinned);
-    return pinned;
-  } catch (err) {
-    reportGroupFailure('pin thread group', err);
-    return null;
-  }
-}
-
-export async function unpinThreadGroupAction(groupId: string): Promise<ThreadGroup | null> {
-  try {
-    const unpinned = await UnpinThreadGroup(groupId) as ThreadGroup;
-    upsertThreadGroup(unpinned);
-    return unpinned;
-  } catch (err) {
-    reportGroupFailure('unpin thread group', err);
-    return null;
-  }
-}
-
-export async function setThreadGroupPinGroupAction(
-  groupId: string,
-  pinGroup: typeof PIN_GROUP_FRONT | typeof PIN_GROUP_BACK,
-): Promise<ThreadGroup | null> {
-  try {
-    const moved = await SetThreadGroupPinGroup(groupId, pinGroup) as ThreadGroup;
-    upsertThreadGroup(moved);
-    return moved;
-  } catch (err) {
-    reportGroupFailure('move pinned thread group', err);
-    return null;
-  }
-}
-
 /**
  * Move threads into a group. The response carries every row the call
  * touched — discussion children follow their root, and a moved row comes
- * back unpinned because a grouped thread cannot hold a pin.
+ * back unpinned: a thread starts unpinned in its new group.
  */
 export async function moveThreadsToGroupAction(
   threadIds: readonly string[],
@@ -205,7 +166,8 @@ export async function moveThreadsToGroupAction(
   return setThreadGroupMembership(threadIds, groupId, 'move threads into group');
 }
 
-/** Ungroup: the same RPC with an empty group id. */
+/** Ungroup: the same RPC with an empty group id. A row that left a group
+ * comes back unpinned. */
 export async function removeThreadsFromGroupAction(
   threadIds: readonly string[],
 ): Promise<boolean> {

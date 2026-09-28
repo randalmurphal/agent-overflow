@@ -441,18 +441,19 @@ sidebar already calls: `thread_ids` (one to fifty) and any of `title`,
 burner are the two pin tiers), `group` (a group name in the thread's
 project, unique there without case and created when it does not
 exist; `null` ungroups). One call covers "archive these five" or
-"group these as auth work". Refusals
-mirror the store: a grouped thread cannot be pinned because the group
-carries the pin, the calling thread cannot archive itself, and a title
-is trimmed and refused when empty. Works on another computer's threads;
+"group these as auth work". A thread inside a group pins like any
+other; joining or leaving a group clears the thread's pin, and a pin in
+the same call applies after the group move, so it lands inside the new
+group. Refusals mirror the store: the calling thread cannot archive
+itself, and a title is trimmed and refused when empty. Works on another computer's threads;
 a thread joins groups only on its own computer. Used only when the user
 asks, or on threads the caller spawned once it is done with them.
 
 ### `thread_group`
 
-Renames, deletes, or pins (`front` / `back` / `none`) a group by name or
-id within a project. Deleting a group ungroups its threads, as the
-sidebar does.
+Renames or deletes a group by name or id within a project. A group is
+not pinnable and the tool takes no `pin`. Deleting a group ungroups its
+threads and clears their pins, as the sidebar does.
 
 ### `thread_remind`
 
@@ -561,8 +562,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > asked. Neither undoes anything.
 >
 > Organizing. `thread_update` renames, archives, pins to the front or
-> back burner, or groups threads, many at once; `thread_group` renames,
-> deletes or pins a group. `thread_options` lists the groups. Do this
+> back burner, or groups threads, many at once; `thread_group` renames
+> or deletes a group. `thread_options` lists the groups. Do this
 > when the user asks, or for threads you spawned once you are done with
 > them. Never archive the thread you are in.
 >
@@ -1089,9 +1090,10 @@ codex 0.153.4); outcomes recorded in the
       once with the request open; `thread_status` with three tokens
       returns on the first settlement.
 - [x] `thread_update` archives five threads in one call, groups two into
-      a new group on the front burner, refuses pinning a grouped thread
-      and archiving the caller; `thread_group` renames and deletes it;
-      every change shows in the sidebar live.
+      a new group, pins one of them inside it in the same call, and
+      refuses archiving the caller; `thread_group` refuses a pin, renames
+      and deletes the group, clearing the member's pin; every change
+      shows in the sidebar live.
 - [x] `thread_remind` after 60 seconds wakes an idle caller with the
       note; `thread_cancel` on its token stops it.
 - [x] The footer on a spawned thread's first message quotes the user's

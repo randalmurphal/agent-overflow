@@ -32,8 +32,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
       && optional(project, ['color', 'remoteURL', 'rootCommit'], [])
       && fields(row, [], ['threadCount']) && optional(row, [], ['lastActive']);
   }
-  if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt'])
-    && optional(row, [], ['pinnedAt', 'pinGroup']);
+  if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt']);
   return fields(row, ['id', 'title', 'provider', 'workspacePath', 'projectPath', 'model'], ['createdAt', 'updatedAt'], ['archived'])
     && (row.ownershipEpoch === undefined || validOwnershipEpoch(row.ownershipEpoch))
     && (row.provider === 'claude' || row.provider === 'codex')

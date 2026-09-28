@@ -1154,14 +1154,12 @@ func threadPinGroupWrite(id string, group int) (rowWrite, error) {
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
 func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
-	row, changed, err := s.applyThreadRowWrite(threadPinnedAtWrite(id, ts))
-	return row, changed, namePinRefusal(s.db, id, ts, err)
+	return s.applyThreadRowWrite(threadPinnedAtWrite(id, ts))
 }
 
 // setThreadPinnedAtTx is setThreadPinnedAt inside the caller's transaction.
 func setThreadPinnedAtTx(tx *sql.Tx, id string, ts *int64) (Thread, bool, error) {
-	row, changed, err := applyThreadRowWriteTx(tx, threadPinnedAtWrite(id, ts))
-	return row, changed, namePinRefusal(tx, id, ts, err)
+	return applyThreadRowWriteTx(tx, threadPinnedAtWrite(id, ts))
 }
 
 func threadPinnedAtWrite(id string, ts *int64) rowWrite {
@@ -1176,34 +1174,7 @@ func threadPinnedAtWrite(id string, ts *int64) rowWrite {
 	}
 	write.Set = "pinned_at = ?, pin_group = ?"
 	write.SetArgs = []any{*ts, PinGroupFront}
-	// A grouped row holds no pin of its own (the v76 CHECK). Making that
-	// the write's eligibility predicate keeps the refusal from surfacing as
-	// a raw constraint failure; a grouped row misses the same predicate in
-	// the miss probe, and threadIsGrouped names it.
-	write.Match = "group_id IS NULL"
 	return write
-}
-
-// namePinRefusal turns a pin's miss on a grouped row into ErrThreadGrouped.
-// It reads through the caller's own handle so the answer describes the same
-// state the write saw, transaction or pool alike.
-func namePinRefusal(q sqlQueryer, id string, ts *int64, err error) error {
-	if ts != nil && errors.Is(err, sql.ErrNoRows) && threadIsGrouped(q, id) {
-		return fmt.Errorf("store: pin %s: %w", id, ErrThreadGrouped)
-	}
-	return err
-}
-
-// threadIsGrouped is the failure-path probe behind ErrThreadGrouped. A
-// missing row reads as ungrouped so the caller's sql.ErrNoRows stands.
-func threadIsGrouped(q sqlQueryer, id string) bool {
-	var grouped bool
-	if err := q.QueryRow(
-		`SELECT group_id IS NOT NULL FROM threads WHERE id = ?`, id,
-	).Scan(&grouped); err != nil {
-		return false
-	}
-	return grouped
 }
 
 // UpdateSessionRef records the provider resume cursor without touching

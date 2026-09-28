@@ -791,26 +791,40 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(pin.className).toContain('group-hover/thread-item:opacity-100');
   });
 
-  it('hides the pin affordance on a grouped row — the GROUP carries the pin', () => {
-    const pane = createThreadPane();
-    const { queryByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ groupId: 'g1' }), pane },
+  it('pins a group member from its own pin affordance', async () => {
+    const pin = setBindingMock('PinThread', vi.fn(async () => makeThread({ groupId: 'g1', pinnedAt: 1 })));
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1' }), pane: createThreadPane(), indent: 2, inGroup: true },
     });
 
-    expect(queryByTestId('thread-row-pin')).toBeNull();
+    await fireEvent.click(getByTestId('thread-row-pin'));
+    await Promise.resolve();
+    expect(pin).toHaveBeenCalledWith('thread-1');
   });
 
-  it('keeps the pin action out of nested discussion participant rows', () => {
+  it('keeps the pin action out of rows that are not pin targets', () => {
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, {
       props: {
         thread: makeThread({ parentThreadId: 'parent' }),
         pane,
         indent: 2,
+        pinnable: false,
       },
     });
 
     expect(queryByTestId('thread-row-pin')).toBeNull();
+  });
+
+  it.each([
+    { name: 'unpinned', thread: {}, want: 'Pin Thread\nOnce pinned, right-click toggles front/back burner' },
+    { name: 'front burner', thread: { pinnedAt: 1, pinGroup: 0 }, want: 'Unpin Thread\nRight-click to move to back burner' },
+    { name: 'back burner', thread: { pinnedAt: 1, pinGroup: 1 }, want: 'Unpin Thread\nRight-click to move to front burner' },
+  ])('explains the right-click burner toggle in the $name pin hover text', ({ thread, want }) => {
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread(thread), pane: createThreadPane() },
+    });
+    expect(getByTestId('thread-row-pin').getAttribute('title')).toBe(want);
   });
 });
 
@@ -1240,12 +1254,18 @@ describe('<ThreadRow> nested row chrome', () => {
     { name: 'pinned discussion parent', thread: { mode: 'discussion' as const, pinnedAt: 1 }, eligible: true },
     { name: 'back pin', thread: { pinnedAt: 1, pinGroup: 1 }, eligible: false },
     { name: 'unpinned', thread: { pinGroup: 0 }, eligible: false },
-    { name: 'group member', thread: { pinnedAt: 1, groupId: 'group' }, eligible: false },
-    { name: 'nested discussion child', thread: { pinnedAt: 1, parentThreadId: 'parent' }, indent: 2, eligible: false },
+    { name: 'front-pinned group member', thread: { pinnedAt: 1, groupId: 'group' }, indent: 2, inGroup: true, eligible: false },
+    { name: 'nested discussion child', thread: { pinnedAt: 1, parentThreadId: 'parent' }, indent: 2, pinnable: false, eligible: false },
     { name: 'pinned child promoted to a top-level row', thread: { pinnedAt: 1, parentThreadId: 'missing-parent' }, eligible: true },
-  ])('marks jump eligibility for $name', ({ thread, eligible, indent }) => {
+  ])('marks jump eligibility for $name', ({ thread, eligible, indent, inGroup, pinnable }) => {
     const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread(thread), pane: null, indent: indent ?? 1 },
+      props: {
+        thread: makeThread(thread),
+        pane: null,
+        indent: indent ?? 1,
+        inGroup: inGroup ?? false,
+        pinnable: pinnable ?? true,
+      },
     });
     expect(getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(eligible);
   });
@@ -1334,14 +1354,14 @@ describe('<ThreadRow> nested row chrome', () => {
     expect(outer.style.paddingLeft).toBe('32px');
   });
 
-  it('reserves no pin gutter inside a group: the rail carries the nesting', () => {
+  it('renders the pin inside a group, where members pin', () => {
     const pane = createThreadPane();
-    const { container } = render(ThreadRow, {
-      props: { thread: makeThread({ groupId: 'g1' }), pane, indent: 2, inGroup: true },
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1', pinnedAt: 1 }), pane, indent: 2, inGroup: true },
     });
-    const outer = container.querySelector('[role="button"]') as HTMLElement;
-    expect(outer.style.paddingLeft).toBe('8px');
+    expect(getByTestId('thread-row-pin')).toHaveAttribute('aria-label', 'Unpin Thread');
   });
+
 });
 
 describe('<ThreadRow> context menu dismissal', () => {

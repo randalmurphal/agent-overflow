@@ -913,11 +913,12 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
 
 /**
  * DeleteThreadGroup removes the group and ungroups its members, active and
- * archived alike. It never deletes a thread.
+ * archived alike. It never deletes a thread. A member leaving the group
+ * loses its pin.
  * 
- * The members' own rows are not re-emitted: a client that drops the group
- * on this frame has nowhere left to render a member under, and the next
- * ListThreads (or the row's own next update) carries the cleared groupId.
+ * Each former member is announced with a thread:updated "full" frame before
+ * the group's own "delete" frame, so no client holds a row naming a group
+ * it has already dropped, and the cleared pins reach every client.
  */
 export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
     return $Call.ByID(4104302889, id);
@@ -3424,15 +3425,6 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
 }
 
 /**
- * PinThreadGroup places the group on the front burner.
- */
-export function PinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGroup> {
-    return $Call.ByID(842795367, id).then(($result: any) => {
-        return $$createType22($result);
-    });
-}
-
-/**
  * PostChannelMessage posts a human-authored intervention into the
  * channel and returns the created message so the frontend can merge
  * its own post immediately rather than waiting on the discussion:message
@@ -4780,7 +4772,7 @@ export function SetPushSenderCredential(credentialJSON: string): $CancellablePro
  * is empty. It returns every row the call touched — the discussion
  * children that travelled with a named root included — and emits one
  * thread:updated "full" frame per row, because a move rewrites the
- * group and strips the pin together.
+ * group and clears the pin of a row that changes group.
  * 
  * The client routes this from the thread ids (methodFamilies.ts); home is
  * the single-backend fallback.
@@ -4788,16 +4780,6 @@ export function SetPushSenderCredential(credentialJSON: string): $CancellablePro
 export function SetThreadGroup(threadIDs: string[], groupID: string): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(2514763466, threadIDs, groupID).then(($result: any) => {
         return $$createType115($result);
-    });
-}
-
-/**
- * SetThreadGroupPinGroup moves an already-pinned group between the front
- * and back burners.
- */
-export function SetThreadGroupPinGroup(id: string, group: number): $CancellablePromise<store$0.ThreadGroup> {
-    return $Call.ByID(4218979176, id, group).then(($result: any) => {
-        return $$createType22($result);
     });
 }
 
@@ -5381,15 +5363,6 @@ export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread>
 export function UnpinThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3175043037, id).then(($result: any) => {
         return $$createType7($result);
-    });
-}
-
-/**
- * UnpinThreadGroup clears the group's pin fields.
- */
-export function UnpinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGroup> {
-    return $Call.ByID(48743460, id).then(($result: any) => {
-        return $$createType22($result);
     });
 }
 

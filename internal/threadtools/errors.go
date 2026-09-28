@@ -27,8 +27,6 @@ const (
 	CodeSelfSend = "thread_self_send"
 	// CodeIsCaller is the calling thread refusing to archive itself.
 	CodeIsCaller = "thread_is_caller"
-	// CodeGrouped is a pin on a thread whose group carries the pin.
-	CodeGrouped = "thread_grouped"
 	// CodeNotYours is a thread the caller never spawned, sent to or
 	// asked.
 	CodeNotYours = "thread_not_yours"

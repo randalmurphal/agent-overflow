@@ -604,15 +604,26 @@ describe('<ThreadContextMenu> group items', () => {
     expect(groupMenuLabels(baseElement)).not.toContain('Move to Group');
   });
 
-  it('adds Remove from Group and drops the pin items for a grouped row', () => {
+  it('adds Remove from Group and keeps the pin items for a grouped row', () => {
     const { baseElement } = renderMenu(makeThread({
       projectId: 'project-1',
       groupId: 'g-alpha',
     }));
     const labels = groupMenuLabels(baseElement);
     expect(labels).toContain('Remove from Group');
-    expect(labels).not.toContain('Pin Thread');
-    expect(labels).not.toContain('Unpin Thread');
+    expect(labels).toContain('Pin Thread');
+  });
+
+  it('offers the burner move and unpin on a pinned grouped row', () => {
+    const { baseElement } = renderMenu(makeThread({
+      projectId: 'project-1',
+      groupId: 'g-alpha',
+      pinnedAt: 1,
+      pinGroup: 1,
+    }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).toContain('Move to Front Burner');
+    expect(labels).toContain('Unpin Thread');
   });
 
   it('lists the project groups by name, then New Group…', async () => {

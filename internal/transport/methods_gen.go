@@ -294,7 +294,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenWorkspaceDiff", ID: 3558532873, Scope: "files:read", Route: "workspace"},                             // main.App.OpenWorkspaceDiff
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true},              // main.App.PairAgentComputer
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                   // main.App.PinThread
-	{Name: "PinThreadGroup", ID: 842795367, Scope: "threads:operate", Route: "home"},                                 // main.App.PinThreadGroup
 	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate", Route: "selected"},                        // main.App.PostChannelMessage
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread"},                           // main.App.PrepareThreadWorktree
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                 // main.App.PreviewNotificationSound
@@ -390,7 +389,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},          // main.App.SetProviderCustomEnvVar
 	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true},             // main.App.SetPushSenderCredential
 	{Name: "SetThreadGroup", ID: 2514763466, Scope: "threads:operate", Route: "home"},                                // main.App.SetThreadGroup
-	{Name: "SetThreadGroupPinGroup", ID: 4218979176, Scope: "threads:operate", Route: "home"},                        // main.App.SetThreadGroupPinGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},      // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                           // main.App.SetThreadPinGroup
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                     // main.App.SetWSLDistroPreference
@@ -430,7 +428,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                           // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate", Route: "thread"},                             // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                 // main.App.UnpinThread
-	{Name: "UnpinThreadGroup", ID: 48743460, Scope: "threads:operate", Route: "home"},                                // main.App.UnpinThreadGroup
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                   // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                              // main.App.UnsubscribePRUpdates
 	{Name: "UpdateClientDeviceName", ID: 3406073706, Scope: "session", Route: "home"},                                // main.App.UpdateClientDeviceName

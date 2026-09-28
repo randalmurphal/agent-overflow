@@ -2,29 +2,39 @@
 
 Status: design signed off 2026-09-02, implemented on `main` the same day
 (store v76, bindings, sidebar UI, e2e `sidebar-thread-groups.spec.ts`).
+Revised 2026-09-28: groups are their own section and not pinnable;
+members pin individually (store v139).
 
 ## Goal
 
 Let the user gather threads of one project under a named, collapsible
 row in the sidebar. Today the only nesting is the discussion tree, whose
 top row is itself a thread. A group's top row is not a thread: it has a
-name, a chevron, a pin, and nothing else of its own; its activity and
-sort position come from its members. It shows no status of its own: a
-running member moves the group up the list, it does not light the row.
+name, a chevron, and nothing else of its own; its activity and sort
+position come from its members. It shows no status of its own: a
+running member moves the group up its section, it does not light the
+row.
 
 ## Decisions
 
-- **A group is a row in the normal sort, not a third pin tier.** It
-  sorts by its members' bubbled status and latest activity exactly the
-  way a discussion parent does, so a group with a running member rises
-  and a quiet one sinks. The group itself is pinnable to the front or
-  back burner like a thread; a pinned group sits in the pin block and
-  counts toward the preview limit, while always remaining visible.
-- **One pin per visible row.** Moving a pinned thread into a group
-  strips its pin; the group carries the pin from then on. A grouped
-  thread cannot be pinned (the schema refuses it, the row hides the pin
-  affordance). Leaving a group does not restore a pin. Auto-pin on first
-  send never fires for a thread that is already in a group.
+- **Groups are their own section, above the pin blocks.** A project's
+  groups render together above its front- and back-burner blocks. Inside
+  the section a group sorts by its members' bubbled status and latest
+  activity exactly the way a discussion parent does, so a group with a
+  running member rises and a quiet one sinks. A group is not pinnable.
+- **Section dividers.** The top level has four sections: groups, front
+  burner, back burner, unpinned. The same thin divider separates each
+  pair of adjacent sections that have rows. Drafts sit above every
+  section and open none. No dividers render inside a group.
+- **Members pin individually.** A thread inside a group pins to the
+  front or back burner with the normal thread pin behavior. A thread
+  starts unpinned in a group it joins, from the top level or from
+  another group. A thread that leaves a group (ungroup, group delete)
+  loses its pin; leaving does not restore a pin it held before it
+  joined. Auto-pin on first send never fires for a thread that is
+  already in a group. A member's pin is never a numbered jump target;
+  jumps count top-level front-burner threads only. A member's discussion
+  children pin through it, as at the top level.
 - **Collapsed group.** Shows a member count. Its members' status still
   bubbles for the SORT (the same bubbling a discussion parent uses) but
   nothing of it renders on the row (ruling 2026-09-02). A group
@@ -35,20 +45,23 @@ running member moves the group up the list, it does not light the row.
   remove the preview without changing saved expansion state. Expanding
   restores the full tree without duplicating the focused row. Groups
   start expanded.
-- **Preview cut.** Front- and back-burner pins share the project's preview
-  limit with unpinned rows. All pins remain visible when they exceed the
-  limit, leaving no preview slots for unpinned rows. Drafts and threads
-  open in panes retain their visibility exceptions. A group takes one
-  slot; its members take none (same as discussion children). An unpinned
-  group can fall below "Show more" like any row.
+- **Preview cut.** Groups and front- and back-burner pins share the
+  project's preview limit with unpinned rows. Groups and pins always
+  remain visible when they exceed the limit, leaving no preview slots
+  for unpinned rows. Drafts and threads open in panes retain their
+  visibility exceptions. A group takes one slot; its members take none
+  (same as discussion children).
 - **No nesting.** No groups inside groups. A discussion tree moves as a
   unit: grouping a parent brings its children; a child cannot be grouped
   on its own. Render depth inside a group goes to three (group, parent,
   child).
 - **One project.** A group belongs to one project and cannot span
   projects. Dropping a thread on a group in another project is a no-op.
-- **Ordering inside a group is the normal comparator** (drafts, status
-  tier, activity, id). No manual ordering.
+- **Ordering inside a group is the normal comparator** (drafts, front
+  burner, back burner, status tier, activity, id). No manual ordering.
+  A pinned member orders inside its group; for the group's bubbled
+  status and sort, members rank by status alone, so a pinned idle member
+  never masks a blocked one.
 - **Drag and drop.** Dropping a thread on a group row, or on any row
   inside an expanded group, moves it in. Dropping a grouped thread
   anywhere in its own project's list outside a group (a top-level thread
@@ -61,8 +74,8 @@ running member moves the group up the list, it does not light the row.
   from Group". Multi-select gets the same two when every selected thread
   shares one project. Project header: "New Group…", also a hover-revealed
   folder-plus button beside New Thread. Group row: New Thread, Rename
-  Group, Pin / Unpin / burner move, Archive Threads, Ungroup All, Delete
-  Group.
+  Group, Archive Threads, Ungroup All, Delete Group. A grouped thread
+  row keeps the normal pin affordance and pin menu items.
 - **New thread.** The group row's plus button and New Thread menu item open
   the normal draft composer with that group's project and computer. Membership
   persists when the draft materializes and when an emptied draft returns to a
@@ -70,10 +83,11 @@ running member moves the group up the list, it does not light the row.
   open placeholders as well as saved threads.
 - **Lifecycle.** A new group is named "New Group" and opens inline
   rename immediately. An empty group persists until deleted. Deleting a
-  group ungroups its members and never deletes a thread; it honors the
-  `confirmDelete` setting. Archiving a member hides it; the group stays
+  group ungroups its members, clears their pins, and never deletes a
+  thread; it honors the `confirmDelete` setting. Archiving a member hides it; the group stays
   and the membership survives unarchive. Deleting a project deletes its
-  groups. A fork of a grouped thread lands in the same group.
+  groups. A fork of a grouped thread lands in the same group, unpinned:
+  the source's pin is its own.
 - **Search.** A group shows when its name matches (all members shown)
   or when any member matches (only matching members shown). A group with
   no match is hidden.
@@ -94,64 +108,68 @@ running member moves the group up the list, it does not light the row.
 
 ### Store
 
-- Migration v76 `thread_groups`:
+- Migration v76 created `thread_groups` and `threads.group_id`
+  (`REFERENCES thread_groups(id) ON DELETE SET NULL`, partial index
+  `idx_threads_group`). Migration v139 removed the v76 rule that a grouped
+  thread holds no pin: it rebuilds `threads` without
+  `CHECK(group_id IS NULL OR pinned_at IS NULL)` and drops
+  `thread_groups.pin_group` and `thread_groups.pinned_at`. The current
+  table:
 
   ```sql
   CREATE TABLE thread_groups (
       id         TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       name       TEXT NOT NULL,
-      pinned_at  INTEGER,
-      pin_group  INTEGER
-          CHECK(pin_group IS NULL OR (pinned_at IS NOT NULL AND pin_group IN (0, 1))),
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
   );
-  CREATE INDEX idx_thread_groups_project ON thread_groups(project_id);
-  ALTER TABLE threads ADD COLUMN group_id TEXT
-      REFERENCES thread_groups(id) ON DELETE SET NULL
-      CHECK(group_id IS NULL OR pinned_at IS NULL);
-  CREATE INDEX idx_threads_group ON threads(group_id) WHERE group_id IS NOT NULL;
   ```
 
-  The CHECK is the "one pin per visible row" rule: a grouped thread
-  cannot hold a pin, whatever a future caller does. `PinThread` states
-  the same rule in its WHERE and reports the miss as a typed
-  `ErrThreadGrouped` ("a grouped thread cannot be pinned"), so the CHECK
-  is the backstop rather than the message. `ON DELETE SET NULL` is
-  "delete group = ungroup", including archived members. The index is
-  partial because `group_id` is NULL on nearly every row.
-- `store.ThreadGroup{ID, ProjectID, Name, PinnedAt *int64, PinGroup *int, CreatedAt, UpdatedAt}`,
-  JSON-tagged like `Thread`. `store.Thread` gains `GroupID string
-  \`json:"groupId,omitempty"\``; every positional scan and INSERT is
-  updated.
+  A name is unique per project without case (v105). `ON DELETE SET NULL`
+  is "delete group = ungroup", including archived members.
+- `store.ThreadGroup{ID, ProjectID, Name, CreatedAt, UpdatedAt}`,
+  JSON-tagged like `Thread`. `store.Thread.GroupID string
+  \`json:"groupId,omitempty"\`` carries membership.
 - `internal/store/thread_groups.go`: `ListThreadGroups`,
   `CreateThreadGroup(projectID, name)`, `RenameThreadGroup`,
-  `DeleteThreadGroup`, `PinThreadGroup`, `UnpinThreadGroup`,
-  `SetThreadGroupPinGroup` (the last three mirror the thread pin
-  primitives, including "pin never touches updated_at"), and
-  `SetThreadGroup(threadIDs []string, groupID string)`.
+  `DeleteThreadGroup`, and `SetThreadGroup(threadIDs []string, groupID
+  string)`. Members pin through the thread pin primitives (`PinThread`,
+  `UnpinThread`, `SetThreadPinGroup`), which do not look at `group_id`.
 - `SetThreadGroup` changes membership on existing threads. One
   transaction; for each id it runs
 
   ```sql
   UPDATE threads
-     SET group_id = ?, pinned_at = NULL, pin_group = NULL
+     SET group_id = ?,
+         pinned_at = CASE WHEN group_id IS ? THEN pinned_at END,
+         pin_group = CASE WHEN group_id IS ? THEN pin_group END
    WHERE ((id = ? AND COALESCE(parent_thread_id, '') = '') OR parent_thread_id = ?)
      AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)
    RETURNING id
   ```
 
-  and the root id must be among the returned rows or the whole call
-  rolls back with a typed refusal: `ErrThreadGroupGone` (deleted or
-  cross-project group), `ErrThreadGone` (deleted thread), or
+  The pin clears only on a row whose group changes: a row already in the
+  destination keeps its pin. The root id must be among the returned rows
+  or the whole call rolls back with a typed refusal: `ErrThreadGroupGone`
+  (deleted or cross-project group), `ErrThreadGone` (deleted thread), or
   `ErrThreadNotRoot` (a discussion child named alone; a child named
   beside its own root is carried by the root's disjunct). Empty
-  `groupID` is ungroup: the same WHERE with `SET group_id = NULL` only,
-  because a bulk selection can name ungrouped rows too and their pins are
-  theirs to keep. The touched rows are read back inside the transaction
-  and returned, children included.
-- Fork copies `group_id` from the source row (all fork paths).
+  `groupID` is ungroup: the same WHERE with `SET group_id = NULL` and the
+  pin cleared only where `group_id` was set, because a bulk selection can
+  name never-grouped rows too and their pins are theirs to keep. The
+  touched rows are read back inside the transaction and returned,
+  children included.
+- `DeleteThreadGroup` clears the members' pins, active and archived, in
+  the transaction that deletes the group, and returns the member rows as
+  they now stand.
+- `ApplyThreadOrganize` (agent `thread_update`) runs the group move
+  before the pin, so a patch that sets both lands the pin inside the new
+  group.
+- A returning conversation transfer arrives ungrouped; the local row's
+  pin survives only if the row was not in a group.
+- Fork copies `group_id` from the source row (all fork paths), never the
+  pin.
 
 ### Backend API
 
@@ -164,7 +182,6 @@ binds:
 | `CreateThreadGroup(projectID, name)` | `store.ThreadGroup` |
 | `RenameThreadGroup(id, name)` | `store.ThreadGroup` |
 | `DeleteThreadGroup(id)` | error |
-| `PinThreadGroup(id)` / `UnpinThreadGroup(id)` / `SetThreadGroupPinGroup(id, group)` | `store.ThreadGroup` |
 | `SetThreadGroup(threadIDs, groupID)` | `[]store.Thread` (every row the call touched, children included) |
 
 Every one of these is a wire RPC, so each carries a `//ao:scope` and a
@@ -184,7 +201,9 @@ Names are trimmed and non-empty; a blank rename is rejected.
 - New channel `thread-group:updated`, payload
   `{action: "create" | "patch" | "delete", group: ThreadGroup}` (`delete`
   carries the id in `group.id`). Every group RPC emits it after the
-  write so a second client stays current.
+  write so a second client stays current. `DeleteThreadGroup` first
+  emits `thread:updated` `full` for every former member (ungrouped and
+  unpinned), then the `delete` frame.
 - `SetThreadGroup` emits `thread:updated` with `action: "full"` and
   the full row for every touched thread. `PinThread`, `UnpinThread`, and
   `SetThreadPinGroup` gain the same emit; that closes the pre-existing
@@ -218,15 +237,20 @@ Names are trimmed and non-empty; a blank rename is rejected.
   is dropped from its project's group list, and a project with a
   surviving group is a visible project.
 - `components/sidebar/ThreadGroupRow.svelte`: same 24px row grammar as
-  `ThreadRow` (pin gutter, chevron, title; no timestamp, status dot
-  or label), folder glyph before the name, member count when collapsed,
-  inline rename on double-click / F2, its own context menu
+  `ThreadRow` (chevron, title; no pin gutter, timestamp, status dot or
+  label), folder glyph before the name. The chevron centres on the
+  top-level pin column, the member rail drops from its centre, members'
+  pins centre under the folder glyph and their titles align with the
+  group name (`utils/sidebarRowMetrics.ts` derives each offset), member count when
+  collapsed, inline rename on double-click / F2, its own context menu
   (`ThreadGroupContextMenu.svelte`). Members render through `ThreadRow`
-  at `indent = depth + 1`. Shared row dimensions live in
-  `utils/sidebarRowMetrics.ts`, and `ThreadRowPinButton` serves both: its
-  writes arrive as `onToggle` / `onCycleBurner` closures and its aria
-  labels as `pinLabel` / `unpinLabel`, replacing the thread-only
-  `buildCtx` prop. A blank inline rename CANCELS rather than round-trips
+  at `indent = depth + 1` and reserve the pin gutter inside the group
+  rail. Shared row dimensions live in `utils/sidebarRowMetrics.ts`.
+  `ThreadRowPinButton` takes its writes as `onToggle` / `onCycleBurner`
+  closures; its hover text says that right-click on a pin toggles front
+  and back burner. `flattenSidebarThreadTree` marks pin targets
+  (`isPinTarget`: top-level threads and direct members) and section
+  starts (`startsSection`). A blank inline rename CANCELS rather than round-trips
   to be rejected. A brand-new group opens rename on mount through
   `requestGroupRename` / `consumePendingGroupRename` in
   `stores/threadGroups.svelte.ts` — the creator cannot open it, because
@@ -250,30 +274,39 @@ Names are trimmed and non-empty; a blank rename is rejected.
   container outside any group, the container shows a subtle inset
   dashed outline so the ungroup target is visible. Drops from another
   project set `dropEffect = 'none'`.
-- `ThreadRow` hides the pin affordance and the pin menu items when
-  `thread.groupId` is set; `ThreadContextMenu` adds the "Move to Group"
+- `ThreadRow` keeps the pin affordance and pin menu items on grouped
+  rows; `ThreadGroupRow` has none. `ThreadContextMenu` adds the "Move to Group"
   submenu (`MenuSubmenuItem`) and "Remove from Group";
   `ProjectContextMenu` adds "New Group…" and `ProjectItem` a folder-plus
   header button; both run `newThreadGroupInProject` (clear the search,
   expand the project, create). Multi-select menu shows the
   group items only when all selected threads share one project.
 - `autoPinNewThread` is a no-op for a thread with a `groupId`, so a fork
-  inside a group (which inherits the group) starts without a failed-pin
-  toast; the first-send pre-check inherits the same guard.
+  inside a group (which inherits the group) starts unpinned; the
+  first-send pre-check inherits the same guard. No backend path
+  auto-pins.
 
 ## Verification
 
 - Store tests: cross-project `SetThreadGroup` is refused and rolls
   back with typed errors (group gone, thread gone, child named as root);
-  grouping strips the pin and ungrouping keeps the pins of ungrouped rows
-  in the same selection; `PinThread` on a grouped row is `ErrThreadGrouped`
-  and the raw CHECK still refuses a grouped+pinned write; migration v76
-  applies over a populated, pinned `threads` table;
-  `DeleteThreadGroup` nulls `group_id` on active and archived
-  members; project delete cascades; children follow the root; fork
-  copies `group_id`.
-- `sidebarTree` / `sidebarTreeView` tests: group sorts by bubbled status and activity; a
-  pinned group sits in its block; a group takes one preview slot and its
+  joining a group, or moving between groups, strips the pin, a repeat
+  move into the same group keeps it, and ungrouping clears the pins of
+  rows that left a group but keeps those of never-grouped rows in the
+  same selection; a grouped thread pins, changes burner and unpins;
+  `ApplyThreadOrganize` with group and pin lands the pin inside the
+  group; migration v139 applies over a populated store and leaves every
+  schema object but the removed CHECK and group pin columns unchanged;
+  `DeleteThreadGroup` nulls `group_id` and clears pins on active and
+  archived members; project delete cascades; children follow the root;
+  fork copies `group_id` and not the pin; a returning transfer of a
+  grouped, pinned thread arrives ungrouped and unpinned.
+- `sidebarTree` / `sidebarTreeView` tests: groups sort above pins and
+  among themselves by bubbled status and activity; members order by pin
+  block and a pinned idle member does not mask a blocked one; section
+  dividers for every combination of sections, none inside a group; pin
+  targets, including a collapsed group's preview row; groups stay above
+  the preview cut; a group takes one preview slot and its
   members none; collapsed and expanded flatten shapes; search by group
   name pulls all members; focused descendants remain visible under
   collapsed groups and discussions;
@@ -287,7 +320,7 @@ Names are trimmed and non-empty; a blank rename is rejected.
 - Transport: `methods_gen_test` classification passes for the new
   methods.
 - Live: create a group from the project menu, rename inline, drag
-  threads in and out, pin the group to both burners, collapse with a
+  threads in and out, pin a member to both burners, collapse with a
   focused member and see only that member beneath the group, search by group
   name, delete the group and see members return to the list, second connected
   client follows every change.

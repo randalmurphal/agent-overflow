@@ -7,10 +7,12 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
 ## Rows and actions
 
 - Keep one row grammar for normal, grouped, and discussion entries. Shared
-  controls such as `ThreadRowPinButton` receive callbacks and labels; they do
+  controls such as `ThreadRowPinButton` receive callbacks; they do
   not own entities.
-- Nested discussion children and grouped threads do not expose independent pin
-  actions. The parent discussion or group is the pin target.
+- Nested discussion children do not expose independent pin actions; the parent
+  discussion is the pin target. Groups are not pinnable. A group's direct
+  members pin like top-level threads, but never as numbered jump targets.
+  `flattenSidebarThreadTree` decides pin targets (`isPinTarget`).
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the

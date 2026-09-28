@@ -82,8 +82,12 @@ it.each([false, true])('keeps the focused member painted while collapsing and ch
   expect([...getCollapsedGroups()]).toEqual(['group']);
   expect(JSON.parse(appStorageGet('sidebar:collapsedGroups')!)).toEqual(['group']);
   expect(view.container.querySelector('[data-sidebar-thread-id="beta"]')).toBeNull();
+  // Nothing but the section divider (1px rule, 4px margin each side) sits
+  // between the previewed member and the unpinned section below it.
   const activeRect = row(view.container, 'alpha').getBoundingClientRect();
-  expect(Math.abs(row(view.container, 'loose').getBoundingClientRect().top - activeRect.bottom)).toBeLessThanOrEqual(2);
+  const divider = view.container.querySelector('[data-testid="thread-section-divider"]')!.getBoundingClientRect();
+  expect(divider.top).toBeGreaterThanOrEqual(activeRect.bottom);
+  expect(Math.abs(row(view.container, 'loose').getBoundingClientRect().top - activeRect.bottom)).toBeLessThanOrEqual(2 + 9);
 
   // Stream-driven tree rebuilds cannot override the saved collapse choice.
   projectTurnStarted('alpha', 'turn', 0, 0);
@@ -157,4 +161,38 @@ it.each([false, true])('keeps a focused discussion child visible without reopeni
   await settled(view.container);
   expect(isDiscussionExpanded('parent')).toBe(false);
   expect(view.container.querySelectorAll('[data-sidebar-thread-id="child"]')).toHaveLength(1);
+});
+
+it('aligns the group chevron with top-level pins and member pins with the folder glyph', async () => {
+  const threads = [
+    thread('member', { groupId: group.id, pinnedAt: 1 }),
+    thread('member-child', { groupId: group.id, parentThreadId: 'member' }),
+    thread('plain-member', { groupId: group.id }),
+    thread('loose', { pinnedAt: 1 }),
+  ];
+  toggleDiscussion('member');
+  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane: createThreadPane() });
+  view.container.style.width = '360px';
+  await settled(view.container);
+
+  const centre = (el: Element) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; };
+  const pinOf = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-pin"]')!;
+  const chevron = view.getByTestId('thread-group-row-expand');
+  const folder = view.getByTestId('thread-group-row-folder');
+
+  // The group chevron sits on the top-level pin column.
+  expect(Math.abs(centre(chevron) - centre(pinOf('loose')))).toBeLessThanOrEqual(1);
+  // A member's pin sits under the group's folder glyph.
+  expect(Math.abs(centre(pinOf('member')) - centre(folder))).toBeLessThanOrEqual(1);
+  // The member rail drops from the chevron's centre.
+  const railX = view.container.querySelector<HTMLElement>('[data-group-member]')!.getBoundingClientRect().left;
+  expect(Math.abs(railX - centre(chevron))).toBeLessThanOrEqual(1);
+  // A member's title (or its discussion chevron) lines up with the group
+  // name; its discussion child steps in from there.
+  const titleLeft = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
+  const groupName = view.getByTestId('thread-group-row-name').getBoundingClientRect();
+  expect(Math.abs(titleLeft('plain-member') - groupName.left)).toBeLessThanOrEqual(1);
+  const memberChevron = row(view.container, 'member').querySelector('[data-testid="thread-row-expand"]')!.getBoundingClientRect();
+  expect(Math.abs(memberChevron.left - groupName.left)).toBeLessThanOrEqual(1);
+  expect(titleLeft('member-child')).toBeGreaterThan(titleLeft('plain-member'));
 });

@@ -14,11 +14,11 @@ import (
 // The sidebar changes a thread's title, archive flag, pin and group one
 // gesture at a time, and each gesture is its own accessor. The agent thread
 // tools send all four at once, and the spec's rule for them is that a
-// thread is either fully updated or untouched with a reason: a patch that
-// pins a thread that its group already pins must not land a rename first
-// and refuse afterwards. ApplyOrganizePatch is that rule: every field of
-// the RESULTING state is checked against the row as it stands before the
-// first write.
+// thread is either fully updated or untouched with a reason: a patch whose
+// group cannot be created must not land a rename first and refuse
+// afterwards. ApplyOrganizePatch is that rule: every field of the
+// RESULTING state is checked against the row as it stands before the first
+// write.
 
 // Pin tiers, as the sidebar names them. They map onto the store's two
 // burners; PinNone is the absence of a pin, which the store spells as a
@@ -34,12 +34,6 @@ const (
 // entry nobody can read: the refusal belongs to the policy that knows the
 // title is a display name.
 var ErrEmptyThreadTitle = errors.New("threadapp: a thread title cannot be empty")
-
-// ErrOrganizeGroupAndPin is a patch that both groups a thread and gives it
-// a pin of its own. A group carries the pin for its members ("one pin per
-// visible row"), so the two are contradictory whatever thread they name,
-// which is why this is refused on the patch rather than per row.
-var ErrOrganizeGroupAndPin = errors.New("threadapp: a grouped thread carries its group's pin, so a patch sets a group or a pin, not both")
 
 // ErrThreadHasNoProject is a group asked for on a thread that belongs to no
 // project. Groups are per project, so there is nowhere to create it.
@@ -83,9 +77,6 @@ func (p OrganizePatch) Validate() error {
 			return fmt.Errorf("threadapp: unknown pin tier %q", *p.Pin)
 		}
 	}
-	if p.Group != nil && strings.TrimSpace(*p.Group) != "" && p.Pin != nil && *p.Pin != PinNone {
-		return ErrOrganizeGroupAndPin
-	}
 	return nil
 }
 
@@ -117,11 +108,12 @@ type OrganizeResult struct {
 // state and then applies it.
 //
 // The refusals are decided here, before the first write, because they are
-// policy: a patch that pins a thread its group already pins is refused
-// whole rather than renamed first. The writes themselves are ONE store
-// call, because the same rule has to survive a failure the plan cannot
-// foresee (a group deleted by a second client between the plan and the
-// write), and only a transaction can undo the writes that already landed.
+// policy: a patch with a blank title or a group for a thread with no
+// project is refused whole rather than renamed first. The writes themselves
+// are ONE store call, because the same rule has to survive a failure the
+// plan cannot foresee (a group deleted by a second client between the plan
+// and the write), and only a transaction can undo the writes that already
+// landed.
 //
 // Call it under the thread's mutation lock, after CheckMutable, as every
 // other thread write is called.
@@ -197,21 +189,18 @@ func planOrganizePatch(database *store.Store, thread store.Thread, patch Organiz
 		plan.archive = &archived
 	}
 
-	// The group is resolved first because it decides whether a pin is
-	// allowed at all: the destination group, not the current one, is what
-	// carries the pin once this patch lands. Resolution only READS here;
-	// a group this read did not find is resolved again inside the write's
-	// transaction and created there, past every refusal, so two patches
-	// naming one new group end up in one group.
-	grouped := thread.GroupID != ""
+	// The group is resolved first because a move clears the pin of a row
+	// that changes group, so it decides which pin the row holds when the
+	// pin write runs. Resolution only READS here; a group this read did not
+	// find is resolved again inside the write's transaction and created
+	// there, past every refusal, so two patches naming one new group end up
+	// in one group.
 	if patch.Group != nil {
 		name := strings.TrimSpace(*patch.Group)
 		switch {
 		case name == "":
-			grouped = false
 			plan.moveGroup = thread.GroupID != ""
 		default:
-			grouped = true
 			if thread.ProjectID == "" {
 				return organizePlan{}, ErrThreadHasNoProject
 			}
@@ -226,13 +215,13 @@ func planOrganizePatch(database *store.Store, thread store.Thread, patch Organiz
 	}
 
 	if patch.Pin != nil {
-		tier := *patch.Pin
-		if tier != PinNone && grouped {
-			// Same rule the store enforces on its own writes, refused here
-			// so the rename beside it never lands first.
-			return organizePlan{}, fmt.Errorf("threadapp: pin %s: %w", thread.ID, store.ErrThreadGrouped)
+		// The move runs first in the store's write, so the pin is compared
+		// with what the row holds after it: nothing, when it changes group.
+		current := currentPinTier(thread)
+		if plan.moveGroup {
+			current = PinNone
 		}
-		if tier != currentPinTier(thread) {
+		if tier := *patch.Pin; tier != current {
 			plan.pin = tier
 		}
 	}

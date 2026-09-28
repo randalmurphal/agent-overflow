@@ -188,11 +188,11 @@ func updateSchema(shape Shape) map[string]any {
 		"pin": map[string]any{
 			"type":        "string",
 			"enum":        []string{PinFront, PinBack, PinNone},
-			"description": "Pin tier: front or back burner, or none to unpin. A grouped thread cannot be pinned on its own, because its group carries the pin; ungroup it first or pin the group with thread_group.",
+			"description": "Pin tier: front or back burner, or none to unpin. A thread inside a group pins the same way.",
 		},
 		"group": map[string]any{
 			"type":        []string{"string", "null"},
-			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Cannot be set together with pin.",
+			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move.",
 		},
 	}
 	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, or group them, many at once. Set at least one of title, archived, pin or group. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. Do this when the user asks, or for threads you spawned once you are done with them."
@@ -208,11 +208,10 @@ func groupSchema(shape Shape) map[string]any {
 		"group_id":   map[string]any{"type": "string", "description": "Group id from thread_options. Use this or group."},
 		"project_id": map[string]any{"type": "string", "description": "Project the group belongs to. Defaults to your own project when the group is named rather than given by id; a group is per project."},
 		"rename":     map[string]any{"type": "string", "maxLength": MaxTitleRunes, "description": "New name for the group."},
-		"pin":        map[string]any{"type": "string", "enum": []string{PinFront, PinBack, PinNone}, "description": "Pin the group to the front or back burner, or none to unpin it. The group's pin is what its threads show."},
 		"delete":     map[string]any{"type": "boolean", "description": "Delete the group. Its threads are ungrouped, not deleted, exactly as the sidebar does it."},
 	}
 	computerIDProperty(shape, properties, "the group")
-	description := "Rename, delete or pin one thread group. Name it with group plus project_id, or with group_id. Pass exactly one of rename, pin or delete."
+	description := "Rename or delete one thread group. Name it with group plus project_id, or with group_id. Pass exactly one of rename or delete. A group is not pinned; pin its threads with thread_update."
 	return tool("thread_group", description, properties)
 }
 

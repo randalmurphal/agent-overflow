@@ -491,43 +491,38 @@
               }}
             />
           {/if}
-          <!-- One pin per visible row: a grouped thread's pin lives on the
-               GROUP, and the schema refuses a pin here — so the items go
-               away rather than offering a write that would fail. -->
-          {#if !currentGroupId}
-            {#if isPinned}
-              <MenuItem
-                label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
-                disabled={operateUngranted}
-                title={ungrantedTitle}
-                onSelect={() => {
-                  onClose();
-                  void setThreadPinGroupAction(
-                    ctx(),
-                    isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
-                  );
-                }}
-              />
-              <MenuItem
-                label="Unpin Thread"
-                disabled={operateUngranted}
-                title={ungrantedTitle}
-                onSelect={() => {
-                  onClose();
-                  void unpinThreadAction(ctx());
-                }}
-              />
-            {:else}
-              <MenuItem
-                label="Pin Thread"
-                disabled={operateUngranted}
-                title={ungrantedTitle}
-                onSelect={() => {
-                  onClose();
-                  void pinThreadAction(ctx());
-                }}
-              />
-            {/if}
+          {#if isPinned}
+            <MenuItem
+              label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void setThreadPinGroupAction(
+                  ctx(),
+                  isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+                );
+              }}
+            />
+            <MenuItem
+              label="Unpin Thread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void unpinThreadAction(ctx());
+              }}
+            />
+          {:else}
+            <MenuItem
+              label="Pin Thread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void pinThreadAction(ctx());
+              }}
+            />
           {/if}
           <MenuItem
             label="Copy Path"

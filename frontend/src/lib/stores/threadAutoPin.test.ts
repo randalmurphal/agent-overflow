@@ -66,12 +66,10 @@ describe('autoPinNewThread', () => {
     expect(out.pinnedAt).toBe(5);
   });
 
-  it('never pins a grouped thread, and never toasts for one', async () => {
+  it('never auto-pins a grouped thread: it starts unpinned in its group', async () => {
     // A fork inherits its source's group (BuildForkedThread) and reaches
-    // this without the first-send pre-check; the store CHECK refuses a pin
-    // on a grouped row, and the user was seeing that as an error toast on
-    // every fork inside a group (2026-09-02).
-    const pin = vi.fn(async () => { throw new Error('a grouped thread cannot be pinned'); });
+    // this without the first-send pre-check.
+    const pin = vi.fn(async () => mkThread({ isDraft: false, groupId: 'g1', pinnedAt: 1 }));
     setBindingMock('PinThread', pin);
     const grouped = mkThread({ isDraft: false, groupId: 'g1' });
     expect(await autoPinNewThread(grouped)).toBe(grouped);

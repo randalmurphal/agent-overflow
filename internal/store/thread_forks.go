@@ -27,8 +27,8 @@ import (
 // this seed with the live measurement.
 //
 // `GroupID` IS copied: a fork of a grouped thread lands in the same
-// sidebar group (migration v76). The fork carries no pin, so the
-// "one pin per visible row" CHECK holds by construction.
+// sidebar group (migration v76). The pin is not: a pin belongs to the
+// thread that holds it, and a thread starts unpinned in a group.
 //
 // Pure: this only builds the row. CreatePointerFork persists it.
 func BuildForkedThread(source Thread) Thread {

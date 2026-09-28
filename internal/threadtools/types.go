@@ -407,5 +407,4 @@ type WorkspaceOption struct {
 type GroupOption struct {
 	ID   string `json:"group_id"`
 	Name string `json:"group"`
-	Pin  string `json:"pin,omitempty"`
 }

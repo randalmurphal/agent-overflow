@@ -111,7 +111,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`code-review.md`](specs/code-review.md) | The review workflow design, signed off 2026-08-23. Not implemented yet. |
 | [`agent-thread-tools.md`](specs/agent-thread-tools.md) | The `ao-thread-tools` MCP server (thirteen tools: search, show, item, options, spawn, send, ask, reply, status, cancel, update, group, remind) and `/side-chat`, locally and across paired computers. Implemented 2026-09-19; unchecked success criteria name what no test covers. |
 | [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
-| [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible, pinnable groups of threads inside a project's sidebar list. Signed off and implemented 2026-09-02. |
+| [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible groups of threads inside a project's sidebar list, shown above the pin blocks; members pin individually. Signed off and implemented 2026-09-02. |
 | [`remote-access.md`](specs/remote-access.md) | Remote transport, pairing, Android, previews, and supervised updates; historical implementation notes and outstanding requirements. |
 | [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |
 | [`conversation-transfer.md`](specs/conversation-transfer.md) | Move/copy ownership protocol, native portability evidence, archive boundaries, and required failure tests; implementation in progress. |

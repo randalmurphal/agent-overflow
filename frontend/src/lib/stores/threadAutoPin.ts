@@ -26,12 +26,10 @@ export function shouldAutoPinFirstSend(thread: Thread | undefined): boolean {
  * is surfaced separately and never reclassifies the already-successful create
  * or send as failed.
  *
- * A grouped thread is never pinned, and the check lives HERE rather than in
- * the first-send pre-check because a fork inherits its source's group
- * (`BuildForkedThread`) and reaches this without any pre-check: one pin per
- * visible row is the GROUP's, and the store CHECK refuses the row pin
- * outright, which is the difference between a silent no-op and a
- * failed-pin toast on an otherwise successful fork or first send.
+ * A grouped thread is never auto-pinned: a thread starts unpinned inside
+ * its group, and the user pins it there by hand. The check lives HERE rather
+ * than in the first-send pre-check because a fork inherits its source's group
+ * (`BuildForkedThread`) and reaches this without any pre-check.
  */
 export async function autoPinNewThread(thread: Thread): Promise<Thread> {
   if (!getSettings().autoPinNewThreads || thread.groupId) return thread;

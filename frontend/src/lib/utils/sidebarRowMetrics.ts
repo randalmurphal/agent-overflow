@@ -18,22 +18,60 @@ import { relativeTime } from './format';
 export const INDENT_PX = [0, 0, 8, 16];
 
 /**
- * The leading gutter between the project rail and the row's first flex child,
- * reserved for the pin affordance. EVERY row reserves it — rows that render a
- * pin place it absolutely inside, rows that don't leave it empty so titles
- * stay aligned with their neighbours.
+ * The leading gutter between the rail and a top-level thread row's first flex
+ * child, reserved for the pin affordance. Rows that render a pin centre it
+ * inside; rows that don't leave it empty so titles stay aligned.
  */
 export const PIN_SLOT_PX = 24;
 
+function indentStepPx(indent: number): number {
+  return INDENT_PX[Math.min(Math.max(indent, 0), INDENT_PX.length - 1)]!;
+}
+
+/** Thread row padding-left for an indent level: the pin gutter plus the indent step. */
+export function sidebarRowPaddingLeftPx(indent: number): number {
+  return PIN_SLOT_PX + indentStepPx(indent);
+}
+
+// ── Group geometry ─────────────────────────────────────────────────────────
+//
+// A group is never pinned, so its row spends no gutter. Instead its chevron
+// is centred on the top-level pin column, and its members' pins are centred
+// under its folder glyph. Every number below is measured from the left edge
+// of the project's thread list and derives from the row grammar ThreadGroupRow
+// renders: chevron (w-4), gap-1.5, folder glyph (11px), gap-1.5, name.
+
+const CHEVRON_PX = 16;
+const ROW_GAP_PX = 6;
+const FOLDER_GLYPH_PX = 11;
+
+/** Group row padding-left: centres the chevron on the top-level pin column. */
+export const GROUP_ROW_PADDING_LEFT_PX = (PIN_SLOT_PX - CHEVRON_PX) / 2;
+
+/** The member rail drops from the chevron's centre (it is a 1px border). */
+export const GROUP_RAIL_LEFT_PX = GROUP_ROW_PADDING_LEFT_PX + CHEVRON_PX / 2;
+
+/** Where a member row's box starts: just right of the rail. */
+const GROUP_MEMBER_ROW_LEFT_PX = GROUP_RAIL_LEFT_PX + 1;
+
+const GROUP_FOLDER_CENTRE_PX = GROUP_ROW_PADDING_LEFT_PX + CHEVRON_PX + ROW_GAP_PX + FOLDER_GLYPH_PX / 2;
+
+const GROUP_NAME_LEFT_PX = GROUP_ROW_PADDING_LEFT_PX + CHEVRON_PX + ROW_GAP_PX + FOLDER_GLYPH_PX + ROW_GAP_PX;
+
 /**
- * Row padding-left for an indent level: the pin gutter plus the indent step.
- * A row INSIDE a group reserves no gutter: nothing can be pinned there, and
- * the group rail already carries the nesting, so the empty 24px only pushed
- * the row's ring and content away from the line.
+ * Left offset, inside a member row, of its PIN_SLOT_PX-wide pin slot, so the
+ * pin centres under the group's folder glyph.
  */
-export function sidebarRowPaddingLeftPx(indent: number, inGroup = false): number {
-  const gutter = inGroup ? 0 : PIN_SLOT_PX;
-  return gutter + INDENT_PX[Math.min(Math.max(indent, 0), INDENT_PX.length - 1)]!;
+export const GROUP_MEMBER_PIN_SLOT_LEFT_PX = Math.round(
+  GROUP_FOLDER_CENTRE_PX - PIN_SLOT_PX / 2 - GROUP_MEMBER_ROW_LEFT_PX,
+);
+
+/**
+ * Member row padding-left: its title lines up with the group's name. A
+ * member's own discussion children step in from there.
+ */
+export function sidebarGroupMemberPaddingLeftPx(indent: number): number {
+  return GROUP_NAME_LEFT_PX - GROUP_MEMBER_ROW_LEFT_PX + indentStepPx(indent) - indentStepPx(2);
 }
 
 /**

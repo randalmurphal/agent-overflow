@@ -172,7 +172,11 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	// disappear only when the conversation returns to a former owner.
 	// The returning conversation is live even where a delete of the copy
 	// it replaces had begun, or had kept it as a holder its forks read.
-	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+`,live_todo='',worktree_setup_state='',deleting=0`); err != nil {
+	// The pin is local and stays, unless the row leaves its group: a thread
+	// leaving a group loses its pin (the CASEs read the pre-update row).
+	const keepPinInGroup = `,pinned_at=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pinned_at END` +
+		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END`
+	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0`); err != nil {
 		return false, err
 	}
 	if err := readTransferHistoryTx(ctx, tx, target, history); err != nil {

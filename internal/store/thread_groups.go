@@ -32,52 +32,28 @@ var ErrThreadGone = errors.New("store: that thread no longer exists")
 // a child's own group_id would be state nothing renders.
 var ErrThreadNotRoot = errors.New("store: a discussion reply moves with its discussion")
 
-// ErrThreadGrouped is what PinThread reports on a grouped row. The group
-// carries the pin from then on ("one pin per visible row"), and the
-// schema's CHECK would refuse the write regardless; the guard exists so the
-// refusal reads as a rule rather than as a raw constraint failure.
-var ErrThreadGrouped = errors.New("store: a grouped thread cannot be pinned")
-
 // ThreadGroup is a named, collapsible sidebar row gathering threads of ONE
 // project (migration v76; spec: docs/specs/sidebar-thread-groups.md).
 //
-// It is not a thread: it has a name, a pin, and nothing else of its own.
-// Its status, activity, and sort position are its members' — the same
-// bubbling a discussion parent does — so nothing here is derived or cached.
-//
-// PinnedAt / PinGroup are the thread pin fields verbatim, including their
-// NULL semantics: NULL PinGroup on a pinned row is the front burner, and
-// an unpinned row never retains a latent group (the schema's CHECK).
+// It is not a thread: it has a name and nothing else of its own. It is
+// not pinnable; its members pin as threads do (migration v139). Its status,
+// activity, and sort position are its members', the same bubbling a
+// discussion parent does, so nothing here is derived or cached.
 type ThreadGroup struct {
 	ID        string `json:"id"`
 	ProjectID string `json:"projectId"`
 	Name      string `json:"name"`
-	PinnedAt  *int64 `json:"pinnedAt,omitempty"`
-	PinGroup  *int   `json:"pinGroup,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
 // threadGroupColumns is the column list scanThreadGroup expects, in order.
-// pinned_at / pin_group stay uncoalesced for the same reason the thread
-// projection leaves them so: the NULL carries meaning.
-const threadGroupColumns = `id, project_id, name, pinned_at, pin_group, created_at, updated_at`
+const threadGroupColumns = `id, project_id, name, created_at, updated_at`
 
 func scanThreadGroup(scanner interface{ Scan(...any) error }) (ThreadGroup, error) {
 	var g ThreadGroup
-	var pinnedAt, pinGroup sql.NullInt64
-	if err := scanner.Scan(
-		&g.ID, &g.ProjectID, &g.Name, &pinnedAt, &pinGroup, &g.CreatedAt, &g.UpdatedAt,
-	); err != nil {
+	if err := scanner.Scan(&g.ID, &g.ProjectID, &g.Name, &g.CreatedAt, &g.UpdatedAt); err != nil {
 		return ThreadGroup{}, err
-	}
-	if pinnedAt.Valid {
-		v := pinnedAt.Int64
-		g.PinnedAt = &v
-	}
-	if pinGroup.Valid {
-		v := int(pinGroup.Int64)
-		g.PinGroup = &v
 	}
 	return g, nil
 }
@@ -204,7 +180,7 @@ func insertThreadGroup(exec sqlExecutor, projectID, trimmed string) (ThreadGroup
 }
 
 // RenameThreadGroup overwrites the display name and advances updated_at:
-// unlike a pin, a rename IS a change to the group itself.
+// a rename IS a change to the group itself.
 func (s *Store) RenameThreadGroup(id, name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -220,71 +196,41 @@ func (s *Store) RenameThreadGroup(id, name string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: rename thread group %s", id))
 }
 
-// DeleteThreadGroup removes the group and ungroups its members — active
-// and archived alike — through the FK's ON DELETE SET NULL. No thread is
-// deleted, and no Go-side sweep runs: the cascade is the mechanism, and
-// every writer connection carries foreign_keys=1 (dsn.go) so it fires.
-func (s *Store) DeleteThreadGroup(id string) error {
-	result, err := s.db.Exec(`DELETE FROM thread_groups WHERE id = ?`, id)
+// DeleteThreadGroup removes the group and ungroups its members, active
+// and archived alike, and returns every member row as it now stands. A
+// thread leaving a group loses its pin, so the members' pins are cleared
+// in the same transaction; the FK's ON DELETE SET NULL then clears their
+// group_id (every writer connection carries foreign_keys=1, dsn.go). No
+// thread is deleted.
+func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: delete thread group %s: %w", id, err)
+		return nil, fmt.Errorf("store: begin delete thread group %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: delete thread group %s", id))
-}
+	defer tx.Rollback()
 
-// PinThreadGroup places the group on the front burner, mirroring
-// PinThread exactly — including the stamped pinned_at that is metadata
-// only and does not order within a burner.
-func (s *Store) PinThreadGroup(id string) error {
-	now := nowMillis()
-	return s.setThreadGroupPinnedAt(id, &now)
-}
-
-// UnpinThreadGroup clears both pin fields. An unpinned row never retains a
-// latent group.
-func (s *Store) UnpinThreadGroup(id string) error {
-	return s.setThreadGroupPinnedAt(id, nil)
-}
-
-// SetThreadGroupPinGroup moves an already-pinned group between the exact
-// two burners. The WHERE clause makes assigning a burner to an unpinned
-// row impossible even for a future caller that skips prevalidation, the
-// same guard SetThreadPinGroup carries.
-func (s *Store) SetThreadGroupPinGroup(id string, group int) error {
-	if group != PinGroupFront && group != PinGroupBack {
-		return fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
-	}
-	result, err := s.db.Exec(
-		`UPDATE thread_groups SET pin_group = ? WHERE id = ? AND pinned_at IS NOT NULL`,
-		group, id,
-	)
+	members, err := queryIDs(tx,
+		`UPDATE threads SET pinned_at = NULL, pin_group = NULL WHERE group_id = ? RETURNING id`, id)
 	if err != nil {
-		return fmt.Errorf("store: update pin_group for thread group %s: %w", id, err)
+		return nil, fmt.Errorf("store: unpin members of thread group %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pin_group for pinned thread group %s", id))
-}
-
-// setThreadGroupPinnedAt is the shared pin/unpin primitive. Like
-// setThreadPinnedAt it deliberately does NOT touch updated_at: pinning is
-// a sidebar-presentation tweak, not a change to the group, and the row's
-// clock is what an empty group sorts by.
-func (s *Store) setThreadGroupPinnedAt(id string, ts *int64) error {
-	var result sql.Result
-	var err error
-	if ts == nil {
-		result, err = s.db.Exec(
-			`UPDATE thread_groups SET pinned_at = NULL, pin_group = NULL WHERE id = ?`, id,
-		)
-	} else {
-		result, err = s.db.Exec(
-			`UPDATE thread_groups SET pinned_at = ?, pin_group = ? WHERE id = ?`,
-			*ts, PinGroupFront, id,
-		)
-	}
+	result, err := tx.Exec(`DELETE FROM thread_groups WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("store: update pin state for thread group %s: %w", id, err)
+		return nil, fmt.Errorf("store: delete thread group %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pin state for thread group %s", id))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread group %s", id)); err != nil {
+		return nil, err
+	}
+	rows := []Thread{}
+	if len(members) > 0 {
+		if rows, err = listThreadsByIDTx(tx, members); err != nil {
+			return nil, fmt.Errorf("store: read back members of deleted thread group %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit delete thread group %s: %w", id, err)
+	}
+	return rows, nil
 }
 
 // SetThreadGroup is the ONE writer of threads.group_id. It moves each
@@ -307,11 +253,12 @@ func (s *Store) setThreadGroupPinnedAt(id string, ts *int64) error {
 //     could explain. Only a TOP-LEVEL row matches as a root (a child is
 //     refused with ErrThreadNotRoot); a child named beside its own root is
 //     still fine, because the root's disjunct carries it.
-//   - Grouping strips the pin in the same statement ("one pin per visible
-//     row"): the group carries the pin from then on, and the schema's CHECK
-//     would refuse the row otherwise. Ungrouping touches ONLY group_id: a
-//     grouped row holds no pin by that CHECK, and a bulk selection may name
-//     ungrouped rows too, whose pins are theirs to keep.
+//   - A row that changes group loses its pin in the same statement: a
+//     thread starts unpinned in a group it joins, and a thread leaving a
+//     group leaves its pin behind. A row whose group does not change keeps
+//     its pin, so a bulk selection naming members already in the
+//     destination, or never-grouped rows in an ungroup, leaves their pins
+//     alone.
 func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]Thread, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -339,13 +286,19 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 	}
 
 	const rootOrChild = `((id = ? AND COALESCE(parent_thread_id, '') = '') OR parent_thread_id = ?)`
+	// Every right-hand side reads the row as it was before the UPDATE, so
+	// the pin CASEs compare against the old group_id.
 	const groupSQL = `UPDATE threads
-   SET group_id = ?, pinned_at = NULL, pin_group = NULL
+   SET group_id = ?,
+       pinned_at = CASE WHEN group_id IS ? THEN pinned_at END,
+       pin_group = CASE WHEN group_id IS ? THEN pin_group END
  WHERE ` + rootOrChild + `
    AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)
  RETURNING id`
 	const ungroupSQL = `UPDATE threads
-   SET group_id = NULL
+   SET group_id = NULL,
+       pinned_at = CASE WHEN group_id IS NULL THEN pinned_at END,
+       pin_group = CASE WHEN group_id IS NULL THEN pin_group END
  WHERE ` + rootOrChild + `
  RETURNING id`
 
@@ -368,7 +321,7 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 		if groupID == "" {
 			rows, err = tx.Query(ungroupSQL, id, id)
 		} else {
-			rows, err = tx.Query(groupSQL, groupID, id, id, groupID)
+			rows, err = tx.Query(groupSQL, groupID, groupID, groupID, id, id, groupID)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)

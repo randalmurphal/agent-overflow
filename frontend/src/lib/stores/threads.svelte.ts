@@ -345,16 +345,17 @@ export function updateThreadGroupState(rows: readonly Thread[]): void {
 }
 
 /**
- * Drop a deleted group's membership from every cached row. DeleteThreadGroup
- * nulls `group_id` in SQLite (ON DELETE SET NULL) without emitting a thread
- * row per member, so this is the local half of that write.
+ * Drop a deleted group's membership from every cached row. A thread leaving
+ * a group leaves its pin behind, so the pin goes with it, matching what
+ * DeleteThreadGroup writes. The backend's per-member thread:updated frames
+ * carry the same values; this is the instant-feedback half.
  */
 export function clearThreadGroupMembership(groupId: string): void {
   if (!groupId) return;
   // Empty placeholders have no catalog row but still carry the group intent.
   for (const pane of getAllPanes().values()) {
     if (pane.thread?.groupId === groupId) {
-      pane.replaceThread({ ...pane.thread, groupId: undefined });
+      pane.replaceThread({ ...pane.thread, groupId: undefined, pinnedAt: undefined, pinGroup: undefined });
     }
   }
   let changed = false;
@@ -362,7 +363,7 @@ export function clearThreadGroupMembership(groupId: string): void {
     if (t.groupId !== groupId) return t;
     changed = true;
     catalogWriter.changed(threadBackend(t.id));
-    return { ...t, groupId: undefined };
+    return { ...t, groupId: undefined, pinnedAt: undefined, pinGroup: undefined };
   });
   if (changed) threads = next;
 }

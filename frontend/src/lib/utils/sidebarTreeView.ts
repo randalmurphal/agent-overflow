@@ -10,9 +10,7 @@
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
-  isDraftNode,
-  sidebarNodePinGroup,
-  sidebarNodeRow,
+  sidebarNodeSection,
   statusPriority,
   type SidebarThreadTreeNode,
   type SidebarTreeNode,
@@ -22,8 +20,12 @@ import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 export type SidebarTreeVisibleNode = SidebarTreeNode & {
   isExpanded: boolean;
   isExpandable: boolean;
-  /** True only on the first top-level back-burner row when both blocks exist. */
-  startsBackBurnerBlock: boolean;
+  /**
+   * True on the first top-level row of a section (groups, front burner,
+   * back burner, unpinned) when an earlier section has rows: the renderer
+   * draws the section divider above it.
+   */
+  startsSection: boolean;
   /**
    * The group this row RENDERS INSIDE, or null at the top level (a group's
    * own row included). It is the drop-target identity for the member-row
@@ -31,6 +33,13 @@ export type SidebarTreeVisibleNode = SidebarTreeNode & {
    * `groupId` field is unverified against what is actually on screen.
    */
   ownerGroupId: string | null;
+  /**
+   * The row carries a pin affordance: a top-level thread or a group's
+   * direct member. A discussion child pins through its parent. Decided from
+   * the node's tree depth, which a collapsed container's preview row no
+   * longer shows in `depth`.
+   */
+  isPinTarget: boolean;
 };
 
 export interface FlattenSidebarThreadTreeInput {
@@ -64,7 +73,7 @@ export function flattenSidebarThreadTree(
 
   const visit = (
     node: SidebarTreeNode,
-    startsBackBurnerBlock = false,
+    startsSection = false,
     ownerGroupId: string | null = null,
   ) => {
     const isExpandable = node.children.length > 0;
@@ -73,7 +82,14 @@ export function flattenSidebarThreadTree(
         ? collapsedGroupIds === undefined || !collapsedGroupIds.has(node.group.id)
         : input.expandedThreadIds.has(node.thread.id)
     );
-    visibleNodes.push({ ...node, isExpanded, isExpandable, startsBackBurnerBlock, ownerGroupId });
+    visibleNodes.push({
+      ...node,
+      isExpanded,
+      isExpandable,
+      startsSection,
+      ownerGroupId,
+      isPinTarget: isPinTarget(node, ownerGroupId),
+    });
     const childOwner = node.kind === 'group' ? node.group.id : ownerGroupId;
     if (!isExpanded) {
       const active = input.activeThreadId
@@ -85,8 +101,9 @@ export function flattenSidebarThreadTree(
           depth: node.depth + 1,
           isExpanded: false,
           isExpandable: false,
-          startsBackBurnerBlock: false,
+          startsSection: false,
           ownerGroupId: childOwner,
+          isPinTarget: isPinTarget(active, childOwner),
           displayLiveStatus: active.ownLiveStatus,
           displayStatus: active.ownStatus,
         });
@@ -96,18 +113,21 @@ export function flattenSidebarThreadTree(
     for (const child of node.children) visit(child, false, childOwner);
   };
 
-  const hasFrontBurner = input.nodes.some((node) => sidebarNodePinGroup(node) === 'front');
-  const hasBackBurner = input.nodes.some((node) => sidebarNodePinGroup(node) === 'back');
-  let markedBackBurner = false;
+  // The top level arrives sorted, so each section is one contiguous run.
+  // Drafts sit above every section and never open one.
+  let previousSection: ReturnType<typeof sidebarNodeSection> = null;
   for (const node of input.nodes) {
-    const startsBackBurnerBlock = hasFrontBurner
-      && hasBackBurner
-      && !markedBackBurner
-      && sidebarNodePinGroup(node) === 'back';
-    if (startsBackBurnerBlock) markedBackBurner = true;
-    visit(node, startsBackBurnerBlock);
+    const section = sidebarNodeSection(node);
+    const startsSection = section !== null && previousSection !== null && section !== previousSection;
+    if (section !== null) previousSection = section;
+    visit(node, startsSection);
   }
   return visibleNodes;
+}
+
+function isPinTarget(node: SidebarTreeNode, ownerGroupId: string | null): boolean {
+  if (node.kind !== 'thread') return false;
+  return node.depth === 0 || (node.depth === 1 && ownerGroupId !== null);
 }
 
 function findThreadNode(
@@ -170,8 +190,9 @@ export function sameSidebarVisibleNodes(
     }
     if (x.depth !== y.depth) return false;
     if (x.isExpanded !== y.isExpanded || x.isExpandable !== y.isExpandable) return false;
-    if (x.startsBackBurnerBlock !== y.startsBackBurnerBlock) return false;
+    if (x.startsSection !== y.startsSection) return false;
     if (x.ownerGroupId !== y.ownerGroupId) return false;
+    if (x.isPinTarget !== y.isPinTarget) return false;
     if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
     if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
     if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
@@ -222,12 +243,13 @@ export interface PreviewThreadsResult {
 /**
  * Slice a sorted top-level node list into a preview window. A thread that
  * is open in a pane never hides behind the cut: any that land in the tail
- * float back into view after the head, in tail order. Pinned rows from
- * both burners count toward the limit and always stay visible, even
- * when their count exceeds it. Drafts stay visible outside the limit.
+ * float back into view after the head, in tail order. Groups and pinned
+ * rows from both burners sort above the unpinned section, count toward
+ * the limit and always stay visible, even when their count exceeds it.
+ * Drafts stay visible outside the limit.
  *
  * A group or discussion takes one slot. Its descendants take none.
- * Containers with an open descendant stay visible above the cut.
+ * Discussions with an open descendant stay visible above the cut.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
@@ -237,16 +259,16 @@ export function previewSidebarThreads(input: {
 }): PreviewThreadsResult {
   const limit = input.limit ?? THREAD_PREVIEW_LIMIT;
 
-  // Drafts and pinned both render outside the truncated unpinned tail.
-  // Drafts come first to match compareTreeNodes (the user is actively
-  // composing them; pin state is a slower-moving curation choice).
+  // Drafts, groups and pins all render outside the truncated unpinned
+  // tail, in the order compareTreeNodes gives them.
   const drafts: SidebarTreeNode[] = [];
   const pinned: SidebarTreeNode[] = [];
   const rest: SidebarTreeNode[] = [];
   for (const node of input.nodes) {
-    if (isDraftNode(node)) drafts.push(node);
-    else if (sidebarNodeRow(node).pinnedAt != null) pinned.push(node);
-    else rest.push(node);
+    const section = sidebarNodeSection(node);
+    if (section === null) drafts.push(node);
+    else if (section === 'unpinned') rest.push(node);
+    else pinned.push(node);
   }
 
   const unpinnedLimit = Math.max(0, limit - pinned.length);

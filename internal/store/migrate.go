@@ -1461,6 +1461,8 @@ CREATE INDEX idx_items_completion_created
 		// A plain ADD COLUMN with a CHECK and a REFERENCES clause — SQLite
 		// permits both on an added column as long as its default is NULL,
 		// which it is — so the FK-parent `threads` table is not rebuilt.
+		//
+		// v139 removes the threads CHECK and the group pin columns.
 		SQL: `CREATE TABLE thread_groups (
     id         TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1727,6 +1729,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: topLevelTimelineIndexMigrationVersion, Name: "top_level_timeline_index", SQL: topLevelTimelineIndexV136SQL},
 	{Version: newestChunkRefsIndexMigrationVersion, Name: "newest_chunk_refs_index", SQL: newestChunkRefsIndexV137SQL},
 	{Version: dropThreadPRRefMigrationVersion, Name: "drop_thread_pr_ref", SQL: dropThreadPRRefV138SQL},
+	{Version: groupedThreadPinsMigrationVersion, Name: "grouped_thread_pins", SQL: groupedThreadPinsV139SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -115,21 +115,28 @@ describe('<ProjectThreadList>', () => {
     expect(queryByTestId('project-thread-list-empty')).toBeNull();
   });
 
-  it('renders one thin divider only when both pin blocks are present', async () => {
+  it('renders one thin divider between each pair of adjacent sections', async () => {
     const pane = createThreadPane();
+    const group: ThreadGroup = { id: 'g1', projectId: 'p1', name: 'Group', createdAt: 0, updatedAt: 0 };
     const { getByTestId, rerender } = render(ProjectThreadList, {
       props: {
         projectId: 'p1',
         threads: [
+          mkThread('member', { groupId: 'g1', pinnedAt: 3, pinGroup: 1 }),
           mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
           mkThread('back', { pinnedAt: 2, pinGroup: 1 }),
+          mkThread('loose'),
         ],
+        groups: [group],
         pane,
       },
     });
     const list = getByTestId('project-thread-list');
-    expect(list.querySelectorAll('[data-testid="thread-pin-group-divider"]')).toHaveLength(1);
-    expect(list.querySelector('[data-testid="thread-pin-group-divider"]')?.className).toContain(
+    // Each divider sits in the wrapper of the row that opens its section.
+    const opened = () => Array.from(list.querySelectorAll('[data-testid="thread-section-divider"]'))
+      .map((divider) => divider.parentElement?.querySelector('[data-sidebar-thread-id]')?.getAttribute('data-sidebar-thread-id'));
+    expect(opened()).toEqual(['front', 'back', 'loose']);
+    expect(list.querySelector('[data-testid="thread-section-divider"]')?.className).toContain(
       'border-border-subtle',
     );
 
@@ -139,9 +146,10 @@ describe('<ProjectThreadList>', () => {
         mkThread('front-a', { pinnedAt: 1, pinGroup: 0 }),
         mkThread('front-b', { pinnedAt: 2, pinGroup: 0 }),
       ],
+      groups: [],
       pane,
     });
-    expect(list.querySelectorAll('[data-testid="thread-pin-group-divider"]')).toHaveLength(0);
+    expect(list.querySelectorAll('[data-testid="thread-section-divider"]')).toHaveLength(0);
   });
 
   it('renders a child durable Interrupted status on the collapsed parent row', () => {
@@ -383,6 +391,34 @@ describe('<ProjectThreadList> thread groups', () => {
       props: { projectId: 'p1', threads, pane: createThreadPane(), groups },
     });
   }
+
+  it('gives members a pin and the group row none, and sorts the group above pins', () => {
+    const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
+    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
+    const front = mkThread('front', { projectId: 'p1', pinnedAt: 1, updatedAt: 99_000 });
+    const { getByTestId, container } = renderList([front, member, child], [mkGroup()]);
+
+    expect(getByTestId('thread-group-row-shell').querySelector('[data-testid="thread-row-pin"]')).toBeNull();
+    const rows = Array.from(container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'));
+    expect(rows.map((row) => row.getAttribute('data-sidebar-group-id') ?? row.getAttribute('data-sidebar-thread-id')))
+      .toEqual(['g1', 'm1', 'front']);
+    const memberRow = container.querySelector('[data-sidebar-thread-id="m1"]') as HTMLElement;
+    expect(memberRow.querySelector('[data-testid="thread-row-pin"]')).not.toBeNull();
+    // A front-burner member is not a numbered jump target.
+    expect(memberRow.hasAttribute('data-sidebar-jump-target')).toBe(false);
+  });
+
+  it('keeps the pin off a member discussion child', async () => {
+    const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
+    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
+    const { container, getAllByTestId } = renderList([member, child], [mkGroup()]);
+    await fireEvent.click(getAllByTestId('thread-row-expand')[0]);
+    await tick();
+
+    const childRow = container.querySelector('[data-sidebar-thread-id="m1-child"]') as HTMLElement;
+    expect(childRow).not.toBeNull();
+    expect(childRow.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
+  });
 
   it('renders a group row above its members', () => {
     const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });

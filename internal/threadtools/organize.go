@@ -105,9 +105,9 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 	return result, nil
 }
 
-// updatePatch validates the whole patch once. group and pin together are
-// refused here rather than per thread: a group carries the pin, so the two
-// are contradictory whatever thread they are aimed at.
+// updatePatch validates the whole patch once. group and pin may come
+// together: the group move applies first, so the pin lands inside the new
+// group.
 func updatePatch(args updateArgs) (UpdateCall, error) {
 	patch := UpdateCall{Archived: args.Archived}
 	if args.Title != nil {
@@ -133,9 +133,6 @@ func updatePatch(args updateArgs) (UpdateCall, error) {
 			return UpdateCall{}, err
 		}
 		patch.Group = group
-	}
-	if patch.Group != nil && patch.Pin != nil && *patch.Pin != PinNone {
-		return UpdateCall{}, publicf(CodeGrouped, "A grouped thread cannot carry its own pin, because its group carries it. Set group or pin in one call, not both, and pin the group itself with thread_group.")
 	}
 	if !patch.Patched() {
 		return UpdateCall{}, invalidf("Set at least one of title, archived, pin or group.")
@@ -220,7 +217,6 @@ type groupArgs struct {
 	ProjectID  string `json:"project_id"`
 	ComputerID string `json:"computer_id"`
 	Rename     string `json:"rename"`
-	Pin        string `json:"pin"`
 	Delete     bool   `json:"delete"`
 }
 
@@ -242,20 +238,16 @@ func (c *session) group(ctx context.Context, raw json.RawMessage) (any, error) {
 		GroupID:   trim(args.GroupID),
 		ProjectID: trim(args.ProjectID),
 		Rename:    trim(args.Rename),
-		Pin:       trim(args.Pin),
 		Delete:    args.Delete,
 	}
 	if count := countSet(call.Group != "", call.GroupID != ""); count != 1 {
 		return nil, invalidf("Name the group with group plus project_id, or with group_id. This call passed %d of the two.", count)
 	}
-	if count := countSet(call.Rename != "", call.Pin != "", call.Delete); count != 1 {
-		return nil, invalidf("Pass exactly one of rename, pin or delete. This call passed %d.", count)
+	if count := countSet(call.Rename != "", call.Delete); count != 1 {
+		return nil, invalidf("Pass exactly one of rename or delete. This call passed %d.", count)
 	}
 	if call.Rename != "" && utf8.RuneCountInString(call.Rename) > MaxTitleRunes {
 		return nil, invalidf("rename must be at most %d characters.", MaxTitleRunes)
-	}
-	if call.Pin != "" && !slices.Contains([]string{PinFront, PinBack, PinNone}, call.Pin) {
-		return nil, invalidf("pin must be front, back or none.")
 	}
 
 	computer, local, ok := c.computerByID(trim(args.ComputerID))

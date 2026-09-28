@@ -137,8 +137,8 @@ func TestApplyThreadOrganizePinDoesNotTouchUpdatedAt(t *testing.T) {
 
 // TestApplyThreadOrganizeRollsBackEveryWriteWhenAStepFails is the spec's
 // rule: a thread is either fully updated or untouched. The pin here is
-// refused by the group move that precedes it, which is exactly the shape
-// four separate accessors could not undo.
+// refused after the rename and the group move landed, which is exactly the
+// shape four separate accessors could not undo.
 func TestApplyThreadOrganizeRollsBackEveryWriteWhenAStepFails(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-roll")
@@ -151,11 +151,11 @@ func TestApplyThreadOrganizeRollsBackEveryWriteWhenAStepFails(t *testing.T) {
 		Title:       organizeTitle("Renamed"),
 		CreateGroup: &ThreadGroupCreate{ProjectID: defaultTestProjectID, Name: "Release"},
 		MoveGroup:   true,
-		Pin:         &ThreadPinWrite{Pinned: true, Burner: PinGroupFront},
+		Pin:         &ThreadPinWrite{Pinned: true, Burner: 7},
 		Archived:    organizeArchived(true),
 	})
-	if !errors.Is(err, ErrThreadGrouped) {
-		t.Fatalf("error = %v, want ErrThreadGrouped", err)
+	if !errors.Is(err, ErrInvalidPinGroup) {
+		t.Fatalf("error = %v, want ErrInvalidPinGroup", err)
 	}
 	assertThreadUntouched(t, s, before)
 
@@ -187,6 +187,40 @@ func TestApplyThreadOrganizeRollsBackEveryWriteWhenAStepFails(t *testing.T) {
 	})
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestApplyThreadOrganizePinsInsideTheGroupItMoves: the group move runs
+// first and clears the pin of a row that changes group, and the pin in the
+// same write then lands inside the new group, on either burner.
+func TestApplyThreadOrganizePinsInsideTheGroupItMoves(t *testing.T) {
+	for _, burner := range []int{PinGroupFront, PinGroupBack} {
+		s := newTestStore(t)
+		mustCreateThread(t, s, "t-move")
+		if _, _, err := s.PinThread("t-move"); err != nil {
+			t.Fatalf("pin thread: %v", err)
+		}
+		if _, _, err := s.SetThreadPinGroup("t-move", burner); err != nil {
+			t.Fatalf("set burner: %v", err)
+		}
+
+		result, err := s.ApplyThreadOrganize("t-move", ThreadOrganizeWrite{
+			CreateGroup: &ThreadGroupCreate{ProjectID: defaultTestProjectID, Name: "Release"},
+			MoveGroup:   true,
+			Pin:         &ThreadPinWrite{Pinned: true, Burner: burner},
+		})
+		if err != nil {
+			t.Fatalf("burner %d: ApplyThreadOrganize: %v", burner, err)
+		}
+		if result.CreatedGroup == nil || result.Thread.GroupID != result.CreatedGroup.ID {
+			t.Fatalf("burner %d: row = %+v, want it in the created group", burner, result.Thread)
+		}
+		if result.Thread.PinnedAt == nil || result.Thread.PinGroup == nil || *result.Thread.PinGroup != burner {
+			t.Errorf("burner %d: row = %+v, want it pinned inside the group", burner, result.Thread)
+		}
+		if !result.Changed {
+			t.Errorf("burner %d: a group move reported no change", burner)
+		}
 	}
 }
 

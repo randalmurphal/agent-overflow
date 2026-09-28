@@ -1,7 +1,8 @@
 // Two-tier pins cross the real SQLite -> App RPC -> transport -> Svelte path.
 // The first case proves an in-app draft is pinned only after its first real
-// send starts. The second proves front/back ordering, the one-boundary divider,
-// and both user-facing move gestures against persisted pin_group state.
+// send starts. The second proves front/back ordering, the section dividers
+// (front | back | unpinned), and both user-facing move gestures against
+// persisted pin_group state.
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface ThreadRow {
@@ -50,6 +51,10 @@ test('front and back blocks move through the context menu and pin right-click', 
             title: 'Back task',
             turns: [{ userText: 'back', items: [{ kind: 'assistant_text', summary: 'back done' }] }],
           },
+          {
+            title: 'Loose task',
+            turns: [{ userText: 'loose', items: [{ kind: 'assistant_text', summary: 'loose done' }] }],
+          },
         ],
       },
     ],
@@ -61,12 +66,13 @@ test('front and back blocks move through the context menu and pin right-click', 
 
   await harness.open(page);
   const rows = page.getByTestId('thread-row');
-  await expect(rows).toHaveCount(2);
+  await expect(rows).toHaveCount(3);
   expect(await page.getByTestId('thread-row-title').allTextContents()).toEqual([
     'Front task',
     'Back task',
+    'Loose task',
   ]);
-  await expect(page.getByTestId('thread-pin-group-divider')).toHaveCount(1);
+  await expect(page.getByTestId('thread-section-divider')).toHaveCount(2);
 
   const backRow = rows.filter({ hasText: 'Back task' });
   await backRow.click({ button: 'right' });
@@ -75,13 +81,14 @@ test('front and back blocks move through the context menu and pin right-click', 
     const stored = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
     return stored.find((row) => row.id === backId)?.pinGroup;
   }).toBe(0);
-  await expect(page.getByTestId('thread-pin-group-divider')).toHaveCount(0);
+  // Front burner straight onto unpinned: one boundary left.
+  await expect(page.getByTestId('thread-section-divider')).toHaveCount(1);
 
   await backRow.getByTestId('thread-row-pin').click({ button: 'right' });
   await expect.poll(async () => {
     const stored = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
     return stored.find((row) => row.id === backId)?.pinGroup;
   }).toBe(1);
-  await expect(page.getByTestId('thread-pin-group-divider')).toHaveCount(1);
+  await expect(page.getByTestId('thread-section-divider')).toHaveCount(2);
   await expect(backRow.getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'back');
 });

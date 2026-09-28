@@ -1629,9 +1629,10 @@ export class Thread {
     /**
      * GroupID names the sidebar thread group this row belongs to
      * (migration v76), or "" for a top-level thread. SetThreadGroup is its
-     * ONE writer; a schema CHECK refuses a group and a pin on the same row
-     * ("one pin per visible row"), and the FK's ON DELETE SET NULL is what
-     * makes deleting a group ungroup its members instead of deleting them.
+     * ONE writer. A grouped row pins like any other; a row that joins or
+     * leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
+     * the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
+     * members instead of deleting them.
      * Discussion children follow their root, so the frontend reads it on
      * top-level nodes only.
      */
@@ -1816,20 +1817,15 @@ export class Thread {
  * ThreadGroup is a named, collapsible sidebar row gathering threads of ONE
  * project (migration v76; spec: docs/specs/sidebar-thread-groups.md).
  * 
- * It is not a thread: it has a name, a pin, and nothing else of its own.
- * Its status, activity, and sort position are its members' — the same
- * bubbling a discussion parent does — so nothing here is derived or cached.
- * 
- * PinnedAt / PinGroup are the thread pin fields verbatim, including their
- * NULL semantics: NULL PinGroup on a pinned row is the front burner, and
- * an unpinned row never retains a latent group (the schema's CHECK).
+ * It is not a thread: it has a name and nothing else of its own. It is
+ * not pinnable; its members pin as threads do (migration v139). Its status,
+ * activity, and sort position are its members', the same bubbling a
+ * discussion parent does, so nothing here is derived or cached.
  */
 export class ThreadGroup {
     "id": string;
     "projectId": string;
     "name": string;
-    "pinnedAt"?: number | null;
-    "pinGroup"?: number | null;
     "createdAt": number;
     "updatedAt": number;
 

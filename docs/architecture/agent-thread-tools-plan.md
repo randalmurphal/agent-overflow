@@ -795,18 +795,19 @@ the caller's rows, open first then newest first, paged by `cursor`.
 `app_thread_tools_organize.go`. `thread_update` resolves each id (local
 or peer), groups the ids by computer, and on each computer validates
 the whole resulting state per thread before touching it (title
-non-empty after trim; group and pin not both set; not archiving the
-caller; group name resolvable or creatable in the thread's project),
+non-empty after trim; not archiving the caller; group name resolvable
+or creatable in the thread's project; a group move runs before a pin in
+the same patch, so the pin lands inside the new group),
 then applies the patch inside one store transaction per thread through
 a new `threadapp.ApplyOrganizePatch` that the existing bindings'
 service calls share, and emits that thread's final `thread:updated`
-once. A refusal names the thread and the reason (`ErrThreadGrouped`
-for pin on a grouped thread, a new `thread_is_caller` for archiving
-the calling thread) and leaves that thread untouched; other threads in
+once. A refusal names the thread and the reason (for example
+`thread_is_caller` for archiving the calling thread) and leaves that
+thread untouched; other threads in
 the call still apply, and the result is per id. Each binding already emits its sidebar events, so the
-UI follows live. `thread_group` maps to `RenameThreadGroup`,
-`DeleteThreadGroup`, `PinThreadGroup` / `SetThreadGroupPinGroup` /
-`UnpinThreadGroup`; a name resolves within the caller's project unless
+UI follows live. `thread_group` maps to `RenameThreadGroup` and
+`DeleteThreadGroup`; a group is not pinnable. A name resolves within
+the caller's project unless
 `project_id` is given. On a peer these run inside `ThreadToolCall`
 under `terminal:operate`, which the own-device session holds; the
 bindings' own `threads:operate` floor is rechecked per call.
@@ -1094,9 +1095,8 @@ Requests and waits:
 - `thread_update` group name that exists in another project: a group
   is per project, so a new group of that name is created in the
   thread's project.
-- `thread_group` delete while a thread in it is pinned through the
-  group: the store ungroups members and drops the pin, as the sidebar
-  does.
+- `thread_group` delete while a member is pinned: the store ungroups
+  the members and clears their pins, as the sidebar does.
 - `thread_remind` with `at` in the past: settles on the next sweep,
   which is what "now" means; there is no ceiling.
 - Reminder due while the caller's turn is running: queued at the

@@ -9,19 +9,14 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Icon from '../primitives/Icon.svelte';
   import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
-  import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import {
     moveThreadsToGroupAction,
     newThreadInGroupAction,
-    pinThreadGroupAction,
     renameThreadGroupAction,
-    setThreadGroupPinGroupAction,
-    unpinThreadGroupAction,
   } from './threadGroupActions';
-  import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { sidebarRowPaddingLeftPx } from '../../utils/sidebarRowMetrics';
+  import { GROUP_ROW_PADDING_LEFT_PX } from '../../utils/sidebarRowMetrics';
   import {
     canDropThreadInGroup,
     endThreadRowDrag,
@@ -32,8 +27,6 @@
   interface Props {
     group: ThreadGroup;
     pane: ThreadPane | null;
-    /** Visual indent level, same scale ThreadRow uses. */
-    indent?: number;
     expanded: boolean;
     /** Top-level member thread ids, in render order. The count is this length. */
     memberThreadIds: readonly string[];
@@ -55,7 +48,6 @@
   let {
     group,
     pane,
-    indent = 0,
     expanded,
     memberThreadIds,
     dropActive = false,
@@ -66,9 +58,9 @@
   let ctxOpen = $state(false);
 
   let memberCount = $derived(memberThreadIds.length);
-  let isPinned = $derived(group.pinnedAt != null);
-  let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent));
-  // Rename, pin, new-thread and the menu's rows all write on the project's
+  // A group row is always top-level; its chevron centres on the pin column.
+  const rowPaddingLeftPx = GROUP_ROW_PADDING_LEFT_PX;
+  // Rename, new-thread and the menu's rows all write on the project's
   // computer under `threads:operate`. The controls stay and go inert.
   let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
 
@@ -261,26 +253,6 @@
     data-sidebar-group-id={group.id}
     data-expanded={expanded}
   >
-    <!-- Leading pin slot, identical to ThreadRow's: absolutely placed in the
-         reserved gutter so it costs the flex row no gap of its own. -->
-    <div class="absolute inset-y-0 left-0 flex items-center justify-center w-6 pointer-events-none">
-      <ThreadRowPinButton
-        {isPinned}
-        pinGroup={group.pinGroup}
-        pinLabel="Pin Group"
-        unpinLabel="Unpin Group"
-        disabled={operateUngranted}
-        onToggle={() => {
-          if (isPinned) void unpinThreadGroupAction(group.id);
-          else void pinThreadGroupAction(group.id);
-        }}
-        onCycleBurner={() => void setThreadGroupPinGroupAction(
-          group.id,
-          group.pinGroup === PIN_GROUP_BACK ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
-        )}
-      />
-    </div>
-
     <!-- Always rendered, even for an empty group: the chevron is what says
          "this row contains things", and a group that shows one only once it
          has a member reads as a different kind of row each time. -->
@@ -300,7 +272,7 @@
       />
     </button>
 
-    <span class="inline-flex items-center shrink-0 text-fg-subtle" aria-hidden="true">
+    <span class="inline-flex items-center shrink-0 text-fg-subtle" aria-hidden="true" data-testid="thread-group-row-folder">
       <Icon icon={expanded ? FolderOpen : Folder} size={11} strokeWidth={1.75} />
     </span>
 

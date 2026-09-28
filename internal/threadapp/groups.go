@@ -40,52 +40,22 @@ func (s *Service) RenameGroup(groupID, name string) (store.ThreadGroup, error) {
 
 // DeleteGroup reads the row BEFORE the delete: the deletion event carries
 // the group it removed, and after the DELETE there is nothing left to read.
-func (s *Service) DeleteGroup(groupID string) (store.ThreadGroup, error) {
+// It also returns the former members as they now stand, ungrouped and
+// unpinned, so the caller can announce every row the delete changed.
+func (s *Service) DeleteGroup(groupID string) (store.ThreadGroup, []store.Thread, error) {
 	database, err := s.database("delete thread group")
 	if err != nil {
-		return store.ThreadGroup{}, err
+		return store.ThreadGroup{}, nil, err
 	}
 	group, err := database.GetThreadGroup(groupID)
 	if err != nil {
-		return store.ThreadGroup{}, err
+		return store.ThreadGroup{}, nil, err
 	}
-	if err := database.DeleteThreadGroup(groupID); err != nil {
-		return store.ThreadGroup{}, err
-	}
-	return group, nil
-}
-
-func (s *Service) PinGroup(groupID string) (store.ThreadGroup, error) {
-	database, err := s.database("pin thread group")
+	members, err := database.DeleteThreadGroup(groupID)
 	if err != nil {
-		return store.ThreadGroup{}, err
+		return store.ThreadGroup{}, nil, err
 	}
-	if err := database.PinThreadGroup(groupID); err != nil {
-		return store.ThreadGroup{}, err
-	}
-	return database.GetThreadGroup(groupID)
-}
-
-func (s *Service) UnpinGroup(groupID string) (store.ThreadGroup, error) {
-	database, err := s.database("unpin thread group")
-	if err != nil {
-		return store.ThreadGroup{}, err
-	}
-	if err := database.UnpinThreadGroup(groupID); err != nil {
-		return store.ThreadGroup{}, err
-	}
-	return database.GetThreadGroup(groupID)
-}
-
-func (s *Service) SetGroupPinGroup(groupID string, group int) (store.ThreadGroup, error) {
-	database, err := s.database("set thread group pin group")
-	if err != nil {
-		return store.ThreadGroup{}, err
-	}
-	if err := database.SetThreadGroupPinGroup(groupID, group); err != nil {
-		return store.ThreadGroup{}, err
-	}
-	return database.GetThreadGroup(groupID)
+	return group, members, nil
 }
 
 // SetGroup moves threads into groupID, or out of any group when it is "".

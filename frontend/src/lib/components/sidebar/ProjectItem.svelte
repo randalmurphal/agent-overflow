@@ -461,7 +461,7 @@
       project, so expanding the project does not move the row.
     -->
     <div class="flex flex-col gap-px ml-4 border-l border-border-subtle/60" data-testid="project-item-active-pin">
-      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
+      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} pinnable={!activeWhenCollapsed.parentThreadId} />
     </div>
   {/if}
 

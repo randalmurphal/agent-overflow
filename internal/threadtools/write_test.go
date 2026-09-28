@@ -389,10 +389,6 @@ func TestUpdateValidatesThePatchOnceBeforeTouchingAnything(t *testing.T) {
 	callErr(t, server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"pin":"middle"}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_update", `{"thread_ids":[],"archived":true}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"group":"  "}`, CodeInvalidRequest)
-	message := callErr(t, server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"group":"Release","pin":"front"}`, CodeGrouped)
-	if !strings.Contains(message, "its group carries it") {
-		t.Errorf("message = %q", message)
-	}
 	if len(app.updates) != 0 {
 		t.Fatal("a refused patch reached the app")
 	}
@@ -401,6 +397,14 @@ func TestUpdateValidatesThePatchOnceBeforeTouchingAnything(t *testing.T) {
 	patch := app.updates[0]
 	if patch.Title == nil || *patch.Title != "Renamed" || patch.Archived == nil || *patch.Archived {
 		t.Fatalf("patch = %+v", patch)
+	}
+
+	// A group and a pin together reach the app as one patch: the group
+	// move applies first and the pin lands inside the group.
+	call(t, server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"group":"Release","pin":"back"}`)
+	both := app.updates[1]
+	if both.Group == nil || *both.Group != "Release" || both.Pin == nil || *both.Pin != PinBack {
+		t.Fatalf("group and pin patch = %+v", both)
 	}
 }
 
@@ -493,7 +497,11 @@ func TestGroupNamesOneGroupAndDoesOneThingToIt(t *testing.T) {
 	callErr(t, server, localCaller(), "thread_group", `{"group":"Release","group_id":"g1","rename":"Later"}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_group", `{"group_id":"g1"}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_group", `{"group_id":"g1","rename":"Later","delete":true}`, CodeInvalidRequest)
-	callErr(t, server, localCaller(), "thread_group", `{"group_id":"g1","pin":"sideways"}`, CodeInvalidRequest)
+	// A group is not pinned: the schema offers no pin, and the argument
+	// is refused as unknown.
+	if message := callErr(t, server, localCaller(), "thread_group", `{"group_id":"g1","pin":"front"}`, CodeInvalidRequest); !strings.Contains(message, "Unknown argument") {
+		t.Errorf("pin on thread_group = %q, want an unknown-argument refusal", message)
+	}
 	if len(app.gcalls) != 0 {
 		t.Fatal("a refused group call reached the app")
 	}
@@ -519,10 +527,10 @@ func TestGroupNamesOneGroupAndDoesOneThingToIt(t *testing.T) {
 // TestGroupOnAnotherComputerRunsThere.
 func TestGroupOnAnotherComputerRunsThere(t *testing.T) {
 	p := newPair(t)
-	p.remote.groupRes = GroupReport{GroupID: "g9", Group: "Release", Action: "pinned", Pin: PinFront}
+	p.remote.groupRes = GroupReport{GroupID: "g9", Group: "Later", Action: "renamed"}
 
-	result := call(t, p.server, localCaller(), "thread_group", `{"group_id":"g9","pin":"front","computer_id":"studio"}`)
-	if len(p.remote.gcalls) != 1 || p.remote.gcalls[0].Pin != PinFront {
+	result := call(t, p.server, localCaller(), "thread_group", `{"group_id":"g9","rename":"Later","computer_id":"studio"}`)
+	if len(p.remote.gcalls) != 1 || p.remote.gcalls[0].Rename != "Later" {
 		t.Fatalf("the destination received %+v", p.remote.gcalls)
 	}
 	if result["computer_id"] != "studio" || result["computer"] != "Studio" {
