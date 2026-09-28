@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { bundleIdPlugin } from "./scripts/bundleId";
+import { bundleIdPlugin } from "./scripts/bundleId.ts";
 
 // Phase B aliases @wailsio/runtime to the local transport shim. The shim
 // exposes the same surface the generated bindings depend on (Call.ByID,
