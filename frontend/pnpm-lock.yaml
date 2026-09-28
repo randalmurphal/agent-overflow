@@ -179,13 +179,13 @@ importers:
         version: 10.0.0
       '@capacitor/app':
         specifier: 8.1.1
-        version: 8.1.1(@capacitor/core@8.5.1)
+        version: 8.1.1(@capacitor/core@8.5.2)
       '@capacitor/barcode-scanner':
-        specifier: 3.1.1
-        version: 3.1.1(@capacitor/core@8.5.1)
+        specifier: 3.1.2
+        version: 3.1.2(@capacitor/core@8.5.2)
       '@capacitor/core':
-        specifier: 8.5.1
-        version: 8.5.1
+        specifier: 8.5.2
+        version: 8.5.2
       '@fontsource/geist-mono':
         specifier: 5.3.0
         version: 5.3.0
@@ -324,13 +324,13 @@ packages:
     peerDependencies:
       '@capacitor/core': '>=8.0.0'
 
-  '@capacitor/barcode-scanner@3.1.1':
-    resolution: {integrity: sha512-IftToRn2YTirzw2K8nkp+p7Mcq41vwcZyqcSYLUeyMbznJS2IbEj1snbRIcTXa+iSuAU6zKY7tNXzwDqyzcx+Q==}
+  '@capacitor/barcode-scanner@3.1.2':
+    resolution: {integrity: sha512-8OdOFfHgxo22TQAGghk+BuSu66RROWPxkHChQpbIttzdomvgKkwJUi8tfNUYqlG2RT9HEy40yyAzxFhxN22lLg==}
     peerDependencies:
       '@capacitor/core': '>=8.0.0'
 
-  '@capacitor/core@8.5.1':
-    resolution: {integrity: sha512-IOQ7ynG1qgrJ/RLuCO3WgyRGmkmmG/cdStRR4ftU2dWEN1FdtLrnI/XpZmZuUsOEHEnzBRJY/PmRH8eTLiXfhA==}
+  '@capacitor/core@8.5.2':
+    resolution: {integrity: sha512-agnQbGdhGw/KZFuLf7H9SY2o+oE7upkr/WPQsYaokXP6f9chaE8iVmbKkfN6SVl4w3pmz7oZ3Ur1hbkmy1hx+w==}
 
   '@capacitor/ios@8.5.1':
     resolution: {integrity: sha512-0EVqwCYf3RUp2JAjUGZ04xmG6dSpIsPmPacI9zKxn6mu9RSiHhmFF230ghe00HrkyB6ig6SfNdoADvVODxYhlQ==}
@@ -1661,10 +1661,10 @@ snapshots:
 
   '@aparajita/capacitor-biometric-auth@10.0.0':
     dependencies:
-      '@capacitor/android': 8.5.1(@capacitor/core@8.5.1)
-      '@capacitor/app': 8.1.1(@capacitor/core@8.5.1)
-      '@capacitor/core': 8.5.1
-      '@capacitor/ios': 8.5.1(@capacitor/core@8.5.1)
+      '@capacitor/android': 8.5.1(@capacitor/core@8.5.2)
+      '@capacitor/app': 8.1.1(@capacitor/core@8.5.2)
+      '@capacitor/core': 8.5.2
+      '@capacitor/ios': 8.5.1(@capacitor/core@8.5.2)
 
   '@babel/code-frame@7.29.0':
     dependencies:
@@ -1680,26 +1680,26 @@ snapshots:
 
   '@braintree/sanitize-url@7.1.2': {}
 
-  '@capacitor/android@8.5.1(@capacitor/core@8.5.1)':
+  '@capacitor/android@8.5.1(@capacitor/core@8.5.2)':
     dependencies:
-      '@capacitor/core': 8.5.1
+      '@capacitor/core': 8.5.2
 
-  '@capacitor/app@8.1.1(@capacitor/core@8.5.1)':
+  '@capacitor/app@8.1.1(@capacitor/core@8.5.2)':
     dependencies:
-      '@capacitor/core': 8.5.1
+      '@capacitor/core': 8.5.2
 
-  '@capacitor/barcode-scanner@3.1.1(@capacitor/core@8.5.1)':
+  '@capacitor/barcode-scanner@3.1.2(@capacitor/core@8.5.2)':
     dependencies:
-      '@capacitor/core': 8.5.1
+      '@capacitor/core': 8.5.2
       html5-qrcode: 2.3.8
 
-  '@capacitor/core@8.5.1':
+  '@capacitor/core@8.5.2':
     dependencies:
       tslib: 2.8.1
 
-  '@capacitor/ios@8.5.1(@capacitor/core@8.5.1)':
+  '@capacitor/ios@8.5.1(@capacitor/core@8.5.2)':
     dependencies:
-      '@capacitor/core': 8.5.1
+      '@capacitor/core': 8.5.2
 
   '@chevrotain/types@11.1.2': {}
 
