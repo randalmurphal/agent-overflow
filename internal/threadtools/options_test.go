@@ -138,3 +138,57 @@ func TestOptionsWithoutPairingReturnsItsOwnFailure(t *testing.T) {
 		t.Errorf("message = %q", message)
 	}
 }
+
+// TestOptionsWhatNarrowsToOneSection: a model looking up a group gets the
+// groups, not every worktree of every project, and the narrowing reaches the
+// App so it can skip the reads the section does not need.
+func TestOptionsWhatNarrowsToOneSection(t *testing.T) {
+	app := newFakeApp("Laptop")
+	app.catalog = catalogOf("laptop")
+	app.catalog.Projects[0].Groups = []GroupOption{{ID: "g1", Name: "MR Reviews"}}
+	app.addThread(Thread{ID: "caller-thread", Provider: "claude"})
+	server := New(app)
+
+	groups := call(t, server, localCaller(), "thread_options", `{"what":"groups"}`)
+	for _, absent := range []string{"providers", "runtime_modes"} {
+		if _, present := groups[absent]; present {
+			t.Errorf("what groups carries %s", absent)
+		}
+	}
+	project := rows(t, groups["projects"])[0].(map[string]any)
+	if _, present := project["workspaces"]; present || project["path"] != nil {
+		t.Errorf("what groups carries workspaces or a path: %v", project)
+	}
+	if len(rows(t, project["groups"])) != 1 || app.catalogs[0].What != OptionsGroups {
+		t.Errorf("groups = %v, the App was asked for %q", project["groups"], app.catalogs[0].What)
+	}
+
+	models := call(t, server, localCaller(), "thread_options", `{"what":"models"}`)
+	if _, present := models["projects"]; present || len(rows(t, models["providers"])) != 1 || models["runtime_modes"] == nil {
+		t.Errorf("what models = %v", models)
+	}
+	projects := call(t, server, localCaller(), "thread_options", `{"what":"projects"}`)
+	project = rows(t, projects["projects"])[0].(map[string]any)
+	if _, present := project["groups"]; present || len(rows(t, project["workspaces"])) != 1 {
+		t.Errorf("what projects = %v", project)
+	}
+	// An empty section kept by what is still stated, as an answer.
+	app.catalog.Projects = nil
+	if empty := call(t, server, localCaller(), "thread_options", `{"what":"groups"}`); empty["projects"] == nil {
+		t.Errorf("an empty projects section vanished: %v", empty)
+	}
+	callErr(t, server, localCaller(), "thread_options", `{"what":"everything"}`, CodeInvalidRequest)
+}
+
+// TestOptionsWhatReachesThePeer so a paired computer narrows its own row.
+func TestOptionsWhatReachesThePeer(t *testing.T) {
+	p := newPair(t)
+	p.local.catalog, p.remote.catalog = catalogOf("laptop"), catalogOf("studio")
+	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude"})
+
+	result := call(t, p.server, localCaller(), "thread_options", `{"what":"models"}`)
+	peer := rows(t, result["computers"])[1].(map[string]any)
+	if _, present := peer["projects"]; present || p.remote.catalogs[0].What != OptionsModels {
+		t.Fatalf("the peer did not narrow its row: %v", peer)
+	}
+}

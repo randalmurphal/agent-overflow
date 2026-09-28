@@ -457,6 +457,9 @@ export async function awaitTurnCompleted(
  */
 export const SHOW_CURSOR_PATTERN = '"cursor":"([^"]+)"|"done":true';
 
+/** The item id of a tool call line a thread_show include tool_calls lists. */
+export const TOOL_ROW_ID_PATTERN = '\\[tool ([^\\] ]+)\\]';
+
 /** One provider's row of a thread_options answer, as far as efforts go. */
 export interface ProviderOptionRow {
   provider: string;

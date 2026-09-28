@@ -33,6 +33,17 @@ type cursor struct {
 	// Include is the thread_show include list, so a continued page keeps
 	// the content the first page asked for.
 	Include []string `json:"i,omitempty"`
+	// Size, Anchor and Since are the window parameters the first page was
+	// asked with: turns for tail and head, context for around, and the
+	// since anchor. A call that repeats them beside the cursor is the same
+	// read; one that changes them is refused.
+	Size   *int   `json:"n,omitempty"`
+	Anchor string `json:"a,omitempty"`
+	Since  int64  `json:"s,omitempty"`
+	// Back marks a tail page, which fills from the newest end: Position
+	// is then the OLDEST row already rendered, and the next page ends
+	// before it.
+	Back bool `json:"b,omitempty"`
 	// Offset is a byte offset for thread_item and a status answer, and a
 	// row offset for a single-computer listing.
 	Offset int64 `json:"o,omitempty"`

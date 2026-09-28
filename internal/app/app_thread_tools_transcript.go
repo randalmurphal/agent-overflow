@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -118,6 +117,17 @@ func (t threadToolsApp) ResolveWindow(_ context.Context, q threadtools.WindowQue
 		if from > bounds.From {
 			bounds.From = from
 		}
+	case threadtools.WindowLastAnswer:
+		// The row a request's `final` answer is read from, in whichever
+		// turn it is.
+		answer, found, err := t.app.store.LastTopLevelItem(q.ThreadID, "assistant_text")
+		if err != nil {
+			return threadtools.WindowBounds{}, err
+		}
+		if !found {
+			return threadtools.WindowBounds{Empty: true}, nil
+		}
+		bounds.From, bounds.To = itemPosition(answer), itemPosition(answer)
 	case threadtools.WindowAround:
 		anchor, err := t.itemRow(q.ThreadID, q.ItemID)
 		if err != nil {
@@ -214,8 +224,12 @@ func (t threadToolsApp) transcriptPage(ctx context.Context, q threadtools.Transc
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rows, err := t.app.store.ListItemsInRange(q.ThreadID, positionCursor(q.From), positionCursor(q.To), q.Limit,
-		threadToolsIncludes(q.Include, "subagent"))
+	list := t.app.store.ListItemsInRange
+	if q.Newest {
+		list = t.app.store.ListNewestItemsInRange
+	}
+	rows, err := list(q.ThreadID, positionCursor(q.From), positionCursor(q.To), q.Limit,
+		threadtools.IncludesBody(q.Include, "subagent"))
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +249,11 @@ func (t threadToolsApp) transcriptPage(ctx context.Context, q threadtools.Transc
 // of any timeline window in this app, and listing them as bodiless
 // one-liners would spend the whole page on them, so the range query
 // leaves them out.
+//
+// A tool or diff row's summary is its label, the command or target it
+// named, and its body is the output it stored, so a call with no output
+// has a label and no body. Every other row's body is its payload, or its
+// summary when it has none.
 func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Item, position int64) (threadtools.Item, error) {
 	kind, role := threadToolsItemKind(row)
 	item := threadtools.Item{
@@ -245,11 +264,21 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 		TurnID:   strconv.Itoa(row.TurnIndex),
 		Name:     row.ToolName,
 	}
+	toolRow := kind == "tool_call" || kind == "diff"
+	if toolRow {
+		item.Label = row.Summary
+		if row.PayloadID == "" {
+			return item, nil
+		}
+	}
 	// A row the include list leaves out states its size and carries no
 	// body, so it asks for the size alone and never reads the payload.
 	maxBytes := 0
-	if threadToolsIncludes(q.Include, kind) {
+	if threadtools.IncludesBody(q.Include, kind) {
 		maxBytes = q.MaxItemBytes
+		if threadtools.IsProse(kind) && q.MaxProseBytes > 0 {
+			maxBytes = q.MaxProseBytes
+		}
 		if maxBytes <= 0 {
 			maxBytes = threadItemWholeBody
 		}
@@ -289,29 +318,6 @@ func threadToolsItemKind(row store.Item) (kind, role string) {
 		return "error", "system"
 	}
 	return row.Kind, "system"
-}
-
-// threadToolsIncludes mirrors the App contract: prose rows always carry
-// their body, everything else only when the include list asks.
-func threadToolsIncludes(include []string, kind string) bool {
-	switch kind {
-	case "user_text", "assistant_text", "error":
-		return true
-	}
-	if slices.Contains(include, threadtools.IncludeAll) {
-		return true
-	}
-	switch kind {
-	case "thinking":
-		return slices.Contains(include, threadtools.IncludeThinking)
-	case "tool_call", "tool_output":
-		return slices.Contains(include, threadtools.IncludeToolOutputs)
-	case "diff":
-		return slices.Contains(include, threadtools.IncludeDiffs)
-	case "subagent":
-		return slices.Contains(include, threadtools.IncludeSubagents)
-	}
-	return false
 }
 
 // threadItemWholeBody asks itemBody for everything the row holds. The
@@ -562,19 +568,17 @@ func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQue
 					return err
 				}
 			}
-			role := item.Role
-			if role == "" {
-				role = item.Kind
-			}
-			head := "[" + role + " " + item.ID + "]"
-			if item.Name != "" {
-				head += " " + item.Name
-			}
-			if item.Text == "" && item.Size > 0 {
+			head := threadtools.RowHead(item)
+			if item.Text == "" {
 				// A row the include list left out states its size here
 				// exactly as it does in the transcript; only what was
-				// included is written whole.
-				if err := write(head + " (" + strconv.FormatInt(item.Size, 10) + " bytes not shown)\n"); err != nil {
+				// included is written whole. A call with no output is its
+				// line alone.
+				line := head + "\n"
+				if item.Size > 0 {
+					line = head + " (" + strconv.FormatInt(item.Size, 10) + " bytes not shown)\n"
+				}
+				if err := write(line); err != nil {
 					return err
 				}
 				from = item.Position + 1

@@ -102,6 +102,26 @@ func (s *Store) LastTopLevelTurnItem(threadID string, turnIndex int, kind string
 	return item, found, nil
 }
 
+// LastTopLevelItem is LastTopLevelTurnItem over the whole thread: its newest
+// visible top-level row of kind, in whichever turn that is. The arms walk
+// the top-level indexes newest first and stop at the first row of kind.
+func (s *Store) LastTopLevelItem(threadID, kind string) (Item, bool, error) {
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+		Where:     mainTimelineFilterFor("items.") + ` AND items.kind = ` + boundText,
+		WhereArgs: []any{kind},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     1,
+	})
+	if err != nil {
+		return Item{}, false, err
+	}
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: last top-level %s of thread %s: %w", kind, threadID, err)
+	}
+	return item, found, nil
+}
+
 // ListTurnItemsOfKind returns turnIndex's rows of kind in timeline order,
 // hydrating only those rows.
 func (s *Store) ListTurnItemsOfKind(threadID string, turnIndex int, kind string) ([]Item, error) {

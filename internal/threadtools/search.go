@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // thread_search: one tool for finding threads and for listing them. Rows
@@ -32,6 +33,7 @@ type searchArgs struct {
 	State       string   `json:"state"`
 	Archived    *bool    `json:"archived"`
 	SpawnedByMe bool     `json:"spawned_by_me"`
+	Group       string   `json:"group"`
 	Since       string   `json:"since"`
 	Limit       int      `json:"limit"`
 	Cursor      string   `json:"cursor"`
@@ -53,8 +55,30 @@ type searchRow struct {
 	Pin          string `json:"pin,omitempty"`
 	Archived     bool   `json:"archived"`
 	Unread       bool   `json:"unread"`
-	ItemID       string `json:"item_id,omitempty"`
-	Snippet      string `json:"snippet,omitempty"`
+	// Self marks the calling thread's own row.
+	Self        bool            `json:"self,omitempty"`
+	LastMessage *lastMessageRow `json:"last_message,omitempty"`
+	ItemID      string          `json:"item_id,omitempty"`
+	Snippet     string          `json:"snippet,omitempty"`
+}
+
+// lastMessageRow says who spoke last in a row's thread, when, and how the
+// message ended: the question "is it waiting on me" in one field.
+type lastMessageRow struct {
+	Role string `json:"role"`
+	At   string `json:"at,omitempty"`
+	Text string `json:"text"`
+}
+
+func newLastMessageRow(message *LastMessage) *lastMessageRow {
+	if message == nil {
+		return nil
+	}
+	text := strings.Join(strings.Fields(message.Tail), " ")
+	if message.Clipped {
+		text = "…" + text
+	}
+	return &lastMessageRow{Role: message.Role, At: unixMsToRFC3339(message.At), Text: text}
 }
 
 type searchGroup struct {
@@ -136,7 +160,7 @@ func searchFilters(query SearchQuery) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		query.Query, query.ThreadID, query.Kind, query.ProjectID, query.Provider,
-		query.State, archived, strconv.FormatInt(query.SinceUnixMs, 10), query.SpawnedBy,
+		query.State, archived, strconv.FormatInt(query.SinceUnixMs, 10), query.SpawnedBy, query.Group,
 	}, "\x00")))
 	return hex.EncodeToString(sum[:8])
 }
@@ -151,8 +175,12 @@ func (c *session) searchQuery(args searchArgs) (SearchQuery, error) {
 		ProjectID: trim(args.ProjectID),
 		Provider:  trim(args.Provider),
 		State:     trim(args.State),
+		Group:     trim(args.Group),
 		Archived:  args.Archived,
 		Limit:     args.Limit,
+	}
+	if utf8.RuneCountInString(query.Group) > MaxTitleRunes {
+		return SearchQuery{}, invalidf("group must be at most %d characters.", MaxTitleRunes)
 	}
 	if len(query.Query) > MaxQueryBytes {
 		return SearchQuery{}, invalidf("query must be at most %d bytes of search text. Search for a phrase, and narrow the rest with the filters.", MaxQueryBytes)
@@ -326,7 +354,7 @@ func peerSearchArgs(query SearchQuery, offset int) (json.RawMessage, error) {
 	if query.ThreadID != "" {
 		args["thread_id"] = query.ThreadID
 	}
-	for key, value := range map[string]string{"kind": query.Kind, "project_id": query.ProjectID, "provider": query.Provider, "state": query.State} {
+	for key, value := range map[string]string{"kind": query.Kind, "project_id": query.ProjectID, "provider": query.Provider, "state": query.State, "group": query.Group} {
 		if value != "" {
 			args[key] = value
 		}
@@ -399,6 +427,8 @@ func (c *session) row(computer Computer, hit Hit) searchRow {
 		Pin:          thread.Pin,
 		Archived:     thread.Archived,
 		Unread:       thread.Unread,
+		Self:         thread.ID == c.caller.ThreadID,
+		LastMessage:  newLastMessageRow(hit.LastMessage),
 		ItemID:       hit.ItemID,
 		Snippet:      hit.Snippet,
 	}

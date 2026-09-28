@@ -120,20 +120,30 @@ One tool for "find threads" and "what threads are there". With `query`
 it is full-text search; without it, a listing by last activity. Either
 way the rows are the same shape: computer id and name, thread id,
 title, project, provider, model, state, last activity, branch, group,
-pin tier (`front` / `back` / none), archived, unread, and with a query
-the matched item id and a snippet. State is the UI's enum (idle
-/ running / awaiting-input / pending-approval / plan-ready / error /
-interrupted), reachable because the handler runs inside the app that
-owns the thread.
+pin tier (`front` / `back` / none), archived, unread, `last_message`,
+`self` on the caller's own row, and with a query the matched item id
+and a snippet. `last_message` is the newest top-level assistant text or
+reader-authored user text of the thread's latest turn: its role, when
+it was last written, and the last 400 characters of it, whitespace
+collapsed and marked `…` when longer. With the state it answers whether
+an idle thread is waiting on an answer without opening it. It is absent
+while the latest turn has no message. One statement reads it for the
+whole page, pinned to each thread's latest turn row. State is the UI's
+enum (idle / running / awaiting-input / pending-approval / plan-ready /
+error / interrupted), reachable because the handler runs inside the
+app that owns the thread.
 
 `query` is FTS5 match syntax: words are ANDed, `"quoted phrases"`
 match exactly, `OR` and a trailing `*` prefix work. Filters:
 `computers` (a list of computer ids; omitted means the caller's
 computer plus every paired one; `["local"]` means only the caller's),
 `thread_id` (search within one thread), `kind` (user | assistant |
-tool | title), `project_id`, `provider`, `state`, `archived`,
+tool | title), `project_id`, `provider`, `state`, `group`, `archived`,
 `spawned_by_me`, `since`, `limit`, and `cursor` to continue a listing
-or a ranked result past `limit`. `archived` true lists only archived
+or a ranked result past `limit`. `group` names a sidebar group by id or
+by name, case-insensitively, matching that name in every project; a
+computer with no such group refuses the search rather than answering
+with no threads. `archived` true lists only archived
 threads and false only unarchived ones; `spawned_by_me` is the spawn
 ledger, forks included, and not the threads merely sent to or asked.
 `query` is at most 4,096 bytes; past that it is not a search term and
@@ -184,14 +194,24 @@ back inline or as a file.
 The window: `tail` (the last N turns, the default with N=20), `head`
 (the first N), `since` (everything after an item id or timestamp),
 `around` + `context` (the turns surrounding one item, which is how a
-`thread_search` hit is opened), or `all`. Inline results carry
+`thread_search` hit is opened), `all`, or `last_answer` (the thread's
+newest top-level assistant message alone, the row a request's `final`
+answer is taken from, with a note while the thread is still running).
+A `tail` page fills from the end of its window and drops the oldest
+rows first, so the newest turn is always on the first page, and its
+cursor continues with the rows before the page. Every other window
+fills from its start. Inline results carry
 `max_bytes`, default 64KB, raised per call up to what the provider will
 accept in one tool result (both providers truncate large tool results
 on their own, which would lose the tail silently). A result that stops
 short is never a dead end: it returns an opaque `cursor` that
 remembers the window and where it stopped; passing it back as `cursor`
 continues the same window (a `head` or `around` window keeps its
-bounds, `all` walks to the end) in as many calls as the agent wants.
+bounds, `all` walks to the end, `tail` walks back to its start) in as many
+calls as the agent wants. A cursor carries the window, its sizing, its
+anchor and `include`: repeating them beside it is the same read, a
+different value is refused naming the parameter, and `max_bytes` may
+change.
 Rows are ordered by timeline position, and a page is a snapshot of
 items that existed when the cursor was minted, so streaming growth
 never shifts a page. 38k-item threads exist, so paging is
@@ -207,15 +227,22 @@ form moves at most `max_bytes` over the wire.
 
 Output is plain text, turn-delimited, each row prefixed with role and
 item id. Default content is what people said: user text and assistant
-text. Tool calls collapse to one line each that states the item id and
-the size of what it holds; `include` is a list from `thinking`,
-`tool_outputs`, `diffs`, `subagents`, `all`, adding the assistant's
-thinking (from `payloads.data`), tool outputs, diffs and subagent runs,
-up to everything stored for the thread. With `to_file`, included items
-are written whole, never clipped. A single item that is itself large
-(a long tool output, a big diff) is shown clipped in the transcript
-with its size and a pointer to `thread_item`; the transcript never
-carries megabytes for one row. Any thread by id, hidden workflow
+text, each clipped only when it alone outgrows the page. Consecutive
+rows of one turn whose bodies the read leaves out fold into one
+parenthesized line that counts the tool calls by name, the thinking
+blocks and any other rows, and states the bytes left out; a busy turn
+costs a line per run, not a line per call. `include` is a list from
+`tool_calls`, `thinking`, `tool_outputs`, `diffs`, `subagents`, `all`:
+`tool_calls` lists each call on its own line with its item id, its
+summary (the command or target it named) and its size; the others add
+the assistant's thinking (from `payloads.data`), tool outputs under
+their call line, diffs and subagent runs, up to everything stored for
+the thread. With `to_file`, included items are written whole, never
+clipped, and every other row is listed with its item id and size. A
+single included item that is itself large (a long tool output, a big
+diff) is shown clipped to a quarter of the page with its size and a
+pointer to `thread_item`; the transcript never carries megabytes for
+one row. Any thread by id, hidden workflow
 threads included.
 
 ### `thread_item`
@@ -238,7 +265,8 @@ and says it stopped early; `eof` follows the bytes the range actually
 consumed, so a range that stops short of the payload's end never
 reports the end. `query` is at most 4,096 bytes. A `cursor` is a byte
 offset inside one payload, so it names the thread and the item it was
-minted for and is refused for any other.
+minted for and is refused for any other; a query cursor accepts its own
+query repeated beside it and refuses another.
 
 ### `thread_options`
 
@@ -252,7 +280,10 @@ catalog. Also per computer: whether it is reachable now, its operating system,
 its projects' workspace paths as that computer sees them (a WSL path is
 not a caller path), and the thread groups in each project with their
 ids. Optional `computer_id`, `provider` and `project_id` narrow a large
-answer; the caller's own row comes first and states the caller's
+answer, and `what` keeps one section: `models` (providers, models and
+runtime modes), `projects` (each project with its path and workspaces)
+or `groups` (each project's id and name with its groups), reading only
+what that section needs; the caller's own row comes first and states the caller's
 current provider, model, effort and mode as the defaults. The `thread_spawn` schema descriptions state those live
 defaults too, so the common case needs no discovery call.
 
@@ -486,13 +517,16 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > Finding things. `thread_search` with a `query` searches settled
 > message text, tool call summaries and titles across all threads; it
 > does not search tool outputs, diffs or thinking. Without a `query` it
-> lists recent threads with what each is doing now, its group, pin and
-> archive state. Narrow with `computers`, `project_id`, `state` or
-> `spawned_by_me`. Check `errors` and `indexing` before treating an
-> empty result as conclusive. Open a hit with `thread_show` `around`
-> its item id. Read the recent end of a thread with `thread_show`
-> (default: last 20 turns, what people said; add `include` for
-> thinking, tool outputs, diffs or subagent runs). A result that stops
+> lists recent threads with what each is doing now, who spoke last and
+> how it ended (`last_message`), its group, pin and archive state; your
+> own thread is marked `self`. Narrow with `computers`, `project_id`,
+> `group` (by name), `state` or `spawned_by_me`. Check `errors` and
+> `indexing` before treating an empty result as conclusive. Open a hit
+> with `thread_show` `around` its item id. Read what a thread concluded
+> with `thread_show` `last_answer`, and its recent end with the default:
+> the last 20 turns of what people said, newest kept first, with each
+> run of tool calls folded to one line; add `include` for `tool_calls`,
+> thinking, tool outputs, diffs or subagent runs. A result that stops
 > short returns a `cursor`; pass it back to continue the same window
 > until it says it is done. For a whole thread, use `all` with
 > `to_file` and read the file with your own tools. A large tool output
@@ -929,9 +963,10 @@ collects that settlement like any other.
 - One `thread_search` for searching and listing; it covers every paired
   computer by default and `computers` narrows (Q3, Q14, Q20, Q23).
   Results group per computer.
-- `thread_show` defaults to the prose tail; `include`, paging with
-  `cursor`, and `to_file` reach everything stored, with no window the
-  agent cannot finish. `thread_item` reads ranges and searches inside
+- `thread_show` defaults to the prose tail, newest rows kept first,
+  with tool runs folded; `last_answer` reads what a thread concluded;
+  `include`, paging with `cursor`, and `to_file` reach everything
+  stored, with no window the agent cannot finish. `thread_item` reads ranges and searches inside
   one large item (Q4, revised 2026-09-19).
 - Spawn inherits everything, overrides each, can take a worktree (Q5,
   Q18). On another computer, project and checkout are explicit and the

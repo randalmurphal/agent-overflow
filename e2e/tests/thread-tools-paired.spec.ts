@@ -30,6 +30,7 @@ import {
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
+  TOOL_ROW_ID_PATTERN,
   advanceGate,
   awaitGate,
   awaitToolAnswer,
@@ -1785,11 +1786,11 @@ test('a multi-megabyte tool output on the other computer is searched and read in
             {
               call: {
                 tool: 'thread_show',
-                args: { thread_id: target, window: 'tail' },
+                args: { thread_id: target, window: 'tail', include: ['tool_calls'] },
                 timeoutMs: 120_000,
               },
             },
-            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: 'item_id=([A-Za-z0-9-]+)' } },
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: TOOL_ROW_ID_PATTERN } },
             {
               call: {
                 tool: 'thread_item',
@@ -1835,14 +1836,14 @@ test('a multi-megabyte tool output on the other computer is searched and read in
     transcript?: string;
   }
   // The row renders on the computer that holds it, so the megabytes never
-  // cross: the transcript is one line naming the size and the reader.
+  // cross: the transcript is one line naming the item and its size.
   const collapsed = await awaitToolAnswer<ShowAnswer>(home, {
     tool: 'thread_show',
     timeoutMs: 120_000,
   });
   expect(collapsed.isError, collapsed.text).toBe(false);
   expect(collapsed.value!.computer_id).toBe(remoteID);
-  expect(collapsed.value!.transcript).toContain('3.8 MB, not shown; read it with thread_item');
+  expect(collapsed.value!.transcript).toMatch(/\[tool [^\]]+\] .*\(3\.8 MB\)/);
   expect(collapsed.value!.transcript!.length).toBeLessThan(64 * 1024);
   expect(collapsed.value!.transcript).not.toContain(bigItem.needle.trim());
 

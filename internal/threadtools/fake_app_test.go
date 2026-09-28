@@ -56,6 +56,7 @@ type fakeApp struct {
 	gcalls  []GroupCall
 
 	searches []SearchQuery
+	catalogs []CatalogQuery
 	windows  []WindowQuery
 	slices   []TranscriptQuery
 	reads    []PayloadQuery
@@ -163,6 +164,17 @@ func (f *fakeApp) ResolveWindow(_ context.Context, q WindowQuery) (WindowBounds,
 		if q.ItemID != "" {
 			bounds.From = positionOf(items, q.ItemID) + 1
 		}
+	case WindowLastAnswer:
+		answer := int64(0)
+		for _, item := range items {
+			if item.Kind == "assistant_text" {
+				answer = item.Position
+			}
+		}
+		if answer == 0 {
+			return WindowBounds{Empty: true}, nil
+		}
+		bounds.From, bounds.To = answer, answer
 	case WindowAround:
 		index := slices.Index(turns, turnOf(items, q.ItemID))
 		low := max(0, index-q.Turns)
@@ -215,49 +227,36 @@ func (f *fakeApp) Transcript(_ context.Context, q TranscriptQuery) (TranscriptSl
 	if f.onTranscript != nil {
 		return f.onTranscript(q)
 	}
-	items := f.items[q.ThreadID]
-	out := make([]Item, 0, q.Limit)
-	for _, item := range items {
-		if item.Position < q.From || item.Position > q.To {
-			continue
+	var inRange []Item
+	for _, item := range f.items[q.ThreadID] {
+		if item.Position >= q.From && item.Position <= q.To {
+			inRange = append(inRange, item)
 		}
+	}
+	if len(inRange) > q.Limit {
+		if q.Newest {
+			inRange = inRange[len(inRange)-q.Limit:]
+		} else {
+			inRange = inRange[:q.Limit]
+		}
+	}
+	out := make([]Item, 0, len(inRange))
+	for _, item := range inRange {
 		copied := item
-		if !includes(q.Include, copied.Kind) {
+		if !IncludesBody(q.Include, copied.Kind) {
 			copied.Text = ""
 		}
-		if q.MaxItemBytes > 0 && len(copied.Text) > q.MaxItemBytes {
-			copied.Text = copied.Text[:q.MaxItemBytes]
+		clip := q.MaxItemBytes
+		if IsProse(copied.Kind) && q.MaxProseBytes > 0 {
+			clip = q.MaxProseBytes
+		}
+		if clip > 0 && len(copied.Text) > clip {
+			copied.Text = copied.Text[:clip]
 			copied.Clipped = true
 		}
 		out = append(out, copied)
-		if len(out) == q.Limit {
-			break
-		}
 	}
 	return TranscriptSlice{Items: out}, nil
-}
-
-// includes mirrors the App contract: prose rows always carry their body,
-// everything else only when the include list asks for it.
-func includes(include []string, kind string) bool {
-	switch kind {
-	case "user_text", "assistant_text", "error":
-		return true
-	}
-	if slices.Contains(include, IncludeAll) {
-		return true
-	}
-	switch kind {
-	case "thinking":
-		return slices.Contains(include, IncludeThinking)
-	case "tool_output":
-		return slices.Contains(include, IncludeToolOutputs)
-	case "diff":
-		return slices.Contains(include, IncludeDiffs)
-	case "subagent":
-		return slices.Contains(include, IncludeSubagents)
-	}
-	return false
 }
 
 func (f *fakeApp) ItemPayload(_ context.Context, q PayloadQuery) (Payload, error) {
@@ -306,7 +305,8 @@ func (f *fakeApp) ExportAnswer(_ context.Context, _ Caller, _ string) (ExportFil
 	return f.export, nil
 }
 
-func (f *fakeApp) Catalog(_ context.Context, _ CatalogQuery) (Catalog, error) {
+func (f *fakeApp) Catalog(_ context.Context, q CatalogQuery) (Catalog, error) {
+	f.catalogs = append(f.catalogs, q)
 	if f.catalogErr != nil {
 		return Catalog{}, f.catalogErr
 	}

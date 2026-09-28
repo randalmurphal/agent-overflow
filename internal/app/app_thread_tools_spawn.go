@@ -315,7 +315,7 @@ func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller st
 		return t.checkSpawnWorktreeBase(opts.ProjectID, call)
 	}
 	if call.WorkspacePath != "" {
-		projects, err := t.projectOptions(opts.ProjectID)
+		projects, err := t.projectOptions(opts.ProjectID, true)
 		if err != nil {
 			return err
 		}

@@ -1,5 +1,7 @@
 package threadtools
 
+import "slices"
+
 // Computer names one computer. Ids address, names are read by people, and
 // every result row that names a thread carries both in the paired shape.
 type Computer struct {
@@ -176,6 +178,9 @@ const (
 	WindowSince  = "since"
 	WindowAround = "around"
 	WindowAll    = "all"
+	// WindowLastAnswer is the thread's newest top-level assistant message,
+	// the same row a request's `final` answer is taken from.
+	WindowLastAnswer = "last_answer"
 )
 
 // WindowQuery asks the App to turn a requested window into positions.
@@ -216,6 +221,9 @@ type TranscriptQuery struct {
 	To   int64
 	// Limit bounds the rows returned. The App must never exceed it.
 	Limit int
+	// Newest takes the Limit rows nearest To instead of nearest From. The
+	// rows still come back in timeline order.
+	Newest bool
 	// Include names the optional content kinds whose body is wanted:
 	// IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents.
 	// A kind left out still yields its row with a size and no body.
@@ -223,6 +231,10 @@ type TranscriptQuery struct {
 	// MaxItemBytes clips one item's body. Size still reports the whole
 	// stored size so the renderer can point at thread_item.
 	MaxItemBytes int
+	// MaxProseBytes clips a user, assistant or error body instead of
+	// MaxItemBytes, so what people said is clipped only when it alone
+	// outgrows the page. Zero means MaxItemBytes.
+	MaxProseBytes int
 }
 
 // Include kinds for thread_show.
@@ -232,7 +244,44 @@ const (
 	IncludeDiffs       = "diffs"
 	IncludeSubagents   = "subagents"
 	IncludeAll         = "all"
+	// IncludeToolCalls lists each tool call on its own line, with its item
+	// id, summary and size, without its output.
+	IncludeToolCalls = "tool_calls"
 )
+
+// IncludesBody reports whether a transcript row of kind carries its body
+// under the include list: prose always does, every other kind only when
+// the list names it. The App reads a body only when this says so, and the
+// renderer folds the rows it says no to.
+func IncludesBody(include []string, kind string) bool {
+	if IsProse(kind) {
+		return true
+	}
+	if slices.Contains(include, IncludeAll) {
+		return true
+	}
+	switch kind {
+	case "thinking":
+		return slices.Contains(include, IncludeThinking)
+	case "tool_call", "tool_output":
+		return slices.Contains(include, IncludeToolOutputs)
+	case "diff":
+		return slices.Contains(include, IncludeDiffs)
+	case "subagent":
+		return slices.Contains(include, IncludeSubagents)
+	}
+	return false
+}
+
+// IsProse is the kinds a transcript always shows whole: what people said
+// and the errors that ended what they asked for.
+func IsProse(kind string) bool {
+	switch kind {
+	case "user_text", "assistant_text", "error":
+		return true
+	}
+	return false
+}
 
 // TranscriptSlice is one page of items. The window's high water comes from
 // ResolveWindow, which is what the cursor carries; a page reports only rows.
@@ -253,6 +302,9 @@ type Item struct {
 	TurnID string `json:"turn_id,omitempty"`
 	// Name is the tool name on a tool_call row.
 	Name string `json:"name,omitempty"`
+	// Label is a tool or diff row's own summary: the command, path or
+	// target the call named. It is not the body, which is the output.
+	Label string `json:"label,omitempty"`
 	// Text is the body, clipped to TranscriptQuery.MaxItemBytes.
 	Text string `json:"text,omitempty"`
 	// Size is the whole stored size of the body in bytes.
@@ -303,6 +355,9 @@ type SearchQuery struct {
 	Archived *bool
 	// SpawnedBy is the caller's thread id when spawned_by_me is set.
 	SpawnedBy string
+	// Group is a sidebar group's id or name. A name matches every group
+	// of that name on the computer, case-insensitively.
+	Group string
 	// SinceUnixMs bounds last activity.
 	SinceUnixMs int64
 	Limit       int
@@ -327,6 +382,21 @@ type Hit struct {
 	// ItemID and Snippet are set for a query hit.
 	ItemID  string
 	Snippet string
+	// LastMessage is the newest message of the thread's latest turn, nil
+	// when that turn has none yet.
+	LastMessage *LastMessage
+}
+
+// LastMessage says who spoke last in a thread and how it ended.
+type LastMessage struct {
+	// Role is user or assistant.
+	Role string
+	// At is when the message was last written, in Unix milliseconds.
+	At int64
+	// Tail is the end of its text, at most a few hundred characters, and
+	// Clipped says the text was longer.
+	Tail    string
+	Clipped bool
 }
 
 // ExportQuery renders a whole window to a file.
@@ -353,7 +423,17 @@ type ExportFile struct {
 type CatalogQuery struct {
 	Provider  string
 	ProjectID string
+	// What narrows the answer to one section: OptionsModels,
+	// OptionsProjects or OptionsGroups. Empty answers all of them.
+	What string
 }
+
+// thread_options sections.
+const (
+	OptionsModels   = "models"
+	OptionsProjects = "projects"
+	OptionsGroups   = "groups"
+)
 
 // Catalog is what a spawn can choose from on one computer, rendered from
 // the catalogs the app already keeps and never from a hand-written list.

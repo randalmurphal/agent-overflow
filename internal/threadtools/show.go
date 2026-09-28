@@ -3,7 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -69,8 +69,8 @@ func (c *session) show(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if args.Cursor != "" && (args.Window != "" || args.Turns != 0 || args.Context != nil || args.ItemID != "" || args.Since != "" || len(args.Include) > 0) {
-		return nil, invalidf("cursor already carries the window, its bounds and the include list. Pass cursor alone, with max_bytes if you want a different budget.")
+	if err := checkShowCursorArgs(args, page); err != nil {
+		return nil, err
 	}
 	budget, err := showBudget(args.MaxBytes)
 	if err != nil {
@@ -86,11 +86,68 @@ func (c *session) show(ctx context.Context, raw json.RawMessage) (any, error) {
 	return c.showLocal(ctx, target, args, page, budget)
 }
 
+// checkShowCursorArgs lets a call repeat the window parameters its cursor
+// already carries, which is what a model does when it re-issues the same
+// read with the cursor added, and refuses only a parameter that names a
+// different read than the one the cursor continues.
+func checkShowCursorArgs(args showArgs, page cursor) error {
+	if page.Kind != cursorShow {
+		return nil
+	}
+	conflict := func(name string) error {
+		return invalidf("%s does not match the read this cursor continues. Pass the cursor with the same parameters, or with max_bytes alone, or omit cursor to start a new read.", name)
+	}
+	if window := trim(args.Window); window != "" && window != page.Window {
+		return conflict("window")
+	}
+	if args.Turns != 0 && (page.Size == nil || *page.Size != args.Turns || (page.Window != WindowTail && page.Window != WindowHead)) {
+		return conflict("turns")
+	}
+	if args.Context != nil && (page.Size == nil || *page.Size != *args.Context || page.Window != WindowAround) {
+		return conflict("context")
+	}
+	if id := trim(args.ItemID); id != "" && id != page.Anchor {
+		return conflict("item_id")
+	}
+	if since := trim(args.Since); since != "" {
+		at, err := parseTimestamp(since, "since")
+		if err != nil {
+			return err
+		}
+		if at != page.Since {
+			return conflict("since")
+		}
+	}
+	if len(args.Include) > 0 {
+		include, err := normalizeInclude(args.Include)
+		if err != nil {
+			return err
+		}
+		if !sameSet(include, page.Include) {
+			return conflict("include")
+		}
+	}
+	return nil
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, value := range a {
+		if !slices.Contains(b, value) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *session) showLocal(ctx context.Context, target Target, args showArgs, page cursor, budget int) (any, error) {
-	window, bounds, include, err := c.showWindow(ctx, target.ThreadID, args, page)
+	window, err := c.showWindow(ctx, target.ThreadID, args, page)
 	if err != nil {
 		return nil, err
 	}
+	bounds, include := window.bounds, window.include
 	thread, err := c.app.Thread(ctx, target.ThreadID)
 	if err != nil {
 		return nil, err
@@ -108,7 +165,7 @@ func (c *session) showLocal(ctx context.Context, target Target, args showArgs, p
 		State:      State(thread, live),
 		Provider:   thread.Provider,
 		Model:      thread.Model,
-		Window:     window,
+		Window:     window.name,
 		From:       bounds.From,
 		To:         bounds.To,
 		Done:       true,
@@ -116,63 +173,107 @@ func (c *session) showLocal(ctx context.Context, target Target, args showArgs, p
 	if note := partialNote(target.Partial); note != "" {
 		result.Note = note
 	}
+	if window.name == WindowLastAnswer && result.State == StateRunning && !bounds.Empty {
+		result.Note = appendNote(result.Note, "The thread is still running, so this may not be its final answer.")
+	}
 	if args.ToFile {
 		file, err := c.app.ExportTranscript(ctx, ExportQuery{ThreadID: thread.ID, Bounds: bounds, Include: include})
 		if err != nil {
 			return nil, err
 		}
 		result.File = &file
-		result.Note = appendNote(result.Note, "The whole window was written to that path on "+NameOfComputer(Computer{ID: id, Name: name})+". Read it with your own file tools; included items are written whole.")
+		result.Note = appendNote(result.Note, "The whole window was written to that path on "+NameOfComputer(Computer{ID: id, Name: name})+". Read it with your own file tools; included items are written whole and every other row is listed with its item id.")
 		return result, nil
 	}
 	if bounds.Empty {
 		result.Transcript = ""
-		result.Note = appendNote(result.Note, "That window holds no items.")
+		if window.name == WindowLastAnswer {
+			result.Note = appendNote(result.Note, "This thread has no assistant message yet.")
+		} else {
+			result.Note = appendNote(result.Note, "That window holds no items.")
+		}
 		return result, nil
 	}
 
-	rendered, err := c.renderWindow(ctx, thread.ID, bounds, include, page.Position, budget)
+	rendered, err := c.renderWindow(ctx, thread.ID, bounds, include, page.Position, window.back, budget)
 	if err != nil {
 		return nil, err
 	}
 	result.Items, result.Bytes, result.Transcript = rendered.items, len(rendered.text), rendered.text
 	result.Done = rendered.done
+	if rendered.folded {
+		result.Note = appendNote(result.Note, "Lines in parentheses fold a run of tool calls and thinking whose bodies this read leaves out. include tool_calls lists each call with its item id; tool_outputs, thinking or diffs add their bodies.")
+	}
+	if rendered.listed {
+		result.Note = appendNote(result.Note, "Read a row's body with thread_item and its item id.")
+	}
 	if !rendered.done {
-		encoded, err := encodeCursor(cursor{
-			Kind: cursorShow, Thread: thread.ID, Window: window,
-			From: bounds.From, To: bounds.To, Position: rendered.last, High: bounds.HighWater, Include: include,
-		})
+		next := window.cursor
+		next.Position = rendered.edge
+		encoded, err := encodeCursor(next)
 		if err != nil {
 			return nil, err
 		}
 		result.Cursor = encoded
-		result.Note = appendNote(result.Note, "This page stopped on its byte budget. Pass cursor back unchanged to continue the same window, or use to_file for the whole of it.")
+		if window.back {
+			result.Note = appendNote(result.Note, "This page holds the newest rows of the window and stopped on its byte budget. Pass cursor back unchanged to read the rows before them, or use to_file for the whole window.")
+		} else {
+			result.Note = appendNote(result.Note, "This page stopped on its byte budget. Pass cursor back unchanged to continue the same window, or use to_file for the whole of it.")
+		}
 	}
 	return result, nil
 }
 
-// showWindow returns the window name, its absolute bounds and the include
-// list, taking them from the cursor when one was passed.
-func (c *session) showWindow(ctx context.Context, threadID string, args showArgs, page cursor) (string, WindowBounds, []string, error) {
+// showRead is one resolved thread_show read: the window, its absolute
+// bounds and include list, which end it fills from, and the cursor that
+// continues it, minus the position the page reaches.
+type showRead struct {
+	name    string
+	bounds  WindowBounds
+	include []string
+	back    bool
+	cursor  cursor
+}
+
+// showWindow resolves the read, taking it from the cursor when one was
+// passed.
+func (c *session) showWindow(ctx context.Context, threadID string, args showArgs, page cursor) (showRead, error) {
 	if page.Kind == cursorShow {
 		if page.Thread != threadID {
-			return "", WindowBounds{}, nil, invalidf("That cursor belongs to another thread. Pass the cursor from this thread's own thread_show result.")
+			return showRead{}, invalidf("That cursor belongs to another thread. Pass the cursor from this thread's own thread_show result.")
 		}
-		return page.Window, WindowBounds{From: page.From, To: page.To, HighWater: page.High}, page.Include, nil
+		return showRead{
+			name:    page.Window,
+			bounds:  WindowBounds{From: page.From, To: page.To, HighWater: page.High},
+			include: page.Include,
+			back:    page.Back,
+			cursor:  page,
+		}, nil
 	}
 	query, err := windowQuery(threadID, args)
 	if err != nil {
-		return "", WindowBounds{}, nil, err
+		return showRead{}, err
 	}
 	include, err := normalizeInclude(args.Include)
 	if err != nil {
-		return "", WindowBounds{}, nil, err
+		return showRead{}, err
 	}
 	bounds, err := c.app.ResolveWindow(ctx, query)
 	if err != nil {
-		return "", WindowBounds{}, nil, err
+		return showRead{}, err
 	}
-	return query.Kind, bounds, include, nil
+	read := showRead{name: query.Kind, bounds: bounds, include: include, back: query.Kind == WindowTail}
+	read.cursor = cursor{
+		Kind: cursorShow, Thread: threadID, Window: query.Kind,
+		From: bounds.From, To: bounds.To, High: bounds.HighWater, Include: include,
+		Anchor: query.ItemID, Since: query.SinceUnixMs, Back: read.back,
+	}
+	switch query.Kind {
+	case WindowTail, WindowHead, WindowAround:
+		size := query.Turns
+		read.cursor.Size = &size
+	}
+	return read, nil
 }
 
 func windowQuery(threadID string, args showArgs) (WindowQuery, error) {
@@ -180,8 +281,8 @@ func windowQuery(threadID string, args showArgs) (WindowQuery, error) {
 	if query.Kind == "" {
 		query.Kind = WindowTail
 	}
-	if !slices.Contains([]string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll}, query.Kind) {
-		return WindowQuery{}, invalidf("window must be one of tail, head, since, around or all.")
+	if !slices.Contains([]string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll, WindowLastAnswer}, query.Kind) {
+		return WindowQuery{}, invalidf("window must be one of tail, head, since, around, all or last_answer.")
 	}
 	if args.Turns < 0 || args.Turns > MaxTurns {
 		return WindowQuery{}, invalidf("turns must be between 1 and %d.", MaxTurns)
@@ -214,12 +315,15 @@ func windowQuery(threadID string, args showArgs) (WindowQuery, error) {
 			}
 			query.SinceUnixMs = at
 		}
+	case WindowLastAnswer:
+		// One row, found by the App; nothing sizes or anchors it.
+		query.ItemID = ""
 	}
 	return query, nil
 }
 
 func normalizeInclude(include []string) ([]string, error) {
-	known := []string{IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}
+	known := []string{IncludeToolCalls, IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}
 	out := make([]string, 0, len(include))
 	for _, kind := range include {
 		kind = trim(kind)
@@ -297,8 +401,10 @@ func (c *session) showOnPeer(ctx context.Context, target Target, args showArgs) 
 }
 
 // forwardArgs re-marshals a decoded argument struct for a peer call. Zero
-// fields are dropped so the destination applies its own defaults, and the
-// computer selector never travels: the destination is already the owner.
+// fields are dropped so the destination applies its own defaults, except a
+// pointer field the caller set, whose zero is a value (context 0 is not the
+// default context). The computer selector never travels: the destination
+// is already the owner.
 func forwardArgs(value any) (json.RawMessage, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -308,7 +414,11 @@ func forwardArgs(value any) (json.RawMessage, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
+	set := setPointerFields(value)
 	for key, field := range fields {
+		if set[key] {
+			continue
+		}
 		switch typed := field.(type) {
 		case string:
 			if typed == "" {
@@ -334,99 +444,20 @@ func forwardArgs(value any) (json.RawMessage, error) {
 	return json.Marshal(fields)
 }
 
-type renderedPage struct {
-	text  string
-	items int
-	last  int64
-	done  bool
-}
-
-// renderWindow walks the window in batches and renders until the budget is
-// spent. It never holds more than one batch, and it always makes progress:
-// the first row of a page is rendered even when it alone fills the budget,
-// clipped with a pointer to thread_item.
-func (c *session) renderWindow(ctx context.Context, threadID string, bounds WindowBounds, include []string, after int64, budget int) (renderedPage, error) {
-	from := bounds.From
-	if after > 0 {
-		from = after + 1
+// setPointerFields names the JSON keys of a struct's non-nil pointer fields.
+func setPointerFields(value any) map[string]bool {
+	set := map[string]bool{}
+	v := reflect.Indirect(reflect.ValueOf(value))
+	if v.Kind() != reflect.Struct {
+		return set
 	}
-	// The bounds are absolute, so they are used as given. The only
-	// adjustment is the snapshot clamp, which is what keeps a page from
-	// shifting when the thread streams on while it is being read.
-	to := bounds.To
-	if bounds.HighWater > 0 && to > bounds.HighWater {
-		to = bounds.HighWater
-	}
-	page := renderedPage{last: after, done: true}
-	var out strings.Builder
-	var turn string
-	itemBudget := budget / 4
-	if itemBudget < 2048 {
-		itemBudget = 2048
-	}
-	for from <= to {
-		slice, err := c.app.Transcript(ctx, TranscriptQuery{
-			ThreadID: threadID, From: from, To: to, Limit: transcriptBatch,
-			Include: include, MaxItemBytes: itemBudget,
-		})
-		if err != nil {
-			return renderedPage{}, err
+	for index := range v.NumField() {
+		field := v.Field(index)
+		if field.Kind() != reflect.Pointer || field.IsNil() {
+			continue
 		}
-		if len(slice.Items) == 0 {
-			return finishPage(page, &out), nil
-		}
-		for _, item := range slice.Items {
-			block := renderItem(threadID, item)
-			if item.TurnID != "" && item.TurnID != turn {
-				turn = item.TurnID
-				block = "--- turn " + item.TurnID + " ---\n" + block
-			}
-			if out.Len() > 0 && out.Len()+len(block)+1 > budget {
-				page.done = false
-				return finishPage(page, &out), nil
-			}
-			if out.Len() > 0 {
-				out.WriteString("\n")
-			}
-			out.WriteString(block)
-			page.items++
-			page.last = item.Position
-			from = item.Position + 1
-		}
-		if len(slice.Items) < transcriptBatch {
-			return finishPage(page, &out), nil
-		}
+		name, _, _ := strings.Cut(v.Type().Field(index).Tag.Get("json"), ",")
+		set[name] = true
 	}
-	return finishPage(page, &out), nil
-}
-
-func finishPage(page renderedPage, out *strings.Builder) renderedPage {
-	page.text = out.String()
-	return page
-}
-
-// renderItem renders one timeline row: role and item id prefix, the body
-// when it is there, and a pointer to thread_item when it is not or when it
-// was clipped. A tool call with no body collapses to the one line the spec
-// asks for, stating its item id and the size it holds.
-func renderItem(threadID string, item Item) string {
-	role := item.Role
-	if role == "" {
-		role = item.Kind
-	}
-	head := fmt.Sprintf("[%s %s]", role, item.ID)
-	if item.Name != "" {
-		head += " " + item.Name
-	}
-	pointer := fmt.Sprintf("thread_item thread_id=%s item_id=%s", threadID, item.ID)
-	switch {
-	case item.Text == "" && item.Size > 0:
-		return fmt.Sprintf("%s (%s, not shown; read it with %s)", head, humanBytes(item.Size), pointer)
-	case item.Text == "":
-		return head
-	case item.Clipped:
-		return fmt.Sprintf("%s %s\n… clipped at %s of %s; read the rest with %s", head, item.Text, humanBytes(int64(len(item.Text))), humanBytes(item.Size), pointer)
-	default:
-		return head + " " + item.Text
-	}
+	return set
 }

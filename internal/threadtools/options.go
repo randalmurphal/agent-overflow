@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	"agent-overflow/internal/errorsx"
 )
@@ -20,18 +21,21 @@ type optionsArgs struct {
 	ComputerID string `json:"computer_id"`
 	Provider   string `json:"provider"`
 	ProjectID  string `json:"project_id"`
+	What       string `json:"what"`
 }
 
 type computerOptions struct {
-	ComputerID   string           `json:"computer_id,omitempty"`
-	Computer     string           `json:"computer,omitempty"`
-	Local        bool             `json:"local,omitempty"`
-	Reachable    bool             `json:"reachable"`
-	OS           string           `json:"os,omitempty"`
-	Defaults     *SpawnDefaults   `json:"defaults,omitempty"`
-	Providers    []ProviderOption `json:"providers"`
-	RuntimeModes []map[string]any `json:"runtime_modes"`
-	Projects     []ProjectOption  `json:"projects"`
+	ComputerID string         `json:"computer_id,omitempty"`
+	Computer   string         `json:"computer,omitempty"`
+	Local      bool           `json:"local,omitempty"`
+	Reachable  bool           `json:"reachable"`
+	OS         string         `json:"os,omitempty"`
+	Defaults   *SpawnDefaults `json:"defaults,omitempty"`
+	// A section what leaves out is nil and absent; one it keeps is
+	// present even when empty, which is an answer about this computer.
+	Providers    []ProviderOption `json:"providers,omitzero"`
+	RuntimeModes []map[string]any `json:"runtime_modes,omitzero"`
+	Projects     []ProjectOption  `json:"projects,omitzero"`
 }
 
 // The two result shapes. A computer with no pairings inlines the one
@@ -62,6 +66,10 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 	}
 	if err := c.checkComputerArg(args.ComputerID); err != nil {
 		return nil, err
+	}
+	args.What = trim(args.What)
+	if args.What != "" && !slices.Contains([]string{OptionsModels, OptionsProjects, OptionsGroups}, args.What) {
+		return nil, invalidf("what must be one of models, projects or groups, or omitted for everything.")
 	}
 	targets := append([]Computer{c.self()}, c.computers...)
 	if id := trim(args.ComputerID); id != "" {
@@ -141,6 +149,9 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 		if trim(args.ProjectID) != "" {
 			fields["project_id"] = trim(args.ProjectID)
 		}
+		if args.What != "" {
+			fields["what"] = args.What
+		}
 		forwarded, err := json.Marshal(fields)
 		if err != nil {
 			return computerOptions{}, err
@@ -161,25 +172,25 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 		return row, nil
 	}
 
-	catalog, err := c.app.Catalog(ctx, CatalogQuery{Provider: trim(args.Provider), ProjectID: trim(args.ProjectID)})
+	catalog, err := c.app.Catalog(ctx, CatalogQuery{Provider: trim(args.Provider), ProjectID: trim(args.ProjectID), What: args.What})
 	if err != nil {
 		return computerOptions{}, err
 	}
 	row := computerOptions{
-		ComputerID:   id,
-		Computer:     name,
-		Local:        true,
-		Reachable:    true,
-		OS:           catalog.OS,
-		Providers:    catalog.Providers,
-		RuntimeModes: RuntimeModeOptions(),
-		Projects:     catalog.Projects,
+		ComputerID: id,
+		Computer:   name,
+		Local:      true,
+		Reachable:  true,
+		OS:         catalog.OS,
 	}
-	if row.Providers == nil {
-		row.Providers = []ProviderOption{}
+	if args.What == "" || args.What == OptionsModels {
+		row.Providers, row.RuntimeModes = catalog.Providers, RuntimeModeOptions()
+		if row.Providers == nil {
+			row.Providers = []ProviderOption{}
+		}
 	}
-	if row.Projects == nil {
-		row.Projects = []ProjectOption{}
+	if args.What != OptionsModels {
+		row.Projects = projectSection(catalog.Projects, args.What)
 	}
 	defaults, err := c.callerDefaults(ctx)
 	if err != nil {
@@ -211,4 +222,20 @@ func (c *session) callerDefaults(ctx context.Context) (*SpawnDefaults, error) {
 		Mode:        thread.Mode,
 		RuntimeMode: thread.RuntimeMode,
 	}, nil
+}
+
+// projectSection keeps the part of each project what asks for. The App may
+// skip the reads a section does not need; this is what decides the shape.
+func projectSection(projects []ProjectOption, what string) []ProjectOption {
+	out := make([]ProjectOption, 0, len(projects))
+	for _, project := range projects {
+		switch what {
+		case OptionsGroups:
+			project.Path, project.Workspaces = "", nil
+		case OptionsProjects:
+			project.Groups = nil
+		}
+		out = append(out, project)
+	}
+	return out
 }

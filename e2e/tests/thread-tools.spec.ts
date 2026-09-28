@@ -22,6 +22,7 @@ import {
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
   THREAD_TOOLS_SERVER,
+  TOOL_ROW_ID_PATTERN,
   advanceGate,
   awaitGate,
   awaitToolAnswer,
@@ -750,15 +751,22 @@ test('the read tools find a thread, render its window and read inside one item',
           steps: [
             { call: { tool: 'thread_search', args: { query: 'scanIdent', limit: 5 } } },
             { call: { tool: 'thread_show', args: { thread_id: target, window: 'tail', turns: 5 } } },
-            // The collapsed tool row names the item to read next, which is
-            // the handoff the transcript exists to make.
-            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: 'item_id=([A-Za-z0-9-]+)' } },
+            // tool_calls lists each call with the item to read next, which
+            // is the handoff the transcript exists to make.
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'tail', turns: 5, include: ['tool_calls'] },
+              },
+            },
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: TOOL_ROW_ID_PATTERN } },
             {
               call: {
                 tool: 'thread_show',
                 args: { thread_id: target, include: ['tool_outputs'], max_bytes: 60000 },
               },
             },
+            { call: { tool: 'thread_show', args: { thread_id: target, window: 'last_answer' } } },
             {
               call: {
                 tool: 'thread_item',
@@ -814,12 +822,26 @@ test('the read tools find a thread, render its window and read inside one item',
   expect(collapsed.value!.done).toBe(true);
   expect(collapsed.value!.transcript).toContain('investigate the tokenizer crash');
   expect(collapsed.value!.transcript).toContain('The crash is in scanIdent');
-  // The tool row is one line naming its size and the tool that reads it.
-  expect(collapsed.value!.transcript).toContain('not shown; read it with thread_item');
+  // The tool call folds into one line counting it and its size.
+  expect(collapsed.value!.transcript).toMatch(/\(1 tool call: Bash 1; [0-9.]+ KB not shown\)/);
   expect(collapsed.value!.transcript).not.toContain('NEEDLE panic');
+  expect(collapsed.value!.transcript).not.toContain('[tool ');
+
+  // tool_calls lists the call with its item id, summary and size.
+  const listed = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
+  expect(listed.isError, listed.text).toBe(false);
+  expect(listed.value!.transcript).toMatch(/\[tool [^\]]+\] Bash: go test \.\/internal\/lex \([0-9.]+ KB\)/);
+  expect(listed.value!.transcript).not.toContain('NEEDLE panic');
 
   const expanded = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
   expect(expanded.value!.transcript).toContain('NEEDLE panic: tokenizer overran the escape');
+
+  // last_answer is what the thread concluded, alone.
+  const concluded = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
+  expect(concluded.isError, concluded.text).toBe(false);
+  expect(concluded.value!.transcript).toMatch(
+    /^--- turn \d+ ---\n\[assistant [^\]]+\] The crash is in scanIdent when the input ends mid-escape\.$/,
+  );
 
   interface ItemAnswer {
     item_id: string;
@@ -1042,8 +1064,13 @@ test('a multi-megabyte tool output is clipped in the transcript and read in rang
       turns: [
         {
           steps: [
-            { call: { tool: 'thread_show', args: { thread_id: target, window: 'tail' } } },
-            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: 'item_id=([A-Za-z0-9-]+)' } },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'tail', include: ['tool_calls'] },
+              },
+            },
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: TOOL_ROW_ID_PATTERN } },
             {
               call: {
                 tool: 'thread_show',
@@ -1087,11 +1114,11 @@ test('a multi-megabyte tool output is clipped in the transcript and read in rang
     transcript?: string;
     done: boolean;
   }
-  // Collapsed: the row is one line naming its size and the tool that reads
-  // it, and the transcript never carries megabytes for one row.
+  // Listed: the row is one line naming its item id and size, and the
+  // transcript never carries megabytes for one row.
   const collapsed = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
   expect(collapsed.isError, collapsed.text).toBe(false);
-  expect(collapsed.value!.transcript).toContain('3.8 MB, not shown; read it with thread_item');
+  expect(collapsed.value!.transcript).toMatch(/\[tool [^\]]+\] .*\(3\.8 MB\)/);
   expect(collapsed.value!.transcript!.length).toBeLessThan(64 * 1024);
   expect(collapsed.value!.transcript).not.toContain(bigItem.needle.trim());
 

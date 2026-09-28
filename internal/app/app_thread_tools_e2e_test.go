@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -333,5 +334,162 @@ func TestThreadSearchIndexJoinsAfterCancellation(t *testing.T) {
 	// An interrupted build leaves its progress row for the next boot.
 	if _, err := app.store.SearchIndexing(); err != nil {
 		t.Fatalf("SearchIndexing: %v", err)
+	}
+}
+
+// TestThreadMCPReadsAnswerTheCommonQuestionsInOneCall drives the reads an
+// agent coordinating other threads makes most, over the loopback transport
+// against real store rows: what did a thread conclude, which threads are
+// waiting on me, and what happened in a busy turn, without paging through
+// a line per tool call.
+func TestThreadMCPReadsAnswerTheCommonQuestionsInOneCall(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	app.configDir = t.TempDir()
+	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+
+	caller, token := remoteMCPThread(t, app, string(provider.Claude))
+	target := store.Thread{
+		ID: "e2e-review", ProjectID: caller.ProjectID, Title: "Review the parser",
+		Provider: string(provider.Claude), Model: "claude-opus-4-7", Mode: "chat",
+		WorkspacePath: caller.WorkspacePath, CreatedAt: 1_000, UpdatedAt: 1_000,
+	}
+	if err := app.store.CreateThread(target); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	group, err := app.store.CreateThreadGroup(caller.ProjectID, "MR Reviews")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	if _, err := app.store.SetThreadGroup([]string{target.ID}, group.ID); err != nil {
+		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	const answer = "Two findings, both in the lexer. Want me to push the fix?"
+	for turn := range 3 {
+		turnID := "e2e-review-turn-" + string(rune('0'+turn))
+		startedAt := int64(2_000 + turn*100)
+		if err := app.store.InsertTurn(store.Turn{TurnID: turnID, ThreadID: target.ID, TurnIndex: turn, StartedAt: startedAt}); err != nil {
+			t.Fatalf("InsertTurn: %v", err)
+		}
+		prefix := "e2e-" + string(rune('a'+turn))
+		index := 0
+		upsert := func(item store.Item, payload *store.Payload) {
+			t.Helper()
+			item.ThreadID, item.TurnIndex, item.ItemIndex, item.Status = target.ID, turn, index, "completed"
+			item.CreatedAt, item.UpdatedAt = startedAt+int64(index), startedAt+int64(index)
+			index++
+			if _, err := app.store.UpsertItem(item, payload); err != nil {
+				t.Fatalf("UpsertItem(%s): %v", item.ID, err)
+			}
+		}
+		upsert(store.Item{ID: prefix + "-user", Kind: "user_text", Role: "user", Summary: "review turn " + string(rune('0'+turn))}, nil)
+		for call, tool := range []string{"Bash", "Read", "Bash", "Read", "Bash"} {
+			id := prefix + "-tool-" + string(rune('0'+call))
+			upsert(store.Item{ID: id, Kind: "tool_call", Role: "assistant", ToolName: tool, Summary: "go test ./internal/parser", PayloadID: id + "-out", PayloadKind: "tool_result"},
+				&store.Payload{ID: id + "-out", Kind: "tool_result", Data: []byte(strings.Repeat("ok ", 1000)), CreatedAt: startedAt})
+		}
+		text := "turn " + string(rune('0'+turn)) + " done"
+		if turn == 2 {
+			text = answer
+		}
+		upsert(store.Item{ID: prefix + "-answer", Kind: "assistant_text", Role: "assistant", Summary: text}, nil)
+		if err := app.store.UpdateTurnCompleted(turnID, startedAt+50, "end_turn", "", "", ""); err != nil {
+			t.Fatalf("UpdateTurnCompleted: %v", err)
+		}
+	}
+	endpoint := threadMCPEndpoint(t, app, caller, token)
+	decode := func(raw json.RawMessage) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		return out
+	}
+
+	// What did it conclude: one call, the answer alone.
+	last := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID, "window": "last_answer"}, false))
+	if last["transcript"] != "--- turn 2 ---\n[assistant e2e-c-answer] "+answer {
+		t.Fatalf("last_answer = %q", last["transcript"])
+	}
+
+	// A busy turn is a line per run of calls, not a line per call.
+	show := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID}, false))
+	transcript, _ := show["transcript"].(string)
+	folded := "(5 tool calls: Bash 3, Read 2; 14.6 KB not shown)"
+	if strings.Count(transcript, folded) != 3 || strings.Contains(transcript, "[tool ") {
+		t.Fatalf("default transcript does not fold the calls:\n%s", transcript)
+	}
+	listed := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID, "include": []string{"tool_calls"}, "turns": 1}, false))
+	if want := "[tool e2e-c-tool-0] Bash: go test ./internal/parser (2.9 KB)"; !strings.Contains(listed["transcript"].(string), want) {
+		t.Fatalf("tool_calls transcript is missing %q:\n%s", want, listed["transcript"])
+	}
+
+	// A tail that does not fit keeps the newest rows, and its cursor, with
+	// the same parameters repeated, reads the rows before them.
+	tail := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID, "turns": 3, "max_bytes": 1024, "include": []string{"tool_outputs"}}, false))
+	if text, _ := tail["transcript"].(string); !strings.HasSuffix(text, "[assistant e2e-c-answer] "+answer) || tail["done"] != false {
+		t.Fatalf("tail page does not end at the answer (done %v):\n%s", tail["done"], text)
+	}
+	before := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID, "turns": 3, "include": []string{"tool_outputs"}, "cursor": tail["cursor"]}, false))
+	if text, _ := before["transcript"].(string); strings.Contains(text, answer) || !strings.Contains(text, "e2e-c-tool-") {
+		t.Fatalf("the page before the tail repeats it or skipped back too far:\n%s", text)
+	}
+
+	// Which threads are waiting on me: the group narrows the listing, and
+	// each row says who spoke last and how it ended.
+	listing := decode(remoteMCPCall(t, endpoint, "thread_search", map[string]any{"group": "mr reviews"}, false))
+	rows, _ := listing["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("group listing = %v", listing)
+	}
+	row := rows[0].(map[string]any)
+	message, _ := row["last_message"].(map[string]any)
+	if row["thread_id"] != target.ID || message["role"] != "assistant" || message["text"] != answer || message["at"] == "" {
+		t.Fatalf("row = %v", row)
+	}
+	everything := decode(remoteMCPCall(t, endpoint, "thread_search", map[string]any{}, false))
+	selves := 0
+	for _, entry := range everything["rows"].([]any) {
+		if entry.(map[string]any)["self"] == true {
+			selves++
+			if entry.(map[string]any)["thread_id"] != caller.ID {
+				t.Errorf("a thread other than the caller is marked self: %v", entry)
+			}
+		}
+	}
+	if selves != 1 {
+		t.Errorf("the caller's own row is marked %d times", selves)
+	}
+	refusal := remoteMCPCall(t, endpoint, "thread_search", map[string]any{"group": "No Such Group"}, true)
+	if !strings.Contains(string(refusal), "no thread group") {
+		t.Fatalf("unknown group refusal = %s", refusal)
+	}
+
+	// A group lookup is the groups, not every provider and worktree.
+	options := decode(remoteMCPCall(t, endpoint, "thread_options", map[string]any{"what": "groups"}, false))
+	if _, present := options["providers"]; present {
+		t.Errorf("what groups carried providers: %v", options)
+	}
+	found := false
+	for _, project := range options["projects"].([]any) {
+		groups, _ := project.(map[string]any)["groups"].([]any)
+		for _, g := range groups {
+			found = found || g.(map[string]any)["group"] == "MR Reviews"
+		}
+	}
+	if !found {
+		t.Fatalf("what groups did not list the group: %v", options)
+	}
+
+	// The export lists every row with its label, so the file stays the way
+	// to grep a whole thread.
+	exported := decode(remoteMCPCall(t, endpoint, "thread_show", map[string]any{"thread_id": target.ID, "window": "all", "to_file": true}, false))
+	path, _ := exported["file"].(map[string]any)["path"].(string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if !strings.Contains(string(data), "[tool e2e-a-tool-0] Bash: go test ./internal/parser (3000 bytes not shown)\n") {
+		t.Fatalf("export does not list the call with its label:\n%s", data[:min(len(data), 600)])
 	}
 }

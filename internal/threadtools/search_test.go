@@ -1,6 +1,7 @@
 package threadtools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -345,4 +346,49 @@ func TestSearchQueryIsBounded(t *testing.T) {
 		t.Errorf("message = %q", message)
 	}
 	call(t, server, localCaller(), "thread_search", mustJSON(t, map[string]any{"query": strings.Repeat("q", MaxQueryBytes)}))
+}
+
+// TestSearchRowsSayWhoSpokeLastAndMarkTheCaller: a listing answers "which
+// threads are waiting on me" without opening any of them, and the caller
+// never mistakes its own thread for someone else's.
+func TestSearchRowsSayWhoSpokeLastAndMarkTheCaller(t *testing.T) {
+	app := newFakeApp("Laptop")
+	waiting := hit(localThreadID, "Review", LiveState{})
+	waiting.LastMessage = &LastMessage{Role: "assistant", At: time.Date(2026, 9, 19, 11, 0, 0, 0, time.UTC).UnixMilli(), Tail: "two findings.\n\nWant me to fix them?", Clipped: true}
+	fresh := hit(twinThreadID, "Fresh", LiveState{})
+	app.hits = []Hit{waiting, fresh, hit("caller-thread", "Me", LiveState{ActiveTurn: true})}
+
+	list := rows(t, call(t, New(app), localCaller(), "thread_search", `{}`)["rows"])
+	last, _ := list[0].(map[string]any)["last_message"].(map[string]any)
+	if last["role"] != "assistant" || last["at"] != "2026-09-19T11:00:00Z" || last["text"] != "…two findings. Want me to fix them?" {
+		t.Fatalf("last_message = %v", last)
+	}
+	if _, present := list[1].(map[string]any)["last_message"]; present {
+		t.Error("a thread with no message in its latest turn must carry no last_message")
+	}
+	for index, row := range list {
+		self, _ := row.(map[string]any)["self"].(bool)
+		if self != (index == 2) {
+			t.Errorf("row %d self = %v", index, self)
+		}
+	}
+}
+
+// TestSearchGroupFilterReachesEveryComputerAndItsCursor: the group is a
+// filter like any other: it reaches the store here and on the peer, and a
+// cursor minted under one group does not continue under another.
+func TestSearchGroupFilterReachesEveryComputerAndItsCursor(t *testing.T) {
+	p := newPair(t)
+	for index := range 12 {
+		p.local.hits = append(p.local.hits, hit(fmt.Sprintf("%s%02d", localThreadID[:len(localThreadID)-2], index), "Sweep", LiveState{}))
+	}
+	first := call(t, p.server, localCaller(), "thread_search", `{"group":" MR Reviews ","limit":10}`)
+	if got := p.local.searches[0].Group; got != "MR Reviews" {
+		t.Errorf("local group = %q", got)
+	}
+	if got := p.remote.searches[0].Group; got != "MR Reviews" {
+		t.Errorf("the peer searched group %q", got)
+	}
+	callErr(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"group": "Other", "limit": 10, "cursor": first["cursor"]}), CodeInvalidRequest)
+	call(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"group": "MR Reviews", "limit": 10, "cursor": first["cursor"]}))
 }

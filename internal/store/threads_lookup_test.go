@@ -233,6 +233,14 @@ func TestThreadSearchFilterAppliesEveryRowFilter(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertThreadRequest(send): %v", err)
 	}
+	// Two threads filed in a group, which the group filter names.
+	sweep, err := s.CreateThreadGroup(makeThread("claude-thread", "claude").ProjectID, "Sweep")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	if _, err := s.SetThreadGroup([]string{"codex-thread", "spawned-thread"}, sweep.ID); err != nil {
+		t.Fatalf("SetThreadGroup: %v", err)
+	}
 	if err := s.BuildSearchIndex(t.Context()); err != nil {
 		t.Fatalf("BuildSearchIndex: %v", err)
 	}
@@ -249,6 +257,8 @@ func TestThreadSearchFilterAppliesEveryRowFilter(t *testing.T) {
 		{"archived", ThreadSearchFilter{Archived: &yes}, []string{"archived-thread"}},
 		{"since", ThreadSearchFilter{SinceUnixMs: 5_100}, []string{"codex-thread", "claude-thread"}},
 		{"spawned by", ThreadSearchFilter{SpawnedBy: "claude-thread"}, []string{"spawned-thread"}},
+		{"group", ThreadSearchFilter{GroupIDs: []string{"no-such-group", sweep.ID}}, []string{"codex-thread", "spawned-thread"}},
+		{"no such group", ThreadSearchFilter{GroupIDs: []string{}}, []string{}},
 		{"scratch the caller owns", ThreadSearchFilter{ScratchThreadIDs: []string{"scratch-thread"}},
 			[]string{"codex-thread", "claude-thread", "spawned-thread", "scratch-thread", "archived-thread", "workflow-thread"}},
 	} {

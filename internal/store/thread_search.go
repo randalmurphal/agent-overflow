@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -99,6 +100,10 @@ type ThreadSearchFilter struct {
 	// SpawnedBy restricts to the threads one caller thread spawned: the
 	// targets of its `spawn` rows in the request ledger.
 	SpawnedBy string
+	// GroupIDs restricts to threads filed in one of these sidebar groups.
+	// A non-nil empty list matches no thread: the caller named a group
+	// this computer does not have.
+	GroupIDs []string
 	// Kinds restricts to user / assistant / tool / title rows.
 	Kinds []string
 	// ScratchThreadIDs are the scratch threads the caller may see. Scratch
@@ -182,6 +187,15 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 	if f.SinceUnixMs > 0 {
 		conditions = append(conditions, threadLastActivityExpr(alias)+" >= ?")
 		args = append(args, f.SinceUnixMs)
+	}
+	if f.GroupIDs != nil {
+		groups, err := json.Marshal(f.GroupIDs)
+		if err != nil {
+			// A []string always encodes; this is unreachable.
+			groups = []byte("[]")
+		}
+		conditions = append(conditions, alias+"group_id IN (SELECT value FROM json_each(?))")
+		args = append(args, string(groups))
 	}
 	if f.SpawnedBy != "" {
 		conditions = append(conditions, `EXISTS (SELECT 1 FROM thread_requests spawns

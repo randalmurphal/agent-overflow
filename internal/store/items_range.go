@@ -77,6 +77,21 @@ func (s *Store) threadTimelineEdge(threadID, orderBy string) (TimelineCursor, bo
 // The limit is applied in SQL. A caller that wants the next page passes a
 // from one coordinate past the last row it received.
 func (s *Store) ListItemsInRange(threadID string, from, to TimelineCursor, limit int, includeChildren bool) ([]Item, error) {
+	return s.listItemsInRange(threadID, from, to, limit, includeChildren, "ASC")
+}
+
+// ListNewestItemsInRange is ListItemsInRange anchored at the other end: the
+// newest limit rows of the range, still returned oldest first. A reader
+// that fills a budget from the end of a range pages backwards by passing a
+// to one coordinate before the oldest row it received.
+func (s *Store) ListNewestItemsInRange(threadID string, from, to TimelineCursor, limit int, includeChildren bool) ([]Item, error) {
+	return s.listItemsInRange(threadID, from, to, limit, includeChildren, "DESC")
+}
+
+// listItemsInRange selects the limit rows nearest the direction's starting
+// end. The hydrator orders what it returns by timeline position whatever
+// order selected them.
+func (s *Store) listItemsInRange(threadID string, from, to TimelineCursor, limit int, includeChildren bool, direction string) ([]Item, error) {
 	if limit <= 0 {
 		return []Item{}, nil
 	}
@@ -88,7 +103,7 @@ func (s *Store) ListItemsInRange(threadID string, from, to TimelineCursor, limit
 	selectedSQL, selectedArgs, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Where:     where,
 		WhereArgs: []any{from.TurnIndex, from.ItemIndex, to.TurnIndex, to.ItemIndex},
-		OrderBy:   "turn_index ASC, item_index ASC",
+		OrderBy:   "turn_index " + direction + ", item_index " + direction,
 		Limit:     limit,
 	})
 	if err != nil {

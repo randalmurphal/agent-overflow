@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/attachedbackends"
@@ -347,6 +348,9 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 func (t threadToolsApp) Catalog(_ context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+		if q.What == threadtools.OptionsProjects || q.What == threadtools.OptionsGroups {
+			break
+		}
 		if q.Provider != "" && q.Provider != name {
 			continue
 		}
@@ -361,7 +365,10 @@ func (t threadToolsApp) Catalog(_ context.Context, q threadtools.CatalogQuery) (
 		}
 		catalog.Providers = append(catalog.Providers, option)
 	}
-	projects, err := t.projectOptions(q.ProjectID)
+	if q.What == threadtools.OptionsModels {
+		return catalog, nil
+	}
+	projects, err := t.projectOptions(q.ProjectID, q.What != threadtools.OptionsGroups)
 	if err != nil {
 		return threadtools.Catalog{}, err
 	}
@@ -411,7 +418,10 @@ func threadToolsProviderName(name string) string {
 // workspace and worktree paths, which is where this app records them:
 // there is no worktree table, and asking git for a listing would be a
 // subprocess per project on a read a model makes to see its choices.
-func (t threadToolsApp) projectOptions(projectID string) ([]threadtools.ProjectOption, error) {
+//
+// withWorkspaces false skips the worktree listing for an answer that names
+// only groups.
+func (t threadToolsApp) projectOptions(projectID string, withWorkspaces bool) ([]threadtools.ProjectOption, error) {
 	projects, err := t.app.store.ListProjects()
 	if err != nil {
 		return nil, err
@@ -420,9 +430,12 @@ func (t threadToolsApp) projectOptions(projectID string) ([]threadtools.ProjectO
 	if err != nil {
 		return nil, err
 	}
-	worktrees, err := t.app.store.ListThreadWorktreeWorkspaces()
-	if err != nil {
-		return nil, err
+	var worktrees []store.ThreadWorktreeWorkspace
+	if withWorkspaces {
+		worktrees, err = t.app.store.ListThreadWorktreeWorkspaces()
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := []threadtools.ProjectOption{}
 	for _, project := range projects {
@@ -469,20 +482,69 @@ func (t threadToolsApp) SearchThreads(ctx context.Context, q threadtools.SearchQ
 		limit = threadtools.DefaultSearchLimit
 	}
 	page := threadtools.SearchPage{Indexing: indexing}
+	search := t.searchIndex
 	if strings.TrimSpace(q.Query) == "" {
-		rows, more, err := t.listThreads(ctx, q, limit)
-		if err != nil {
-			return threadtools.SearchPage{}, err
-		}
-		page.Rows, page.More = rows, more
-		return page, nil
+		search = t.listThreads
 	}
-	rows, more, err := t.searchIndex(ctx, q, limit)
+	rows, more, err := search(ctx, q, limit)
 	if err != nil {
+		return threadtools.SearchPage{}, err
+	}
+	if err := t.attachLastMessages(rows); err != nil {
 		return threadtools.SearchPage{}, err
 	}
 	page.Rows, page.More = rows, more
 	return page, nil
+}
+
+// attachLastMessages reads who spoke last in each thread of a page, in one
+// statement whatever the page holds, after the page is settled: a `state`
+// filter reads far more threads than it keeps.
+func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if !slices.Contains(ids, row.Thread.ID) {
+			ids = append(ids, row.Thread.ID)
+		}
+	}
+	messages, err := t.app.store.ListThreadLastMessages(ids)
+	if err != nil {
+		return err
+	}
+	for index := range rows {
+		message, ok := messages[rows[index].Thread.ID]
+		if !ok {
+			continue
+		}
+		role := "assistant"
+		if message.Kind == "user_text" {
+			role = "user"
+		}
+		rows[index].LastMessage = &threadtools.LastMessage{Role: role, At: message.At, Tail: message.Tail, Clipped: message.Clipped}
+	}
+	return nil
+}
+
+// threadGroupIDs resolves a group filter on this computer: an id, or every
+// group whose name matches it case-insensitively, whichever project owns
+// it. A filter that names no group here is refused, because answering "no
+// threads" would read as an empty group.
+func (t threadToolsApp) threadGroupIDs(ref string) ([]string, error) {
+	groups, err := t.app.store.ListThreadGroups()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, group := range groups {
+		if group.ID == ref || strings.EqualFold(strings.TrimSpace(group.Name), ref) {
+			ids = append(ids, group.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("There is no thread group %q on this computer. thread_options with what groups lists them.", ref), nil)
+	}
+	return ids, nil
 }
 
 // threadSearchScanCap and threadSearchScanPage bound the walk a `state`
@@ -524,6 +586,13 @@ func (t threadToolsApp) threadToolsFilter(ctx context.Context, q threadtools.Sea
 	}
 	if q.Kind != "" {
 		filter.Kinds = []string{q.Kind}
+	}
+	if q.Group != "" {
+		ids, err := t.threadGroupIDs(q.Group)
+		if err != nil {
+			return store.ThreadSearchFilter{}, err
+		}
+		filter.GroupIDs = ids
 	}
 	return filter, nil
 }

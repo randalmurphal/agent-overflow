@@ -184,6 +184,16 @@ func TestItemQueryCapsMatchesAndPagesTheRest(t *testing.T) {
 	if second["more"] != nil || second["query"] != "needle" {
 		t.Fatalf("the last page is not final or lost the query: %v", second)
 	}
+	// Repeating the query beside its cursor is the same search; another
+	// query would spend the offset on a scan it was never minted for.
+	repeated := call(t, server, localCaller(), "thread_item", mustJSON(t, map[string]any{"thread_id": localThreadID, "item_id": "i3", "query": "needle", "cursor": first["cursor"]}))
+	if got := len(rows(t, repeated["matches"])); got != total-MaxItemMatches {
+		t.Fatalf("the repeated query read %d matches, want the second page's %d", got, total-MaxItemMatches)
+	}
+	message := callErr(t, server, localCaller(), "thread_item", mustJSON(t, map[string]any{"thread_id": localThreadID, "item_id": "i3", "query": "yy", "cursor": first["cursor"]}), CodeInvalidRequest)
+	if !strings.HasPrefix(message, "query does not match") {
+		t.Errorf("refusal = %q", message)
+	}
 	firstOffset := field(t, rows(t, second["matches"])[0], "offset").(float64)
 	lastOfFirst := field(t, rows(t, first["matches"])[MaxItemMatches-1], "offset").(float64)
 	if firstOffset <= lastOfFirst {

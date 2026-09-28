@@ -1456,3 +1456,115 @@ func TestThreadToolsExportWalksTheWindowInBoundedBatches(t *testing.T) {
 		t.Fatalf("rows twice the chunk cost %d store reads, half-chunk rows %d", large, small)
 	}
 }
+
+// TestThreadToolsCatalogReadsOnlyTheSectionAsked: a group lookup does not
+// probe the model catalogs or list every worktree, and a model lookup does
+// not read the projects.
+func TestThreadToolsCatalogReadsOnlyTheSectionAsked(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	f.thread(t, "catalog-worktree", func(th *store.Thread) { th.WorktreePath, th.Branch = t.TempDir(), "feature" })
+	ctx := t.Context()
+
+	reads := func(what string) (threadtools.Catalog, uint64) {
+		t.Helper()
+		before := f.app.store.ReadCount()
+		catalog, err := f.adapter.Catalog(ctx, threadtools.CatalogQuery{What: what})
+		if err != nil {
+			t.Fatalf("Catalog(%q): %v", what, err)
+		}
+		return catalog, f.app.store.ReadCount() - before
+	}
+	whole, wholeReads := reads("")
+	groups, groupReads := reads(threadtools.OptionsGroups)
+	models, _ := reads(threadtools.OptionsModels)
+
+	if len(whole.Providers) == 0 || len(whole.Projects) == 0 {
+		t.Fatalf("the whole catalog is missing a section: %+v", whole)
+	}
+	if len(groups.Providers) != 0 || len(groups.Projects) == 0 || groupReads >= wholeReads {
+		t.Errorf("what groups read %d statements against %d for everything, providers %v", groupReads, wholeReads, groups.Providers)
+	}
+	for _, project := range groups.Projects {
+		if len(project.Workspaces) > 1 {
+			t.Errorf("what groups listed worktrees: %+v", project.Workspaces)
+		}
+	}
+	if len(models.Projects) != 0 || len(models.Providers) == 0 {
+		t.Errorf("what models = %+v", models)
+	}
+}
+
+// TestThreadToolsTranscriptLabelsToolRowsAndReadsFromEitherEnd: a tool
+// row's summary is its label and its body is only the output it stored,
+// and a newest-first page is the rows nearest the end, in timeline order.
+func TestThreadToolsTranscriptLabelsToolRowsAndReadsFromEitherEnd(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	thread := f.thread(t, "labels")
+	running := store.Item{ID: "l-running", Kind: "tool_call", Role: "assistant", ToolName: "Bash", Summary: "make go-test", Status: "running", CreatedAt: 1, UpdatedAt: 1}
+	f.turn(t, thread.ID, 0, 1_000,
+		textItem("l-ask", "user_text", "run it"),
+		payloadItem("l-done", "Read", "file body"),
+		running,
+		textItem("l-answer", "assistant_text", strings.Repeat("a", 5000)),
+	)
+	ctx := t.Context()
+	bounds, err := f.adapter.ResolveWindow(ctx, threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.adapter.Transcript(ctx, threadtools.TranscriptQuery{
+		ThreadID: thread.ID, From: bounds.From, To: bounds.To, Limit: 2, Newest: true,
+		Include: []string{threadtools.IncludeToolOutputs}, MaxItemBytes: 4, MaxProseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "l-running" || page.Items[1].ID != "l-answer" {
+		t.Fatalf("newest page = %+v", page.Items)
+	}
+	if call := page.Items[0]; call.Label != "make go-test" || call.Text != "" || call.Size != 0 {
+		t.Errorf("a call with no output must be its label alone: %+v", call)
+	}
+	if answer := page.Items[1]; len(answer.Text) != 4096 || !answer.Clipped || answer.Size != 5000 {
+		t.Errorf("prose must clip to MaxProseBytes, not MaxItemBytes: %d bytes clipped=%t", len(answer.Text), answer.Clipped)
+	}
+	older, err := f.adapter.Transcript(ctx, threadtools.TranscriptQuery{
+		ThreadID: thread.ID, From: bounds.From, To: page.Items[0].Position - 1, Limit: 5, Newest: true,
+		Include: []string{threadtools.IncludeToolOutputs}, MaxItemBytes: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older.Items) != 2 || older.Items[1].ID != "l-done" {
+		t.Fatalf("older page = %+v", older.Items)
+	}
+	if done := older.Items[1]; done.Label != "Read" || done.Text != "file" || !done.Clipped || done.Size != 9 {
+		t.Errorf("a call with output must carry its label beside its clipped output: %+v", done)
+	}
+
+	// The export lists a call with no output as its line alone, and one
+	// whose output it left out with the size.
+	file, err := f.adapter.ExportTranscript(ctx, threadtools.ExportQuery{ThreadID: thread.ID, Bounds: bounds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"\n[tool l-running] Bash: make go-test\n", "\n[tool l-done] Read (9 bytes not shown)\n"} {
+		if !strings.Contains(string(exported), line) {
+			t.Errorf("export is missing %q:\n%s", line, exported)
+		}
+	}
+
+	answer, err := f.adapter.ResolveWindow(ctx, threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowLastAnswer})
+	if err != nil || answer.Empty || answer.From != answer.To || answer.To != page.Items[1].Position {
+		t.Fatalf("last_answer bounds = %+v, %v", answer, err)
+	}
+	empty := f.thread(t, "labels-empty")
+	f.turn(t, empty.ID, 0, 1_000, textItem("e-ask", "user_text", "hello"))
+	if none, err := f.adapter.ResolveWindow(ctx, threadtools.WindowQuery{ThreadID: empty.ID, Kind: threadtools.WindowLastAnswer}); err != nil || !none.Empty {
+		t.Fatalf("a thread that never answered: %+v, %v", none, err)
+	}
+}

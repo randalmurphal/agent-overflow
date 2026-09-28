@@ -72,7 +72,12 @@ func (c *session) item(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if page.Query != "" && trim(args.Query) == "" {
+	if page.Query != "" {
+		// A query cursor is a scan offset inside one search. Repeating the
+		// query beside it is the same search; another query is not.
+		if query := trim(args.Query); query != "" && query != page.Query {
+			return nil, invalidf("query does not match the search this cursor continues. Pass the cursor with the same query or none, or omit cursor to start a new search.")
+		}
 		args.Query = page.Query
 	}
 	switch selectors := countSet(args.Offset != nil, trim(args.Lines) != "", trim(args.Query) != ""); selectors {

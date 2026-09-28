@@ -37,6 +37,13 @@ const (
 	// MinShowBytes keeps a budget large enough for one row plus its
 	// prefix, so a page can always make progress.
 	MinShowBytes = 1 << 10
+	// proseHeadroom is what a page keeps beside a prose body clipped to
+	// the page: the row head, the turn header and the clip pointer.
+	proseHeadroom = 512
+	// maxLabelBytes bounds a tool row's summary on its line.
+	maxLabelBytes = 160
+	// maxRunNames is how many tool names a folded line counts by name.
+	maxRunNames = 6
 
 	// DefaultItemBytes and MaxItemBytes bound one thread_item read.
 	DefaultItemBytes = 16 << 10

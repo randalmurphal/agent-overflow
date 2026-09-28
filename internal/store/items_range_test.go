@@ -310,3 +310,119 @@ func TestLatestHumanUserTextSkipsWhatAgentsWrote(t *testing.T) {
 		t.Fatalf("text = %q, want the last thing a person typed", text)
 	}
 }
+
+// TestListNewestItemsInRangeTakesTheNewestRowsOldestFirst pins the other
+// end of the range read: the limit keeps the rows nearest `to`, across the
+// imported and local arms, and they still come back in timeline order so a
+// caller pages backwards by passing a `to` before the first row.
+func TestListNewestItemsInRangeTakesTheNewestRowsOldestFirst(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+
+	whole := TimelineCursor{TurnIndex: 0, ItemIndex: -1 << 20}
+	end := TimelineCursor{TurnIndex: 3, ItemIndex: 1 << 20}
+
+	page, err := s.ListNewestItemsInRange(timelineParityThreadID, whole, end, 3, false)
+	if err != nil {
+		t.Fatalf("ListNewestItemsInRange: %v", err)
+	}
+	if !equalIDs(page, "loc-wire-3", "loc-user-3", "loc-answer-3") {
+		t.Fatalf("newest page = %v", itemIDs(page))
+	}
+	// The page before it crosses from the local rows into the imported
+	// ones, and children stay out.
+	before, err := s.ListNewestItemsInRange(timelineParityThreadID, whole,
+		TimelineCursor{TurnIndex: page[0].TurnIndex, ItemIndex: page[0].ItemIndex - 1}, 5, false)
+	if err != nil {
+		t.Fatalf("ListNewestItemsInRange(before): %v", err)
+	}
+	if !equalIDs(before, "imp-answer-1", "loc-user-2", "loc-launch-2", "loc-plan-2", "loc-answer-2") {
+		t.Fatalf("previous page = %v", itemIDs(before))
+	}
+	for _, item := range before {
+		if item.ID == "imp-answer-1" {
+			continue
+		}
+		if item.TurnIndex != 2 {
+			t.Errorf("row %s from turn %d", item.ID, item.TurnIndex)
+		}
+	}
+}
+
+// TestLastTopLevelItemFindsTheNewestRowOfKindInAnyTurn: the newest row of a
+// kind may sit turns back, and a subagent child of that kind never counts.
+func TestLastTopLevelItemFindsTheNewestRowOfKindInAnyTurn(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+
+	answer, found, err := s.LastTopLevelItem(timelineParityThreadID, "assistant_text")
+	if err != nil || !found || answer.ID != "loc-answer-3" {
+		t.Fatalf("last assistant text = %q found=%t err=%v", answer.ID, found, err)
+	}
+	// Turn 3 has no tool call; turn 2's top-level launch is the newest, not
+	// its child.
+	tool, found, err := s.LastTopLevelItem(timelineParityThreadID, "tool_call")
+	if err != nil || !found || tool.ID != "loc-launch-2" {
+		t.Fatalf("last tool call = %q found=%t err=%v", tool.ID, found, err)
+	}
+	if _, found, err := s.LastTopLevelItem(timelineParityThreadID, "thinking"); err != nil || found {
+		t.Fatalf("a kind the thread never stored: found=%t err=%v", found, err)
+	}
+}
+
+// TestListThreadLastMessagesReadsEachThreadsLatestTurnInOneStatement pins
+// what a listing row reports as the last thing said: the newest top-level
+// message of the latest turn, a wire-only injection and a subagent's text
+// excluded, a pointer fork read through its lineage up to its own cut.
+func TestListThreadLastMessagesReadsEachThreadsLatestTurnInOneStatement(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	threads := seedTimelineParityForks(t, s)
+	mustCreateThread(t, s, "last-message-draft")
+	mustCreateThread(t, s, "last-message-open")
+	if err := s.InsertTurn(Turn{TurnID: "lm-0", ThreadID: "last-message-open", TurnIndex: 0, StartedAt: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertCarded(s, Item{
+		ID: "lm-ask", ThreadID: "last-message-open", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: strings.Repeat("x", 1000) + " still waiting?", CreatedAt: 10, UpdatedAt: 42,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := s.ReadCount()
+	got, err := s.ListThreadLastMessages(append(threads, "last-message-draft", "last-message-open", "no-such-thread"))
+	if err != nil {
+		t.Fatalf("ListThreadLastMessages: %v", err)
+	}
+	if reads := s.ReadCount() - before; reads != 1 {
+		t.Errorf("a page of threads cost %d reads, want one statement", reads)
+	}
+
+	want := map[string]string{
+		timelineParityThreadID:            "late-answer-3",
+		timelineParityThreadID + "-whole": "final answer",
+		timelineParityThreadID + "-cut":   "cut-more-2",
+	}
+	for id, tail := range want {
+		row, ok := got[id]
+		if !ok || row.Kind != "assistant_text" || row.Tail != tail {
+			t.Errorf("%s: last message = %#v (present %t), want assistant text %q", id, row, ok, tail)
+		}
+	}
+	open, ok := got["last-message-open"]
+	if !ok || open.Kind != "user_text" || open.At != 42 {
+		t.Fatalf("open thread: %#v present=%t", open, ok)
+	}
+	if !open.Clipped || got[timelineParityThreadID].Clipped {
+		t.Errorf("clipped = %t for a long text, %t for a short one", open.Clipped, got[timelineParityThreadID].Clipped)
+	}
+	if !strings.HasSuffix(open.Tail, " still waiting?") || len([]rune(open.Tail)) != threadLastMessageTailRunes {
+		t.Errorf("tail = %d runes ending %q", len([]rune(open.Tail)), open.Tail[max(0, len(open.Tail)-20):])
+	}
+	for _, id := range []string{"last-message-draft", "no-such-thread"} {
+		if _, ok := got[id]; ok {
+			t.Errorf("%s has no turn and must have no last message", id)
+		}
+	}
+}

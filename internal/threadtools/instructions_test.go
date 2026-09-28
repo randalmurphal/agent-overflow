@@ -19,7 +19,7 @@ var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]*`)
 // answer kinds, call outcomes and the two search result flags. Every other
 // backticked word must be a tool name, a parameter or an enum value.
 var resultVocabulary = []string{
-	"errors", "indexing",
+	"errors", "indexing", "last_message", "self",
 	"reply", "final",
 	"backgrounded", "blocked", "unconfirmed",
 }

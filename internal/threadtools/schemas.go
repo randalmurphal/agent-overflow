@@ -118,6 +118,7 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"archived":      map[string]any{"type": "boolean", "description": "true lists only archived threads, false only unarchived ones. Omitted, a query searches both and a listing shows unarchived threads only, as the sidebar does."},
 		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, forks included. A thread it merely sent to or asked is not listed; thread_status lists those requests."},
+		"group":         map[string]any{"type": "string", "description": "Only threads filed in this sidebar group, by its name (case-insensitive, every project's group of that name) or its id. A computer with no such group refuses the search rather than answering with no threads."},
 		"since":         map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset. Only threads active since then."},
 		"limit": map[string]any{
 			"type":        "integer",
@@ -127,7 +128,7 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_search result, passed back unchanged to continue past limit. Omit to start over."},
 	}
-	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
+	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
 	if shape.Paired() {
 		properties["computers"] = map[string]any{
 			"type":        "array",
@@ -148,9 +149,9 @@ func showSchema(shape Shape) map[string]any {
 		},
 		"window": map[string]any{
 			"type":        "string",
-			"enum":        []string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll},
+			"enum":        []string{WindowTail, WindowHead, WindowSince, WindowAround, WindowAll, WindowLastAnswer},
 			"default":     WindowTail,
-			"description": "Which part of the thread to read. tail is the last turns (the default) and head the first, both sized by turns. since reads everything after item_id, or after the since timestamp. around reads the turns surrounding item_id, sized by context, which is how a thread_search hit is opened. all starts at the beginning and pages to the end.",
+			"description": "Which part of the thread to read. tail is the last turns (the default) and head the first, both sized by turns; a tail page that runs out of budget keeps the newest rows and drops the oldest, and its cursor reads backwards. since reads everything after item_id, or after the since timestamp. around reads the turns surrounding item_id, sized by context, which is how a thread_search hit is opened. all starts at the beginning and pages to the end. last_answer is the thread's newest assistant message alone, whole: what a thread concluded, and the same text a request's final answer carries.",
 		},
 		"turns": map[string]any{
 			"type":        "integer",
@@ -176,9 +177,9 @@ func showSchema(shape Shape) map[string]any {
 		},
 		"include": map[string]any{
 			"type":        "array",
-			"items":       map[string]any{"type": "string", "enum": []string{IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}},
+			"items":       map[string]any{"type": "string", "enum": []string{IncludeToolCalls, IncludeThinking, IncludeToolOutputs, IncludeDiffs, IncludeSubagents, IncludeAll}},
 			"minItems":    1,
-			"description": "Extra content to render beside what people said. Default is user and assistant text only, with each tool call collapsed to one line stating its item id and the size it holds. thinking adds the assistant's reasoning, tool_outputs the outputs, diffs the diffs, subagents the subagent runs, and all everything stored for the thread.",
+			"description": "Extra content to render beside what people said. Default is user and assistant text, whole, with each run of tool calls and thinking folded into one parenthesized line that counts the calls by tool name and states the bytes left out. tool_calls lists each call on its own line with its item id, summary and size; tool_outputs adds each call's output, thinking the assistant's reasoning, diffs the diffs, subagents the subagent runs, and all everything stored for the thread.",
 		},
 		"max_bytes": map[string]any{
 			"type":        "integer",
@@ -194,11 +195,11 @@ func showSchema(shape Shape) map[string]any {
 		},
 		"cursor": map[string]any{
 			"type":        "string",
-			"description": "Opaque cursor from a previous thread_show result, passed back unchanged to continue the same window from where it stopped. A head or around window keeps its bounds; all walks to the end. The page is a snapshot of the items that existed when the cursor was minted, so a thread that keeps streaming never shifts a page under you. When cursor is set, window and its sizing parameters are already fixed and must be omitted.",
+			"description": "Opaque cursor from a previous thread_show result, passed back unchanged to continue the same window from where it stopped. A head or around window keeps its bounds; all walks to the end; tail continues with the rows before the page it came from. The page is a snapshot of the items that existed when the cursor was minted, so a thread that keeps streaming never shifts a page under you. The cursor carries the window, its sizing and include: repeating them is harmless, a different value is refused, and max_bytes may change.",
 		},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Read one thread's transcript. Output is plain text, turn-delimited, each row prefixed with its role and item id. The default window is the last " + fmt.Sprintf("%d", DefaultTailTurns) + " turns of what people said. A single item too large for the transcript is shown clipped with its size and its item id: read the rest with thread_item. Any thread by id, hidden workflow threads included."
+	description := "Read one thread's transcript. Output is plain text, turn-delimited, each row prefixed with its role and item id. The default window is the last " + fmt.Sprintf("%d", DefaultTailTurns) + " turns of what people said; when they do not fit, the newest rows are kept. window last_answer returns only the newest assistant message. A single item too large for the transcript is shown clipped with its size and its item id: read the rest with thread_item. Any thread by id, hidden workflow threads included."
 	return tool("thread_show", description+dataNotice, properties, "thread_id")
 }
 
@@ -236,8 +237,13 @@ func optionsSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"provider":   map[string]any{"type": "string", "description": "Only this provider's models, to narrow a large answer."},
 		"project_id": map[string]any{"type": "string", "description": "Only this project's workspaces and thread groups."},
+		"what": map[string]any{
+			"type":        "string",
+			"enum":        []string{OptionsModels, OptionsProjects, OptionsGroups},
+			"description": "Only one section. models is the providers, their models and the runtime modes; projects is each project with its path and workspaces; groups is each project's id and name with its thread groups and nothing else. Omit for everything.",
+		},
 	}
-	description := "What a spawn can choose from, rendered from the catalogs this app keeps: the providers, each provider's models with their reasoning efforts and context windows, the runtime modes with a one-line meaning each, and the projects with their workspaces and thread groups. Your own computer comes first and states your current provider, model, effort, mode and runtime mode as the defaults a spawn inherits. Call it when you want something other than your own setup, or to look up a group or project id."
+	description := "What a spawn can choose from, rendered from the catalogs this app keeps: the providers, each provider's models with their reasoning efforts and context windows, the runtime modes with a one-line meaning each, and the projects with their workspaces and thread groups. Your own computer comes first and states your current provider, model, effort, mode and runtime mode as the defaults a spawn inherits. Call it when you want something other than your own setup, or to look up a project id; what narrows a large answer to the section you need. thread_spawn, thread_search and thread_update take a group by name, so a group id is rarely needed."
 	if shape.Paired() {
 		properties["computer_id"] = map[string]any{"type": "string", "description": "Only this computer's row. Omit for this computer and every paired one."}
 		description += " Each paired computer also reports whether it is reachable right now, its operating system, and its projects' workspace paths as that computer sees them, which are not paths on this computer."
