@@ -7,7 +7,6 @@
 // so it can be unit-tested without mounting the component.
 
 import {
-  GitCreatePR,
   GitPull,
   GitPush,
   RemoveOtherWorktree,
@@ -18,7 +17,6 @@ import {
 } from '../../stores/draftWorkspaceSync';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
-import { forgeLabels } from '../../utils/forgeLabels';
 import type {
   GitActionResult,
   GitStatus,
@@ -67,6 +65,17 @@ export function primaryActionFor(status: GitStatus | null): PrimaryAction {
 }
 
 /**
+ * Whether the menu's Push item is offered. Git porcelain reports no
+ * ahead/behind counts for a branch without an upstream, so a branch that
+ * was never pushed has aheadCount 0; the backend push sets the upstream in
+ * that case. A detached HEAD (empty branch) has nothing to push.
+ */
+export function menuPushEnabled(status: GitStatus): boolean {
+  if (status.aheadCount > 0) return true;
+  return !status.hasUpstream && status.branch !== '';
+}
+
+/**
  * Removing the pane's own worktree is still a workspace action — the
  * directory is the subject — so it takes the same ref, plus the path being
  * removed. `GitRemoveWorktree(threadID)` remains for the thread-centric
@@ -82,11 +91,6 @@ export interface GitActionCtx {
   workspace: WorkspaceRef;
   reportError: (message: string) => void;
   refreshStatus: () => Promise<void>;
-  /**
-   * Forge id (`status.forge`) for label adaptation in toasts and errors.
-   * Optional — when omitted, falls back to GitHub strings via forgeLabels.
-   */
-  forge?: string;
 }
 
 export async function runPushAction(ctx: GitActionCtx): Promise<void> {
@@ -118,26 +122,6 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
   } catch (err) {
     console.error('Pull failed:', err);
     ctx.reportError(`Pull failed: ${errString(err)}`);
-  }
-}
-
-export async function runCreatePRAction(ctx: GitActionCtx): Promise<void> {
-  const labels = forgeLabels(ctx.forge);
-  try {
-    const result = (await GitCreatePR(ctx.workspace, '', '', false)) as GitActionResult;
-    if (result.error) {
-      console.error(`${labels.createAction} failed:`, result.error);
-      ctx.reportError(`${labels.createAction} failed: ${result.error}`);
-      return;
-    }
-    addToast(
-      'success',
-      result.prUrl ? `${labels.noun} created: ${result.prUrl}` : `${labels.noun} created`,
-    );
-    await ctx.refreshStatus();
-  } catch (err) {
-    console.error(`${labels.createAction} failed:`, err);
-    ctx.reportError(`${labels.createAction} failed: ${errString(err)}`);
   }
 }
 

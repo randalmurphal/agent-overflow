@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GitActionsControl from './GitActionsControl.svelte';
@@ -12,8 +12,10 @@ import {
   __seedGitStatusErrorForTest,
   __seedGitStatusForTest,
 } from '../../stores/gitStatusStore.svelte';
+import { OPEN_GIT_DIALOG_EVENT } from '../../stores/eventNames';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 import { idleWorkspaceActivity, busyWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 // GitActionsControl is a pure consumer of the shared workspace-keyed
 // git-status store — it owns no subscription (ChatHeaderActions attaches).
@@ -118,17 +120,151 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(refreshNow).toHaveBeenCalled();
   });
 
-  it('renders the split button + Ship Changes menu entry in a valid repo', async () => {
+  it('renders the split button + git action menu entries in a valid repo', async () => {
     const pane = await buildPane();
     __seedGitStatusForTest(WORKSPACE, status({ isRepo: true, hasChanges: true }));
-    const { container, queryByTestId, findByRole } = render(GitActionsControl, { props: { pane } });
+    const { container, queryByTestId, findByRole, getAllByRole } = render(GitActionsControl, { props: { pane } });
     await flush();
 
     expect(queryByTestId('git-actions-error')).toBeNull();
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]');
     expect(trigger).not.toBeNull();
     await fireEvent.click(trigger!);
-    expect(await findByRole('menuitem', { name: /Ship Changes/i })).toBeInTheDocument();
+    expect(await findByRole('menuitem', { name: 'Commit' })).toBeInTheDocument();
+    const labels = getAllByRole('menuitem').map((item) => item.textContent?.trim());
+    expect(labels).toEqual(['Commit', 'Push', 'Pull', 'Create PR']);
+  });
+
+  it('opens the Create PR dialog from the menu item', async () => {
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));
+    const { findByLabelText, findByRole, findByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await fireEvent.click(await findByRole('menuitem', { name: 'Create PR' }));
+    expect(await findByText('Create Pull Request')).toBeInTheDocument();
+  });
+
+  it('refreshes status when the Create PR dialog closes', async () => {
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));
+    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
+    const { findByLabelText, findByRole, findByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await fireEvent.click(await findByRole('menuitem', { name: 'Create PR' }));
+    await findByText('Create Pull Request');
+    await fireEvent.click(await findByText('Cancel'));
+    expect(refreshNow).toHaveBeenCalled();
+  });
+
+  it('enables Push for a branch with no upstream and disables it when detached', async () => {
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }));
+    const { findByLabelText, findByRole } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    const push = await findByRole('menuitem', { name: 'Push' });
+    expect(push.getAttribute('aria-disabled')).toBeNull();
+
+    __seedGitStatusForTest(WORKSPACE, status({ branch: '', hasUpstream: false, aheadCount: 0 }));
+    await flush();
+    expect(push.getAttribute('aria-disabled')).toBe('true');
+
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', hasUpstream: true, aheadCount: 0 }));
+    await flush();
+    expect(push.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('pushes from the menu for a branch with no upstream', async () => {
+    const pane = await buildPane();
+    const pushArgs: unknown[][] = [];
+    setBindingMock('GitPush', async (...args: unknown[]) => {
+      pushArgs.push(args);
+      return { action: 'push' };
+    });
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }));
+    const { findByLabelText, findByRole } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await fireEvent.click(await findByRole('menuitem', { name: 'Push' }));
+    await flush();
+    expect(pushArgs).toEqual([[pane.workspace]]);
+  });
+});
+
+describe('<GitActionsControl> palette dialog event', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    await loadSettings();
+  });
+
+  function dispatchOpen(paneId: string, dialog: 'commit' | 'createPR'): void {
+    window.dispatchEvent(new CustomEvent(OPEN_GIT_DIALOG_EVENT, { detail: { paneId, dialog } }));
+  }
+
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('opens the Commit dialog for its own pane and ignores other panes', async () => {
+    // The dialog is a lazy chunk. Load it first so a wrongly opened dialog
+    // renders within the flush window instead of passing the negative check
+    // by being still in flight.
+    await import('./CommitDialog.svelte');
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
+    const { findByText, queryByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    dispatchOpen('some-other-pane', 'commit');
+    await flush();
+    expect(queryByText('Commit Changes')).toBeNull();
+
+    dispatchOpen(pane.paneId, 'commit');
+    expect(await findByText('Commit Changes')).toBeInTheDocument();
+  });
+
+  it('does not open a dialog for a view-only session', async () => {
+    await import('./CommitDialog.svelte');
+    await import('./CreatePRDialog.svelte');
+    await pairViewOnly();
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true, branch: 'feature', isDefaultBranch: false }));
+    const { queryByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    dispatchOpen(pane.paneId, 'commit');
+    dispatchOpen(pane.paneId, 'createPR');
+    await flush();
+    expect(queryByText('Commit Changes')).toBeNull();
+    expect(queryByText('Create Pull Request')).toBeNull();
+  });
+
+  it('opens the Create PR dialog for git.openPR', async () => {
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));
+    const { findByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    dispatchOpen(pane.paneId, 'createPR');
+    expect(await findByText('Create Pull Request')).toBeInTheDocument();
+  });
+
+  it('opens the existing PR instead of the dialog when one is already open', async () => {
+    const pane = await buildPane();
+    const openExternal = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    __seedGitStatusForTest(WORKSPACE, status({
+      branch: 'feature',
+      isDefaultBranch: false,
+      openPrUrl: 'https://github.com/o/r/pull/12',
+      openPrNumber: 12,
+    }));
+    const { queryByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    dispatchOpen(pane.paneId, 'createPR');
+    await flush();
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/o/r/pull/12');
+    expect(queryByText('Create Pull Request')).toBeNull();
   });
 
   it('disables Remove Worktree while this pane thread is busy', async () => {

@@ -9,7 +9,7 @@
   import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
-  import { OPEN_SHIP_CHANGES_EVENT } from './lib/stores/eventNames';
+  import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
@@ -550,13 +550,12 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     registerBuiltinCommands({
       openThreadForm: () => requestNewThread(false),
       openThreadFormInNewPane: () => requestNewThread(true),
-      openShipChanges: (paneId) => {
-        // The Ship Changes drawer lives inside GitActionsControl (deep in
-        // the chat tree). A CustomEvent keeps App.svelte from owning a
-        // reference to a component it never renders.
-        window.dispatchEvent(new CustomEvent(OPEN_SHIP_CHANGES_EVENT, {
-          detail: { paneId },
-        }));
+      openGitDialog: (paneId, dialog) => {
+        // The git dialogs live inside GitActionsControl (deep in the chat
+        // tree). A CustomEvent keeps App.svelte from owning a reference to
+        // a component it never renders.
+        const detail: OpenGitDialogDetail = { paneId, dialog };
+        window.dispatchEvent(new CustomEvent(OPEN_GIT_DIALOG_EVENT, { detail }));
       },
       requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),

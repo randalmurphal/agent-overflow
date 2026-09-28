@@ -14,5 +14,12 @@
 // component the dispatcher holds no reference to — anything whose state
 // lives in a store is reached by calling the store.
 export const PICKER_TOGGLE_INPUT_EVENT = 'agent-overflow:picker-toggle-input';
-export const OPEN_SHIP_CHANGES_EVENT = 'agent-overflow:open-ship-changes';
+// Opens one of the git dialogs GitActionsControl hosts for a pane. The
+// palette dispatches it because the dialogs live deep in the chat tree.
+export const OPEN_GIT_DIALOG_EVENT = 'agent-overflow:open-git-dialog';
+export type GitDialogKind = 'commit' | 'createPR';
+export interface OpenGitDialogDetail {
+  paneId: string;
+  dialog: GitDialogKind;
+}
 export const REVEAL_PANE_EVENT = 'agent-overflow:reveal-pane';

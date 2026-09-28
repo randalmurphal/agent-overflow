@@ -86,7 +86,7 @@ import {
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
-import { PICKER_TOGGLE_INPUT_EVENT } from './eventNames';
+import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
 import {
@@ -107,7 +107,8 @@ export interface BuiltinCommandHooks {
   // from panes.svelte#openThreadInNewPane, which opens an existing
   // thread in a new pane).
   openThreadFormInNewPane?: () => void;
-  openShipChanges: (paneId: string) => void;
+  // Opens the Commit or Create PR/MR dialog hosted by the pane's git control.
+  openGitDialog: (paneId: string, dialog: GitDialogKind) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
   requestThreadJump: (index: number) => void;
@@ -215,7 +216,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
     openThreadForm,
     openThreadFormInNewPane,
-    openShipChanges,
+    openGitDialog,
     requestDiscussion,
     focusThreadSearch,
     requestThreadJump,
@@ -1081,7 +1082,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
-        openShipChanges(pane.paneId);
+        openGitDialog(pane.paneId, 'commit');
       }),
   });
 
@@ -1124,18 +1125,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
-        openShipChanges(pane.paneId);
-      }),
-  });
-
-  registerCommand({
-    id: 'git.ship',
-    label: 'Git: Ship Changes (commit → push → PR/MR)',
-    icon: '⇪',
-    when: 'hasActiveThread && gitOperate',
-    run: (ctx) =>
-      withActiveThread(ctx, (_t, pane) => {
-        openShipChanges(pane.paneId);
+        openGitDialog(pane.paneId, 'createPR');
       }),
   });
 

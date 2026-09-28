@@ -18,7 +18,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
-  import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/eventNames';
+  import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from '../../stores/eventNames';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -32,8 +32,8 @@
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
   import {
+    menuPushEnabled,
     primaryActionFor,
-    runCreatePRAction,
     runPullAction,
     runPushAction,
     runRemoveWorktreeAction,
@@ -71,7 +71,7 @@
   // failing, so the retry button can say what went wrong.
   let statusError = $derived(pane.gitStatus.statusError);
 
-  // Every action here rides `git:operate` — commit, push, pull, PR, ship,
+  // Every action here rides `git:operate` — commit, push, pull, PR,
   // remove-worktree. A session without it never gets a git status either
   // (the store's own guard), so this control is normally absent rather than
   // inert; the gate is what keeps every action honest if a status ever
@@ -81,25 +81,36 @@
   let actionLoading = $state(false);
 
   let showCommit = $state(false);
-  let showShip = $state(false);
+  let showCreatePR = $state(false);
   let showDropdown = $state(false);
   let showRemoveWorktreeConfirm = $state(false);
 
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
-  function handleOpenShip(event: Event): void {
-    const detail = (event as CustomEvent<{ paneId?: string }>).detail;
-    if (detail?.paneId && detail.paneId !== pane.paneId) return;
-    if (workspace !== null) showShip = true;
+  // Palette commands reach the dialogs through this event because they hold
+  // no reference to this control. The Create PR/MR dialog opens only where
+  // the menu item would act: an existing PR/MR opens in the browser instead.
+  function handleOpenGitDialog(event: Event): void {
+    const detail = (event as CustomEvent<OpenGitDialogDetail | undefined>).detail;
+    if (!detail || detail.paneId !== pane.paneId || workspace === null) return;
+    switch (detail.dialog) {
+      case 'commit':
+        if (!gitUngranted) showCommit = true;
+        break;
+      case 'createPR':
+        if (openPRURL) void handleExternalURL(openPRURL);
+        else if (!gitUngranted) showCreatePR = true;
+        break;
+    }
   }
 
   onMount(() => {
-    window.addEventListener(OPEN_SHIP_CHANGES_EVENT, handleOpenShip);
+    window.addEventListener(OPEN_GIT_DIALOG_EVENT, handleOpenGitDialog);
   });
 
   onDestroy(() => {
     if (typeof window !== 'undefined') {
-      window.removeEventListener(OPEN_SHIP_CHANGES_EVENT, handleOpenShip);
+      window.removeEventListener(OPEN_GIT_DIALOG_EVENT, handleOpenGitDialog);
     }
   });
 
@@ -130,7 +141,6 @@
       workspace: ws,
       reportError: (msg) => pane.setGeneralError(msg),
       refreshStatus: () => pane.gitStatus.refreshNow(),
-      forge: status?.forge,
     };
   }
 
@@ -174,6 +184,11 @@
 
   function handleCommitClose() {
     showCommit = false;
+    void pane.gitStatus.refreshNow();
+  }
+
+  function handleCreatePRClose() {
+    showCreatePR = false;
     void pane.gitStatus.refreshNow();
   }
 </script>
@@ -233,7 +248,7 @@
         />
         <MenuItem
           label="Push"
-          disabled={menuStatus.aheadCount === 0 || gitUngranted}
+          disabled={!menuPushEnabled(menuStatus) || gitUngranted}
           onSelect={() => {
             showDropdown = false;
             void guard(() => runPushAction(ctx(ws)));
@@ -263,17 +278,8 @@
             if (openPRURL) {
               void handleExternalURL(openPRURL);
             } else {
-              void guard(() => runCreatePRAction(ctx(ws)));
+              showCreatePR = true;
             }
-          }}
-        />
-        <MenuDivider />
-        <MenuItem
-          label="Ship Changes…"
-          disabled={gitUngranted}
-          onSelect={() => {
-            showDropdown = false;
-            showShip = true;
           }}
         />
         {#if worktreePath}
@@ -300,16 +306,9 @@
   />
 
   <LazyOverlay
-    load={() => import('./ShipChangesDrawer.svelte')}
-    active={showShip}
-    props={{
-      pane,
-      open: showShip,
-      onClose: () => {
-        showShip = false;
-        void pane.gitStatus.refreshNow();
-      },
-    }}
+    load={() => import('./CreatePRDialog.svelte')}
+    active={showCreatePR}
+    props={{ pane, open: showCreatePR, onClose: handleCreatePRClose }}
   />
 
   <ConfirmDialog

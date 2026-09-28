@@ -30,9 +30,10 @@ type GitStatus struct {
 	// OpenPRLookupError is set when the forge lookup failed, distinct from
 	// a successful lookup that found no open PR/MR for the branch.
 	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
-	// PendingOperation surfaces any in-progress multi-step operation that
-	// blocks new commits. Values: "merge", "rebase", "bisect", or "" when
-	// the repo is clean. Callers gate Ship Changes on this being empty.
+	// PendingOperation surfaces an in-progress multi-step operation.
+	// Values: "merge", "rebase", "bisect", or "" when none is pending. The
+	// commit dialog shows it as a notice; git itself decides whether a
+	// commit can be recorded.
 	PendingOperation string `json:"pendingOperation,omitempty"`
 }
 

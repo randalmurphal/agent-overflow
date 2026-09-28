@@ -393,7 +393,7 @@ type Settings struct {
 	// GitLabSelfHostedHosts is the user's allowlist of self-hosted
 	// GitLab hostnames (bare hosts, e.g. "gitlab.mycompany.com").
 	// Origin URLs whose host matches an entry classify as the "gitlab"
-	// forge, enabling the Ship Changes wizard, MR labels, and the
+	// forge, enabling the Create MR dialog, MR labels, and the
 	// `glab` CLI integration. `gitlab.com` does not need to be listed;
 	// it is recognised by literal hostname match. Entries are stored
 	// lowercase, deduped, and stripped of scheme/path on write.

@@ -12,24 +12,22 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-// -- Agent 3 (Wave 5D) -- integration tests for the Ship Changes flow.
-//
-// The Ship Changes wizard is a frontend drawer (owned by Agent 6) that calls
-// three Wails bindings in sequence: GitCommit, GitPush, and GitCreatePR.
-// Rather than test the UI, we assert that the backend can serve a realistic
+// Integration tests for the git action bindings the Commit and Create PR/MR
+// dialogs and the git menu call: GitCommit, GitPush and GitCreatePR. Rather
+// than test the UI, we assert that the backend can serve a realistic
 // sequence of those bindings against a real git repo + bare-remote setup
 // + a mock gh CLI on PATH.
 //
 // Each test creates a tempdir git repo with an initial commit, wires a bare
-// remote as "origin", and drives the Ship sequence step-by-step. The mock gh
+// remote as "origin", and drives commit, push and PR creation. The mock gh
 // is installed by prepending a writable directory onto PATH via t.Setenv —
 // this matches internal/git/github_test.go's existing convention and lets the
 // live `gh` resolution in internal/git/core.go pick it up.
 
-// shipTestSetup returns the ref addressing a fresh repo with a bare "origin"
-// remote, plus that repo's path. Callers can stage / commit / push and the
-// wizard's state will mirror reality.
-func shipTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace string, remote string) {
+// gitActionTestSetup returns the ref addressing a fresh repo with a bare
+// "origin" remote, plus that repo's path. Callers can stage / commit / push
+// and the status stream will mirror reality.
+func gitActionTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace string, remote string) {
 	t.Helper()
 
 	app = newTestAppWithStore(t)
@@ -44,10 +42,10 @@ func shipTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace string, 
 	return app, testWorkspaceRef(t, app, workspace), workspace, remote
 }
 
-// installMockGhShip prepends a mock gh on PATH for a ship-flow test. The mock
+// installMockGh prepends a mock gh on PATH for a git action test. The mock
 // prints `stdout` to stdout and (optionally) `stderr` to stderr, then exits
 // with `exitCode`. gh tracks no state across invocations.
-func installMockGhShip(t *testing.T, stdout, stderr string, exitCode int) {
+func installMockGh(t *testing.T, stdout, stderr string, exitCode int) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock gh shim assumes POSIX shell")
@@ -66,10 +64,11 @@ exit %d
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// TestShip_FullWizardFlow: stage-commit-push-PR end-to-end against a bare
-// remote. Each step must succeed and leave the workspace in the expected state.
-func TestShip_FullWizardFlow(t *testing.T) {
-	app, ref, workspace, remote := shipTestSetup(t)
+// TestGitActions_CommitPushCreatePR: commit, push and PR creation end-to-end
+// against a bare remote. Each step must succeed and leave the workspace in
+// the expected state.
+func TestGitActions_CommitPushCreatePR(t *testing.T) {
+	app, ref, workspace, remote := gitActionTestSetup(t)
 
 	// Wire the remote: fetch URL classifies as github (so the forge
 	// dispatcher routes Create PR through the github forge / gh mock),
@@ -85,7 +84,7 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 
 	// Step 1: commit.
-	installMockGhShip(t, "https://example.com/pr/1", "", 0)
+	installMockGh(t, "https://example.com/pr/1", "", 0)
 	result, err := app.GitCommit(ref, "ship: add feature", "body")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
@@ -123,11 +122,11 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 }
 
-// TestShip_CommitOnlyPath: the user stops the wizard after committing. We
-// assert that no PR side-effects happen — GitCommit is self-contained, no
-// calls to GitPush or GitCreatePR are wired from that single binding.
-func TestShip_CommitOnlyPath(t *testing.T) {
-	app, ref, workspace, _ := shipTestSetup(t)
+// TestGitActions_CommitOnly: the user only commits. We assert that no PR
+// side-effects happen — GitCommit is self-contained, no calls to GitPush or
+// GitCreatePR are wired from that single binding.
+func TestGitActions_CommitOnly(t *testing.T) {
+	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	readme := filepath.Join(workspace, "README.txt")
 	if err := os.WriteFile(readme, []byte("hello\nupdated\n"), 0o644); err != nil {
@@ -149,10 +148,10 @@ func TestShip_CommitOnlyPath(t *testing.T) {
 	}
 }
 
-// TestShip_CommitAndPushNoPR: commit and push, but stop before PR. Remote
+// TestGitActions_CommitAndPushNoPR: commit and push, but no PR. Remote
 // must have the new commit reachable.
-func TestShip_CommitAndPushNoPR(t *testing.T) {
-	app, ref, workspace, remote := shipTestSetup(t)
+func TestGitActions_CommitAndPushNoPR(t *testing.T) {
+	app, ref, workspace, remote := gitActionTestSetup(t)
 
 	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 	testutil.RunGit(t, workspace, "remote", "set-url", "--push", "origin", remote)
@@ -181,12 +180,12 @@ func TestShip_CommitAndPushNoPR(t *testing.T) {
 	}
 }
 
-// TestShip_CommitFailsOnNoChanges: GitCommit runs `git add -A` then
+// TestGitActions_CommitFailsOnNoChanges: GitCommit runs `git add -A` then
 // `git commit`. On a clean tree, git commit emits a non-zero exit and the
-// wrapper surfaces the error -- the wizard must then tell the user there's
-// nothing to commit.
-func TestShip_CommitFailsOnNoChanges(t *testing.T) {
-	app, ref, _, _ := shipTestSetup(t)
+// wrapper surfaces the error -- the commit dialog must then tell the user
+// there's nothing to commit.
+func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
+	app, ref, _, _ := gitActionTestSetup(t)
 
 	_, err := app.GitCommit(ref, "nothing", "")
 	if err == nil {
@@ -198,11 +197,11 @@ func TestShip_CommitFailsOnNoChanges(t *testing.T) {
 	}
 }
 
-// TestShip_PushFailsOnNoUpstream: a fresh branch without `origin` configured
-// cannot push. The wizard must surface the missing-remote message from the
-// Core, not an obscure git crash.
-func TestShip_PushFailsOnNoUpstream(t *testing.T) {
-	app, ref, _, _ := shipTestSetup(t)
+// TestGitActions_PushFailsOnNoRemote: a fresh branch without `origin`
+// configured cannot push. The menu must surface the missing-remote message
+// from the Core, not an obscure git crash.
+func TestGitActions_PushFailsOnNoRemote(t *testing.T) {
+	app, ref, _, _ := gitActionTestSetup(t)
 
 	// No remote added to the repo. Push should fail with the remote-missing
 	// error from internal/git/actions.go.
@@ -215,14 +214,14 @@ func TestShip_PushFailsOnNoUpstream(t *testing.T) {
 	}
 }
 
-// TestShip_CreatePRFailsWhenNotPushed: if gh exits non-zero (branch has no
-// upstream / no PR can be created), the wrapper must surface the error.
-func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
-	app, ref, workspace, _ := shipTestSetup(t)
+// TestGitActions_CreatePRFailsWhenNotPushed: if gh exits non-zero (branch
+// has no upstream / no PR can be created), the wrapper must surface the error.
+func TestGitActions_CreatePRFailsWhenNotPushed(t *testing.T) {
+	app, ref, workspace, _ := gitActionTestSetup(t)
 	// Forge dispatch needs a classifiable origin to route to gh.
 	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 
-	installMockGhShip(t, "", "must push first", 1)
+	installMockGh(t, "", "must push first", 1)
 
 	_, err := app.GitCreatePR(ref, "PR title", "body", false)
 	if err == nil {
@@ -236,11 +235,11 @@ func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
 	}
 }
 
-// TestShip_NewBranchFromCurrent: the wizard may create a branch before
+// TestGitActions_NewBranchFromCurrent: a branch may be created before
 // committing. Cutting the branch off the current base and committing must
 // land the commit on the new branch.
-func TestShip_NewBranchFromCurrent(t *testing.T) {
-	app, ref, workspace, _ := shipTestSetup(t)
+func TestGitActions_NewBranchFromCurrent(t *testing.T) {
+	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	state, err := app.GitCreateBranchFrom(ref, "ship/feature", "main", true)
 	if err != nil {
@@ -276,14 +275,13 @@ func TestShip_NewBranchFromCurrent(t *testing.T) {
 	}
 }
 
-// TestShip_StackedActionsIdempotent: running GitCommit twice on the same
-// state -- no new changes between them -- the second must fail with the same
-// "nothing to commit" signal as TestShip_CommitFailsOnNoChanges. In other
-// words the wizard cannot accidentally produce two commits by running the
-// step twice, which matters because drawer retry buttons wire to the same
-// binding.
-func TestShip_StackedActionsIdempotent(t *testing.T) {
-	app, ref, workspace, _ := shipTestSetup(t)
+// TestGitActions_RepeatedCommitIdempotent: running GitCommit twice on the
+// same state -- no new changes between them -- the second must fail with the
+// same "nothing to commit" signal as TestGitActions_CommitFailsOnNoChanges.
+// In other words a repeated Commit cannot accidentally produce two commits,
+// which matters because a retry from the dialog wires to the same binding.
+func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
+	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	feature := filepath.Join(workspace, "feature.txt")
 	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
@@ -308,11 +306,12 @@ func TestShip_StackedActionsIdempotent(t *testing.T) {
 	}
 }
 
-// TestShip_CreatePRWithDraftFlag verifies the GitCreatePR contract: the
-// `draft` parameter threads through to `gh pr create --draft`. When draft is
-// false the flag is absent; when true it's present.
-func TestShip_CreatePRWithDraftFlag(t *testing.T) {
-	app, ref, workspace, _ := shipTestSetup(t)
+// TestGitActions_CreatePRWithDraftFlag verifies the GitCreatePR contract: the
+// `draft` parameter (the dialog's checkbox) threads through to
+// `gh pr create --draft`. When draft is false the flag is absent; when true
+// it's present.
+func TestGitActions_CreatePRWithDraftFlag(t *testing.T) {
+	app, ref, workspace, _ := gitActionTestSetup(t)
 	// Forge dispatch needs a classifiable origin to route to gh.
 	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 

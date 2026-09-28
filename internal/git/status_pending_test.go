@@ -9,9 +9,9 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-// Bug C3 regression: GetGitStatus must surface in-progress multi-step
-// operations (merge/rebase/bisect) so the Ship Changes wizard can disable
-// commit and tell the user why.
+// GetGitStatus must surface in-progress multi-step operations
+// (merge/rebase/bisect) so the commit dialog can tell the user what a
+// commit will do.
 func TestPendingOperationClean(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	status, err := NewCore().Status(repo)

@@ -519,7 +519,7 @@ type BuiltinHooks = Parameters<typeof registerBuiltinCommands>[0];
 function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
   return {
     openThreadForm: () => {},
-    openShipChanges: () => {},
+    openGitDialog: () => {},
     requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
@@ -1182,49 +1182,34 @@ describe('mode.cycle command', () => {
   });
 });
 
-describe('git.ship command', () => {
-  beforeEach(() => {
-    clearCommandRegistry();
-  });
-
-  it('passes the command target pane id to the ship-changes hook', () => {
-    const pane = readyPane();
-    const openedForPaneIds: string[] = [];
-    registerBuiltinCommands(makeBuiltinHooks({
-      openShipChanges: (paneId) => {
-        openedForPaneIds.push(paneId);
-      },
-    }));
-
-    runCommand('git.ship', makeCommandContext(pane, {}));
-
-    expect(openedForPaneIds).toEqual([pane.paneId]);
-  });
-});
-
 describe('git commit/PR command safety', () => {
   beforeEach(() => {
     clearCommandRegistry();
   });
 
-  it('opens Ship Changes for git.commit instead of prompting and calling GitCommit directly', () => {
+  it('is not registered as git.ship', () => {
+    registerBuiltinCommands(makeBuiltinHooks());
+    expect(getCommand('git.ship')).toBeUndefined();
+  });
+
+  it('opens the Commit dialog for git.commit instead of prompting and calling GitCommit directly', () => {
     const pane = readyPane();
-    const openedForPaneIds: string[] = [];
+    const opened: Array<[string, string]> = [];
     const { promptMock, restore } = installPromptMock();
     const commitMock = setBindingMock('GitCommit', async () => ({
       action: 'commit',
       commitSha: 'abc1234',
     }));
     registerBuiltinCommands(makeBuiltinHooks({
-      openShipChanges: (paneId) => {
-        openedForPaneIds.push(paneId);
+      openGitDialog: (paneId, dialog) => {
+        opened.push([paneId, dialog]);
       },
     }));
 
     try {
       runCommand('git.commit', makeCommandContext(pane, {}));
 
-      expect(openedForPaneIds).toEqual([pane.paneId]);
+      expect(opened).toEqual([[pane.paneId, 'commit']]);
       expect(promptMock).not.toHaveBeenCalled();
       expect(commitMock).not.toHaveBeenCalled();
     } finally {
@@ -1232,24 +1217,24 @@ describe('git commit/PR command safety', () => {
     }
   });
 
-  it('opens Ship Changes for git.openPR instead of prompting and creating directly', () => {
+  it('opens the Create PR/MR dialog for git.openPR instead of prompting and creating directly', () => {
     const pane = readyPane();
-    const openedForPaneIds: string[] = [];
+    const opened: Array<[string, string]> = [];
     const { promptMock, restore } = installPromptMock();
     const createPrMock = setBindingMock('GitCreatePR', async () => ({
       action: 'pr',
       prUrl: 'https://example.test/pr/1',
     }));
     registerBuiltinCommands(makeBuiltinHooks({
-      openShipChanges: (paneId) => {
-        openedForPaneIds.push(paneId);
+      openGitDialog: (paneId, dialog) => {
+        opened.push([paneId, dialog]);
       },
     }));
 
     try {
       runCommand('git.openPR', makeCommandContext(pane, {}));
 
-      expect(openedForPaneIds).toEqual([pane.paneId]);
+      expect(opened).toEqual([[pane.paneId, 'createPR']]);
       expect(promptMock).not.toHaveBeenCalled();
       expect(createPrMock).not.toHaveBeenCalled();
     } finally {
@@ -2038,7 +2023,7 @@ describe('capability-gated commands', () => {
     expect(isCommandEnabled('thread.fork', ctx)).toBe(false);
     expect(isCommandEnabled('git.commit', ctx)).toBe(false);
     expect(isCommandEnabled('git.push', ctx)).toBe(false);
-    expect(isCommandEnabled('git.ship', ctx)).toBe(false);
+    expect(isCommandEnabled('git.openPR', ctx)).toBe(false);
     expect(isCommandEnabled('terminal.new', ctx)).toBe(false);
     expect(isCommandEnabled('terminal.toggle', ctx)).toBe(false);
   });

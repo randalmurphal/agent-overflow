@@ -5,6 +5,7 @@
   import type { GitActionResult } from '../../types/git';
   import { GenerateCommitMessage, GitCommit } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { FIELD_CLASS } from './dialogFieldClass';
 
   let { pane, open, onClose }: {
     pane: ThreadPane;
@@ -22,6 +23,22 @@
   // workspace ref. Null means this pane names no repository; the control
   // that opens this dialog does not render in that case.
   let workspace = $derived(pane.workspace);
+
+  // A pending merge, rebase or bisect is informational only: git itself
+  // refuses a commit it cannot record (unresolved conflicts) and that
+  // refusal surfaces as the commit error below.
+  let pendingNotice = $derived.by(() => {
+    switch (pane.gitStatus.status?.pendingOperation ?? '') {
+      case 'merge':
+        return 'A merge is in progress. Committing completes the merge.';
+      case 'rebase':
+        return 'A rebase is in progress. Use `git rebase --continue` to proceed after committing.';
+      case 'bisect':
+        return 'A bisect is in progress. Run `git bisect reset` when done.';
+      default:
+        return '';
+    }
+  });
 
   async function handleGenerate() {
     const ws = workspace;
@@ -63,15 +80,21 @@
     }
   }
 
-  const FIELD_CLASS =
-    'w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
-    'text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
-    'transition-colors';
 </script>
 
 <Modal {open} title="Commit Changes" onClose={onClose} width="lg" padding="comfortable">
   {#snippet children()}
     <div class="space-y-3">
+      {#if pendingNotice}
+        <p
+          class="text-[0.75rem] text-fg-muted bg-info/10 border border-info/40 rounded-[var(--radius-control)] px-3 py-1.5"
+          role="status"
+          data-testid="commit-dialog-pending-operation"
+        >
+          {pendingNotice}
+        </p>
+      {/if}
+
       <div>
         <div class="flex items-center justify-between gap-2 mb-1">
           <label for="commit-subject" class="text-[0.75rem] text-fg-muted font-medium">Subject</label>

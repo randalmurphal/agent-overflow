@@ -342,9 +342,10 @@ export class GitStatus {
     "openPrLookupError"?: string;
 
     /**
-     * PendingOperation surfaces any in-progress multi-step operation that
-     * blocks new commits. Values: "merge", "rebase", "bisect", or "" when
-     * the repo is clean. Callers gate Ship Changes on this being empty.
+     * PendingOperation surfaces an in-progress multi-step operation.
+     * Values: "merge", "rebase", "bisect", or "" when none is pending. The
+     * commit dialog shows it as a notice; git itself decides whether a
+     * commit can be recorded.
      */
     "pendingOperation"?: string;
 

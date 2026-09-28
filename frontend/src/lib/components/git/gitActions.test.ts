@@ -1,15 +1,16 @@
 // Git action coverage:
-//   - `primaryActionFor` is pure (decision table). Test every branch.
-//   - `runPushAction` / `runPullAction` / `runCreatePRAction` handle
-//     result.error vs thrown errors differently — conflating them
-//     flips success toasts on push failures. Assert both paths.
+//   - `primaryActionFor` and `menuPushEnabled` are pure (decision tables).
+//     Test every branch.
+//   - `runPushAction` / `runPullAction` handle result.error vs thrown
+//     errors differently — conflating them flips success toasts on push
+//     failures. Assert both paths.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  menuPushEnabled,
   primaryActionFor,
   runPushAction,
   runPullAction,
-  runCreatePRAction,
   runRemoveWorktreeAction,
   type GitActionCtx,
   type RemoveWorktreeCtx,
@@ -165,23 +166,22 @@ describe('runPullAction', () => {
   });
 });
 
-describe('runCreatePRAction', () => {
-  beforeEach(() => resetBindingMocks());
-
-  it('reports result.error on PR creation failure', async () => {
-    setBindingMock('GitCreatePR', async () => ({ error: 'already open' }));
-    const c = ctx();
-    await runCreatePRAction(c);
-    expect(c.reportError).toHaveBeenCalledWith('Create PR failed: already open');
+describe('menuPushEnabled', () => {
+  it('offers Push when the branch is ahead of its upstream', () => {
+    expect(menuPushEnabled(status({ aheadCount: 2 }))).toBe(true);
   });
 
-  it('surfaces a thrown error via errString', async () => {
-    setBindingMock('GitCreatePR', async () => {
-      throw new Error('no auth');
-    });
-    const c = ctx();
-    await runCreatePRAction(c);
-    expect(c.reportError).toHaveBeenCalledWith('Create PR failed: no auth');
+  it('does not offer Push when up to date with the upstream', () => {
+    expect(menuPushEnabled(status({ hasUpstream: true, aheadCount: 0 }))).toBe(false);
+  });
+
+  // Porcelain reports no ahead count without an upstream; the push sets one.
+  it('offers Push for a branch that has no upstream yet', () => {
+    expect(menuPushEnabled(status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }))).toBe(true);
+  });
+
+  it('does not offer Push on a detached HEAD without an upstream', () => {
+    expect(menuPushEnabled(status({ branch: '', hasUpstream: false, aheadCount: 0 }))).toBe(false);
   });
 });
 

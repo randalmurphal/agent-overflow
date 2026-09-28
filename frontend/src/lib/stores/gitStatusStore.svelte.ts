@@ -2,8 +2,8 @@
 //
 // Git status is a fact about a CHECKOUT, so the workspace path is the entity
 // and every consumer derives from one entry: the chat header's diff/PR
-// badges, the commit/push control, the Ship Changes wizard, the branch
-// picker's dirty bit, and the review pane's PR reference. Two panes on one
+// badges, the commit/push control and its dialogs, the branch picker's
+// dirty bit, and the review pane's PR reference. Two panes on one
 // worktree (project-root threads default to it; "implement this plan in a
 // new thread" inherits the source worktree) therefore cannot disagree about
 // whether there is anything to commit — which they could, for minutes, when

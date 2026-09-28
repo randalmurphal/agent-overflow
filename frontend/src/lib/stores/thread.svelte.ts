@@ -373,8 +373,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let pendingTerminalFocus = $state(false);
 
   // Read view onto the shared, workspace-keyed git-status store —
-  // GitActionsControl, the header diff/PR badges, the Ship Changes wizard,
-  // and the review pane's staleness dot all read it. It resolves its key
+  // GitActionsControl and its dialogs, the header diff/PR badges, and the
+  // review pane's staleness dot all read it. It resolves its key
   // from the pane's current thread on every read, so a thread switch or a
   // worktree move re-points it with no reset of its own: the incoming
   // thread's workspace answers immediately, and the outgoing one's entry is
