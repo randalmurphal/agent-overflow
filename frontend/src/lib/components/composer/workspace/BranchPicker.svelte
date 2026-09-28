@@ -77,9 +77,6 @@
   let loading = $state(false);
   // Why the open list is empty; cleared by the next successful list.
   let loadError = $state<string | null>(null);
-  // A failed remote fetch leaves ahead/behind counts at the last fetch. Shown
-  // only while the picker still lists the workspace that failed.
-  let fetchError = $state<{ workspaceKey: string | null; message: string } | null>(null);
   let applying = $state(false);
   // Non-null while the prune preview dialog is up; captures the WORKSPACE
   // at open so a pane switch mid-dialog can't retarget the deletion.
@@ -159,12 +156,6 @@
   // suggest "checkout the local working copy", which isn't a thing.
   let showLocalRow = $derived(workspaceDirty && intent.creatingBranch);
 
-  let visibleFetchError = $derived(
-    fetchError && fetchError.workspaceKey === workspaceKeyForRef(workspace)
-      ? fetchError.message
-      : null,
-  );
-
   let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
   function branchRefreshKey(
@@ -198,12 +189,10 @@
     const ws = workspace;
     if (!ws) return;
     const threadIdentity = pane.thread.id;
-    const fetchedKey = workspaceKeyForRef(ws);
     lastOpenBranchKey = branchRefreshKey(threadIdentity, ws, currentBranch);
     refreshMru();
     loading = true;
     loadError = null;
-    fetchError = null;
     // The dirty bit streams in through the shared workspace-keyed git-status
     // store for every pane, placeholder included — nothing to fetch here.
     const fetchBranches = refreshBranches(threadIdentity, ws);
@@ -212,7 +201,7 @@
       try {
         fetched = !!(await GitMaybeFetchRemotes(ws));
       } catch (err) {
-        if (open) fetchError = { workspaceKey: fetchedKey, message: userFacingError(err) };
+        console.error('background fetch failed:', err);
         return;
       }
       // Refresh what the picker lists now: the pane may have moved to
@@ -642,16 +631,6 @@
               onAction={() => handleSync(branch)}
             />
           {/each}
-        </div>
-      {/if}
-      {#if visibleFetchError}
-        <div
-          class="line-clamp-3 max-w-72 break-words px-3 py-1.5 text-xs text-text-secondary/60"
-          role="presentation"
-          title={visibleFetchError}
-          data-testid="branch-picker-fetch-error"
-        >
-          Fetch failed, ahead/behind counts may be out of date: {visibleFetchError}
         </div>
       {/if}
     {/if}

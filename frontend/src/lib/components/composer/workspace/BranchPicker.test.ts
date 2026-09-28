@@ -930,26 +930,6 @@ describe('<BranchPicker>', () => {
     expect(await findByRole('menuitem', { name: /wt-branch/ })).toBeTruthy();
   });
 
-  it('notes a failed background fetch only while its workspace is listed', async () => {
-    const pane = await buildPane('main');
-    setBindingMock('GitMaybeFetchRemotes', async () => {
-      throw new Error('could not resolve host');
-    });
-    setBindingMock('GitListBranches', async () => [
-      { name: 'main', isCurrent: true, isDefault: true },
-    ]);
-
-    const { getByTestId, findByTestId, queryByTestId } = render(BranchPicker, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('branch-picker-trigger'));
-    const note = await findByTestId('branch-picker-fetch-error');
-    expect(note.textContent ?? '').toMatch(/could not resolve host/i);
-
-    pane.replaceThread({ ...pane.thread!, workspacePath: '/wt' });
-    await waitFor(() => expect(queryByTestId('branch-picker-fetch-error')).toBeNull());
-  });
-
   it('opens the prune preview dialog from the menu and closes the popover', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
