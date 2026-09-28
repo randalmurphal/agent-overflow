@@ -6,15 +6,15 @@
   // "Open full review" opens the review companion on the phase's own thread,
   // which closes the overlay (R3).
   //
-  // The whole patch is read once into compact storage and each file's lines
-  // are materialized on expand, so opening three files costs one read, not
-  // four. The read can hold the diff open to read evicted text again; it is
-  // disposed with its files, and read again when that text is lost.
+  // The whole patch is read once into compact storage, and an expanded file
+  // renders its lines from it (WorkflowDiffLines), so opening three files
+  // costs one read, not four. The read can hold the diff open to read
+  // evicted text again; it is disposed with its files, and read again when
+  // that text is lost.
 
   import { onDestroy } from 'svelte';
   import WorkflowDiff from './WorkflowDiff.svelte';
-  import type { PatchFile } from '../../utils/patchFiles';
-  import { patchFileFromReviewFile, type ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchStore';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { OpenBranchBaseDiff } from '../../stores/bindings';
   import { ReviewDiffSource, type ReviewDiffRead } from '../../stores/reviewDiffStream';
@@ -39,10 +39,8 @@
   // Both controls read workspace content — the branch-base diff, and the
   // review companion opened over it.
   let ungranted = $derived(!projectHasScope('files:read', workspace?.projectId));
-  // The parsed files; `files` is their summaries for the list.
-  let parsed: ReviewFile[] = [];
   let read: ReviewDiffRead | null = null;
-  let files = $state<PatchFile[]>([]);
+  let files = $state.raw<readonly ReviewFile[]>([]);
   let loading = $state(false);
   let loaded = $state(false);
   let error = $state('');
@@ -66,7 +64,6 @@
   function clear(): void {
     read?.dispose();
     read = null;
-    parsed = [];
     files = [];
     loaded = false;
   }
@@ -98,26 +95,13 @@
         clear();
         void load();
       });
-      parsed = next.parser.files;
-      files = parsed.map((file) => ({
-        path: file.path,
-        kind: file.kind,
-        additions: file.additions,
-        deletions: file.deletions,
-        lines: [],
-      }));
+      files = next.parser.files;
       loaded = true;
     } catch (err) {
       if (loadedKey === key) error = userFacingError(err, 'Could not load the changes.');
     } finally {
       loading = false;
     }
-  }
-
-  async function loadFile(path: string): Promise<PatchFile> {
-    const file = parsed.find((entry) => entry.path === path);
-    if (!file) throw new Error(`No hunks for ${path}`);
-    return file.body.whenResident(() => patchFileFromReviewFile(file));
   }
 
   async function openFullReview(): Promise<void> {
@@ -132,7 +116,7 @@
 
 <section class="space-y-2" data-testid="workflow-gate-diff">
   {#if files.length > 0}
-    <WorkflowDiff {files} {expandFirst} onLoadFile={loadFile} />
+    <WorkflowDiff {files} {expandFirst} />
   {:else if loading}
     <p class="text-xs text-fg-muted" data-testid="workflow-diff-loading">Loading changes…</p>
   {:else if error}

@@ -48,7 +48,7 @@ describe('<WorkflowGateDiff> past the memory budget', () => {
     expect(release).not.toHaveBeenCalled();
 
     await fireEvent.click(view.getAllByTestId('wf-diff-file-toggle')[2]);
-    expect(await view.findByTestId('wf-diff-hunks')).toHaveTextContent('c.go line 4');
+    await waitFor(() => expect(view.getByTestId('wf-diff-hunks')).toHaveTextContent('c.go line 4'));
 
     view.unmount();
     expect(release).toHaveBeenCalledTimes(1);
@@ -76,7 +76,7 @@ describe('<WorkflowGateDiff> past the memory budget', () => {
       expect(view.getAllByTestId('wf-diff-file')).toHaveLength(3);
     });
     await fireEvent.click(view.getAllByTestId('wf-diff-file-toggle')[2]);
-    expect(await view.findByTestId('wf-diff-hunks')).toHaveTextContent('c.go line 4');
+    await waitFor(() => expect(view.getByTestId('wf-diff-hunks')).toHaveTextContent('c.go line 4'));
     view.unmount();
   });
 });

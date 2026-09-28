@@ -12,8 +12,9 @@ import {
   type AnchorLines,
   type RowStart,
 } from './patchRows';
+import { reportFrontendDiagnostic } from './frontendErrorCapture';
 import { patchMemory, patchTextVersion } from './patchMemory.svelte';
-import type { ReviewFile } from './patchStore';
+import { PatchTextLost, type ReviewFile } from './patchStore';
 import type { RowEstimate } from './virtual/types';
 
 export const REVIEW_LINE_HEIGHT_PX = 20;
@@ -436,7 +437,8 @@ export class BlockRowsCache {
   }
 
   // A failed read marks its store lost, and the store's owner reads the
-  // diff again; the placeholders stay until then.
+  // diff again; the placeholders stay until then. Anything else is a
+  // defect, reported.
   private fill(key: string, file: ReviewFile, block: LineBlockRow, lines: { start: number; end: number }): void {
     if (this.filling.has(key)) return;
     this.filling.add(key);
@@ -446,7 +448,11 @@ export class BlockRowsCache {
         this.keep(key, materializedBlock(file, block, built.rows));
         patchMemory.restored();
       })
-      .catch(() => {})
+      .catch((error: unknown) => {
+        if (!(error instanceof PatchTextLost)) {
+          reportFrontendDiagnostic('review diff: block rows could not be built', String(error));
+        }
+      })
       .finally(() => this.filling.delete(key));
   }
 

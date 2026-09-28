@@ -58,9 +58,9 @@ once and the owner reads the diff again.
   screen passes the budget. Rows own copies of their text (`ownText`), so a
   kept block holds no chunk.
 - Exact readers (highlight requests, edit verification, merged edit files,
-  PR comment excerpts, the gate diff's file view) read inside
-  `whenResident`, which reads evicted text again and pins it while the
-  reader runs.
+  PR comment excerpts, the blocks of an expanded gate diff file) read
+  inside `whenResident`, which reads evicted text again and pins it while
+  the reader runs.
 - A synchronous derivation must not read text that can be evicted: it would
   request the text and run again whenever the text returns. Read what it
   needs beforehand, as context expansion records hunk headings in its state
@@ -69,9 +69,11 @@ once and the owner reads the diff again.
 ## Diffs taller than the browser
 
 A browser caps an element's height (Chromium and WebKit near 33.5M px,
-Firefox near 17.9M px), which a diff passes near 900K lines. The diff body
-renders through `LongListVirtualizer`
-(`frontend/src/lib/components/virtual/`), which holds a range of rows short
-of every cap and moves it as the reader scrolls toward its ends or jumps
-elsewhere. Scrolling across a move keeps the line being read in place, and
-the file tree, comment jumps and reading-position restores reach any row.
+Firefox near 17.9M px), which a diff passes near 900K lines. The review
+diff body and an expanded gate diff file render through
+`LongListVirtualizer` (`frontend/src/lib/components/virtual/`), which holds
+a range of rows short of every cap and moves it as the reader scrolls
+toward its ends or jumps elsewhere. Scrolling across a move keeps the line
+being read in place, and the file tree, comment jumps and reading-position
+restores reach any row. The gate diff renders a file in blocks read from
+compact storage (`WorkflowDiffLines`), never the whole file at once.

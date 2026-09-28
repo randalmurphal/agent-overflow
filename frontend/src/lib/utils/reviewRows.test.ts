@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { materializeRows } from './patchRows';
-import { parseReviewFiles, type ReviewFile } from './patchStore';
+import { parseReviewFiles, PatchTextLost, type ReviewFile } from './patchStore';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 import {
   REVIEW_FILE_HEADER_PX,
@@ -464,6 +465,7 @@ describe('reviewRowEstimate', () => {
 });
 
 describe('BlockRowsCache over evicted text', () => {
+  const diagnostics = installDiagnosticsCapture();
   const disposers: (() => void)[] = [];
   afterEach(() => {
     for (const dispose of disposers.splice(0)) dispose();
@@ -521,6 +523,28 @@ describe('BlockRowsCache over evicted text', () => {
     });
     expect(expected.some((row) => row.intraline)).toBe(true);
     expect(cache.get(second, block)).toBe(cache.get(second, block));
+  });
+
+  it('reports a block that fails for any reason but lost text, and leaves lost text to the owner', async () => {
+    const patch = modifiedPatch(20);
+    const files = streamed(patch, 200, 100);
+    const second = files[1];
+    const block = lineBlocks(buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [] }).rows)
+      .find((candidate) => candidate.fileIndex === 1)!;
+    const whenResident = vi.spyOn(second.body, 'whenResident');
+
+    whenResident.mockRejectedValueOnce(new PatchTextLost('review diff: not open'));
+    new BlockRowsCache().get(second, block);
+    await vi.waitFor(() => expect(whenResident).toHaveBeenCalledTimes(1));
+    // Let the rejection be handled before asserting nothing was reported.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await diagnostics.messages()).toEqual([]);
+
+    whenResident.mockRejectedValueOnce(new Error('boom'));
+    new BlockRowsCache().get(second, block);
+    await vi.waitFor(async () => {
+      expect(await diagnostics.messages()).toEqual(['review diff: block rows could not be built']);
+    });
   });
 
   it('completes a block whose text alone passes the budget', async () => {

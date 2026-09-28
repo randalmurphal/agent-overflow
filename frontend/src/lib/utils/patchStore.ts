@@ -896,7 +896,7 @@ export class PatchBody {
   }
 
   /** The file's lines as PatchLine objects. Allocates per line: only for
-   * surfaces that render a whole file (the workflow gate diff). Throws
+   * joining edit sections into one file (reviewPaneLoad). Throws
    * PatchTextNotResident when any line is evicted. */
   toPatchLines(): PatchLine[] {
     const lines: PatchLine[] = [];
