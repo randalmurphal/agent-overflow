@@ -47,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Node directly so the cross image matches the repo's Node 24 floor,
 # then install the pinned pnpm globally via npm.
 ARG NODE_VERSION=24.14.1
-ARG PNPM_VERSION=10.33.2
+ARG PNPM_VERSION=12.6.0
 RUN NODE_ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x64" ;; esac) && \
     NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
     curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" && \

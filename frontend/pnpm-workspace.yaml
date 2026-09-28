@@ -1,3 +1,7 @@
+# pnpm reads only auth and registry settings from .npmrc; keep project
+# settings here.
+engineStrict: true
+
 # ws: @vitest/browser 4.x pins a ws range with known advisories (fragment
 # DoS < 8.21.0, uninitialized-memory disclosure < 8.20.1); dev-only test
 # server, but override until vitest moves its pin.

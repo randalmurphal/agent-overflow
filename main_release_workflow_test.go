@@ -20,7 +20,7 @@ import (
 
 func TestPackageManagerPinsMatchAcrossBuildRoots(t *testing.T) {
 	var want string
-	for _, path := range []string{"frontend/package.json", "package.json", "mobile/package.json"} {
+	for _, path := range []string{"frontend/package.json", "package.json", "mobile/package.json", "e2e/package.json"} {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

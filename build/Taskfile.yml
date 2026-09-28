@@ -17,7 +17,7 @@ tasks:
       - node_modules
     preconditions:
       - sh: pnpm --version
-        msg: "pnpm not found. Install with `npm i -g pnpm@10.33.2` or via https://pnpm.io/installation."
+        msg: "pnpm not found. Install with `npm i -g pnpm@12.6.0` or via https://pnpm.io/installation."
     cmds:
       - pnpm install --frozen-lockfile
 
