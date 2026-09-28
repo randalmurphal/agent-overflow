@@ -139,3 +139,167 @@ func TestStopRacingLaunchKeepsWaitGroupOwnershipStructural(t *testing.T) {
 		t.Fatalf("LaunchThread after Stop = %v, want shutdown error", err)
 	}
 }
+
+type recordingSetupEvents struct {
+	mu     sync.Mutex
+	frames []Event
+}
+
+func (e *recordingSetupEvents) Setup(event Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.frames = append(e.frames, event)
+}
+
+func (*recordingSetupEvents) ThreadUpdated(store.Thread) {}
+
+func (e *recordingSetupEvents) mark() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.frames)
+}
+
+// cancelledSince returns the cancelled terminal frames recorded after mark.
+func (e *recordingSetupEvents) cancelledSince(mark int) []Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var cancelled []Event
+	for _, frame := range e.frames[mark:] {
+		if frame.Phase == phaseFinished && frame.State == runCancelled {
+			cancelled = append(cancelled, frame)
+		}
+	}
+	return cancelled
+}
+
+func newCancelTestService(t *testing.T, recipe string) (*Service, *testStore, *recordingSetupEvents, store.Thread) {
+	t.Helper()
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	thread := store.Thread{ID: "thread", ProjectID: "project", ProjectPath: root, WorktreePath: worktree, WorkspacePath: worktree}
+	storage := &testStore{
+		threads: map[string]store.Thread{thread.ID: thread},
+		config:  worktreesetup.Config{Run: [][]string{{"/bin/sh", "-c", recipe}}, Timeout: "60s"},
+	}
+	events := &recordingSetupEvents{}
+	service := New(Config{Store: storage, Events: events, Context: t.Context})
+	t.Cleanup(service.Stop)
+	return service, storage, events, thread
+}
+
+// failSetup runs a failing recipe to completion and returns its run id.
+func failSetup(t *testing.T, service *Service, storage *testStore, thread store.Thread) string {
+	t.Helper()
+	if err := service.LaunchThread(thread, true); err != nil {
+		t.Fatalf("LaunchThread: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if !service.WaitThread(ctx, thread.ID) {
+		t.Fatal("setup did not settle")
+	}
+	snapshot, err := service.GetThreadWorktreeSetup(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadWorktreeSetup: %v", err)
+	}
+	if snapshot.State != runFailed || snapshot.RunID == "" {
+		t.Fatalf("snapshot = %q run %q, want a retained failure", snapshot.State, snapshot.RunID)
+	}
+	if got, _ := storage.GetThread(thread.ID); got.WorktreeSetupState != store.WorktreeSetupStateFailed {
+		t.Fatalf("durable state = %q, want failed", got.WorktreeSetupState)
+	}
+	return snapshot.RunID
+}
+
+func assertSetupCleared(t *testing.T, service *Service, storage *testStore, threadID string) {
+	t.Helper()
+	if got, _ := storage.GetThread(threadID); got.WorktreeSetupState != store.WorktreeSetupStateNone {
+		t.Fatalf("durable state = %q, want empty", got.WorktreeSetupState)
+	}
+	snapshot, err := service.GetThreadWorktreeSetup(threadID)
+	if err != nil {
+		t.Fatalf("GetThreadWorktreeSetup: %v", err)
+	}
+	if snapshot.State != runIdle {
+		t.Fatalf("snapshot state = %q, want idle", snapshot.State)
+	}
+}
+
+func assertOneCancelled(t *testing.T, events *recordingSetupEvents, mark int, runID string) {
+	t.Helper()
+	cancelled := events.cancelledSince(mark)
+	if len(cancelled) != 1 {
+		t.Fatalf("cancelled frames = %d, want 1", len(cancelled))
+	}
+	if cancelled[0].ThreadID != "thread" || cancelled[0].RunID != runID {
+		t.Fatalf("cancelled frame thread %q run %q, want thread run %q", cancelled[0].ThreadID, cancelled[0].RunID, runID)
+	}
+}
+
+// A client showing a failed card drops it only on a setup frame; the
+// thread-row update alone does not reach the card.
+func TestCancelThreadRetiresARetainedFailure(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "exit 1")
+	runID := failSetup(t, service, storage, thread)
+
+	mark := events.mark()
+	service.CancelThread(thread.ID)
+	assertOneCancelled(t, events, mark, runID)
+	assertSetupCleared(t, service, storage, thread.ID)
+
+	mark = events.mark()
+	service.CancelThread(thread.ID)
+	if frames := events.cancelledSince(mark); len(frames) != 0 {
+		t.Fatalf("repeat cancel emitted %d cancelled frames, want none", len(frames))
+	}
+}
+
+func TestCancelPathRetiresARetainedFailure(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "exit 1")
+	runID := failSetup(t, service, storage, thread)
+
+	mark := events.mark()
+	service.CancelPath(thread.WorktreePath)
+	assertOneCancelled(t, events, mark, runID)
+	assertSetupCleared(t, service, storage, thread.ID)
+
+	// Worktree removal follows CancelPath with CancelThread for each occupant.
+	// The failure is already retired, so no second frame follows.
+	mark = events.mark()
+	service.CancelThread(thread.ID)
+	if frames := events.cancelledSince(mark); len(frames) != 0 {
+		t.Fatalf("CancelThread after CancelPath emitted %d cancelled frames, want none", len(frames))
+	}
+}
+
+// After a restart the failure survives only in the thread row, and the
+// snapshot serves it with an empty run id.
+func TestCancelThreadRetiresADurableOnlyFailure(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "exit 1")
+	if err := storage.SetThreadWorktreeSetupState(thread.ID, store.WorktreeSetupStateFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	service.CancelThread(thread.ID)
+	assertOneCancelled(t, events, 0, "")
+	assertSetupCleared(t, service, storage, thread.ID)
+}
+
+// A live run reports its own cancellation when it settles; the cancel path
+// must not add a second frame.
+func TestCancelThreadOnALiveRunEmitsOneCancelledFrame(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "sleep 30")
+	if err := service.LaunchThread(thread, true); err != nil {
+		t.Fatalf("LaunchThread: %v", err)
+	}
+
+	service.CancelThread(thread.ID)
+	cancelled := events.cancelledSince(0)
+	if len(cancelled) != 1 || cancelled[0].RunID == "" {
+		t.Fatalf("cancelled frames = %+v, want one for the live run", cancelled)
+	}
+	assertSetupCleared(t, service, storage, thread.ID)
+}

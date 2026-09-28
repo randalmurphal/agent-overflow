@@ -461,7 +461,8 @@ func (s *Service) dropWorktreeSetupRun(run *worktreeSetupRun) {
 // --- Cancellation ---
 
 // CancelThread stops any run for the thread, joins its goroutine,
-// drops the record, and clears the durable state. Safe on a thread that never
+// drops the record, and clears the durable state. A failure it clears, live or
+// only durable, is retired with a cancelled frame. Safe on a thread that never
 // had a run, and safe to call twice.
 //
 // It BLOCKS until the run goroutine has settled: callers are tearing the
@@ -478,9 +479,14 @@ func (s *Service) CancelThread(threadID string) {
 	if run != nil {
 		run.cancel()
 		<-run.done
-		s.dropWorktreeSetupRun(run)
+		s.discardCancelledRun(run)
 	}
-	s.setThreadWorktreeSetupState(threadID, store.WorktreeSetupStateNone)
+	previous := s.setThreadWorktreeSetupState(threadID, store.WorktreeSetupStateNone)
+	if run == nil && previous.WorktreeSetupState == store.WorktreeSetupStateFailed {
+		// A failure that outlived its process has no record; the snapshot
+		// serves it with an empty run id, which this frame retires.
+		s.emitCancelled(threadID, "", previous.WorktreePath)
+	}
 }
 
 // CancelPath stops every recipe executing in a directory and joins it before
@@ -504,8 +510,42 @@ func (s *Service) CancelPath(worktreePath string) {
 	for _, run := range runs {
 		run.cancel()
 		<-run.done
-		s.dropWorktreeSetupRun(run)
+		s.discardCancelledRun(run)
 	}
+}
+
+// discardCancelledRun drops a cancelled run's record once it has settled. A
+// run cancelled while live already emitted its cancelled frame from
+// finishThreadWorktreeSetup. A run that had already FAILED emitted nothing, so
+// its retained failure is retired here: the durable state clears and every
+// client receives the same cancelled frame.
+func (s *Service) discardCancelledRun(run *worktreeSetupRun) {
+	s.mu.Lock()
+	registered := s.runs[run.threadID] == run
+	if registered {
+		delete(s.runs, run.threadID)
+	}
+	retired := registered && run.state == runFailed
+	if retired {
+		run.state = runCancelled
+	}
+	s.mu.Unlock()
+	if !retired {
+		return
+	}
+	s.setThreadWorktreeSetupState(run.threadID, store.WorktreeSetupStateNone)
+	s.emitCancelled(run.threadID, run.id, run.worktreePath)
+}
+
+func (s *Service) emitCancelled(threadID, runID, worktreePath string) {
+	s.emitSetup(Event{
+		Phase:        phaseFinished,
+		ThreadID:     threadID,
+		RunID:        runID,
+		WorktreePath: worktreePath,
+		State:        runCancelled,
+		FinishedAt:   time.Now().UnixMilli(),
+	})
 }
 
 // ReleaseThread is what every app-layer path that MOVES a chat
@@ -662,26 +702,31 @@ func (s *Service) worktreeSetupRunState(run *worktreeSetupRun) RunState {
 // A persistence failure is logged, not propagated: the column is a
 // restart-survival convenience, and the panel already carries the run's real
 // outcome. Losing it must not take the run's own reporting down with it.
-func (s *Service) setThreadWorktreeSetupState(threadID, state string) {
+//
+// It returns the row as it was before the change, or a zero Thread when the
+// value did not move.
+func (s *Service) setThreadWorktreeSetupState(threadID, state string) store.Thread {
 	if s.store == nil {
-		return
+		return store.Thread{}
 	}
 	current, err := s.store.GetThread(threadID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("thread %s: read worktree setup state: %v", threadID, err)
 		}
-		return
+		return store.Thread{}
 	}
 	if current.WorktreeSetupState == state {
-		return
+		return store.Thread{}
 	}
 	if err := s.store.SetThreadWorktreeSetupState(threadID, state); err != nil {
 		log.Printf("thread %s: persist worktree setup state %q: %v", threadID, state, err)
-		return
+		return store.Thread{}
 	}
+	previous := current
 	current.WorktreeSetupState = state
 	s.emitThreadUpdated(current)
+	return previous
 }
 
 // threadOccupiesWorktree reports whether the thread is still working in the

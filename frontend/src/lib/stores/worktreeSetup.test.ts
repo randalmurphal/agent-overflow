@@ -150,6 +150,42 @@ describe('terminal states', () => {
     expect(getWorktreeSetup(THREAD)).toBeNull();
   });
 
+  // The backend retires a retained failure with a cancelled frame for the
+  // same run when the thread leaves the worktree or the worktree is removed.
+  it('clears a shown failure when its run is cancelled', () => {
+    applyWorktreeSetupEvent(started());
+    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed', error: 'exit 1' });
+    expect(hasWorktreeSetupSurface(THREAD)).toBe(true);
+    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'cancelled' });
+    expect(getWorktreeSetup(THREAD)).toBeNull();
+    expect(GetThreadWorktreeSetup).not.toHaveBeenCalled();
+  });
+
+  it('clears a durable-only failure on a cancelled frame with no run id', async () => {
+    GetThreadWorktreeSetup.mockResolvedValue({
+      threadId: THREAD, runId: '', state: 'failed', steps: [], stepStatuses: [],
+      output: '', outputSeq: 0, worktreePath: '/wt',
+    });
+    await hydrateWorktreeSetup(THREAD);
+    expect(getWorktreeSetup(THREAD)?.state).toBe('failed');
+    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: '', state: 'cancelled' });
+    expect(getWorktreeSetup(THREAD)).toBeNull();
+  });
+
+  it('re-reads to idle on a cancelled frame for a run it never saw', async () => {
+    applyWorktreeSetupEvent(started());
+    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed', error: 'exit 1' });
+    GetThreadWorktreeSetup.mockResolvedValue({
+      threadId: THREAD, runId: '', state: 'idle', steps: [], stepStatuses: [],
+      output: '', outputSeq: 0,
+    });
+    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-other', state: 'cancelled' });
+    expect(GetThreadWorktreeSetup).toHaveBeenCalledWith(THREAD);
+    await vi.waitFor(() => {
+      expect(getWorktreeSetup(THREAD)).toBeNull();
+    });
+  });
+
   // No panel is ever mounted here: a run that succeeds while its thread is
   // off screen must still clear, not wait for the thread to be opened.
   it('clears a success after the linger with no panel mounted', async () => {
