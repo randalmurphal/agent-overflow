@@ -378,11 +378,15 @@ export function reviewStateForPane(
   return state;
 }
 
-export function disposeReviewStateForPane(sourcePaneId: string, expectedIdentity?: string): void {
-  const current = statesBySourcePane.get(sourcePaneId);
-  if (expectedIdentity && current?.identity !== expectedIdentity) return;
-  current?.dispose?.();
+/**
+ * Dispose `state` if it is still the pane's registered state. A state that
+ * was already replaced was disposed by `reviewStateForPane`, and its
+ * successor belongs to a newer mount.
+ */
+export function disposeReviewStateForPane(sourcePaneId: string, state: ReviewPaneState): void {
+  if (statesBySourcePane.get(sourcePaneId) !== state) return;
   statesBySourcePane.delete(sourcePaneId);
+  state.dispose();
 }
 
 export async function openReviewCompanion(

@@ -506,6 +506,62 @@ describe('<ReviewPane>', () => {
     expect(header.textContent).not.toContain('+99');
   });
 
+  it('closing the pane releases its PR hold and its diff read', async () => {
+    const detail = {
+      number: 5,
+      title: 'Add feature',
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+    } as unknown as PRDetail;
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: 'github:owner/repo:5',
+      detail,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('ListPRReviewThreads', async () => []);
+    // The PR diff is still reading its second chunk when the pane closes.
+    const text = patch();
+    setBindingMock('OpenPRDiff', async () => ({
+      id: 'diff-1',
+      chunk: { data: text.slice(0, 40), offset: 0, nextOffset: 40, eof: false },
+      headSha: 'sha-a',
+    }));
+    let unblock!: () => void;
+    const held = new Promise<void>((resolve) => { unblock = resolve; });
+    const read = setBindingMock('ReadReviewDiff', async (_handle: string, offset: number) => {
+      await held;
+      return { data: text.slice(offset), offset, nextOffset: text.length, eof: true };
+    });
+    const release = setBindingMock('ReleaseReviewDiff', async () => undefined);
+
+    seedSourcePanePR();
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await waitFor(() => {
+      expect(read).toHaveBeenCalledWith('diff-1', 40, expect.any(Number));
+    });
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+    unblock();
+    await waitFor(() => {
+      expect(release).toHaveBeenCalledWith('diff-1');
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it("disables approve/request-changes on the viewer's own GitHub PR, keeps comment", async () => {
     const detail: PRDetail = {
       number: 5,

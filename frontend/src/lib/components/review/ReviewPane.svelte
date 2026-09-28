@@ -67,7 +67,8 @@
   // svelte-ignore state_referenced_locally
   const subject = reviewSubjectForPane(ctx);
   // svelte-ignore state_referenced_locally
-  const review = subject ? reviewStateForPane(ctx.paneId, subject) : null;
+  const sourcePaneId = ctx.paneId;
+  const review = subject ? reviewStateForPane(sourcePaneId, subject) : null;
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
   // the conversation, each thread's comments, the comments list. A reader
   // rather than a value: the PR reference and its web URL arrive after
@@ -170,7 +171,7 @@
   });
 
   onDestroy(() => {
-    disposeReviewStateForPane(ctx.paneId, ctx.thread?.id);
+    if (review) disposeReviewStateForPane(sourcePaneId, review);
   });
 
   function setScope(value: string): void {

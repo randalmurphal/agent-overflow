@@ -22,12 +22,13 @@ import {
 } from './reviewPaneLoad';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
 import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import type { DiffReviewComment, PRDetail, ReviewThread } from '../types/models';
+import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
@@ -98,7 +99,8 @@ const REVIEW_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: REVIEW_
  * `threadId` is what the thread-scoped ones (edits, comments, steer) take.
  */
 function subjectFor(threadId: string | null = 'thread-1'): ReviewSubject {
-  return { identity: threadId ?? 'draft:pane-1', threadId, workspace: REVIEW_WS };
+  const thread = { id: threadId ?? 'draft:pane-1', projectId: REVIEW_WS.projectId } as Thread;
+  return { identity: companionSubjectKey({ thread, workspace: REVIEW_WS }), threadId, workspace: REVIEW_WS };
 }
 
 /**
@@ -296,7 +298,7 @@ describe('reviewPane store', () => {
       baseBranch: 'release',
     }));
 
-    disposeReviewStateForPane('pane-1');
+    disposeReviewStateForPane('pane-1', state);
     const branch = setReviewDiffMock('OpenBranchBaseDiff', async () => patchFor('release.go', 1));
     const restored = reviewStateForPane('pane-2', subjectFor());
     await waitLoaded(restored);
@@ -904,7 +906,7 @@ describe('reviewPane store — PR scope', () => {
     await vi.waitFor(() => {
       expect(resolveSubscribe).toBeDefined();
     });
-    disposeReviewStateForPane('pane-1');
+    disposeReviewStateForPane('pane-1', state);
     resolveSubscribe?.({
       id: 'sub-late',
       prKey: PR_KEY,
@@ -926,6 +928,24 @@ describe('reviewPane store — PR scope', () => {
     reviewStateForPane('pane-1', subjectFor('thread-2'));
 
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('disposal releases only the state it names', async () => {
+    const { unsubscribe } = installPRMocks();
+    const stale = reviewStateForPane('pane-1', subjectFor('thread-2'));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    // The replaced state's late teardown leaves its successor alone.
+    disposeReviewStateForPane('pane-1', stale);
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(reviewStateForPane('pane-1', prSubject())).toBe(state);
+
+    disposeReviewStateForPane('pane-1', state);
+    expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+    // Reopening the same subject builds a fresh state.
+    expect(reviewStateForPane('pane-1', prSubject())).not.toBe(state);
   });
 
   it('pr:updated applies live on same head and flags stale on a moved head without touching the diff', async () => {
@@ -1785,12 +1805,12 @@ describe('reviewPane store — streamed diffs', () => {
 
   it('releases the handle of a diff read by a disposed pane', async () => {
     const { read, release, unblock } = installChunkedDiff('OpenWorkspaceDiff', patch, 40, { hold: 40 });
-    reviewStateForPane('pane-1', subjectFor());
+    const state = reviewStateForPane('pane-1', subjectFor());
     await vi.waitFor(() => {
       expect(read).toHaveBeenCalledTimes(1);
     });
 
-    disposeReviewStateForPane('pane-1');
+    disposeReviewStateForPane('pane-1', state);
     unblock();
     await vi.waitFor(() => {
       expect(release).toHaveBeenCalledWith('diff-1');
@@ -3072,7 +3092,7 @@ describe('reviewPane store: painted span retention', () => {
     expect(colored(state.conflictPaintedSpans, conflict)).toBe(false);
     expect(colored(state.paintedSpans, a)).toBe(true);
 
-    disposeReviewStateForPane('pane-1');
+    disposeReviewStateForPane('pane-1', state);
     expect(colored(state.paintedSpans, a)).toBe(false);
   });
 });
