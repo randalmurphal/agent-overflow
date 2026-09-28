@@ -19,6 +19,7 @@
   } from './lib/stores/paneLayoutPersistence';
   import { flushPaneLayoutPersistence, paneLayoutMutationRevision, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
   import { installCompanionPanes } from './lib/stores/companionPanes.svelte';
+  import { installCompanionStash } from './lib/stores/companionStash';
   import { flushAppStorage, hydrateAppStorage } from './lib/stores/appStorage';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { selectedBackend } from './lib/stores/selectedBackend.svelte';
@@ -472,6 +473,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         if (disposed) return;
         installPaneLayoutPersistence();
         installCompanionPanes();
+        installCompanionStash();
         await Promise.race([
           highlightTablesWarm,
           new Promise((resolve) => setTimeout(resolve, 1500)),

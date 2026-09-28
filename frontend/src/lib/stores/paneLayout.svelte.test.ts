@@ -210,6 +210,72 @@ describe('paneLayout store', () => {
     expect(paneBlockRangeAt(items, 3)).toEqual({ start: 3, end: 3 });
   });
 
+  describe('companions of a side chat', () => {
+    // A side chat is a thread pane, so it can have companions of its own.
+    // They sit right after it and belong to its source's block.
+    function sideChat(sourcePaneId: string): PaneLayoutItem {
+      const paneId = `side-chat-${sourcePaneId}`;
+      return { id: paneId, paneId, kind: 'side-chat', widthPx: 560, sourcePaneId };
+    }
+
+    function agentOf(sourcePaneId: string): PaneLayoutItem {
+      const paneId = `agent-${sourcePaneId}`;
+      return { id: paneId, paneId, kind: 'agent', widthPx: 560, sourcePaneId };
+    }
+
+    it('resnaps them right after the side chat, ahead of its siblings', () => {
+      setPaneLayoutItemsForTest([thread('a'), thread('b'), sideChat('a'), review('a'), agentOf('side-chat-a')]);
+
+      movePaneLayoutItemToIndex('b', 0);
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'b',
+        'a',
+        'side-chat-a',
+        'agent-side-chat-a',
+        'review-a',
+      ]);
+    });
+
+    it('drops them when the side chat is gone', () => {
+      setPaneLayoutItemsForTest([thread('a'), thread('b'), agentOf('side-chat-a')]);
+
+      movePaneLayoutItemToIndex('b', 0);
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['b', 'a']);
+    });
+
+    it('moves them with the block, from any member', () => {
+      setPaneLayoutItemsForTest([thread('a'), sideChat('a'), agentOf('side-chat-a'), thread('b')]);
+
+      movePaneLayoutItem('a', 1);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'b',
+        'a',
+        'side-chat-a',
+        'agent-side-chat-a',
+      ]);
+
+      movePaneLayoutItem('agent-side-chat-a', -1);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'a',
+        'side-chat-a',
+        'agent-side-chat-a',
+        'b',
+      ]);
+    });
+
+    it('reports the whole block as their range', () => {
+      setPaneLayoutItemsForTest([thread('a'), sideChat('a'), agentOf('side-chat-a'), review('a'), thread('b')]);
+      const items = getPaneLayoutItems();
+
+      expect(paneBlockRangeAt(items, 0)).toEqual({ start: 0, end: 3 });
+      expect(paneBlockRangeAt(items, 2)).toEqual({ start: 0, end: 3 });
+      expect(paneBlockRangeAt(items, 3)).toEqual({ start: 0, end: 3 });
+      expect(paneBlockRangeAt(items, 4)).toEqual({ start: 4, end: 4 });
+    });
+  });
+
   it('applies a boundary drag from the drag-start snapshot, not accumulated state', () => {
     setPaneLayoutItemsForTest([
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 800 },

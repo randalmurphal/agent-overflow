@@ -125,7 +125,7 @@ function isPersistedCompanionKind(kind: unknown): kind is PersistedCompanionKind
  * layout does, so restore cannot know yet whether the row survives. The pane
  * body self-closes when it resolves the scope to nothing (spec Q5).
  */
-function parsePersistedAgentScope(value: unknown): AgentPaneScopeSnapshot | null {
+export function parsePersistedAgentScope(value: unknown): AgentPaneScopeSnapshot | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   const scopeItemId = record.scopeItemId;

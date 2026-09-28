@@ -24,6 +24,8 @@ import {
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';
+import { resetCompanionStashForTest } from '../lib/stores/companionStash';
+import { reinitAppStorageForTest } from '../lib/stores/appStorage';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 import { __setTransportStatusForTest } from '../lib/stores/transportStatus.svelte';
@@ -298,6 +300,11 @@ afterEach(() => {
   // catalog per case, so stale model capabilities from another suite make
   // menus lie about context windows and fast-mode support.
   resetProviderModelsForTest();
+  // Companions stashed for a thread would reopen on a later test's mount of
+  // a same-id thread, from the stash itself or from appStorage's in-memory
+  // bucket, which outlives the localStorage wipe below.
+  resetCompanionStashForTest();
+  reinitAppStorageForTest();
   // Any component test that imports timelineSizePriors.svelte.ts installs
   // the real localStorage-backed size-priors adapter at module scope
   // (installSizePriorsPersistence runs on import). Reset its debounce

@@ -623,14 +623,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * Pane-close counterpart of the thread-switch snapshot: cache the
    * item window (+ durable replica, size priors) so a later reopen is
    * a warm restore, not a cold fetch with an estimate→measure spring
-   * (bug-report-20260822T020840Z). Called by `destroyPane` BEFORE
-   * `clear()` empties the items, and by `startDraftPlaceholder` for the
-   * same leaving-the-thread edge. Skips a thread the store no longer
-   * lists — deletion flows call `removeThread` (which evicts every
-   * cache tier) before closing the panes, and caching here would
-   * resurrect the just-evicted window.
+   * (bug-report-20260822T020840Z), and stash the companions so the
+   * thread reopens them. Called by `destroyPane` BEFORE `clear()`
+   * empties the items, and by `startDraftPlaceholder` for the same
+   * leaving-the-thread edge. The window cache skips a thread the store
+   * no longer lists — deletion flows call `removeThread` (which evicts
+   * every cache tier) before closing the panes, and caching here would
+   * resurrect the just-evicted window. The removal has already closed
+   * that pane's companions, so the stash finds none.
    */
   function snapshotPaneForClose(): void {
+    companions.stashAll();
     if (!thread || !getThreadById(thread.id)) return;
     switchLoad.snapshotPaneForClose();
   }

@@ -5,8 +5,8 @@
 // what opening each one actually means (the review pane needs a review
 // SUBJECT — the checkout, plus the thread row when there is one — and an
 // async open; closing the
-// agent pane drops its breadcrumb trail), and the close-them-all sweep a
-// pane clear runs.
+// agent pane drops its breadcrumb trail), the stash a pane leaving its
+// thread runs, and the close-them-all sweep a pane clear runs.
 //
 // MUST NOT hold companion STATE. `companionPanes.svelte.ts` is the registry
 // and the only owner of what is mounted where; this module is one pane's
@@ -26,6 +26,7 @@ import {
 } from './companionPanes.svelte';
 import { openReviewCompanion, type ReviewSubject } from './reviewPane.svelte';
 import { disposeAgentStateForPane, openAgentCompanion } from './agentPane.svelte';
+import { stashCompanions } from './companionStash';
 
 export interface ThreadPaneCompanionsOptions {
   paneId: string;
@@ -59,10 +60,19 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
     },
 
     /**
+     * The pane is leaving its thread (closing, or "+ New" on it): hide its
+     * companions and remember them for that thread, which reopens them
+     * when it is shown again (companionStash.ts).
+     */
+    stashAll(): void {
+      stashCompanions(paneId, options.getThread());
+    },
+
+    /**
      * Companions are per-thread surfaces; an emptied pane keeps none.
-     * Covers the explicit clear-pane command and startDraftPlaceholder
-     * ("+ New" on a pane that was showing a thread). destroyPane's
-     * cascade observer also lands here — second call is a no-op.
+     * Every leaving-the-thread edge has stashed them by now, so this closes
+     * only what a clear without leaving holds: registry resets and a
+     * deleted thread's pane.
      */
     closeAll(): void {
       closeCompanionsForSource(paneId);

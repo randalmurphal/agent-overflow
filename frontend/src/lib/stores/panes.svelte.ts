@@ -562,8 +562,9 @@ function reportDuplicateMount(threadId: string, targetPaneId: string): void {
  * A side chat is a ThreadPane, so focus resolves to it, but it holds one
  * thread for its whole life: the fork it was cut for, mounted while the pane
  * is still empty. Once that is in place, anything else the user opens goes
- * to the source pane beside it, whose thread switch then closes the side
- * chat. Layout-level, so it needs nothing from the companion store.
+ * to the source pane beside it, whose thread switch then hides the side
+ * chat until that thread is shown again. Layout-level, so it needs nothing
+ * from the companion store.
  */
 export function threadHostPane(pane: ThreadPane): ThreadPane {
   if (!pane.threadId) return pane;
@@ -576,6 +577,7 @@ async function replaceThreadInPane(
   thread: Thread,
   targetPane: string | ThreadPane,
   activation: PaneActivation,
+  mountOptions: MountThreadOptions = {},
 ): Promise<ThreadPane> {
   const requested = typeof targetPane === 'string'
     ? panes.get(targetPane)
@@ -591,8 +593,10 @@ async function replaceThreadInPane(
     paneActivationById = new Map(paneActivationById).set(target.paneId, activation);
   }
   addThreadPaneToLayout(target.paneId);
-  focusedPaneId = target.paneId;
-  revealPane(target.paneId);
+  if (!mountOptions.background) {
+    focusedPaneId = target.paneId;
+    revealPane(target.paneId);
+  }
   // Ahead of switchThread, which is what issues this thread's history and
   // window loads: the backend must already be admitting the thread's
   // entity-filtered frames by the time those answers stream back, or the
@@ -643,6 +647,15 @@ function resolveOpenTargetPane(targetPane?: string | ThreadPane | null): string 
   return ensureMainPane();
 }
 
+export interface MountThreadOptions {
+  /**
+   * Leave focus and scroll where they are. For a pane reopened alongside the
+   * thread the user did open, which is not itself something they asked to
+   * look at.
+   */
+  background?: boolean;
+}
+
 /**
  * THE way a thread is put on screen. Reveals the pane already showing it when
  * there is one — otherwise mounts it in `targetPane` (default: the focused
@@ -657,12 +670,13 @@ export async function mountThreadInPane(
   thread: Thread,
   targetPane?: string | ThreadPane | null,
   activation: PaneActivation = 'committed',
+  mountOptions: MountThreadOptions = {},
 ): Promise<ThreadPane> {
   if (thread.forkPreparing) throw new Error('This fork is still being prepared.');
   notePaneLayoutMutation();
   const existing = revealThreadIfOpen(thread.id, activation);
   if (existing) return existing;
-  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), activation);
+  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), activation, mountOptions);
 }
 
 export async function openThreadInPane(

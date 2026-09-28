@@ -1,10 +1,11 @@
 // `/side-chat`: fork the focused pane's thread into a hidden scratch thread
 // and open it in a companion pane beside its source.
 //
-// The pane owns the fork's lifetime. Closing it (explicitly, with its source,
-// or when the source pane changes thread) deletes the thread through
-// companionPanes.svelte#closeCompanion; Keep promotes it into an ordinary
-// thread and swaps the companion for a normal thread pane in place. Both
+// The pane owns the fork's lifetime. Closing it deletes the thread through
+// companionPanes.svelte#closeCompanion. When its source pane leaves the
+// thread (switches or closes) the side chat is hidden with the thread's other
+// companions and reopens with it (companionStash.ts). Keep promotes it into an
+// ordinary thread and swaps the companion for a normal thread pane in place. Both
 // bindings carry the thread id, so the call routes to the computer that owns
 // the thread and the pane addresses the same one.
 
@@ -94,7 +95,8 @@ export async function keepSideChat(paneId: string): Promise<void> {
   // The pane goes first, or the reopen below would find the thread still
   // mounted and reveal the pane that is on its way out. destroyPane cascades
   // into the companion registry through the destroyed-pane observer, which
-  // drops the registration.
+  // drops the registration. Its close edge stashes the side chat's own
+  // companions under the thread, so the new pane reopens them.
   destroyPane(paneId);
   syncThread(promoted);
   await openThreadInNewPane(promoted, insertIndex < 0 ? undefined : insertIndex);

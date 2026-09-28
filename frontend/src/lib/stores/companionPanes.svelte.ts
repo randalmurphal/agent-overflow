@@ -3,14 +3,16 @@
 //
 // Companions are snapped immediately to the source pane's right by
 // paneLayout.svelte.ts, and they belong to the THREAD the source pane was
-// showing when they opened — ThreadPane closes them (closeCompanionsForSource)
-// whenever that thread changes.
+// showing when they opened. When the pane leaves that thread they are
+// hidden, not closed: companionStash.ts remembers them for the thread and
+// reopens them when it is shown again. Only an explicit close forgets one.
 //
 // take-control renders its own raw PTY surface, and side-chat an ordinary
-// thread pane over its own scratch thread. Those two and browser are
-// ephemeral: browser follows a live Chrome target that cannot be restored,
-// and a side chat's thread is deleted when its pane closes. The other kinds
-// are persisted and restored by paneLayoutPersistence.ts.
+// thread pane over its own scratch thread, which can have companions of its
+// own. take-control, browser and side-chat are ephemeral: browser follows a
+// live Chrome target that cannot be restored, and a side chat's thread is
+// deleted when it is closed and swept at boot. The other kinds are persisted
+// and restored by paneLayoutPersistence.ts.
 
 import {
   addPaneLayoutItem,
@@ -93,22 +95,48 @@ function unregisterCompanionPane(paneId: string): void {
   companionPanes.delete(paneId);
 }
 
+// After the source and everything hanging from it, including the companions
+// of a side chat among its companions.
 function companionInsertIndex(sourcePaneId: string): number {
   const layoutItems = getPaneLayoutItems();
   const sourceIndex = layoutItems.findIndex((item) => item.paneId === sourcePaneId);
   if (sourceIndex < 0) return -1;
+  const descendants = new Set([sourcePaneId]);
   let insertIndex = sourceIndex + 1;
   for (let i = sourceIndex + 1; i < layoutItems.length; i += 1) {
     const item = layoutItems[i];
-    if (!isCompanionKind(item.kind) || item.sourcePaneId !== sourcePaneId) break;
+    if (!isCompanionKind(item.kind) || !item.sourcePaneId || !descendants.has(item.sourcePaneId)) break;
+    descendants.add(item.paneId);
     insertIndex = i + 1;
   }
   return insertIndex;
 }
 
+/** The companions paired to `sourcePaneId`, in layout order. */
+export function companionsForSource(sourcePaneId: string): CompanionPaneState[] {
+  const out: CompanionPaneState[] = [];
+  for (const item of getPaneLayoutItems()) {
+    const state = companionPanes.get(item.paneId);
+    if (state && state.sourcePaneId === sourcePaneId) out.push(state);
+  }
+  return out;
+}
+
+export interface OpenCompanionOptions {
+  /** Width to open at. Defaults to the source pane's. */
+  widthPx?: number;
+  /**
+   * Scroll the new companion into view. On by default, since opening is
+   * explicit intent; a companion reopened with its thread is not, and must
+   * not pull a compact screen off the thread.
+   */
+  reveal?: boolean;
+}
+
 export function openCompanion(
   sourcePaneId: string,
   kind: CompanionKind,
+  options: OpenCompanionOptions = {},
 ): CompanionPaneState | null {
   const existing = companionForSource(sourcePaneId, kind);
   if (existing) return existing;
@@ -119,12 +147,13 @@ export function openCompanion(
 
   const paneId = companionPaneIdFor(sourcePaneId, kind);
   const sourceWidthPx = layoutItems[sourceIndex].widthPx;
+  const widthPx = options.widthPx ?? sourceWidthPx;
   addPaneLayoutItem(
     {
       id: paneId,
       paneId,
       kind,
-      widthPx: sourceWidthPx > 0 ? sourceWidthPx : averagePaneWidthPx(),
+      widthPx: widthPx > 0 ? widthPx : averagePaneWidthPx(),
       sourcePaneId,
     },
     // take-control hugs its source even past open panel companions: the
@@ -138,28 +167,50 @@ export function openCompanion(
   );
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };
   registerCompanionPane(state);
-  // Opening is explicit intent: scroll the new companion into view. Focus
-  // deliberately stays on the source thread — the user opts into the
+  // Focus deliberately stays on the source thread — the user opts into the
   // companion by clicking or pane-navigating into it.
-  revealPane(paneId);
+  if (options.reveal ?? true) revealPane(paneId);
   return state;
 }
 
+/**
+ * Close a companion for good: a side chat's thread is deleted, and so is
+ * anything the side chat itself had open.
+ */
 export function closeCompanion(paneId: string): void {
+  takeDownCompanion(paneId, 'close');
+}
+
+/**
+ * Take a companion down because its source pane is leaving the thread it
+ * belongs to. Unlike a close, a side chat keeps its thread: companionStash.ts
+ * has recorded it and reopens it with the thread. A side chat's pane goes
+ * through destroyPane, whose close edge stashes the side chat's own
+ * companions under the side chat's thread.
+ */
+export function hideCompanion(paneId: string): void {
+  takeDownCompanion(paneId, 'hide');
+}
+
+function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
   const state = companionPanes.get(paneId);
   if (!state) return;
   // Read before the section leaves the DOM: under compact the strip shows
   // one pane, and closing the one on screen must bring its thread back
   // rather than glide to whichever sibling companion is left.
   const wasOnScreen = isCompactLayout() && onScreenCompactPaneId() === paneId;
+  if (isThreadHostingCompanionKind(state.kind) && mode === 'close') {
+    // First, while the side chat still exists: its own companions close
+    // with it rather than being remembered for a thread about to be deleted.
+    closeCompanionsForSource(paneId);
+  }
   unregisterCompanionPane(paneId);
   if (isThreadHostingCompanionKind(state.kind)) {
-    // Read before the registry entry goes: the fork exists only for this
-    // pane, so closing the pane deletes it. destroyPane removes the layout
+    // Read before the registry entry goes. destroyPane removes the layout
     // item itself.
     const threadId = getPane(paneId)?.threadId ?? '';
     destroyPane(paneId);
-    void deleteSideChatThread(threadId);
+    if (mode === 'close') void deleteSideChatThread(threadId);
   } else {
     removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
   }
@@ -222,10 +273,10 @@ export function restoreCompanion(
 }
 
 /**
- * Close every companion paired to `sourcePaneId`. Companions belong to
- * the thread they were opened for, not the pane slot: ThreadPane calls
- * this when its thread changes (switch, clear, draft start), and the
- * destroyed-pane cascade below funnels through it too.
+ * Close every companion paired to `sourcePaneId` for good. The leaving-a-
+ * thread edges stash companions instead (companionStash.ts); this is for a
+ * pane cleared without leaving to anywhere (registry resets, a deleted
+ * thread) and for the destroyed-pane cascade below.
  */
 export function closeCompanionsForSource(sourcePaneId: string): void {
   const paneIds = Array.from(companionPanes.values())

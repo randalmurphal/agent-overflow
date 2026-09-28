@@ -166,6 +166,15 @@ Mechanism in
   dead one is removed and the drawer collapses with the last. Restoring
   terminals across a restart would be a separate feature
   (`internal/app/app_terminal_threads.go`).
+- Companion panes belong to their thread, per client. A pane leaving a
+  thread (switching, closing, starting a draft) hides the thread's
+  companions, and the next pane to show that thread reopens them where they
+  were: order, widths, an agent pane's scope, a side chat's conversation.
+  Closing a companion forgets it; deleting or archiving the thread forgets
+  all of them and deletes a hidden side chat. Plan, review and agent survive
+  a restart like the layout; take-control and side chats last the session.
+  Nothing is shared across clients. The browser pane follows its backend
+  state instead (`frontend/src/lib/stores/companionStash.ts`).
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Thread content search matches title and workspace path only. Searching

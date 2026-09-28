@@ -176,6 +176,19 @@ export function prependThread(thread: Thread): void {
   threads = [thread, ...threads.filter((t) => t.id !== thread.id)];
 }
 
+let threadRemovedObservers: Array<(id: string) => void> = [];
+
+/**
+ * Run `observer` after every `removeThread`: the thread was deleted or
+ * archived, so per-thread state kept outside this store must go with it.
+ */
+export function addThreadRemovedObserver(observer: (id: string) => void): () => void {
+  threadRemovedObservers = [...threadRemovedObservers, observer];
+  return () => {
+    threadRemovedObservers = threadRemovedObservers.filter((existing) => existing !== observer);
+  };
+}
+
 export function removeThread(id: string): void {
   invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
   catalogWriter.changed(threadBackend(id));
@@ -203,6 +216,7 @@ export function removeThread(id: string): void {
   clearPayloadCacheForThread(id);
   clearLiveUsageSnapshot(id);
   releaseThreadTerminalState(id);
+  for (const observer of threadRemovedObservers) observer(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {

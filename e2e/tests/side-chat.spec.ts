@@ -5,16 +5,29 @@
 // pane beside its source, without touching the running turn or the sidebar;
 // Keep promotes the scratch thread into an ordinary sidebar thread
 // (`PromoteScratchThread`) and swaps the companion for a normal pane;
-// closing the side chat, closing the source pane it hangs from, and
-// switching that pane to another thread delete the scratch thread; and a
-// reload restores the source pane alone, because no side-chat pane is ever
-// persisted. Creating a grouped draft from a focused side chat targets its
-// source pane and preserves the group's collapse state.
-// Spec: docs/specs/agent-thread-tools.md.
+// closing the side chat deletes the scratch thread; closing the source pane
+// or switching it to another thread hides the side chat with its thread,
+// and showing that thread again brings back the same conversation; a
+// subagent run in the side chat opens in the side chat's own agent pane,
+// which comes back with it; and a reload restores the source pane alone,
+// because no side-chat pane is ever persisted. Creating a grouped draft
+// from a focused side chat targets its source pane and preserves the
+// group's collapse state.
+// Spec: docs/specs/agent-thread-tools.md, docs/decisions.md (companions).
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { plainScenario, setScenario, threadRows, threadToolsScenario } from './thread-tools-helpers.js';
+import {
+  RESULT_LINE,
+  claudeScenario,
+  emit,
+  taskStartedLine,
+  taskUpdatedLine,
+  textLines,
+  toolResultLine,
+  toolUseLine,
+} from './agent-visibility-helpers.js';
 
 const SOURCE_TITLE = 'Main work';
 const SIDE_CHAT_TITLE = `Side chat: ${SOURCE_TITLE}`;
@@ -25,6 +38,11 @@ function sourcePane(page: Page) {
 
 function sideChatPane(page: Page) {
   return page.locator('section[data-pane-kind="side-chat"]');
+}
+
+/** The side chat pane, found by the thread it shows. */
+function sideChatShowing(page: Page, threadId: string) {
+  return sideChatPane(page).locator(`[data-ui-surface="chat"][data-thread-id="${threadId}"]`);
 }
 
 /**
@@ -201,7 +219,7 @@ test('closing the side chat deletes the thread it held', async ({ harness, page 
     .toBe(false);
 });
 
-test('closing the source pane takes its side chat and the thread with it', async ({
+test('closing the source pane hides its side chat until the thread is opened again', async ({
   harness,
   page,
 }) => {
@@ -221,12 +239,16 @@ test('closing the source pane takes its side chat and the thread with it', async
 
   await sourcePane(page).getByTestId('pane-close').click();
   await expect(sideChatPane(page)).toHaveCount(0);
-  await expect
-    .poll(async () => (await threadRows(harness)).some((row) => row.id === fork!.id))
-    .toBe(false);
+  expect(await scratchFork(harness, source.threadId)).toBeDefined();
+
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await expect(sideChatShowing(page, fork!.id)).toBeVisible();
+  await expect(sideChatPane(page).getByTestId('assistant-message-body').first()).toContainText(
+    'The migration starts in schema.sql.',
+  );
 });
 
-test('switching the source pane to another thread closes its side chat and deletes the fork', async ({
+test('switching the source pane away hides its side chat, and switching back restores it', async ({
   harness,
   page,
 }) => {
@@ -235,7 +257,44 @@ test('switching the source pane to another thread closes its side chat and delet
   await setScenario(
     harness,
     source.path,
-    plainScenario({ name: 'side-chat-switch', provider: 'claude', texts: ['On it.'] }),
+    plainScenario({ name: 'side-chat-switch', provider: 'claude', texts: ['On it.', 'Side answer.'] }),
+  );
+
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await runOneTurn(page, harness, 'read the migration');
+  await runSideChat(page);
+  const fork = await scratchFork(harness, source.threadId);
+  expect(fork).toBeDefined();
+  await sideChatPane(page).getByLabel('Message Input').fill('a side question');
+  await sideChatPane(page).getByTestId('composer-send').click();
+  await harness.waitForEvent('provider:turn_completed');
+  await expect(sideChatPane(page).getByTestId('user-message-bubble').filter({ hasText: 'a side question' })).toBeVisible();
+
+  await page.getByTestId('thread-row').filter({ hasText: 'Other work' }).click();
+  await expect(sideChatPane(page)).toHaveCount(0);
+  await expect(sourcePane(page)).toHaveCount(1);
+  await expect(sourcePane(page).locator(`[data-ui-surface="chat"][data-thread-id="${other}"]`)).toBeVisible();
+  expect(await scratchFork(harness, source.threadId)).toBeDefined();
+
+  // The same conversation comes back, not a fresh fork, and focus stays on
+  // the thread that was opened.
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await expect(sideChatShowing(page, fork!.id)).toBeVisible();
+  await expect(sideChatPane(page).getByTestId('user-message-bubble').filter({ hasText: 'a side question' })).toBeVisible();
+  await expect(sourcePane(page)).toHaveAttribute('data-pane-focused', 'true');
+  expect((await threadRows(harness)).filter((row) => row.mode === 'scratch')).toHaveLength(1);
+});
+
+test('a subagent the side chat runs opens in the side chat\'s own agent pane, which returns with it', async ({
+  harness,
+  page,
+}) => {
+  const source = await seedSource(harness, ['Other work']);
+  await setScenario(
+    harness,
+    source.path,
+    plainScenario({ name: 'side-chat-agent-source', provider: 'claude', texts: ['On it.'] }),
   );
 
   await harness.open(page);
@@ -245,15 +304,45 @@ test('switching the source pane to another thread closes its side chat and delet
   const fork = await scratchFork(harness, source.threadId);
   expect(fork).toBeDefined();
 
-  // The side chat is a fork of the thread the pane showed when it opened;
-  // the pane moving to another thread takes it down like a close would.
+  // The side chat's own session starts on its first send, under this
+  // scenario: one awaited agent.
+  await harness.rpc('HarnessSetScenario', { cwd: source.path, scenario: claudeScenario('side-chat-agent', [
+    emit([
+      ...textLines('msg-lead', 'Delegating the survey.'),
+      toolUseLine('msg-survey', 'tu-survey', 'Agent', {
+        description: 'survey the parser',
+        subagent_type: 'surveyor',
+      }),
+      taskStartedLine('task-survey', 'tu-survey', 'survey the parser'),
+      ...textLines('msg-survey-mid', 'Surveying the parser now.', 'tu-survey'),
+      taskUpdatedLine('task-survey', { status: 'completed', end_time: 1787415964725 }),
+      toolResultLine('tu-survey', 'Survey complete.'),
+      RESULT_LINE,
+    ]),
+  ]) });
+  await sideChatPane(page).getByLabel('Message Input').fill('survey the parser');
+  await sideChatPane(page).getByTestId('composer-send').click();
+  await harness.waitForEvent('provider:turn_completed');
+
+  await sideChatPane(page).getByTestId('subagent-group').first()
+    .getByTestId('subagent-group-open-pane').first().click();
+  const agentPane = page.locator('section[data-pane-kind="agent"]');
+  await expect(agentPane.getByTestId('agent-pane-breadcrumb-current')).toHaveText('Surveyor');
+  await expect(agentPane.getByText('Surveying the parser now.')).toBeVisible();
+  // It sits with the side chat it belongs to.
+  await expect(page.locator('section[data-pane-kind]')).toHaveCount(3);
+  expect(await page.locator('section[data-pane-kind]').evaluateAll(
+    (sections) => sections.map((section) => section.getAttribute('data-pane-kind')),
+  )).toEqual(['thread', 'side-chat', 'agent']);
+
   await page.getByTestId('thread-row').filter({ hasText: 'Other work' }).click();
   await expect(sideChatPane(page)).toHaveCount(0);
-  await expect(sourcePane(page)).toHaveCount(1);
-  await expect(sourcePane(page).locator(`[data-ui-surface="chat"][data-thread-id="${other}"]`)).toBeVisible();
-  await expect
-    .poll(async () => (await threadRows(harness)).some((row) => row.id === fork!.id))
-    .toBe(false);
+  await expect(agentPane).toHaveCount(0);
+
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await expect(sideChatShowing(page, fork!.id)).toBeVisible();
+  await expect(agentPane.getByTestId('agent-pane-breadcrumb-current')).toHaveText('Surveyor');
+  await expect(agentPane.getByText('Surveying the parser now.')).toBeVisible();
 });
 
 test('a reload brings the source pane back without its side chat', async ({ harness, page }) => {
@@ -315,7 +404,8 @@ test('New Thread in a collapsed group replaces the side chat source and preserve
     const rows = await harness.rpc<Array<{ id: string; groupId?: string; isDraft?: boolean }>>('HarnessListThreadRows');
     return rows.filter(row => row.groupId === group.id).map(row => row.isDraft);
   }).toEqual([true]);
-  await expect.poll(async () => (await threadRows(harness)).some(row => row.id === fork!.id)).toBe(false);
+  // Hidden with the source thread the pane left, not deleted.
+  expect((await threadRows(harness)).some(row => row.id === fork!.id)).toBe(true);
 });
 
 for (const action of ['sidebar', 'side-chat'] as const) {

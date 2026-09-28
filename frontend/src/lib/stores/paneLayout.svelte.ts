@@ -15,7 +15,8 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // `sourcePaneId`. Most host a surface of their own rather than a thread.
 // 'side-chat' is the exception: it hosts an ordinary ChatView over its own
 // scratch thread, and is a companion because it belongs to the source pane's
-// thread and dies with it. take-control, browser and side-chat are
+// thread. Being a thread pane, a side chat can have companions of its own.
+// take-control, browser and side-chat are
 // live/ephemeral; plan, review, and agent companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
 export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat';
@@ -39,8 +40,8 @@ export interface PaneLayoutItem {
   // widths and horizontal-scroll when it is narrower. Resize semantics
   // live in utils/paneWidths.ts.
   widthPx: number;
-  // Set only on companion items: the paneId of the source thread pane this
-  // surface is paired to. Drives adjacency (companions sit immediately right
+  // Set only on companion items: the paneId of the pane this surface is
+  // paired to, a thread pane or a side chat. Drives adjacency (companions sit immediately right
   // of their source) and cascade close (source closes → companions close).
   sourcePaneId?: string;
   // Set only on 'agent' companion items, and only by layout RESTORE: the
@@ -221,14 +222,29 @@ export function movePaneLayoutItemToIndex(paneId: string, insertIndex: number): 
   requestLayoutPersistence();
 }
 
-// resnapCompanionItems re-pins every companion pane immediately to the right
-// of the thread pane it is paired to (sourcePaneId), preserving the relative
-// order of thread panes and the relative order of companions for the same
-// source. This is the structural guarantee behind the user-facing rule "it
-// doesn't leave a dangling mf on the side": no reorder can separate companions
-// from their source. A companion item whose source is gone is dropped (the
-// cascade-close path is the authoritative remover; this is only a defensive
-// sweep so a transient orphan can't render).
+// A layout block is a thread pane plus everything that hangs from it: its
+// companions, and the companions of a companion that hosts a thread of its
+// own (a side chat's agent or review pane). `blockLeadId` walks a companion's
+// source chain up to that thread pane. The walk is bounded by the item count,
+// so a malformed chain ends as its own block rather than looping.
+function blockLeadId(
+  item: PaneLayoutItem,
+  byPaneId: ReadonlyMap<string, PaneLayoutItem>,
+): string {
+  let current = item;
+  for (let hops = 0; hops < byPaneId.size; hops += 1) {
+    if (!isCompanionKind(current.kind) || !current.sourcePaneId) return current.paneId;
+    const source = byPaneId.get(current.sourcePaneId);
+    if (!source) return current.paneId;
+    current = source;
+  }
+  return current.paneId;
+}
+
+function layoutItemsById(items: readonly PaneLayoutItem[]): Map<string, PaneLayoutItem> {
+  return new Map(items.map((item) => [item.paneId, item]));
+}
+
 /**
  * Item-index range of the [source + companions] block containing `index`
  * in a snapped layout. A plain thread pane is a block of one. Drop
@@ -239,17 +255,16 @@ export function paneBlockRangeAt(
   items: readonly PaneLayoutItem[],
   index: number,
 ): { start: number; end: number } {
-  let start = index;
   const item = items[index];
-  if (item && isCompanionKind(item.kind) && item.sourcePaneId) {
-    const leadIndex = items.findIndex((candidate) => candidate.paneId === item.sourcePaneId);
-    if (leadIndex >= 0 && leadIndex < index) start = leadIndex;
-  }
-  const leadId = items[start]?.paneId;
+  if (!item) return { start: index, end: index };
+  const byPaneId = layoutItemsById(items);
+  const leadId = blockLeadId(item, byPaneId);
+  const leadIndex = items.findIndex((candidate) => candidate.paneId === leadId);
+  const start = leadIndex >= 0 && leadIndex <= index ? leadIndex : index;
   let end = start;
   for (let i = start + 1; i < items.length; i += 1) {
     const candidate = items[i];
-    if (!isCompanionKind(candidate.kind) || candidate.sourcePaneId !== leadId) break;
+    if (!isCompanionKind(candidate.kind) || blockLeadId(candidate, byPaneId) !== items[start].paneId) break;
     end = i;
   }
   return { start, end };
@@ -260,22 +275,33 @@ export function paneBlockRangeAt(
 // block — defensive only, resnap drops those before they persist.
 function groupPaneBlocks(items: PaneLayoutItem[]): PaneLayoutItem[][] {
   const blocks: PaneLayoutItem[][] = [];
-  const blockByLead = new Map<string, PaneLayoutItem[]>();
+  const blockByPaneId = new Map<string, PaneLayoutItem[]>();
   for (const item of items) {
     if (isCompanionKind(item.kind) && item.sourcePaneId) {
-      const block = blockByLead.get(item.sourcePaneId);
+      const block = blockByPaneId.get(item.sourcePaneId);
       if (block) {
         block.push(item);
+        blockByPaneId.set(item.paneId, block);
         continue;
       }
     }
     const block = [item];
     blocks.push(block);
-    blockByLead.set(item.paneId, block);
+    blockByPaneId.set(item.paneId, block);
   }
   return blocks;
 }
 
+// resnapCompanionItems re-pins every companion pane immediately to the right
+// of the pane it is paired to (sourcePaneId), preserving the relative order
+// of thread panes and the relative order of companions for the same source.
+// A companion's own companions follow it before its next sibling, so a side
+// chat's agent pane sits between the side chat and whatever else its thread
+// has open. This is the structural guarantee behind the user-facing rule "it
+// doesn't leave a dangling mf on the side": no reorder can separate companions
+// from their source. A companion item whose source is gone is dropped (the
+// cascade-close path is the authoritative remover; this is only a defensive
+// sweep so a transient orphan can't render).
 function resnapCompanionItems(items: PaneLayoutItem[]): PaneLayoutItem[] {
   const companionsBySource = new Map<string, PaneLayoutItem[]>();
   const threadItems: PaneLayoutItem[] = [];
@@ -289,10 +315,18 @@ function resnapCompanionItems(items: PaneLayoutItem[]): PaneLayoutItem[] {
     }
   }
   const result: PaneLayoutItem[] = [];
+  const placed = new Set<string>();
+  const appendCompanionsOf = (sourcePaneId: string): void => {
+    for (const companion of companionsBySource.get(sourcePaneId) ?? []) {
+      if (placed.has(companion.paneId)) continue;
+      placed.add(companion.paneId);
+      result.push(companion);
+      appendCompanionsOf(companion.paneId);
+    }
+  };
   for (const item of threadItems) {
     result.push(item);
-    const companions = companionsBySource.get(item.paneId);
-    if (companions) result.push(...companions);
+    appendCompanionsOf(item.paneId);
   }
   return result;
 }

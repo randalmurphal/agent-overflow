@@ -32,9 +32,7 @@ import {
   createRefreshScheduler,
   type RefreshToken,
 } from '../utils/refreshScheduler';
-import {
-  closeCompanionsForSource,
-} from './companionPanes.svelte';
+import { stashCompanions } from './companionStash';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
 import {
@@ -933,10 +931,10 @@ export function createThreadSwitchLoad(
    * Commit the incoming thread to the pane.
    */
   function commitIncomingThread(newThread: Thread): void {
-    // Companion panes (plan / review / take-control / browser)
-    // belong to the thread they were opened for. Switching this pane to
-    // a DIFFERENT thread closes them instead of retargeting them; a
-    // same-thread re-switch keeps them open. Closing
+    // Companion panes belong to the thread they were opened for.
+    // Switching this pane to a DIFFERENT thread hides them and remembers
+    // them for the outgoing thread (companionStash.ts) instead of
+    // retargeting them; a same-thread re-switch keeps them open. Hiding
     // happens synchronously, before any effect flush sees the new
     // thread, so a mounted companion body never re-renders against a
     // thread it wasn't opened for.
@@ -944,7 +942,7 @@ export function createThreadSwitchLoad(
     runWindowCommitEffects('incoming thread commit', [
       () => {
         if (outgoing && outgoing.id !== newThread.id) {
-          closeCompanionsForSource(paneId);
+          stashCompanions(paneId, outgoing);
         }
       },
       () => options.clearDraftPlaceholder(),

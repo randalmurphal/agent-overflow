@@ -936,9 +936,12 @@ running. Forks the thread at its tail, in-flight turn included, into a
 mode (a human is present in this pane), and opens it in a companion pane
 kind `side-chat` to the source's right. Modeled on `take-control`: never
 persisted, added to `COMPANION_SHAPED_PANE_ID`, left out of
-`isPersistedCompanionKind`. Closes with the source pane and when the
-source pane's thread changes, like every companion; closing deletes the
-thread. A Keep action in the pane header flips the thread to the
+`isPersistedCompanionKind`. Hidden with its thread when the source pane
+leaves it and reopened when the thread is shown again, like every
+companion ([companion ruling](../decisions.md#sidebar-threads-drafts));
+closing it deletes the thread, as does deleting or archiving the source.
+Being a thread pane, it can have companions of its own, such as the agent
+pane for a subagent it runs. A Keep action in the pane header flips the thread to the
 source's mode, which puts it in the sidebar, and converts the pane to a
 normal thread pane in place. Works on any thread the frontend can show,
 whichever computer owns it.
@@ -1009,7 +1012,8 @@ collects that settlement like any other.
   that an agent never wonders which tool a scenario calls for, and no
   longer than that.
 - Side chat follows companion rules, discards on close, opens mid-turn
-  (Q12, Q22).
+  (Q12, Q22). Leaving its source thread hides it rather than discarding it
+  (companion ruling, 2026-09-28).
 - A thread id is a complete address; resolution fans out on a local
   miss and follows a Move. Cross-computer reach is own-device only,
   gated by pairing and the caller's own switch. Source-minted tokens

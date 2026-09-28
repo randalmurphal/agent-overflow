@@ -193,9 +193,11 @@ rings no bell, and nothing hides a stop's card later.
   agent's own spinner sprite / LED chase, verb and elapsed timer, keyed
   on the launch (ruling 2026-08-23, reversing the earlier "no run timer,
   no spinner" call); idle, the row stays as a height twin.
-- Pane lifetime mirrors the review pane: persisted and restored, closed
-  when the source thread changes, closes itself when the scoped row is
-  gone on restore (Q5).
+- Pane lifetime mirrors the review pane: persisted and restored, hidden
+  with its thread when the source pane leaves it and reopened at the same
+  scope when the thread is shown again
+  ([companion ruling](../decisions.md#sidebar-threads-drafts)), closes
+  itself when the scoped row is gone on restore (Q5).
 - Background section lists every node that is backgrounded or descends
   from one, indented by depth; an agent row's header toggles its digest
   and its explicit open button opens the pane. Neither moves the

@@ -1,8 +1,10 @@
 // stores/threadPaneCompanions.test.ts
 //
 // threadPaneCompanions.ts through the pane: which companion surfaces open
-// for a pane, what opening each one requires, and the close-them-all sweep
-// a pane clear runs. The registry itself is companionPanes.svelte.test.ts.
+// for a pane, what opening each one requires, the stash a pane leaving its
+// thread runs, and the close-them-all sweep a pane clear runs. The registry
+// itself is companionPanes.svelte.test.ts; reopening a stashed thread's
+// companions on mount is companionStash.test.ts.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createThreadPane } from './thread.svelte';
@@ -14,7 +16,7 @@ describe('threadPaneCompanions', () => {
   beforeEach(installThreadPaneTestEnv);
 
   describe('companion panes', () => {
-    it('closes every companion when the pane switches to a different thread', async () => {
+    it('takes every companion down when the pane switches to a different thread', async () => {
       const pane = createThreadPane();
       seedThreadPaneLayout(pane.paneId);
       await pane.switchThread(makeThread({ id: 'thread-a' }));
@@ -27,13 +29,9 @@ describe('threadPaneCompanions', () => {
 
       expect(pane.showPlanSidebar).toBe(false);
       expect(isCompanionOpen(pane.paneId, 'review')).toBe(false);
-      // Switching back does not resurrect them either — companions are
-      // per-thread surfaces the user reopens explicitly.
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.showPlanSidebar).toBe(false);
     });
 
-    it('closes take-control when switching to another claude-tui thread (no re-attach)', async () => {
+    it('takes take-control down when switching to another claude-tui thread (no re-attach)', async () => {
       // The terminal mirror is pinned to the thread it was opened for. It
       // must never silently re-attach to the incoming thread's session —
       // keystrokes would land in the wrong PTY.
@@ -64,7 +62,7 @@ describe('threadPaneCompanions', () => {
       expect(isCompanionOpen(pane.paneId, 'review')).toBe(true);
     });
 
-    it('closes companions when "+ New" starts a draft placeholder in the pane', async () => {
+    it('takes companions down when "+ New" starts a draft placeholder in the pane', async () => {
       const pane = createThreadPane();
       seedThreadPaneLayout(pane.paneId);
       await pane.switchThread(makeThread({ id: 'thread-a' }));
