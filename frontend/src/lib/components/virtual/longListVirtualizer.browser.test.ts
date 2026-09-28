@@ -122,6 +122,17 @@ describe('LongListVirtualizer', () => {
     }
   });
 
+  it('lands a jump made while a move is pending, even to a row the move would drop', async () => {
+    const { harness, scrollEl } = await mountHarness(makeRows(1000));
+    expect(harness.handle()!.holds(5)).toBe(true);
+    // The first jump leaves a move around row 900 pending; the second
+    // targets a row held now that the move would drop.
+    harness.handle()!.scrollToIndex(900);
+    harness.handle()!.scrollToIndex(5);
+    await settle(scrollEl);
+    expect(topRow(scrollEl)).toEqual({ id: 'r5', index: 5, into: 0 });
+  });
+
   it('keeps the row being read in place when rows change around the held range', async () => {
     const { harness, scrollEl } = await mountHarness(makeRows(1000));
     harness.handle()!.scrollToIndex(500);

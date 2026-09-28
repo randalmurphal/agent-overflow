@@ -114,11 +114,12 @@
   });
 
   function plan(keys: readonly unknown[], move: { key: unknown } | null): HeldRange {
+    const fresh = move !== null && move !== planned;
+    planned = move;
     const count = keys.length;
     const sizeAt = sizesFor(keys);
     if (fitsWhole(count, sizeAt, limits.limit)) return { start: 0, end: count };
-    if (move && move !== planned) {
-      planned = move;
+    if (fresh) {
       const focus = keys.indexOf(move.key);
       if (focus >= 0) return rangeAround(count, sizeAt, focus, limits.span);
     }
@@ -187,7 +188,8 @@
     if (!inner || data.length === 0) return;
     const seq = ++jumpSeq;
     const target = Math.max(0, Math.min(data.length - 1, index));
-    if (holds(target)) {
+    // A move still pending could leave the target behind.
+    if (holds(target) && request === planned) {
       inner.scrollToIndex(target - heldStart, opts);
       return;
     }
