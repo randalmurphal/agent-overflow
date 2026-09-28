@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
-import { parseReviewFiles } from './patchStore';
+import { setPatchTextBudgetForTest } from './patchMemory.svelte';
+import { materializeRows } from './patchRows';
+import { parseReviewFiles, type ReviewFile } from './patchStore';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
@@ -457,5 +460,82 @@ describe('reviewRowEstimate', () => {
     expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'surface-end']);
     expect(estimate.at(0)).toBe(REVIEW_FILE_HEADER_PX);
     expect(estimate.isExact?.(0)).toBe(true);
+  });
+});
+
+describe('BlockRowsCache over evicted text', () => {
+  const disposers: (() => void)[] = [];
+  afterEach(() => {
+    for (const dispose of disposers.splice(0)) dispose();
+    setPatchTextBudgetForTest(null);
+  });
+
+  // A resident file, then a modified one whose pairs carry intraline
+  // ranges and whose text is evicted.
+  function modifiedPatch(lines: number): string {
+    const body: string[] = [];
+    for (let line = 0; line < lines; line += 1) body.push(`-const value${line} = ${line};`);
+    for (let line = 0; line < lines; line += 1) body.push(`+const value${line} = ${line + 1};`);
+    return [
+      addedPatch('src/first.ts', 2),
+      'diff --git a/src/second.ts b/src/second.ts',
+      '--- a/src/second.ts',
+      '+++ b/src/second.ts',
+      `@@ -1,${lines} +1,${lines} @@`,
+      ...body,
+    ].join('\n') + '\n';
+  }
+
+  function streamed(patch: string, budget: number, size: number): ReviewFile[] {
+    setPatchTextBudgetForTest(budget);
+    const { parser, files } = streamPatch(patch, size);
+    disposers.push(() => parser.store.dispose());
+    return files;
+  }
+
+  function reference(patch: string, path: string): ReviewFile {
+    const file = parseReviewFiles(patch).find((candidate) => candidate.path === path)!;
+    disposers.push(() => file.body.segments[0].store.dispose());
+    return file;
+  }
+
+  it('renders placeholders, then keeps the rows built once the text is back', async () => {
+    const patch = modifiedPatch(20);
+    const files = streamed(patch, 200, 100);
+    const second = files[1];
+    expect(second.body.resident()).toBe(false);
+    const block = lineBlocks(buildReviewRows({ files, viewMode: 'stacked', collapsedPaths: new Set(), drafts: [], openEditors: [] }).rows)
+      .find((candidate) => candidate.fileIndex === 1)!;
+    const cache = new BlockRowsCache();
+
+    const placeholder = cache.get(second, block);
+    expect(placeholder.rows.length).toBe(block.count);
+    expect(placeholder.rows.some((row) => row.pending && row.line.content === '')).toBe(true);
+    expect(placeholder.rows.every((row) => row.pending || row.line.content !== '')).toBe(true);
+    // Line numbers never wait for text.
+    const expected = materializeRows(reference(patch, 'src/second.ts'), block.start, block.count).rows;
+    expect(placeholder.rows.map((row) => [row.oldLine, row.newLine])).toEqual(expected.map((row) => [row.oldLine, row.newLine]));
+
+    await vi.waitFor(() => {
+      expect(cache.get(second, block).rows).toEqual(expected);
+    });
+    expect(expected.some((row) => row.intraline)).toBe(true);
+    expect(cache.get(second, block)).toBe(cache.get(second, block));
+  });
+
+  it('completes a block whose text alone passes the budget', async () => {
+    const patch = modifiedPatch(16);
+    const files = streamed(patch, 1, 37);
+    const second = files[1];
+    const block = lineBlocks(buildReviewRows({ files, viewMode: 'split', collapsedPaths: new Set(), drafts: [], openEditors: [] }).rows)
+      .find((candidate) => candidate.fileIndex === 1)!;
+    const cache = new BlockRowsCache();
+    const expected = materializeRows(reference(patch, 'src/second.ts'), block.start, block.count).rows;
+
+    expect(cache.get(second, block).rows.some((row) => row.pending)).toBe(true);
+    await vi.waitFor(() => {
+      expect(cache.get(second, block).rows).toEqual(expected);
+    });
+    expect(cache.get(second, block).splitRows).toHaveLength(block.splitCount!);
   });
 });

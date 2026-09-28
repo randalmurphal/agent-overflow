@@ -31,7 +31,7 @@ import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../t
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
 import { mergePatchFilesByPath } from '../utils/patchFiles';
 import { anchorRow, displayRowCount } from '../utils/patchRows';
-import { patchFileFromReviewFile, reviewFileFromPatchFile, type ReviewFile } from '../utils/patchStore';
+import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type ReviewFile } from '../utils/patchStore';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 
@@ -322,11 +322,16 @@ interface EditFileGroup {
  * file-ordered section per path (the review surface keys rows, tree and
  * collapse state by path; see mergePatchFilesByPath). Fed a parser's files
  * as they grow, a path's merge is rebuilt only when a section joins it.
+ *
+ * A merge reads its sections' text and holds its own copy of it. A path
+ * whose section text is evicted keeps its previous merge until `settle`
+ * reads the text again.
  */
 export class EditFileMerge {
   private sections: readonly ReviewFile[] = [];
   private seen = 0;
   private groups = new Map<string, EditFileGroup>();
+  private pending = new Set<EditFileGroup>();
 
   files(sections: readonly ReviewFile[]): ReviewFile[] {
     if (sections !== this.sections) {
@@ -334,6 +339,7 @@ export class EditFileMerge {
       this.sections = sections;
       this.seen = 0;
       this.groups = new Map();
+      this.pending = new Set();
     }
     const joined = new Set<EditFileGroup>();
     for (; this.seen < sections.length; this.seen += 1) {
@@ -347,9 +353,23 @@ export class EditFileMerge {
       }
     }
     for (const group of joined) {
-      group.file = reviewFileFromPatchFile(mergePatchFilesByPath(group.sections.map(patchFileFromReviewFile))[0]);
+      if (group.sections.every((section) => section.body.resident())) this.merge(group);
+      else this.pending.add(group);
     }
     return Array.from(this.groups.values(), (group) => group.file);
+  }
+
+  /** Merges the paths that waited for evicted text, reading it again.
+   * Rejects with PatchTextLost when it can no longer be read. */
+  async settle(): Promise<void> {
+    for (const group of this.pending) {
+      await whenResident(group.sections.flatMap((section) => section.body.segments), () => this.merge(group));
+    }
+  }
+
+  private merge(group: EditFileGroup): void {
+    group.file = reviewFileFromPatchFile(mergePatchFilesByPath(group.sections.map(patchFileFromReviewFile))[0]);
+    this.pending.delete(group);
   }
 }
 

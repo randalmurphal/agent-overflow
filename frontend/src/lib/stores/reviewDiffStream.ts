@@ -2,13 +2,15 @@ import { ReadReviewDiff, ReleaseReviewDiff } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { PatchParser } from '../utils/patchStore';
+import { PatchParser, type PatchTextLost, type PatchTextSource } from '../utils/patchStore';
 
 // A review diff read from the backend in chunks. An Open*Diff call returns
 // the first chunk and, when the patch continues, a handle that only the
 // connection that opened it can read; every call on it is pinned to that
-// computer. The handle is released at the end of the patch or when the
-// read is abandoned.
+// computer. The handle is released when the read is abandoned, and at the
+// end of the patch when all of its text fit the memory budget; otherwise
+// the read's store keeps it to read evicted text again until the read is
+// disposed.
 
 /** Bytes asked of each ReadReviewDiff (the backend clamps to its bounds). */
 export const REVIEW_DIFF_READ_BYTES = 2 * 1024 * 1024;
@@ -34,13 +36,18 @@ export interface ReviewDiffRead {
   parser: PatchParser;
   /** Pull request diffs: the head commit the diff was computed at. */
   headSha: string;
+  /** Runs once when evicted text of the patch can no longer be read. */
+  onLost(listener: (err: PatchTextLost) => void): void;
+  /** Releases the handle, if the read kept it, and the text's budget. */
+  dispose(): void;
 }
 
 export interface ReviewDiffReadOptions {
   /** Checked between chunks; a true answer stops the read. */
   cancelled: () => boolean;
   /** Runs after each chunk but the last, with the parser being filled. A
-   * retry fills a new parser. */
+   * retry fills a new parser; the parser a failed or cancelled read
+   * filled is disposed. */
   onProgress?: (parser: PatchParser) => void;
   /** Runs when an Open answers, before the rest is read. A retry opens
    * again. */
@@ -90,13 +97,17 @@ export class ReviewDiffSource {
     this.first = null;
     const opened = await pending;
     const id = opened.id;
+    const parser = new PatchParser();
+    const store = parser.store;
+    // The store owns the handle from here: it releases it on dispose.
+    if (id) store.attachSource(this.textSource(id));
+    let read: ReviewDiffRead | null = null;
     try {
       onOpened?.(opened);
-      const parser = new PatchParser();
       let chunk = opened.chunk;
       for (;;) {
         if (cancelled()) return null;
-        parser.append(chunk.data);
+        parser.append(chunk.data, chunk);
         if (chunk.eof) break;
         if (!id) throw new Error('review diff: the backend returned no handle for an unfinished diff');
         onProgress?.(parser);
@@ -104,10 +115,27 @@ export class ReviewDiffSource {
         chunk = await withBackendTarget(this.backend, () => ReadReviewDiff(id, offset, REVIEW_DIFF_READ_BYTES));
       }
       parser.end();
-      return { parser, headSha: opened.headSha ?? '' };
+      // All of the text is resident: nothing needs the handle again.
+      if (!store.evictedAny) store.detachSource()?.release();
+      read = {
+        parser,
+        headSha: opened.headSha ?? '',
+        onLost: (listener) => store.whenLost(listener),
+        dispose: () => store.dispose(),
+      };
+      return read;
     } finally {
-      if (id) this.release(id);
+      if (!read) store.dispose();
     }
+  }
+
+  // Reads an evicted chunk again: the same offset and a window no larger
+  // than the first read's cut the same chunk (gitdiff.ChunkCut).
+  private textSource(id: string): PatchTextSource {
+    return {
+      read: (offset, nextOffset) => withBackendTarget(this.backend, () => ReadReviewDiff(id, offset, nextOffset - offset)),
+      release: () => this.release(id),
+    };
   }
 
   private open(): Promise<ReviewDiffOpened> {

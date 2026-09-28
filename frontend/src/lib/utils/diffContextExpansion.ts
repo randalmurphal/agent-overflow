@@ -9,11 +9,13 @@ import {
   LINE_DEL,
   LINE_HUNK,
   LINE_MARKER,
+  ownText,
   PatchBody,
   PatchStore,
   type BodySegment,
   type ReviewFile,
   type StoredLine,
+  whenResident,
 } from './patchStore';
 
 // Hunk-gap context expansion: merges fetched new-side source lines
@@ -33,6 +35,10 @@ export type ExpandDirection = 'up' | 'down' | 'all';
 export interface ContextExpansionState {
   /** New-side line number → source text (no diff prefix). */
   lines: Map<number, string>;
+  /** Hunk-header line index → the heading after its closing `@@`, read
+   * once from the file (hunkHeadings) so a build never reads evicted
+   * text. A header missing here is read from the file's text. */
+  headings?: Map<number, string>;
   /** New-side file length once an EOF response reveals it; null until
    * known. Sizes (or retires) the file's trailing gap. */
   eofLine: number | null;
@@ -104,6 +110,17 @@ export function applyContextExpansion(
   return expanded;
 }
 
+/** The heading of every hunk header of a body, by line index, reading
+ * evicted headers again. */
+export function readHunkHeadings(body: PatchBody): Promise<Map<number, string>> {
+  const headers: number[] = [];
+  for (let index = 0; index < body.lineCount; index += 1) {
+    if (body.kind(index) === LINE_HUNK) headers.push(index);
+  }
+  return whenResident(headers.flatMap((index) => body.slice(index, index + 1)), () =>
+    new Map(headers.map((index) => [index, ownText(hunkHeaderSuffix(body.text(index)))])));
+}
+
 interface Hunk {
   header: number;
   /** One past the hunk's last line. */
@@ -136,7 +153,7 @@ function applyContextExpansionUncached(file: ReviewFile, state: ContextExpansion
         end: body.lineCount,
         oldStart: body.hunkOldStart(index),
         newStart: body.hunkNewStart(index),
-        suffix: hunkHeaderSuffix(body.text(index)),
+        suffix: state.headings?.get(index) ?? hunkHeaderSuffix(body.text(index)),
         oldCount: 0,
         newCount: 0,
         before: [],

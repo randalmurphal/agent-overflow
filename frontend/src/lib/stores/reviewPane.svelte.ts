@@ -69,7 +69,8 @@ import {
   type EditSelection,
   type LoadedPatch,
 } from './reviewPaneLoad';
-import type { PatchParser } from '../utils/patchStore';
+import type { ReviewDiffRead } from './reviewDiffStream';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
@@ -101,11 +102,12 @@ import {
   applyContextExpansion,
   expansionFetchRange,
   nextExpansionVersion,
+  readHunkHeadings,
   type ContextExpansionState,
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
-import { reviewFileFromPatchFile, type ReviewFile } from '../utils/patchStore';
+import { reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
@@ -772,6 +774,21 @@ function createReviewPaneState(
   // back into a dead state — or hold a PR reference nobody will release.
   let disposed = false;
 
+  // The read whose files the pane shows. It can hold the diff's handle to
+  // read evicted text again, so it is disposed when its files go.
+  let shownRead: ReviewDiffRead | null = null;
+
+  function showRead(read: ReviewDiffRead | null): void {
+    if (read === shownRead) return;
+    shownRead?.dispose();
+    shownRead = read;
+    read?.onLost((err) => {
+      if (shownRead !== read || disposed) return;
+      reportFrontendDiagnostic('review diff: evicted text could not be read again', err.message);
+      void reload({ selectionOnly: true });
+    });
+  }
+
   // A pr-scope load that ran before `prRef` resolved is waiting on input,
   // not failed: a pane restored into persisted pr scope races the
   // git-status fetch at boot and used to stick on "No PR or MR is
@@ -820,6 +837,7 @@ function createReviewPaneState(
 
   function dispose(): void {
     disposed = true;
+    showRead(null);
     disposePRRefWatch();
     disposePaintedRetention();
     paintedSpans.clear();
@@ -929,6 +947,7 @@ function createReviewPaneState(
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
     loadedFiles = [];
+    showRead(null);
     patchKey = '';
     clearContextExpansions();
   }
@@ -1004,6 +1023,7 @@ function createReviewPaneState(
       // step, so no frame shows its files with another load's collapse
       // state, patch key or head.
       showFiles(arrival, read.files);
+      showRead(read.read);
       patchKey = read.patchKey;
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
@@ -1061,6 +1081,7 @@ function createReviewPaneState(
       if (seq !== loadSeq || disposed) return;
       clearContextExpansions();
       loadedFiles = [];
+      showRead(null);
       patchKey = '';
       openEditors = [];
       draftBodies.clear();
@@ -1110,9 +1131,9 @@ function createReviewPaneState(
   async function readPatch(
     seq: number,
     arrival: Arrival,
-  ): Promise<{ files: readonly ReviewFile[]; patchKey: string; headSha: string } | null> {
+  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string; headSha: string } | null> {
     const { patch, mergesPaths } = arrival.loaded;
-    if (patch === null) return { files: [], patchKey: '', headSha: '' };
+    if (patch === null) return { files: [], read: null, patchKey: '', headSha: '' };
     const merge = mergesPaths ? new EditFileMerge() : null;
     const view = (sections: readonly ReviewFile[]): readonly ReviewFile[] => merge?.files(sections) ?? sections;
     const cancelled = (): boolean => seq !== loadSeq || disposed;
@@ -1148,7 +1169,22 @@ function createReviewPaneState(
       },
     });
     if (!read) return null;
-    return { files: view(read.parser.files), patchKey: read.parser.sourceKey(), headSha: read.headSha };
+    if (merge) {
+      try {
+        // The last sections join the merge here; a path whose text was
+        // evicted merges once it is read again.
+        merge.files(read.parser.files);
+        await merge.settle();
+      } catch (err) {
+        read.dispose();
+        throw err;
+      }
+      if (cancelled()) {
+        read.dispose();
+        return null;
+      }
+    }
+    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey(), headSha: read.headSha };
   }
 
   if (!deferInitialLoad) void reload();
@@ -1213,11 +1249,11 @@ function createReviewPaneState(
   // The historical patch text of one edits-scope file, for the
   // backend's has-the-file-drifted verification. Empty for unknown
   // paths (the backend then refuses, which is the safe direction).
-  function editVerifyPatch(path: string): string {
+  async function editVerifyPatch(path: string): Promise<string> {
     if (scope !== 'edits') return '';
     const file = files.find((candidate) => candidate.path === path);
     if (!file) return '';
-    return filePatchText(file);
+    return file.body.whenResident(() => filePatchText(file));
   }
 
   // Load-time expandability pass for the edits scope: one batch RPC
@@ -1267,13 +1303,15 @@ function createReviewPaneState(
       const batch = candidates.slice(start, end);
       start = end;
       try {
+        const files = await whenResident(
+          batch.flatMap((file) => file.body.segments),
+          () => batch.map((file) => ({ path: file.path, verifyPatch: filePatchText(file) })),
+        );
+        if (seq !== loadSeq || disposed) return;
         const result = await VerifyEditDiffs(threadId, {
           editPayloadId: context.editPayloadId ?? '',
           editTurnIndex: context.editTurnIndex ?? -1,
-          files: batch.map((file) => ({
-            path: file.path,
-            verifyPatch: filePatchText(file),
-          })),
+          files,
         });
         if (seq !== loadSeq || disposed) return;
         for (const path of result.expandablePaths ?? []) {
@@ -1299,7 +1337,7 @@ function createReviewPaneState(
         path,
         startLine: range.start,
         endLine: range.end,
-        verifyPatch: editVerifyPatch(path),
+        verifyPatch: await editVerifyPatch(path),
         editPayloadId: context.editPayloadId ?? '',
         editTurnIndex: context.editTurnIndex ?? -1,
       };
@@ -1312,8 +1350,15 @@ function createReviewPaneState(
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.
       if (seq !== loadSeq || disposed) return;
+      // Builds of the expansion run in a derived, so the headings they
+      // keep are read here, where evicted text can be read again.
+      const source = loadedFiles.find((file) => file.path === path);
+      const headings = contextExpansions.get(path)?.headings
+        ?? (source ? await readHunkHeadings(source.body) : undefined);
+      if (seq !== loadSeq || disposed) return;
       const state = contextExpansions.get(path)
         ?? { lines: new Map<number, string>(), eofLine: null, version: 0 };
+      state.headings ??= headings;
       const lines = result.lines ?? [];
       for (let index = 0; index < lines.length; index += 1) {
         state.lines.set(result.startLine + index, lines[index]);
@@ -1403,18 +1448,24 @@ function createReviewPaneState(
     sendingComments = true;
     try {
       const detail = prSnapshot?.detail;
-      await SendDiffReviewComments(commentThreadId(), scope, sourceKey, drafts.map((comment) => comment.id), {
-        pr: scope === 'pr' && detail
-          ? {
-              number: detail.number,
-              url: detail.url,
-              comments: drafts.map((comment) => ({
-                commentId: comment.id,
-                hunkExcerpt: hunkExcerptForComment(files, comment),
-              })),
-            }
-          : undefined,
-      });
+      const thread = commentThreadId();
+      const sendScope = scope;
+      const key = sourceKey;
+      const sending = drafts;
+      const shown = files;
+      // Excerpts can read evicted text again, so everything the send
+      // addresses is taken before.
+      const pr = sendScope === 'pr' && detail
+        ? {
+            number: detail.number,
+            url: detail.url,
+            comments: await Promise.all(sending.map(async (comment) => ({
+              commentId: comment.id,
+              hunkExcerpt: await hunkExcerptForComment(shown, comment),
+            }))),
+          }
+        : undefined;
+      await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
       await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       error = null;
     } catch (err) {

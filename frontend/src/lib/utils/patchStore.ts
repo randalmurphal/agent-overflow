@@ -1,4 +1,5 @@
 import { appendFNV1a32 } from './fnv1a';
+import { patchMemory, type EvictableText } from './patchMemory.svelte';
 import {
   cleanPath,
   parseHunkHeader,
@@ -18,6 +19,14 @@ import {
 // `PatchParser` classifies lines as they complete and splits the patch
 // into files with the same rules as `parsePatchFiles`; each file is a
 // `PatchBody`, a view over line ranges of one or more stores.
+//
+// Text read from a diff counts against the memory budget
+// (`patchMemory.svelte.ts`). A store whose diff is still open can give up
+// chunk text under it and read the text again from the diff. Line
+// indexes, kinds and hunks stay resident, so everything but a line's text
+// is always answerable. A reader of evicted text either shows a
+// placeholder and asks for the text (`load`), or reads once it is back
+// (`whenResident`).
 
 export const LINE_META = 0;
 export const LINE_HUNK = 1;
@@ -56,6 +65,52 @@ export interface StoredLine {
   fold?: { id: number; lines: number };
 }
 
+/** Where a store's chunks came from, to read an evicted one again. */
+export interface PatchTextSource {
+  /** Reads the chunk at backend bytes [offset, nextOffset) again. */
+  read(offset: number, nextOffset: number): Promise<{ data: string; nextOffset: number }>;
+  release(): void;
+}
+
+/** Evicted text that can no longer be read: the diff's handle ended, the
+ * diff no longer serves the same bytes, or the store was disposed. */
+export class PatchTextLost extends Error {
+  constructor(message = 'patch text: the diff can no longer be read') {
+    super(message);
+    this.name = 'PatchTextLost';
+  }
+}
+
+/** A read of text the store does not hold. */
+export class PatchTextNotResident extends Error {
+  constructor(line: number) {
+    super(`patch store: line ${line} is not resident`);
+    this.name = 'PatchTextNotResident';
+  }
+}
+
+// A store the owner never disposed stops being counted when it is collected.
+const heldText = new FinalizationRegistry<{ bytes: number; pinned: number }>((held) => {
+  patchMemory.remove(held.bytes);
+  patchMemory.pin(-held.pinned);
+});
+
+// What a chunk's text costs: V8 holds a string with any character past
+// Latin-1 at two bytes per character.
+function textBytes(text: string): number {
+  return /[^\x00-\xff]/.test(text) ? text.length * 2 : text.length;
+}
+
+/**
+ * A copy of text read from a store that shares no memory with its chunk.
+ * V8 and JavaScriptCore slice strings by reference, so a line kept after
+ * its chunk is evicted would keep the whole chunk; slicing a
+ * concatenation flattens it into a new string first.
+ */
+export function ownText(text: string): string {
+  return (' ' + text).slice(1);
+}
+
 /**
  * The lines of one patch, stored as the chunks they arrived in.
  *
@@ -64,13 +119,39 @@ export interface StoredLine {
  * middle, and a later chunk holds its end. Lines are numbered from 0 in
  * arrival order.
  */
-export class PatchStore {
+export class PatchStore implements EvictableText {
   readonly id = nextStoreId++;
-  private readonly texts: string[] = [];
+  private readonly texts: (string | null)[] = [];
   private readonly starts: Uint32Array[] = [];
   private readonly firstLines: number[] = [];
   private readonly counts: number[] = [];
   private readonly charStarts: number[] = [];
+  // Per chunk: whether its text holds a newline and ends with one, so a
+  // line's chunks are known without its text.
+  private readonly newlines: boolean[] = [];
+  private readonly newlineEnds: boolean[] = [];
+  // Per chunk: its backend byte range (-1 when it has none) and what its
+  // text costs.
+  private readonly offsets: number[] = [];
+  private readonly nextOffsets: number[] = [];
+  private readonly sizes: number[] = [];
+  private readonly held = { bytes: 0, pinned: 0 };
+  private source: PatchTextSource | null = null;
+  private readonly reloads = new Map<number, Promise<void>>();
+  // Reads of evicted chunks run one at a time, so reads in patch order
+  // continue one backend stream.
+  private reloadChain: Promise<unknown> = Promise.resolve();
+  private readonly pins = new Map<number, number>();
+  // Bytes of the chunks pinned by `pin` and by the line still arriving;
+  // their sum is reported to the budget (`held.pinned`).
+  private pinnedBytes = 0;
+  private openPinnedBytes = 0;
+  private lastRead = -1;
+  private disposed = false;
+  private lost: PatchTextLost | null = null;
+  private lostListeners: ((err: PatchTextLost) => void)[] = [];
+  /** Whether any chunk was evicted: its text lives only in the source. */
+  evictedAny = false;
   private kinds = new Uint8Array(256);
   private hunkLines = new Int32Array(16);
   private hunkOld = new Int32Array(16);
@@ -86,16 +167,59 @@ export class PatchStore {
   private openOffset = 0;
   private openLength = 0;
 
+  constructor() {
+    heldText.register(this, this.held, this);
+  }
+
   /**
    * Appends one chunk of patch text. `onLine` runs once per line that the
    * chunk completes, in line order, with the text its first character is
    * in and that line's length; it may not read the store's line text,
-   * which is indexed after the chunk is.
+   * which is indexed after the chunk is. `span` is the chunk's backend
+   * byte range, which an evicted chunk is read again by.
    */
-  append(data: string, onLine: (line: number, text: string, offset: number, length: number) => void): void {
+  append(
+    data: string,
+    onLine: (line: number, text: string, offset: number, length: number) => void,
+    span?: { offset: number; nextOffset: number },
+  ): void {
+    const chunk = this.texts.length;
     this.texts.push(data);
     this.charStarts.push(this.totalChars);
     this.totalChars += data.length;
+    this.newlines.push(data.includes('\n'));
+    this.newlineEnds.push(data.endsWith('\n'));
+    this.offsets.push(span?.offset ?? -1);
+    this.nextOffsets.push(span?.nextOffset ?? -1);
+    const size = textBytes(data);
+    this.sizes.push(size);
+    this.hold(size);
+    this.index(data, onLine);
+    this.pinOpenLine();
+    if (this.source && span) {
+      patchMemory.offer(this, chunk, true);
+      patchMemory.enforce();
+    }
+  }
+
+  // The chunks of a line still arriving are pinned until it ends.
+  private pinOpenLine(): void {
+    let bytes = 0;
+    if (this.openLine >= 0) {
+      for (let chunk = this.openChunk; chunk < this.sizes.length; chunk += 1) bytes += this.sizes[chunk];
+    }
+    this.reportPinned(this.pinnedBytes, bytes);
+  }
+
+  private reportPinned(explicit: number, open: number): void {
+    if (this.disposed) return;
+    patchMemory.pin(explicit + open - this.held.pinned);
+    this.pinnedBytes = explicit;
+    this.openPinnedBytes = open;
+    this.held.pinned = explicit + open;
+  }
+
+  private index(data: string, onLine: (line: number, text: string, offset: number, length: number) => void): void {
     let pos = 0;
     if (this.openLine >= 0) {
       const end = data.indexOf('\n');
@@ -143,6 +267,8 @@ export class PatchStore {
   end(onLine: (line: number, text: string, offset: number, length: number) => void): void {
     if (this.openLine < 0) return;
     this.completeOpenLine(this.openLength, onLine);
+    this.pinOpenLine();
+    patchMemory.enforce();
   }
 
   // A line that spans chunks is classified from its first characters,
@@ -152,14 +278,17 @@ export class PatchStore {
     const line = this.openLine;
     this.openLine = -1;
     let prefix = '';
+    // The open line's chunks are pinned while it is open.
     for (let chunk = this.openChunk; chunk < this.texts.length && prefix.length < SPANNING_PREFIX_CHARS; chunk += 1) {
-      prefix += chunk === this.openChunk ? this.texts[chunk].slice(this.openOffset) : this.texts[chunk];
+      const text = this.texts[chunk] ?? '';
+      prefix += chunk === this.openChunk ? text.slice(this.openOffset) : text;
     }
     prefix = prefix.slice(0, Math.min(length, SPANNING_PREFIX_CHARS));
     onLine(line, prefix, 0, length);
   }
 
-  /** A store of explicitly typed lines, for patches built in memory. */
+  /** A store of explicitly typed lines, for patches built in memory. Its
+   * text is not read from a diff and is not counted. */
   static fromLines(lines: readonly StoredLine[]): PatchStore {
     const store = new PatchStore();
     if (lines.length === 0) return store;
@@ -185,6 +314,11 @@ export class PatchStore {
     }
     store.texts.push(text);
     store.charStarts.push(0);
+    store.newlines.push(true);
+    store.newlineEnds.push(true);
+    store.offsets.push(-1);
+    store.nextOffsets.push(-1);
+    store.sizes.push(textBytes(text));
     store.firstLines.push(0);
     store.counts.push(lines.length);
     store.starts.push(starts);
@@ -228,10 +362,11 @@ export class PatchStore {
     return this.folds?.get(line);
   }
 
-  /** A line's text, without its newline. */
+  /** A line's text, without its newline. Throws PatchTextNotResident
+   * when the store does not hold it. */
   text(line: number): string {
     const chunk = this.chunkOf(line);
-    const text = this.texts[chunk];
+    const text = this.residentText(chunk, line);
     const local = line - this.firstLines[chunk];
     const start = this.starts[chunk][local];
     if (local + 1 < this.counts[chunk]) return text.slice(start, this.starts[chunk][local + 1] - 1);
@@ -240,12 +375,220 @@ export class PatchStore {
     // A line longer than its chunk: the rest is in the chunks after it.
     let joined = text.slice(start);
     for (let next = chunk + 1; next < this.texts.length; next += 1) {
-      const piece = this.texts[next];
+      const piece = this.residentText(next, line);
       const end = piece.indexOf('\n');
       if (end >= 0) return joined + piece.slice(0, end);
       joined += piece;
     }
     return joined;
+  }
+
+  /** Whether the store holds a line's text. */
+  resident(line: number): boolean {
+    const first = this.chunkOf(line);
+    const last = this.endChunkOf(line, first);
+    for (let chunk = first; chunk <= last; chunk += 1) {
+      if (this.texts[chunk] === null) return false;
+    }
+    return true;
+  }
+
+  /** Whether the store holds the text of lines [start, end). */
+  residentRange(start: number, end: number): boolean {
+    if (end <= start) return true;
+    const last = this.endChunkOf(end - 1, this.chunkOf(end - 1));
+    for (let chunk = this.chunkOf(start); chunk <= last; chunk += 1) {
+      if (this.texts[chunk] === null) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Reads evicted text of lines [start, end) again. The text can be
+   * evicted again once it lands; a reader that must read all of it at
+   * once pins it first (`whenResident`). Rejects with PatchTextLost when
+   * the text can no longer be read.
+   */
+  load(start: number, end: number): Promise<void> {
+    if (end <= start) return Promise.resolve();
+    const pending: Promise<void>[] = [];
+    const last = this.endChunkOf(end - 1, this.chunkOf(end - 1));
+    for (let chunk = this.chunkOf(start); chunk <= last; chunk += 1) {
+      if (this.texts[chunk] === null) pending.push(this.reload(chunk));
+    }
+    if (pending.length === 0) return Promise.resolve();
+    return Promise.all(pending).then(() => undefined);
+  }
+
+  /** Keeps the chunks of lines [start, end) from eviction until the
+   * returned function runs. */
+  pin(start: number, end: number): () => void {
+    if (end <= start) return () => {};
+    const first = this.chunkOf(start);
+    const last = this.endChunkOf(end - 1, this.chunkOf(end - 1));
+    let bytes = this.pinnedBytes;
+    for (let chunk = first; chunk <= last; chunk += 1) {
+      const count = this.pins.get(chunk) ?? 0;
+      if (count === 0) bytes += this.sizes[chunk];
+      this.pins.set(chunk, count + 1);
+    }
+    this.reportPinned(bytes, this.openPinnedBytes);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      let bytes = this.pinnedBytes;
+      for (let chunk = first; chunk <= last; chunk += 1) {
+        const count = (this.pins.get(chunk) ?? 1) - 1;
+        if (count > 0) {
+          this.pins.set(chunk, count);
+        } else {
+          this.pins.delete(chunk);
+          bytes -= this.sizes[chunk];
+        }
+      }
+      this.reportPinned(bytes, this.openPinnedBytes);
+      patchMemory.enforce();
+    };
+  }
+
+  /** Makes chunks appended from now on, and every chunk held so far,
+   * evictable: they can be read again from `source`. */
+  attachSource(source: PatchTextSource): void {
+    this.source = source;
+    this.lastRead = -1;
+    for (let chunk = 0; chunk < this.texts.length; chunk += 1) {
+      if (this.texts[chunk] !== null && this.offsets[chunk] >= 0) patchMemory.offer(this, chunk, true);
+    }
+    patchMemory.enforce();
+  }
+
+  /** Stops evicting: every chunk is resident and stays. Returns the source
+   * for its owner to release. */
+  detachSource(): PatchTextSource | null {
+    const source = this.source;
+    this.source = null;
+    for (let chunk = 0; chunk < this.texts.length; chunk += 1) patchMemory.withdraw(this, chunk);
+    return source;
+  }
+
+  /**
+   * Runs `listener` once evicted text can no longer be read, at once when
+   * that already happened. Whoever shows the store reads the diff again.
+   */
+  whenLost(listener: (err: PatchTextLost) => void): void {
+    if (this.lost) listener(this.lost);
+    else this.lostListeners.push(listener);
+  }
+
+  /** Stops counting the store's text and releases its source. Text it
+   * still holds stays readable; evicted text is lost. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.reportPinned(0, 0);
+    this.disposed = true;
+    this.lostListeners = [];
+    for (let chunk = 0; chunk < this.texts.length; chunk += 1) patchMemory.withdraw(this, chunk);
+    patchMemory.remove(this.held.bytes);
+    this.held.bytes = 0;
+    heldText.unregister(this);
+    const source = this.source;
+    this.source = null;
+    source?.release();
+  }
+
+  pinned(chunk: number): boolean {
+    return (this.openLine >= 0 && chunk >= this.openChunk) || this.reloads.has(chunk) || this.pins.has(chunk);
+  }
+
+  evict(chunk: number): number {
+    if (this.texts[chunk] === null) return 0;
+    this.texts[chunk] = null;
+    this.evictedAny = true;
+    if (chunk === this.lastRead) this.lastRead = -1;
+    const size = this.sizes[chunk];
+    this.held.bytes -= size;
+    return size;
+  }
+
+  private hold(bytes: number): void {
+    if (this.disposed) return;
+    this.held.bytes += bytes;
+    patchMemory.add(bytes);
+  }
+
+  private residentText(chunk: number, line: number): string {
+    const text = this.texts[chunk];
+    if (text === null) throw new PatchTextNotResident(line);
+    // Consecutive reads of one chunk are one use.
+    if (chunk !== this.lastRead) {
+      this.lastRead = chunk;
+      patchMemory.touch(this, chunk);
+    }
+    return text;
+  }
+
+  private reload(chunk: number): Promise<void> {
+    const pending = this.reloads.get(chunk);
+    if (pending) return pending;
+    const source = this.source;
+    if (this.lost) return Promise.reject(this.lost);
+    if (!source || this.disposed) return Promise.reject(new PatchTextLost('patch text: the diff was closed'));
+    const offset = this.offsets[chunk];
+    const next = this.nextOffsets[chunk];
+    const chars = this.charLength(chunk);
+    const read = this.reloadChain
+      .then(() => {
+        if (this.disposed) throw new PatchTextLost('patch text: the diff was closed');
+        return source.read(offset, next);
+      })
+      .then((answer) => {
+        if (answer.nextOffset !== next || answer.data.length !== chars) {
+          throw new PatchTextLost('patch text: the diff no longer serves the same chunk');
+        }
+        if (this.disposed || this.texts[chunk] !== null) return;
+        this.texts[chunk] = answer.data;
+        this.hold(this.sizes[chunk]);
+        patchMemory.offer(this, chunk, false);
+        patchMemory.restored();
+      })
+      .catch((err: unknown) => {
+        // A chunk that cannot be read is text this store can no longer
+        // show, whatever the cause; its owner reads the diff again.
+        const lost = err instanceof PatchTextLost
+          ? err
+          : new PatchTextLost(`patch text: ${err instanceof Error ? err.message : String(err)}`);
+        if (!this.lost && !this.disposed) {
+          this.lost = lost;
+          const listeners = this.lostListeners;
+          this.lostListeners = [];
+          for (const listener of listeners) listener(lost);
+        }
+        throw lost;
+      })
+      .finally(() => {
+        this.reloads.delete(chunk);
+        patchMemory.enforce();
+      });
+    this.reloads.set(chunk, read);
+    this.reloadChain = read.catch(() => {});
+    return read;
+  }
+
+  private charLength(chunk: number): number {
+    return (chunk + 1 < this.charStarts.length ? this.charStarts[chunk + 1] : this.totalChars) - this.charStarts[chunk];
+  }
+
+  // The chunk a line's text ends in. A chunk's last line continues into
+  // the chunks after it until one holds a newline.
+  private endChunkOf(line: number, first: number): number {
+    if (line - this.firstLines[first] + 1 < this.counts[first]) return first;
+    let chunk = first;
+    while (!this.newlineEnds[chunk] && chunk + 1 < this.texts.length) {
+      chunk += 1;
+      if (this.newlines[chunk]) break;
+    }
+    return chunk;
   }
 
   /** Absolute UTF-16 offset of a line's first character. */
@@ -257,11 +600,11 @@ export class PatchStore {
   /** Absolute UTF-16 offset just past a line's last character. */
   lineEnd(line: number): number {
     if (line + 1 < this.lineCount) return this.lineStart(line + 1) - 1;
-    const last = this.texts[this.texts.length - 1] ?? '';
-    return this.totalChars - (last.endsWith('\n') ? 1 : 0);
+    return this.totalChars - (this.newlineEnds[this.newlineEnds.length - 1] ? 1 : 0);
   }
 
-  /** Lines [start, end) joined with newlines. */
+  /** Lines [start, end) joined with newlines. Throws PatchTextNotResident
+   * when the store does not hold all of them. */
   textRange(start: number, end: number): string {
     if (end <= start) return '';
     const from = this.lineStart(start);
@@ -269,14 +612,15 @@ export class PatchStore {
     const first = this.chunkOf(start);
     const last = this.chunkOf(end - 1);
     const firstBase = this.charStarts[first];
-    if (first === last && to - firstBase <= this.texts[first].length) {
-      return this.texts[first].slice(from - firstBase, to - firstBase);
+    const firstText = this.residentText(first, start);
+    if (first === last && to - firstBase <= firstText.length) {
+      return firstText.slice(from - firstBase, to - firstBase);
     }
     let out = '';
     for (let chunk = first; chunk < this.texts.length; chunk += 1) {
       const base = this.charStarts[chunk];
-      const text = this.texts[chunk];
       if (base >= to) break;
+      const text = this.residentText(chunk, start);
       out += text.slice(Math.max(0, from - base), Math.min(text.length, to - base));
     }
     return out;
@@ -317,11 +661,11 @@ export class PatchStore {
     this.kinds = grown;
   }
 
-  /** Bytes the store holds, for tests and memory accounting. */
+  /** Bytes the store holds, for tests and measurement. */
   heldBytes(): number {
     let bytes = this.kinds.byteLength + this.hunkLines.byteLength * 3;
     for (let chunk = 0; chunk < this.texts.length; chunk += 1) {
-      bytes += this.texts[chunk].length + this.starts[chunk].byteLength;
+      bytes += (this.texts[chunk] === null ? 0 : this.sizes[chunk]) + this.starts[chunk].byteLength;
     }
     return bytes;
   }
@@ -457,9 +801,33 @@ export class PatchBody {
     return store.kind(line);
   }
 
+  /** A line's text. Throws PatchTextNotResident when it is evicted. */
   text(index: number): string {
     const { store, line } = this.locate(index);
     return store.text(line);
+  }
+
+  /** Whether a line's text is resident. */
+  residentLine(index: number): boolean {
+    const { store, line } = this.locate(index);
+    return store.resident(line);
+  }
+
+  /** Whether the text of every line is resident. */
+  resident(): boolean {
+    return this.segments.every((segment) => segment.store.residentRange(segment.start, segment.end));
+  }
+
+  /** Reads the evicted text of lines [start, end) again (PatchStore.load). */
+  loadLines(start: number, end: number): Promise<void> {
+    return Promise.all(
+      this.slice(start, end).map((range) => range.store.load(range.start, range.end)),
+    ).then(() => undefined);
+  }
+
+  /** Runs `read` with lines [start, end) resident (whenResident). */
+  whenResident<T>(read: () => T, start = 0, end = this.lineCount): Promise<T> {
+    return whenResident(this.slice(start, end), read);
   }
 
   hunkOldStart(index: number): number {
@@ -481,6 +849,7 @@ export class PatchBody {
    * The text the highlighter aligns spans with: every line joined by
    * newlines, marker and fold rows replaced by a non-content marker (see
    * `diffSpanCache.svelte.ts` patchTextOf, which this must match).
+   * Throws PatchTextNotResident when any line is evicted.
    */
   patchText(): string {
     if (!this.hasMarkers) {
@@ -494,9 +863,11 @@ export class PatchBody {
   }
 
   /** The highlighter cache key for this file's patch text
-   * (`contentKey` of `patchText()`), computed once. */
-  contentKey(): string {
+   * (`contentKey` of `patchText()`), computed once. Null while any line
+   * is evicted and the key was not computed yet. */
+  contentKey(): string | null {
     if (this.key !== null) return this.key;
+    if (!this.resident()) return null;
     let hash = 0x811c9dc5;
     if (!this.hasMarkers) {
       for (let index = 0; index < this.segments.length; index += 1) {
@@ -525,7 +896,8 @@ export class PatchBody {
   }
 
   /** The file's lines as PatchLine objects. Allocates per line: only for
-   * surfaces that render a whole file (the workflow gate diff). */
+   * surfaces that render a whole file (the workflow gate diff). Throws
+   * PatchTextNotResident when any line is evicted. */
   toPatchLines(): PatchLine[] {
     const lines: PatchLine[] = [];
     for (let index = 0; index < this.lineCount; index += 1) {
@@ -552,6 +924,24 @@ export class PatchBody {
     }
     const segment = this.segments[low];
     return { store: segment.store, line: segment.start + index - this.bases[low] };
+  }
+}
+
+/**
+ * Runs `read` once the text of every range is resident, and keeps it
+ * resident while `read` runs; synchronously when it already is. Rejects
+ * with PatchTextLost when evicted text can no longer be read.
+ */
+export async function whenResident<T>(ranges: readonly BodySegment[], read: () => T): Promise<T> {
+  const releases = ranges.map((range) => range.store.pin(range.start, range.end));
+  try {
+    const loads = ranges
+      .filter((range) => !range.store.residentRange(range.start, range.end))
+      .map((range) => range.store.load(range.start, range.end));
+    if (loads.length > 0) await Promise.all(loads);
+    return read();
+  } finally {
+    for (const release of releases) release();
   }
 }
 
@@ -672,12 +1062,13 @@ export class PatchParser {
     this.completeLine(line, text, offset, length);
   };
 
-  /** Appends patch text; any chunk boundary is allowed. */
-  append(data: string): void {
+  /** Appends patch text; any chunk boundary is allowed. `span` is the
+   * chunk's backend byte range, for a store that can evict it. */
+  append(data: string, span?: { offset: number; nextOffset: number }): void {
     if (this.ended) throw new Error('patch parser: append after end');
     if (data === '') return;
     this.hash = appendFNV1a32(this.hash, data);
-    this.store.append(data, this.onLine);
+    this.store.append(data, this.onLine, span);
     this.publish();
   }
 

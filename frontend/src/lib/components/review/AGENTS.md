@@ -31,8 +31,11 @@ PR stores; components own presentation and interaction.
   (`components/chat/markdown/forgeAttachmentContext.ts`) for its whole subtree;
   every `ChatMarkdown` under it renders forge-hosted attachments through
   `utils/forgeAttachments.ts`. Do not pass the PR source as a prop.
-- Collapse and load large files explicitly. Avoid mounting hidden diff bodies or
-  preloading every payload.
+- A diff is read whole into compact storage and its text is held within the
+  patch memory budget. Render evicted text as placeholders and read exact text
+  through `whenResident`; see
+  [review diff streaming](../../../../../docs/architecture/review-diff-streaming.md).
+  Do not mount hidden diff bodies.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

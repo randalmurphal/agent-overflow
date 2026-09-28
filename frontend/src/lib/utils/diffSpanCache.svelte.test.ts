@@ -22,6 +22,8 @@ import { applyContextExpansion, nextExpansionVersion } from './diffContextExpans
 import { contentKey } from './fnv1a';
 import { parsePatchFiles, type PatchFile, type PatchLine } from './patchFiles';
 import { parseReviewFiles } from './patchStore';
+import { patchMemory, setPatchTextBudgetForTest } from './patchMemory.svelte';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 import { resetSyntaxClassNamesForTest } from './syntaxSpans';
 
 function makeFile(path: string, bodies: string[]): PatchFile {
@@ -132,6 +134,77 @@ describe('requestFileSpans', () => {
     await requestReviewFileSpans(again, 'thread-1');
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(getSpansForReviewLine(again, 3, line)?.r).toEqual(['const y = 2;'.length, 1]);
+  });
+
+  it('reads a review file\'s evicted text again to key and send it', async () => {
+    const pad = `diff --git a/pad.ts b/pad.ts\n@@ -1,0 +1,1 @@\n+${'p'.repeat(200)}\n`;
+    const patch = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      '@@ -1,1 +1,2 @@',
+      '+const x = 1;',
+      '+const y = 2;',
+    ].join('\n');
+    setPatchTextBudgetForTest(220);
+    const { parser, files } = streamPatch(`${pad}${patch}\n`, 20);
+    try {
+      const file = files[1];
+      expect(file.body.resident()).toBe(false);
+      const line = { content: '+const y = 2;', type: 'add' } as const;
+      expect(getSpansForReviewLine(file, 3, line)).toBeNull();
+      const rpc = setBindingMock('HighlightPatch', async () => keywordResult(makeFile('src/a.ts', ['const x = 1;', 'const y = 2;'])));
+
+      await requestReviewFileSpans(file, 'thread-1');
+
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0][0]).toEqual({ path: 'src/a.ts', patch });
+      expect(getSpansForReviewLine(file, 3, line)?.r).toEqual(['const y = 2;'.length, 1]);
+    } finally {
+      parser.store.dispose();
+      setPatchTextBudgetForTest(null);
+    }
+  });
+
+  it('requests nothing for text that can no longer be read, and reports nothing', async () => {
+    const pad = `diff --git a/pad.ts b/pad.ts\n@@ -1,0 +1,1 @@\n+${'p'.repeat(200)}\n`;
+    setPatchTextBudgetForTest(220);
+    const { parser, files, source } = streamPatch(`${pad}diff --git a/src/a.ts b/src/a.ts\n@@ -1,1 +1,1 @@\n+const x = 1;\n`, 20);
+    try {
+      source.read.mockRejectedValue(new Error('review diff: not open'));
+      const rpc = setBindingMock('HighlightPatch', async () => ({ lang: 'plaintext', lines: [], truncated: false }));
+
+      await requestReviewFileSpans(files[1], 'thread-1');
+
+      expect(rpc).not.toHaveBeenCalled();
+      expect(getToasts()).toEqual([]);
+    } finally {
+      parser.store.dispose();
+      setPatchTextBudgetForTest(null);
+    }
+  });
+
+  it('sends nothing when a keyed file\'s text can no longer be read, and reports nothing', async () => {
+    const pad = `diff --git a/pad.ts b/pad.ts\n@@ -1,0 +1,1 @@\n+${'p'.repeat(200)}\n`;
+    const { parser, files, source } = streamPatch(`${pad}diff --git a/src/a.ts b/src/a.ts\n@@ -1,1 +1,1 @@\n+const x = 1;\n`, 20);
+    try {
+      const file = files[1];
+      expect(file.body.contentKey()).not.toBeNull();
+      setPatchTextBudgetForTest(1);
+      patchMemory.enforce();
+      expect(file.body.resident()).toBe(false);
+      source.read.mockRejectedValue(new Error('review diff: not open'));
+      const rpc = setBindingMock('HighlightPatch', async () => ({ lang: 'plaintext', lines: [], truncated: false }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await requestReviewFileSpans(file, 'thread-1');
+
+      expect(rpc).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      expect(getToasts()).toEqual([]);
+      warn.mockRestore();
+    } finally {
+      parser.store.dispose();
+      setPatchTextBudgetForTest(null);
+    }
   });
 
   it('never sends a review file over the backend cap', async () => {

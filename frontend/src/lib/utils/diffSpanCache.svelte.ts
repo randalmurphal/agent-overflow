@@ -36,7 +36,7 @@ import { contentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
-import type { ReviewFile } from './patchStore';
+import { PatchTextLost, type ReviewFile } from './patchStore';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,
@@ -347,7 +347,9 @@ export async function requestFileSpans(
 /**
  * requestFileSpans for a review file: keyed by its body's content key,
  * and never sent when its patch is over the backend's input cap. Result
- * lines index 1:1 with the body's lines.
+ * lines index 1:1 with the body's lines. Evicted text is read again
+ * first; text that can no longer be read requests nothing, since its
+ * owner reads the diff again.
  */
 export async function requestReviewFileSpans(
   file: ReviewFile,
@@ -356,13 +358,24 @@ export async function requestReviewFileSpans(
 ): Promise<void> {
   const body = file.body;
   if (body.lineCount === 0 || body.textLength > HIGHLIGHT_MAX_PATCH_CHARS) return;
-  await requestSpans(`${file.path} ${body.contentKey()}`, file.path, () => body.patchText(), owner, context);
+  // The key reads the text once; the patch is read only for a request.
+  let key = body.contentKey();
+  if (key === null) {
+    try {
+      key = await body.whenResident(() => body.contentKey());
+    } catch (err) {
+      if (err instanceof PatchTextLost) return;
+      throw err;
+    }
+    if (key === null) return;
+  }
+  await requestSpans(`${file.path} ${key}`, file.path, () => body.whenResident(() => body.patchText()), owner, context);
 }
 
 async function requestSpans(
   base: string,
   path: string,
-  patchOf: () => string,
+  patchOf: () => string | Promise<string>,
   owner: string,
   context?: PatchScopeContext | null,
 ): Promise<void> {
@@ -399,17 +412,19 @@ async function requestSpans(
     if (!retry) return;
   }
   if (inFlight.has(key)) return;
-  const patch = patchOf();
-  if (patch.length > HIGHLIGHT_MAX_PATCH_CHARS) {
-    // Over the backend's cap: its answer is all plain, final for this
-    // content, so record that instead of re-sending it on every retry.
-    insert(key, [], false, false);
-    return;
-  }
   const flight = {};
   inFlight.set(key, flight);
 
   try {
+    const pending = patchOf();
+    const patch = typeof pending === 'string' ? pending : await pending;
+    if (inFlight.get(key) !== flight) return;
+    if (patch.length > HIGHLIGHT_MAX_PATCH_CHARS) {
+      // Over the backend's cap: its answer is all plain, final for this
+      // content, so record that instead of re-sending it on every retry.
+      insert(key, [], false, false);
+      return;
+    }
     let result: { lines: EncodedLine[] | null; incomplete: boolean; primed?: boolean } | null =
       null;
     if (primed) {
@@ -462,7 +477,8 @@ async function requestSpans(
     }
   } catch (err) {
     if (inFlight.get(key) !== flight) return;
-    reportSpanFailure(path, err);
+    // Text that can no longer be read is its owner's to read again.
+    if (!(err instanceof PatchTextLost)) reportSpanFailure(path, err);
     const entry = entries.get(key);
     if (!entry) {
       // No entry landed: drop the ownership record too, or a
@@ -738,8 +754,11 @@ export function getSpansForReviewLine(
 ): EncodedLine | null {
   void generation;
   const body = file.body;
-  if (body.textLength <= HIGHLIGHT_MAX_PATCH_CHARS) {
-    const direct = entryForKey(`${file.path} ${body.contentKey()}`, context);
+  // A body with evicted text has no key until it is read again; the span
+  // request that reads it bumps the generation when its answer lands.
+  const key = body.textLength <= HIGHLIGHT_MAX_PATCH_CHARS ? body.contentKey() : null;
+  if (key !== null) {
+    const direct = entryForKey(`${file.path} ${key}`, context);
     if (direct) {
       const span = direct.spans[lineIndex] ?? null;
       painted?.note(file.path, line, span);

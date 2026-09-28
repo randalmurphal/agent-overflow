@@ -19,7 +19,10 @@ Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
 branch has the PR; it fetches the PR head and diffs it against the
-merge base (`OpenPRDiff`).
+merge base (`OpenPRDiff`). Diffs of every scope are read in chunks with no
+size limit, and the frontend holds patch text within a memory budget
+([review diff streaming](review-diff-streaming.md)), replacing the
+constraint below that full patch text is parsed and held.
 
 ## Goal
 

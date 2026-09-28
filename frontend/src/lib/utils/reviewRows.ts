@@ -12,6 +12,7 @@ import {
   type AnchorLines,
   type RowStart,
 } from './patchRows';
+import { patchMemory, patchTextVersion } from './patchMemory.svelte';
 import type { ReviewFile } from './patchStore';
 import type { RowEstimate } from './virtual/types';
 
@@ -370,6 +371,12 @@ export interface MaterializedBlock {
   splitRows?: SplitDisplayRow[];
 }
 
+function materializedBlock(file: ReviewFile, block: LineBlockRow, rows: PatchDisplayRow[]): MaterializedBlock {
+  const out: MaterializedBlock = { file, rows };
+  if (block.splitCount !== undefined) out.splitRows = buildSplitDisplayRows(rows);
+  return out;
+}
+
 /** Blocks one review surface materialized, with room for several screens. */
 const BLOCK_ROWS_CACHE_MAX = 512;
 
@@ -383,9 +390,16 @@ const fileIds = new WeakMap<ReviewFile, number>();
  * shares with the previous one and keyed rows do not re-render. Holds the
  * most recently used blocks of the files the surface shows; an evicted
  * block is rebuilt when it renders again.
+ *
+ * A block over evicted text renders placeholder rows until its text is
+ * read again. It is then built with that text pinned, so it completes
+ * even when the text on screen alone passes the memory budget. Rows own
+ * their text (patchRows.ts), so a kept block holds no chunk.
  */
 export class BlockRowsCache {
   private readonly blocks = new Map<string, MaterializedBlock>();
+  private readonly filling = new Set<string>();
+  private shown: Set<ReviewFile> | null = null;
 
   get(file: ReviewFile, block: LineBlockRow): MaterializedBlock {
     let fileId = fileIds.get(file);
@@ -400,24 +414,48 @@ export class BlockRowsCache {
       this.blocks.set(key, cached);
       return cached;
     }
-    const rows = materializeRows(file, block.start, block.count);
-    const out: MaterializedBlock = { file, rows };
-    if (block.splitCount !== undefined) out.splitRows = buildSplitDisplayRows(rows);
-    if (this.blocks.size >= BLOCK_ROWS_CACHE_MAX) {
-      const oldest = this.blocks.keys().next().value;
-      if (oldest !== undefined) this.blocks.delete(oldest);
+    const built = materializeRows(file, block.start, block.count);
+    const out = materializedBlock(file, block, built.rows);
+    if (!built.complete) {
+      // Rendered again when the filled block lands.
+      patchTextVersion();
+      this.fill(key, file, block, built.lines);
+      return out;
     }
-    this.blocks.set(key, out);
+    this.keep(key, out);
     return out;
   }
 
   /** Drops the blocks of files the surface no longer shows. */
   retain(files: readonly ReviewFile[]): void {
-    if (this.blocks.size === 0) return;
     const shown = new Set(files);
+    this.shown = shown;
     for (const [key, block] of this.blocks) {
       if (!shown.has(block.file)) this.blocks.delete(key);
     }
+  }
+
+  // A failed read marks its store lost, and the store's owner reads the
+  // diff again; the placeholders stay until then.
+  private fill(key: string, file: ReviewFile, block: LineBlockRow, lines: { start: number; end: number }): void {
+    if (this.filling.has(key)) return;
+    this.filling.add(key);
+    file.body.whenResident(() => materializeRows(file, block.start, block.count), lines.start, lines.end)
+      .then((built) => {
+        if (!built.complete || this.blocks.has(key) || (this.shown && !this.shown.has(file))) return;
+        this.keep(key, materializedBlock(file, block, built.rows));
+        patchMemory.restored();
+      })
+      .catch(() => {})
+      .finally(() => this.filling.delete(key));
+  }
+
+  private keep(key: string, block: MaterializedBlock): void {
+    if (this.blocks.size >= BLOCK_ROWS_CACHE_MAX) {
+      const oldest = this.blocks.keys().next().value;
+      if (oldest !== undefined) this.blocks.delete(oldest);
+    }
+    this.blocks.set(key, block);
   }
 
   get size(): number {

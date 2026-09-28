@@ -41,9 +41,13 @@ import {
 } from '../utils/diffSpanCache.svelte';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { REVIEW_DIFF_READ_BYTES } from './reviewDiffStream';
+import { patchTextHeldBytes, setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
+import { PatchTextLost } from '../utils/patchStore';
+import { mergePatchFilesByPath, parsePatchFiles } from '../utils/patchFiles';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
 function rowsOf(file: ReviewFile): PatchDisplayRow[] {
-  return materializeRows(file, FILE_START, displayRowCount(file));
+  return materializeRows(file, FILE_START, displayRowCount(file)).rows;
 }
 
 function linesOf(file: ReviewFile | undefined): PatchLine[] | undefined {
@@ -3070,5 +3074,156 @@ describe('reviewPane store: painted span retention', () => {
 
     disposeReviewStateForPane('pane-1');
     expect(colored(state.paintedSpans, a)).toBe(false);
+  });
+});
+
+describe('reviewPane store — diffs past the memory budget', () => {
+  const diagnostics = installDiagnosticsCapture();
+  afterEach(() => {
+    // Their diffs keep handles: let them go while the release mock stands.
+    __resetReviewPaneStateForTest();
+    setPatchTextBudgetForTest(null);
+  });
+
+  const patch = [patchFor('src/a.ts', 3), patchFor('src/b.ts', 3), patchFor('src/c.ts', 3)].join('\n');
+
+  it('keeps the handle to read evicted text again, and releases it with the diff', async () => {
+    const base = patchTextHeldBytes();
+    setPatchTextBudgetForTest(100);
+    const { read, release } = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(release).not.toHaveBeenCalled();
+    expect(patchTextHeldBytes() - base).toBeLessThanOrEqual(100);
+
+    const last = state.files[2];
+    expect(last.body.resident()).toBe(false);
+    read.mockClear();
+    const lines = await last.body.whenResident(() => last.body.toPatchLines());
+    expect(lines.map((line) => line.content)).toEqual(patchFor('src/c.ts', 3).split('\n'));
+    expect(read.mock.calls.length).toBeGreaterThan(0);
+    for (const [id, offset, size] of read.mock.calls as [string, number, number][]) {
+      expect(id).toBe('diff-1');
+      expect(size).toBe(Math.min(40, patch.length - offset));
+    }
+
+    state.dispose();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith('diff-1');
+    expect(patchTextHeldBytes()).toBe(base);
+  });
+
+  it('lets the previous diff go when a reload replaces it', async () => {
+    setPatchTextBudgetForTest(100);
+    const { release } = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const first = state.files[2];
+
+    await state.reload();
+    expect(release).toHaveBeenCalledTimes(1);
+    await expect(first.body.loadLines(0, 1)).rejects.toBeInstanceOf(PatchTextLost);
+  });
+
+  it('reads the diff again when its evicted text can no longer be read', async () => {
+    setPatchTextBudgetForTest(100);
+    const { open, read } = installChunkedDiff('OpenWorkspaceDiff', patch, 40);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    read.mockImplementationOnce(async () => { throw new Error('review diff: not open'); });
+
+    await expect(state.files[2].body.loadLines(0, 1)).rejects.toBeInstanceOf(PatchTextLost);
+    await vi.waitFor(() => {
+      expect(open).toHaveBeenCalledTimes(2);
+    });
+    await waitLoaded(state);
+    expect(state.error).toBeNull();
+    expect(state.files.map((file) => file.path)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(await diagnostics.messages()).toContain('review diff: evicted text could not be read again');
+  });
+
+  function editSection(path: string, start: number, text: string): string {
+    return [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -${start},1 +${start},1 @@`,
+      `-old ${text}`,
+      `+new ${text}`,
+    ].join('\n');
+  }
+
+  function installEdits(turn: string) {
+    setBindingMock('ListThreadEditDiffs', async () => ({
+      entries: [{ itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited', paths: ['x.go'], insertions: 1, deletions: 1, createdAt: 1 }],
+      turnLabels: [{ turnIndex: 1, label: 'edit' }],
+    }));
+    installChunkedDiff('OpenTurnEditsDiff', turn, 30);
+    return setBindingMock('VerifyEditDiffs', async (_threadId, req) => ({
+      expandablePaths: (req as { files: { path: string }[] }).files.map((file) => file.path),
+    }));
+  }
+
+  it('merges a path whose sections were evicted while the turn arrived', async () => {
+    const turn = [editSection('x.go', 1, 'a'), editSection('y.go', 1, 'b'), editSection('x.go', 9, 'c')].join('\n');
+    installEdits(turn);
+    setPatchTextBudgetForTest(1);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    const expected = mergePatchFilesByPath(parsePatchFiles(turn));
+    expect(state.files.map((file) => file.path)).toEqual(['x.go', 'y.go']);
+    const merged = state.files.find((file) => file.path === 'x.go')!;
+    expect(await merged.body.whenResident(() => merged.body.toPatchLines())).toEqual(expected[0].lines);
+  });
+
+  it('verifies edit files whose text was evicted', async () => {
+    const turn = [editSection('x.go', 1, 'a'), editSection('y.go', 1, 'b')].join('\n');
+    const verify = installEdits(turn);
+    setPatchTextBudgetForTest(1);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    await vi.waitFor(() => {
+      expect(state.files.every((file) => file.suppressGaps === undefined)).toBe(true);
+    });
+    const sent = verify.mock.calls.flatMap((call) => (call[1] as { files: { path: string; verifyPatch: string }[] }).files);
+    expect(sent.map((file) => file.verifyPatch)).toEqual(parseReviewFiles(turn).map((file) => file.body.patchText()));
+  });
+
+  it('expands a gap in a file whose hunk headings were evicted', async () => {
+    const filler = patchFor('src/big.ts', 20);
+    const gapped = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -10,2 +10,2 @@ function app()',
+      ' ctx',
+      '-old',
+      '+new',
+    ].join('\n');
+    installChunkedDiff('OpenWorkspaceDiff', `${filler}\n${gapped}\n`, 30);
+    setBindingMock('GetDiffContextLines', async (_ws, req) => {
+      const { startLine, endLine } = req as { startLine: number; endLine: number };
+      return {
+        lines: Array.from({ length: endLine - startLine + 1 }, (_, i) => `src ${startLine + i}`),
+        startLine,
+        eof: false,
+        totalLines: 0,
+      };
+    });
+    setPatchTextBudgetForTest(100);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    const app = () => state.files.find((file) => file.path === 'src/app.ts')!;
+    expect(app().body.resident()).toBe(false);
+    const leading = rowsOf(await app().body.whenResident(() => app())).find((row) => row.gap)?.gap;
+
+    await state.expandDiffContext('src/app.ts', leading!, 'all');
+    expect(state.error).toBeNull();
+    const expanded = app();
+    expect(await expanded.body.whenResident(() => expanded.body.text(3))).toBe('@@ -1,11 +1,11 @@ function app()');
   });
 });

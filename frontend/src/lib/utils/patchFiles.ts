@@ -45,6 +45,9 @@ export interface PatchDisplayRow {
    * materializer (`patchRows.ts`); PatchFile rows look lines up by
    * identity instead. */
   lineIndex?: number;
+  /** The line's text is evicted and being read again (`patchStore.ts`):
+   * `line.content` is empty until the row is materialized again. */
+  pending?: boolean;
 }
 
 export interface SplitDisplayRow {

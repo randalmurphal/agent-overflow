@@ -185,10 +185,10 @@ function expectSameFile(review: ReviewFile, parsed: PatchFile): void {
       const reviewVariant: ReviewFile = { ...review, newSideTotal, suppressGaps: suppressGaps || review.suppressGaps };
       const expected = buildPatchDisplayRows(parsed.lines, newSideTotal, suppressGaps || parsed.suppressGaps === true);
       expect(displayRowCount(reviewVariant)).toBe(expected.length);
-      expect(withoutLineIndex(materializeRows(reviewVariant, FILE_START, expected.length + 5))).toEqual(expected);
+      expect(withoutLineIndex(materializeRows(reviewVariant, FILE_START, expected.length + 5).rows)).toEqual(expected);
       for (let start = 0; start < expected.length; start += 7) {
         const count = 11;
-        const rows = materializeRows(reviewVariant, rowStartAt(reviewVariant, start), count);
+        const rows = materializeRows(reviewVariant, rowStartAt(reviewVariant, start), count).rows;
         expect(withoutLineIndex(rows)).toEqual(expected.slice(start, start + count));
         expect(splitRowCount(reviewVariant, rowStartAt(reviewVariant, start), count))
           .toBe(buildSplitDisplayRows(expected.slice(start, start + count)).length);
@@ -242,7 +242,7 @@ describe('PatchParser', () => {
     const patch = `diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -1 +1 @@\n-${long}\n+${long}y\n`;
     const { files } = parseInChunks(patch, (index) => (index % 2 === 0 ? 700 : 1300));
     expectParity(patch, files);
-    const rows = materializeRows(files[0], FILE_START, 10);
+    const rows = materializeRows(files[0], FILE_START, 10).rows;
     expect(rows.filter((row) => !row.gap).map((row) => row.line.content.length)).toEqual([5001, 5002]);
   });
 

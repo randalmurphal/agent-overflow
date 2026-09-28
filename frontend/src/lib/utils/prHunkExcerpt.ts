@@ -8,11 +8,13 @@ interface ExcerptRow {
   newLine: number;
 }
 
-export function hunkExcerptForComment(
+/** The rows around a comment's line, as posted with it. Reads evicted
+ * text again first. */
+export async function hunkExcerptForComment(
   files: readonly ReviewFile[],
   comment: Pick<DiffReviewComment, 'filePath' | 'oldLine' | 'newLine' | 'side'>,
   context = 3,
-): string {
+): Promise<string> {
   const file = files.find((candidate) => candidate.path === comment.filePath);
   if (!file || comment.side === 'file') return '';
   // Gap rows are UI affordances, not content — an excerpt line for one
@@ -36,7 +38,9 @@ export function hunkExcerptForComment(
     }
   }
   if (after < 0) return '';
-  return excerpt.map((row) => formatRow(file, row)).join('\n');
+  const first = excerpt[0].lineIndex;
+  const last = excerpt[excerpt.length - 1].lineIndex;
+  return file.body.whenResident(() => excerpt.map((row) => formatRow(file, row)).join('\n'), first, last + 1);
 }
 
 function rowMatchesComment(

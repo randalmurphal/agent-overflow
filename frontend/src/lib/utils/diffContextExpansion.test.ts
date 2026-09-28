@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   applyContextExpansion,
   DIFF_CONTEXT_EXPAND_STEP,
   expansionFetchRange,
+  readHunkHeadings,
   type ContextExpansionState,
 } from './diffContextExpansion';
 import type { DiffGap, PatchDisplayRow } from './patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from './patchRows';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { setPatchTextBudgetForTest } from './patchMemory.svelte';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 
 // Two hunks with a known between-gap (new-side 14..41), a leading gap
 // (1..9), and an unknown-size trailing gap starting at 44. Hunk 1 nets
@@ -33,7 +36,7 @@ function fileOf(patch: string): ReviewFile {
 }
 
 function rowsOf(file: ReviewFile): PatchDisplayRow[] {
-  return materializeRows(file, FILE_START, displayRowCount(file));
+  return materializeRows(file, FILE_START, displayRowCount(file)).rows;
 }
 
 function gapsOf(file: ReviewFile): DiffGap[] {
@@ -247,5 +250,28 @@ index 1111111..2222222 100644
     expect(expanded.body.patchText()).toBe(contents(expanded).join('\n'));
     // The original lines are read from the parsed store, not copied.
     expect(expanded.body.segments.some((segment) => segment.store === file.body.segments[0].store)).toBe(true);
+  });
+});
+
+describe('applyContextExpansion over evicted text', () => {
+  afterEach(() => setPatchTextBudgetForTest(null));
+
+  it('builds from the headings read with the expansion, whatever text is resident', async () => {
+    const padding = `diff --git a/pad.ts b/pad.ts\n--- a/pad.ts\n+++ b/pad.ts\n@@ -1,0 +1,1 @@\n+${'p'.repeat(400)}\n`;
+    setPatchTextBudgetForTest(420);
+    const { parser, files } = streamPatch(padding + midFilePatch, 30);
+    try {
+      const file = files.find((candidate) => candidate.path === 'app.ts')!;
+      expect(file.body.resident()).toBe(false);
+      const headings = await readHunkHeadings(file.body);
+      expect([...headings]).toEqual([[3, ' function first()'], [9, ' function second()']]);
+
+      const expanded = applyContextExpansion(file, { ...state(range(14, 16)), headings });
+      const expected = applyContextExpansion(fileOf(midFilePatch), state(range(14, 16)));
+      expect(await expanded.body.whenResident(() => contents(expanded))).toEqual(contents(expected));
+      expect(expanded.body.text(3)).toBe('@@ -10,5 +10,7 @@ function first()');
+    } finally {
+      parser.store.dispose();
+    }
   });
 });

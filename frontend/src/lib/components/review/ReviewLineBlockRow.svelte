@@ -117,10 +117,11 @@
 </script>
 
 <!-- Reserved action column: a real cell at the row's left edge, so
-     the hover affordance never paints over the line numbers. -->
-{#snippet actionCell(anchor: CommentAnchor, side: string)}
+     the hover affordance never paints over the line numbers. A row whose
+     text is still being read (`pending`) has no text to quote yet. -->
+{#snippet actionCell(row: PatchDisplayRow, anchor: CommentAnchor, side: string)}
   <span class="flex w-5 shrink-0 items-center justify-center">
-    {#if onAddComment}
+    {#if onAddComment && !row.pending}
       <button
         type="button"
         class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-accent-fg opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 compact:opacity-100 hover:brightness-110 focus:outline-none"
@@ -233,14 +234,14 @@
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
         <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'}">
           {#if pair.left}
-            {@render actionCell(sideAnchor(pair.left, 'old'), 'old-line')}
+            {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
         <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
           {#if pair.right}
-            {@render actionCell(sideAnchor(pair.right, 'new'), 'new-line')}
+            {@render actionCell(pair.right, sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
             <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForReviewLine(file, pair.right.lineIndex ?? -1, pair.right.line, spanContext, painted)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
@@ -259,7 +260,7 @@
           class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04]"
           style:height={wordWrap ? undefined : lineHeight}
         >
-          {@render actionCell(stackedAnchor(row), 'line')}
+          {@render actionCell(row, stackedAnchor(row), 'line')}
           <span class="flex shrink-0 {gutterTintClass(row.line.type)}">
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}

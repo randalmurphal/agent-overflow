@@ -7,6 +7,7 @@ import {
   LINE_MARKER,
   LINE_META,
   lineTypeOf,
+  ownText,
   type PatchBody,
   type ReviewFile,
 } from './patchStore';
@@ -272,21 +273,37 @@ export function splitRowCount(file: ReviewFile, start: Readonly<RowStart>, count
   return rows;
 }
 
+export interface MaterializedRows {
+  rows: PatchDisplayRow[];
+  /** The file's lines [start, end) holding every line the rows read. */
+  lines: { start: number; end: number };
+  /** Whether every line read was resident. A row over an evicted line is
+   * `pending`; a row whose partner's line is evicted lacks its intraline
+   * range. */
+  complete: boolean;
+}
+
 /**
  * Display row objects for `count` rows from `start`, with intraline
  * ranges. Reads the text of those rows and of their del/add partners.
  */
-export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, count: number): PatchDisplayRow[] {
+export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, count: number): MaterializedRows {
   const body = file.body;
   const gapsOn = fileGapsOn(file);
   const walker = new RowWalker(file, start);
   const rows: PatchDisplayRow[] = [];
-  const texts = new Map<number, string>();
-  const textOf = (index: number): string => {
+  const lines = { start: start.line, end: start.line };
+  let complete = true;
+  // Rows outlive the chunks their text was read from (ownText).
+  const texts = new Map<number, string | null>();
+  const textOf = (index: number): string | null => {
     let text = texts.get(index);
     if (text === undefined) {
-      text = body.text(index);
+      text = body.residentLine(index) ? ownText(body.text(index)) : null;
       texts.set(index, text);
+      if (text === null) complete = false;
+      lines.start = Math.min(lines.start, index);
+      lines.end = Math.max(lines.end, index + 1);
     }
     return text;
   };
@@ -311,7 +328,8 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
     }
     const index = walker.lineIndex;
     const kind = body.kind(index);
-    const line: PatchLine = { content: textOf(index), type: lineTypeOf(kind) };
+    const text = textOf(index);
+    const line: PatchLine = { content: text ?? '', type: lineTypeOf(kind) };
     if (kind === LINE_MARKER) {
       const fold = body.fold(index);
       if (fold) line.fold = fold;
@@ -324,11 +342,15 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
       side: walker.type === 'del' ? 'old' : walker.type === 'add' ? 'new' : 'context',
       lineIndex: index,
     };
+    if (text === null) row.pending = true;
     if (kind === LINE_DEL || kind === LINE_ADD) {
+      // The partner is read even for a placeholder row, so the lines a
+      // block needs are known before its text is back.
       const partner = partners.of(index, kind);
-      if (partner >= 0) {
-        const delText = kind === LINE_DEL ? line.content : textOf(partner);
-        const addText = kind === LINE_ADD ? line.content : textOf(partner);
+      const partnerText = partner >= 0 ? textOf(partner) : null;
+      if (text !== null && partnerText !== null) {
+        const delText = kind === LINE_DEL ? line.content : partnerText;
+        const addText = kind === LINE_ADD ? line.content : partnerText;
         const ranges = intralineRanges(
           stripPatchLinePrefix({ content: delText, type: 'del' }),
           stripPatchLinePrefix({ content: addText, type: 'add' }),
@@ -339,7 +361,7 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
     }
     rows.push(row);
   }
-  return rows;
+  return { rows, lines, complete };
 }
 
 /**
