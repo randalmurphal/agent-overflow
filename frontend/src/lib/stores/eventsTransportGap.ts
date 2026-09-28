@@ -32,6 +32,7 @@ import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
+import { revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
 import { getThreads } from './threads.svelte';
@@ -424,6 +425,15 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // fills — letting them reach the default branch would turn every
       // overflow into a full sidebar + pane refetch for data that repairs
       // itself.
+      return;
+    }
+    case 'worktree:removed': {
+      // Thread rows moved by a lost frame are repaired by the thread:updated
+      // they rode on; draft composers have no row, so the worktree list is
+      // what says which ones sit on a directory that is gone. During a
+      // replay the completion re-reads it (events.ts).
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      if (!isBackendRecovering(backend)) void revalidateDraftWorktrees(backend);
       return;
     }
     case 'worktree:setup': {

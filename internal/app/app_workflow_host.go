@@ -94,6 +94,10 @@ func (h workflowHostAdapter) DefaultWorktreePath(projectPath, branch string) (st
 
 func (h workflowHostAdapter) WorktreeBranchPrefix() string { return h.app.worktreeBranchPrefix() }
 
+func (h workflowHostAdapter) RemoveWorktree(projectPath, worktreePath string, force bool) error {
+	return h.app.removeWorkflowWorktree(projectPath, worktreePath, force)
+}
+
 func (h workflowHostAdapter) WorkflowPromptAncestry(
 	itemID string, workflow def.Workflow,
 ) workflowrunner.PromptContext {

@@ -2583,6 +2583,11 @@ restarting the session (the process already lives there) and without
 the idle gate that user-driven moves have. `action: "remove"` also
 reattaches other threads on the deleted worktree to the project root the
 way an outside removal does (their sessions stop, each is told why).
+The CLI deletes the worktree before it writes the result, so from a
+top-level `ExitWorktree` tool_use (any `action` but `keep`) until its
+result, turn end or session end, the registry sweep leaves the calling
+thread's session alone; a call that ends without a followed removal
+sweeps the project again.
 The CLI moves the transcript itself: on enter the file leaves the launch
 cwd's slug dir (which keeps only `memory/`) for the worktree's slug dir,
 with a `{"type":"relocated","relocatedCwd":...}` row and the

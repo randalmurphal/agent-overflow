@@ -78,6 +78,13 @@ type WorktreeHost interface {
 	CutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error
 	DefaultWorktreePath(projectPath, branch string) (string, error)
 	WorktreeBranchPrefix() string
+	// RemoveWorktree deletes a checkout the run owns (`git worktree remove`,
+	// forced when force is set) and applies the app's reaction to a removal
+	// it performed: threads still on it move to the project root without a
+	// notice. Removals go through it rather than GitCore so they are never
+	// reported as made outside the app. The error is git's; a failed
+	// reaction is reported on the threads it concerns.
+	RemoveWorktree(projectPath, worktreePath string, force bool) error
 }
 
 // PromptHost is the two ends of an element's context: the ancestry the prompt

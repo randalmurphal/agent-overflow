@@ -9495,6 +9495,12 @@ export class WorktreeListItem {
     "head": string;
     "deleteBlocked": boolean;
 
+    /**
+     * Missing is true when git still registers the worktree but its
+     * directory is gone (deleted without `git worktree remove`).
+     */
+    "missing": boolean;
+
     /** Creates a new WorktreeListItem instance. */
     constructor($$source: Partial<WorktreeListItem> = {}) {
         if (!("path" in $$source)) {
@@ -9508,6 +9514,9 @@ export class WorktreeListItem {
         }
         if (!("deleteBlocked" in $$source)) {
             this["deleteBlocked"] = false;
+        }
+        if (!("missing" in $$source)) {
+            this["missing"] = false;
         }
 
         Object.assign(this, $$source);

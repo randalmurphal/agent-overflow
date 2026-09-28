@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"agent-overflow/internal/eventchan"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
@@ -19,7 +20,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			DataRoot:          a.workflowDataRoot,
 			MemoryProvenance:  a.workflowMemoryProvenance,
 			RecordMemory:      a.recordWorkflowMemory,
-			Git:               func() workflowapp.Git { return a.gitCore() },
+			Git:               func() workflowapp.Git { return workflowGit{Core: a.gitCore(), app: a} },
 			Context:           a.lifeCtx,
 			ListBranchCommits: gitdiff.ListBranchCommits,
 			ProjectProfile: func(projectID string) (workflowapp.DispositionProfile, error) {
@@ -286,6 +287,18 @@ func projectWorkflowMemoryLog(value workflowapp.MemoryLog) WorkflowAgentMemoryLo
 		ItemID: value.ItemID, RootID: value.RootID, Path: value.Path,
 		Notes: value.Notes, Total: value.Total, Skipped: value.Skipped,
 	}
+}
+
+// workflowGit is the git surface workflow disposition and discard use. Its
+// worktree removal is the app's (removeWorkflowWorktree), so the checkouts a
+// workflow cleans up are never reported as removed outside the app.
+type workflowGit struct {
+	*gitops.Core
+	app *App
+}
+
+func (g workflowGit) RemoveWorktreeForce(projectPath, worktreePath string, force bool) error {
+	return g.app.removeWorkflowWorktree(projectPath, worktreePath, force)
 }
 
 func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResult {

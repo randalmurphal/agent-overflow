@@ -175,6 +175,11 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 		path := gone[canonical]
 		_, announce := announced[canonical]
 		removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: path, cause: "was removed outside Agent Overflow"}
+		if a.appWorktreeRemovals.contains(path) {
+			// The app is removing it (removeWorkflowWorktree) and reacts
+			// the same way; this sweep only got there first.
+			removal.cause = ""
+		}
 		a.reclaimRemovedWorktree(removal, "", announce, func(threadIDs []string, problem string) {
 			for _, id := range threadIDs {
 				a.emitErrorToThread(id, fmt.Sprintf("worktree %s no longer exists, but %s", path, problem))
@@ -192,12 +197,12 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 // the app is performing at the same time; that removal finishes first and
 // this sweep then finds nothing left on the path.
 //
-// A thread whose own CLI reported removing this worktree is left to follow
-// its move (applyProviderWorkspaceChange) as the exiting thread is: the
-// registry can show the removal before the app has read the tool result, and
-// that session is the one doing the moving. The occupants' pending events are
-// processed first so a result already read is not mistaken for an outside
-// removal.
+// A thread whose own CLI reported removing this worktree, or has an
+// `ExitWorktree` call in flight, is left to follow its move
+// (applyProviderWorkspaceChange) as the exiting thread is: the registry can
+// show the removal before the app has read the tool result, and that session
+// is the one doing the moving. The occupants' pending events are processed
+// first so a result already read is not mistaken for an outside removal.
 //
 // announce makes the removal reach every client even when no thread moved.
 // A failure is reported to the caller with the affected thread ids rather
@@ -242,7 +247,11 @@ func (a *App) reclaimRemovedWorktree(removal *worktreeRemoval, exitingThreadID s
 		unlocks = append(unlocks, unlock)
 	}
 	others = slices.DeleteFunc(others, func(id string) bool {
-		return a.providerExitingWorktree(id, worktreePath)
+		if a.providerExitingWorktree(id, worktreePath) {
+			return true
+		}
+		current, ok := a.sessionManager().get(id)
+		return ok && a.pendingWorktreeExits.claim(id, current.Token)
 	})
 	mutable, err := a.mutableWorkspaceThreads(others)
 	if err != nil {

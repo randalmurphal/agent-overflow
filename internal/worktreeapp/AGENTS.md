@@ -14,7 +14,8 @@ activity application service.
 - Directory-wide activity aggregated across every matching thread, including
   transient background-task ids supplied by root.
 - Worktree dirty/unpushed/upstream/attachment status and picker
-  `DeleteBlocked` projection.
+  `DeleteBlocked` projection, and `Missing` for a registered worktree whose
+  directory is gone.
 
 ## Boundary
 

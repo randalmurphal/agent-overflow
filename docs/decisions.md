@@ -152,12 +152,14 @@ Mechanism in
   the app (a terminal's `git worktree remove`, `rm -rf`, another tool),
   detected by a watch on git's worktree registry (`internal/worktreewatch`,
   `internal/app/app_worktree_watch.go`) that runs for every project whether
-  or not a pane is open. The thread that ran `ExitWorktree` keeps its
-  session, which moved itself. The in-app removal refuses busy threads and
-  says nothing on them; a removal that already happened stops a running
-  turn as interrupted, its background tasks show as died like an app
-  restart, queued messages return to the composer, and every moved thread
-  gets a warning notice at its own timeline position saying who removed the
+  or not a pane is open. The thread running `ExitWorktree` keeps its
+  session from the tool call on, since it moves itself. The in-app removal
+  refuses busy threads; a workflow's cleanup keeps its own force rules. A
+  removal that did not wait for idle threads stops a running turn as
+  interrupted, its background tasks show as died like an app restart, and
+  queued messages return to the composer. Only a removal the app did not
+  perform (Claude's, or one made outside) puts a warning notice on each
+  moved thread, at its own timeline position, saying who removed the
   worktree and that it now runs in Base. Terminals opened in the worktree
   close, and one `worktree:removed` event moves draft placeholders on it to
   Base on every client. A project whose root is itself gone is left alone;

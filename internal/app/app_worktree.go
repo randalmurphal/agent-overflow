@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
@@ -71,6 +72,9 @@ type WorktreeListItem struct {
 	Branch        string `json:"branch"`
 	Head          string `json:"head"`
 	DeleteBlocked bool   `json:"deleteBlocked"`
+	// Missing is true when git still registers the worktree but its
+	// directory is gone (deleted without `git worktree remove`).
+	Missing bool `json:"missing"`
 }
 
 // GitCreateWorktree creates a new worktree for the requested branch and returns its path.
@@ -420,6 +424,76 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, for
 		return nil, fmt.Errorf("worktree removed but %w", err)
 	}
 	return reattached, nil
+}
+
+// removeWorkflowWorktree removes a checkout a workflow owns, for its own
+// cleanup: disposition, discard, unit retirement and provisioning rollback.
+// The workflow has already decided, with its own force semantics, so no idle
+// or loss-of-work gate applies. The reaction is the one every removal the app
+// performs gets: threads still on the path move to the project root and
+// their sessions stop, without a notice, and clients are told once.
+//
+// The path counts as an app removal from before git runs until that
+// reaction is done, so a registry sweep racing it moves the same threads
+// without a notice too. The returned error is git's; a failed reaction is
+// reported on the threads it concerns.
+func (a *App) removeWorkflowWorktree(projectPath, worktreePath string, force bool) error {
+	done := a.appWorktreeRemovals.begin(worktreePath)
+	defer done()
+	resumeStatus := a.gitApplication().SuppressStatus(worktreePath)
+	if err := a.gitCore().RemoveWorktreeForce(projectPath, worktreePath, force); err != nil {
+		resumeStatus()
+		return err
+	}
+	project, err := a.store.GetProjectByPath(projectPath)
+	if err != nil {
+		// No project row, so no thread row can point at the checkout.
+		log.Printf("worktree %s removed; project %s not found: %v", worktreePath, projectPath, err)
+		return nil
+	}
+	removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: worktreePath}
+	a.reclaimRemovedWorktree(removal, "", true, func(threadIDs []string, problem string) {
+		log.Printf("worktree %s removed by a workflow, but %s", worktreePath, problem)
+		for _, id := range threadIDs {
+			a.emitErrorToThread(id, fmt.Sprintf("worktree %s was removed by a workflow, but %s", worktreePath, problem))
+		}
+	})
+	return nil
+}
+
+// appWorktreeRemovals names the worktree paths the app is removing right now,
+// so the registry watch does not report them as removed outside the app. An
+// entry lives from before git runs until the app's own reaction is done.
+type appWorktreeRemovals struct {
+	mu     sync.Mutex
+	active map[string]int
+}
+
+// begin registers path and returns the call that releases it.
+func (r *appWorktreeRemovals) begin(path string) func() {
+	key := canonicalExistingPrefix(path)
+	r.mu.Lock()
+	if r.active == nil {
+		r.active = make(map[string]int)
+	}
+	r.active[key]++
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.active[key]--; r.active[key] <= 0 {
+				delete(r.active, key)
+			}
+		})
+	}
+}
+
+func (r *appWorktreeRemovals) contains(path string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active[canonicalExistingPrefix(path)] > 0
 }
 
 // mutableWorkspaceThreads filters a locked occupant set down to the threads

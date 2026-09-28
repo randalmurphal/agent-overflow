@@ -147,6 +147,7 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	// than handled. Callers rely on those being handled when this returns:
 	// a replacement start re-admits the thread right after.
 	a.drainProviderEvents(threadID, "close provider session")
+	a.settlePendingWorktreeExit(threadID, sess.Token, false)
 	if closeErr != nil {
 		return fmt.Errorf("close %s session for thread %s: %w", sess.Provider, threadID, closeErr)
 	}

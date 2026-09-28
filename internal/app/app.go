@@ -127,6 +127,12 @@ type App struct {
 	// treat the thread that performed it as an outside removal's victim.
 	// See app_worktree_follow.go.
 	providerWorktreeExits sync.Map
+	// pendingWorktreeExits covers the same thread earlier: from the
+	// `ExitWorktree` tool_use until its result. See app_worktree_follow.go.
+	pendingWorktreeExits pendingWorktreeExits
+	// appWorktreeRemovals names the worktrees the app is removing without
+	// the in-app removal's gates (workflow cleanup). See app_worktree.go.
+	appWorktreeRemovals appWorktreeRemovals
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once

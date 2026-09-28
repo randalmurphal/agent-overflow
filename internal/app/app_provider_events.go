@@ -67,6 +67,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// The process moved its own working directory (EnterWorktree /
 		// ExitWorktree). Both Claude providers share the parser that
 		// emits this, and both leave the thread row to follow the move.
+		if providerType == string(provider.Claude) || providerType == string(provider.ClaudeTUI) {
+			a.observeClaudeWorktreeExit(threadID, sessionToken, evt)
+		}
 		if evt.Kind == provider.EventWorkspaceChanged {
 			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 		}
@@ -393,6 +396,7 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 		return
 	}
 	a.revokeSessionMCP(threadID, removed.Token)
+	a.settlePendingWorktreeExit(threadID, removed.Token, false)
 	a.emitProviderSessionDisconnected(threadID, removed.Provider)
 
 	// Self-exit teardown bypasses closeProviderSession (the subprocess is

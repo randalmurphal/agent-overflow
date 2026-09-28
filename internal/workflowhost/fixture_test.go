@@ -220,6 +220,10 @@ func (h *fakeHost) DefaultWorktreePath(projectPath, branch string) (string, erro
 	return gitops.UniqueWorktreePath(filepath.Join(base, gitops.SanitizeWorktreePathSegment(branch)))
 }
 
+func (h *fakeHost) RemoveWorktree(projectPath, worktreePath string, force bool) error {
+	return h.GitCore().RemoveWorktreeForce(projectPath, worktreePath, force)
+}
+
 func (h *fakeHost) WorktreeBranchPrefix() string {
 	if h.branchPrefix == "" {
 		return gitops.AutoWorktreeBranchPrefix

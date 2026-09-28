@@ -169,7 +169,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
-import { applyWorktreeRemoved } from './eventsWorktreeRemoved';
+import { applyWorktreeRemoved, revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import {
   applyThreadTitleGeneration,
   type ThreadTitleGenerationEvent,
@@ -684,6 +684,13 @@ export function setupEventListeners(): () => void {
     'worktree:removed',
     applyWorktreeRemoved,
   );
+  // A frame lost across a reconnect, or never sent because the computer
+  // restarted, leaves a draft on a directory that is gone; the worktree
+  // list is the authority once the replay has applied. A gap on the channel
+  // re-reads it too (eventsTransportGap.ts).
+  const cancelWorktreeRemovedRecovery = onBackendRecovery((backend, phase) => {
+    if (phase === 'complete') void revalidateDraftWorktrees(backend);
+  });
 
   // transport:gap — synthetic event fired by wsClient.ts when the
   // server reports a missed seq on a channel. Coarse-grained recovery:
@@ -830,6 +837,7 @@ export function setupEventListeners(): () => void {
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelWorktreeRemoved();
+    cancelWorktreeRemovedRecovery();
     cancelTransportGap();
     cancelModeChanged();
     cancelRuntimeModeChanged();

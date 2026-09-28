@@ -422,7 +422,7 @@ func (r *Runner) retireUnitWorktrees(done workflowCompletion) {
 		if unit.Kind == store.WorkItemUnitKindJoin || strings.TrimSpace(unit.WorktreePath) == "" {
 			continue
 		}
-		if err := r.host.GitCore().RemoveWorktree(done.projectPath, unit.WorktreePath); err != nil {
+		if err := r.host.RemoveWorktree(done.projectPath, unit.WorktreePath, false); err != nil {
 			// Ask the checkout the same question `git worktree remove` decides
 			// on, rather than matching its refusal text: that sentence is
 			// localized and free to change between git versions.

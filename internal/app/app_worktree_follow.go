@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
 
@@ -39,18 +42,23 @@ import (
 func (a *App) followProviderWorkspaceChange(threadID, sessionToken string, evt provider.ProviderEvent) {
 	var change provider.WorkspaceChangeMeta
 	if err := json.Unmarshal(evt.Meta, &change); err != nil || strings.TrimSpace(change.Cwd) == "" {
+		a.settlePendingWorktreeExit(threadID, sessionToken, false)
 		a.emitWireErrorToThread(threadID, "Claude changed its working directory, but AO could not read the new path from the event.")
 		return
 	}
 	// Recorded here, on the event worker, before the move is applied: the
 	// registry watch may already be sweeping the removed worktree and must
-	// leave this thread's session alone (reclaimRemovedWorktree).
+	// leave this thread's session alone (reclaimRemovedWorktree). The
+	// pending call is settled only after, so a sweep always sees one of the
+	// two.
 	removed := strings.TrimSpace(change.WorktreePath)
-	if change.RemovedWorktree && removed != "" {
+	followed := change.RemovedWorktree && removed != ""
+	if followed {
 		a.providerWorktreeExits.Store(threadID, removed)
 	}
+	a.settlePendingWorktreeExit(threadID, sessionToken, followed)
 	go func() {
-		if change.RemovedWorktree && removed != "" {
+		if followed {
 			defer a.providerWorktreeExits.CompareAndDelete(threadID, removed)
 		}
 		a.applyProviderWorkspaceChange(threadID, sessionToken, change)
@@ -174,4 +182,119 @@ func (a *App) reclaimProviderRemovedWorktree(projectID, project, worktreePath, e
 	a.reclaimRemovedWorktree(removal, exitingThreadID, true, func(_ []string, problem string) {
 		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but %s", worktreePath, problem))
 	})
+}
+
+// pendingWorktreeExits holds, per thread, the top-level `ExitWorktree`
+// call its Claude session started and has not answered. The CLI deletes the
+// worktree before it writes the result, so the registry watch can see the
+// removal while only the tool_use has been read; that session is the one
+// removing it and must not be stopped as an outside removal's victim.
+//
+// A sweep that leaves a thread to its pending call marks the entry
+// deferred. If the call settles without the app following a removal (it was
+// refused, kept the worktree, or the turn or session ended first), the
+// thread's project is swept again so the row is not left on a vanished
+// path. One entry per thread, removed when the call, turn or session ends.
+type pendingWorktreeExits struct {
+	mu       sync.Mutex
+	byThread map[string]*pendingWorktreeExit
+}
+
+type pendingWorktreeExit struct {
+	token     string
+	toolUseID string
+	deferred  bool
+}
+
+func (p *pendingWorktreeExits) start(threadID, token, toolUseID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.byThread == nil {
+		p.byThread = make(map[string]*pendingWorktreeExit)
+	}
+	p.byThread[threadID] = &pendingWorktreeExit{token: token, toolUseID: toolUseID}
+}
+
+// toolUseID returns the pending call of the session identified by token.
+func (p *pendingWorktreeExits) toolUseID(threadID, token string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.byThread[threadID]
+	if !ok || entry.token != token {
+		return "", false
+	}
+	return entry.toolUseID, true
+}
+
+// claim reports whether the session identified by token has a pending call
+// and, if so, records that a sweep left the thread to it.
+func (p *pendingWorktreeExits) claim(threadID, token string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.byThread[threadID]
+	if !ok || entry.token != token {
+		return false
+	}
+	entry.deferred = true
+	return true
+}
+
+// settle removes the session's pending call and reports whether a sweep
+// deferred to it.
+func (p *pendingWorktreeExits) settle(threadID, token string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.byThread[threadID]
+	if !ok || entry.token != token {
+		return false
+	}
+	delete(p.byThread, threadID)
+	return entry.deferred
+}
+
+// observeClaudeWorktreeExit tracks a Claude session's pending `ExitWorktree`
+// call on the thread's event worker, in wire order. The call is settled by
+// the workspace change that follows its result (followProviderWorkspaceChange),
+// by a refused or unreadable result, by the end of the top-level turn, or by
+// the session closing.
+func (a *App) observeClaudeWorktreeExit(threadID, sessionToken string, evt provider.ProviderEvent) {
+	if claude.WorktreeRemovalStarted(evt) {
+		a.pendingWorktreeExits.start(threadID, sessionToken, evt.ItemID)
+		return
+	}
+	toolUseID, ok := a.pendingWorktreeExits.toolUseID(threadID, sessionToken)
+	if !ok {
+		return
+	}
+	if claude.ToolCallRefused(evt, toolUseID) ||
+		(evt.Kind == provider.EventError && evt.ItemID == toolUseID) ||
+		(evt.Kind == provider.EventTurnComplete && strings.TrimSpace(evt.ParentToolUseID) == "") {
+		a.settlePendingWorktreeExit(threadID, sessionToken, false)
+	}
+}
+
+// settlePendingWorktreeExit ends the session's pending `ExitWorktree` call.
+// followed is true when the app is following the removal the call reported,
+// which sweeps the worktree itself; otherwise a sweep that deferred to the
+// call runs again for the thread's project.
+func (a *App) settlePendingWorktreeExit(threadID, sessionToken string, followed bool) {
+	if !a.pendingWorktreeExits.settle(threadID, sessionToken) || followed {
+		return
+	}
+	go a.resweepThreadProject(threadID)
+}
+
+// resweepThreadProject reconciles the worktrees of threadID's project
+// against the registry, reattaching the thread if its worktree is gone.
+func (a *App) resweepThreadProject(threadID string) {
+	thread, err := a.store.GetThread(threadID)
+	if err == nil {
+		var project store.Project
+		project, err = a.store.GetProject(thread.ProjectID)
+		if err == nil {
+			a.reconcileProjectWorktrees(project.Path, nil)
+			return
+		}
+	}
+	a.emitErrorToThread(threadID, fmt.Sprintf("AO could not recheck this thread's worktree after Claude's ExitWorktree call: %v", err))
 }

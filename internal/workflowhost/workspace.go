@@ -296,7 +296,7 @@ func (r *Runner) provisionWorkspace(
 		}
 	}
 	rollback := func(cause error) error {
-		if removeErr := core.RemoveWorktreeForce(project.Path, worktreePath, true); removeErr != nil {
+		if removeErr := r.host.RemoveWorktree(project.Path, worktreePath, true); removeErr != nil {
 			return errors.Join(cause, fmt.Errorf("rollback worktree %q: %w", worktreePath, removeErr))
 		}
 		// Clear provisioning state but keep the intake-time base branch: it is
@@ -410,7 +410,7 @@ func (r *Runner) provisionUnitWorktree(
 		if adopted {
 			return cause
 		}
-		if removeErr := core.RemoveWorktreeForce(primary.Project.Path, worktreePath, true); removeErr != nil {
+		if removeErr := r.host.RemoveWorktree(primary.Project.Path, worktreePath, true); removeErr != nil {
 			return errors.Join(cause, fmt.Errorf("rollback unit worktree %q: %w", worktreePath, removeErr))
 		}
 		return cause

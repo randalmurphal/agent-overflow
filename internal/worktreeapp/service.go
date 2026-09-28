@@ -2,6 +2,7 @@ package worktreeapp
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -27,6 +28,9 @@ type WorktreeListItem struct {
 	Branch        string `json:"branch"`
 	Head          string `json:"head"`
 	DeleteBlocked bool   `json:"deleteBlocked"`
+	// Missing is true when git still registers the worktree but its
+	// directory is gone (deleted without `git worktree remove`).
+	Missing bool `json:"missing"`
 }
 
 // WorkspaceActivity aggregates live work across every thread referencing one
@@ -244,7 +248,9 @@ func (s *Service) List(project string) ([]WorktreeListItem, error) {
 	items := make([]WorktreeListItem, len(worktrees))
 	itemByPath := make(map[string]int, len(items))
 	for index, worktree := range worktrees {
-		items[index] = WorktreeListItem{Path: worktree.Path, Branch: worktree.Branch, Head: worktree.HEAD}
+		info, statErr := os.Stat(worktree.Path)
+		missing := statErr != nil || !info.IsDir()
+		items[index] = WorktreeListItem{Path: worktree.Path, Branch: worktree.Branch, Head: worktree.HEAD, Missing: missing}
 		itemByPath[gitops.CanonicalPath(worktree.Path)] = index
 	}
 	for _, ref := range refs {

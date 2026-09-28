@@ -175,3 +175,35 @@ func decodeWorkspaceChange(tool string, raw json.RawMessage) (provider.Workspace
 		return provider.WorkspaceChangeMeta{}, "unknown worktree tool " + tool
 	}
 }
+
+// WorktreeRemovalStarted reports whether evt starts a top-level
+// `ExitWorktree` call that may delete the session's own worktree. The CLI
+// runs the removal before it writes the result, so the worktree can vanish
+// while the call is still unanswered. Only an explicit `action: "keep"`
+// rules the removal out; an input that cannot be read counts as a removal.
+func WorktreeRemovalStarted(evt provider.ProviderEvent) bool {
+	if evt.Kind != provider.EventToolStart || evt.ItemType != exitWorktreeToolName || evt.ParentToolUseID != "" {
+		return false
+	}
+	var meta struct {
+		Input struct {
+			Action string `json:"action"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		return true
+	}
+	return strings.TrimSpace(meta.Input.Action) != "keep"
+}
+
+// ToolCallRefused reports whether evt completes toolUseID with an error
+// result: the call did nothing, and no workspace change follows it.
+func ToolCallRefused(evt provider.ProviderEvent, toolUseID string) bool {
+	if evt.Kind != provider.EventToolComplete || evt.ItemID != toolUseID {
+		return false
+	}
+	var meta struct {
+		IsError bool `json:"is_error"`
+	}
+	return json.Unmarshal(evt.Meta, &meta) == nil && meta.IsError
+}
