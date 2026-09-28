@@ -79,6 +79,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`virtualizer-replacement-plan.md`](architecture/virtualizer-replacement-plan.md) | Design behind `utils/virtual/`. |
 | [`agent-thread-tools-plan.md`](architecture/agent-thread-tools-plan.md) | Data model, ownership, edge cases and build record for the `ao-thread-tools` spec; amendments it makes to the spec are listed at its top. Implemented 2026-09-19. |
 | [`review-pane-design.md`](architecture/review-pane-design.md) | The review-pane surface `internal/gitdiff` feeds. |
+| [`review-diff-streaming.md`](architecture/review-diff-streaming.md) | Review diffs of any size: chunked reads over open handles, compact patch storage within a memory budget, and held rows for diffs taller than the browser. |
 
 ### Workflows
 
