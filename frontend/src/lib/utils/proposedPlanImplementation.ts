@@ -16,6 +16,7 @@ import { projectSendResolved, projectSendStarted } from '../stores/threadStatuse
 import { addToast } from '../stores/toast.svelte';
 import type { SourceProposedPlan, Thread } from '../types/models';
 import { errString } from './errors';
+import { sameNormalizedPath } from './path';
 import { buildSendOptions } from './sendOptions';
 import {
   clearWorktreeIntent,
@@ -175,7 +176,11 @@ export async function implementProposedPlanInNewThread(
     try {
       await SaveDraft(created.id, draftContent, [], [], sourceRef);
     } catch (saveErr) {
-      if (created.worktreePath) {
+      // Only a worktree cut for the new thread is its to remove. One it
+      // inherited is the source thread's checkout.
+      const cutForThread = !!created.worktreePath
+        && !sameNormalizedPath(created.worktreePath, sourceThread.worktreePath ?? '');
+      if (cutForThread) {
         await GitRemoveWorktree(created.id)
           .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult))
           .catch((cleanupErr) => {
