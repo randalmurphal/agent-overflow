@@ -148,7 +148,7 @@ func jsonInt(n int64) string {
 func TestUnknownInvocationsFailLoudlyWithTheFullArgv(t *testing.T) {
 	e, _ := seeded(t, Options{})
 	cases := [][]string{
-		{"gh", "pr", "create", "--title", "t", "--body", "b"},
+		{"gh", "pr", "create", "--title", "t", "--body", "b", "--web"},
 		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "title,labels"},
 		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--web"},
 		{"gh", "api", "repos/acme/widgets/pulls/7/reviews", "-X", "POST", "--input", "-"},
@@ -338,5 +338,71 @@ func TestParseFlags(t *testing.T) {
 		if _, _, err := parseFlags(bad, defs); err == nil {
 			t.Errorf("parseFlags(%q) accepted", bad)
 		}
+	}
+}
+
+func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
+	origins := map[string]string{"/gh": "git@github.com:acme/widgets.git", "/gl": "https://gitlab.com/grp/sub/tool.git"}
+	branch := "topic"
+	e, _ := seeded(t, Options{
+		Origin: func(cwd string) (string, error) { return origins[cwd], nil },
+		Head: func(string) (CheckoutHead, error) {
+			return CheckoutHead{Branch: branch, SHA: strings.Repeat("f", 40)}, nil
+		},
+	})
+	gh := func(args ...string) control.ForgeResult {
+		return e.Handle(control.ForgeCall{CLI: "gh", Cwd: "/gh", Args: args})
+	}
+	glab := func(args ...string) control.ForgeResult {
+		return e.Handle(control.ForgeCall{CLI: "glab", Cwd: "/gl", Args: args})
+	}
+
+	created := gh("pr", "create", "--title", "Topic", "--body", "Why", "--draft")
+	if created.ExitCode != 0 || string(created.Stdout) != "https://github.com/acme/widgets/pull/8\n" {
+		t.Fatalf("gh pr create = %d %q %q", created.ExitCode, created.Stdout, created.Stderr)
+	}
+	listed := decode[[]map[string]any](t, gh("pr", "list", "--head", branch, "--state", "open", "--json", "number,title,body,isDraft,headRefOid,baseRefName"))
+	if len(listed) != 1 || listed[0]["number"] != float64(8) || listed[0]["title"] != "Topic" || listed[0]["body"] != "Why" ||
+		listed[0]["isDraft"] != true || listed[0]["headRefOid"] != strings.Repeat("f", 40) || listed[0]["baseRefName"] != "main" {
+		t.Fatalf("created pull = %v", listed)
+	}
+	if again := gh("pr", "create", "--title", "Again", "--body", ""); again.ExitCode != 1 || !strings.Contains(again.Stderr, "already exists") {
+		t.Fatalf("duplicate gh pr create = %d %q", again.ExitCode, again.Stderr)
+	}
+	if other := gh("pr", "create", "--title", "Elsewhere", "--body", "", "--base", "release"); other.ExitCode != 0 {
+		t.Fatalf("gh pr create into another base = %d %q", other.ExitCode, other.Stderr)
+	}
+	if missing := gh("pr", "create", "--title", "No body"); missing.ExitCode != 1 || !strings.Contains(missing.Stderr, "--body") {
+		t.Fatalf("gh pr create without --body = %d %q", missing.ExitCode, missing.Stderr)
+	}
+
+	mr := glab("mr", "create", "--title", "Topic", "--description", "Why", "--yes", "--no-editor", "--draft")
+	if mr.ExitCode != 0 || string(mr.Stdout) != "https://gitlab.com/grp/sub/tool/-/merge_requests/4\n" {
+		t.Fatalf("glab mr create = %d %q %q", mr.ExitCode, mr.Stdout, mr.Stderr)
+	}
+	shown := decode[map[string]any](t, glab("api", "projects/grp%2Fsub%2Ftool/merge_requests/4"))
+	if shown["title"] != "Draft: Topic" || shown["draft"] != true || shown["description"] != "Why" || shown["source_branch"] != branch {
+		t.Fatalf("created merge request = %v", shown)
+	}
+	if again := glab("mr", "create", "--title", "Again", "--description", "", "--yes", "--no-editor", "--target-branch", "release"); again.ExitCode != 1 ||
+		!strings.Contains(again.Stderr, "Another open merge request already exists for this source branch: !4") {
+		t.Fatalf("duplicate glab mr create = %d %q", again.ExitCode, again.Stderr)
+	}
+
+	branch = "main"
+	if same := gh("pr", "create", "--title", "Main", "--body", ""); same.ExitCode != 1 {
+		t.Fatalf("gh pr create from the base = %d %q", same.ExitCode, same.Stderr)
+	}
+	for _, args := range [][]string{
+		{"mr", "create", "--title", "Prompted", "--description", ""},
+		{"mr", "create", "--title", "Filled", "--description", "", "--yes", "--no-editor", "--fill"},
+	} {
+		inv := glab(args...)
+		if inv.ExitCode != 1 || !strings.Contains(inv.Stderr, "unhandled") {
+			t.Errorf("glab %v = %d %q, want unhandled", args, inv.ExitCode, inv.Stderr)
+		}
+	}
+	if inv := gh("pr", "create", "--title", "Filled", "--body", "", "--fill"); !strings.Contains(inv.Stderr, "unhandled") {
+		t.Errorf("gh pr create --fill = %q, want unhandled", inv.Stderr)
 	}
 }

@@ -373,3 +373,45 @@ func glabUpload(e *Engine, c *call, m []string) response {
 	}
 	return glabNotFound("File")
 }
+
+// glabMRCreate answers `glab mr create --title T --description D --yes
+// --no-editor [--target-branch B] [--draft]` with the new merge request's
+// URL. The app always passes --yes and --no-editor, the non-interactive
+// spelling; without them glab would prompt, which this fake cannot. A draft
+// gets GitLab's "Draft: " title prefix. GitLab refuses a second open merge
+// request from the same source branch.
+func glabMRCreate(e *Engine, c *call) response {
+	if len(c.positional) != 0 {
+		return unhandled("mr create takes no positional arguments")
+	}
+	if !c.has("yes") || !c.has("no-editor") {
+		return unhandled("mr create without --yes and --no-editor prompts")
+	}
+	if !c.has("title") || !c.has("description") {
+		return unhandled("mr create without --title and --description prompts")
+	}
+	r, head, err := e.createTarget("gitlab", c)
+	if err != nil {
+		return response{exit: 1, stderr: err.Error() + "\n"}
+	}
+	req := createRequest{title: c.flag("title"), body: c.flag("description"), base: defaultString(c.flag("target-branch"), defaultBaseRef), draft: c.has("draft")}
+	if strings.TrimSpace(req.title) == "" {
+		return response{exit: 1, stderr: "failed to create merge request: 400 {message: {title: [can't be blank]}}\n"}
+	}
+	if req.draft {
+		req.title = "Draft: " + req.title
+	}
+	if head.Branch == req.base {
+		return response{exit: 1, stderr: "failed to create merge request: 400 {message: [You can't use same project/branch for source and target]}\n"}
+	}
+	for i := range r.Pulls {
+		if p := &r.Pulls[i]; p.State == "open" && p.HeadRef == head.Branch {
+			return response{exit: 1, stderr: fmt.Sprintf("failed to create merge request: 409 {message: [Another open merge request already exists for this source branch: !%d]}\n", p.Number)}
+		}
+	}
+	pull, err := e.addPull(r, head, req)
+	if err != nil {
+		return response{exit: 1, stderr: "ao-mockforge: " + err.Error() + "\n"}
+	}
+	return response{stdout: []byte(gitlabMRURL(r, pull) + "\n")}
+}

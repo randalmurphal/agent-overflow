@@ -592,3 +592,35 @@ func diffTotals(diff string) diffCounts {
 	}
 	return totals
 }
+
+// ghPRCreate answers `gh pr create --title T --body B [--base B] [--draft]`
+// with the new pull request's URL. Without a terminal gh refuses a call
+// missing either --title or --body, a head that is the base, and a head
+// that already has an open pull request into the base.
+func ghPRCreate(e *Engine, c *call) response {
+	if len(c.positional) != 0 {
+		return unhandled("pr create takes no positional arguments")
+	}
+	if !c.has("title") || !c.has("body") {
+		return response{exit: 1, stderr: "must provide `--title` and `--body` (or `--fill` or `fill-first` or `--fillverbose`) when not running interactively\n"}
+	}
+	r, head, err := e.createTarget("github", c)
+	if err != nil {
+		return response{exit: 1, stderr: err.Error() + "\n"}
+	}
+	req := createRequest{title: c.flag("title"), body: c.flag("body"), base: defaultString(c.flag("base"), defaultBaseRef), draft: c.has("draft")}
+	if strings.TrimSpace(req.title) == "" {
+		return response{exit: 1, stderr: "GraphQL: Title can't be blank (createPullRequest)\n"}
+	}
+	if head.Branch == req.base {
+		return response{exit: 1, stderr: fmt.Sprintf("GraphQL: No commits between %s and %s (createPullRequest)\n", req.base, head.Branch)}
+	}
+	if existing := r.openPullFor(head.Branch, req.base); existing != nil {
+		return response{exit: 1, stderr: fmt.Sprintf("a pull request for branch %q into branch %q already exists:\n%s\n", head.Branch, req.base, githubPullURL(r, existing))}
+	}
+	pull, err := e.addPull(r, head, req)
+	if err != nil {
+		return response{exit: 1, stderr: "ao-mockforge: " + err.Error() + "\n"}
+	}
+	return response{stdout: []byte(githubPullURL(r, pull) + "\n")}
+}

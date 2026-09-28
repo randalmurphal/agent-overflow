@@ -74,6 +74,10 @@ type Options struct {
 	// the checkout (`gh pr list`, glab's `:fullpath`). Defaults to asking
 	// git.
 	Origin func(cwd string) (string, error)
+	// Head answers a working directory's current branch and commit, for
+	// the create calls that open a pull or merge request from the
+	// checkout. Defaults to asking git.
+	Head func(cwd string) (CheckoutHead, error)
 }
 
 // Engine is the fake forge: seeded state, the route table's host and the
@@ -96,6 +100,9 @@ type Engine struct {
 func New(opts Options) *Engine {
 	if opts.Origin == nil {
 		opts.Origin = gitOrigin
+	}
+	if opts.Head == nil {
+		opts.Head = gitHead
 	}
 	return &Engine{opts: opts, viewer: defaultViewer, repos: make(map[string]*Repo)}
 }

@@ -150,6 +150,37 @@ export async function publishPullRequest(
 }
 
 /**
+ * Publish the checked-out `branch` of the seeded `workspace` to `repo`'s
+ * origin with no pull request, and seed the fake forge with `repo`. The
+ * origin is the forge's own URL answered from a bare repository under the
+ * harness data root (see `publishPullRequest`), `main` and `branch` are
+ * pushed to it, and `branch` tracks `origin/<branch>` from a fetch, so git
+ * status reports an upstream on a recognised forge.
+ */
+export async function publishBranch(
+  harness: HarnessApp,
+  workspace: string,
+  repo: ForgeRepo,
+  branch: string,
+): Promise<void> {
+  const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
+  const root = path.join(harness.bootstrap.dataRoot, 'forge-origin');
+  const proxy = path.join(root, 'git-proxy.sh');
+  const bare = path.join(root, `${repo.project}.git`);
+  await mkdir(bare, { recursive: true });
+  await writeFile(proxy, gitProxyScript(root), { mode: 0o755 });
+  git(bare, 'init', '--bare', '--quiet');
+  git(workspace, 'push', '--quiet', bare, 'main', branch);
+
+  await seedForge(harness, [repo]);
+  git(workspace, 'config', 'core.gitProxy', proxy);
+  git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);
+  git(workspace, 'fetch', '--quiet', 'origin');
+  git(workspace, 'branch', '--quiet', `--set-upstream-to=origin/${branch}`, branch);
+}
+
+/**
  * Open the thread titled `title` and its review pane on the PR scope
  * through the chat header's PR badge, which appears once git status has
  * looked the branch's PR up. Answers the review pane section.

@@ -35,6 +35,15 @@ var commands = []command{
 		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
 		{long: "state", short: "s", value: true}, {long: "limit", short: "L", value: true}, {long: "json", value: true},
 	}, run: ghPRList},
+	{cli: "gh", path: []string{"pr", "create"}, flags: []flagDef{
+		{long: "title", short: "t", value: true}, {long: "body", short: "b", value: true},
+		{long: "base", short: "B", value: true}, {long: "draft", short: "d"},
+	}, run: ghPRCreate},
+	{cli: "glab", path: []string{"mr", "create"}, flags: []flagDef{
+		{long: "title", short: "t", value: true}, {long: "description", short: "d", value: true},
+		{long: "target-branch", short: "b", value: true}, {long: "draft"},
+		{long: "yes", short: "y"}, {long: "no-editor"},
+	}, run: glabMRCreate},
 	{cli: "gh", path: []string{"run", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghRunView},
 	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, githubAPI) }},
 	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, gitlabAPI) }},

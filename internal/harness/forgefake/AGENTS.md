@@ -48,10 +48,13 @@ inspection go through the harness wire with no fixture files.
 
 ## Invocations
 
-Handled, covering the reads the review pane, git status and CI make:
+Handled, covering the reads the review pane, git status and CI make, and
+the Create PR/MR dialog:
 
 | CLI | Invocation | App caller |
 |---|---|---|
+| gh | `pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
+| glab | `mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
 | gh | `pr view --repo P N --json ...` | GetPRDetail, CI rollup |
 | gh | `pr list --head B --state open --json ...` | open PR lookup (checkout origin) |
 | gh | `pr list --state merged --limit N --json ...` | merged heads (checkout origin) |
@@ -68,10 +71,10 @@ Handled, covering the reads the review pane, git status and CI make:
 | glab | `api projects/P/jobs/ID/trace` | CI job log |
 | glab | `api projects/P/uploads/SECRET/NAME` | forge attachments |
 
-Unhandled (fail with their argv): `gh pr create`; `gh api` review, file
-comment and reply POSTs; the GraphQL resolve and unresolve mutations;
-`glab mr create`; `glab api` draft notes, bulk publish, approve,
-discussion note POST and discussion resolve PUT.
+Unhandled (fail with their argv): `gh api` review, file comment and reply
+POSTs; the GraphQL resolve and unresolve mutations; `glab api` draft
+notes, bulk publish, approve, discussion note POST and discussion resolve
+PUT.
 
 ## Fixture notes
 
@@ -80,6 +83,9 @@ discussion note POST and discussion resolve PUT.
   seeded `host` and `project` must match that origin.
 - A GitLab path may name the project by its numeric `id` instead of its
   path; both resolve.
+- A create opens the pull for the cwd's checked-out branch and commit
+  (read with git) into `main` unless the call names a base, numbered one
+  past the repo's highest. It does not check that the branch was pushed.
 - The app caches the GitHub viewer login for 15 minutes per `Core`, and
   `HarnessReset` does not clear it. A `viewer` seeded after the boot's
   first GitHub PR load is not observed, so shared-worker specs keep the

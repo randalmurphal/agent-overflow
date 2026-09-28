@@ -322,6 +322,56 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	}
 }
 
+// The app's own create call opens a pull or merge request for the
+// checkout's branch, and the open-PR lookup git status makes finds it.
+func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {
+	fixture := githubFixture()
+	fixture.Repos = append(fixture.Repos, gitlabFixture().Repos...)
+	r := newRig(t, fixture)
+	checkout := func(origin, branch string) string {
+		dir := t.TempDir()
+		for _, args := range [][]string{
+			{"init", "-q", "-b", "main"},
+			{"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+			{"checkout", "-q", "-b", branch},
+			{"remote", "add", "origin", origin},
+		} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		return dir
+	}
+	gh := checkout("git@github.com:acme/widgets.git", "topic")
+	url, err := r.core.CreatePR(gh, "Topic", "Why", "", true)
+	if err != nil || url != "https://github.com/acme/widgets/pull/8" {
+		t.Fatalf("gh CreatePR = %q, %v", url, err)
+	}
+	open, err := r.core.ListOpenPRs(gh, "topic")
+	if err != nil || len(open) != 1 || open[0].Number != 8 || open[0].URL != url {
+		t.Fatalf("gh ListOpenPRs after create = %+v, %v", open, err)
+	}
+	if _, err := r.core.CreatePR(gh, "Again", "", "", false); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second gh CreatePR error = %v", err)
+	}
+
+	gl := checkout("https://gitlab.com/grp/sub/tool.git", "topic")
+	mrURL, err := r.core.CreatePR(gl, "Topic", "Why", "", false)
+	if err != nil || mrURL != "https://gitlab.com/grp/sub/tool/-/merge_requests/4" {
+		t.Fatalf("glab CreatePR = %q, %v", mrURL, err)
+	}
+	openMR, err := r.core.ListOpenPRs(gl, "topic")
+	if err != nil || len(openMR) != 1 || openMR[0].Number != 4 {
+		t.Fatalf("glab ListOpenPRs after create = %+v, %v", openMR, err)
+	}
+
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+	}
+}
+
 func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
 	r := newRig(t, githubFixture())
 	dir := t.TempDir()
@@ -331,12 +381,13 @@ func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
 	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://github.com/acme/widgets.git").CombinedOutput(); err != nil {
 		t.Fatalf("git remote: %v\n%s", err, out)
 	}
-	_, err := r.core.CreatePR(dir, "Title", "Body", "main", false)
-	if err == nil || !strings.Contains(err.Error(), `unhandled gh invocation`) || !strings.Contains(err.Error(), `gh "pr" "create" "--title" "Title"`) {
-		t.Fatalf("CreatePR error = %v, want the fake's unhandled report with the argv", err)
+	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
+	err := r.core.ReplyToThread(dir, ref, "", 99, "Body")
+	if err == nil || !strings.Contains(err.Error(), `unhandled gh invocation`) || !strings.Contains(err.Error(), `gh "api" "repos/acme/widgets/pulls/7/comments/99/replies"`) {
+		t.Fatalf("ReplyToThread error = %v, want the fake's unhandled report with the argv", err)
 	}
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 1 || !log[0].Unhandled || log[0].Args[0] != "pr" || log[0].Cwd == "" {
+	if len(log) != 1 || !log[0].Unhandled || log[0].Args[0] != "api" || log[0].Cwd == "" {
 		t.Fatalf("recorded %+v", log)
 	}
 }
