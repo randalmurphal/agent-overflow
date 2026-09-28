@@ -2581,7 +2581,8 @@ The app moves the thread row to the reported directory when it is the
 project root or a registered worktree of the thread's project, without
 restarting the session (the process already lives there) and without
 the idle gate that user-driven moves have. `action: "remove"` also
-reattaches other threads on the deleted worktree to the project root.
+reattaches other threads on the deleted worktree to the project root the
+way an outside removal does (their sessions stop, each is told why).
 The CLI moves the transcript itself: on enter the file leaves the launch
 cwd's slug dir (which keeps only `memory/`) for the worktree's slug dir,
 with a `{"type":"relocated","relocatedCwd":...}` row and the

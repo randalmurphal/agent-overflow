@@ -212,6 +212,33 @@ func (m *Manager) RequestRefresh(cwd string) {
 	}
 }
 
+// Suppress stops the watcher for cwd from computing and broadcasting status
+// until the returned resume runs or the watcher stops. It is for a caller
+// about to delete the workspace: the states git reports while the directory
+// goes (every file deleted, then no repository) describe nothing a
+// subscriber can act on. resume is idempotent; it re-enables broadcasting
+// and requests a refresh. With no watcher for cwd there is nothing to hold
+// and resume does nothing; a watcher created afterwards is not held.
+func (m *Manager) Suppress(cwd string) (resume func()) {
+	noop := func() {}
+	if cwd == "" {
+		return noop
+	}
+	_, canon, err := canonicalize(cwd)
+	if err != nil {
+		// Nothing canonicalizes to a path that is already gone, and no
+		// watcher can be keyed by it either.
+		return noop
+	}
+	m.mu.Lock()
+	w := m.watchers[canon]
+	m.mu.Unlock()
+	if w == nil {
+		return noop
+	}
+	return w.suppress()
+}
+
 func (m *Manager) shouldRefreshMissingPR(status gitops.GitStatus) bool {
 	// GitStatus intentionally does not distinguish "no PR exists" from
 	// "PR lookup has not been warmed yet". Re-checking on subscriber

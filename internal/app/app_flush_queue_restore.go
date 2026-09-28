@@ -52,7 +52,17 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 	if guard != nil && !guard() {
 		return nil
 	}
+	return a.restoreUnconfirmedQueueLocked(threadID)
+}
 
+// restoreUnconfirmedQueueLocked is the restore itself, for a caller that
+// already holds the thread action lock: a session the app is about to stop
+// for a reason other than the person's own Stop hands its queued messages
+// back to the composer the same way a death does.
+func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.UnconfirmedFlushItem {
+	if a.triage == nil {
+		return nil
+	}
 	// threadLock -> a.flushDispatch.mu is the established lock order documented
 	// by RegisterQueueItem. Draining here, rather than before the thread lock,
 	// keeps the guard and the destructive operation in one critical section.

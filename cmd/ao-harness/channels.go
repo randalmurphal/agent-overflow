@@ -123,6 +123,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.WorkflowItemState,
 		eventchan.WorkflowPhaseState,
 		eventchan.WorkflowSoftStop,
+		eventchan.WorktreeRemoved,
 		eventchan.WorktreeSetup,
 	}
 }

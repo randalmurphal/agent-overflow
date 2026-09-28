@@ -29,6 +29,26 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 const WS = { projectId: 'project-1', workspacePath: '/repo' };
 const WT_WS = { projectId: 'project-1', workspacePath: '/tmp/wt-feature' };
 
+// What RemoveOtherWorktree answers: the caller's workspace after the removal
+// and the thread rows it moved to the project root.
+function removal(reattached: Thread[] = []) {
+  return { workspace: { workspacePath: '/repo', worktreePath: '', branch: 'main' }, reattached };
+}
+
+function cleanStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    path: '/tmp/wt-feature',
+    branch: 'feat',
+    dirty: false,
+    uncommittedCount: 0,
+    unpushedCommits: 0,
+    hasUpstream: true,
+    attachedThreads: 0,
+    terminals: 0,
+    ...overrides,
+  };
+}
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: 'project-1',
@@ -305,7 +325,7 @@ describe('<EnvPicker>', () => {
       hasUpstream: true,
       attachedThreads: 0,
     }));
-    setBindingMock('RemoveOtherWorktree', async () => ({ workspacePath: '/repo', worktreePath: '', branch: 'main' }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
 
     const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
       props: { pane, workspaceLock: makeWorkspaceLock() },
@@ -409,7 +429,7 @@ describe('<EnvPicker>', () => {
       hasUpstream: true,
       attachedThreads: 0,
     }));
-    setBindingMock('RemoveOtherWorktree', async () => ({ workspacePath: '/repo', worktreePath: '', branch: 'main' }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
 
     const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
       props: { pane, workspaceLock },
@@ -487,10 +507,7 @@ describe('<EnvPicker>', () => {
       hasUpstream: true,
       attachedThreads: 0,
     }));
-    const remove = setBindingMock('RemoveOtherWorktree', async () => ({
-      workspacePath: '/repo',
-      branch: 'main',
-    }));
+    const remove = setBindingMock('RemoveOtherWorktree', async () => removal());
     setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not run for placeholder worktree removal');
     });
@@ -515,33 +532,24 @@ describe('<EnvPicker>', () => {
     expect(getBindingMock('CreateThread')).not.toHaveBeenCalled();
   });
 
-  it('moves every draft composer parked in the removed worktree, not just the acting one', async () => {
-    const acting = buildPlaceholderPane('main');
-    const sibling = buildPlaceholderPane('pane-1');
-    const elsewhere = buildPlaceholderPane('pane-2');
-    // A composer that was never in the removed directory.
-    elsewhere.applyDraftPlaceholderWorkspace({
-      workspacePath: '/repo',
-      worktreePath: '',
-      branch: 'main',
+  it('applies the moved rows from the reply to every pane showing them', async () => {
+    const acting = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    const onWorktree = makeThread({
+      id: 'thread-on-worktree',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+      projectPath: '/repo',
+      branch: 'feat',
     });
+    const sibling = await buildRegisteredPane(onWorktree, [], 'pane-1');
     setBindingMock('GitListWorktrees', async () => [
       { path: '/repo', branch: 'main', head: 'abc' },
       { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
     ]);
-    setBindingMock('GitWorktreeStatus', async () => ({
-      path: '/tmp/wt-feature',
-      branch: 'feat',
-      dirty: false,
-      uncommittedCount: 0,
-      unpushedCommits: 0,
-      hasUpstream: true,
-      attachedThreads: 0,
-    }));
-    setBindingMock('RemoveOtherWorktree', async () => ({
-      workspacePath: '/repo',
-      branch: 'main',
-    }));
+    setBindingMock('GitWorktreeStatus', async () => cleanStatus({ attachedThreads: 1 }));
+    setBindingMock('RemoveOtherWorktree', async () =>
+      removal([{ ...onWorktree, workspacePath: '/repo', worktreePath: '', branch: 'main' }]),
+    );
 
     const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
       props: { pane: acting, workspaceLock: makeWorkspaceLock() },
@@ -550,13 +558,59 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(await findByLabelText(/Remove worktree wt-feature/));
     await fireEvent.click(await findByTestId('env-picker-confirm-remove'));
 
+    // No thread:updated frame is delivered here: the reply alone moves it.
     await waitFor(() => {
-      expect(acting.thread?.workspacePath).toBe('/repo');
       expect(sibling.thread?.workspacePath).toBe('/repo');
       expect(sibling.thread?.worktreePath).toBe('');
       expect(sibling.thread?.branch).toBe('main');
     });
-    expect(elsewhere.thread?.branch).toBe('main');
+  });
+
+  it('says how many terminals the removal closes', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+      { path: '/tmp/wt-quiet', branch: 'quiet', head: 'ghi' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async (_ws: unknown, path: string) =>
+      cleanStatus({ path, terminals: path === '/tmp/wt-feature' ? 2 : 0 }),
+    );
+
+    const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByLabelText(/Remove worktree wt-feature/));
+    const note = await findByTestId('env-picker-confirm-terminals');
+    expect(note.textContent?.trim()).toBe('2 terminals will close.');
+
+    await fireEvent.click(getByTestId('env-picker-confirm-row').querySelector('button')!);
+    await fireEvent.click(await findByLabelText(/Remove worktree wt-quiet/));
+    await findByTestId('env-picker-confirm-remove');
+    await waitFor(() => expect(queryByTestId('env-picker-confirm-terminals')).toBeNull());
+  });
+
+  it('shows why the worktree list is empty until a read succeeds', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    let failing = true;
+    setBindingMock('GitListWorktrees', async () => {
+      if (failing) throw new Error('list worktrees: git exited 128: fatal: not a git repository');
+      return [{ path: '/tmp/wt-feature', branch: 'feat', head: 'def' }];
+    });
+
+    const { getByTestId, findByTestId, findByLabelText, queryByTestId, queryByLabelText } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    const error = await findByTestId('env-picker-list-error');
+    expect(error.textContent ?? '').toMatch(/Could not list worktrees/);
+    expect(error.textContent ?? '').toMatch(/not a git repository/i);
+    expect(queryByLabelText(/Remove worktree wt-feature/)).toBeNull();
+
+    failing = false;
+    emitWailsEvent('provider:turn_completed', { threadId: 'thread-sibling', turnId: 'turn-1', turnIndex: 0 });
+    await findByLabelText(/Remove worktree wt-feature/, {}, { timeout: 2000 });
+    expect(queryByTestId('env-picker-list-error')).toBeNull();
   });
 
   it('ignores a stale placeholder worktree removal response after the placeholder is replaced', async () => {
@@ -574,7 +628,7 @@ describe('<EnvPicker>', () => {
       hasUpstream: true,
       attachedThreads: 0,
     }));
-    let resolveRemove: ((value: { workspacePath: string; branch: string }) => void) | undefined;
+    let resolveRemove: ((value: ReturnType<typeof removal>) => void) | undefined;
     setBindingMock('RemoveOtherWorktree', async () => new Promise((resolve) => {
       resolveRemove = resolve;
     }));
@@ -595,7 +649,7 @@ describe('<EnvPicker>', () => {
       workspacePath: '/other',
       branch: 'main',
     });
-    resolveRemove!({ workspacePath: '/repo', branch: 'main' });
+    resolveRemove!(removal());
 
     await waitFor(() => {
       expect(pane.thread?.projectId).toBe('project-2');
@@ -618,7 +672,7 @@ describe('<EnvPicker>', () => {
       hasUpstream: true,
       attachedThreads: 0,
     }));
-    setBindingMock('RemoveOtherWorktree', async () => ({ workspacePath: '/repo', worktreePath: '', branch: 'main' }));
+    setBindingMock('RemoveOtherWorktree', async () => removal());
 
     const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
       props: { pane, workspaceLock: makeWorkspaceLock() },

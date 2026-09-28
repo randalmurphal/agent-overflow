@@ -42,7 +42,30 @@ func (a *App) followProviderWorkspaceChange(threadID, sessionToken string, evt p
 		a.emitWireErrorToThread(threadID, "Claude changed its working directory, but AO could not read the new path from the event.")
 		return
 	}
-	go a.applyProviderWorkspaceChange(threadID, sessionToken, change)
+	// Recorded here, on the event worker, before the move is applied: the
+	// registry watch may already be sweeping the removed worktree and must
+	// leave this thread's session alone (reclaimRemovedWorktree).
+	removed := strings.TrimSpace(change.WorktreePath)
+	if change.RemovedWorktree && removed != "" {
+		a.providerWorktreeExits.Store(threadID, removed)
+	}
+	go func() {
+		if change.RemovedWorktree && removed != "" {
+			defer a.providerWorktreeExits.CompareAndDelete(threadID, removed)
+		}
+		a.applyProviderWorkspaceChange(threadID, sessionToken, change)
+	}()
+}
+
+// providerExitingWorktree reports whether threadID's own CLI reported
+// removing worktreePath and the app has not finished following that move.
+func (a *App) providerExitingWorktree(threadID, worktreePath string) bool {
+	value, ok := a.providerWorktreeExits.Load(threadID)
+	if !ok {
+		return false
+	}
+	path, _ := value.(string)
+	return gitops.SameFilesystemPath(path, worktreePath)
 }
 
 func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change provider.WorkspaceChangeMeta) {
@@ -51,7 +74,12 @@ func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change
 		log.Printf("thread %s: workspace change from %s abandoned: %v", threadID, change.Tool, err)
 		return
 	}
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
 	// A replacement session launched from the row's workspace is the
 	// authority now; a late result from the session it replaced describes
@@ -100,7 +128,12 @@ func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change
 	}
 
 	if change.RemovedWorktree {
-		a.reclaimProviderRemovedWorktree(project, change.WorktreePath, threadID)
+		// Released first: the sweep locks the other occupants in id order,
+		// and holding this thread's lock across it would invert that order
+		// against a registry sweep that is locking the same set.
+		locked = false
+		unlock()
+		a.reclaimProviderRemovedWorktree(thread.ProjectID, project, change.WorktreePath, threadID)
 	}
 }
 
@@ -130,13 +163,15 @@ func (a *App) resolveProviderWorkspaceTarget(project, cwd string) (GitWorkspaceS
 
 // reclaimProviderRemovedWorktree is the app's half of an `ExitWorktree
 // remove`: the CLI deleted the directory and branch, so every OTHER thread
-// still attached there is reattached to the project root exactly as
-// RemoveOtherWorktree would have done. The exiting thread itself already
-// followed the move and holds its own lock, so it is excluded from the
-// occupant set rather than locked twice. A failure is reported on the
-// exiting thread, whose tool result this reaction belongs to.
-func (a *App) reclaimProviderRemovedWorktree(project, worktreePath, exitingThreadID string) {
-	a.reclaimRemovedWorktree(project, worktreePath, exitingThreadID, func(_ []string, problem string) {
+// still attached there is reattached to the project root the way an outside
+// removal reattaches it: its session stops and it is told why. The exiting
+// thread itself already followed the move and keeps its running session
+// (the CLI relocated itself), so it is excluded from the occupant set. A
+// failure is reported on the exiting thread, whose tool
+// result this reaction belongs to.
+func (a *App) reclaimProviderRemovedWorktree(projectID, project, worktreePath, exitingThreadID string) {
+	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath, cause: "was removed by Claude in another thread"}
+	a.reclaimRemovedWorktree(removal, exitingThreadID, true, func(_ []string, problem string) {
 		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but %s", worktreePath, problem))
 	})
 }

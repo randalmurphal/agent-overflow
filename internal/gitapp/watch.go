@@ -176,6 +176,16 @@ func (s *Service) RequestRefresh(workspace string) {
 	}
 }
 
+// SuppressStatus holds the status stream of workspace off the wire until
+// the returned resume runs or the stream's watcher stops. See
+// gitwatch.Manager.Suppress.
+func (s *Service) SuppressStatus(workspace string) (resume func()) {
+	if s.watch == nil {
+		return func() {}
+	}
+	return s.watch.Suppress(workspace)
+}
+
 // StatusPumpRefsForTesting reports the live shared-pump refcount to legacy root
 // integration tests while the race-sensitive unit coverage lives here.
 func (s *Service) StatusPumpRefsForTesting(cwd string) (int, bool) {

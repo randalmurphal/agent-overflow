@@ -17,14 +17,17 @@ import (
 // terminal, `rm -rf`, another tool. The thread row is the app's only record
 // of where a thread works, and a row pointing at a directory that no longer
 // exists breaks everything downstream: git status, the workspace strip, the
-// next `--resume` (the CLI exits with code 1 once its cwd is unlinked). The
-// two removal paths the app already reacts to, its own RemoveOtherWorktree
-// and the CLI's `ExitWorktree remove`, reattach every thread of the dead
-// checkout to the project root. This file gives the external removal the
-// same reaction, from a watch on git's own worktree registry.
+// next start. A live session does not notice either: neither CLI exits when
+// its cwd is deleted (Codex fails every later command; Claude's shell falls
+// back to the home directory and keeps going there). The two removal paths
+// the app already reacts to, its own RemoveOtherWorktree and the CLI's
+// `ExitWorktree remove`, reattach every thread of the dead checkout to the
+// project root. This file gives the external removal the same reaction, from
+// a watch on git's own worktree registry, and tells each moved thread what
+// happened.
 
 // startWorktreeWatch builds the registry watcher. It watches nothing until
-// armWorktreeWatch runs: a sweep moves rows and restarts sessions, which is
+// armWorktreeWatch runs: a sweep moves rows and stops sessions, which is
 // work that acts on its own and so waits for the activation gate like every
 // other unattended worker. Built early because the project chokepoints read
 // the field without a lock.
@@ -81,14 +84,20 @@ func (a *App) closeWorktreeWatch() {
 
 // reconcileProjectWorktrees reattaches every thread of the project whose
 // checkout is no longer one of the repository's registered, present
-// worktrees. It is the watcher's callback and runs on the watcher's
+// worktrees, and announces every worktree the watcher saw vanish (removed)
+// whether or not a thread row points at it: draft placeholders live only
+// in clients. It is the watcher's callback and runs on the watcher's
 // goroutine, serialized per project; it is also safe to call directly.
 //
 // "Gone" is decided against git's registry read from disk and a stat of
 // each registration: a checkout deleted with `rm -rf` is still registered
 // and no longer present, one removed with `git worktree remove` is neither.
 // Both are the same thing to the thread: a directory it cannot run in.
-func (a *App) reconcileProjectWorktrees(projectPath string) {
+//
+// A retired row (a conversation moved to another computer, a holder) keeps
+// the path it had and is never reattached, so it does not make a path gone:
+// it would otherwise run the sweep again on every registry change.
+func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 	if a.shuttingDown.Load() {
 		return
 	}
@@ -133,18 +142,42 @@ func (a *App) reconcileProjectWorktrees(projectPath string) {
 			if _, ok := live[canonical]; ok {
 				continue
 			}
+			if _, ok := gone[canonical]; ok {
+				continue
+			}
+			retired, err := a.threadApplication().CheckCleanup(ref.ID)
+			if err == nil && retired {
+				continue
+			}
+			// An unreadable ownership answer counts the path: the sweep
+			// rechecks under the thread lock and reports what it cannot.
 			gone[canonical] = path
 		}
 	}
-	paths := make([]string, 0, len(gone))
-	for _, path := range gone {
-		paths = append(paths, path)
+	announced := make(map[string]struct{}, len(removed))
+	for _, path := range removed {
+		canonical := gitops.CanonicalPath(path)
+		if _, ok := live[canonical]; ok {
+			// Back on disk by the time this read ran.
+			continue
+		}
+		announced[canonical] = struct{}{}
+		if _, ok := gone[canonical]; !ok {
+			gone[canonical] = path
+		}
 	}
-	slices.Sort(paths)
-	for _, path := range paths {
-		a.reclaimRemovedWorktree(project.Path, path, "", func(threadIDs []string, problem string) {
+	canonicals := make([]string, 0, len(gone))
+	for canonical := range gone {
+		canonicals = append(canonicals, canonical)
+	}
+	slices.Sort(canonicals)
+	for _, canonical := range canonicals {
+		path := gone[canonical]
+		_, announce := announced[canonical]
+		removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: path, cause: "was removed outside Agent Overflow"}
+		a.reclaimRemovedWorktree(removal, "", announce, func(threadIDs []string, problem string) {
 			for _, id := range threadIDs {
-				a.emitErrorToThread(id, fmt.Sprintf("worktree %s was removed outside Agent Overflow, but %s", path, problem))
+				a.emitErrorToThread(id, fmt.Sprintf("worktree %s no longer exists, but %s", path, problem))
 			}
 		})
 	}
@@ -159,13 +192,22 @@ func (a *App) reconcileProjectWorktrees(projectPath string) {
 // the app is performing at the same time; that removal finishes first and
 // this sweep then finds nothing left on the path.
 //
+// A thread whose own CLI reported removing this worktree is left to follow
+// its move (applyProviderWorkspaceChange) as the exiting thread is: the
+// registry can show the removal before the app has read the tool result, and
+// that session is the one doing the moving. The occupants' pending events are
+// processed first so a result already read is not mistaken for an outside
+// removal.
+//
+// announce makes the removal reach every client even when no thread moved.
 // A failure is reported to the caller with the affected thread ids rather
 // than logged: the threads whose rows are wrong are where it must be seen.
-func (a *App) reclaimRemovedWorktree(project, worktreePath, exitingThreadID string, report func(threadIDs []string, problem string)) {
-	worktreePath = strings.TrimSpace(worktreePath)
-	if worktreePath == "" {
+func (a *App) reclaimRemovedWorktree(removal *worktreeRemoval, exitingThreadID string, announce bool, report func(threadIDs []string, problem string)) {
+	removal.path = strings.TrimSpace(removal.path)
+	if removal.path == "" {
 		return
 	}
+	worktreePath := removal.path
 	a.cancelWorktreeSetupsForPath(worktreePath)
 	occupants, err := a.threadsReferencingWorkspace(worktreePath)
 	if err != nil {
@@ -180,11 +222,10 @@ func (a *App) reclaimRemovedWorktree(project, worktreePath, exitingThreadID stri
 	}
 	slices.Sort(others)
 	others = slices.Compact(others)
-	if len(others) == 0 {
-		if a.workspaceFiles != nil {
-			a.workspaceFiles.Invalidate(worktreePath)
+	for _, id := range others {
+		if a.hasActiveSession(id) {
+			a.drainProviderEvents(id, "worktree removed")
 		}
-		return
 	}
 	unlocks := make([]func(), 0, len(others))
 	defer func() {
@@ -200,6 +241,9 @@ func (a *App) reclaimRemovedWorktree(project, worktreePath, exitingThreadID stri
 		}
 		unlocks = append(unlocks, unlock)
 	}
+	others = slices.DeleteFunc(others, func(id string) bool {
+		return a.providerExitingWorktree(id, worktreePath)
+	})
 	mutable, err := a.mutableWorkspaceThreads(others)
 	if err != nil {
 		report(others, fmt.Sprintf("the threads attached to it could not be checked: %v", err))
@@ -208,7 +252,11 @@ func (a *App) reclaimRemovedWorktree(project, worktreePath, exitingThreadID stri
 	for _, id := range mutable {
 		a.cancelThreadWorktreeSetup(id)
 	}
-	if err := a.reattachThreadsFromRemovedWorktree(project, worktreePath, mutable); err != nil {
+	reattached, sweepErr := a.reattachThreadsFromRemovedWorktree(removal, mutable)
+	if sweepErr != nil {
+		report(mutable, sweepErr.Error())
+	}
+	if err := a.finishWorktreeRemoval(removal, reattached, announce); err != nil {
 		report(mutable, err.Error())
 	}
 }

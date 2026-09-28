@@ -12,15 +12,14 @@ import {
   RemoveOtherWorktree,
 } from '../../stores/bindings';
 import {
-  applyToDraftPlaceholdersInWorkspace,
-  placeholderWorkspaceOf,
-} from '../../stores/draftWorkspaceSync';
+  syncRemovedWorktreeThreads,
+  type WorktreeRemovalResult,
+} from '../../stores/worktreeRemoval.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type {
   GitActionResult,
   GitStatus,
-  GitWorkspaceState,
   WorkspaceRef,
 } from '../../types/git';
 
@@ -127,17 +126,16 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
 
 export async function runRemoveWorktreeAction(ctx: RemoveWorktreeCtx): Promise<void> {
   try {
-    const next = (await RemoveOtherWorktree(
+    const removal = (await RemoveOtherWorktree(
       ctx.workspace,
       ctx.worktreePath,
       false,
-    )) as GitWorkspaceState;
-    // Thread rows attached to the removed worktree are reattached and
-    // broadcast by the backend; draft placeholders have no row to broadcast,
-    // so the returned state is applied to them here.
-    applyToDraftPlaceholdersInWorkspace(ctx.workspace, placeholderWorkspaceOf(next));
+    )) as WorktreeRemovalResult;
+    // This pane's own row moved to the project root; applying it now points
+    // the pane's status at the root. Draft composers in the removed
+    // directory are moved by the worktree:removed event.
+    syncRemovedWorktreeThreads(removal);
     addToast('success', 'Worktree removed');
-    await ctx.refreshStatus();
   } catch (err) {
     console.error('Remove worktree failed:', err);
     ctx.reportError(`Remove worktree failed: ${errString(err)}`);

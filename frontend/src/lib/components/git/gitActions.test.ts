@@ -20,6 +20,8 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
+import { buildPane, makeThread } from '../../../test/helpers/chat';
+import { resetPanesForTest } from '../../stores/panes.svelte';
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -186,20 +188,33 @@ describe('menuPushEnabled', () => {
 });
 
 describe('runRemoveWorktreeAction', () => {
-  beforeEach(() => resetBindingMocks());
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+  });
 
-  it('removes the named worktree from the pane\'s checkout and refreshes', async () => {
+  it('removes the named worktree and applies the moved rows from the reply', async () => {
+    const worktree = '/workspace/.worktrees/feature';
+    const onWorktree = makeThread({ workspacePath: worktree, worktreePath: worktree, projectPath: '/workspace', branch: 'feature' });
+    const pane = await buildPane(onWorktree);
+    const moved = { ...onWorktree, workspacePath: '/workspace', worktreePath: '', branch: 'main' };
     const remove = setBindingMock('RemoveOtherWorktree', async () => ({
-      workspacePath: '/workspace',
-      worktreePath: '',
-      branch: 'main',
+      workspace: { workspacePath: '/workspace', worktreePath: '', branch: 'main' },
+      reattached: [moved],
     }));
     const c = removeCtx();
     await runRemoveWorktreeAction(c);
-    // Thread rows reattach through ThreadUpdated; what this action owns is
-    // the RPC's subject — the checkout, plus the worktree being removed.
-    expect(remove).toHaveBeenCalledWith(WS, '/workspace/.worktrees/feature', false);
-    expect(c.refreshStatus).toHaveBeenCalledTimes(1);
+    // What this action owns is the RPC's subject: the checkout, plus the
+    // worktree being removed.
+    expect(remove).toHaveBeenCalledWith(WS, worktree, false);
+    // The pane's own row is applied from the reply, not left to a
+    // thread:updated event that can arrive after it.
+    expect(pane.thread?.workspacePath).toBe('/workspace');
+    expect(pane.thread?.worktreePath).toBe('');
+    expect(pane.thread?.branch).toBe('main');
+    // The moved row points the pane's status at the root; a refresh of the
+    // removed checkout would read a directory that is gone.
+    expect(c.refreshStatus).not.toHaveBeenCalled();
     expect(c.reportError).not.toHaveBeenCalled();
   });
 

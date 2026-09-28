@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { forkThreadAction, type ThreadActionCtx } from './threadRowActions';
+import { deleteThreadAction, forkThreadAction, type ThreadActionCtx } from './threadRowActions';
+import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { resetPanesForTest } from '../../stores/panes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
   getThreads,
@@ -98,5 +100,37 @@ describe('forkThreadAction', () => {
     expect(ctx.reportError).toHaveBeenCalledTimes(1);
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/missing a session/);
     expect(ctx.switchPane).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteThreadAction', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    clearThreadsForTest();
+  });
+
+  it('applies the rows its worktree removal moved before deleting the thread', async () => {
+    const worktree = '/tmp/work-wt/feature';
+    const sibling = makeBaseThread({ id: 'thread-sibling', workspacePath: worktree, worktreePath: worktree, projectPath: '/tmp/work', branch: 'feature' });
+    const siblingPane = await buildPane(sibling, [], 'pane-sibling');
+    const order: string[] = [];
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GitRemoveWorktree', async () => {
+      order.push('remove');
+      return {
+        workspace: { workspacePath: worktree, worktreePath: worktree, branch: 'feature' },
+        reattached: [{ ...sibling, workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }],
+      };
+    });
+    setBindingMock('DeleteThread', async () => {
+      order.push(`delete, sibling at ${siblingPane.thread?.workspacePath}`);
+    });
+
+    await deleteThreadAction(makeCtx({ workspacePath: worktree, worktreePath: worktree }));
+
+    expect(order).toEqual(['remove', 'delete, sibling at /tmp/work']);
+    expect(siblingPane.thread?.worktreePath).toBe('');
+    expect(siblingPane.thread?.branch).toBe('main');
   });
 });

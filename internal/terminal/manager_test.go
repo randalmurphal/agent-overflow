@@ -425,3 +425,58 @@ func isSizeLine(line string) bool {
 	}
 	return true
 }
+
+// CloseMatching reaches every thread's sessions the predicate accepts, and
+// only those, and each close reports its exit.
+func TestManagerCloseMatchingClosesAcrossThreads(t *testing.T) {
+	exits := make(chan string, 8)
+	m := NewManager(nil, func(threadID, terminalID string, status ExitStatus) { exits <- terminalID })
+	gone := t.TempDir()
+	kept := t.TempDir()
+	open := func(thread, cwd string) SessionSummary {
+		t.Helper()
+		summary, err := m.Open(thread, SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 10"}, Cwd: cwd})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		return summary
+	}
+	a := open("thread-a", gone)
+	b := open("draft:b", gone)
+	keep := open("thread-a", kept)
+	t.Cleanup(func() { _ = m.Shutdown() })
+
+	inGone := func(summary SessionSummary) bool { return summary.Cwd == gone }
+	if got := m.Matching(inGone); len(got) != 2 {
+		t.Fatalf("Matching = %d sessions, want 2", len(got))
+	}
+	closed, err := m.CloseMatching(inGone)
+	if err != nil {
+		t.Fatalf("CloseMatching: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, summary := range closed {
+		ids[summary.TerminalID] = true
+	}
+	if len(closed) != 2 || !ids[a.TerminalID] || !ids[b.TerminalID] {
+		t.Fatalf("closed = %+v, want %s and %s", closed, a.TerminalID, b.TerminalID)
+	}
+	if got := m.List("thread-a"); len(got) != 1 || got[0].TerminalID != keep.TerminalID {
+		t.Fatalf("thread-a sessions = %+v, want only %s", got, keep.TerminalID)
+	}
+	if got := m.List("draft:b"); len(got) != 0 {
+		t.Fatalf("draft:b sessions = %+v, want none", got)
+	}
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-exits:
+			seen[id] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("exit callbacks = %v, want both closed sessions", seen)
+		}
+	}
+	if !seen[a.TerminalID] || !seen[b.TerminalID] {
+		t.Fatalf("exit callbacks = %v, want %s and %s", seen, a.TerminalID, b.TerminalID)
+	}
+}

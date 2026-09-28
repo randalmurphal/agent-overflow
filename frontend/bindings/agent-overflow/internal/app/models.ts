@@ -9523,6 +9523,54 @@ export class WorktreeListItem {
 }
 
 /**
+ * WorktreeRemoval is what an in-app worktree removal answers its caller.
+ */
+export class WorktreeRemoval {
+    /**
+     * Workspace is the caller's workspace after the removal: unchanged when
+     * it removed some other worktree, the project root when it removed its
+     * own.
+     */
+    "workspace": GitWorkspaceState;
+
+    /**
+     * Reattached are the thread rows the removal moved to the project root,
+     * as they now stand. The caller applies them before it reads its own
+     * workspace again: the thread:updated broadcast of the same rows is an
+     * event, and events can arrive after this reply.
+     */
+    "reattached": store$0.Thread[];
+
+    /** Creates a new WorktreeRemoval instance. */
+    constructor($$source: Partial<WorktreeRemoval> = {}) {
+        if (!("workspace" in $$source)) {
+            this["workspace"] = (new GitWorkspaceState());
+        }
+        if (!("reattached" in $$source)) {
+            this["reattached"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeRemoval instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeRemoval {
+        const $$createField0_0 = $$createType171;
+        const $$createField1_0 = $$createType173;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("workspace" in $$parsedSource) {
+            $$parsedSource["workspace"] = $$createField0_0($$parsedSource["workspace"]);
+        }
+        if ("reattached" in $$parsedSource) {
+            $$parsedSource["reattached"] = $$createField1_0($$parsedSource["reattached"]);
+        }
+        return new WorktreeRemoval($$parsedSource as Partial<WorktreeRemoval>);
+    }
+}
+
+/**
  * WorktreeSetupConfig is the wire shape of a project's worktree setup recipe.
  * It mirrors worktreesetup.Config with the slices always materialised, so the
  * editor binds against `[]` rather than having to treat null as empty.
@@ -9552,7 +9600,7 @@ export class WorktreeSetupConfig {
      */
     static createFrom($$source: any = {}): WorktreeSetupConfig {
         const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType171;
+        const $$createField1_0 = $$createType174;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("copy" in $$parsedSource) {
             $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
@@ -9626,7 +9674,7 @@ export class WorktreeSetupRunState {
      * Creates a new WorktreeSetupRunState instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeSetupRunState {
-        const $$createField3_0 = $$createType173;
+        const $$createField3_0 = $$createType176;
         const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
@@ -9681,8 +9729,9 @@ export class WorktreeSetupStep {
 /**
  * WorktreeStatus describes a worktree's safety classification for the cleanup
  * UI: whether the working tree has uncommitted changes, whether the branch
- * has unpushed commits, whether an upstream is configured, and how many
- * threads are currently attached to the worktree.
+ * has unpushed commits, whether an upstream is configured, how many threads
+ * are currently attached to the worktree, and how many open terminals
+ * removing it would close.
  */
 export class WorktreeStatus {
     "path": string;
@@ -9692,6 +9741,7 @@ export class WorktreeStatus {
     "unpushedCommits": number;
     "hasUpstream": boolean;
     "attachedThreads": number;
+    "terminals": number;
 
     /** Creates a new WorktreeStatus instance. */
     constructor($$source: Partial<WorktreeStatus> = {}) {
@@ -9715,6 +9765,9 @@ export class WorktreeStatus {
         }
         if (!("attachedThreads" in $$source)) {
             this["attachedThreads"] = 0;
+        }
+        if (!("terminals" in $$source)) {
+            this["terminals"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -9901,6 +9954,9 @@ const $$createType167 = BusyThread.createFrom;
 const $$createType168 = $Create.Array($$createType167);
 const $$createType169 = workspacefiles$0.WorkspaceFile.createFrom;
 const $$createType170 = $Create.Array($$createType169);
-const $$createType171 = $Create.Array($$createType8);
-const $$createType172 = WorktreeSetupStep.createFrom;
+const $$createType171 = GitWorkspaceState.createFrom;
+const $$createType172 = store$0.Thread.createFrom;
 const $$createType173 = $Create.Array($$createType172);
+const $$createType174 = $Create.Array($$createType8);
+const $$createType175 = WorktreeSetupStep.createFrom;
+const $$createType176 = $Create.Array($$createType175);

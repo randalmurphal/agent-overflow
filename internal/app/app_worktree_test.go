@@ -75,7 +75,7 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 
 	seedWorktreeTestAnchor(t, app, thread.ID, "worktree-before-removal", "user:1", 1)
 
-	if err := app.GitRemoveWorktree(thread.ID); err != nil {
+	if _, err := app.GitRemoveWorktree(thread.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -843,7 +843,7 @@ func TestGitRemoveWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 		t.Fatalf("CreateThread(other) error = %v", err)
 	}
 
-	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+	if _, err := app.GitRemoveWorktree(owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -906,7 +906,7 @@ func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
 	}
 	otherBefore := persistedOther.UpdatedAt
 
-	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+	if _, err := app.GitRemoveWorktree(owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -955,7 +955,7 @@ func TestGitRemoveWorktreeReattachesArchivedThreads(t *testing.T) {
 		t.Fatalf("CreateThread(other) error = %v", err)
 	}
 
-	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+	if _, err := app.GitRemoveWorktree(owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -1324,7 +1324,7 @@ func TestRemoveOtherWorktreeRemovesAndReturnsPlaceholderState(t *testing.T) {
 		t.Fatalf("GitCreateWorktree() error = %v", err)
 	}
 
-	state, err := app.RemoveOtherWorktree(
+	removal, err := app.RemoveOtherWorktree(
 		WorkspaceRef{ProjectID: project.ID, WorkspacePath: worktreePath}, worktreePath, true)
 	if err != nil {
 		t.Fatalf("RemoveOtherWorktree() error = %v", err)
@@ -1332,14 +1332,14 @@ func TestRemoveOtherWorktreeRemovesAndReturnsPlaceholderState(t *testing.T) {
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree should be removed; stat err = %v", err)
 	}
-	if !samePath(state.WorkspacePath, repo) {
-		t.Fatalf("returned WorkspacePath = %q, want %q", state.WorkspacePath, repo)
+	if !samePath(removal.Workspace.WorkspacePath, repo) {
+		t.Fatalf("returned WorkspacePath = %q, want %q", removal.Workspace.WorkspacePath, repo)
 	}
-	if state.WorktreePath != "" {
-		t.Fatalf("returned WorktreePath = %q, want empty", state.WorktreePath)
+	if removal.Workspace.WorktreePath != "" {
+		t.Fatalf("returned WorktreePath = %q, want empty", removal.Workspace.WorktreePath)
 	}
-	if state.Branch != "main" {
-		t.Fatalf("returned Branch = %q, want main", state.Branch)
+	if removal.Workspace.Branch != "main" {
+		t.Fatalf("returned Branch = %q, want main", removal.Workspace.Branch)
 	}
 
 	refreshedOwner, err := app.store.GetThread(owner.ID)
@@ -1722,7 +1722,7 @@ func TestGitRemoveWorktreeRejectsBusyCallerOnOwnWorktree(t *testing.T) {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 
-	err = app.GitRemoveWorktree(thread.ID)
+	_, err = app.GitRemoveWorktree(thread.ID)
 	if err == nil {
 		t.Fatal("expected GitRemoveWorktree to refuse while the occupying caller is mid-turn")
 	}
@@ -2117,7 +2117,7 @@ func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+	if _, err := app.GitRemoveWorktree(owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -2241,7 +2241,7 @@ func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
 	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
 	placeWorktreeTranscript(t, env.home, env.worktreePath, forkID)
 
-	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+	if _, err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -2282,7 +2282,7 @@ func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
 	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
 	srcTranscript := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.worktreePath), sessionID+".jsonl")
 
-	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+	if _, err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -2327,7 +2327,7 @@ func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *te
 	attachSessionToWorktree(t, env, sessionID, "")
 
 	// Removal succeeds even though there is nothing to relocate.
-	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+	if _, err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() must succeed when transcript is already gone, got %v", err)
 	}
 
@@ -2359,7 +2359,7 @@ func TestGitRemoveWorktreeCodexThreadSkipsRelocation(t *testing.T) {
 	const sessionID = "codex-thread-xyz"
 	attachSessionToWorktree(t, env, sessionID, "")
 
-	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+	if _, err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
 	}
 
@@ -2412,7 +2412,7 @@ func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
 	}
 
 	// Removal must SUCCEED despite the subagent-subdir copy failure.
-	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+	if _, err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() must succeed when only the subagent subdir copy fails, got %v", err)
 	}
 

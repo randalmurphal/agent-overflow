@@ -144,16 +144,24 @@ Mechanism in
   A directory the row cannot represent (outside the project's worktrees)
   is refused with an error on the thread, not recorded.
   See `docs/references/claude-wire.md` §E10.
-- A worktree removed OUTSIDE the app (a terminal's `git worktree remove`,
-  `rm -rf`, another tool) reattaches its threads to the project root the
-  same way an in-app removal does, detected by a watch on git's worktree
-  registry (`internal/worktreewatch`, `internal/app/app_worktree_watch.go`)
-  that runs for every project whether or not a pane is open. The rules
-  differ from the in-app removal only where the removal already happened:
-  no busy-thread refusal, an idle session restarts from the root and its
-  background tasks show as died like an app restart, a mid-turn session is
-  left running and restarts once the thread is quiet. A project whose root
-  is itself gone is left alone; there is nothing to reattach to.
+- A removed worktree's threads move to the project root (Base) and their
+  sessions stop; nothing restarts them, and the next send starts them
+  there. Neither CLI exits when its cwd is deleted, and a restart would run
+  work nobody sent. This holds for every removal: in-app, a workflow's,
+  Claude's `ExitWorktree remove` in another thread, and one made OUTSIDE
+  the app (a terminal's `git worktree remove`, `rm -rf`, another tool),
+  detected by a watch on git's worktree registry (`internal/worktreewatch`,
+  `internal/app/app_worktree_watch.go`) that runs for every project whether
+  or not a pane is open. The thread that ran `ExitWorktree` keeps its
+  session, which moved itself. The in-app removal refuses busy threads and
+  says nothing on them; a removal that already happened stops a running
+  turn as interrupted, its background tasks show as died like an app
+  restart, queued messages return to the composer, and every moved thread
+  gets a warning notice at its own timeline position saying who removed the
+  worktree and that it now runs in Base. Terminals opened in the worktree
+  close, and one `worktree:removed` event moves draft placeholders on it to
+  Base on every client. A project whose root is itself gone is left alone;
+  there is nothing to reattach to.
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart

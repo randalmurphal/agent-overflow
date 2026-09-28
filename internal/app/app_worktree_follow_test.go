@@ -181,10 +181,17 @@ func TestFollowExitWorktreeKeepReturnsThreadToProjectRoot(t *testing.T) {
 }
 
 // ExitWorktree remove: the CLI already deleted the checkout. The exiting
-// thread returns to the root, and any OTHER thread attached to the dead
-// worktree is reattached exactly as a user-driven removal would do.
+// thread returns to the root and keeps its running session, which moved
+// itself. Any OTHER thread attached to the dead worktree is handled as an
+// outside removal: reattached, its session stopped, and told why.
 func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
 	f := newFollowFixture(t, "thread-follow-exit-remove")
+	events := &emitRecorder{}
+	f.app.testEmitHook = func(name string, data any) {
+		f.rows.hook(name, data)
+		events.capture(name, data)
+	}
+	f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
 	worktree := f.cliWorktree(t, "feature-z")
 	moved := f.thread
 	moved.WorkspacePath, moved.WorktreePath, moved.Branch = worktree, worktree, "worktree-feature-z"
@@ -197,6 +204,22 @@ func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
 	sibling.UpdatedAt = 1_700_000_000_000
 	if err := f.app.store.CreateThread(sibling); err != nil {
 		t.Fatalf("CreateThread(sibling): %v", err)
+	}
+	f.app.sessionManager().put(f.thread.ID, session{Provider: string(provider.Claude), Token: "token-live"})
+	f.app.sessionManager().put(sibling.ID, session{Provider: string(provider.Claude), Token: "token-sibling"})
+	var stopsMu sync.Mutex
+	var stops, starts []string
+	f.app.stopSessionFn = func(id string) error {
+		stopsMu.Lock()
+		defer stopsMu.Unlock()
+		stops = append(stops, id)
+		return nil
+	}
+	f.app.startSessionFn = func(id string) error {
+		stopsMu.Lock()
+		defer stopsMu.Unlock()
+		starts = append(starts, id)
+		return nil
 	}
 	// The CLI's remove half: directory and branch are gone before the
 	// result reaches AO.
@@ -216,6 +239,25 @@ func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
 		t.Errorf("sibling UpdatedAt bumped by the sweep: %d -> %d", sibling.UpdatedAt, reattached.UpdatedAt)
 	}
 	waitUntil(t, 5*time.Second, func() bool { return len(f.rows.fullRowsFor(sibling.ID)) > 0 })
+	waitUntil(t, 5*time.Second, func() bool { return len(worktreeRemovedEvents(events)) > 0 })
+	removals := worktreeRemovedEvents(events)
+	if len(removals) != 1 || !samePath(removals[0].Path, worktree) || len(removals[0].ThreadIDs) != 1 || removals[0].ThreadIDs[0] != sibling.ID {
+		t.Errorf("worktree:removed = %+v, want one naming the sibling", removals)
+	}
+	stopsMu.Lock()
+	if len(stops) != 1 || stops[0] != sibling.ID || len(starts) != 0 {
+		t.Errorf("stops = %v starts = %v, want only the sibling stopped and nothing started", stops, starts)
+	}
+	stopsMu.Unlock()
+	if current, ok := f.app.sessionManager().get(f.thread.ID); !ok || current.Token != "token-live" {
+		t.Errorf("exiting thread's session disturbed: present=%v token=%q", ok, current.Token)
+	}
+	if notices := warningNotices(t, f.app.store, sibling.ID); len(notices) != 1 || !strings.Contains(notices[0], "was removed by Claude in another thread") {
+		t.Errorf("sibling notices = %q, want one naming Claude's removal", notices)
+	}
+	if notices := warningNotices(t, f.app.store, f.thread.ID); len(notices) != 0 {
+		t.Errorf("exiting thread notices = %q, want none", notices)
+	}
 }
 
 // A directory the row cannot represent (not the project root, not one of
@@ -395,7 +437,7 @@ func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
 		t.Fatalf("UpdateThread(moved): %v", err)
 	}
 
-	if err := f.app.GitRemoveWorktree(f.thread.ID); err != nil {
+	if _, err := f.app.GitRemoveWorktree(f.thread.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree on the CLI's locked worktree: %v", err)
 	}
 

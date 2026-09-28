@@ -32,6 +32,10 @@ import {
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { closePanesShowingThread } from '../../stores/panes.svelte';
+import {
+  syncRemovedWorktreeThreads,
+  type WorktreeRemovalResult,
+} from '../../stores/worktreeRemoval.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -128,7 +132,7 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
       console.error('Failed to stop session before delete:', err);
     });
     if (ctx.thread.worktreePath) {
-      await GitRemoveWorktree(ctx.thread.id);
+      syncRemovedWorktreeThreads((await GitRemoveWorktree(ctx.thread.id)) as WorktreeRemovalResult);
     }
     await DeleteThread(ctx.thread.id);
     removeThread(ctx.thread.id);

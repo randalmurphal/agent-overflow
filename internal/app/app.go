@@ -121,6 +121,12 @@ type App struct {
 	// worktreeWatchArmed opens once the activation gate has: a reattach sweep
 	// acts on rows and sessions, so no project is watched before it.
 	worktreeWatchArmed atomic.Bool
+	// providerWorktreeExits maps a thread id to the worktree its own CLI
+	// reported removing (`ExitWorktree remove`) until the app has followed
+	// the move. The registry watch can see that removal first and must not
+	// treat the thread that performed it as an outside removal's victim.
+	// See app_worktree_follow.go.
+	providerWorktreeExits sync.Map
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once

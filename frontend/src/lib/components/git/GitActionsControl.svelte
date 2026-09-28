@@ -41,6 +41,11 @@
     type RemoveWorktreeCtx,
   } from './gitActions';
   import type { WorkspaceRef } from '../../types/git';
+  import {
+    TerminalsClosingNote,
+    terminalsClosingNoteForWorktree,
+    withTerminalsNote,
+  } from '../../stores/worktreeRemoval.svelte';
 
   // `trigger` false renders no split button: the compact chat header
   // rolls every action into one menu and opens this menu from a row in
@@ -84,6 +89,20 @@
   let showCreatePR = $state(false);
   let showDropdown = $state(false);
   let showRemoveWorktreeConfirm = $state(false);
+  const removeTerminalsNote = new TerminalsClosingNote();
+
+  function openRemoveWorktreeConfirm(): void {
+    showRemoveWorktreeConfirm = true;
+    const ws = workspace;
+    const path = worktreePath;
+    if (ws && path) removeTerminalsNote.load(() => terminalsClosingNoteForWorktree(ws, path));
+    else removeTerminalsNote.clear();
+  }
+
+  function closeRemoveWorktreeConfirm(): void {
+    showRemoveWorktreeConfirm = false;
+    removeTerminalsNote.clear();
+  }
 
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
@@ -291,7 +310,7 @@
             title={gitUngranted ? 'Not granted to this device' : workspaceLock.locked ? workspaceLock.reason : undefined}
             onSelect={() => {
               showDropdown = false;
-              showRemoveWorktreeConfirm = true;
+              openRemoveWorktreeConfirm();
             }}
           />
         {/if}
@@ -314,15 +333,16 @@
   <ConfirmDialog
     open={showRemoveWorktreeConfirm}
     title="Remove worktree"
-    description="This will remove the git worktree for this thread. The branch will be preserved but the working directory will be deleted."
+    description={withTerminalsNote(
+      'This will remove the git worktree for this thread. The branch will be preserved but the working directory will be deleted.',
+      removeTerminalsNote.note,
+    )}
     confirmLabel="Remove"
     destructive={true}
     onConfirm={() => {
-      showRemoveWorktreeConfirm = false;
+      closeRemoveWorktreeConfirm();
       void guard(() => runRemoveWorktreeAction(removeCtx(ws, worktreePath)));
     }}
-    onCancel={() => {
-      showRemoveWorktreeConfirm = false;
-    }}
+    onCancel={closeRemoveWorktreeConfirm}
   />
 {/if}

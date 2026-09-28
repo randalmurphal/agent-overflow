@@ -292,6 +292,25 @@ describe('<GitActionsControl> palette dialog event', () => {
     expect(queryByText(/This will remove the git worktree/)).toBeNull();
   });
 
+  it('says how many terminals removing the worktree closes', async () => {
+    setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    const status_ = setBindingMock('GitWorktreeStatus', async () => ({ path: '/workspace-wt/feat', terminals: 2 }));
+    const pane = await buildPane(makeThread({
+      workspacePath: '/workspace-wt/feat',
+      worktreePath: '/workspace-wt/feat',
+    }));
+    __seedGitStatusForTest('/workspace-wt/feat', status({ isRepo: true }));
+    const { container, findByRole, findByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    await fireEvent.click(container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]')!);
+    await fireEvent.click(await findByRole('menuitem', { name: /Remove Worktree/ }));
+
+    await findByText(/working directory will be deleted\. 2 terminals will close\./);
+    expect(status_).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '/workspace-wt/feat' }, '/workspace-wt/feat');
+  });
+
   // The regression the workspace-change lock was re-keyed for. This pane's
   // thread is idle; a DIFFERENT thread sharing the same worktree has a
   // background task running. The thread-keyed lock this replaced asked only

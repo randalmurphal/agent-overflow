@@ -532,6 +532,7 @@ export class WorktreeStatus {
   unpushedCommits: number;
   hasUpstream: boolean;
   attachedThreads: number;
+  terminals: number;
   constructor(s: Partial<WorktreeStatus> = {}) {
     this.path = s.path ?? '';
     this.branch = s.branch ?? '';
@@ -540,6 +541,7 @@ export class WorktreeStatus {
     this.unpushedCommits = s.unpushedCommits ?? 0;
     this.hasUpstream = s.hasUpstream ?? false;
     this.attachedThreads = s.attachedThreads ?? 0;
+    this.terminals = s.terminals ?? 0;
   }
 }
 

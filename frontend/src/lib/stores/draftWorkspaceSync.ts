@@ -6,10 +6,8 @@
 // draft placeholder has no row for that broadcast to name, so every open
 // "+ New" composer parked in the directory has to be told here.
 //
-// One module, because three surfaces do it — the branch picker's checkout,
-// the environment picker's worktree removal, and the git split-button's
-// "Remove Worktree" — and three private copies of the fan-out were three
-// chances for one of them to compare paths differently.
+// One module, so the branch picker's checkout and the `worktree:removed`
+// event (every worktree removal, whoever made it) compare paths the same way.
 
 import { forEachDraftPlaceholderPane } from './panes.svelte';
 import { sameNormalizedPath } from '../utils/path';
@@ -54,26 +52,22 @@ export function applyToDraftPlaceholdersInWorkspace(
 
 /**
  * A removed worktree's directory is gone, so every draft placeholder parked
- * in it moves to the project root — which is where the backend puts the
- * attached thread rows too.
- *
- * `rootState` is the caller's own post-removal state when it happens to
- * describe that root; otherwise the branch is unknown and renders as "No
- * branch" until the next read, which is honest rather than guessed.
+ * in it moves to the project root on `rootBranch`, which is where the backend
+ * puts the attached thread rows too. Returns the ids of the drafts it moved.
  */
 export function moveDraftPlaceholdersOffWorktree(
   projectId: string,
   removedPath: string,
-  rootState: PlaceholderWorkspace | null,
-): void {
+  rootBranch: string,
+): string[] {
+  const moved: string[] = [];
   forEachDraftPlaceholderPane(projectId, (target) => {
-    if (!sameNormalizedPath(target.thread?.workspacePath ?? '', removedPath)) return;
-    const root = target.thread?.projectPath ?? '';
+    const draft = target.thread;
+    if (!draft || !sameNormalizedPath(draft.workspacePath ?? '', removedPath)) return;
+    const root = draft.projectPath ?? '';
     if (!root) return;
-    target.applyDraftPlaceholderWorkspace(
-      rootState && sameNormalizedPath(rootState.workspacePath, root)
-        ? rootState
-        : { workspacePath: root, worktreePath: '', branch: '' },
-    );
+    moved.push(draft.id);
+    target.applyDraftPlaceholderWorkspace({ workspacePath: root, worktreePath: '', branch: rootBranch });
   });
+  return moved;
 }

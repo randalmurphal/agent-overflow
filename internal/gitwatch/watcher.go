@@ -152,6 +152,9 @@ type workspaceWatcher struct {
 	subscribers []*Subscription
 	lastStatus  gitops.GitStatus
 	watchRoots  []gitops.WatchRoot
+	// suppressed counts the outstanding Manager.Suppress holds. While it is
+	// non-zero no status is computed or broadcast; it dies with the watcher.
+	suppressed int
 }
 
 func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error)) *workspaceWatcher {
@@ -436,6 +439,9 @@ func (w *workspaceWatcher) requestRefresh() {
 // themselves non-blocking (buffer size 1, supersede-on-overflow), so
 // the lock is held for microseconds bounded by len(subscribers).
 func (w *workspaceWatcher) refresh() (nonPRChanged bool) {
+	if w.isSuppressed() {
+		return false
+	}
 	status, err := w.statusFn(w.cwd)
 	if err != nil {
 		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
@@ -443,7 +449,9 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if status.Equal(w.lastStatus) {
+	// Rechecked under the lock: a hold taken while statusFn ran must still
+	// keep this status off the wire.
+	if w.suppressed > 0 || status.Equal(w.lastStatus) {
 		return false
 	}
 	nonPRChanged = statusDiffersIgnoringPR(status, w.lastStatus)
@@ -472,6 +480,9 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool) {
 // Errors are treated as "no evidence": a transient git failure must not
 // trigger reinstall churn.
 func (w *workspaceWatcher) probeLiveness() bool {
+	if w.isSuppressed() {
+		return false
+	}
 	fn := w.fastStatusFn
 	if fn == nil {
 		fn = w.statusFn
@@ -484,6 +495,32 @@ func (w *workspaceWatcher) probeLiveness() bool {
 	last := w.lastStatus
 	w.mu.Unlock()
 	return statusDiffersIgnoringPR(status, last)
+}
+
+func (w *workspaceWatcher) isSuppressed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.suppressed > 0
+}
+
+// suppress takes one hold and returns its idempotent release, which
+// requests a refresh once the last hold is gone.
+func (w *workspaceWatcher) suppress() func() {
+	w.mu.Lock()
+	w.suppressed++
+	w.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			w.mu.Lock()
+			w.suppressed--
+			resumed := w.suppressed == 0
+			w.mu.Unlock()
+			if resumed {
+				w.requestRefresh()
+			}
+		})
+	}
 }
 
 // statusDiffersIgnoringPR compares two statuses on everything except the

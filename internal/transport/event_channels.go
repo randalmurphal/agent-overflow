@@ -1609,6 +1609,18 @@ var channelPolicies = []ChannelPolicy{
 			"frames — never latest-only.",
 	},
 	{
+		Channel:   eventchan.WorktreeRemoved,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "Names a removed worktree's absolute path, its project and the " +
+			"root's branch, plus the ids of the threads it moved. The path is " +
+			"what GitListWorktrees answers under git:operate, so the push " +
+			"reaches the sessions the list does. Audience any: a draft on a " +
+			"phone parked in the worktree must follow it to the root. Each " +
+			"frame names a different worktree, so never latest-only.",
+	},
+	{
 		Channel:   eventchan.WorktreeSetup,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

@@ -44,7 +44,13 @@ type Config struct {
 	// to its registrations afterwards. Calls for one project never overlap;
 	// a change observed while a call runs yields exactly one more call after
 	// it returns. Required.
-	OnChange func(project string)
+	//
+	// removed lists the worktrees that vanished since the previous read:
+	// registered and present on disk then, not both now. The first read of
+	// a project has nothing to compare against and reports none. Removals
+	// observed while a call runs are carried into the next call, and a
+	// path that reappears before that call is dropped from it.
+	OnChange func(project string, removed []string)
 
 	// ExtraDir names a second directory whose direct entries are worktrees
 	// of project (the app's own cut location), so their deletion is seen
@@ -100,6 +106,8 @@ type projectWatch struct {
 	initialized bool
 	running     bool
 	rerun       bool
+	// removed holds the vanished paths no OnChange call has reported yet.
+	removed map[string]struct{}
 }
 
 // NewManager starts the read loop. It never fails: when the platform cannot
@@ -223,6 +231,7 @@ func (m *Manager) Close() {
 func (m *Manager) forgetLocked(pw *projectWatch) {
 	delete(m.projects, pw.key)
 	pw.rerun = false
+	pw.removed = nil
 	for _, dir := range pw.watchedDirs() {
 		keys := m.byDir[dir]
 		delete(keys, pw.key)
@@ -277,6 +286,9 @@ func (m *Manager) evaluateLocked(pw *projectWatch) {
 	if pw.initialized && slices.Equal(current, pw.last) {
 		return
 	}
+	if pw.initialized {
+		pw.noteRemovedLocked(current)
+	}
 	pw.last = current
 	pw.initialized = true
 	m.dispatchLocked(pw)
@@ -326,13 +338,57 @@ func (m *Manager) dispatchLocked(pw *projectWatch) {
 	go m.run(pw)
 }
 
+// noteRemovedLocked adds to the pending removals every path that was
+// present at the previous read and is not present in current, and drops any
+// pending path that is present again. Caller holds m.mu.
+func (pw *projectWatch) noteRemovedLocked(current []Registration) {
+	present := make(map[string]struct{}, len(current))
+	for _, registration := range current {
+		if registration.Present {
+			present[registration.Path] = struct{}{}
+			delete(pw.removed, registration.Path)
+		}
+	}
+	for _, registration := range pw.last {
+		if !registration.Present {
+			continue
+		}
+		if _, ok := present[registration.Path]; ok {
+			continue
+		}
+		if pw.removed == nil {
+			pw.removed = make(map[string]struct{})
+		}
+		pw.removed[registration.Path] = struct{}{}
+	}
+}
+
+// takeRemovedLocked returns the pending removals in path order and clears
+// them. Caller holds m.mu.
+func (pw *projectWatch) takeRemovedLocked() []string {
+	if len(pw.removed) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(pw.removed))
+	for path := range pw.removed {
+		paths = append(paths, path)
+	}
+	pw.removed = nil
+	sort.Strings(paths)
+	return paths
+}
+
 func (m *Manager) run(pw *projectWatch) {
 	defer m.dispatch.Done()
+	m.mu.Lock()
+	removed := pw.takeRemovedLocked()
+	m.mu.Unlock()
 	for {
-		m.cfg.OnChange(pw.key)
+		m.cfg.OnChange(pw.key, removed)
 		m.mu.Lock()
 		if pw.rerun && !m.closed {
 			pw.rerun = false
+			removed = pw.takeRemovedLocked()
 			m.mu.Unlock()
 			continue
 		}

@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/worktreewatch"
 )
 
@@ -28,6 +29,7 @@ type watchFixture struct {
 	repo    string
 	project store.Project
 	rows    *threadRowRecorder
+	events  *emitRecorder
 }
 
 func newWatchFixture(t *testing.T) watchFixture {
@@ -39,8 +41,50 @@ func newWatchFixture(t *testing.T) watchFixture {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
 	rows := &threadRowRecorder{}
-	app.testEmitHook = rows.hook
-	return watchFixture{app: app, repo: repo, project: project, rows: rows}
+	events := &emitRecorder{}
+	app.testEmitHook = func(name string, data any) {
+		rows.hook(name, data)
+		events.capture(name, data)
+	}
+	app.triage = triage.NewRouter(app.store, app.emit)
+	return watchFixture{app: app, repo: repo, project: project, rows: rows, events: events}
+}
+
+// removals returns every worktree:removed event emitted so far.
+func (f watchFixture) removals() []WorktreeRemovedEvent {
+	return worktreeRemovedEvents(f.events)
+}
+
+func worktreeRemovedEvents(events *emitRecorder) []WorktreeRemovedEvent {
+	var out []WorktreeRemovedEvent
+	for _, call := range events.snapshot() {
+		if evt, ok := call.Data.(WorktreeRemovedEvent); ok && call.Channel == "worktree:removed" {
+			out = append(out, evt)
+		}
+	}
+	return out
+}
+
+// notices returns the summaries of the warning notices on threadID's
+// timeline.
+func (f watchFixture) notices(t *testing.T, threadID string) []string {
+	t.Helper()
+	return warningNotices(t, f.app.store, threadID)
+}
+
+func warningNotices(t *testing.T, st *store.Store, threadID string) []string {
+	t.Helper()
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems(%s): %v", threadID, err)
+	}
+	var out []string
+	for _, item := range items {
+		if item.Kind == "notification" && item.ToolName == "warning" {
+			out = append(out, item.Summary)
+		}
+	}
+	return out
 }
 
 // thread creates a thread row on workspace; a linked worktree sets both
@@ -113,7 +157,7 @@ func TestReconcileProjectWorktreesReattachesThreadsOfExternallyRemovedWorktree(t
 	// The removal happens in a terminal: registration and directory both go.
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
 
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	reattached := f.assertAtRoot(t, attached.ID)
 	if reattached.UpdatedAt != attached.UpdatedAt {
@@ -160,7 +204,7 @@ func TestReconcileProjectWorktreesReattachesDeletedButRegisteredWorktree(t *test
 	if err := os.RemoveAll(worktree); err != nil {
 		t.Fatalf("rm -rf worktree: %v", err)
 	}
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	f.assertAtRoot(t, attached.ID)
 }
@@ -173,7 +217,7 @@ func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
 	onRemoved := f.thread(t, "thread-on-removed", removed, "feature-removed")
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", removed)
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	if row := f.row(t, onKept.ID); !samePath(row.WorkspacePath, kept) || !samePath(row.WorktreePath, kept) {
 		t.Errorf("thread on the surviving worktree moved: %+v", row)
@@ -187,7 +231,7 @@ func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
 	f.rows.mu.Lock()
 	f.rows.events = nil
 	f.rows.mu.Unlock()
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 	if n := len(f.rows.fullRowsFor(onRemoved.ID)); n != 0 {
 		t.Errorf("idempotent sweep broadcast %d rows", n)
 	}
@@ -203,73 +247,98 @@ func TestReconcileProjectWorktreesSkipsProjectWhoseRootIsGone(t *testing.T) {
 	if err := os.RemoveAll(f.repo); err != nil {
 		t.Fatalf("remove repo: %v", err)
 	}
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	if row := f.row(t, attached.ID); !samePath(row.WorkspacePath, worktree) {
 		t.Errorf("thread moved although the project root is gone: %+v", row)
 	}
 }
 
-// An idle thread with a live session restarts it from the root: the process
-// still has the deleted directory as its cwd.
-func TestReconcileProjectWorktreesRestartsIdleSession(t *testing.T) {
+// An idle thread with a live session has it stopped and not restarted:
+// neither CLI exits when its cwd is deleted, and a restart nobody asked for
+// would start work the user did not send. The thread is told why.
+func TestReconcileProjectWorktreesStopsIdleSessionWithoutRestart(t *testing.T) {
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-idle")
 	attached := f.thread(t, "thread-idle-session", worktree, "feature-idle")
+	idle := f.thread(t, "thread-idle-no-session", worktree, "feature-idle")
 	f.app.sessionManager().put(attached.ID, session{Provider: string(provider.Claude), Token: "token-idle"})
 	var stops, starts []string
 	f.app.stopSessionFn = func(id string) error { stops = append(stops, id); return nil }
 	f.app.startSessionFn = func(id string) error { starts = append(starts, id); return nil }
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	f.assertAtRoot(t, attached.ID)
-	if len(stops) != 1 || stops[0] != attached.ID || len(starts) != 1 || starts[0] != attached.ID {
-		t.Errorf("stops = %v starts = %v, want one of each for %s", stops, starts, attached.ID)
+	f.assertAtRoot(t, idle.ID)
+	if !slices.Equal(stops, []string{attached.ID}) || len(starts) != 0 {
+		t.Errorf("stops = %v starts = %v, want one stop of %s and no start", stops, starts, attached.ID)
+	}
+	if f.app.sessionManager().runtime.PendingConfigReconnect(attached.ID) {
+		t.Error("a deferred restart was armed for the removed worktree's thread")
+	}
+	notices := f.notices(t, attached.ID)
+	if len(notices) != 1 || !strings.Contains(notices[0], "was removed outside Agent Overflow") || !strings.Contains(notices[0], "session was stopped") {
+		t.Errorf("notices on the stopped thread = %q, want one saying the worktree was removed and the session stopped", notices)
+	}
+	notices = f.notices(t, idle.ID)
+	if len(notices) != 1 || strings.Contains(notices[0], "session was stopped") || !strings.Contains(notices[0], "now runs in Base") {
+		t.Errorf("notices on the sessionless thread = %q, want one saying it now runs in Base", notices)
+	}
+	removals := f.removals()
+	if len(removals) != 1 || !samePath(removals[0].Path, worktree) || removals[0].ProjectID != f.project.ID || removals[0].Branch != "main" ||
+		!slices.Equal(removals[0].ThreadIDs, []string{idle.ID, attached.ID}) {
+		t.Errorf("worktree:removed events = %+v, want one for %s naming both threads", removals, worktree)
 	}
 }
 
-// A thread mid-turn keeps its process: the row heals now, the restart waits
-// for the thread to go quiet.
-func TestReconcileProjectWorktreesDefersRestartMidTurn(t *testing.T) {
+// A thread mid-turn is stopped too: its process has lost its directory, so
+// the turn ends interrupted the way any stopped session's does, and the
+// message queued behind it goes back to the composer instead of being
+// dropped. Nothing restarts it.
+func TestReconcileProjectWorktreesStopsSessionMidTurn(t *testing.T) {
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-busy")
 	attached := f.thread(t, "thread-mid-turn", worktree, "feature-busy")
-	// A turn in flight is what the live session counts, the same signal the
-	// deferred restart waits on.
+	if err := f.app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: attached.ID, TurnID: "turn-0", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	f.app.triage.RegisterQueueItem(attached.ID, triage.QueuedFlushItem{ID: "queued-behind-turn", Message: "run the tests next", EnqueuedAt: time.Now().UnixMilli()})
 	liveness := sessionruntime.NewLiveness(time.Now())
 	liveness.ActiveTurns.Store(1)
 	f.app.sessionManager().put(attached.ID, session{Provider: string(provider.Claude), Token: "token-busy", Liveness: liveness})
-	f.app.sessionManager().runtime.SetConfigReconnectPollOverride(10 * time.Millisecond)
-	restarted := make(chan string, 1)
-	f.app.stopSessionFn = func(string) error { return nil }
-	f.app.startSessionFn = func(id string) error { restarted <- id; return nil }
+	var starts []string
+	f.app.startSessionFn = func(id string) error { starts = append(starts, id); return nil }
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	f.assertAtRoot(t, attached.ID)
-	if current, ok := f.app.sessionManager().get(attached.ID); !ok || current.Token != "token-busy" {
-		t.Fatalf("mid-turn session disturbed: present=%v token=%q", ok, current.Token)
+	if f.app.hasActiveSession(attached.ID) {
+		t.Fatal("the session on the removed worktree is still registered")
 	}
-	if !f.app.sessionManager().runtime.PendingConfigReconnect(attached.ID) {
-		t.Fatal("no deferred restart armed for the mid-turn thread")
+	aborted := false
+	for _, call := range f.events.snapshot() {
+		if evt, ok := call.Data.(triage.TurnCompletedEvent); ok && call.Channel == "provider:turn_completed" && evt.ThreadID == attached.ID && evt.Aborted {
+			aborted = true
+		}
 	}
-	select {
-	case id := <-restarted:
-		t.Fatalf("session %s restarted while its turn was open", id)
-	case <-time.After(100 * time.Millisecond):
+	if !aborted {
+		t.Error("the open turn did not end interrupted")
 	}
-	// The process dies on its own (the CLI exits once its cwd is gone):
-	// the deferred restart stands down and leaves resumption to the death
-	// path, which starts from the healed row.
-	f.app.unregisterSession(attached.ID, "token-busy")
-	waitUntil(t, 5*time.Second, func() bool { return !f.app.sessionManager().runtime.PendingConfigReconnect(attached.ID) })
-	select {
-	case id := <-restarted:
-		t.Fatalf("deferred restart fired for %s after the session was gone", id)
-	default:
+	draft, _, err := f.app.store.GetThreadDraft(attached.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if !strings.Contains(draft.Content, "run the tests next") {
+		t.Errorf("draft = %q, want the queued message restored to it", draft.Content)
+	}
+	if notices := f.notices(t, attached.ID); len(notices) != 1 || !strings.Contains(notices[0], "session was stopped") {
+		t.Errorf("notices = %q, want one saying the session was stopped", notices)
+	}
+	if len(starts) != 0 || f.app.sessionManager().runtime.PendingConfigReconnect(attached.ID) {
+		t.Errorf("starts = %v pending restart = %v, want neither", starts, f.app.sessionManager().runtime.PendingConfigReconnect(attached.ID))
 	}
 }
 
@@ -382,9 +451,9 @@ func TestSyncWorktreeWatchWaitsForActivation(t *testing.T) {
 }
 
 // The sweep is provider-neutral. A Codex thread resumes by thread id from
-// ~/.codex, so it gets the row move and the restart from the root but no
-// transcript relocation: the Claude-only branch must not create a Claude
-// projects dir for it.
+// ~/.codex, so it gets the row move and the stop but no transcript
+// relocation: the Claude-only branch must not create a Claude projects dir
+// for it.
 func TestReconcileProjectWorktreesReattachesCodexThreadWithoutRelocation(t *testing.T) {
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-codex")
@@ -403,27 +472,26 @@ func TestReconcileProjectWorktreesReattachesCodexThreadWithoutRelocation(t *test
 	f.app.startSessionFn = func(id string) error { starts = append(starts, id); return nil }
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	reattached := f.assertAtRoot(t, attached.ID)
 	if reattached.SessionRef != threadRef {
 		t.Errorf("SessionRef = %q, want %q kept", reattached.SessionRef, threadRef)
 	}
-	if len(stops) != 1 || stops[0] != attached.ID || len(starts) != 1 || starts[0] != attached.ID {
-		t.Errorf("stops = %v starts = %v, want one of each for %s", stops, starts, attached.ID)
+	if !slices.Equal(stops, []string{attached.ID}) || len(starts) != 0 {
+		t.Errorf("stops = %v starts = %v, want one stop of %s and no start", stops, starts, attached.ID)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude", "projects")); !os.IsNotExist(err) {
 		t.Errorf("Claude projects dir created for a Codex thread (stat err = %v)", err)
 	}
 }
 
-// A live CLI appends under the old slug until it exits, so the sweep must
-// not move a live session's transcript; the restart's start settles it once
-// the old process is stopped. The seams model that: the stop appends the
-// CLI's exit records, the start runs the settle the real start runs first.
-// The root-slug transcript must then hold the exit records, with no second
-// copy left under the dead slug.
-func TestReconcileProjectWorktreesLeavesLiveSessionTranscriptToTheRestart(t *testing.T) {
+// A live CLI appends under the old slug until it exits, so the transcript
+// moves only once the stop has ended the process. The stop seam appends
+// the CLI's exit records and unregisters the session as the real stop
+// does; the root-slug transcript must then hold them, with no copy left
+// under the dead slug, so a resume from Base finds the whole conversation.
+func TestReconcileProjectWorktreesMovesLiveTranscriptAfterTheStop(t *testing.T) {
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-live-transcript")
 	home := t.TempDir()
@@ -437,7 +505,8 @@ func TestReconcileProjectWorktreesLeavesLiveSessionTranscriptToTheRestart(t *tes
 	src := writeClaudeProjectSession(t, home, worktree, sessionID, "{\"type\":\"user\"}\n")
 	f.app.sessionManager().put(attached.ID, session{Provider: string(provider.Claude), Token: "token-live-transcript"})
 	var movedBeforeStop bool
-	f.app.stopSessionFn = func(string) error {
+	f.app.stopSessionFn = func(id string) error {
+		f.app.sessionManager().take(id)
 		if _, err := os.Stat(src); err != nil {
 			movedBeforeStop = true
 		}
@@ -449,31 +518,31 @@ func TestReconcileProjectWorktreesLeavesLiveSessionTranscriptToTheRestart(t *tes
 		_, err = file.WriteString("{\"type\":\"cost-state\"}\n")
 		return err
 	}
-	f.app.startSessionFn = func(id string) error {
-		row, err := f.app.store.GetThread(id)
-		if err != nil {
-			return err
-		}
-		f.app.settleClaudeTranscriptForWorkspace(row)
-		return nil
-	}
+	var starts []string
+	f.app.startSessionFn = func(id string) error { starts = append(starts, id); return nil }
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
-	f.app.reconcileProjectWorktrees(f.repo)
+	f.app.reconcileProjectWorktrees(f.repo, nil)
 
 	f.assertAtRoot(t, attached.ID)
 	if movedBeforeStop {
 		t.Fatal("the sweep moved a live session's transcript before the process stopped")
 	}
+	if len(starts) != 0 {
+		t.Errorf("starts = %v, want none", starts)
+	}
 	dest := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, f.repo), sessionID+".jsonl")
 	content, err := os.ReadFile(dest)
 	if err != nil {
-		t.Fatalf("transcript not settled under the root slug after the restart: %v", err)
+		t.Fatalf("transcript not moved under the root slug: %v", err)
 	}
 	if !strings.Contains(string(content), "cost-state") {
 		t.Errorf("the exit records did not follow the transcript to the root slug: %q", content)
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Errorf("a copy remains under the dead slug: err=%v", err)
+	}
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, f.repo); err != nil || !samePath(located, dest) {
+		t.Errorf("LocateSessionFile from root = %q, %v; want %q", located, err, dest)
 	}
 }

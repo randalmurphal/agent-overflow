@@ -26,13 +26,13 @@
     WorktreeStatus,
     type WorktreeListItem,
   } from '../../../stores/bindings';
-  import type { GitWorkspaceState } from '../../../types/git';
   import { syncThread } from '../../../stores/panes.svelte';
+  import { placeholderWorkspaceOf } from '../../../stores/draftWorkspaceSync';
   import {
-    moveDraftPlaceholdersOffWorktree,
-    placeholderWorkspaceOf,
-    type PlaceholderWorkspace,
-  } from '../../../stores/draftWorkspaceSync';
+    syncRemovedWorktreeThreads,
+    terminalsClosingNote,
+    type WorktreeRemovalResult,
+  } from '../../../stores/worktreeRemoval.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
@@ -80,6 +80,8 @@
   let open = $state(false);
   let worktrees: WorktreeListItem[] = $state([]);
   let loading = $state(false);
+  // Why the last list read failed, until a read succeeds.
+  let listError: string | null = $state(null);
   let applying = $state(false);
   let confirm: ConfirmState | null = $state(null);
 
@@ -149,13 +151,15 @@
       const res = (await GitListWorktrees(ws)) as WorktreeListItem[] | null;
       if (!token.isCurrent()) return;
       worktrees = Array.isArray(res) ? res : [];
+      listError = null;
     } catch (err) {
       console.error('GitListWorktrees failed:', err);
       if (!token.isCurrent()) return;
       // Delete gating stays conservative on a failure: no rows means no
       // trash affordance to click, rather than rows carrying a deleteBlocked
-      // flag nothing has verified.
+      // flag nothing has verified. The menu says why the list is empty.
       worktrees = [];
+      listError = userFacingError(err);
     } finally {
       if (token.isCurrent()) loading = false;
     }
@@ -359,25 +363,21 @@
     const placeholderId = pane.draftPlaceholder?.id ?? '';
     confirm = { ...confirm, pending: true, error: null };
     try {
-      const next = (await RemoveOtherWorktree(ws, path, force)) as GitWorkspaceState;
-      const rootState: PlaceholderWorkspace = placeholderWorkspaceOf(next);
+      const removal = (await RemoveOtherWorktree(ws, path, force)) as WorktreeRemovalResult;
+      // The moved rows first: this pane's own row may be one of them, and
+      // the list refresh below reads its workspace.
+      syncRemovedWorktreeThreads(removal);
       // Guarded, not aborted: the removal happened whatever this pane did
-      // under the await, and the other panes still have to be told. A
-      // persisted row is reattached and broadcast by the backend; only a
-      // placeholder needs telling here.
+      // under the await. Other draft composers in the removed directory
+      // are moved by the worktree:removed event.
       if (
         pane.hasDraftPlaceholder &&
         pane.draftPlaceholder?.id === placeholderId &&
         sameNormalizedPath(pane.thread?.workspacePath ?? '', ws.workspacePath)
       ) {
-        pane.applyDraftPlaceholderWorkspace(rootState);
+        pane.applyDraftPlaceholderWorkspace(placeholderWorkspaceOf(removal.workspace));
       }
-      moveDraftPlaceholdersOffWorktree(ws.projectId, path, rootState);
       addToast('info', `Removed worktree ${label}`);
-      // If we just removed the current workspace, the backend has flipped
-      // us to the project root and broadcast a thread upsert; the pane
-      // store handles that sync. Either way, refresh the list so the row
-      // disappears.
       confirm = null;
       refresh?.request({ immediate: true });
     } catch (err) {
@@ -443,6 +443,14 @@
       >
         Loading worktrees…
       </div>
+    {:else if listError}
+      <div
+        class="px-3 py-1.5 text-xs text-error"
+        role="presentation"
+        data-testid="env-picker-list-error"
+      >
+        Could not list worktrees: {listError}
+      </div>
     {:else if worktrees.length > 0}
       <MenuDivider />
       {#each worktrees as wt (wt.path)}
@@ -472,6 +480,11 @@
                 {:else if confirm.status.attachedThreads > 0}
                   <div class="mt-1 text-[0.6875rem] text-fg-hint truncate">
                     {riskSummary(confirm.status)} — will move to project root.
+                  </div>
+                {/if}
+                {#if terminalsClosingNote(confirm.status.terminals)}
+                  <div class="mt-1 text-[0.6875rem] text-fg-hint truncate" data-testid="env-picker-confirm-terminals">
+                    {terminalsClosingNote(confirm.status.terminals)}
                   </div>
                 {/if}
               {/if}

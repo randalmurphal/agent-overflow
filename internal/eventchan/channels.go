@@ -357,12 +357,19 @@ const (
 	WorkflowSoftStop           Channel = "workflow:soft-stop"
 )
 
-// worktree:* — per-project worktree setup command output. Its own
-// channel rather than a phase discriminator on an existing one: only the
-// setup panel subscribes, and the frames carry local command output (the
-// registry gates it on `terminal:operate`, like terminal:output).
+// worktree:* channels: per-project worktree lifecycle.
+//
+// WorktreeSetup is setup command output. Its own channel rather than a
+// phase discriminator on an existing one: only the setup panel subscribes,
+// and the frames carry local command output (the registry gates it on
+// `terminal:operate`, like terminal:output).
+//
+// WorktreeRemoved announces that one of a project's worktrees no longer
+// exists, whoever removed it, so clients move the draft placeholders that
+// have no thread row for thread:updated to carry.
 const (
-	WorktreeSetup Channel = "worktree:setup"
+	WorktreeRemoved Channel = "worktree:removed"
+	WorktreeSetup   Channel = "worktree:setup"
 )
 
 // ComputerRoutesChanged invalidates the authenticated bootstrap route snapshot.

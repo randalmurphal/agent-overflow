@@ -3,6 +3,7 @@ package worktreewatch
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -10,26 +11,35 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-// recorder counts OnChange calls per project and lets a test wait for the
-// next one.
+// recorder counts OnChange calls per project, keeps the removals each call
+// reported, and lets a test wait for the next one.
 type recorder struct {
-	mu    sync.Mutex
-	calls map[string]int
-	wake  chan struct{}
+	mu      sync.Mutex
+	calls   map[string]int
+	removed map[string][][]string
+	wake    chan struct{}
 }
 
 func newRecorder() *recorder {
-	return &recorder{calls: make(map[string]int), wake: make(chan struct{}, 64)}
+	return &recorder{calls: make(map[string]int), removed: make(map[string][][]string), wake: make(chan struct{}, 64)}
 }
 
-func (r *recorder) onChange(project string) {
+func (r *recorder) onChange(project string, removed []string) {
 	r.mu.Lock()
 	r.calls[project]++
+	r.removed[project] = append(r.removed[project], removed)
 	r.mu.Unlock()
 	select {
 	case r.wake <- struct{}{}:
 	default:
 	}
+}
+
+// removals returns the removed list of every call for project, in order.
+func (r *recorder) removals(project string) [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.removed[project]...)
 }
 
 func (r *recorder) count(project string) int {
@@ -215,7 +225,7 @@ func TestChangesDuringACallCoalesceIntoOneMoreCall(t *testing.T) {
 	m := NewManager(Config{
 		Debounce:         20 * time.Millisecond,
 		LivenessInterval: time.Hour,
-		OnChange: func(string) {
+		OnChange: func(string, []string) {
 			mu.Lock()
 			calls++
 			concurrent++
@@ -287,7 +297,7 @@ func TestCloseWaitsForCallsInFlight(t *testing.T) {
 	finished := make(chan struct{})
 	m := NewManager(Config{
 		LivenessInterval: time.Hour,
-		OnChange: func(string) {
+		OnChange: func(string, []string) {
 			close(entered)
 			<-release
 			close(finished)
@@ -320,4 +330,96 @@ func TestCloseWaitsForCallsInFlight(t *testing.T) {
 	// Idempotent, and a later SetProjects is a no-op rather than a panic.
 	m.Close()
 	m.SetProjects([]string{repo})
+}
+
+// The first read reports no removals: it has no earlier read to compare with.
+// Later calls name exactly the worktrees that stopped being registered and
+// present, whichever way they went.
+func TestRemovedWorktreesAreReportedOnce(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	extra := t.TempDir()
+	deleted := filepath.Join(extra, "feature-rm")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature-rm", deleted)
+	removed := addWorktree(t, repo, "feature-remove")
+	kept := addWorktree(t, repo, "feature-kept")
+
+	rec := newRecorder()
+	m := newTestManager(t, rec, Config{ExtraDir: func(string) string { return extra }})
+	m.SetProjects([]string{repo})
+	rec.waitCount(t, repo, 1, 5*time.Second)
+	if got := rec.removals(repo); len(got) != 1 || got[0] != nil {
+		t.Fatalf("first read removals = %v, want none", got)
+	}
+
+	testutil.RunGit(t, repo, "worktree", "remove", "--force", removed)
+	rec.waitCount(t, repo, 2, 5*time.Second)
+	if got := rec.removals(repo)[1]; len(got) != 1 || got[0] != removed {
+		t.Fatalf("removals after git worktree remove = %v, want [%s]", got, removed)
+	}
+
+	// rm -rf keeps the registration; losing the directory is the removal.
+	if err := os.RemoveAll(deleted); err != nil {
+		t.Fatalf("remove worktree dir: %v", err)
+	}
+	rec.waitCount(t, repo, 3, 5*time.Second)
+	if got := rec.removals(repo)[2]; len(got) != 1 || got[0] != deleted {
+		t.Fatalf("removals after rm -rf = %v, want [%s]", got, deleted)
+	}
+
+	// Pruning the stale registration is a change, but nothing present left.
+	testutil.RunGit(t, repo, "worktree", "prune")
+	rec.waitCount(t, repo, 4, 5*time.Second)
+	if got := rec.removals(repo)[3]; got != nil {
+		t.Fatalf("removals after prune = %v, want none", got)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("kept worktree: %v", err)
+	}
+}
+
+// Removals seen while a call runs reach the next call instead of being lost
+// to the coalescing.
+func TestRemovalsDuringACallReachTheNextCall(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	first := addWorktree(t, repo, "feature-one")
+	second := addWorktree(t, repo, "feature-two")
+	var mu sync.Mutex
+	var reports [][]string
+	started := make(chan struct{}, 8)
+	release := make(chan struct{})
+	m := NewManager(Config{
+		Debounce:         20 * time.Millisecond,
+		LivenessInterval: time.Hour,
+		OnChange: func(_ string, removed []string) {
+			mu.Lock()
+			reports = append(reports, removed)
+			n := len(reports)
+			mu.Unlock()
+			started <- struct{}{}
+			if n == 1 {
+				<-release
+			}
+		},
+	})
+	t.Cleanup(m.Close)
+	m.SetProjects([]string{repo})
+	<-started
+
+	testutil.RunGit(t, repo, "worktree", "remove", "--force", first)
+	time.Sleep(150 * time.Millisecond)
+	testutil.RunGit(t, repo, "worktree", "remove", "--force", second)
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no follow-up call after the blocked call returned")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{first, second}
+	slices.Sort(want)
+	if len(reports) != 2 || !slices.Equal(reports[1], want) {
+		t.Fatalf("reports = %v, want a follow-up naming %v", reports, want)
+	}
 }

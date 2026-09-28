@@ -14,13 +14,15 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/triage"
 )
 
 // WorktreeStatus describes a worktree's safety classification for the cleanup
 // UI: whether the working tree has uncommitted changes, whether the branch
-// has unpushed commits, whether an upstream is configured, and how many
-// threads are currently attached to the worktree.
+// has unpushed commits, whether an upstream is configured, how many threads
+// are currently attached to the worktree, and how many open terminals
+// removing it would close.
 type WorktreeStatus struct {
 	Path             string `json:"path"`
 	Branch           string `json:"branch"`
@@ -29,6 +31,35 @@ type WorktreeStatus struct {
 	UnpushedCommits  int    `json:"unpushedCommits"`
 	HasUpstream      bool   `json:"hasUpstream"`
 	AttachedThreads  int    `json:"attachedThreads"`
+	Terminals        int    `json:"terminals"`
+}
+
+// WorktreeRemoval is what an in-app worktree removal answers its caller.
+type WorktreeRemoval struct {
+	// Workspace is the caller's workspace after the removal: unchanged when
+	// it removed some other worktree, the project root when it removed its
+	// own.
+	Workspace GitWorkspaceState `json:"workspace"`
+	// Reattached are the thread rows the removal moved to the project root,
+	// as they now stand. The caller applies them before it reads its own
+	// workspace again: the thread:updated broadcast of the same rows is an
+	// event, and events can arrive after this reply.
+	Reattached []store.Thread `json:"reattached"`
+}
+
+// WorktreeRemovedEvent is the payload of `worktree:removed`, emitted once for
+// every removal of a project's worktree the app performs or observes: its
+// own removal, a workflow's cleanup, Claude's `ExitWorktree remove`, and a
+// removal made outside the app. Draft placeholders live only in clients, so
+// this is how every client learns to move the ones parked on Path.
+type WorktreeRemovedEvent struct {
+	ProjectID string `json:"projectId"`
+	Path      string `json:"path"`
+	// Branch is the project root's current branch, the branch a draft moved
+	// to the root shows.
+	Branch string `json:"branch"`
+	// ThreadIDs are the threads this removal moved to the project root.
+	ThreadIDs []string `json:"threadIds"`
 }
 
 // WorktreeListItem is the picker-facing worktree shape. DeleteBlocked is true
@@ -252,47 +283,48 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 // resolves that attachment and hands the workspace-keyed removal the answer.
 //
 //ao:scope git:operate
-func (a *App) GitRemoveWorktree(threadID string) error {
+func (a *App) GitRemoveWorktree(threadID string) (WorktreeRemoval, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return err
+		return WorktreeRemoval{}, err
 	}
 	worktreePath := strings.TrimSpace(thread.WorktreePath)
 	if worktreePath == "" {
-		return fmt.Errorf("thread %s has no worktree path", threadID)
+		return WorktreeRemoval{}, fmt.Errorf("thread %s has no worktree path", threadID)
 	}
-	_, err = a.RemoveOtherWorktree(workspaceRefForThread(thread), worktreePath, false)
-	return err
+	return a.RemoveOtherWorktree(workspaceRefForThread(thread), worktreePath, false)
 }
 
 // RemoveOtherWorktree removes one of the project's worktrees, optionally
 // forcing through dirty/unpushed safety. Locally owned threads are reset to the
-// project root and their sessions restart. Confirmed outgoing moves keep their
-// immutable retired metadata; pending transfers block removal.
-//
-// The returned state is the CALLER's workspace after the removal: unchanged
-// when it removed some other worktree, reset to the project root when it
-// removed its own.
+// project root and their idle sessions stop; the next send starts them there.
+// Confirmed outgoing moves keep their immutable retired metadata; pending
+// transfers block removal.
 //
 //ao:scope git:operate
-func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bool) (GitWorkspaceState, error) {
+func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bool) (WorktreeRemoval, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
-		return GitWorkspaceState{}, err
+		return WorktreeRemoval{}, err
 	}
-	if err := a.removeProjectWorktree(project, worktreePath, force); err != nil {
-		return GitWorkspaceState{}, err
+	reattached, err := a.removeProjectWorktree(ws.ProjectID, project, worktreePath, force)
+	if err != nil {
+		return WorktreeRemoval{}, err
 	}
-	return a.resolveProjectWorkspaceStateAfterRemoval(project, workspace, worktreePath)
+	state, err := a.resolveProjectWorkspaceStateAfterRemoval(project, workspace, worktreePath)
+	if err != nil {
+		return WorktreeRemoval{}, err
+	}
+	return WorktreeRemoval{Workspace: state, Reattached: reattached}, nil
 }
 
-func (a *App) removeProjectWorktree(project, worktreePath string, force bool) error {
+func (a *App) removeProjectWorktree(projectID, project, worktreePath string, force bool) ([]store.Thread, error) {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
-		return fmt.Errorf("worktree path is required")
+		return nil, fmt.Errorf("worktree path is required")
 	}
 	if gitops.SameFilesystemPath(project, worktreePath) {
-		return fmt.Errorf("refusing to remove project root as worktree")
+		return nil, fmt.Errorf("refusing to remove project root as worktree")
 	}
 
 	core := a.gitCore()
@@ -301,9 +333,9 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	// project's worktrees" boundary. Without this, a forced removal's
 	// only guard against an arbitrary path is git's own refusal.
 	if _, ok, err := a.findWorktree(project, worktreePath); err != nil {
-		return fmt.Errorf("validate worktree: %w", err)
+		return nil, fmt.Errorf("validate worktree: %w", err)
 	} else if !ok {
-		return fmt.Errorf("%s is not a worktree of project %s", worktreePath, project)
+		return nil, fmt.Errorf("%s is not a worktree of project %s", worktreePath, project)
 	}
 	if !force {
 		// The gate refuses concrete loss-of-work signals: uncommitted
@@ -314,12 +346,12 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 		// GitRemoveWorktree path unusable. The UI surfaces no-upstream
 		// as a visual warning and routes through force=true so this
 		// gate never sees it.
-		status, err := a.computeWorktreeStatus(project, worktreePath)
+		status, err := a.worktreeApplication().Status(project, worktreePath)
 		if err != nil {
-			return fmt.Errorf("worktree status: %w", err)
+			return nil, fmt.Errorf("worktree status: %w", err)
 		}
 		if status.Dirty || status.UnpushedCommits > 0 {
-			return fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits)
+			return nil, fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits)
 		}
 	}
 
@@ -329,7 +361,7 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	// mutations before we touch git.
 	attached, release, err := a.lockWorkspaceThreads(worktreePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer release()
 
@@ -345,19 +377,19 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	// path to contend on a shared project-scoped lock.
 	recheck, err := a.threadsReferencingWorkspace(worktreePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	slices.Sort(recheck)
 	if !slices.Equal(attached, slices.Compact(recheck)) {
-		return fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
+		return nil, fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
 	}
 	mutable, err := a.mutableWorkspaceThreads(attached)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Cancel by directory and block on the join. A recipe still writing into the
@@ -371,13 +403,23 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	for _, id := range mutable {
 		a.cancelThreadWorktreeSetup(id)
 	}
+	// Hold the workspace's git status off the wire while git deletes it:
+	// the reads in between (every file deleted, then no repository) are
+	// states of a directory on its way out. On success the hold ends with
+	// the watcher, when its panes follow their threads to the root; on
+	// failure it ends here and a refresh shows the tree as it stands.
+	resumeStatus := a.gitApplication().SuppressStatus(worktreePath)
 	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
-		return err
+		resumeStatus()
+		return nil, err
 	}
-	if err := a.reattachThreadsFromRemovedWorktree(project, worktreePath, mutable); err != nil {
-		return fmt.Errorf("worktree removed but %w", err)
+	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath}
+	reattached, sweepErr := a.reattachThreadsFromRemovedWorktree(removal, mutable)
+	finishErr := a.finishWorktreeRemoval(removal, reattached, true)
+	if err := errors.Join(sweepErr, finishErr); err != nil {
+		return nil, fmt.Errorf("worktree removed but %w", err)
 	}
-	return nil
+	return reattached, nil
 }
 
 // mutableWorkspaceThreads filters a locked occupant set down to the threads
@@ -399,10 +441,157 @@ func (a *App) mutableWorkspaceThreads(attached []string) ([]string, error) {
 	return mutable, nil
 }
 
+// worktreeRemoval names one removed worktree for the reactions every removal
+// shares, and remembers the project root's branch once it is read.
+type worktreeRemoval struct {
+	projectID string
+	project   string
+	path      string
+	// cause is empty for a removal the app performed on request. Otherwise
+	// it says who removed the worktree ("was removed outside Agent
+	// Overflow"), and every thread the removal moves is told so.
+	cause string
+
+	branch     string
+	branchRead bool
+}
+
+// projectBranch reads the project root's current branch on first use. A
+// removal that moves no thread and tells no client never spawns git for it.
+func (r *worktreeRemoval) projectBranch(core *gitops.Core) string {
+	if !r.branchRead {
+		r.branch = core.CurrentBranch(r.project)
+		r.branchRead = true
+	}
+	return r.branch
+}
+
+// notice is the timeline message a thread moved by an outside removal gets.
+func (r *worktreeRemoval) notice(stopped bool) string {
+	if stopped {
+		return fmt.Sprintf("Worktree %s %s. Its session was stopped, and this thread now runs in Base (%s); the next message starts it there.", r.path, r.cause, r.project)
+	}
+	return fmt.Sprintf("Worktree %s %s. This thread now runs in Base (%s).", r.path, r.cause, r.project)
+}
+
+// finishWorktreeRemoval is what every removal ends with, whoever removed the
+// checkout: its cached file list goes, every terminal opened in it or below
+// it closes, and every client is told which worktree went and which threads
+// moved. announce false skips the event for a sweep that neither moved a
+// thread nor saw the worktree go (a row found on a path that was already
+// gone). Returns the terminals that could not be closed.
+func (a *App) finishWorktreeRemoval(removal *worktreeRemoval, reattached []store.Thread, announce bool) error {
+	if a.workspaceFiles != nil {
+		// The path no longer exists; drop any cached file list before
+		// another thread's @-mention picker reaches for it.
+		a.workspaceFiles.Invalidate(removal.path)
+	}
+	var closeErr error
+	if a.terminals != nil {
+		// Each close reaches the exit callback, which drops the tab on every
+		// client and ends a terminal thread whose last shell this was.
+		if _, err := a.terminals.CloseMatching(func(summary terminal.SessionSummary) bool {
+			return pathWithin(summary.Cwd, removal.path)
+		}); err != nil {
+			closeErr = fmt.Errorf("terminals opened in it could not all be closed: %w", err)
+		}
+	}
+	if !announce && len(reattached) == 0 {
+		return closeErr
+	}
+	ids := make([]string, 0, len(reattached))
+	for _, thread := range reattached {
+		ids = append(ids, thread.ID)
+	}
+	a.emit(eventchan.WorktreeRemoved, WorktreeRemovedEvent{
+		ProjectID: removal.projectID,
+		Path:      removal.path,
+		Branch:    removal.projectBranch(a.gitCore()),
+		ThreadIDs: ids,
+	})
+	return closeErr
+}
+
+// worktreeTerminalCount counts the open terminals removing path would close.
+func (a *App) worktreeTerminalCount(path string) int {
+	if a.terminals == nil {
+		return 0
+	}
+	return len(a.terminals.Matching(func(summary terminal.SessionSummary) bool {
+		return pathWithin(summary.Cwd, path)
+	}))
+}
+
+// pathWithin reports whether path is root or lies below it. Both sides are
+// resolved through their longest existing ancestor, so a directory that was
+// just deleted still compares equal to the spelling it had before.
+func pathWithin(path, root string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
+		return false
+	}
+	rel, err := filepath.Rel(canonicalExistingPrefix(root), canonicalExistingPrefix(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+// canonicalExistingPrefix resolves symlinks in the longest ancestor of path
+// that exists and appends the rest unchanged.
+func canonicalExistingPrefix(path string) string {
+	path = filepath.Clean(path)
+	rest := ""
+	for current := path; ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+		current = parent
+	}
+}
+
+// stopSessionForRemovedWorkspace ends the live session of a thread whose
+// working directory is gone. Neither CLI exits when its cwd is deleted: Codex
+// fails every later command, and Claude's shell falls back to the home
+// directory and keeps running commands there. So the session is stopped,
+// never restarted; the next send starts it from the row's new workspace. A
+// running turn ends interrupted, as it does when any session is stopped, and
+// the thread's background tasks show as died. Messages queued behind the
+// turn go back to the composer, as they do when a session dies, rather than
+// being dropped by a stop nobody asked for. Caller holds the thread action
+// lock. Reports whether a session was stopped.
+func (a *App) stopSessionForRemovedWorkspace(threadID string) (bool, error) {
+	if startState, ok := a.sessionManager().startState(threadID); ok {
+		<-startState.Done
+	}
+	if !a.hasActiveSession(threadID) {
+		return false, nil
+	}
+	requeued := a.restoreUnconfirmedQueueLocked(threadID)
+	err := a.stopSession(threadID)
+	if len(requeued) > 0 {
+		// The stop wiped the queue these re-entered; register them again so
+		// the next start's flush still finds them.
+		a.requeueUnconfirmedFlushItems(threadID, requeued)
+		a.emitQueueStateChanged(threadID)
+	}
+	return true, err
+}
+
 // reattachThreadsFromRemovedWorktree moves every listed thread that still
-// points at a worktree which no longer exists back to the project root.
-// The caller holds each thread's action lock and has already removed the
-// checkout (or learned that the provider did).
+// points at a worktree which no longer exists back to the project root and
+// returns the rows it moved. The caller holds each thread's action lock and
+// has already removed the checkout (or learned that someone else did).
+//
+// A moved thread's live session is stopped first (see
+// stopSessionForRemovedWorkspace); with no process left writing it, the
+// Claude transcript then moves to the root's slug so the next start resumes
+// it. When removal.cause is set, each moved thread gets a timeline notice
+// saying what happened, at its own position in the thread.
 //
 // Best-effort sweep: the worktree is already gone, so per-thread refresh
 // failures must NOT bail mid-loop and leave siblings pointing at a deleted
@@ -416,14 +605,10 @@ func (a *App) mutableWorkspaceThreads(attached []string) ([]string, error) {
 // updated_at DESC), erasing the order the user had built up. The frontend's
 // syncThreadRow does a max-merge on updatedAt, so the unchanged timestamp in
 // the broadcast event is invariant-safe.
-func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, mutable []string) error {
-	if a.workspaceFiles != nil {
-		// The path no longer exists; drop any cached file list before another
-		// thread's @-mention picker reaches for it.
-		a.workspaceFiles.Invalidate(worktreePath)
-	}
+func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutable []string) ([]store.Thread, error) {
+	project, worktreePath := removal.project, removal.path
 	core := a.gitCore()
-	projectBranch := core.CurrentBranch(project)
+	reattached := make([]store.Thread, 0, len(mutable))
 	var sweepErrs []error
 	for _, id := range mutable {
 		t, err := a.store.GetThread(id)
@@ -439,11 +624,15 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 		}
 		if gitops.SameFilesystemPath(t.WorkspacePath, worktreePath) {
 			t.WorkspacePath = project
-			t.Branch = projectBranch
+			t.Branch = removal.projectBranch(core)
 			mutated = true
 		}
 		if !mutated {
 			continue
+		}
+		stopped, err := a.stopSessionForRemovedWorkspace(id)
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session stop failed: %w", id, err))
 		}
 		if err := a.store.UpdateThread(t); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
@@ -459,14 +648,10 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 			// switch/create/attach this can't be aborted: a hard failure is
 			// surfaced and resume is left to fail loudly.
 			//
-			// Only when no process is alive. A live CLI keeps appending under
-			// the old slug until it exits (conversation rows mid-turn, and
-			// last-prompt / cost-state records at exit), so moving the file
-			// now would strand those rows in a second copy the purge below
-			// has already run past. A live session is restarted below,
-			// immediately or once the thread is quiet, and every start
-			// settles the transcript under the row's workspace after the old
-			// process is fully stopped (settleClaudeTranscriptForWorkspace).
+			// Only when no process is alive: a live CLI appends under the old
+			// slug until it exits. The stop above ended it, and a session that
+			// is somehow still registered leaves the move to the settle every
+			// start runs (settleClaudeTranscriptForWorkspace).
 			moved, err := a.copyClaudeSessionForWorkspaceChange(t, previousWorkspace)
 			if err != nil {
 				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session relocate failed: %w", id, err))
@@ -480,28 +665,17 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
 		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
-		// A thread mid-turn has a process running in a directory that no
-		// longer exists. Restarting it now would cut the turn for nothing:
-		// the process either dies on its own (Node fails on a cwd that was
-		// unlinked, and auto-reconnect then resumes from the healed row) or
-		// finishes the turn. The deferred restart waits for the thread to go
-		// quiet and, like a config change, restarts only if the session it
-		// finds still runs from the old directory. The user-driven removal
-		// never reaches this branch: it refuses while any occupant is busy.
-		if a.threadTurnInFlight(id) {
-			log.Printf("thread %s: worktree %s removed mid-turn; session restarts from %s once the thread is quiet", id, worktreePath, project)
-			a.schedulePendingConfigReconnect(id)
-			continue
+		if removal.cause != "" {
+			if err := a.emitNoticeToThread(id, removal.notice(stopped)); err != nil {
+				sweepErrs = append(sweepErrs, err)
+			}
 		}
-		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
-			continue
-		}
+		reattached = append(reattached, t)
 	}
 	if len(sweepErrs) > 0 {
-		return fmt.Errorf("%d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
+		return reattached, fmt.Errorf("%d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
 	}
-	return nil
+	return reattached, nil
 }
 
 // claudeSessionRefs returns a Claude thread's deduped, non-empty session refs
@@ -704,12 +878,22 @@ func (a *App) GitWorktreeStatus(ws WorkspaceRef, worktreePath string) (WorktreeS
 	return a.computeWorktreeStatus(project, worktreePath)
 }
 
-// computeWorktreeStatus is the engine behind GitWorktreeStatus. Split out so
-// RemoveOtherWorktree's safety gate can call it without going through a
-// thread fetch the caller already did.
+// computeWorktreeStatus is the engine behind GitWorktreeStatus.
 func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatus, error) {
 	status, err := a.worktreeApplication().Status(project, worktreePath)
-	return WorktreeStatus(status), err
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	return WorktreeStatus{
+		Path:             status.Path,
+		Branch:           status.Branch,
+		Dirty:            status.Dirty,
+		UncommittedCount: status.UncommittedCount,
+		UnpushedCommits:  status.UnpushedCommits,
+		HasUpstream:      status.HasUpstream,
+		AttachedThreads:  status.AttachedThreads,
+		Terminals:        a.worktreeTerminalCount(worktreePath),
+	}, nil
 }
 
 // GitListWorktrees lists the worktrees of the referenced workspace's

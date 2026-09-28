@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -44,6 +46,31 @@ func (a *App) emitErrorToThread(threadID, content string) {
 // invariant 29).
 func (a *App) emitWireErrorToThread(threadID, content string) {
 	a.routeErrorToThread(threadID, content, false)
+}
+
+// emitNoticeToThread persists a warning notification row on the thread: an
+// app-side event the user must know about that is not a failure, so it does
+// not paint the thread Failed the way an error row does. Routed through
+// HandleSynthetic for the reason emitErrorToThread is: its callers fire
+// right after stopping the thread's session.
+func (a *App) emitNoticeToThread(threadID, content string) error {
+	if a.triage == nil {
+		return fmt.Errorf("thread %s notice not recorded: event router not wired", threadID)
+	}
+	meta, err := json.Marshal(map[string]string{"kind": "warning"})
+	if err != nil {
+		return fmt.Errorf("thread %s notice not recorded: %w", threadID, err)
+	}
+	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
+		Kind:      provider.EventNotification,
+		ThreadID:  threadID,
+		Content:   content,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		return fmt.Errorf("thread %s notice not recorded: %w", threadID, err)
+	}
+	return nil
 }
 
 // routeErrorToThread builds the EventError and hands it to triage on

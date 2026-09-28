@@ -205,6 +205,7 @@ export {
     WorkspaceFileSearchResult,
     WorkspaceRef,
     WorktreeListItem,
+    WorktreeRemoval,
     WorktreeSetupConfig,
     WorktreeSetupRunState,
     WorktreeSetupStep,

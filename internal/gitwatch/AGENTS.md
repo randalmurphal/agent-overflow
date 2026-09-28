@@ -21,7 +21,9 @@ through the polling fallback. Liveness probes use the fast status function and
 restore filesystem watching when possible.
 
 `RequestRefresh` is a no-op when nobody watches the workspace, but logs a path
-that cannot be canonicalized. Subscription and manager close are idempotent.
+that cannot be canonicalized. `Suppress` holds a workspace's status off the
+wire while the caller deletes it; the hold ends when its resume runs or the
+watcher stops, and the last resume refreshes. Subscription and manager close are idempotent.
 The final subscriber stops its watcher; `Manager.Close` waits for all watcher
 goroutines and closes update channels before returning.
 

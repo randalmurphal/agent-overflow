@@ -366,6 +366,35 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     expect(getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     expect(deleted).toBe(false);
   });
+
+  it('says how many terminals deleting a thread on a worktree closes', async () => {
+    await primeSettings({ confirmDelete: true });
+    setBindingMock('GitWorktreeStatus', async () => ({ path: '/tmp/wt', terminals: 3 }));
+
+    const { getByRole, findByText } = renderMenu(makeThread({
+      id: 'ctx-worktree',
+      projectId: 'project-1',
+      workspacePath: '/tmp/wt',
+      worktreePath: '/tmp/wt',
+    }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
+
+    await findByText(/This action cannot be undone\. 3 terminals will close\./);
+  });
+
+  it('counts the terminals of each selected worktree in a bulk delete', async () => {
+    await primeSettings({ confirmDelete: false });
+    const first = makeThread({ id: 'thread-1', projectId: 'project-1', workspacePath: '/tmp/wt-a', worktreePath: '/tmp/wt-a' });
+    const second = makeThread({ id: 'thread-2', projectId: 'project-1', workspacePath: '/tmp/wt-b', worktreePath: '/tmp/wt-b' });
+    replaceAllThreads([first, second]);
+    setBindingMock('GitWorktreeStatus', async (_ws: unknown, path: string) => ({ path, terminals: 1 }));
+    setThreadSelection(['thread-1', 'thread-2']);
+
+    const { getByRole, findByText } = renderMenu(first);
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+
+    await findByText(/This action cannot be undone\. 2 terminals will close\./);
+  });
 });
 
 describe('<ThreadContextMenu> Check for Provider Updates', () => {

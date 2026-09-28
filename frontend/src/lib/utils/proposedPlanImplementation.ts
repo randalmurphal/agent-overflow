@@ -30,6 +30,10 @@ import {
   prepareThreadWorktreeIntent,
   type WorktreePrepareCallbacks,
 } from '../stores/worktreeIntentMaterialize';
+import {
+  syncRemovedWorktreeThreads,
+  type WorktreeRemovalResult,
+} from '../stores/worktreeRemoval.svelte';
 
 const IMPLEMENT_PROMPT = 'Implement the plan.';
 
@@ -172,9 +176,11 @@ export async function implementProposedPlanInNewThread(
       await SaveDraft(created.id, draftContent, [], [], sourceRef);
     } catch (saveErr) {
       if (created.worktreePath) {
-        await GitRemoveWorktree(created.id).catch((cleanupErr) => {
-          console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
-        });
+        await GitRemoveWorktree(created.id)
+          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult))
+          .catch((cleanupErr) => {
+            console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
+          });
       }
       // Roll back the orphan thread row so it doesn't appear in the
       // sidebar after a failed seed (the visibility carve-out keys on

@@ -261,6 +261,57 @@ func (m *Manager) Restart(terminalID string) (SessionSummary, error) {
 	return m.Open(threadID, opts)
 }
 
+// Matching returns the summaries of every active session, of any thread,
+// that match accepts, in start order. match must not call back into m.
+func (m *Manager) Matching(match func(SessionSummary) bool) []SessionSummary {
+	m.mu.Lock()
+	var summaries []SessionSummary
+	for _, sess := range m.sessions {
+		if summary := sess.Summary(); match(summary) {
+			summaries = append(summaries, summary)
+		}
+	}
+	m.mu.Unlock()
+	sortSummaries(summaries)
+	return summaries
+}
+
+// CloseMatching closes every active session, of any thread, that match
+// accepts, and returns the summaries of the sessions it closed. Each close
+// reaches the exit callback like any other. Errors are collected and
+// returned joined (best-effort cleanup). match must not call back into m.
+func (m *Manager) CloseMatching(match func(SessionSummary) bool) ([]SessionSummary, error) {
+	m.mu.Lock()
+	var toClose []*Session
+	var summaries []SessionSummary
+	for id, sess := range m.sessions {
+		if summary := sess.Summary(); match(summary) {
+			toClose = append(toClose, sess)
+			summaries = append(summaries, summary)
+			delete(m.sessions, id)
+		}
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, sess := range toClose {
+		if err := sess.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	sortSummaries(summaries)
+	return summaries, errors.Join(errs...)
+}
+
+func sortSummaries(summaries []SessionSummary) {
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].StartedAt == summaries[j].StartedAt {
+			return summaries[i].TerminalID < summaries[j].TerminalID
+		}
+		return summaries[i].StartedAt < summaries[j].StartedAt
+	})
+}
+
 // CloseThread closes every active session belonging to the given thread.
 // Errors are collected and returned as a joined error (best-effort cleanup).
 func (m *Manager) CloseThread(threadID string) error {

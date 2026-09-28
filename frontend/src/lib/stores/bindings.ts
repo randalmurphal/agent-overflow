@@ -674,8 +674,7 @@ export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
-export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
-// Dev-server rows are read-only views of one machine's scan, never
+export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';// Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {
   DevServer,

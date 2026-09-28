@@ -925,3 +925,82 @@ func TestNoAsyncRefreshWithoutForge(t *testing.T) {
 		t.Fatalf("full statusFn called %d times, want 0 (no forge = no async refresh)", n)
 	}
 }
+
+// A held workspace neither computes nor broadcasts status, whatever the
+// filesystem does; releasing the last hold refreshes and broadcasts the
+// state as it stands then.
+func TestSuppressHoldsBroadcastsUntilResume(t *testing.T) {
+	t.Parallel()
+	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	sub, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	first := mgr.Suppress(dir)
+	second := mgr.Suppress(dir)
+	calls := stub.callCount()
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true, FileCount: 40})
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mgr.RequestRefresh(dir)
+	expectNoUpdate(t, sub, debounceWindow+200*time.Millisecond)
+	if got := stub.callCount(); got != calls {
+		t.Fatalf("status computed %d times while held, want 0", got-calls)
+	}
+
+	// One hold released, one outstanding: still quiet. A repeated release
+	// of the same hold does not count as the other one.
+	first()
+	first()
+	mgr.RequestRefresh(dir)
+	expectNoUpdate(t, sub, debounceWindow+200*time.Millisecond)
+
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true, FileCount: 1})
+	second()
+	got := recvWithin(t, sub, 5*time.Second)
+	if got.FileCount != 1 {
+		t.Fatalf("status after resume = %+v, want the state at resume", got)
+	}
+}
+
+// The hold belongs to the watcher: once its last subscriber leaves, a new
+// watcher for the same path broadcasts normally, and releasing the old
+// hold is harmless.
+func TestSuppressEndsWithTheWatcher(t *testing.T) {
+	t.Parallel()
+	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	sub, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	resume := mgr.Suppress(dir)
+	sub.Close()
+
+	next, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("resubscribe: %v", err)
+	}
+	defer next.Close()
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true, FileCount: 2})
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := recvWithin(t, next, 5*time.Second); got.FileCount != 2 {
+		t.Fatalf("new watcher status = %+v, want FileCount 2", got)
+	}
+	resume()
+
+	// No watcher at all: nothing to hold.
+	mgr.Suppress(filepath.Join(t.TempDir(), "absent"))()
+}

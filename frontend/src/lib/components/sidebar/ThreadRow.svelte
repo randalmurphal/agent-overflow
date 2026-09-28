@@ -61,6 +61,11 @@
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
+    TerminalsClosingNote,
+    terminalsClosingNoteForThreadDelete,
+    withTerminalsNote,
+  } from '../../stores/worktreeRemoval.svelte';
+  import {
     hasUnread,
     resolveThreadStatusPill,
     type ThreadStatusPill,
@@ -200,6 +205,7 @@
   // Delete-confirm dialog for the terminal row-X (shown when
   // settings.confirmDelete is true).
   let showDeleteConfirm = $state(false);
+  const deleteTerminalsNote = new TerminalsClosingNote();
 
   // Context menu anchor + state.
   let rowEl: HTMLDivElement | undefined = $state(undefined);
@@ -282,6 +288,7 @@
     e.stopPropagation();
     if (getSettings().confirmDelete) {
       showDeleteConfirm = true;
+      deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
     } else {
       void deleteThreadAction(ctx());
     }
@@ -702,11 +709,14 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Terminal"
-  description="This will remove the terminal from the sidebar and close its shell. This cannot be undone."
+  description={withTerminalsNote(
+    'This will remove the terminal from the sidebar and close its shell. This cannot be undone.',
+    deleteTerminalsNote.note,
+  )}
   confirmLabel="Delete"
   destructive={true}
-  onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
-  onCancel={() => { showDeleteConfirm = false; }}
+  onConfirm={() => { showDeleteConfirm = false; deleteTerminalsNote.clear(); void deleteThreadAction(ctx()); }}
+  onCancel={() => { showDeleteConfirm = false; deleteTerminalsNote.clear(); }}
 />
 
 {/if}

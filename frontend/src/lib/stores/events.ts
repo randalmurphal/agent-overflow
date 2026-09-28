@@ -21,6 +21,8 @@ import { installComputerHydration } from './computerHydration';
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
 //   - eventsHighlight.ts     — highlight:live / highlight:diff_seed span ingest
 //   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
+//   - eventsWorktreeRemoved.ts: worktree:removed, drafts leave a removed
+//                              worktree
 //   - eventsSessionImport.ts — session-import:progress run frames (+ the
 //                              transport-loss end condition a run has no
 //                              other way to learn about)
@@ -47,6 +49,7 @@ import type {
   UsageEvent,
   UserInputEvent,
   WorktreeSetupEvent,
+  WorktreeRemovedEvent,
   ThreadGroupUpdateEvent,
 } from '../types/events';
 import type {
@@ -166,6 +169,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
+import { applyWorktreeRemoved } from './eventsWorktreeRemoved';
 import {
   applyThreadTitleGeneration,
   type ThreadTitleGenerationEvent,
@@ -673,6 +677,13 @@ export function setupEventListeners(): () => void {
     'worktree:setup',
     applyWorktreeSetup,
   );
+  // worktree:removed: one frame per removed worktree, whoever removed it.
+  // Moved thread rows ride thread:updated; this moves the draft composers
+  // parked in the directory, which have no row.
+  const cancelWorktreeRemoved = wailsEventOn<WorktreeRemovedEvent>(
+    'worktree:removed',
+    applyWorktreeRemoved,
+  );
 
   // transport:gap — synthetic event fired by wsClient.ts when the
   // server reports a missed seq on a channel. Coarse-grained recovery:
@@ -818,6 +829,7 @@ export function setupEventListeners(): () => void {
     cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
+    cancelWorktreeRemoved();
     cancelTransportGap();
     cancelModeChanged();
     cancelRuntimeModeChanged();

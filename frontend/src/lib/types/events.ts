@@ -640,6 +640,20 @@ export interface WorktreeSetupEvent {
   finishedAt?: number;
 }
 
+/**
+ * WorktreeRemovedEvent is the one `worktree:removed` frame every removal of a
+ * project's worktree emits, whoever removed it (app_worktree.go). `threadIds`
+ * are the thread rows moved to the project root, whose rows arrive on
+ * `thread:updated`; `branch` is the root's branch, for draft composers that
+ * move there.
+ */
+export interface WorktreeRemovedEvent {
+  projectId: string;
+  path: string;
+  branch: string;
+  threadIds: string[];
+}
+
 /** One resolved step of a setup run, in execution order. */
 export interface WorktreeSetupStepFrame {
   index: number;

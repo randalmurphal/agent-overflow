@@ -5,6 +5,9 @@
 // spawning git, and owns its filesystem watches, debounce, polling fallback
 // and callback goroutines.
 //
-// The consumer decides what a change means; the app reattaches the threads
-// of a worktree that no longer exists to the project root.
+// Each report names the worktrees that vanished since the previous read,
+// diffed against the last read the manager keeps per watched project. The
+// consumer decides what a change means; the app reattaches the threads of a
+// worktree that no longer exists to the project root and tells every client
+// which worktree went.
 package worktreewatch

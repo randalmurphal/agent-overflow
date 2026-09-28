@@ -13,6 +13,13 @@
   } from '../../stores/bindings';
   import { prependThread } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
+  import {
+    syncRemovedWorktreeThreads,
+    TerminalsClosingNote,
+    terminalsClosingNoteForThreadDelete,
+    withTerminalsNote,
+    type WorktreeRemovalResult,
+  } from '../../stores/worktreeRemoval.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
@@ -25,6 +32,7 @@
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
+  const deleteTerminalsNote = new TerminalsClosingNote();
 
   $effect(() => {
     loading = true;
@@ -60,7 +68,7 @@
         console.error('Failed to stop session before delete:', err);
       });
       if (thread.worktreePath) {
-        await GitRemoveWorktree(thread.id);
+        syncRemovedWorktreeThreads((await GitRemoveWorktree(thread.id)) as WorktreeRemovalResult);
       }
       await DeleteThread(thread.id);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
@@ -74,16 +82,19 @@
 
   function confirmDelete(thread: Thread): void {
     deleteTarget = thread;
+    deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
   }
 
   function cancelDelete(): void {
     deleteTarget = null;
+    deleteTerminalsNote.clear();
   }
 
   function executeDelete(): void {
     if (!deleteTarget) return;
     const target = deleteTarget;
     deleteTarget = null;
+    deleteTerminalsNote.clear();
     void handleDelete(target);
   }
 
@@ -156,7 +167,10 @@
 <ConfirmDialog
   open={deleteTarget !== null}
   title="Delete Archived Thread"
-  description="This will permanently delete this thread and all its messages. This action cannot be undone."
+  description={withTerminalsNote(
+    'This will permanently delete this thread and all its messages. This action cannot be undone.',
+    deleteTerminalsNote.note,
+  )}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={executeDelete}

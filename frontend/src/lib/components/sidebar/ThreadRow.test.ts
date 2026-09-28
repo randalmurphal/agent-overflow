@@ -321,6 +321,23 @@ describe('<ThreadRow> terminal delete action', () => {
 
     expect(deletedId).toBe('term-on');
   });
+
+  it('says how many terminals close when the terminal thread sits on a worktree', async () => {
+    await primeSettings({ confirmDelete: true });
+    setBindingMock('GitWorktreeStatus', async () => ({ path: '/tmp/wt/term', terminals: 2 }));
+    const thread = makeThread({
+      id: 'term-wt',
+      mode: 'terminal',
+      projectId: 'project-1',
+      workspacePath: '/tmp/wt/term',
+      worktreePath: '/tmp/wt/term',
+    });
+    const { getByTestId, findByText } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+
+    await fireEvent.click(getByTestId('thread-row-delete'));
+
+    await findByText(/This cannot be undone\. 2 terminals will close\./);
+  });
 });
 
 describe('<ThreadRow> leading mode icon', () => {
