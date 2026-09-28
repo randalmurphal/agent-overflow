@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { DiffReviewComment } from '../types/models';
 import {
   captureReadingAnchor,
   resolveReadingAnchor,
   type ReadingAnchor,
+  type ReadingPosition,
   type RowGeometry,
 } from './reviewAnchor';
 import { parseReviewFiles, type ReviewFile } from './patchStore';
@@ -31,7 +33,12 @@ function geometryOf(built: ReviewRowsResult, wordWrap = false): RowGeometry {
       }
       return Math.max(0, built.rows.length - 1);
     },
+    holds: (index) => index >= 0 && index < built.rows.length,
   };
+}
+
+function topOf(position: ReadingPosition | null, geometry: RowGeometry): number | null {
+  return position === null ? null : geometry.getItemOffset(position.index) + position.offset;
 }
 
 function fileFor(path: string, lines: number, startLine = 1): ReviewFile {
@@ -45,12 +52,29 @@ function fileFor(path: string, lines: number, startLine = 1): ReviewFile {
   ].join('\n'))[0];
 }
 
-function buildFor(files: ReviewFile[]): ReviewRowsResult {
+function draftAt(path: string, newLine: number): DiffReviewComment {
+  return {
+    id: `draft-${path}-${newLine}`,
+    threadId: 'thread-1',
+    scope: 'workspace',
+    sourceKey: 'source',
+    filePath: path,
+    status: 'draft',
+    newLine,
+    side: 'new',
+    selectedText: '',
+    body: 'draft',
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function buildFor(files: ReviewFile[], drafts: DiffReviewComment[] = []): ReviewRowsResult {
   return buildReviewRows({
     files,
     viewMode: 'stacked',
     collapsedPaths: new Set(),
-    drafts: [],
+    drafts,
     openEditors: [],
     prThreads: [],
     expandedPRThreadIds: new Set(),
@@ -61,7 +85,7 @@ describe('captureReadingAnchor', () => {
   it('is null at the top — the top stays the top', () => {
     const files = [fileFor('a.ts', 10)];
     const built = buildFor(files);
-    expect(captureReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), 0, false)).toBeNull();
+    expect(captureReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), 0)).toBeNull();
   });
 
   it('anchors the line under the viewport top with its pixel delta', () => {
@@ -70,14 +94,54 @@ describe('captureReadingAnchor', () => {
     const geometry = geometryOf(built);
     // Header (60px) + 3 lines + 7px into line 4.
     const offset = REVIEW_FILE_HEADER_PX + 3 * REVIEW_LINE_HEIGHT_PX + 7;
-    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset, false);
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
     expect(anchor).toEqual({ path: 'a.ts', line: 4, side: 'new', delta: 7 });
+  });
+
+  it('anchors a comment row to the line above it, so the comment stays put when rows above change', () => {
+    const files = [fileFor('a.ts', 40)];
+    const draft = draftAt('a.ts', 10);
+    const built = buildFor(files, [draft]);
+    const geometry = geometryOf(built);
+    const commentRow = built.rows.findIndex((row) => row.kind === 'comment-thread');
+    const offset = geometry.getItemOffset(commentRow) + 30;
+
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
+    expect(anchor).toEqual({ path: 'a.ts', line: 10, side: 'new', delta: REVIEW_LINE_HEIGHT_PX + 30 });
+
+    // Another draft above splits the block and adds a comment row.
+    const rebuilt = buildFor(files, [draftAt('a.ts', 4), draft]);
+    const regeometry = geometryOf(rebuilt);
+    const movedRow = rebuilt.rowKeys.indexOf(built.rowKeys[commentRow]);
+    const top = topOf(resolveReadingAnchor(rebuilt, files, new BlockRowsCache(), anchor!), regeometry);
+    expect(top).toBe(regeometry.getItemOffset(movedRow) + 30);
+  });
+
+  it('anchors a comment row below the header to the file', () => {
+    const files = [fileFor('a.ts', 10)];
+    const built = buildFor(files, [{ ...draftAt('a.ts', 0), side: 'file', newLine: undefined }]);
+    const geometry = geometryOf(built);
+    const offset = REVIEW_FILE_HEADER_PX + 12;
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
+    expect(anchor).toEqual({ path: 'a.ts', line: 0, side: 'new', delta: REVIEW_FILE_HEADER_PX + 12 });
+    expect(topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchor!), geometry)).toBe(offset);
+  });
+
+  it('anchors nothing it cannot measure: a row outside the held rows', () => {
+    const files = [fileFor('a.ts', 40)];
+    const built = buildFor(files, [draftAt('a.ts', 10)]);
+    const full = geometryOf(built);
+    const commentRow = built.rows.findIndex((row) => row.kind === 'comment-thread');
+    // Held from the comment row down: the line above it has no offset.
+    const held: RowGeometry = { ...full, holds: (index) => index >= commentRow };
+    const offset = full.getItemOffset(commentRow) + 30;
+    expect(captureReadingAnchor(built, files, new BlockRowsCache(), held, offset)).toBeNull();
   });
 
   it('anchors the file header when the top row is the header', () => {
     const files = [fileFor('a.ts', 10)];
     const built = buildFor(files);
-    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), 10, false);
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), 10);
     expect(anchor).toEqual({ path: 'a.ts', line: 0, side: 'new', delta: 10 });
   });
 });
@@ -91,9 +155,30 @@ describe('resolveReadingAnchor', () => {
     const built = buildFor(files);
     const geometry = geometryOf(built);
     const offset = 2 * REVIEW_FILE_HEADER_PX + 55 * REVIEW_LINE_HEIGHT_PX + 3;
-    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset, false);
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
     expect(anchor?.path).toBe('b.ts');
-    expect(resolveReadingAnchor(built, files, new BlockRowsCache(), geometry, anchor!, false)).toBe(offset);
+    expect(topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchor!), geometry)).toBe(offset);
+  });
+
+  it('round-trips under word wrap, where blocks measure taller than their lines', () => {
+    const files = [fileFor('a.ts', 20), fileFor('b.ts', 80)];
+    const built = buildFor(files);
+    const flat = geometryOf(built);
+    // Every block renders at 3x its unwrapped height.
+    const offsets: number[] = [0];
+    for (let index = 0; index < built.rows.length; index += 1) {
+      const size = flat.getItemOffset(index + 1) - flat.getItemOffset(index) || REVIEW_FILE_HEADER_PX;
+      offsets.push(offsets[index] + (built.rows[index].kind === 'line-block' ? 3 * size : size));
+    }
+    const wrapped: RowGeometry = {
+      getItemOffset: (index) => offsets[index] ?? 0,
+      findItemIndex: (offset) => Math.max(0, offsets.findIndex((top) => top > offset) - 1),
+      holds: () => true,
+    };
+    for (const offset of [offsets[3] + 5, offsets[3] + 1500, offsets[4] - 1, offsets[5] + 77]) {
+      const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), wrapped, offset);
+      expect(topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchor!), wrapped)).toBe(offset);
+    }
   });
 
   it('keeps the anchored line stable when content above it grows', () => {
@@ -101,12 +186,12 @@ describe('resolveReadingAnchor', () => {
     const builtBefore = buildFor(before);
     const geomBefore = geometryOf(builtBefore);
     const anchor = anchorAt(12);
-    const offsetBefore = resolveReadingAnchor(builtBefore, before, new BlockRowsCache(), geomBefore, anchor, false)!;
+    const offsetBefore = topOf(resolveReadingAnchor(builtBefore, before, new BlockRowsCache(), anchor), geomBefore)!;
 
     // a.ts triples in size; b.ts line 12 must stay under the viewport top.
     const after = [fileFor('a.ts', 30), fileFor('b.ts', 30)];
     const builtAfter = buildFor(after);
-    const offsetAfter = resolveReadingAnchor(builtAfter, after, new BlockRowsCache(), geometryOf(builtAfter), anchor, false)!;
+    const offsetAfter = topOf(resolveReadingAnchor(builtAfter, after, new BlockRowsCache(), anchor), geometryOf(builtAfter))!;
     expect(offsetAfter - offsetBefore).toBe(20 * REVIEW_LINE_HEIGHT_PX);
   });
 
@@ -115,7 +200,7 @@ describe('resolveReadingAnchor', () => {
     const built = buildFor(files);
     const geometry = geometryOf(built);
     // Line 12 no longer exists (file shrank to 8 lines) → nearest is 8.
-    const top = resolveReadingAnchor(built, files, new BlockRowsCache(), geometry, anchorAt(12), false)!;
+    const top = topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchorAt(12)), geometry)!;
     expect(top).toBe(REVIEW_FILE_HEADER_PX + 7 * REVIEW_LINE_HEIGHT_PX + 5);
   });
 
@@ -123,7 +208,7 @@ describe('resolveReadingAnchor', () => {
     const files = [fileFor('a.ts', 5), fileFor('c.ts', 5)];
     const built = buildFor(files);
     const geometry = geometryOf(built);
-    const top = resolveReadingAnchor(built, files, new BlockRowsCache(), geometry, anchorAt(3, 'b.ts'), false);
+    const top = topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchorAt(3, 'b.ts')), geometry);
     // c.ts header (a.ts header + 5 lines), delta NOT carried over.
     expect(top).toBe(REVIEW_FILE_HEADER_PX + 5 * REVIEW_LINE_HEIGHT_PX);
   });
@@ -131,7 +216,7 @@ describe('resolveReadingAnchor', () => {
   it('returns null when nothing after the anchor survives', () => {
     const files = [fileFor('a.ts', 5)];
     const built = buildFor(files);
-    expect(resolveReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), anchorAt(3, 'z.ts'), false)).toBeNull();
+    expect(topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchorAt(3, 'z.ts')), geometryOf(built))).toBeNull();
   });
 
   it('falls back to the header when the file collapsed', () => {
@@ -145,7 +230,7 @@ describe('resolveReadingAnchor', () => {
       prThreads: [],
       expandedPRThreadIds: new Set(),
     });
-    const top = resolveReadingAnchor(built, files, new BlockRowsCache(), geometryOf(built), anchorAt(12), false);
+    const top = topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchorAt(12)), geometryOf(built));
     expect(top).toBe(0); // header row offset, no line delta
   });
 });

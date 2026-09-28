@@ -6,6 +6,11 @@ to the DOM. Chat, discussion channels, and review surfaces share it.
 `TimelineVirtualizer.svelte` owns scroller and row observation, spacer layout,
 absolute row positioning, scroll-event input, scroll-end synthesis, and the
 `TimelineVirtualizerHandle`. `VirtualRow.svelte` mounts and measures one row.
+`LongListVirtualizer.svelte` wraps it for lists that can pass a browser's
+element height limit: it hands the virtualizer a contiguous range of rows
+that fits (`utils/virtual/heldRows.ts`) and moves the range as the reader
+nears its ends or jumps outside it. Its handle takes indices of the whole
+list; only held rows have scroll offsets.
 
 - Keep this layer surface-agnostic. Surface-specific paging, restore, grouping,
   and scroll intent stay with the consumer. Imports flow from surfaces to this

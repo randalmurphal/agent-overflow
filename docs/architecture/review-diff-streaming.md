@@ -65,3 +65,13 @@ once and the owner reads the diff again.
   request the text and run again whenever the text returns. Read what it
   needs beforehand, as context expansion records hunk headings in its state
   (`readHunkHeadings`).
+
+## Diffs taller than the browser
+
+A browser caps an element's height (Chromium and WebKit near 33.5M px,
+Firefox near 17.9M px), which a diff passes near 900K lines. The diff body
+renders through `LongListVirtualizer`
+(`frontend/src/lib/components/virtual/`), which holds a range of rows short
+of every cap and moves it as the reader scrolls toward its ends or jumps
+elsewhere. Scrolling across a move keeps the line being read in place, and
+the file tree, comment jumps and reading-position restores reach any row.

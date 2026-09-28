@@ -4,13 +4,13 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import AnsiText from '../chat/AnsiText.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
+  import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import { createReviewScrollOwner } from './reviewScroll';
   import { OpenExternalURL } from '../../stores/bindings';
   import type { CIJobLogResult } from '../../types/models';
   import type { CILogView } from '../../stores/reviewPane.svelte';
   import { ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
-  import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
+  import type { RowEstimate } from '../../utils/virtual/types';
 
   // CI job log view — replaces the diff body (same pattern as the
   // conflict viewer). The log is chunked into fixed line blocks and
@@ -65,7 +65,7 @@
   const getKey = (chunk: LogChunk) => chunk.id;
 
   let scrollEl: HTMLElement | undefined = $state();
-  let listRef: TimelineVirtualizerHandle | undefined = $state();
+  let listRef: LongListHandle | undefined = $state();
   const scroll = createReviewScrollOwner(() => scrollEl);
 
   // Bottom-anchor each newly loaded log exactly once (per log identity):
@@ -185,7 +185,7 @@
       aria-label="CI job log"
       data-testid="review-ci-log-scroll"
     >
-      <TimelineVirtualizer
+      <LongListVirtualizer
         bind:this={listRef}
         data={chunks}
         {getKey}
@@ -198,7 +198,7 @@
         {#snippet children(chunk: LogChunk)}
           <AnsiText source={chunk.text} class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" />
         {/snippet}
-      </TimelineVirtualizer>
+      </LongListVirtualizer>
     </div>
   {/if}
 </div>

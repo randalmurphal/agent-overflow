@@ -20,9 +20,14 @@ PR stores; components own presentation and interaction.
 
 - Keep raw patch and comment content canonical. Derive file rows, hunks,
   comments, syntax spans, and display metadata locally.
-- Virtualized review lists use the generic adapter in
-  [`components/virtual/`](../virtual/AGENTS.md). Review-specific anchoring and
-  selection stay here.
+- Virtualized review lists use `LongListVirtualizer` from
+  [`components/virtual/`](../virtual/AGENTS.md), so a diff or log of any
+  height stays reachable. Row indices are indices of the whole list; a
+  row outside the held range has no scroll offset, so reach it through
+  `scrollToIndex`. Review-specific anchoring and selection stay here.
+- Remember and restore reading positions as reading anchors (file, line,
+  pixel delta; `utils/reviewAnchor.ts`), never as pixel offsets: a pixel
+  names a different line once the held range moves.
 - Preserve line identity across refreshes so open threads, selections, and
   measured rows do not move unnecessarily.
 - Embedded forge HTML uses `ChatMarkdown`'s opt-in sanitized mode. Do not render

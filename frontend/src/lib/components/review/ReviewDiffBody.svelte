@@ -1,9 +1,14 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
-  import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
+  import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
   import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
-  import { createReviewScrollOwner, reviewScrollKey } from './reviewScroll';
+  import {
+    createReviewScrollOwner,
+    reviewScrollKey,
+    saveReadingPosition,
+    savedReadingPosition,
+  } from './reviewScroll';
   import type { DiffReviewComment, ReviewThread } from '../../types/models';
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
@@ -23,13 +28,15 @@
     type CommentAnchor,
     type ReviewRow,
   } from '../../utils/reviewRows';
-  import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
+  import type { RowEstimate } from '../../utils/virtual/types';
 
   // The continuous virtualized review surface: every file's header +
-  // line blocks + comment rows in ONE TimelineVirtualizer, with a
+  // line blocks + comment rows in ONE LongListVirtualizer, with a
   // sticky overlay copy of the current file's header (rows are
   // absolutely positioned, so CSS `position: sticky` group containers
   // can't work here — the overlay is driven by findItemIndex instead).
+  // A diff taller than a browser can lay out holds a range of its rows
+  // at a time; row indices here are always indices of `built.rows`.
   //
   // Estimate coherence: the engine takes its RowEstimate once at
   // construction, so we hand it a stable wrapper that reads the CURRENT
@@ -135,20 +142,23 @@
   const scrollKey = $derived(reviewScrollKey(subjectId, scope, viewMode, wordWrap));
 
   let scrollEl: HTMLElement | undefined = $state();
-  let listRef: TimelineVirtualizerHandle | undefined = $state();
+  let listRef: LongListHandle | undefined = $state();
   const scroll = createReviewScrollOwner(() => scrollEl);
 
-  // Save under the OUTGOING key while its geometry is still in the DOM
-  // ($effect.pre cleanup runs before the flush); also fires at unmount.
+  // Save under the OUTGOING key ($effect.pre cleanup runs before the
+  // flush); also fires at unmount.
   $effect.pre(() => {
     const key = scrollKey;
-    return () => scroll.savePosition(key);
+    return () => saveReadingPosition(key, readingAnchor);
   });
 
   // Restore once per key, and only once content exists — a scope switch
   // lands its rows a load later, and restoring against the empty state
   // would just clamp to 0. Unrelated rebuilds (collapse toggles) must
-  // NOT re-restore, hence the once-per-key gate.
+  // NOT re-restore, hence the once-per-key gate. A key with nothing saved
+  // keeps the line being read (a view mode or wrap change); the reading
+  // anchor is still the one captured under the outgoing key, because the
+  // rebuild effect below runs after this one.
   let restoredKey = '';
   $effect(() => {
     const key = scrollKey;
@@ -156,7 +166,10 @@
     if (!hasRows || restoredKey === key) return;
     restoredKey = key;
     untrack(() => {
-      scroll.restorePosition(key);
+      const saved = savedReadingPosition(key);
+      const target = saved === undefined ? readingAnchor : saved;
+      if (target) restoreAnchor(target);
+      else if (saved === null) scroll.applyScrollTarget(0);
       // The engine tail-seeds its window until its first scroll input
       // (chat's bottom-anchored mount seeding). This surface is
       // TOP-anchored, and neither a restore that lands on the current
@@ -225,14 +238,19 @@
 
   function captureAnchor(offset: number): void {
     const ref = listRef;
-    readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset, wordWrap) : null;
+    readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset) : null;
   }
 
   function restoreAnchor(target: ReadingAnchor): void {
     const ref = listRef;
     if (!ref) return;
-    const top = resolveReadingAnchor(built, files, blockRows, ref, target, wordWrap);
-    if (top !== null) scroll.applyScrollTarget(top);
+    const position = resolveReadingAnchor(built, files, blockRows, target);
+    if (!position) return;
+    if (ref.holds(position.index)) {
+      scroll.applyScrollTarget(Math.max(0, ref.getItemOffset(position.index) + position.offset));
+    } else {
+      ref.scrollToIndex(position.index, { offset: position.offset });
+    }
   }
 
   // Geometry can change without a scroll event (collapse toggle above
@@ -280,6 +298,7 @@
   // a stale request can't re-fire on a later rebuild.
   let flashRowKey: string | null = $state(null);
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  const flashRow = $derived(flashRowKey === null ? null : (built.rows[built.rowKeys.indexOf(flashRowKey)] ?? null));
   $effect(() => {
     const key = jumpToRowKey;
     const ref = listRef;
@@ -423,7 +442,7 @@
     onkeydown={handleKeydown}
   >
     {#key geometryKey}
-      <TimelineVirtualizer
+      <LongListVirtualizer
         bind:this={listRef}
         data={built.rows}
         {getKey}
@@ -433,11 +452,11 @@
         applyScrollTarget={scroll.applyScrollTarget}
         onCompensation={scroll.applyCompensation}
         onscroll={(offset) => { updateSticky(offset); captureAnchor(offset); }}
-        onscrollend={() => scroll.savePosition(scrollKey)}
+        onscrollend={() => saveReadingPosition(scrollKey, readingAnchor)}
       >
-        {#snippet children(row: ReviewRow, rowIndex: number)}
+        {#snippet children(row: ReviewRow)}
           {@const file = files[row.fileIndex]}
-          {@const flashing = flashRowKey !== null && built.rowKeys[rowIndex] === flashRowKey}
+          {@const flashing = row === flashRow}
           {#if !file}
             <!-- Build/props raced; the next flush re-renders coherent rows. -->
           {:else if row.kind === 'file-header'}
@@ -487,7 +506,7 @@
             </div>
           {/if}
         {/snippet}
-      </TimelineVirtualizer>
+      </LongListVirtualizer>
     {/key}
   </div>
 </div>
