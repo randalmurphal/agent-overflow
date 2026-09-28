@@ -19,6 +19,8 @@
     results: WorkspaceFile[];
     activeIndex: number;
     loading?: boolean;
+    /** Why the last search failed; shown in place of the result list. */
+    error?: string;
     /** Absolute base for resolving the workspace-relative file.path when
      *  the user hits the editor-link affordance. */
     workspacePath?: string;
@@ -34,6 +36,7 @@
     results,
     activeIndex,
     loading = false,
+    error = '',
     workspacePath = '',
     onSelect,
     onHover,
@@ -60,6 +63,8 @@
       <div class="border-b border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-subtle">
         {#if loading}
           Searching…
+        {:else if error}
+          Workspace search failed
         {:else if query}
           Files matching "{query}" · {results.length} result{results.length === 1 ? '' : 's'}
         {:else}
@@ -67,7 +72,9 @@
         {/if}
       </div>
 
-      {#if results.length === 0 && !loading}
+      {#if error && !loading}
+        <div class="px-3 py-3 text-[0.75rem] text-error" data-testid="mention-error">{error}</div>
+      {:else if results.length === 0 && !loading}
         <div class="px-3 py-3 text-[0.75rem] text-fg-subtle">No matches. Escape to close.</div>
       {:else}
         <ul class="py-1">

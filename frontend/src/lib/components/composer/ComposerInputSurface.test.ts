@@ -20,6 +20,7 @@ import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mock
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
 
@@ -230,6 +231,87 @@ describe('<ComposerInputSurface>', () => {
 
     await typeInto('/workflow ship it');
     await waitFor(() => expect(queryByTestId('composer-command-highlight')).not.toBeNull());
+  });
+
+  // ---- mentions ----
+
+  function mentionFiles() {
+    return {
+      files: [
+        { path: 'src/main.ts', kind: 'file', parentPath: 'src' },
+        { path: 'src/helper.ts', kind: 'file', parentPath: 'src' },
+      ],
+      truncated: false,
+      root: '/tmp/workspace',
+    };
+  }
+
+  function activeMention(getAllByTestId: (id: string) => HTMLElement[]): string | null {
+    const active = getAllByTestId('mention-option').find((el) => el.getAttribute('aria-selected') === 'true');
+    return active?.textContent?.trim() ?? null;
+  }
+
+  it('searches once per trigger change and keeps the highlight across keyup and click', async () => {
+    const search = setBindingMock('SearchWorkspaceFiles', async () => mentionFiles());
+    const { textarea, typeInto, getAllByTestId } = await mountSurface();
+
+    await typeInto('see @src');
+    await waitFor(() => expect(getAllByTestId('mention-option')).toHaveLength(2));
+    expect(search).toHaveBeenCalledTimes(1);
+
+    await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+    await fireEvent.keyUp(textarea, { key: 'ArrowDown' });
+    await fireEvent.click(textarea);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+
+    expect(activeMention(getAllByTestId)).toMatch(/src\/helper\.ts/);
+    expect(search).toHaveBeenCalledTimes(1);
+
+    await typeInto('see @src/');
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps an Escape-dismissed mention closed until the text stops matching it', async () => {
+    const search = setBindingMock('SearchWorkspaceFiles', async () => mentionFiles());
+    const { textarea, typeInto, queryByTestId } = await mountSurface();
+
+    await typeInto('see @src');
+    await waitFor(() => expect(queryByTestId('mention-popover')).not.toBeNull());
+
+    await fireEvent.keyDown(textarea, { key: 'Escape' });
+    await fireEvent.keyUp(textarea, { key: 'Escape' });
+    await tick();
+    expect(queryByTestId('mention-popover')).toBeNull();
+
+    await typeInto('see @srcm');
+    await tick();
+    expect(queryByTestId('mention-popover')).toBeNull();
+    expect(search).toHaveBeenCalledTimes(1);
+
+    await typeInto('see ');
+    await typeInto('see @s');
+    await waitFor(() => expect(queryByTestId('mention-popover')).not.toBeNull());
+  });
+
+  it('shows a failed mention search inside the popover instead of a toast', async () => {
+    for (const toast of getToasts()) removeToast(toast.id);
+    let fail = true;
+    setBindingMock('SearchWorkspaceFiles', async () => {
+      if (fail) throw new Error('workspace index unavailable');
+      return mentionFiles();
+    });
+    const { typeInto, findByTestId, queryByTestId, getAllByTestId } = await mountSurface();
+
+    await typeInto('see @src');
+    const error = await findByTestId('mention-error');
+    expect(error.textContent).toMatch(/workspace index unavailable/i);
+    expect(getToasts()).toHaveLength(0);
+
+    fail = false;
+    await typeInto('see @src/');
+    await waitFor(() => expect(getAllByTestId('mention-option')).toHaveLength(2));
+    expect(queryByTestId('mention-error')).toBeNull();
   });
 
   // ---- keyboard ----

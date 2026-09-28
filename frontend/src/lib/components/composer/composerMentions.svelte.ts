@@ -1,9 +1,10 @@
 // Composer @mention popover state + trigger detection.
 //
 // Owns:
-//   - mention trigger / results list / active index / loading flag
+//   - mention trigger / results list / active index / loading flag / error
 //   - search-generation counter so a slow SearchWorkspaceFiles response
 //     can't overwrite fresher results
+//   - the dismissed trigger, so Escape holds until the text stops matching
 //
 // The caller provides a textarea reference + workspace getter. The search
 // reads a CHECKOUT, so it is keyed on the workspace and works on a draft
@@ -13,7 +14,6 @@
 
 import { SearchWorkspaceFiles } from '../../stores/bindings';
 import type { WorkspaceRef } from '../../types/git';
-import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
 import { detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
@@ -31,6 +31,8 @@ export interface ComposerMentionsHandle {
   readonly mentionResults: WorkspaceFile[];
   readonly mentionActiveIndex: number;
   readonly mentionLoading: boolean;
+  /** Non-empty when the last search failed; rendered inside the popover. */
+  readonly mentionError: string;
   setMentionActiveIndex(i: number): void;
 
   /**
@@ -40,7 +42,13 @@ export interface ComposerMentionsHandle {
   refreshTriggers(): void;
 
   insertMention(file: WorkspaceFile): void;
+  /** Dismiss the popover until the text stops matching this trigger. */
   closeMention(): void;
+}
+
+/** What a search answers for: the checkout, the `@` position, the query. */
+function mentionSearchKey(workspace: WorkspaceRef | null, trigger: MentionTrigger): string {
+  return `${workspace?.projectId ?? ''}\0${workspace?.workspacePath ?? ''}\0${trigger.start}\0${trigger.query}`;
 }
 
 export function createComposerMentions(opts: ComposerMentionsOptions): ComposerMentionsHandle {
@@ -48,26 +56,32 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
   let mentionResults: WorkspaceFile[] = $state([]);
   let mentionActiveIndex = $state(0);
   let mentionLoading = $state(false);
+  let mentionError = $state('');
   let mentionSearchGeneration = 0;
+  // Key of the search the open popover shows. Selection, keyup and click
+  // refresh the trigger without changing it; those must not search again.
+  let openSearchKey: string | null = null;
+  // `@` index of the trigger the user dismissed, or null.
+  let dismissedStart: number | null = null;
 
-  async function loadMentionResults(query: string): Promise<void> {
-    const workspace = opts.getWorkspace();
+  async function loadMentionResults(workspace: WorkspaceRef | null, query: string): Promise<void> {
+    const generation = ++mentionSearchGeneration;
     if (!workspace) {
       mentionResults = [];
+      mentionLoading = false;
       return;
     }
-    const generation = ++mentionSearchGeneration;
     mentionLoading = true;
     try {
       const result = (await SearchWorkspaceFiles(workspace, query, 50)) as WorkspaceFileSearchResult;
       if (generation !== mentionSearchGeneration) return;
       mentionResults = result?.files ?? [];
       mentionActiveIndex = 0;
+      mentionError = '';
     } catch (err) {
       if (generation !== mentionSearchGeneration) return;
-      console.error('SearchWorkspaceFiles failed:', err);
       mentionResults = [];
-      addToast('warning', `Workspace search failed: ${errString(err)}`);
+      mentionError = errString(err);
     } finally {
       if (generation === mentionSearchGeneration) {
         mentionLoading = false;
@@ -75,11 +89,22 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     }
   }
 
-  function closeMention(): void {
+  function resetMention(): void {
     mentionTrigger = null;
     mentionResults = [];
     mentionActiveIndex = 0;
+    mentionLoading = false;
+    mentionError = '';
+    openSearchKey = null;
     mentionSearchGeneration++;
+  }
+
+  function closeMention(): void {
+    // Escape reaches both the textarea and the popover's own handler; the
+    // second close finds nothing open and must keep the first dismissal.
+    if (!mentionTrigger) return;
+    dismissedStart = mentionTrigger.start;
+    resetMention();
   }
 
   function refreshTriggers(): void {
@@ -89,13 +114,17 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     const caret = textarea.selectionStart ?? value.length;
 
     const mention = detectMentionTrigger(value, caret);
-    if (mention) {
-      mentionTrigger = mention;
-      void loadMentionResults(mention.query);
+    if (!mention || mention.start !== dismissedStart) dismissedStart = null;
+    if (!mention || dismissedStart !== null) {
+      if (mentionTrigger) resetMention();
       return;
     }
-
-    closeMention();
+    const workspace = opts.getWorkspace();
+    const key = mentionSearchKey(workspace, mention);
+    if (key === openSearchKey) return;
+    openSearchKey = key;
+    mentionTrigger = mention;
+    void loadMentionResults(workspace, mention.query);
   }
 
   function insertMention(file: WorkspaceFile): void {
@@ -106,7 +135,7 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     // `input` event drives `handleInput` in Composer.svelte, which calls
     // `draft.setContent(textarea.value)` — store update is automatic.
     replaceTextareaRange(textarea, mentionTrigger.start, mentionTrigger.end, `@${file.path} `);
-    closeMention();
+    resetMention();
   }
 
   return {
@@ -114,6 +143,7 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     get mentionResults() { return mentionResults; },
     get mentionActiveIndex() { return mentionActiveIndex; },
     get mentionLoading() { return mentionLoading; },
+    get mentionError() { return mentionError; },
     setMentionActiveIndex(i: number): void { mentionActiveIndex = i; },
 
     refreshTriggers,

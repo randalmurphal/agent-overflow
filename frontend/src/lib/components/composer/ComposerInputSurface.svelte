@@ -387,6 +387,7 @@
       results={mentions.mentionResults}
       activeIndex={mentions.mentionActiveIndex}
       loading={mentions.mentionLoading}
+      error={mentions.mentionError}
       workspacePath={paneWorkspacePath(pane)}
       onSelect={mentions.insertMention}
       onClose={mentions.closeMention}
