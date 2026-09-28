@@ -52,7 +52,7 @@ frontend/package.json.md5
 # vitest.config.ts; this is a belt-and-braces guard. Intentional
 # visual-regression baselines, if ever added, live in committed
 # __screenshots__/ dirs (deliberately NOT ignored here).
-frontend/.vitest-attachments/
+frontend/.vitest/
 
 # Binaries built into the repo root
 /agent-overflow

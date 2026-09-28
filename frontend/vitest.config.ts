@@ -132,7 +132,7 @@ export default defineConfig({
             instances: [{ browser: 'chromium' }],
             // These are geometry assertions on invisible off-screen divs; a
             // failure screenshot is useless and would litter the tree with
-            // `.vitest-attachments/` + `__screenshots__/` byproducts.
+            // `.vitest/attachments/` byproducts.
             screenshotFailures: false,
           },
         },
