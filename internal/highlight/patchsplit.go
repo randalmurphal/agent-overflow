@@ -1,6 +1,10 @@
 package highlight
 
-import "strings"
+import (
+	"strings"
+
+	"agent-overflow/internal/unidiff"
+)
 
 // PatchFileSeed is one file's slice of a (possibly multi-file) unified
 // diff, split exactly the way the frontend's parsePatchFiles
@@ -25,7 +29,7 @@ type PatchFileSeed struct {
 //     "\n") is dropped;
 //   - the path starts as the cleaned 4th whitespace-separated token of
 //     the opener, then is overwritten by "rename to " lines and by
-//     "+++ " lines (unless /dev/null);
+//     "+++ " lines (unless /dev/null) outside hunk bodies (unidiff.Body);
 //   - a file whose path resolves empty is dropped.
 func SplitPatchFiles(patch string) []PatchFileSeed {
 	if strings.TrimSpace(patch) == "" {
@@ -38,6 +42,7 @@ func SplitPatchFiles(patch string) []PatchFileSeed {
 
 	var out []PatchFileSeed
 	var cur []string
+	var body unidiff.Body
 	path := ""
 	finish := func() {
 		if len(cur) > 0 && path != "" {
@@ -55,9 +60,14 @@ func SplitPatchFiles(patch string) []PatchFileSeed {
 				path = cleanPatchPath(parts[3])
 			}
 			cur = []string{line}
+			body = unidiff.Body{}
 			continue
 		}
 		if cur == nil {
+			continue
+		}
+		if body.Next(line) != unidiff.Outside {
+			cur = append(cur, line)
 			continue
 		}
 		// Mirrors parsePatchFiles' unconditional assignment: a bogus

@@ -27,6 +27,11 @@ describe('parseDiffLines', () => {
     expect(out[1]).toEqual({ type: 'context', content: '--- a/file.ts' });
   });
 
+  it('reads header lookalikes inside a hunk as the lines they are', () => {
+    expect(parseDiffLines('--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1,2 @@\n--- note\n+++i\n select 1;').map((line) => line.type))
+      .toEqual(['context', 'context', 'meta', 'del', 'add', 'context']);
+  });
+
   it('classifies lines without +/-/@@ prefix as context', () => {
     const out = parseDiffLines(' unchanged\nplain');
     expect(out[0]).toEqual({ type: 'context', content: ' unchanged' });

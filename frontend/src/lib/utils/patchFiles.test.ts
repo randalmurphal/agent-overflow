@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  HUNK_ADDED,
+  HUNK_CONTEXT,
+  HUNK_HEADER,
+  HUNK_NO_NEWLINE,
+  HUNK_OUTSIDE,
+  HUNK_REMOVED,
+  HunkBody,
   PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
   __parsePatchCacheStatsForTest,
   __resetParsePatchCacheForTest,
@@ -13,7 +20,102 @@ import {
   stripPatchLinePrefix,
 } from './patchFiles';
 
+function hunkKinds(lines: string[]): number[] {
+  const body = new HunkBody();
+  return lines.map((line) => body.next(line));
+}
+
+// The same vectors as internal/unidiff's tests: both twins read every
+// line the same way.
+describe('HunkBody', () => {
+  it('reads header lookalikes inside a hunk as body lines', () => {
+    expect(hunkKinds([
+      'diff --git a/q.sql b/q.sql',
+      '--- a/q.sql',
+      '+++ b/q.sql',
+      '@@ -1,3 +1,3 @@',
+      '--- removed sql comment',
+      '+++ added counter',
+      ' context',
+      '-last',
+      '\\ No newline at end of file',
+      '+last',
+      'diff --git a/r.txt b/r.txt',
+      '--- a/r.txt',
+      '+++ b/r.txt',
+      '@@ -1 +1 @@',
+      '-x',
+      '+y',
+    ])).toEqual([
+      HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_HEADER,
+      HUNK_REMOVED, HUNK_ADDED, HUNK_CONTEXT, HUNK_REMOVED, HUNK_NO_NEWLINE, HUNK_ADDED,
+      HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_HEADER, HUNK_REMOVED, HUNK_ADDED,
+    ]);
+  });
+
+  it('ends a body where its counts end without a diff line', () => {
+    expect(hunkKinds([
+      '--- a/one',
+      '+++ b/one',
+      '@@ -1,2 +1,2 @@',
+      ' same',
+      '-old',
+      '+new',
+      '--- a/two',
+      '+++ b/two',
+      '@@ -1 +1,2 @@',
+      '',
+      '+added',
+    ])).toEqual([
+      HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_HEADER, HUNK_CONTEXT, HUNK_REMOVED, HUNK_ADDED,
+      HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_HEADER, HUNK_CONTEXT, HUNK_ADDED,
+    ]);
+  });
+
+  it('ends a body at a line it cannot hold', () => {
+    expect(hunkKinds([
+      '@@ -1,5 +1,5 @@',
+      '-a',
+      'diff --git a/b b/b',
+      '--- a/b',
+      '@@ -1 +0,0 @@',
+      '+no room on the new side',
+      '-b',
+      '-past the count',
+      '@@@ -1 -1 +1 @@@',
+      '+outside a malformed header',
+    ])).toEqual([
+      HUNK_HEADER, HUNK_REMOVED, HUNK_OUTSIDE, HUNK_OUTSIDE,
+      HUNK_HEADER, HUNK_OUTSIDE, HUNK_OUTSIDE, HUNK_OUTSIDE,
+      HUNK_HEADER, HUNK_OUTSIDE,
+    ]);
+  });
+
+  it('reads a line range of a longer string', () => {
+    const body = new HunkBody();
+    const text = 'xx@@ -2,1 +3 @@yy---zz';
+    expect(body.next(text, 2, 13)).toBe(HUNK_HEADER);
+    expect(body.header).toEqual({ oldStart: 2, oldCount: 1, newStart: 3, newCount: 1 });
+    expect(body.next(text, 17, 3)).toBe(HUNK_REMOVED);
+  });
+});
+
 describe('parsePatchFiles', () => {
+  it('reads header lookalikes inside a hunk as the lines they are', () => {
+    const [file] = parsePatchFiles([
+      'diff --git a/q.sql b/q.sql',
+      '--- a/q.sql',
+      '+++ b/q.sql',
+      '@@ -1,2 +1,2 @@',
+      '--- note',
+      '+++ b/other.txt',
+      ' select 1;',
+    ].join('\n'));
+    expect(file.path).toBe('q.sql');
+    expect([file.additions, file.deletions]).toEqual([1, 1]);
+    expect(file.lines.map((line) => line.type)).toEqual(['meta', 'meta', 'meta', 'meta', 'del', 'add', 'context']);
+  });
+
   it('builds aligned split rows for replacement hunks', () => {
     const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
 --- a/app.ts

@@ -105,6 +105,16 @@ func TestSplitPatchFiles(t *testing.T) {
 			want:  []PatchFileSeed{{Path: "docs/new.md", Patch: added}},
 		},
 		{
+			// An added "++ b/other.txt" line reads "+++ b/other.txt"
+			// with its prefix; it is a body line, not a header.
+			name:  "a header lookalike inside a hunk keeps the path",
+			patch: "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n+++ b/other.txt\n keep",
+			want: []PatchFileSeed{{
+				Path:  "notes.txt",
+				Patch: "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n+++ b/other.txt\n keep",
+			}},
+		},
+		{
 			name:  "empty and blank input",
 			patch: "  \n ",
 			want:  nil,

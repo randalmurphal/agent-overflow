@@ -105,9 +105,12 @@ export function parsePatchFiles(patch: string): PatchFile[] {
   }
 
   const lines = patch.split('\n');
+  const body = new HunkBody();
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex] ?? '';
     if (lineIndex === lines.length - 1 && line === '') continue;
+    // A `diff --git` line is never a body line, so it ends any body.
+    const kind = body.next(line);
     if (line.startsWith('diff --git ')) {
       finish();
       const parts = line.split(/\s+/);
@@ -125,30 +128,21 @@ export function parsePatchFiles(patch: string): PatchFile[] {
     if (line.startsWith('deleted file')) current.kind = 'deleted';
     if (line.startsWith('rename from ')) current.kind = 'renamed';
     if (line.startsWith('rename to ')) current.path = cleanPath(line.slice('rename to '.length));
-    if (line.startsWith('+++ ')) {
+    if (kind === HUNK_OUTSIDE && line.startsWith('+++ ')) {
       const next = cleanPath(line.slice(4));
       if (next && next !== '/dev/null') current.path = next;
     }
     // INVARIANT: this +/- accounting is the panel's authoritative line count,
     // and the header badge must match it. Go mirrors this rule in
-    // internal/git/status.go (countAddedLines, for the badge's untracked
-    // tally) and its test twin countPatchAddsDels. If you change the add/del
-    // rule here — the +++/--- header skips especially — update countAddedLines,
-    // the badge==panel tests in status_test.go and the review pane's streaming
-    // twin (PatchParser in patchStore.ts), or the badge will silently diverge
-    // from this panel.
-    if (line.startsWith('+') && !line.startsWith('+++')) current.additions += 1;
-    if (line.startsWith('-') && !line.startsWith('---')) current.deletions += 1;
-    current.lines.push({
-      content: line,
-      type: line.startsWith('+') && !line.startsWith('+++')
-        ? 'add'
-        : line.startsWith('-') && !line.startsWith('---')
-          ? 'del'
-          : isPatchMetaLine(line)
-            ? 'meta'
-            : 'context',
-    });
+    // internal/git/status_untracked.go (countAddedLines, for the badge's
+    // untracked tally) and its test twin countPatchAddsDels. If you change
+    // the add/del rule here, update countAddedLines, the badge==panel tests
+    // in internal/git and the review pane's streaming twin (PatchParser in
+    // patchStore.ts), or the badge will silently diverge from this panel.
+    const type = patchLineType(kind, line);
+    if (type === 'add') current.additions += 1;
+    if (type === 'del') current.deletions += 1;
+    current.lines.push({ content: line, type });
   }
   finish();
   return files;
@@ -717,13 +711,86 @@ export function cleanPath(raw: string): string {
   return raw.replace(/^"|"$/g, '').replace(/^[ab]\//, '');
 }
 
-export function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
-  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+export interface HunkHeader {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+}
+
+/** Parses `@@ -oldStart[,oldCount] +newStart[,newCount] @@`. An omitted
+ * count is 1. */
+export function parseHunkHeader(line: string): HunkHeader | null {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
   if (!match) return null;
   return {
     oldStart: Number(match[1]),
-    newStart: Number(match[2]),
+    oldCount: match[2] === undefined ? 1 : Number(match[2]),
+    newStart: Number(match[3]),
+    newCount: match[4] === undefined ? 1 : Number(match[4]),
   };
+}
+
+// What a line is in a patch (HunkBody.next).
+/** Outside every hunk body: a file header, a line before the first hunk,
+ * or text past a body its header's counts ended. Read by its prefix. */
+export const HUNK_OUTSIDE = 0;
+/** A hunk's `@@` line, well-formed or not. */
+export const HUNK_HEADER = 1;
+export const HUNK_CONTEXT = 2;
+export const HUNK_ADDED = 3;
+export const HUNK_REMOVED = 4;
+/** `\ No newline at end of file`, which belongs to neither side. */
+export const HUNK_NO_NEWLINE = 5;
+export type HunkLineKind = 0 | 1 | 2 | 3 | 4 | 5;
+
+/**
+ * Follows a patch line by line and classifies each line. A body line's
+ * text can begin with anything after its prefix, so a removed `-- note`
+ * reads `--- note` and an added `++x` reads `+++x`: a line is a file
+ * header only outside a hunk body, and the hunk header's counts say where
+ * the body ends. The Go twin is `unidiff.Body` (internal/unidiff); both
+ * read every line the same way.
+ */
+export class HunkBody {
+  private oldLeft = 0;
+  private newLeft = 0;
+  /** The header of the hunk line `next` last read, or null for a
+   * malformed one. */
+  header: HunkHeader | null = null;
+
+  /** Classifies the patch's next line, `text` or its `[offset, offset +
+   * length)` range. A hunk header starts a body of the lines its counts
+   * name; a line the body cannot hold ends it. */
+  next(text: string, offset = 0, length = text.length - offset): HunkLineKind {
+    const first = length > 0 ? text.charCodeAt(offset) : -1;
+    if (first === 64 && length > 1 && text.charCodeAt(offset + 1) === 64) {
+      const header = parseHunkHeader(offset === 0 && length === text.length ? text : text.slice(offset, offset + length));
+      this.header = header;
+      this.oldLeft = header?.oldCount ?? 0;
+      this.newLeft = header?.newCount ?? 0;
+      return HUNK_HEADER;
+    }
+    if (first === 92) return HUNK_NO_NEWLINE;
+    if (this.oldLeft === 0 && this.newLeft === 0) return HUNK_OUTSIDE;
+    if (first === 43 && this.newLeft > 0) {
+      this.newLeft -= 1;
+      return HUNK_ADDED;
+    }
+    if (first === 45 && this.oldLeft > 0) {
+      this.oldLeft -= 1;
+      return HUNK_REMOVED;
+    }
+    // An empty line is a context line whose trailing space was stripped.
+    if ((first === -1 || first === 32) && this.oldLeft > 0 && this.newLeft > 0) {
+      this.oldLeft -= 1;
+      this.newLeft -= 1;
+      return HUNK_CONTEXT;
+    }
+    this.oldLeft = 0;
+    this.newLeft = 0;
+    return HUNK_OUTSIDE;
+  }
 }
 
 /** Header text after the closing `@@` (the function-context heading),
@@ -747,9 +814,9 @@ export function formatHunkHeader(
   return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${suffix}`;
 }
 
-/** Prefixes of the patch lines that belong to neither side. The review
- * store's streaming parser (`patchStore.ts`) classifies with the same
- * list, so both parsers agree on every line. */
+/** Prefixes of the patch lines outside hunk bodies (HunkBody) that belong
+ * to neither side. The review store's streaming parser (`patchStore.ts`)
+ * classifies with the same list, so both parsers agree on every line. */
 export const PATCH_META_PREFIXES: readonly string[] = [
   '@@',
   // `\ No newline at end of file`: git's annotation on the line
@@ -777,6 +844,25 @@ export const PATCH_META_PREFIXES: readonly string[] = [
 
 function isPatchMetaLine(line: string): boolean {
   return PATCH_META_PREFIXES.some((prefix) => line.startsWith(prefix));
+}
+
+/** A line's type from its HunkBody kind; a line outside every body is
+ * read by its prefix, where `+++` and `---` are file headers. */
+function patchLineType(kind: HunkLineKind, line: string): 'add' | 'del' | 'meta' | 'context' {
+  switch (kind) {
+    case HUNK_ADDED:
+      return 'add';
+    case HUNK_REMOVED:
+      return 'del';
+    case HUNK_CONTEXT:
+      return 'context';
+    case HUNK_HEADER:
+    case HUNK_NO_NEWLINE:
+      return 'meta';
+  }
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'add';
+  if (line.startsWith('-') && !line.startsWith('---')) return 'del';
+  return isPatchMetaLine(line) ? 'meta' : 'context';
 }
 
 /**

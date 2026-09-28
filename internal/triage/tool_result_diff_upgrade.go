@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/unidiff"
 )
 
 func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, turnDiff string) (bool, error) {
@@ -241,7 +242,12 @@ func toolDiffSectionAllowed(section string, allowed map[string]struct{}, workspa
 
 func diffSectionPaths(section string, workspaceRoot string) []string {
 	var paths []string
+	var body unidiff.Body
 	for _, line := range strings.Split(section, "\n") {
+		if body.Next(line) != unidiff.Outside {
+			// A body line can read like a header with its prefix.
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "+++ b/"):
 			paths = append(paths, normalizeFileChangeDisplayPath(strings.TrimPrefix(line, "+++ b/"), workspaceRoot))

@@ -2,6 +2,12 @@ import { appendFNV1a32 } from './fnv1a';
 import { patchMemory, type EvictableText } from './patchMemory.svelte';
 import {
   cleanPath,
+  HUNK_ADDED,
+  HUNK_CONTEXT,
+  HUNK_HEADER,
+  HUNK_OUTSIDE,
+  HUNK_REMOVED,
+  HunkBody,
   parseHunkHeader,
   PATCH_META_PREFIXES,
   type PatchFile,
@@ -1055,6 +1061,7 @@ export class PatchParser {
   readonly files: ReviewFile[] = [];
   private current: Section | null = null;
   private held: Section | null = null;
+  private readonly body = new HunkBody();
   private readonly finished: ([Section] | [Section, Section])[] = [];
   private hash = 0x811c9dc5;
   private ended = false;
@@ -1098,6 +1105,7 @@ export class PatchParser {
 
   private completeLine(line: number, text: string, offset: number, length: number): void {
     const store = this.store;
+    const kind = this.body.next(text, offset, length);
     if (startsAt(text, offset, length, 'diff --git ')) {
       this.finishSection(line);
       const parts = text.slice(offset, offset + length).split(/\s+/);
@@ -1114,8 +1122,13 @@ export class PatchParser {
       return;
     }
     const current = this.current;
-    const plus = length > 0 && text.charCodeAt(offset) === 43 && !startsAt(text, offset, length, '+++');
-    const minus = length > 0 && text.charCodeAt(offset) === 45 && !startsAt(text, offset, length, '---');
+    // parsePatchFiles' rule: a hunk body's lines by its header's counts,
+    // and a line outside every body by its prefix.
+    const outside = kind === HUNK_OUTSIDE;
+    const plus = kind === HUNK_ADDED
+      || (outside && length > 0 && text.charCodeAt(offset) === 43 && !startsAt(text, offset, length, '+++'));
+    const minus = kind === HUNK_REMOVED
+      || (outside && length > 0 && text.charCodeAt(offset) === 45 && !startsAt(text, offset, length, '---'));
     if (current) {
       if (startsAt(text, offset, length, 'new file')) current.kind = 'added';
       if (startsAt(text, offset, length, 'deleted file')) current.kind = 'deleted';
@@ -1123,7 +1136,7 @@ export class PatchParser {
       if (startsAt(text, offset, length, 'rename to ')) {
         current.path = cleanPath(text.slice(offset + 'rename to '.length, offset + length));
       }
-      if (startsAt(text, offset, length, '+++ ')) {
+      if (outside && startsAt(text, offset, length, '+++ ')) {
         const next = cleanPath(text.slice(offset + 4, offset + length));
         if (next && next !== '/dev/null') current.path = next;
       }
@@ -1134,17 +1147,15 @@ export class PatchParser {
       store.setKind(line, LINE_ADD);
     } else if (minus) {
       store.setKind(line, LINE_DEL);
-    } else if (PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
-      const header = startsAt(text, offset, length, '@@')
-        ? parseHunkHeader(text.slice(offset, offset + length))
-        : null;
-      if (header) {
-        store.addHunk(line, header.oldStart, header.newStart);
-        store.setKind(line, LINE_HUNK);
-        if (current && current.firstHunk < 0) current.firstHunk = line;
-      } else {
-        store.setKind(line, LINE_META);
-      }
+    } else if (kind === HUNK_CONTEXT) {
+      store.setKind(line, LINE_CONTEXT);
+    } else if (kind === HUNK_HEADER && this.body.header) {
+      store.addHunk(line, this.body.header.oldStart, this.body.header.newStart);
+      store.setKind(line, LINE_HUNK);
+      if (current && current.firstHunk < 0) current.firstHunk = line;
+    } else if (kind !== HUNK_OUTSIDE || PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
+      // A malformed hunk header, the no-newline marker, or a file header.
+      store.setKind(line, LINE_META);
     } else {
       store.setKind(line, LINE_CONTEXT);
     }

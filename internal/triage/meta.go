@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/stringsx"
+	"agent-overflow/internal/unidiff"
 )
 
 // DiffMeta is the JSON structure stored in payloads.meta for diffs.
@@ -69,8 +70,13 @@ func ExtractDiffMeta(patch string) DiffMeta {
 	dm := DiffMeta{ChangeKind: "modified"}
 	lines := strings.Split(patch, "\n")
 
-	// Extract file path from diff header.
+	// Extract file path from diff header. A body line can read "+++ "
+	// with its prefix; headers are outside hunk bodies.
+	var body unidiff.Body
 	for _, line := range lines {
+		if body.Next(line) != unidiff.Outside {
+			continue
+		}
 		if strings.HasPrefix(line, "+++ b/") {
 			dm.FilePath = strings.TrimPrefix(line, "+++ b/")
 			break
@@ -81,20 +87,27 @@ func ExtractDiffMeta(patch string) DiffMeta {
 		}
 	}
 
-	// Count insertions/deletions (lines starting with + or - that aren't headers).
+	// Count insertions/deletions: a hunk body's lines by its header's
+	// counts, and any line past a body the counts ended by its prefix.
+	body = unidiff.Body{}
 	inBody := false
 	for _, line := range lines {
-		if strings.HasPrefix(line, "@@") {
+		switch body.Next(line) {
+		case unidiff.HunkHeader:
 			inBody = true
-			continue
-		}
-		if !inBody {
-			continue
-		}
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+		case unidiff.Added:
 			dm.Insertions++
-		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+		case unidiff.Removed:
 			dm.Deletions++
+		case unidiff.Outside:
+			if !inBody {
+				continue
+			}
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				dm.Insertions++
+			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+				dm.Deletions++
+			}
 		}
 	}
 

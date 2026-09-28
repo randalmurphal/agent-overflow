@@ -222,20 +222,16 @@ func countUntrackedFileLines(info os.FileInfo, path string, budget int) (inserti
 // This must stay aligned with the diff panel's untracked-file count, which is a
 // different code path: the panel sums the frontend's parse
 // (frontend/src/lib/utils/patchFiles.ts) of `git diff --no-index --patch
-// /dev/null <file>`, counting every '+' line that is not the '+++' header -
-// which equals the newline count here (the "\ No newline" marker and "Binary
-// files differ" lines start with '\'/'B', so neither side counts them).
+// /dev/null <file>`, counting every '+' line of the hunk body (a content line
+// starting "++" reads "+++" in the patch and still counts) - which equals the
+// newline count here (the "\ No newline" marker and "Binary files differ"
+// lines start with '\'/'B', so neither side counts them).
 // TestCountAddedLinesMatchesPanelParse and the panel-total assertion in
 // TestStatusInsertionsIncludeUntracked pin the two together; keep them in sync.
 //
-// Known divergences (rare, documented rather than fixed):
-//   - .gitattributes content overrides (binary, -text, -diff): the panel uses
-//     real `git diff` and honours them; this raw heuristic does not.
-//   - a file content line beginning with "++" (two or more '+'): git's patch
-//     adds one more '+' prefix, so the panel sees "+++..." and the frontend's
-//     startsWith('+++') header-skip drops it - the panel undercounts while this
-//     counter is correct. The mirror "---" case cannot occur for an untracked
-//     file: every content line is an addition prefixed "+", never "-".
+// Known divergence (rare, documented rather than fixed): .gitattributes
+// content overrides (binary, -text, -diff). The panel uses real `git diff`
+// and honours them; this raw heuristic does not.
 func countAddedLines(data []byte) int {
 	if len(data) == 0 {
 		return 0

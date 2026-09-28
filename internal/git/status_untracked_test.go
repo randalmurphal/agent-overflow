@@ -325,7 +325,8 @@ func TestUntrackedStatsCacheTTLSweep(t *testing.T) {
 // numstat - so this is the test that proves the badge matches what the user sees
 // for each shape of untracked file. A content line starting with a single '+' is
 // included because the patch prefixes it to "++...", and both sides must still
-// count it (only the '+++' header is excluded).
+// count it (only the '+++' header is excluded), and so is one starting "++",
+// which the patch prefixes to "+++..." inside the hunk body.
 func TestCountAddedLinesMatchesPanelParse(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	cases := []struct{ name, content string }{
@@ -334,6 +335,7 @@ func TestCountAddedLinesMatchesPanelParse(t *testing.T) {
 		{"binary", "\x00\x01\x02binary"},
 		{"single_line", "only\n"},
 		{"content_line_starting_with_plus", "+added\nplain\n"},
+		{"content_line_starting_with_two_plus", "++i;\n++ b/x\nplain\n"},
 		{"empty", ""},
 	}
 	for i, tc := range cases {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/unidiff"
 )
 
 func TestParseStatusOutput(t *testing.T) {
@@ -1125,16 +1126,26 @@ func untrackedOracle(t *testing.T, repo string) int {
 }
 
 // countPatchAddsDels mirrors the frontend patch parser
-// (frontend/src/lib/utils/patchFiles.ts): a '+'/'-' line that is not a
-// '+++'/'---' file header is an addition/deletion. This is how the diff panel
-// turns gitdiff.OpenWorktreeDiff's unified patch into the +/- totals it displays.
+// (frontend/src/lib/utils/patchFiles.ts): a hunk body's '+'/'-' lines are
+// additions/deletions whatever follows the prefix, and a line outside every
+// body counts by its prefix unless it is a '+++'/'---' file header. This is
+// how the diff panel turns gitdiff.OpenWorktreeDiff's unified patch into the
+// +/- totals it displays.
 func countPatchAddsDels(patch string) (insertions, deletions int) {
+	var body unidiff.Body
 	for _, line := range strings.Split(patch, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+		switch body.Next(line) {
+		case unidiff.Added:
 			insertions++
-		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+		case unidiff.Removed:
 			deletions++
+		case unidiff.Outside:
+			switch {
+			case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+				insertions++
+			case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+				deletions++
+			}
 		}
 	}
 	return insertions, deletions

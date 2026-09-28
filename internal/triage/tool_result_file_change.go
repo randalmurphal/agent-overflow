@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/unidiff"
 )
 
 const (
@@ -327,7 +328,7 @@ func lineBoundedDiffPreview(patch string, maxBodyLines int) (string, int, bool) 
 	remaining := strings.TrimSuffix(patch, "\n")
 	bodyLines := 0
 	truncated := false
-	inHunk := false
+	var body unidiff.Body
 
 	for remaining != "" {
 		line, rest, found := strings.Cut(remaining, "\n")
@@ -335,9 +336,8 @@ func lineBoundedDiffPreview(patch string, maxBodyLines int) (string, int, bool) 
 			rest = ""
 		}
 
-		if isInlineDiffPreviewMetaLine(line, inHunk) {
+		if isInlineDiffPreviewMetaLine(line, body.Next(line)) {
 			writePreviewLine(line)
-			inHunk = nextInlineDiffPreviewHunkState(line, inHunk)
 			remaining = rest
 			continue
 		}
@@ -349,7 +349,7 @@ func lineBoundedDiffPreview(patch string, maxBodyLines int) (string, int, bool) 
 		writePreviewLine(line)
 		bodyLines++
 
-		if bodyLines >= maxBodyLines && hasInlineDiffPreviewBodyLine(rest, inHunk) {
+		if bodyLines >= maxBodyLines && hasInlineDiffPreviewBodyLine(rest, body) {
 			truncated = true
 			break
 		}
@@ -359,27 +359,32 @@ func lineBoundedDiffPreview(patch string, maxBodyLines int) (string, int, bool) 
 	return preview.String(), bodyLines, truncated
 }
 
-func hasInlineDiffPreviewBodyLine(patch string, inHunk bool) bool {
+// hasInlineDiffPreviewBodyLine reports whether patch, read on from body,
+// has a line the preview counts.
+func hasInlineDiffPreviewBodyLine(patch string, body unidiff.Body) bool {
 	remaining := strings.TrimSuffix(patch, "\n")
 	for remaining != "" {
 		line, rest, found := strings.Cut(remaining, "\n")
 		if !found {
 			rest = ""
 		}
-		if !isInlineDiffPreviewMetaLine(line, inHunk) {
+		if !isInlineDiffPreviewMetaLine(line, body.Next(line)) {
 			return true
 		}
-		inHunk = nextInlineDiffPreviewHunkState(line, inHunk)
 		remaining = rest
 	}
 	return false
 }
 
-func isInlineDiffPreviewMetaLine(line string, inHunk bool) bool {
-	if strings.HasPrefix(line, "@@") {
+// isInlineDiffPreviewMetaLine reports whether the preview keeps a line
+// without counting it: a hunk header, or a file header outside every hunk
+// body. A body line is counted even when it reads like a header with its
+// prefix ("--- note" removing "-- note").
+func isInlineDiffPreviewMetaLine(line string, kind unidiff.LineKind) bool {
+	if kind == unidiff.HunkHeader {
 		return true
 	}
-	if inHunk {
+	if kind != unidiff.Outside {
 		return false
 	}
 	return strings.HasPrefix(line, "diff ") ||
@@ -396,16 +401,6 @@ func isInlineDiffPreviewMetaLine(line string, inHunk bool) bool {
 		strings.HasPrefix(line, "rename to ") ||
 		strings.HasPrefix(line, "copy from ") ||
 		strings.HasPrefix(line, "copy to ")
-}
-
-func nextInlineDiffPreviewHunkState(line string, current bool) bool {
-	if strings.HasPrefix(line, "diff ") {
-		return false
-	}
-	if strings.HasPrefix(line, "@@") {
-		return true
-	}
-	return current
 }
 
 func buildUnifiedPatch(change fileChange) (fileChangePatch, bool) {
@@ -520,7 +515,12 @@ func diffSectionMatchesFileChange(section string, change fileChange) bool {
 
 func strictDiffHeaderPaths(section string) ([]string, bool) {
 	paths := []string{}
+	var body unidiff.Body
 	for _, line := range strings.Split(section, "\n") {
+		if body.Next(line) != unidiff.Outside {
+			// A body line can read like a header with its prefix.
+			continue
+		}
 		var ok bool
 		switch {
 		case strings.HasPrefix(line, "diff --git "):

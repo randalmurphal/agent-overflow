@@ -713,6 +713,53 @@ func TestLineBoundedDiffPreviewCountsPatchLikeBodyLines(t *testing.T) {
 	}
 }
 
+func TestLineBoundedDiffPreviewReadsHeadersByHunkBodyCounts(t *testing.T) {
+	// A removed "-- note" reads "--- note" with its prefix and is a body
+	// line; the next file's headers of a plain unified diff follow the
+	// body directly and are not.
+	patch := strings.Join([]string{
+		"--- a/one.sql",
+		"+++ b/one.sql",
+		"@@ -1,2 +1,1 @@",
+		"--- note",
+		" select 1;",
+		"--- a/two.sql",
+		"+++ b/two.sql",
+		"@@ -1 +1 @@",
+		"-a",
+		"+b",
+	}, "\n")
+	preview, lines, truncated := lineBoundedDiffPreview(patch, 4)
+	if preview != patch || lines != 4 || truncated {
+		t.Fatalf("preview = %q, %d lines, truncated %v; want the whole patch, 4 lines, not truncated", preview, lines, truncated)
+	}
+	preview, lines, truncated = lineBoundedDiffPreview(patch, 3)
+	if lines != 3 || !truncated || strings.Contains(preview, "+b") {
+		t.Fatalf("preview = %q, %d lines, truncated %v; want 3 lines, truncated before +b", preview, lines, truncated)
+	}
+}
+
+func TestDiffSectionPathsSkipHeaderLookalikesInsideAHunk(t *testing.T) {
+	section := strings.Join([]string{
+		"diff --git a/q.sql b/q.sql",
+		"--- a/q.sql",
+		"+++ b/q.sql",
+		"@@ -1,2 +1,2 @@",
+		"--- note",
+		"+++ b/other.txt",
+		" select 1;",
+	}, "\n")
+	if !diffSectionMatchesFileChange(section, fileChange{Path: "q.sql"}) {
+		t.Error("section with header lookalike body lines does not match its own file")
+	}
+	if got := filterUnifiedDiffByPaths(section, []ToolInlineDiffFile{{Path: "other.txt"}}, ""); got != "" {
+		t.Errorf("a body line named the section's file: kept %q for other.txt", got)
+	}
+	if got := filterUnifiedDiffByPaths(section, []ToolInlineDiffFile{{Path: "q.sql"}}, ""); got != section {
+		t.Errorf("filter for q.sql = %q, want the section", got)
+	}
+}
+
 func TestBuildExactInlineDiffPreservesRenamePreviousPath(t *testing.T) {
 	diff := strings.Join([]string{
 		"diff --git a/src/old.ts b/src/new.ts",

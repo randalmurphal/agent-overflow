@@ -151,24 +151,31 @@ func TestParsePatchEmptyContextLine(t *testing.T) {
 	}
 }
 
-func TestParseHunkHeaderForms(t *testing.T) {
-	cases := []struct {
-		line       string
-		oldS, newS int
-		ok         bool
-	}{
-		{"@@ -22,7 +33,9 @@ def context():", 22, 33, true},
-		{"@@ -1 +1 @@", 1, 1, true},
-		{"@@ -0,0 +1,5 @@", 0, 1, true},
-		{"@@ garbage @@", 0, 0, false},
-		{"@@ -x,1 +1,1 @@", 0, 0, false},
+func TestParsePatchReadsHeaderLookalikesInsideAHunkAsBodyLines(t *testing.T) {
+	// A removed SQL comment and an added `++i` read "---" and "+++" with
+	// their prefixes; the hunk continues past them to its last line.
+	patch := "diff --git a/q.sql b/q.sql\n" +
+		"--- a/q.sql\n" +
+		"+++ b/q.sql\n" +
+		"@@ -1,3 +1,3 @@\n" +
+		"--- old note\n" +
+		"+++i;\n" +
+		" select 1;\n" +
+		"-drop table t;\n" +
+		"+drop table u;\n"
+	p := parsePatch(patch)
+	if len(p.hunks) != 1 {
+		t.Fatalf("hunks = %d, want 1", len(p.hunks))
 	}
-	for _, c := range cases {
-		o, n, ok := parseHunkHeader(c.line)
-		if ok != c.ok || o != c.oldS || n != c.newS {
-			t.Errorf("parseHunkHeader(%q) = (%d,%d,%v), want (%d,%d,%v)",
-				c.line, o, n, ok, c.oldS, c.newS, c.ok)
-		}
+	h := p.hunks[0]
+	if string(h.oldDoc) != "-- old note\nselect 1;\ndrop table t;" {
+		t.Errorf("oldDoc = %q", h.oldDoc)
+	}
+	if string(h.newDoc) != "++i;\nselect 1;\ndrop table u;" {
+		t.Errorf("newDoc = %q", h.newDoc)
+	}
+	if len(h.lines) != 5 || h.lines[0].patchIndex != 4 || h.lines[4].patchIndex != 8 {
+		t.Errorf("line refs = %+v, want patch lines 4 through 8", h.lines)
 	}
 }
 

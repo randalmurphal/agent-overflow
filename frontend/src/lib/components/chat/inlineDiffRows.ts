@@ -3,7 +3,7 @@
 // rows from hunk headers, inserts a separator row between hunks, and
 // stops at the preview cap (flagging overflow for the fade-out + the
 // "Show full diff in side panel" CTA).
-import type { PatchLine } from '../../utils/patchFiles';
+import { parseHunkHeader, type PatchLine } from '../../utils/patchFiles';
 import { INLINE_DIFF_PREVIEW_LINE_COUNT } from '../../utils/inlineThreshold';
 
 export type InlineDiffRow =
@@ -88,10 +88,4 @@ export function buildInlineDiffRows(
     if (!appendRow({ kind: 'line', line, lineNo })) break;
   }
   return { rows, hasOverflow, maxLineNo };
-}
-
-function parseHunkHeader(content: string): { oldStart: number; newStart: number } | null {
-  const m = content.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-  if (!m || m[1] === undefined || m[2] === undefined) return null;
-  return { oldStart: Number(m[1]), newStart: Number(m[2]) };
 }

@@ -181,6 +181,29 @@ index abc123..def456 100644
 	}
 }
 
+func TestExtractDiffMetaReadsHeaderLookalikesInsideAHunkAsBodyLines(t *testing.T) {
+	// A removed "-- note" and an added "++ b/fake.go" read "---" and
+	// "+++" with their prefixes.
+	patch := "diff --git a/q.sql b/q.sql\n" +
+		"--- a/q.sql\n" +
+		"+++ b/q.sql\n" +
+		"@@ -1,2 +1,2 @@\n" +
+		"--- note\n" +
+		"+++ b/fake.go\n" +
+		" select 1;\n"
+	dm := ExtractDiffMeta(patch)
+	if dm.FilePath != "q.sql" || dm.Insertions != 1 || dm.Deletions != 1 {
+		t.Errorf("got path %q +%d -%d, want q.sql +1 -1", dm.FilePath, dm.Insertions, dm.Deletions)
+	}
+
+	// A hunk-only patch has no header to name the file.
+	hunkOnly := "@@ -1 +1 @@\n-x\n+++ b/fake.go\n"
+	dm = ExtractDiffMeta(hunkOnly)
+	if dm.FilePath != "" || dm.Insertions != 1 || dm.Deletions != 1 {
+		t.Errorf("hunk-only: got path %q +%d -%d, want no path +1 -1", dm.FilePath, dm.Insertions, dm.Deletions)
+	}
+}
+
 func TestExtractDiffMetaNewFile(t *testing.T) {
 	patch := `diff --git a/new.go b/new.go
 new file mode 100644

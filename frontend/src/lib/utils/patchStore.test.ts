@@ -41,8 +41,8 @@ const mixed = [
   ' const e = 5;',
   '@@ -40,3 +41,3 @@',
   ' tail();',
-  '--- deleted sql comment reads as meta',
-  '+++ added line that reads as meta',
+  '--- removed "-- note" reads like a header',
+  '+++ added "++i" reads like a header',
   '-old();',
   '+new();',
   '\\ No newline at end of file',
@@ -130,7 +130,10 @@ function randomPatch(seed: number): string {
       const lines = 1 + rand(40);
       for (let line = 0; line < lines; line += 1) {
         const pick = rand(4);
-        const text = `line ${rand(1000)} ${'x'.repeat(rand(30))}`;
+        // Some lines' text starts with "--" or "++", so the line reads
+        // like a file header with its prefix.
+        const lead = ['', '', '', '--', '++'][rand(5)];
+        const text = `${lead}line ${rand(1000)} ${'x'.repeat(rand(30))}`;
         if (pick === 0) {
           body.push(`-${text}`);
           oldCount += 1;
@@ -218,6 +221,17 @@ function parseInChunks(patch: string, sizes: (index: number) => number): { parse
 describe('PatchParser', () => {
   it('describes a patch exactly as parsePatchFiles and buildPatchDisplayRows do', () => {
     expectParity(mixed, parseReviewFiles(mixed));
+  });
+
+  it('reads header lookalikes inside a hunk as the lines they are', () => {
+    const [file] = parseReviewFiles(mixed);
+    const lines = file.body.toPatchLines();
+    const removed = lines.findIndex((line) => line.content.startsWith('--- removed'));
+    const added = lines.findIndex((line) => line.content.startsWith('+++ added'));
+    expect(lines[removed].type).toBe('del');
+    expect(lines[added].type).toBe('add');
+    expect(file.path).toBe('src/app.ts');
+    expect([file.additions, file.deletions]).toEqual([5, 4]);
   });
 
   it('describes random patches exactly', () => {
