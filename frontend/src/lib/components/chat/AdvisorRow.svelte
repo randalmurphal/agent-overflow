@@ -6,10 +6,11 @@
   // the header (e.g. "Advisor (Opus 4.7)"), and a prose-formatted
   // expanded body. The advisor runs in its OWN context window: tokens
   // are not surfaced on the parent's context meter (see
-  // docs/references/claude-wire.md §server_tool_use). The model id is
-  // stamped on `item.meta.advisor_model` at parse time and normalised
-  // here via `displayModelLabel` — same pattern subagent rows use for
-  // `subagent_model`.
+  // docs/references/claude-wire.md). The advisor's own model id (not
+  // the parent's) is stamped on `item.meta.advisor_model` once the API
+  // message's usage reports it, which can be after completion, and
+  // normalised here via `displayModelLabel` — same pattern subagent rows
+  // use for `subagent_model`.
 
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';

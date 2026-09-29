@@ -21,8 +21,10 @@ import (
 //   - One `tool_call` row keyed by the `srvtoolu_*` id with
 //     ToolName="advisor", running after the start, completed after
 //     the result.
-//   - Item meta preserves `advisor_model` and `assistant_message_id`
-//     across the persistence boundary so AdvisorRow can read them.
+//   - Item meta preserves `assistant_message_id` across the persistence
+//     boundary, and the advisor model reported by the message's closing
+//     `message_delta` lands on the completed row as `advisor_model`
+//     without changing its status or payload.
 //   - A `tool-call-result:srvtoolu_...` payload row carries the
 //     advisor text as data, with a `preview` field on the payload
 //     header (what the collapsed row pulls via item.payloadMeta).
@@ -90,17 +92,17 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 		t.Fatalf("post-start status: got %q, want %q", running.Status, statusRunning)
 	}
 
-	// The unknown `advisor_model` / `assistant_message_id` fields are
-	// preserved verbatim through validJSONObjectString — the typed
-	// ToolStartMeta struct doesn't enumerate them, but the raw
-	// round-trip keeps every top-level key. AdvisorRow reads these
-	// directly off item.meta to render the "Advisor (Opus 4.7)" affix.
+	// The unknown `assistant_message_id` field is preserved verbatim
+	// through validJSONObjectString — the typed ToolStartMeta struct
+	// doesn't enumerate it, but the raw round-trip keeps every top-level
+	// key. The call envelope reports no advisor iteration, so the
+	// parent's model must not be stamped as the advisor's.
 	var runningMeta map[string]any
 	if err := json.Unmarshal([]byte(running.Meta), &runningMeta); err != nil {
 		t.Fatalf("running meta unmarshal: %v (meta=%q)", err, running.Meta)
 	}
-	if runningMeta["advisor_model"] != "claude-opus-4-7" {
-		t.Fatalf("running meta.advisor_model: got %v, want claude-opus-4-7", runningMeta["advisor_model"])
+	if model, ok := runningMeta["advisor_model"]; ok {
+		t.Fatalf("running meta.advisor_model: got %v, want absent until the advisor iteration reports it", model)
 	}
 	if runningMeta["assistant_message_id"] != "msg-adv" {
 		t.Fatalf("running meta.assistant_message_id: got %v, want msg-adv", runningMeta["assistant_message_id"])
@@ -125,6 +127,31 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 		t.Fatalf("route complete: %v", err)
 	}
 
+	// The closing message_delta reports the advisor's own model (Fable
+	// while the parent runs Opus). Its meta-only start must merge onto
+	// the completed row without reopening it or rewriting its summary.
+	beforeStamp, _, err := st.GetThreadItem("t-advisor", "srvtoolu_e2e")
+	if err != nil {
+		t.Fatalf("pre-stamp lookup: %v", err)
+	}
+	deltaLine := []byte(`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":6,"output_tokens":30,"cache_read_input_tokens":100,"cache_creation_input_tokens":0,"iterations":[{"type":"message","input_tokens":2},{"type":"advisor_message","model":"claude-fable-5-1","input_tokens":900},{"type":"message","input_tokens":2}]}}}`)
+	deltaEvents, err := parser.ParseLine("t-advisor", deltaLine)
+	if err != nil {
+		t.Fatalf("message_delta parse: %v", err)
+	}
+	var sawStamp bool
+	for _, evt := range deltaEvents {
+		if evt.Kind == provider.EventToolStart && evt.ItemID == "srvtoolu_e2e" {
+			sawStamp = true
+		}
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("route message_delta event %s: %v", evt.Kind, err)
+		}
+	}
+	if !sawStamp {
+		t.Fatalf("message_delta did not stamp the advisor model; events=%+v", deltaEvents)
+	}
+
 	completed, ok, err := st.GetThreadItem("t-advisor", "srvtoolu_e2e")
 	if err != nil || !ok {
 		t.Fatalf("post-complete lookup: ok=%v err=%v", ok, err)
@@ -135,19 +162,19 @@ func TestAdvisorEndToEndProducesToolCallRowAndPayload(t *testing.T) {
 	if completed.ToolName != "advisor" {
 		t.Fatalf("post-complete toolName: got %q, want advisor", completed.ToolName)
 	}
+	if completed.Summary != beforeStamp.Summary {
+		t.Fatalf("model stamp rewrote summary: got %q, want %q", completed.Summary, beforeStamp.Summary)
+	}
 	if completed.PayloadID != "tool-call-result:srvtoolu_e2e" {
 		t.Fatalf("post-complete payloadID: got %q, want tool-call-result:srvtoolu_e2e", completed.PayloadID)
 	}
 
-	// Completion must NOT scrub the `advisor_model` field we stamped on
-	// the launch — mergeItemMetaJSON unions the launch keys with the
-	// completion keys, so the model affix survives.
 	var completedMeta map[string]any
 	if err := json.Unmarshal([]byte(completed.Meta), &completedMeta); err != nil {
 		t.Fatalf("completed meta unmarshal: %v (meta=%q)", err, completed.Meta)
 	}
-	if completedMeta["advisor_model"] != "claude-opus-4-7" {
-		t.Fatalf("completed meta.advisor_model: got %v, want claude-opus-4-7", completedMeta["advisor_model"])
+	if completedMeta["advisor_model"] != "claude-fable-5-1" {
+		t.Fatalf("completed meta.advisor_model: got %v, want claude-fable-5-1", completedMeta["advisor_model"])
 	}
 	if completedMeta["assistant_message_id"] != "msg-adv" {
 		t.Fatalf("completed meta.assistant_message_id: got %v, want msg-adv (mergeItemMetaJSON must preserve every launch-side unknown key, not just advisor_model)", completedMeta["assistant_message_id"])

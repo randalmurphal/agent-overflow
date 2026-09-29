@@ -57,6 +57,29 @@ describe('<AdvisorRow>', () => {
     expect(previewText).not.toContain('Unknown');
   });
 
+  it('shows the advisor model when it lands on an already-completed row', async () => {
+    // Headless Claude reports the advisor's model on the API message's
+    // closing usage, after the advisor result settles the row.
+    const completed = {
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'advisor',
+      summary: 'advisor',
+    } as const;
+    const { getByTestId, rerender } = render(AdvisorRow, {
+      props: { item: makeItem({ ...completed, meta: JSON.stringify({ toolName: 'advisor' }) }) },
+    });
+    expect(getByTestId('advisor-row-preview').textContent).not.toContain('(');
+
+    await rerender({
+      item: makeItem({
+        ...completed,
+        meta: JSON.stringify({ toolName: 'advisor', advisor_model: 'claude-fable-5-1' }),
+      }),
+    });
+    expect(getByTestId('advisor-row-preview').textContent).toContain('Advisor(Fable 5.1)');
+  });
+
   it('renders the completed state with an expandable body chevron when payloadId is set, sourcing preview text from payloadMeta', () => {
     // The collapsed-row preview pulls from the stored payload header's
     // `preview` field (the 240-char truncation triage writes alongside

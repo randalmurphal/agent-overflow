@@ -145,7 +145,7 @@
   <!-- Claude's server-side `advisor` tool call. Runs inline (not
        backgrounded) with its own model context window; the response
        text body is shipped as the tool_call_result payload and the
-       parent envelope's model id is stamped on item.meta.advisor_model
+       advisor's own model id is stamped on item.meta.advisor_model
        (rendered via displayModelLabel). -->
   <AdvisorRow {pane} {item} />
 {:else}

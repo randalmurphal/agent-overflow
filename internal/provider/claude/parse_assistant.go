@@ -44,6 +44,14 @@ type assistantUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// Iterations is the per-API-call breakdown `message_delta` carries.
+	// Only the advisor model is read from it (advisorIterationModels).
+	Iterations []usageIteration `json:"iterations,omitempty"`
+}
+
+type usageIteration struct {
+	Type  string `json:"type"`
+	Model string `json:"model,omitempty"`
 }
 
 type assistantMessage struct {
@@ -198,7 +206,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			// matching result arrives on a SECOND assistant envelope
 			// carrying an `advisor_tool_result` content block — see
 			// docs/references/claude-wire.md §server_tool_use.
-			events = p.appendServerToolUseEvent(events, threadID, parentToolUseID, msg.ID, msg.Model, now, block)
+			events = p.appendServerToolUseEvent(events, threadID, parentToolUseID, msg.ID, advisorIterationModels(msg.Usage), now, block)
 		case "advisor_tool_result":
 			// Result of a prior `server_tool_use` advisor call. Closes
 			// the tool lifecycle for the matching `srvtoolu_*` id.
@@ -953,12 +961,12 @@ func extractExitPlanModePlan(input json.RawMessage) string {
 // `advisor`; if Anthropic adds web_search/web_fetch under the same
 // envelope shape, route by `block.Name` here.
 //
-// The advisor model is read from the parent envelope's `message.model`
-// (passed in as advisorModel). The wire does not carry a separate
-// `advisor_model` field on the server_tool_use block; the
-// advisor uses the same model family as the parent in practice, so
-// stamping `message.model` is correct and matches what the
-// usage.iterations[type=advisor_message].model field reports.
+// The advisor can run on a different model than the parent, and the
+// only per-call record of it is usage.iterations[type=advisor_message].model
+// (see advisorModelState). advisorModels is that list from this
+// envelope's usage, empty when the envelope carries no iterations. The
+// launch carries `advisor_model` only when the model is already known;
+// otherwise stampAdvisorModels adds it when the message's usage arrives.
 //
 // `markAdvisor` remembers the id so the matching `advisor_tool_result`
 // block can identify which completion is an advisor result vs a
@@ -966,7 +974,8 @@ func extractExitPlanModePlan(input json.RawMessage) string {
 // user-role envelopes handled in parse_user.go).
 func (p *Parser) appendServerToolUseEvent(
 	events []provider.ProviderEvent,
-	threadID, parentToolUseID, assistantMessageID, advisorModel string,
+	threadID, parentToolUseID, assistantMessageID string,
+	advisorModels []string,
 	now time.Time,
 	block assistantContentBlock,
 ) []provider.ProviderEvent {
@@ -986,7 +995,8 @@ func (p *Parser) appendServerToolUseEvent(
 		return events
 	}
 	p.markAdvisor(block.ID)
-	meta := marshalAdvisorToolMeta(block.Name, advisorModel, assistantMessageID)
+	model := p.recordAdvisorCall(parentToolUseID, assistantMessageID, block.ID, advisorModels)
+	meta := marshalAdvisorToolMeta(block.Name, model, assistantMessageID)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
@@ -1074,10 +1084,121 @@ func extractAdvisorResultText(content json.RawMessage) string {
 	return payload.Text
 }
 
+// advisorModelState pairs the advisor calls of one API message with the
+// models that ran them. The API reports an advisor's model only as
+// usage.iterations[type=advisor_message].model, one entry per advisor
+// call in call order, and all of a message's advisor calls share that
+// message's usage. Headless stream-json delivers the iterations on the
+// closing `message_delta`, after the `server_tool_use` envelopes; the
+// TUI reconstructor puts them on the assembled assistant envelope. The
+// parent's `message.model` is never the advisor's model source: the
+// advisor is configured separately and routinely differs.
+type advisorModelState struct {
+	messageID string
+	// calls are the message's advisor tool ids in call order.
+	calls []string
+	// models are the advisor iteration models in call order.
+	models []string
+	// stamped counts the leading calls whose model has been emitted.
+	stamped int
+}
+
+// advisorIterationModels returns the advisor models from a usage
+// breakdown in call order, or nil when it lists none.
+func advisorIterationModels(u *assistantUsage) []string {
+	if u == nil {
+		return nil
+	}
+	var models []string
+	for _, it := range u.Iterations {
+		if it.Type == "advisor_message" {
+			models = append(models, strings.TrimSpace(it.Model))
+		}
+	}
+	return models
+}
+
+// advisorState returns the scope's state for messageID, starting fresh
+// when the scope has moved on to another message.
+func (p *Parser) advisorState(scope, messageID string) *advisorModelState {
+	st := p.advisorModelScopes[scope]
+	if st != nil && st.messageID == messageID {
+		return st
+	}
+	if p.advisorModelScopes == nil || (st == nil && len(p.advisorModelScopes) >= parserTaskMapCap) {
+		p.advisorModelScopes = make(map[string]*advisorModelState)
+	}
+	st = &advisorModelState{messageID: messageID}
+	p.advisorModelScopes[scope] = st
+	return st
+}
+
+// recordAdvisorCall appends an advisor call to its message and returns
+// its model when the message's usage already reported it, "" otherwise.
+func (p *Parser) recordAdvisorCall(scope, messageID, toolUseID string, models []string) string {
+	st := p.advisorState(scope, messageID)
+	if len(models) > len(st.models) {
+		st.models = models
+	}
+	st.calls = append(st.calls, toolUseID)
+	idx := len(st.calls) - 1
+	if st.stamped != idx || idx >= len(st.models) || st.models[idx] == "" {
+		return ""
+	}
+	st.stamped++
+	return st.models[idx]
+}
+
+// startAdvisorMessage drops the scope's advisor state when a new API
+// message begins; calls of an interrupted message never get a model.
+func (p *Parser) startAdvisorMessage(scope string) {
+	if p == nil {
+		return
+	}
+	delete(p.advisorModelScopes, scope)
+}
+
+// stampAdvisorModels handles the closing `message_delta` usage of the
+// scope's current message: each advisor call launched without a model
+// gets a meta-only EventToolStart carrying `advisor_model`. The message
+// is over, so the scope's state is released.
+func (p *Parser) stampAdvisorModels(events []provider.ProviderEvent, threadID, scope string, u *assistantUsage, now time.Time) []provider.ProviderEvent {
+	if p == nil {
+		return events
+	}
+	st := p.advisorModelScopes[scope]
+	if st == nil {
+		return events
+	}
+	models := advisorIterationModels(u)
+	if len(models) == 0 {
+		return events
+	}
+	delete(p.advisorModelScopes, scope)
+	for i := st.stamped; i < len(st.calls) && i < len(models); i++ {
+		if models[i] == "" {
+			continue
+		}
+		meta, _ := json.Marshal(map[string]any{
+			"advisor_model":    models[i],
+			"meta_update_only": true,
+		})
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    st.calls[i],
+			ItemType:  "advisor",
+			Meta:      meta,
+			Timestamp: now,
+		})
+	}
+	return events
+}
+
 // marshalAdvisorToolMeta builds the EventToolStart Meta for an advisor
 // invocation. Mirrors marshalToolMeta's shape for triage compatibility
 // (same toolName/input/assistant_message_id keys) but adds
-// `advisor_model` — the frontend's AdvisorRow renders it via
+// `advisor_model` when known — the frontend's AdvisorRow renders it via
 // displayModelLabel, the same way subagent rows render their
 // `subagent_model`.
 func marshalAdvisorToolMeta(toolName, advisorModel, assistantMessageID string) json.RawMessage {

@@ -52,6 +52,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		if json.Unmarshal(eventObj["message"], &msg) == nil {
 			p.rememberStreamedMessageID(msg.ID)
 		}
+		p.startAdvisorMessage(parentToolUseID)
 		return p.startUsageMessage(threadID, parentToolUseID, eventObj["message"], now), nil
 
 	case "content_block_start":
@@ -151,6 +152,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 					events = append(events, p.reportMessageUsage(threadID, p.usageProgress.activeMessage, "", &u, now)...)
 				}
 				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, u)
+				events = p.stampAdvisorModels(events, threadID, parentToolUseID, &u, now)
 			}
 		}
 		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, eventObj["delta"], now); soft != nil {

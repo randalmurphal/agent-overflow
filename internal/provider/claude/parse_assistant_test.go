@@ -387,8 +387,9 @@ func TestErrorEnumToHumanCopy_UnknownEnumFallsBack(t *testing.T) {
 // TestParseAssistant_AdvisorCallEmitsToolStart pins the wire shape of
 // the `server_tool_use` advisor call: a single content block with
 // `srvtoolu_*` id and `name:"advisor"` becomes one EventToolStart
-// keyed by that id, ItemType="advisor", with `advisor_model` and
-// `assistant_message_id` stamped on the meta.
+// keyed by that id, ItemType="advisor", with `assistant_message_id`
+// stamped on the meta. The envelope's usage lists no advisor iteration,
+// so the parent's `message.model` must not become `advisor_model`.
 func TestParseAssistant_AdvisorCallEmitsToolStart(t *testing.T) {
 	line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_abc","name":"advisor","input":{}}]}}`)
 	events, err := ParseLine(testThreadProto, line)
@@ -418,8 +419,8 @@ func TestParseAssistant_AdvisorCallEmitsToolStart(t *testing.T) {
 	if meta["toolName"] != "advisor" {
 		t.Fatalf("meta.toolName: got %v, want advisor", meta["toolName"])
 	}
-	if meta["advisor_model"] != "claude-opus-4-7" {
-		t.Fatalf("meta.advisor_model: got %v, want claude-opus-4-7", meta["advisor_model"])
+	if model, ok := meta["advisor_model"]; ok {
+		t.Fatalf("meta.advisor_model: got %v, want absent until the advisor iteration reports it", model)
 	}
 	if meta["assistant_message_id"] != "msg-adv" {
 		t.Fatalf("meta.assistant_message_id: got %v, want msg-adv", meta["assistant_message_id"])
