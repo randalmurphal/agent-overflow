@@ -13,12 +13,13 @@ var today = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 func TestPublishedStandardRates(t *testing.T) {
 	// One million tokens in each of the four billing classes.
 	for model, want := range map[string]float64{
-		"gpt-6-astra": 73.5,
+		"gpt-6-astra": 73.5, "gpt-6-sol": 14.7, "gpt-6-luna": 0.735,
 		"gpt-5.6-sol": 29.4, "gpt-daybreak-blue-latest": 29.4,
 		"gpt-5.6-terra": 16.7, "gpt-5.6-luna": 1.67,
 		"gpt-5.6-cyber": 104.375, "gpt-daybreak-red-latest": 104.375,
 		"claude-fable-5": 81, "claude-fable-5-1": 80.25,
 		"claude-mythos-5-1": 80.25, "claude-opus-4-1": 121.5,
+		"claude-opus-5-5": 32.2, "claude-sonnet-5-5": 16.2,
 		"claude-opus-4-6": 40.5, "claude-sonnet-5": 16.2,
 		"claude-sonnet-4-6": 24.3, "claude-haiku-4-5": 8.1,
 	} {
