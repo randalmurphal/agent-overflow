@@ -167,7 +167,7 @@ func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []p
 		if delta.IsZero() {
 			continue
 		}
-		row := accountingModelUsage(name, delta)
+		row := p.accountingModelUsage(name, delta)
 		row.CostReported = reliable
 		deltas = append(deltas, row)
 	}
@@ -214,17 +214,17 @@ func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.To
 	if usage.IsZero() {
 		return provider.TokenUsage{}, nil
 	}
-	row := accountingModelUsage(p.currentModel(), usage)
+	row := p.accountingModelUsage(p.currentModel(), usage)
 	row.CostReported = reliable
 	return usage, []provider.ModelTokenUsage{row}
 }
 
-// Message snapshots and result.modelUsage can spell one model differently
-// (a context-tier marker, Haiku's dated ID). Reconcile by the shared
-// canonical slug while preserving the final report's model spelling and price.
-func accountingModelUsage(model string, usage provider.TokenUsage) provider.ModelTokenUsage {
+// Live usage and result.modelUsage can spell one model differently (Haiku's
+// dated ID). Reconcile by the name live usage was recorded under
+// (usageModel) while preserving the final report's model spelling and price.
+func (p *Parser) accountingModelUsage(model string, usage provider.TokenUsage) provider.ModelTokenUsage {
 	result := provider.ModelTokenUsage{Model: model, TokenUsage: usage}
-	if key := provider.NormalizeModelSlug(string(provider.Claude), model); key != model {
+	if key := p.usageModel(model); key != model {
 		result.AccountingModel = key
 	}
 	return result

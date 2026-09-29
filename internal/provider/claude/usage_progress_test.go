@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -111,10 +112,65 @@ func TestUsageProgressBoundsMessageDeduplication(t *testing.T) {
 }
 
 func TestUsageAccountingCanonicalIdentityPreservesReportedModel(t *testing.T) {
-	for _, model := range []string{"claude-haiku-4-5-20251001", "claude-opus-4-7[1m]"} {
-		result := accountingModelUsage(model, provider.TokenUsage{OutputTokens: 5})
-		if result.Model != model || result.AccountingModel != provider.NormalizeModelSlug(string(provider.Claude), model) {
-			t.Fatalf("model identity: %+v", result)
+	for _, tc := range []struct{ session, model, accounting string }{
+		// A dated report of the session's model settles the rows live usage
+		// recorded under the session's spelling.
+		{"claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-haiku-4-5"},
+		// The report names the session's model exactly as system/init did.
+		{"claude-opus-4-7[1m]", "claude-opus-4-7[1m]", ""},
+		// Another model, such as the auto-mode classifier, keeps its slug.
+		{"claude-opus-4-7[1m]", "claude-haiku-4-5-20251001", "claude-haiku-4-5"},
+		{"", "claude-opus-4-7[1m]", "claude-opus-4-7"},
+	} {
+		p := NewParser()
+		p.SetModel(tc.session)
+		result := p.accountingModelUsage(tc.model, provider.TokenUsage{OutputTokens: 5})
+		if result.Model != tc.model || result.AccountingModel != tc.accounting {
+			t.Fatalf("session %q, model %q: %+v, want accounting model %q", tc.session, tc.model, result, tc.accounting)
 		}
+	}
+}
+
+// TestUsageProgressUsesTheSessionsContextTier pins that a 1M session's live
+// usage is named the way its final report will be, from the first message,
+// and that settlement reconciles against that same name.
+func TestUsageProgressUsesTheSessionsContextTier(t *testing.T) {
+	p := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := p.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return events
+	}
+	parse(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-5-5[1m]","cwd":"/tmp","tools":[]}`)
+	var models []string
+	for _, e := range parse(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":1}}}}`) {
+		if e.Kind == provider.EventUsageProgress {
+			for _, m := range e.UsageProgress.ModelUsage {
+				models = append(models, m.Model)
+			}
+		}
+	}
+	if len(models) != 1 || models[0] != "claude-opus-5-5[1m]" {
+		t.Fatalf("live usage models = %v, want [claude-opus-5-5[1m]]", models)
+	}
+	// A refusal fallback runs another model, which keeps its own name.
+	models = nil
+	for _, e := range parse(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m2","model":"claude-opus-4-8","usage":{"output_tokens":1}}}}`) {
+		if e.Kind == provider.EventUsageProgress {
+			for _, m := range e.UsageProgress.ModelUsage {
+				models = append(models, m.Model)
+			}
+		}
+	}
+	if !slices.Equal(models, []string{"claude-opus-4-8", "claude-opus-5-5[1m]"}) {
+		t.Fatalf("live usage models = %v, want the fallback under its own slug beside the session's", models)
+	}
+	final := requireWireTurnComplete(t, parse(`{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,`+
+		`"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":10,"outputTokens":1,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.1}}}`))
+	if len(final.ModelUsage) != 1 || final.ModelUsage[0].Model != "claude-opus-5-5[1m]" || final.ModelUsage[0].AccountingModel != "" {
+		t.Fatalf("final model usage = %+v, want claude-opus-5-5[1m] settling its own live rows", final.ModelUsage)
 	}
 }

@@ -62,7 +62,7 @@ func (p *Parser) reportMessageUsage(threadID, id, model string, usage *assistant
 	}
 	current := previous
 	if !exists {
-		current.Model = provider.NormalizeModelSlug(string(provider.Claude), model)
+		current.Model = p.usageModel(model)
 	}
 	if usage != nil {
 		current.InputTokens = max(current.InputTokens, usage.InputTokens)
@@ -89,6 +89,20 @@ func (p *Parser) reportMessageUsage(threadID, id, model string, usage *assistant
 	sort.Slice(models, func(i, j int) bool { return models[i].Model < models[j].Model })
 	return []provider.ProviderEvent{{Kind: provider.EventUsageProgress, ThreadID: threadID, Timestamp: now,
 		UsageProgress: &provider.UsageProgress{Scope: s.scope, Segment: strconv.FormatUint(s.segment, 10), ModelUsage: models}}}
+}
+
+// usageModel names a message's live usage the way result.modelUsage will
+// name it. Message snapshots carry the bare API model ID, while the result
+// keys the session's model by the exact string system/init reported,
+// context-tier marker included (`claude-opus-5-5[1m]`). A message on the
+// session's model therefore takes the session's spelling; any other model,
+// such as a refusal fallback's, keeps its canonical slug.
+func (p *Parser) usageModel(model string) string {
+	slug := provider.NormalizeModelSlug(string(provider.Claude), model)
+	if session := p.currentModel(); session != "" && provider.NormalizeModelSlug(string(provider.Claude), session) == slug {
+		return session
+	}
+	return slug
 }
 
 func (p *Parser) finishUsageSegment() string {
