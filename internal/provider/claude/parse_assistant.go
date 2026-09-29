@@ -291,11 +291,10 @@ func claudeAssistantFailure(errorEnum string, closesParentTurn bool) *provider.F
 // ordinal.
 //
 // Note: because this event carries content with ContentPresent=true,
-// triage settles it SYNCHRONOUSLY on the read-loop goroutine (the
-// !active branch of settleStreaming*Async runs persistOrUpdateCompleted*
-// inline), unlike a normal empty content_block_stop which dispatches
-// async. Top-level this is the cold CLI-retry path; subagent text and
-// thinking take it for every block.
+// triage persists it inline on the thread's event worker (the !active
+// branch of settleStreaming*Async runs persistOrUpdateCompleted*), as it
+// does any completed row, after waiting for the thread's in-flight
+// stream settles. A normal empty content_block_stop settles async.
 func (p *Parser) appendRecoveredBlockEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID, messageID string,
