@@ -1287,6 +1287,9 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	// place instead of reading as a background ack.
 	p.clearLiveAgentTask(toolUseID)
 	p.releaseOwnedBackgroundTask(taskID)
+	// Sidechain rows stay parented to the transcript root, not a resume's
+	// carrier tool_use.
+	p.releaseSubagentRecoveredBlocks(firstNonEmpty(p.taskTranscriptRoot(taskID), toolUseID))
 	// A killed agent never wakes and gets no task_notification (§E6b),
 	// so its mirror projection closes here, parked or not.
 	var events []provider.ProviderEvent

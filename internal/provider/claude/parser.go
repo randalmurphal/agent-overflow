@@ -196,13 +196,24 @@ type Parser struct {
 	// two same-kind blocks of the same message. The recovery item id is
 	// `message.id#ordinal` from this counter, so same-kind blocks land on
 	// distinct rows instead of the second overwriting the first via
-	// FindStreamItemByProviderItemID. The ordinal only needs to be unique
-	// within the turn — the sole context recovery ever fires in — because
-	// `claude --resume` does not re-deliver assistant snapshots across
-	// processes (see the streamedMessageIDs doc above), so there is no
-	// cross-process replay whose ids would need to be reproduced. Cleared at
-	// the turn boundary with streamedMessageIDs; bounded by parserStreamBlockCap.
+	// FindStreamItemByProviderItemID. `claude --resume` does not re-deliver
+	// assistant snapshots across processes (see the streamedMessageIDs doc
+	// above), so there is no cross-process replay whose ids would need to be
+	// reproduced. This map numbers top-level messages only, which cannot
+	// outlive their turn: cleared at the turn boundary with
+	// streamedMessageIDs; bounded by parserStreamBlockCap.
 	recoveredBlockSeq map[string]int
+	// subagentRecoveredBlocks numbers recovered blocks per subagent scope
+	// (parent_tool_use_id). Subagent text and thinking never stream, so
+	// every such block is recovered here. An async agent's message can
+	// outlive the parent's turn: a server tool call (advisor) pauses it
+	// mid-message while the parent reaches `result`, and the message then
+	// continues. A turn-boundary reset would restart its ordinals and
+	// reissue an id triage already settled. A subagent's messages are
+	// sequential, so one cursor per scope suffices: a new message id
+	// replaces it, and the agent's terminal task_updated releases it.
+	// Bounded by parserTaskMapCap with wholesale reset.
+	subagentRecoveredBlocks map[string]recoveredBlockCursor
 	// model is the latest model id observed on this session. Seeded from
 	// the system/init line and used to price result usage so triage
 	// doesn't have to reach back into the store for pricing. When
@@ -418,6 +429,7 @@ func (p *Parser) Close() {
 	p.streamBlockTypes = nil
 	p.streamedMessageIDs = nil
 	p.recoveredBlockSeq = nil
+	p.subagentRecoveredBlocks = nil
 	p.lastAssistantMessageID = ""
 	p.interruptAcked = false
 	p.activeCommandUUID = ""
@@ -1038,25 +1050,59 @@ func (p *Parser) hasStreamedMessageID(id string) bool {
 	return ok
 }
 
+// recoveredBlockCursor is a subagent scope's current message and the
+// next recovery ordinal within it.
+type recoveredBlockCursor struct {
+	messageID string
+	next      int
+}
+
 // nextRecoveredBlockIndex returns the next per-message recovery ordinal
 // and advances it. See the recoveredBlockSeq field doc for why a
 // parser-tracked counter (not the envelope-local content index) is needed
-// to keep same-kind recovered blocks of one message on distinct rows.
-// Bounded by parserStreamBlockCap with wholesale reset, matching the
-// sibling stream maps.
-func (p *Parser) nextRecoveredBlockIndex(messageID string) int {
+// to keep same-kind recovered blocks of one message on distinct rows, and
+// the subagentRecoveredBlocks doc for why subagent scopes keep theirs
+// across turn boundaries. The overflow reset only fires when a new key
+// would be added, so it never restarts the message being numbered.
+func (p *Parser) nextRecoveredBlockIndex(scope, messageID string) int {
 	if p == nil {
 		return 0
+	}
+	if scope != "" {
+		cursor, ok := p.subagentRecoveredBlocks[scope]
+		if !ok && len(p.subagentRecoveredBlocks) >= parserTaskMapCap {
+			p.subagentRecoveredBlocks = nil
+		}
+		if p.subagentRecoveredBlocks == nil {
+			p.subagentRecoveredBlocks = make(map[string]recoveredBlockCursor)
+		}
+		if cursor.messageID != messageID {
+			cursor = recoveredBlockCursor{messageID: messageID}
+		}
+		idx := cursor.next
+		cursor.next++
+		p.subagentRecoveredBlocks[scope] = cursor
+		return idx
+	}
+	idx, ok := p.recoveredBlockSeq[messageID]
+	if !ok && len(p.recoveredBlockSeq) >= parserStreamBlockCap {
+		p.recoveredBlockSeq = nil
 	}
 	if p.recoveredBlockSeq == nil {
 		p.recoveredBlockSeq = make(map[string]int)
 	}
-	if len(p.recoveredBlockSeq) >= parserStreamBlockCap {
-		p.recoveredBlockSeq = make(map[string]int)
-	}
-	idx := p.recoveredBlockSeq[messageID]
 	p.recoveredBlockSeq[messageID] = idx + 1
 	return idx
+}
+
+// releaseSubagentRecoveredBlocks drops scope's recovery cursor when its
+// agent reaches a terminal. A woken round starts a new message, so the
+// cursor is never needed across the stop.
+func (p *Parser) releaseSubagentRecoveredBlocks(scope string) {
+	if p == nil || scope == "" {
+		return
+	}
+	delete(p.subagentRecoveredBlocks, scope)
 }
 
 // recoveredBlockItemID builds the provider item id for a recovered
@@ -1069,9 +1115,10 @@ func recoveredBlockItemID(messageID string, index int) string {
 }
 
 // clearSnapshotRecoveryState drops the per-turn assistant-snapshot
-// discriminator + recovery maps (streamedMessageIDs and
+// discriminator + top-level recovery map (streamedMessageIDs and
 // recoveredBlockSeq) at the turn boundary so neither leaks into the next
-// turn. Called by parseResult alongside takeLastAssistantMessageID.
+// turn. Subagent cursors are not per-turn and stay. Called by parseResult
+// alongside takeLastAssistantMessageID.
 func (p *Parser) clearSnapshotRecoveryState() {
 	if p == nil {
 		return

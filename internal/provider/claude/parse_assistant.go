@@ -273,7 +273,8 @@ func claudeAssistantFailure(errorEnum string, closesParentTurn bool) *provider.F
 
 // appendRecoveredBlockEvent emits a completed-block event for a
 // text/thinking block that arrived on a coalesced `assistant` snapshot
-// without ever streaming (the CLI-internal-retry case — see the `text`
+// without ever streaming: a top-level CLI-internal retry, or any
+// forwarded subagent block, since subagents never stream (see the `text`
 // branch in parseAssistant and the streamedMessageIDs field doc). It
 // rides the EventContentBlockStop channel so triage's late-completion
 // handler (settleStreaming*Async's !active+ContentPresent branch)
@@ -293,7 +294,8 @@ func claudeAssistantFailure(errorEnum string, closesParentTurn bool) *provider.F
 // triage settles it SYNCHRONOUSLY on the read-loop goroutine (the
 // !active branch of settleStreaming*Async runs persistOrUpdateCompleted*
 // inline), unlike a normal empty content_block_stop which dispatches
-// async. Acceptable: this is the cold CLI-retry path only.
+// async. Top-level this is the cold CLI-retry path; subagent text and
+// thinking take it for every block.
 func (p *Parser) appendRecoveredBlockEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID, messageID string,
@@ -303,7 +305,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 	if content == "" {
 		return events
 	}
-	index := p.nextRecoveredBlockIndex(messageID)
+	index := p.nextRecoveredBlockIndex(parentToolUseID, messageID)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventContentBlockStop,
 		ThreadID:        threadID,

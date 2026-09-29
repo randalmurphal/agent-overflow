@@ -511,6 +511,101 @@ func TestNeverStreamedSubagentSnapshotRecoversUnderParentToolUseID(t *testing.T)
 	}
 }
 
+// TestSubagentRecoveryOrdinalSurvivesParentResult pins recovery ordinals
+// for an async agent whose message outlives the parent's turn. The
+// agent's thinking block, advisor call, advisor result and next thinking
+// block all share one message id; the parent reaches `result` while the
+// advisor runs. Resetting the ordinal there reissued `msg#0` for the
+// second block, and triage rejected it as a rewrite of settled history.
+func TestSubagentRecoveryOrdinalSurvivesParentResult(t *testing.T) {
+	parser := NewParser()
+	const scope = "toolu_async_agent"
+	sidechain := func(messageID, block string) []byte {
+		return []byte(`{"type":"assistant","parent_tool_use_id":"` + scope + `","message":{"id":"` + messageID + `","role":"assistant","content":[` + block + `]}}`)
+	}
+	lines := [][]byte{
+		sidechain("msg_sub", `{"type":"thinking","thinking":"before the advisor"}`),
+		sidechain("msg_sub", `{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}`),
+		[]byte(`{"type":"result","subtype":"success","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`),
+		sidechain("msg_sub", `{"type":"advisor_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"advisor_result","text":"advice"}}`),
+		sidechain("msg_sub", `{"type":"thinking","thinking":"after the advisor"}`),
+		sidechain("msg_next", `{"type":"text","text":"next message"}`),
+	}
+	got := map[string]string{}
+	for i, line := range lines {
+		events, err := parser.ParseLine(testThread, line)
+		if err != nil {
+			t.Fatalf("parse line %d: %v", i, err)
+		}
+		for _, e := range events {
+			if e.Kind != provider.EventContentBlockStop || !e.ContentPresent {
+				continue
+			}
+			if prev, dup := got[e.ItemID]; dup {
+				t.Fatalf("recovered ItemID %q issued twice: %q then %q", e.ItemID, prev, e.Content)
+			}
+			got[e.ItemID] = e.Content
+		}
+	}
+	want := map[string]string{
+		"msg_sub#0":  "before the advisor",
+		"msg_sub#1":  "after the advisor",
+		"msg_next#0": "next message",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("recovered blocks = %v, want %v", got, want)
+	}
+	for id, content := range want {
+		if got[id] != content {
+			t.Errorf("%s = %q, want %q (all recovered: %v)", id, got[id], content, got)
+		}
+	}
+}
+
+// TestSubagentRecoveryCursorReleasedAtTranscriptRootTerminal pins the
+// cursor's release for a resumed agent. Its sidechain rows stay parented
+// to the original launch while the terminal task_updated resolves to the
+// resume's carrier tool_use, so the release must use the transcript root.
+func TestSubagentRecoveryCursorReleasedAtTranscriptRootTerminal(t *testing.T) {
+	const originalLaunchID = "toolu_01EHRwHNH98jqRKdFVcpmLtH"
+	lines := loadNDJSONFixture(t, fixtureLocalAgentAsyncResume)
+	terminal := -1
+	for i, line := range lines {
+		var envelope struct {
+			Subtype string `json:"subtype"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			t.Fatalf("decode fixture line %d: %v", i, err)
+		}
+		if envelope.Subtype == "task_updated" {
+			terminal = i // the resumed round's terminal is the last one
+		}
+	}
+	if terminal < 0 {
+		t.Fatal("fixture has no task_updated terminal")
+	}
+
+	parser := NewParser()
+	for i, line := range lines[:terminal] {
+		if _, err := parser.ParseLine(testThread, line); err != nil {
+			t.Fatalf("parse fixture line %d: %v", i, err)
+		}
+	}
+	block := []byte(`{"type":"assistant","parent_tool_use_id":"` + originalLaunchID + `","message":{"id":"msg_round2","role":"assistant","content":[{"type":"text","text":"round two"}]}}`)
+	if _, err := parser.ParseLine(testThread, block); err != nil {
+		t.Fatalf("parse sidechain block: %v", err)
+	}
+	if _, ok := parser.subagentRecoveredBlocks[originalLaunchID]; !ok {
+		t.Fatal("sidechain block did not open a recovery cursor under the transcript root")
+	}
+	if _, err := parser.ParseLine(testThread, lines[terminal]); err != nil {
+		t.Fatalf("parse terminal: %v", err)
+	}
+	if cursor, ok := parser.subagentRecoveredBlocks[originalLaunchID]; ok {
+		t.Fatalf("terminal left the transcript root's recovery cursor: %+v", cursor)
+	}
+}
+
 // contentBlockStopType pulls the blockType discriminator out of an
 // EventContentBlockStop's Meta, matching triage's blockTypeForStop read.
 func contentBlockStopType(t *testing.T, raw json.RawMessage) string {
