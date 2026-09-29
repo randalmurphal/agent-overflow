@@ -24,7 +24,7 @@ import (
 func TestProviderSmokeRevertFlows(t *testing.T) {
 	for _, smoke := range []providerSmokeCase{
 		providerSmokeClaudeCase(),
-		{providerName: string(provider.Codex), model: "gpt-5.6-luna",
+		{providerName: string(provider.Codex), model: "gpt-6-luna",
 			installHint: "install Codex CLI on PATH", loginHint: "run `codex login`", probeAccount: (*App).ProbeCodexAccount},
 	} {
 		t.Run(smoke.providerName, func(t *testing.T) {

@@ -23,7 +23,7 @@ func TestProviderSmokeQueueVisibility(t *testing.T) {
 	claudeCase := providerSmokeClaudeCase()
 	claudeCase.model = "claude-haiku-4-5"
 	for _, smoke := range []providerSmokeCase{
-		{providerName: string(provider.Codex), model: "gpt-5.6-luna", installHint: "install Codex CLI on PATH", loginHint: "run `codex login`", probeAccount: (*App).ProbeCodexAccount},
+		{providerName: string(provider.Codex), model: "gpt-6-luna", installHint: "install Codex CLI on PATH", loginHint: "run `codex login`", probeAccount: (*App).ProbeCodexAccount},
 		claudeCase,
 	} {
 		t.Run(smoke.providerName, func(t *testing.T) {

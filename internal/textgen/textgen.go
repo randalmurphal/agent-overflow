@@ -36,7 +36,7 @@ const (
 	// defaults used when settings leaves them blank. Both deliberately
 	// pick the cheapest/fastest tier — textgen runs are short structured
 	// outputs (titles, commit messages), not reasoning work.
-	DefaultCodexModel  = "gpt-5.6-luna"
+	DefaultCodexModel  = "gpt-6-luna"
 	DefaultClaudeModel = "claude-haiku-4-5"
 )
 

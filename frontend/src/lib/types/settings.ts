@@ -486,7 +486,7 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-5.6-luna, claude → claude-haiku-4-5).
+   * default" (codex → gpt-6-luna, claude → claude-haiku-4-5).
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these

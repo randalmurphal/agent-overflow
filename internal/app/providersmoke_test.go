@@ -125,10 +125,9 @@ func providerSmokeClaudeCase() providerSmokeCase {
 func TestProviderSmokeCodex(t *testing.T) {
 	runProviderSmoke(t, providerSmokeCase{
 		providerName: string(provider.Codex),
-		// Codex's own catalog describes gpt-5.6-luna as the fast, affordable
-		// coding model, and unlike gpt-5.4-mini it carries no upgrade/deprecation
-		// pointer.
-		model:        "gpt-5.6-luna",
+		// Codex's own catalog describes gpt-6-luna as the fast, affordable
+		// model and carries no upgrade pointer for it.
+		model:        "gpt-6-luna",
 		installHint:  "install the Codex CLI (https://github.com/openai/codex#installation) and put `codex` on PATH",
 		loginHint:    "run `codex login`",
 		probeAccount: (*App).ProbeCodexAccount,
