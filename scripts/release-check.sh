@@ -12,8 +12,14 @@ run() {
 # regenerated output differs from what's committed, the release workflow's
 # clean-tree guard will fail in CI — catch the drift here instead. Uncommitted
 # work you started with is fine; only changes the checks themselves introduce
-# fail.
+# fail. An empty Task checksum directory makes every task regenerate its
+# outputs as on CI's fresh checkout; the repository's .task cache would skip
+# tasks whose sources are unchanged even when the generator's output changed.
 STATUS_BEFORE=$(git -C "$ROOT_DIR" status --porcelain)
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+TASK_TEMP_DIR="$tmpdir/task"
+export TASK_TEMP_DIR
 
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run build"
 run make -C "$ROOT_DIR" go-build
@@ -44,8 +50,6 @@ STATUS_AFTER=$(git -C "$ROOT_DIR" status --porcelain)
 if [ "$STATUS_AFTER" != "$STATUS_BEFORE" ]; then
 	echo "ERROR: the checks changed tracked files — regenerated output differs from what's committed." >&2
 	echo "Commit the changes below or the release workflow's clean-tree guard will fail in CI:" >&2
-	tmpdir=$(mktemp -d)
-	trap 'rm -rf "$tmpdir"' EXIT
 	printf '%s\n' "$STATUS_BEFORE" | sort > "$tmpdir/before"
 	printf '%s\n' "$STATUS_AFTER" | sort > "$tmpdir/after"
 	comm -13 "$tmpdir/before" "$tmpdir/after" >&2
