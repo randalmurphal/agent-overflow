@@ -280,6 +280,10 @@ Mechanism in
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
   needs no release (see `internal/claudemodels/AGENTS.md`).
+- Model inputs are full model IDs. AO keeps no alias table: a Claude alias
+  (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
+  slug is passed as written for Codex to judge. An alias the CLI reports back
+  is read only through its own model list (`internal/provider/AGENTS.md`).
 - Claude 2.1.257 `rate_limit_info.unifiedWindows`: not parsed yet by
   ruling (revisit once the shape is stable; supporting it adds a visible
   overage row, its own decision).

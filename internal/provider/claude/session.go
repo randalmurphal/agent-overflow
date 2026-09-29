@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -72,6 +73,8 @@ type Session struct {
 	// answer "is the repository overriding what AO asked for". Guarded by
 	// configModelMu, which already covers the other half of that question.
 	requestedEffort string
+	// modelAliases is Config.ModelAliases, fixed at spawn and read-only.
+	modelAliases map[string]string
 	// advertisedCommandsMu guards advertisedCommands: the provider-executed
 	// slash-command NAMES this session most recently advertised — seeded by
 	// `system/init.slash_commands` and REPLACED wholesale by
@@ -280,6 +283,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		spawnedWithFastModeOptIn: cfg.FastMode,
 		configModel:              cfg.Model,
 		requestedEffort:          cfg.ReasoningEffort,
+		modelAliases:             maps.Clone(cfg.ModelAliases),
 		basePermissionMode:       normalizeClaudePermissionMode(cfg.BasePermissionMode),
 		currentPermissionMode:    normalizeClaudePermissionMode(cfg.BasePermissionMode),
 		interactionMode:          cfg.InteractionMode,

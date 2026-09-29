@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -269,5 +270,44 @@ func TestModelReadBackIsSkippedWithoutAModel(t *testing.T) {
 	case <-reads:
 	default:
 		t.Fatal("a real model change made no read-back; the family-alias step-down would go unrecorded")
+	}
+}
+
+// TestSpawnedClaudeSessionReadsProjectAliasThroughProbeList covers the spawn
+// stamp end to end: a project settings file naming `opus` is compared through
+// the alias map the probe's model list reported for this binary, so it reads
+// as agreement when the CLI resolves `opus` to the thread's model.
+func TestSpawnedClaudeSessionReadsProjectAliasThroughProbeList(t *testing.T) {
+	app := newTestAppWithStore(t)
+	binary := writeGetSettingsFakeCLI(t,
+		`{"effective":{},"sources":[{"source":"projectSettings","settings":{"model":"opus"}}],`+
+			`"applied":{"model":"claude-opus-5-5","effort":"high"}}`, "")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{{Value: "opus[1m]", ResolvedModel: "claude-opus-5-5[1m]"}}, nil)
+	capture.Store(app.claudeProbeModelKey())
+
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-5-5", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	current, ok := app.sessionManager().get(thread.ID)
+	if !ok || current.Claude == nil {
+		t.Fatalf("session = %+v, %v; want a live claude session", current, ok)
+	}
+
+	if _, err := app.readClaudeAppliedSettings(thread.ID, current.Token); err != nil {
+		t.Fatalf("readClaudeAppliedSettings: %v", err)
+	}
+	if got := current.Claude.SettingsOverrides(); len(got) != 0 {
+		t.Fatalf("SettingsOverrides = %+v, want none: the probe says opus is claude-opus-5-5", got)
 	}
 }

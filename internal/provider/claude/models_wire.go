@@ -64,22 +64,50 @@ type WireModel struct {
 // CanonicalSlug maps a wire row onto the model-slug space the rest of AO uses
 // (`provider.ClaudeModels` slugs, thread rows, favorites).
 //
-// Three normalizations, in order, each one the wire forcing our hand:
+// Two normalizations, in order, each one the wire forcing our hand:
 //
 //  1. Prefer ResolvedModel over Value — Value is an alias space that includes
-//     the CLI's own "default" pointer, so it is not a model identity.
+//     the CLI's own "default" pointer, so it is not a model identity. A row
+//     with no ResolvedModel names a model only when its Value is itself a
+//     model ID; an alias there says nothing about which model it means.
 //  2. provider.NormalizeModelSlug drops the trailing `[1m]` context marker —
-//     which the wire is inconsistent about carrying — and folds the alias
-//     spellings and dated ids (`claude-haiku-4-5-20251001` →
-//     `claude-haiku-4-5`) onto catalog slugs.
+//     which the wire is inconsistent about carrying — and folds the dated
+//     `claude-haiku-4-5-20251001` onto its catalog slug.
 //
 // Returns "" for a row that names nothing.
 func (m WireModel) CanonicalSlug() string {
 	raw := strings.TrimSpace(m.ResolvedModel)
 	if raw == "" {
 		raw = strings.TrimSpace(m.Value)
+		if provider.ValidateModelID(string(provider.Claude), raw, nil) != nil {
+			return ""
+		}
 	}
 	return provider.NormalizeModelSlug(string(provider.Claude), raw)
+}
+
+// ModelAliases maps each alias the rows declare (`opus`, `sonnet`,
+// `default`), without its `[1m]` marker, to the catalog slug the CLI says it
+// resolves to. It is the only source AO uses to read an alias, because what
+// an alias names changes with each CLI release. Rows whose Value is already
+// the model, or that do not say what they resolve to, contribute nothing.
+func ModelAliases(rows []WireModel) map[string]string {
+	var aliases map[string]string
+	for _, row := range rows {
+		if strings.TrimSpace(row.ResolvedModel) == "" {
+			continue
+		}
+		alias := provider.NormalizeModelSlug(string(provider.Claude), row.Value)
+		slug := row.CanonicalSlug()
+		if alias == "" || slug == "" || alias == slug {
+			continue
+		}
+		if aliases == nil {
+			aliases = make(map[string]string)
+		}
+		aliases[alias] = slug
+	}
+	return aliases
 }
 
 // DeclaresExtendedContext reports whether the row itself proves the model can

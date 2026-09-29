@@ -129,6 +129,9 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	if trimmed := strings.TrimSpace(opts.Model); trimmed != "" {
 		model = trimmed
 	}
+	if err := models.ValidateModel(providerName, model); err != nil {
+		return store.Thread{}, fmt.Errorf("create thread: %w", err)
+	}
 	model = provider.NormalizeModelSlug(providerName, model)
 	if trimmed := strings.TrimSpace(opts.ReasoningEffort); trimmed != "" {
 		effort = trimmed

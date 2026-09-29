@@ -3,6 +3,7 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,9 +131,9 @@ func TestCanonicalSlugNormalizations(t *testing.T) {
 			want: "claude-haiku-4-5",
 		},
 		{
-			name: "alias with no resolved id still normalises",
+			name: "alias with no resolved id names nothing",
 			row:  WireModel{Value: "opus"},
-			want: "claude-opus-5",
+			want: "",
 		},
 		{
 			name: "unknown model passes through untouched",
@@ -147,7 +148,7 @@ func TestCanonicalSlugNormalizations(t *testing.T) {
 		{
 			name: "a bare marker is not a model id",
 			row:  WireModel{Value: "[1m]"},
-			want: "[1m]",
+			want: "",
 		},
 	}
 	for _, tt := range tests {
@@ -156,6 +157,29 @@ func TestCanonicalSlugNormalizations(t *testing.T) {
 				t.Errorf("CanonicalSlug() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestModelAliasesComeFromTheCLIList pins the alias map against the captured
+// initialize rows: every alias maps to what the CLI says it resolves to, and a
+// row whose value is already the model contributes nothing.
+func TestModelAliasesComeFromTheCLIList(t *testing.T) {
+	parsed, matched, err := tryParseControlInitResponse(loadInitializeFixtureLine(t))
+	if err != nil || !matched || parsed.ModelsErr != nil || len(parsed.Models) == 0 {
+		t.Fatalf("tryParseControlInitResponse: matched=%v err=%v modelsErr=%v", matched, err, parsed.ModelsErr)
+	}
+	rows := parsed.Models
+	want := map[string]string{
+		"default": "claude-opus-5",
+		"opus":    "claude-opus-5",
+		"sonnet":  "claude-sonnet-5",
+		"haiku":   "claude-haiku-4-5",
+	}
+	if got := ModelAliases(rows); !maps.Equal(got, want) {
+		t.Fatalf("ModelAliases = %v, want %v", got, want)
+	}
+	if got := ModelAliases([]WireModel{{Value: "opus"}}); got != nil {
+		t.Fatalf("ModelAliases(unresolved alias) = %v, want nil", got)
 	}
 }
 

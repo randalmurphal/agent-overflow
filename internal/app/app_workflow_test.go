@@ -926,6 +926,33 @@ func TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess(t *testing.T
 	}
 }
 
+// TestCreateWorkflowThreadRefusesAClaudeAlias pins that a workflow phase
+// naming `sonnet` parks as a wiring error instead of running on whatever the
+// alias means this release.
+func TestCreateWorkflowThreadRefusesAClaudeAlias(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+
+	_, err := app.createWorkflowThread(workflowhost.ThreadSpec{
+		ItemID: "item-alias", Label: `phase "review"`,
+		Title:        workflowhost.ThreadTitle("", "review"),
+		ProviderName: string(provider.Claude), Model: "sonnet",
+		Access:    def.AccessWrite,
+		Workspace: workflowhost.PreparedWorkspace{Path: repo, Project: projectRow},
+	})
+	if !errors.Is(err, provider.ErrModelAlias) || !errors.Is(err, engine.ErrWiringFailed) {
+		t.Fatalf("error = %v, want ErrModelAlias tagged engine.ErrWiringFailed", err)
+	}
+	threads, err := app.store.ListThreadsByProject(projectRow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("refused phase still created %d thread(s)", len(threads))
+	}
+}
+
 func writeMixedAccessWorkflow(t *testing.T, configRoot string) {
 	t.Helper()
 	writeAccessWorkflowFixture(t, configRoot, "mixed-access", `id: mixed-access

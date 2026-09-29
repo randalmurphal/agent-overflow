@@ -26,7 +26,10 @@ turn-scoped overrides. `claude-tui` does not enforce runtime mode, so callers
 that require enforcement must reject it.
 
 Keep model IDs separate from context tiers. Normalize Claude's trailing
-`[1m]` marker for catalog lookup. Argv builders use
+`[1m]` marker for catalog lookup. `NormalizeModelSlug` folds spellings of
+one ID and never resolves an alias. Model inputs pass `ValidateModelID`; a
+Claude alias the CLI reports is read only through its reported model list
+(`claude.ModelAliases`). Argv builders use
 `ModelDeclaresNoReasoningEffort`; persisted effort columns cannot represent
 the absence of an effort flag.
 

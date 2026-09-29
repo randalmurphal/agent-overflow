@@ -107,6 +107,9 @@ func (a *App) newThreadDefaultsProfile(ctx context.Context, update NewThreadDefa
 		profile.Provider = providerName
 	}
 	if model != "" {
+		if err := a.validateModelChoice(profile.Provider, model); err != nil {
+			return store.ChatModelProfile{}, fmt.Errorf("update new thread defaults: %w", err)
+		}
 		profile.Model = provider.NormalizeModelSlug(profile.Provider, model)
 	}
 	profile = a.sanitizeChatModelProfile(profile)

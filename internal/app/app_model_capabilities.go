@@ -162,6 +162,16 @@ func (a *App) fallbackChatModelProfile(providerName, model string, availableProv
 	return chatmodel.FallbackProfileWith(a.contextWindowOptionsForModel, providerName, model, availableProviders...)
 }
 
+// validateModelChoice refuses a model input that is not a model ID, listing
+// what the merged Claude catalog offers (provider.ValidateModelID).
+func (a *App) validateModelChoice(providerName, model string) error {
+	providerName = strings.TrimSpace(providerName)
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog != provider.ClaudeProbeEnrichedCatalog {
+		return nil
+	}
+	return provider.ValidateModelID(providerName, model, a.claudeModelsForProvider(providerName))
+}
+
 // modelInfoForProvider uses capability evidence already available locally.
 // Catalog expiry, refresh failure and omission cannot revoke a known choice.
 func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found bool) {

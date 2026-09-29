@@ -126,6 +126,9 @@ func (s *Service) profileForSelection(providerName, model string) (store.ChatMod
 	if err != nil {
 		return store.ChatModelProfile{}, err
 	}
+	if err := models.ValidateModel(providerName, model); err != nil {
+		return store.ChatModelProfile{}, err
+	}
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
 	if s.deps.Store != nil {
 		profile, err := s.deps.Store.GetChatModelProfile(providerName, model)

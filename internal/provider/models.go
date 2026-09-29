@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -317,52 +319,57 @@ func TrimContextMarker(model string) string {
 	return strings.TrimSpace(model[:strings.LastIndexByte(model, '[')])
 }
 
-// NormalizeModelSlug resolves the same short aliases t3-code accepts on model
-// inputs. It does not validate availability; app-server model/list remains the
-// Codex source of truth for live picker contents.
+// NormalizeModelSlug folds the spellings of one model ID onto its catalog
+// slug. It never resolves a family alias such as Claude's `opus`: what an
+// alias names changes with each release, so the CLI's own model list is the
+// only source for it (claude.ModelAliases), and model inputs must be full
+// IDs (ValidateModelID).
 //
-// For Claude it also drops a context-tier marker, so a lookup keyed on the slug
+// For Claude it drops a context-tier marker, so a lookup keyed on the slug
 // (FindModel and everything built on it — effort tiers, fast-mode support,
 // context-window options) cannot silently degrade to "unknown model" just
-// because the id arrived on its 1M spelling.
+// because the id arrived on its 1M spelling. It also folds Haiku 4.5's dated
+// API ID, which is the CLI's resolved spelling of the catalog slug.
 func NormalizeModelSlug(providerName, model string) string {
 	switch providerName {
-	case string(Codex):
-		switch model {
-		case "gpt-5-codex", "5.4":
-			return "gpt-5.4"
-		case "5.3", "gpt-5.3":
-			return "gpt-5.3-codex"
-		case "5.3-spark", "gpt-5.3-spark":
-			return "gpt-5.3-codex-spark"
-		default:
-			return model
-		}
 	case string(Claude), string(ClaudeTUI):
 		model = TrimContextMarker(model)
-		switch model {
-		case "fable", "fable-5":
-			return "claude-fable-5"
-		case "opus", "opus-5":
-			return "claude-opus-5"
-		case "opus-4.8", "claude-opus-4.8":
-			return "claude-opus-4-8"
-		case "opus-4.7", "claude-opus-4.7":
-			return "claude-opus-4-7"
-		case "opus-4.6", "claude-opus-4.6":
-			return "claude-opus-4-6"
-		case "sonnet", "sonnet-5":
-			return "claude-sonnet-5"
-		case "sonnet-4.6", "claude-sonnet-4.6":
-			return "claude-sonnet-4-6"
-		case "haiku", "haiku-4.5", "claude-haiku-4.5", "claude-haiku-4-5-20251001":
+		if model == "claude-haiku-4-5-20251001" {
 			return "claude-haiku-4-5"
-		default:
-			return model
 		}
+		return model
 	default:
 		return model
 	}
+}
+
+// ErrModelAlias marks a Claude model input that is not a model ID.
+var ErrModelAlias = errors.New("model aliases are not accepted")
+
+// ValidateModelID reports whether model may be stored as a thread's model.
+// A Claude model must be a full model ID: `claude-` prefixed, or a slug the
+// offered catalog lists (the probe can learn IDs in other spellings). Anything
+// else, such as the CLI's `opus` or `sonnet`, is an alias whose target moves
+// between releases, so it is refused with the offered slugs. Codex models are
+// not checked here: Codex accepts custom slugs and reports availability
+// itself when the turn starts. An empty model is the caller's to handle.
+func ValidateModelID(providerName, model string, offered []ModelInfo) error {
+	if providerName != string(Claude) && providerName != string(ClaudeTUI) {
+		return nil
+	}
+	slug := NormalizeModelSlug(providerName, strings.TrimSpace(model))
+	if slug == "" || strings.HasPrefix(slug, "claude-") {
+		return nil
+	}
+	slugs := make([]string, 0, len(offered))
+	for _, candidate := range offered {
+		if candidate.Slug == slug {
+			return nil
+		}
+		slugs = append(slugs, candidate.Slug)
+	}
+	return fmt.Errorf("%w: %q is not a Claude model ID; use one of: %s",
+		ErrModelAlias, strings.TrimSpace(model), strings.Join(slugs, ", "))
 }
 
 // ContextWindowOptionsForModel returns the selectable context windows for a

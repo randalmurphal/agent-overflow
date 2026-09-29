@@ -48,7 +48,6 @@ func TestMatchIgnoresTheContextTierMarker(t *testing.T) {
 		{name: "marker on the thread", entry: "claude-opus-5", model: "claude-opus-5[1m]"},
 		{name: "marker on the entry", entry: "claude-opus-5[1m]", model: "claude-opus-5"},
 		{name: "marker on both", entry: "claude-opus-5[1m]", model: "claude-opus-5[1m]"},
-		{name: "alias on the entry", entry: "opus", model: "claude-opus-5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,10 +67,22 @@ func TestMatchIgnoresTheContextTierMarker(t *testing.T) {
 // a bracketed CODEX id was trimmed here and nowhere else in the app.
 func TestMatchNormalizesCodexIDsThroughTheProviderTable(t *testing.T) {
 	entries := []settings.PromptOverride{
-		{Enabled: true, Models: []string{"gpt-5-codex"}, Prompt: "p"},
+		{Enabled: true, Models: []string{"gpt-6-sol[1m]"}, Prompt: "p"},
 	}
-	if _, ok := Match(entries, "codex", "gpt-5.4"); !ok {
-		t.Fatal("Match() = false for a codex alias its resolved id should match")
+	if _, ok := Match(entries, "codex", "gpt-6-sol[1m]"); !ok {
+		t.Fatal("Match() = false for the same bracketed codex id")
+	}
+	if _, ok := Match(entries, "codex", "gpt-6-sol"); ok {
+		t.Fatal("Match() = true: a bracketed codex id was trimmed here but nowhere else")
+	}
+}
+
+// An alias names a different model each release, so an entry holding one
+// never matches the model a thread runs.
+func TestMatchDoesNotResolveAliases(t *testing.T) {
+	entries := []settings.PromptOverride{{Enabled: true, Models: []string{"opus"}, Prompt: "p"}}
+	if _, ok := Match(entries, "claude", "claude-opus-5-5"); ok {
+		t.Fatal("Match(entry=opus, model=claude-opus-5-5) = true, want false")
 	}
 }
 

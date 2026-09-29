@@ -664,15 +664,16 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 	providers := []struct {
 		name         string
 		providerName string
+		model        string
 	}{
-		{"claude", string(provider.Claude)},
-		{"codex", string(provider.Codex)},
+		{"claude", string(provider.Claude), "claude-opus-5"},
+		{"codex", string(provider.Codex), "gpt-5.6-sol"},
 	}
 	for _, pc := range providers {
 		t.Run(pc.name, func(t *testing.T) {
 			app, _ := setupE2EApp(t)
 			workspace := t.TempDir()
-			thread, err := createTestThread(t, app, pc.providerName, workspace, "m", "chat")
+			thread, err := createTestThread(t, app, pc.providerName, workspace, pc.model, "chat")
 			if err != nil {
 				t.Fatalf("CreateThread: %v", err)
 			}

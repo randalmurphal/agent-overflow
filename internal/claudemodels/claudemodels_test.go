@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -552,6 +553,35 @@ func TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity(t *testing.T
 	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-c", WorkDir: "/home/u"}
 	if !slices.Equal(slugs(modelsFor(catalog, other, string(provider.Claude))), slugs(provider.ClaudeModels)) {
 		t.Error("a binary that never reported must serve the shipped catalog, not another binary's answer")
+	}
+}
+
+// TestCatalogAliasesFollowTheServedAnswer pins that alias resolution comes
+// from the same wire rows ModelsFor serves: the identity's own, else the same
+// binary's newest, else nothing, and that an empty re-probe keeps them.
+func TestCatalogAliasesFollowTheServedAnswer(t *testing.T) {
+	catalog := NewCatalog()
+	if got := catalog.AliasesFor(testKey("account-a")); got != nil {
+		t.Fatalf("AliasesFor before any probe = %v, want nil", got)
+	}
+	catalog.Store(testKey("account-a"), []claude.WireModel{
+		{Value: "opus[1m]", ResolvedModel: "claude-opus-5-5[1m]"},
+		{Value: "claude-fable-5-1[1m]", ResolvedModel: "claude-fable-5-1"},
+	}, nil)
+	want := map[string]string{"opus": "claude-opus-5-5"}
+	if got := catalog.AliasesFor(testKey("account-a")); !maps.Equal(got, want) {
+		t.Fatalf("AliasesFor(own) = %v, want %v", got, want)
+	}
+	if got := catalog.AliasesFor(testKey("account-b")); !maps.Equal(got, want) {
+		t.Fatalf("AliasesFor(unprobed, same binary) = %v, want %v", got, want)
+	}
+	catalog.Store(testKey("account-a"), nil, nil)
+	if got := catalog.AliasesFor(testKey("account-a")); !maps.Equal(got, want) {
+		t.Fatalf("AliasesFor after an empty re-probe = %v, want the retained %v", got, want)
+	}
+	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
+	if got := catalog.AliasesFor(other); got != nil {
+		t.Fatalf("AliasesFor(other binary) = %v, want nil", got)
 	}
 }
 

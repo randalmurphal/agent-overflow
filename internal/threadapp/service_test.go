@@ -39,6 +39,10 @@ func (m *testModels) DraftDefaults(providerName, model, effort string, fastMode 
 	return m.CoerceReasoningEffort(providerName, model, effort), fastMode && m.SupportsFastMode(providerName, model)
 }
 
+func (m *testModels) ValidateModel(providerName, model string) error {
+	return provider.ValidateModelID(providerName, model, provider.ModelsForProvider(providerName))
+}
+
 type testWorkspace struct {
 	currentBranch string
 	findPath      string

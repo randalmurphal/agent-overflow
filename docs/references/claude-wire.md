@@ -3728,7 +3728,10 @@ Four properties that decide how it can be used:
 
 AO's consumer is `internal/claudemodels`, which merges the array into the
 hand-maintained catalog under those constraints (`internal/claudemodels/AGENTS.md`
-carries the policy). One real discrepancy the array settled: **Haiku reports no
+carries the policy). The rows are also AO's only source for what an alias
+means (`claude.ModelAliases`), used to read an alias the CLI reports back,
+such as a project `settings.json` naming `opus`. One real discrepancy the
+array settled: **Haiku reports no
 effort support at all**, under both subscription and API-key auth, while AO's
 catalog declared low/medium/high, and the catalog was corrected.
 

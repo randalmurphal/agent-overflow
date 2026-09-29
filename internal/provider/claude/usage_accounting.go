@@ -219,9 +219,9 @@ func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.To
 	return usage, []provider.ModelTokenUsage{row}
 }
 
-// Message snapshots use API model IDs, while result.modelUsage can use CLI
-// aliases or a context-tier marker. Reconcile by the shared canonical slug
-// while preserving the final report's model spelling and price.
+// Message snapshots and result.modelUsage can spell one model differently
+// (a context-tier marker, Haiku's dated ID). Reconcile by the shared
+// canonical slug while preserving the final report's model spelling and price.
 func accountingModelUsage(model string, usage provider.TokenUsage) provider.ModelTokenUsage {
 	result := provider.ModelTokenUsage{Model: model, TokenUsage: usage}
 	if key := provider.NormalizeModelSlug(string(provider.Claude), model); key != model {

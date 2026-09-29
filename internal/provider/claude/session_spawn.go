@@ -121,6 +121,13 @@ type Config struct {
 	// must never reach the DeepEqual and queue a restart. See
 	// session_peer.go for the live path.
 	PeerSessionName string
+	// ModelAliases is the CLI's own alias map (ModelAliases over the
+	// probe's model rows), used to read a model alias the CLI reports back,
+	// such as a project settings file naming `opus`. Spawn-stamped by the
+	// app from the probe catalog and never carried by ConfigFromOptions:
+	// it describes the binary, not the thread. Nil when no probe has
+	// reported, and an alias it does not list is compared as written.
+	ModelAliases map[string]string
 	// MaxSubagentSpawnDepth / MaxConcurrentSubagents cap subagent
 	// fan-out via CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH /
 	// CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in the block's env map. Both

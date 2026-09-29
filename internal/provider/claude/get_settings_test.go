@@ -83,7 +83,7 @@ func TestSettingsSnapshotProjectOverrides(t *testing.T) {
 	}
 	now := time.Now()
 
-	notices := snapshot.ProjectOverrides("claude-fable-5", "high", now)
+	notices := snapshot.ProjectOverrides("claude-fable-5", "high", nil, now)
 	if len(notices) != 2 {
 		t.Fatalf("notices = %+v, want the project model + effortLevel pair", notices)
 	}
@@ -94,14 +94,38 @@ func TestSettingsSnapshotProjectOverrides(t *testing.T) {
 	}
 
 	// The extended-context marker is AO's own spelling of the same model.
-	marked := snapshot.ProjectOverrides("claude-sonnet-5[1m]", "low", now)
+	marked := snapshot.ProjectOverrides("claude-sonnet-5[1m]", "low", nil, now)
 	if len(marked) != 0 {
 		t.Fatalf("notices = %+v, want none when the project agrees modulo the [1m] marker", marked)
 	}
 
 	// No stated intent, nothing to disagree with.
-	if got := snapshot.ProjectOverrides("", "", now); len(got) != 0 {
+	if got := snapshot.ProjectOverrides("", "", nil, now); len(got) != 0 {
 		t.Fatalf("notices = %+v, want none when AO requested nothing", got)
+	}
+}
+
+// TestSettingsSnapshotProjectOverridesReadsAliasesFromCLIList pins that a
+// project alias means whatever the CLI's own model list says it resolves to,
+// and that an alias the list does not resolve is compared as written.
+func TestSettingsSnapshotProjectOverridesReadsAliasesFromCLIList(t *testing.T) {
+	snapshot, err := ParseSettingsSnapshot(json.RawMessage(
+		`{"effective":{},"sources":[{"source":"projectSettings","settings":{"model":"opus[1m]"}}]}`))
+	if err != nil {
+		t.Fatalf("ParseSettingsSnapshot: %v", err)
+	}
+	now := time.Now()
+	if got := snapshot.ProjectOverrides("claude-opus-5-5[1m]", "", map[string]string{"opus": "claude-opus-5-5"}, now); len(got) != 0 {
+		t.Fatalf("notices = %+v, want none when the CLI resolves opus to the requested model", got)
+	}
+	for name, aliases := range map[string]map[string]string{
+		"alias resolves elsewhere": {"opus": "claude-opus-5"},
+		"no CLI list":              nil,
+	} {
+		got := snapshot.ProjectOverrides("claude-opus-5-5", "", aliases, now)
+		if len(got) != 1 || got[0].Configured != "opus[1m]" {
+			t.Fatalf("%s: notices = %+v, want the project model notice", name, got)
+		}
 	}
 }
 
@@ -114,7 +138,7 @@ func TestSettingsSnapshotProjectOverridesIgnoresWrongTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSettingsSnapshot: %v", err)
 	}
-	if got := snapshot.ProjectOverrides("claude-fable-5", "high", time.Now()); len(got) != 0 {
+	if got := snapshot.ProjectOverrides("claude-fable-5", "high", nil, time.Now()); len(got) != 0 {
 		t.Fatalf("notices = %+v, want none for a non-string model and a blank effortLevel", got)
 	}
 }
@@ -210,6 +234,37 @@ func TestGetSettingsRoundTrip(t *testing.T) {
 	}
 	if overrides[0].Requested != "high" {
 		t.Fatalf("notice requested = %q, want the tier AO asked for", overrides[0].Requested)
+	}
+}
+
+// TestGetSettingsReadsProjectAliasThroughSessionAliases covers the spawn
+// plumbing: Config.ModelAliases is what the live read-back resolves a
+// project alias through.
+func TestGetSettingsReadsProjectAliasThroughSessionAliases(t *testing.T) {
+	payload := `{"effective":{},"sources":[{"source":"projectSettings","settings":{"model":"opus"}}],` +
+		`"applied":{"model":"claude-opus-5-5","effort":"high","advisor":null}}`
+	for _, tc := range []struct {
+		name    string
+		aliases map[string]string
+		notices int
+	}{
+		{"alias resolves to the requested model", map[string]string{"opus": "claude-opus-5-5"}, 0},
+		{"alias resolves elsewhere", map[string]string{"opus": "claude-opus-5"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := getSettingsTestSession(t, Config{
+				Model:        "claude-opus-5-5",
+				ModelAliases: tc.aliases,
+			}, payload, "")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if _, err := s.GetSettings(ctx); err != nil {
+				t.Fatalf("GetSettings: %v", err)
+			}
+			if got := s.SettingsOverrides(); len(got) != tc.notices {
+				t.Fatalf("SettingsOverrides = %+v, want %d notice(s)", got, tc.notices)
+			}
+		})
 	}
 }
 

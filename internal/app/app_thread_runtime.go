@@ -64,6 +64,10 @@ func (p threadModelPolicy) DraftDefaults(providerName, model, effort string, fas
 	return p.app.draftModelDefaults(providerName, model, effort, fastMode)
 }
 
+func (p threadModelPolicy) ValidateModel(providerName, model string) error {
+	return p.app.validateModelChoice(providerName, model)
+}
+
 type threadWorkspacePort struct{ app *App }
 
 func (p threadWorkspacePort) CurrentBranch(workspacePath string) string {

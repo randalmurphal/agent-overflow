@@ -575,6 +575,7 @@ func (a *App) spawnProviderSession(
 		// letting the reconciler see it would queue a restart every time a
 		// thread title lands. See app_claude_peer_name.go.
 		cfg.PeerSessionName = opts.ClaudePeerSessionName
+		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err

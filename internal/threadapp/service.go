@@ -28,6 +28,9 @@ type ModelPolicy interface {
 	// wire-only model's windows validate and default correctly.
 	ContextWindowOptions(providerName, model string) []provider.ContextWindowOption
 	DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool)
+	// ValidateModel refuses a model input that is not a model ID
+	// (provider.ValidateModelID against the merged catalog).
+	ValidateModel(providerName, model string) error
 }
 
 // WorktreeCut describes one fresh worktree. Branch is the branch it checks

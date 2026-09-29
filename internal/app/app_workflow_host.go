@@ -833,6 +833,9 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	if strings.TrimSpace(workspace) == "" {
 		return store.Thread{}, fmt.Errorf("workflow runner: %s has no workspace", spec.Label)
 	}
+	if err := a.validateModelChoice(spec.ProviderName, spec.Model); err != nil {
+		return store.Thread{}, fmt.Errorf("%w: workflow runner: %s: %w", engine.ErrWiringFailed, spec.Label, err)
+	}
 	model := provider.NormalizeModelSlug(spec.ProviderName, spec.Model)
 	// A workflow lane's model settings come from the catalog's defaults for
 	// (provider, model) plus what the definition authored — deliberately NOT from

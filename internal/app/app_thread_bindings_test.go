@@ -108,22 +108,14 @@ func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
 	}
 }
 
-func TestCreateThreadNormalizesModelAlias(t *testing.T) {
+func TestCreateThreadRefusesAClaudeAlias(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/talias-create", "5.4", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
+	_, err := createTestThread(t, app, string(provider.Claude), "/tmp/talias-create", "opus", "")
+	if !errors.Is(err, provider.ErrModelAlias) {
+		t.Fatalf("createTestThread(opus) error = %v, want ErrModelAlias", err)
 	}
-	if thread.Model != "gpt-5.4" {
-		t.Fatalf("Model = %q, want gpt-5.4", thread.Model)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if stored.Model != "gpt-5.4" {
-		t.Fatalf("stored Model = %q, want gpt-5.4", stored.Model)
+	if !strings.Contains(err.Error(), "claude-opus-5") {
+		t.Fatalf("error %q does not list the offered models", err)
 	}
 }
 
@@ -271,19 +263,19 @@ func TestStartTerminalRejectsUnknownProject(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadModelNormalizesAlias(t *testing.T) {
+func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/talias-update", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "opus")
-	if err != nil {
-		t.Fatalf("UpdateThreadModel(opus): %v", err)
+	if _, err := app.UpdateThreadModel(thread.ID, "opus"); !errors.Is(err, provider.ErrModelAlias) {
+		t.Fatalf("UpdateThreadModel(opus) error = %v, want ErrModelAlias", err)
 	}
-	if updated.Model != "claude-opus-5" {
-		t.Fatalf("Model = %q, want claude-opus-5", updated.Model)
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil || stored.Model != "claude-sonnet-4-6" {
+		t.Fatalf("stored model = %q, %v; want claude-sonnet-4-6 unchanged", stored.Model, err)
 	}
 }
 
@@ -508,6 +500,23 @@ func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 	}
 }
 
+func TestUpdateNewThreadDefaultsRefusesAClaudeAlias(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+	_, err = app.UpdateNewThreadDefaults(context.Background(), NewThreadDefaultsUpdate{
+		ProjectID: project.ID, Provider: "claude", Model: "sonnet",
+	})
+	if !errors.Is(err, provider.ErrModelAlias) {
+		t.Fatalf("UpdateNewThreadDefaults(sonnet) error = %v, want ErrModelAlias", err)
+	}
+	if _, err := app.store.GetChatModelProfile("claude", "sonnet"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetChatModelProfile(claude, sonnet) error = %v, want no row", err)
+	}
+}
+
 func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
@@ -519,7 +528,7 @@ func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
 	defaults, err := app.UpdateNewThreadDefaults(context.Background(), NewThreadDefaultsUpdate{
 		ProjectID:       project.ID,
 		Provider:        "codex",
-		Model:           "5.4",
+		Model:           "gpt-5.4",
 		ReasoningEffort: "high",
 		FastMode:        &fastMode,
 		RuntimeMode:     "approval-required",

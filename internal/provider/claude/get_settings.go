@@ -245,8 +245,10 @@ func ParseSettingsSnapshot(payload json.RawMessage) (*SettingsSnapshot, error) {
 // project file naming a different model is worth knowing about even when a
 // higher-priority layer overrode it, because the next spawn's layering can
 // differ. `[1m]` markers are trimmed off the model before comparing so an
-// extended-context request does not read as a project override of itself.
-func (s *SettingsSnapshot) ProjectOverrides(wantModel, wantEffort string, now time.Time) []SettingsOverrideNotice {
+// extended-context request does not read as a project override of itself,
+// and a configured alias is read through aliases (the CLI's own model list,
+// see ModelAliases); an alias it does not list is compared as written.
+func (s *SettingsSnapshot) ProjectOverrides(wantModel, wantEffort string, aliases map[string]string, now time.Time) []SettingsOverrideNotice {
 	var notices []SettingsOverrideNotice
 	for _, src := range s.Sources {
 		if _, ok := projectScopedSettingsSources[src.Source]; !ok {
@@ -254,8 +256,7 @@ func (s *SettingsSnapshot) ProjectOverrides(wantModel, wantEffort string, now ti
 		}
 		if wantModel != "" {
 			if got, ok := settingsString(src.Settings, settingsKeyModel); ok &&
-				provider.NormalizeModelSlug(string(provider.Claude), got) !=
-					provider.NormalizeModelSlug(string(provider.Claude), wantModel) {
+				resolveModelAlias(got, aliases) != resolveModelAlias(wantModel, aliases) {
 				notices = append(notices, SettingsOverrideNotice{
 					Source:     src.Source,
 					Field:      settingsKeyModel,
@@ -278,6 +279,16 @@ func (s *SettingsSnapshot) ProjectOverrides(wantModel, wantEffort string, now ti
 		}
 	}
 	return notices
+}
+
+// resolveModelAlias is a model's catalog slug, reading an alias through the
+// CLI-reported map.
+func resolveModelAlias(model string, aliases map[string]string) string {
+	slug := provider.NormalizeModelSlug(string(provider.Claude), model)
+	if resolved, ok := aliases[slug]; ok {
+		return resolved
+	}
+	return slug
 }
 
 // settingsString reads one string-valued key out of a raw settings map. A
@@ -330,7 +341,7 @@ func (s *Session) recordSettingsSnapshot(snapshot *SettingsSnapshot) {
 	wantModel, wantEffort := s.configModel, s.requestedEffort
 	s.configModelMu.Unlock()
 
-	notices := snapshot.ProjectOverrides(wantModel, wantEffort, time.Now())
+	notices := snapshot.ProjectOverrides(wantModel, wantEffort, s.modelAliases, time.Now())
 
 	s.liveStateMu.Lock()
 	if snapshot.Applied != nil {

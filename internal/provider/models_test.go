@@ -2,7 +2,9 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -84,9 +86,9 @@ func TestModelsForProvider_ClaudeTUI(t *testing.T) {
 }
 
 func TestClaudeTUIResolvesLikeClaude(t *testing.T) {
-	// Alias normalization is shared with claude.
-	if got := NormalizeModelSlug(string(ClaudeTUI), "opus"); got != "claude-opus-5" {
-		t.Errorf("NormalizeModelSlug(claude-tui, opus) = %q, want claude-opus-5", got)
+	// Slug normalization is shared with claude.
+	if got := NormalizeModelSlug(string(ClaudeTUI), "claude-opus-5[1m]"); got != "claude-opus-5" {
+		t.Errorf("NormalizeModelSlug(claude-tui, claude-opus-5[1m]) = %q, want claude-opus-5", got)
 	}
 	if _, found := FindModel(string(ClaudeTUI), "claude-opus-4-8"); !found {
 		t.Error("FindModel(claude-tui, claude-opus-4-8) not found")
@@ -212,36 +214,17 @@ func TestClaudeSonnetEffortTiersMatchAPICapabilities(t *testing.T) {
 	}
 }
 
-func TestSonnetAliasResolvesToSonnet5(t *testing.T) {
-	// The bare "sonnet" alias must resolve to the Sonnet 5 catalog entry
-	// (with its capabilities), not just normalize at the string level.
-	model, found := FindModel("claude", "sonnet")
-	if !found {
-		t.Fatal(`FindModel("claude", "sonnet") not found`)
+func TestFindModelDoesNotResolveAliases(t *testing.T) {
+	// A family alias names a different model after each release, so the
+	// static catalog never answers for one.
+	for _, alias := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if model, found := FindModel("claude", alias); found {
+			t.Errorf("FindModel(claude, %q) = %q, want not found", alias, model.Slug)
+		}
 	}
-	if model.Slug != "claude-sonnet-5" {
-		t.Fatalf(`FindModel("claude", "sonnet").Slug = %q, want claude-sonnet-5`, model.Slug)
-	}
-	if !ReasoningEffortSupportedForModel("claude", "sonnet", "xhigh") {
-		t.Error(`effort "xhigh" should be supported via the "sonnet" alias (Sonnet 5)`)
-	}
-}
-
-func TestOpusAliasResolvesToOpus5(t *testing.T) {
-	// The bare "opus" alias must resolve to the Opus 5 catalog entry
-	// (with its capabilities), not just normalize at the string level.
-	model, found := FindModel("claude", "opus")
-	if !found {
-		t.Fatal(`FindModel("claude", "opus") not found`)
-	}
-	if model.Slug != "claude-opus-5" {
-		t.Fatalf(`FindModel("claude", "opus").Slug = %q, want claude-opus-5`, model.Slug)
-	}
-	if !slices.Contains(model.Capabilities, ModelCapabilityFastMode) {
-		t.Error(`fast mode should be supported via the "opus" alias (Opus 5)`)
-	}
-	if got := DefaultReasoningEffortForModel("claude", "claude-opus-5", DefaultReasoningEffort); got != EffortXHigh {
-		t.Errorf("default effort for claude-opus-5 = %q, want xhigh", got)
+	model, found := FindModel("claude", "claude-opus-5[1m]")
+	if !found || model.Slug != "claude-opus-5" || !slices.Contains(model.Capabilities, ModelCapabilityFastMode) {
+		t.Fatalf("FindModel(claude, claude-opus-5[1m]) = %+v, %v; want the Opus 5 entry", model, found)
 	}
 }
 
@@ -331,33 +314,57 @@ func TestModelInfoReasoningEffortHelpersIgnoreUnknownLiveSlugs(t *testing.T) {
 	}
 }
 
-func TestNormalizeModelSlugClaudeAliases(t *testing.T) {
-	tests := map[string]string{
-		"fable":                      "claude-fable-5",
-		"fable-5":                    "claude-fable-5",
-		"claude-fable-5":             "claude-fable-5",
-		"opus":                       "claude-opus-5",
-		"opus-5":                     "claude-opus-5",
-		"claude-opus-5":              "claude-opus-5",
-		"opus-4.8":                   "claude-opus-4-8",
-		"claude-opus-4.8":            "claude-opus-4-8",
-		"opus-4.7":                   "claude-opus-4-7",
-		"claude-opus-4.7":            "claude-opus-4-7",
-		"claude-opus-4.6":            "claude-opus-4-6",
-		"sonnet":                     "claude-sonnet-5",
-		"sonnet-5":                   "claude-sonnet-5",
-		"claude-sonnet-5":            "claude-sonnet-5",
-		"sonnet-4.6":                 "claude-sonnet-4-6",
-		"claude-sonnet-4.6":          "claude-sonnet-4-6",
-		"haiku":                      "claude-haiku-4-5",
-		"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
-		"claude-opus-4-6-20251117":   "claude-opus-4-6-20251117",
-		"claude-sonnet-4-6-20251117": "claude-sonnet-4-6-20251117",
+func TestNormalizeModelSlugFoldsSpellingsNotAliases(t *testing.T) {
+	tests := []struct{ provider, input, want string }{
+		{"claude", "claude-fable-5", "claude-fable-5"},
+		{"claude", "claude-opus-5-5[1m]", "claude-opus-5-5"},
+		{"claude-tui", "claude-sonnet-5[1m]", "claude-sonnet-5"},
+		{"claude", "claude-haiku-4-5-20251001", "claude-haiku-4-5"},
+		{"claude", "claude-opus-4-6-20251117", "claude-opus-4-6-20251117"},
+		// Aliases and shorthand name different models over time; they
+		// are never resolved here.
+		{"claude", "opus", "opus"},
+		{"claude", "sonnet[1m]", "sonnet"},
+		{"claude", "claude-opus-4.8", "claude-opus-4.8"},
+		{"codex", "5.4", "5.4"},
+		{"codex", "gpt-5-codex", "gpt-5-codex"},
+		{"codex", "gpt-6-sol[1m]", "gpt-6-sol[1m]"},
 	}
+	for _, tc := range tests {
+		if got := NormalizeModelSlug(tc.provider, tc.input); got != tc.want {
+			t.Errorf("NormalizeModelSlug(%s, %q) = %q, want %q", tc.provider, tc.input, got, tc.want)
+		}
+	}
+}
 
-	for input, want := range tests {
-		if got := NormalizeModelSlug("claude", input); got != want {
-			t.Errorf("NormalizeModelSlug(%q) = %q, want %q", input, got, want)
+func TestValidateModelIDRefusesClaudeAliases(t *testing.T) {
+	offered := []ModelInfo{{Slug: "claude-opus-5-5"}, {Slug: "us.anthropic.claude-opus-5-5-v1"}}
+	for _, tc := range []struct {
+		provider, model string
+		ok              bool
+	}{
+		{"claude", "claude-opus-5-5", true},
+		{"claude", "claude-opus-5-5[1m]", true},
+		{"claude", "claude-opus-6", true}, // a full ID the catalog has not learned yet
+		{"claude", "us.anthropic.claude-opus-5-5-v1", true},
+		{"claude", "", true},
+		{"claude", "opus", false},
+		{"claude", "opus[1m]", false},
+		{"claude-tui", "sonnet", false},
+		{"claude", "default", false},
+		{"codex", "5.4", true},
+		{"codex", "my-custom-model", true},
+	} {
+		err := ValidateModelID(tc.provider, tc.model, offered)
+		if tc.ok && err != nil {
+			t.Errorf("ValidateModelID(%s, %q) = %v, want nil", tc.provider, tc.model, err)
+		}
+		if !tc.ok {
+			if !errors.Is(err, ErrModelAlias) {
+				t.Errorf("ValidateModelID(%s, %q) = %v, want ErrModelAlias", tc.provider, tc.model, err)
+			} else if !strings.Contains(err.Error(), "claude-opus-5-5, us.anthropic.claude-opus-5-5-v1") {
+				t.Errorf("ValidateModelID(%s, %q) error %q does not list the offered slugs", tc.provider, tc.model, err)
+			}
 		}
 	}
 }
@@ -548,12 +555,9 @@ func TestClaudeDefaultContextWindowPerModel(t *testing.T) {
 		}
 	}
 
-	// Aliases resolve through the same catalog entries.
-	if got := DefaultContextWindowForModel(string(Claude), "opus", 0); got != ClaudeExtendedContextWindow {
-		t.Errorf(`DefaultContextWindowForModel("opus") = %d, want %d`, got, ClaudeExtendedContextWindow)
-	}
-	if got := DefaultContextWindowForModel(string(Claude), "sonnet", 0); got != ClaudeStandardContextWindow {
-		t.Errorf(`DefaultContextWindowForModel("sonnet") = %d, want %d`, got, ClaudeStandardContextWindow)
+	// The 1M spelling resolves through the same catalog entries.
+	if got := DefaultContextWindowForModel(string(Claude), "claude-sonnet-5[1m]", 0); got != ClaudeStandardContextWindow {
+		t.Errorf(`DefaultContextWindowForModel("claude-sonnet-5[1m]") = %d, want %d`, got, ClaudeStandardContextWindow)
 	}
 }
 

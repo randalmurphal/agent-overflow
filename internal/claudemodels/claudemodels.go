@@ -830,6 +830,21 @@ func (c *Catalog) ModelsFor(
 	return models, enriched
 }
 
+// AliasesFor returns the alias map (claude.ModelAliases) of the wire rows
+// behind ModelsFor's answer for key: the key's own entry, else the same
+// binary's newest. Nil means no probe has said what any alias resolves to.
+func (c *Catalog) AliasesFor(key provider.ProbeCacheKey) map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[key.String()]; ok {
+		return claude.ModelAliases(entry.wire)
+	}
+	if entry, ok := c.newestForBinaryLocked(key.Binary); ok {
+		return claude.ModelAliases(entry.wire)
+	}
+	return nil
+}
+
 // newestForBinaryLocked finds the most recently stored entry learned from one
 // binary path. Caller holds mu.
 func (c *Catalog) newestForBinaryLocked(binary string) (catalogEntry, bool) {

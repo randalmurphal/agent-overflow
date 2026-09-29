@@ -102,6 +102,12 @@ func Commands(key provider.ProbeCacheKey) ([]provider.SlashCommand, bool) {
 	return commandCache().AnswerFor(key)
 }
 
+// ModelAliases returns what each alias the Claude CLI reported for one probe
+// identity resolves to (claudemodels.Catalog.AliasesFor).
+func ModelAliases(key provider.ProbeCacheKey) map[string]string {
+	return modelCatalog().AliasesFor(key)
+}
+
 // Models returns the picker catalog for one Claude-family provider, and
 // whether a probe answer backs it. A false enriched is the shipped list.
 func Models(key provider.ProbeCacheKey, providerName string) (models []provider.ModelInfo, enriched bool) {
