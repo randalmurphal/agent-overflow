@@ -54,13 +54,15 @@ export const chatMarkdownTheme: Theme = {
     blocked: 'text-fg-hint',
   },
   // Compact heading sizing that matches the `.markdown-body` rules in
-  // app.css, rather than the library's mt-6/mb-2/text-3xl chat-hostile scale.
-  h1: { base: 'md-blk mt-3 mb-1 text-lg font-semibold' },
-  h2: { base: 'md-blk mt-3 mb-1 text-base font-semibold' },
-  h3: { base: 'md-blk mt-2 mb-1 text-[0.9375rem] font-semibold' },
-  h4: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
-  h5: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
-  h6: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  // app.css, rather than the library's text-3xl chat-hostile scale. Block
+  // spacing is app.css's `--markdown-block-gap`: entries that own a block's
+  // margin here read that token, and the rest leave it to the cascade.
+  h1: { base: 'md-blk text-lg font-semibold' },
+  h2: { base: 'md-blk text-base font-semibold' },
+  h3: { base: 'md-blk text-[0.9375rem] font-semibold' },
+  h4: { base: 'md-blk text-sm font-semibold' },
+  h5: { base: 'md-blk text-sm font-semibold' },
+  h6: { base: 'md-blk text-sm font-semibold' },
   // Block-level entries that carry nothing but the md-blk marker (see its
   // doc above); spacing is the cascade's.
   paragraph: { base: 'md-blk' },
@@ -84,7 +86,7 @@ export const chatMarkdownTheme: Theme = {
     // `border-border-subtle` alongside `border-0`: border WIDTH and border
     // COLOR are separate concerns, and this block is one `border` away from
     // painting. Inert at zero width today.
-    base: 'md-blk my-3 w-full overflow-hidden rounded-md border-0 border-border-subtle flex flex-col bg-code-block',
+    base: 'md-blk my-(--markdown-block-gap) w-full overflow-hidden rounded-md border-0 border-border-subtle flex flex-col bg-code-block',
     // Same background as base — the inner container is mostly there for the
     // relative positioning the host's copy overlay expects.
     container: 'relative overflow-visible bg-transparent p-0 font-mono text-[0.8125rem]',
@@ -116,7 +118,7 @@ export const chatMarkdownTheme: Theme = {
   // blockquote` rule in app.css paints (var(--md-blockquote)), so the class
   // cannot disagree with what the cascade renders.
   blockquote: {
-    base: 'md-blk border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
+    base: 'md-blk border-border-subtle text-md-blockquote border-l-2 pl-3 italic',
   },
   // GFM alerts (`> [!NOTE]` … ). The variant entry lands on the alert
   // container (left border), its `[data-alert-title]` row (via the descendant
@@ -126,7 +128,7 @@ export const chatMarkdownTheme: Theme = {
   // everywhere else in the app; the border is toned to /45 so a 4px rule
   // doesn't out-shout the prose it introduces.
   alert: {
-    base: 'relative my-4 border-l-4 p-4 md-blk',
+    base: 'relative my-(--markdown-block-gap) border-l-4 p-4 md-blk',
     title: 'text-sm font-semibold flex items-center gap-2 mb-2 capitalize',
     icon: 'size-5',
     note: '[&>[data-alert-title]]:text-info stroke-info border-info/45',
@@ -141,7 +143,7 @@ export const chatMarkdownTheme: Theme = {
     // width-vs-color reason as `code.base`. `overflow-x-auto` agrees with the
     // app.css pan-x rule that owns the wrapper: a table whose columns cannot
     // fit pans inside it instead of being clipped by the pane.
-    base: 'md-blk overflow-x-auto max-w-full my-3 border-0 border-border-subtle rounded-none',
+    base: 'md-blk overflow-x-auto max-w-full my-(--markdown-block-gap) border-0 border-border-subtle rounded-none',
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
     // silently-overridden no-op. Keep them in agreement — columns size to
@@ -169,7 +171,7 @@ export const chatMarkdownTheme: Theme = {
   // `<sup>`) compounds, and two levels is already the practical limit.
   sup: { base: 'text-[0.75em] align-super' },
   sub: { base: 'text-[0.75em] align-sub' },
-  hr: { base: 'md-blk border-border-subtle my-5' },
+  hr: { base: 'md-blk border-border-subtle my-(--markdown-block-gap)' },
   strong: { base: 'font-semibold' },
   em: { base: 'italic' },
   // `~~strike~~`. De-emphasis here means the same thing `.markdown-body del`
@@ -185,7 +187,7 @@ export const chatMarkdownTheme: Theme = {
   // marker class: the duplicate is inert, and dropping one is a free cleanup
   // for whoever next edits this entry.
   mermaid: {
-    base: 'group md-blk group relative my-3 h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
+    base: 'group md-blk group relative my-(--markdown-block-gap) h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
     buttons: 'absolute right-1 top-1 flex h-fit w-fit items-center gap-1',
   },
   math: { block: 'md-blk', inline: '' },
@@ -204,7 +206,7 @@ export const chatMarkdownTheme: Theme = {
   },
   // Definition lists: the term is the focal text and the detail is body copy,
   // exactly the fg/fg-muted split.
-  descriptionList: { base: 'my-4 space-y-2 md-blk' },
+  descriptionList: { base: 'my-(--markdown-block-gap) space-y-2 md-blk' },
   descriptionTerm: { base: 'font-semibold border-l-2 pl-4 text-fg border-border-subtle' },
   descriptionDetail: { base: 'ml-4 leading-relaxed text-fg-muted' },
   // The one header button left: mermaid's expand control.
