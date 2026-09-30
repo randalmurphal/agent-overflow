@@ -10,16 +10,22 @@ import (
 	"time"
 )
 
-// ConfigureGroup puts the command in its own process group and makes context
-// cancellation kill that whole group. A setup hook or a check command routinely
-// spawns children (`sh -c 'make … & wait'`); killing only the direct child
-// leaves them holding the worktree open past the timeout that was supposed to
-// end them.
+// ConfigureGroup starts the command in its own session, which leads a new
+// process group whose id is its pid, and makes context cancellation kill that
+// whole group. A setup hook or a check command routinely spawns children
+// (`sh -c 'make … & wait'`); killing only the direct child leaves them holding
+// the worktree open past the timeout that was supposed to end them.
+//
+// A new session rather than only a new group, because a group in this
+// process's session is a background group of its controlling terminal, if it
+// has one: a descendant that reads the terminal, or an interactive bash or zsh
+// taking job control, stops the whole group with SIGTTIN. Without a
+// controlling terminal, /dev/tty fails instead.
 //
 // WaitDelay bounds how long Wait blocks on inherited pipes after the kill, so a
 // grandchild that ignored SIGKILL delivery ordering cannot wedge the reaper.
 func ConfigureGroup(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	command.Cancel = func() error { return signalConfiguredGroup(command, syscall.SIGKILL) }
 	command.WaitDelay = time.Second
 }
@@ -31,7 +37,7 @@ func KillConfiguredGroup(command *exec.Cmd) error {
 	if command == nil || command.Process == nil {
 		return os.ErrProcessDone
 	}
-	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid {
+	if !groupConfigured(command) {
 		return errors.New("process group was not configured")
 	}
 	return signalConfiguredGroup(command, syscall.SIGKILL)
@@ -43,7 +49,7 @@ func TerminateConfiguredGroup(command *exec.Cmd) error {
 	if command == nil || command.Process == nil {
 		return os.ErrProcessDone
 	}
-	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid {
+	if !groupConfigured(command) {
 		return errors.New("process group was not configured")
 	}
 	return signalConfiguredGroup(command, syscall.SIGTERM)
@@ -58,6 +64,12 @@ func ConfiguredGroupAlive(command *exec.Cmd) bool {
 	}
 	err := syscall.Kill(-command.Process.Pid, 0)
 	return !errors.Is(err, syscall.ESRCH)
+}
+
+// groupConfigured reports whether the command leads its own process group.
+func groupConfigured(command *exec.Cmd) bool {
+	attr := command.SysProcAttr
+	return attr != nil && (attr.Setsid || attr.Setpgid)
 }
 
 func signalConfiguredGroup(command *exec.Cmd, signal syscall.Signal) error {

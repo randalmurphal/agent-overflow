@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/procutil"
 )
 
 // pathStartSentinel / pathEndSentinel bracket the captured PATH value
@@ -119,6 +120,13 @@ func probe(ctx context.Context, shell string) (string, error) {
 		pathStartSentinel, pathEndSentinel,
 	)
 	cmd := exec.CommandContext(pctx, shell, "-ilc", script)
+	// An interactive bash or zsh whose process group is not its terminal's
+	// foreground group stops that group with SIGTTIN, which would freeze
+	// this process too when it runs in a background group (an update trial,
+	// or an app backgrounded from a shell). A new session has no terminal.
+	// Its group is also killed at the timeout, with anything the rc files
+	// started, and a descendant holding stdout cannot outlast the timeout.
+	procutil.ConfigureGroup(cmd)
 
 	// The probe's whole job is to report the user's REAL PATH. Started
 	// from an AppImage, the inherited PATH carries the squashfs mount's
@@ -137,7 +145,9 @@ func probe(ctx context.Context, shell string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard
 
-	if err := cmd.Run(); err != nil {
+	// ErrWaitDelay means the shell exited successfully while something its
+	// rc files started still holds stdout; the output is complete.
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return "", fmt.Errorf("shellenv: %s -ilc: %w", shell, err)
 	}
 

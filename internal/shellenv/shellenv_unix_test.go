@@ -3,12 +3,20 @@
 package shellenv
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
 func TestMergePath_DedupesPreservesLoginOrdering(t *testing.T) {
@@ -206,5 +214,121 @@ func TestSync_FallsBackWhenPrimaryShellFails(t *testing.T) {
 		if strings.Contains(err.Error(), failingShell) {
 			t.Fatalf("Sync error still references missing primary shell: %v", err)
 		}
+	}
+}
+
+// shellScript writes a stub shell that runs prelude and then prints payload
+// between the sentinels, as the real probe's script does.
+func shellScript(t *testing.T, prelude, payload string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fakesh")
+	body := "#!/bin/sh\n" + prelude + "\n" +
+		"printf '%s\\n' '" + pathStartSentinel + "' '" + payload + "' '" + pathEndSentinel + "'\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write fake shell: %v", err)
+	}
+	return path
+}
+
+// jobControlPrelude does what an interactive bash or zsh does at startup
+// when its process group is not the foreground group of its terminal: stop
+// the whole group with SIGTTIN until the terminal gives it the foreground.
+const jobControlPrelude = "if (: </dev/tty) 2>/dev/null; then kill -s TTIN 0; fi"
+
+const (
+	probeHelperRole  = "AO_SHELLENV_PROBE_HELPER"
+	probeHelperShell = "AO_SHELLENV_PROBE_SHELL"
+)
+
+// TestProbe_InBackgroundProcessGroupCompletes runs the probe the way an
+// update trial does: in a background process group of a session that has a
+// controlling terminal. The probe's shell must not stop the prober.
+func TestProbe_InBackgroundProcessGroupCompletes(t *testing.T) {
+	shell := shellScript(t, jobControlPrelude, "/fake/login/bin")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProbeHelper$")
+	cmd.Env = append(os.Environ(), probeHelperRole+"=terminal", probeHelperShell+"="+shell)
+	terminal, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("start the helper on a terminal: %v", err)
+	}
+	defer terminal.Close()
+	var output bytes.Buffer
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(&output, terminal)
+	}()
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err = <-waited:
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the terminal helper did not exit")
+	}
+	terminal.Close()
+	<-copied
+	if err != nil {
+		t.Fatalf("helper failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "probe returned /fake/login/bin err=<nil>") {
+		t.Fatalf("probe result missing:\n%s", output.String())
+	}
+}
+
+// TestProbeHelper is the subprocess of
+// TestProbe_InBackgroundProcessGroupCompletes. As "terminal" it is the
+// foreground of its terminal and runs itself as "background" in a new
+// process group of the same session, which runs the probe.
+func TestProbeHelper(t *testing.T) {
+	switch os.Getenv(probeHelperRole) {
+	case "terminal":
+		child := exec.Command(os.Args[0], "-test.run=^TestProbeHelper$")
+		child.Env = append(os.Environ(), probeHelperRole+"=background")
+		var out bytes.Buffer
+		child.Stdout, child.Stderr = &out, &out
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := child.Start(); err != nil {
+			fmt.Printf("start the background prober: %v\n", err)
+			os.Exit(1)
+		}
+		waited := make(chan error, 1)
+		go func() { waited <- child.Wait() }()
+		select {
+		case err := <-waited:
+			fmt.Print(out.String())
+			if err != nil {
+				fmt.Printf("background prober failed: %v\n", err)
+				os.Exit(1)
+			}
+		case <-time.After(15 * time.Second):
+			_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+			fmt.Println("background prober did not finish: its process group was stopped")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "background":
+		got, err := probe(context.Background(), os.Getenv(probeHelperShell))
+		fmt.Printf("probe returned %s err=%v\n", got, err)
+		os.Exit(0)
+	default:
+		t.Skip("subprocess of TestProbe_InBackgroundProcessGroupCompletes")
+	}
+}
+
+// A daemon started by the rc files inherits stdout and outlives the shell.
+// The probe still answers once the shell exits.
+func TestProbe_DescendantHoldingStdoutDoesNotBlock(t *testing.T) {
+	shell := shellScript(t, "sleep 30 &", "/fake/login/bin")
+	started := time.Now()
+	got, err := probe(context.Background(), shell)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got != "/fake/login/bin" {
+		t.Fatalf("probe returned %q", got)
+	}
+	if elapsed := time.Since(started); elapsed > probeTimeout {
+		t.Fatalf("probe took %s, past its %s cap", elapsed, probeTimeout)
 	}
 }
