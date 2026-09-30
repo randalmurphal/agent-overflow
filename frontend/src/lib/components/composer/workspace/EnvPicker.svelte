@@ -143,18 +143,35 @@
   // flight and a late answer is inert. The scheduler's token replaced a
   // hand-rolled sequence number that could not see the popover close.
   let refresh: RefreshScheduler | null = null;
+  // While a removal is in flight this pane's own workspace may be the path
+  // being deleted, and its row only moves when the removal answers. Refreshes
+  // wait for that answer rather than list from a path that is going away.
+  let removing = false;
+  let refreshHeld = false;
 
   async function refreshWorktreeList(token: RefreshToken): Promise<void> {
     const ws = workspace;
     if (!ws) return;
+    if (removing) {
+      refreshHeld = true;
+      return;
+    }
     try {
       const res = (await GitListWorktrees(ws)) as WorktreeListItem[] | null;
       if (!token.isCurrent()) return;
+      if (removing) {
+        refreshHeld = true;
+        return;
+      }
       worktrees = Array.isArray(res) ? res : [];
       listError = null;
     } catch (err) {
       console.error('GitListWorktrees failed:', err);
       if (!token.isCurrent()) return;
+      if (removing) {
+        refreshHeld = true;
+        return;
+      }
       // Delete gating stays conservative on a failure: no rows means no
       // trash affordance to click, rather than rows carrying a deleteBlocked
       // flag nothing has verified. The menu says why the list is empty.
@@ -362,8 +379,11 @@
     const label = confirm.label;
     const placeholderId = pane.draftPlaceholder?.id ?? '';
     confirm = { ...confirm, pending: true, error: null };
+    removing = true;
+    refreshHeld = false;
     try {
       const removal = (await RemoveOtherWorktree(ws, path, force)) as WorktreeRemovalResult;
+      removing = false;
       // The moved rows first: this pane's own row may be one of them, and
       // the list refresh below reads its workspace.
       syncRemovedWorktreeThreads(removal);
@@ -379,12 +399,16 @@
       }
       addToast('info', `Removed worktree ${label}`);
       confirm = null;
+      // A list read that started before the answer describes the old tree.
+      refresh?.reset();
       refresh?.request({ immediate: true });
     } catch (err) {
+      removing = false;
       console.error('RemoveOtherWorktree failed:', err);
       if (confirm) {
         confirm = { ...confirm, pending: false, error: userFacingError(err) };
       }
+      if (refreshHeld) refresh?.request();
     }
   }
 </script>

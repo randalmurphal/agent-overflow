@@ -9,13 +9,18 @@
 // page's event frames. A terminal opened in the worktree is named in the
 // confirmation ("1 terminal will close.") and its tab is gone afterwards.
 //
+// Own worktree with a live session that takes seconds to exit: the row
+// reaches the page before the process is gone, and a turn in another thread
+// during the removal never makes the open picker list from the deleted path.
+//
 // Draft on another client: a "+ New" draft bound to a worktree in one
 // browser, with a staged new-branch intent, is moved to Base and loses the
 // staged intent when a second browser removes that worktree from its git
 // actions menu. The removing page never sees the draft's pane, so only the
 // thread:updated / worktree:removed events can move it.
 import type { Page } from '@playwright/test';
-import { test, expect } from './fixtures.js';
+import { test, expect, type HarnessMockEvent } from './fixtures.js';
+import { RESULT_LINE, claudeTurnsScenario, emit, textLines } from './agent-visibility-helpers.js';
 import { methodNameById } from './offhost-helpers.js';
 import {
   attachWorktree,
@@ -209,4 +214,113 @@ test('removing a worktree on one client moves a draft bound to it on another to 
   } finally {
     await other.close();
   }
+});
+
+/**
+ * What reached `page` between its RemoveOtherWorktree call and the reply:
+ * turn lifecycle frames (from any thread) and the page's own worktree list
+ * reads.
+ */
+async function watchRemovalWindow(page: Page) {
+  let phase: 'idle' | 'removing' | 'replied' = 'idle';
+  let removeCallId = '';
+  let turnEvents = 0;
+  let listCalls = 0;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (frame.type === 'rpc' && frame.methodId !== undefined) {
+        const method = methodNameById(frame.methodId);
+        if (phase === 'idle' && method === 'RemoveOtherWorktree') {
+          phase = 'removing';
+          removeCallId = String(frame.id);
+        } else if (phase === 'removing' && method === 'GitListWorktrees') {
+          listCalls++;
+        }
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as {
+        type?: string;
+        id?: string;
+        channel?: string;
+        events?: Array<{ channel: string }>;
+      };
+      if (phase === 'removing') {
+        const channels = frame.type === 'event' ? [frame.channel] : frame.type === 'batch' ? (frame.events ?? []).map((e) => e.channel) : [];
+        turnEvents += channels.filter((c) => c === 'provider:turn_started' || c === 'provider:turn_completed').length;
+        if (frame.type === 'rpc' && String(frame.id) === removeCallId) phase = 'replied';
+      }
+      socket.send(message);
+    });
+  });
+  return { phase: () => phase, turnEvents: () => turnEvents, listCalls: () => listCalls };
+}
+
+test('removing the thread\'s own worktree while its session takes seconds to exit never lists from the removed path', async ({
+  harness,
+  page,
+}) => {
+  const OWN = 'slow-exit-wt';
+  const OTHER = 'slow-exit-other-wt';
+  const project = await seedWorktreeProject(harness, 'worktree-remove-slow-exit', ['Slow exit thread', 'Busy sibling'], [OWN, OTHER]);
+  const [ownId, siblingId] = project.threadIds;
+  const own = await attachWorktree(harness, ownId, OWN);
+  const other = await attachWorktree(harness, siblingId, OTHER);
+  const ownPath = own.worktreePath!;
+
+  // Every session answers one turn and, once its stdin closes, takes two
+  // seconds to exit, as a real CLI can.
+  await harness.rpc('HarnessSetScenario', {
+    scenario: {
+      ...(claudeTurnsScenario('worktree-remove-slow-exit', [[emit([...textLines('msg-done', 'Done.'), RESULT_LINE])]]) as object),
+      afterTurns: 'repeatLast',
+      exitDelayMs: 2_000,
+    },
+  });
+  const removal = await watchRemovalWindow(page);
+
+  await harness.open(page);
+  await openThread(page, 'Slow exit thread');
+  await expect(envTrigger(page)).toHaveText(basename(ownPath));
+  const input = page.getByLabel('Message Input');
+  await input.fill('Warm up.');
+  await input.press('Enter');
+  const registered = await harness.waitForEvent<HarnessMockEvent>('harness:mock', (ev) => ev.report.kind === 'registered');
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === ownId);
+  const ownExited = () =>
+    harness.countEvents<HarnessMockEvent>('harness:mock', (ev) => ev.mockId === registered.mockId && ev.report.kind === 'exiting');
+
+  await envTrigger(page).click();
+  const menu = page.getByRole('menu', { name: 'Workspace' });
+  await menu.getByRole('button', { name: `Remove worktree ${basename(ownPath)}` }).click();
+  const confirm = page.getByTestId('env-picker-confirm-row');
+  await page.evaluate(() => {
+    const seen = window as unknown as { __listErrorSeen?: boolean };
+    seen.__listErrorSeen = false;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="env-picker-list-error"]')) seen.__listErrorSeen = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await confirm.getByTestId('env-picker-confirm-remove').click();
+  // Another thread's turn runs while the removal waits for the session to
+  // exit: the picker hears its lifecycle events.
+  await harness.rpc('SendMessage', siblingId, 'Turn during the removal.', []);
+
+  // The row reaches the page while the session is still shutting down.
+  await expect(envTrigger(page)).toHaveText('Base');
+  expect(ownExited(), 'the row moved only after the session exited').toBe(0);
+  expect(removal.phase()).toBe('removing');
+
+  await expect(page.getByRole('alert').filter({ hasText: `Removed worktree ${basename(ownPath)}` })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(ownExited, { message: 'the removal answered before the session exited' }).toBe(1);
+  expect(removal.turnEvents(), 'no turn event reached the page during the removal').toBeGreaterThan(0);
+  expect(removal.listCalls(), 'the picker read the list while the removal was in flight').toBe(0);
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: basename(other.worktreePath!) })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: basename(ownPath) })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { __listErrorSeen?: boolean }).__listErrorSeen)).toBe(false);
+  await expect(errorToasts(page)).toHaveCount(0);
 });
