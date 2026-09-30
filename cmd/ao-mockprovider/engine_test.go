@@ -925,6 +925,25 @@ func TestStartupDelayHoldsTheFirstFrameOnce(t *testing.T) {
 	}
 }
 
+// TestExitDelayHoldsTheExit: exitDelayMs reproduces a CLI that takes a
+// while to exit after the app closes its stdin.
+func TestExitDelayHoldsTheExit(t *testing.T) {
+	var buf bytes.Buffer
+	sc := &scenario.Scenario{
+		Version:     scenario.CurrentVersion,
+		Name:        "slow-exit",
+		Provider:    scenario.ProviderClaude,
+		ExitDelayMs: 40,
+	}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
+
+	start := time.Now()
+	e.awaitExitDelay()
+	if waited := time.Since(start); waited < 30*time.Millisecond {
+		t.Fatalf("exit waited %v, want roughly the scenario's 40ms", waited)
+	}
+}
+
 // TestCaptureBindsAVarForLaterTurns: a scenario is installed before the
 // app mints the ids it would want to name, so a capture reads one out of
 // text it can already spell and keeps it for the rest of the process.

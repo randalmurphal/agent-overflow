@@ -634,32 +634,47 @@ func canonicalExistingPrefix(path string) string {
 	}
 }
 
-// stopSessionForRemovedWorkspace ends the live session of a thread whose
-// working directory is gone. Neither CLI exits when its cwd is deleted: Codex
-// fails every later command, and Claude's shell falls back to the home
-// directory and keeps running commands there. So the session is stopped,
-// never restarted; the next send starts it from the row's new workspace. A
-// running turn ends interrupted, as it does when any session is stopped, and
-// the thread's background tasks show as died. Messages queued behind the
-// turn go back to the composer, as they do when a session dies, rather than
-// being dropped by a stop nobody asked for. Caller holds the thread action
-// lock. Reports whether a session was stopped.
-func (a *App) stopSessionForRemovedWorkspace(threadID string) (bool, error) {
+// detachSessionForRemovedWorkspace takes the live session of a thread whose
+// working directory is gone out of the runtime and returns the stop that
+// ends its process, or nil when no session was running. Neither CLI exits
+// when its cwd is deleted: Codex fails every later command, and Claude's
+// shell falls back to the home directory and keeps running commands there.
+// So the session is stopped, never restarted; the next send starts it from
+// the row's new workspace. A running turn ends interrupted, as it does when
+// any session is stopped, and the thread's background tasks show as died.
+// Messages queued behind the turn go back to the composer, as they do when a
+// session dies, rather than being dropped by a stop nobody asked for.
+//
+// Detaching first is what lets the caller move the row before the process
+// exits, which can take seconds: a detached session's late events cannot
+// write the row back (their writes are gated on the session's token), and
+// the events it had already emitted are handled here, against the row they
+// were emitted under. Caller holds the thread action lock.
+func (a *App) detachSessionForRemovedWorkspace(threadID string) func() error {
 	if startState, ok := a.sessionManager().startState(threadID); ok {
 		<-startState.Done
 	}
 	if !a.hasActiveSession(threadID) {
-		return false, nil
+		return nil
 	}
 	requeued := a.restoreUnconfirmedQueueLocked(threadID)
-	err := a.stopSession(threadID)
-	if len(requeued) > 0 {
-		// The stop wiped the queue these re-entered; register them again so
-		// the next start's flush still finds them.
-		a.requeueUnconfirmedFlushItems(threadID, requeued)
-		a.emitQueueStateChanged(threadID)
+	sess, _ := a.sessionManager().take(threadID)
+	a.drainProviderEvents(threadID, "detach session from removed worktree")
+	return func() error {
+		var err error
+		if a.stopSessionFn != nil {
+			err = a.stopSessionFn(threadID)
+		} else {
+			err = a.teardownAndCloseSession(threadID, sess)
+		}
+		if len(requeued) > 0 {
+			// The stop wiped the queue these re-entered; register them again
+			// so the next start's flush still finds them.
+			a.requeueUnconfirmedFlushItems(threadID, requeued)
+			a.emitQueueStateChanged(threadID)
+		}
+		return err
 	}
-	return true, err
 }
 
 // reattachThreadsFromRemovedWorktree moves every listed thread that still
@@ -667,11 +682,13 @@ func (a *App) stopSessionForRemovedWorkspace(threadID string) (bool, error) {
 // returns the rows it moved. The caller holds each thread's action lock and
 // has already removed the checkout (or learned that someone else did).
 //
-// A moved thread's live session is stopped first (see
-// stopSessionForRemovedWorkspace); with no process left writing it, the
+// A moved thread's live session is detached, its row moved and broadcast,
+// and only then is its process stopped (see
+// detachSessionForRemovedWorkspace); with no process left writing it, the
 // Claude transcript then moves to the root's slug so the next start resumes
 // it. When removal.cause is set, each moved thread gets a timeline notice
-// saying what happened, at its own position in the thread.
+// saying what happened, at its own position in the thread. The broadcast
+// also reaches the caller's pane, which the binding return already synced.
 //
 // Best-effort sweep: the worktree is already gone, so per-thread refresh
 // failures must NOT bail mid-loop and leave siblings pointing at a deleted
@@ -710,12 +727,20 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 		if !mutated {
 			continue
 		}
-		stopped, err := a.stopSessionForRemovedWorkspace(id)
-		if err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session stop failed: %w", id, err))
+		// The row moves and is announced before the process stops, so no
+		// surface reads the deleted path while the CLI takes its time to exit.
+		stop := a.detachSessionForRemovedWorkspace(id)
+		updateErr := a.store.UpdateThread(t)
+		if updateErr == nil {
+			a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
 		}
-		if err := a.store.UpdateThread(t); err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
+		if stop != nil {
+			if err := stop(); err != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session stop failed: %w", id, err))
+			}
+		}
+		if updateErr != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, updateErr))
 			continue
 		}
 		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) && !a.hasActiveSession(id) {
@@ -739,14 +764,8 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 				a.purgeRelocatedClaudeSessions(id, moved)
 			}
 		}
-		// Other panes only know to re-render when the thread:updated event
-		// fires — without it the sibling pane keeps showing the deleted
-		// worktree path until the user navigates. The caller's pane gets a
-		// redundant echo (the binding return already syncs it), which the
-		// pane store treats as idempotent.
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
 		if removal.cause != "" {
-			if err := a.emitNoticeToThread(id, removal.notice(stopped)); err != nil {
+			if err := a.emitNoticeToThread(id, removal.notice(stop != nil)); err != nil {
 				sweepErrs = append(sweepErrs, err)
 			}
 		}

@@ -167,6 +167,25 @@ func TestStartupDelayValidation(t *testing.T) {
 	}
 }
 
+// TestExitDelayValidation: the delay must stay below the app's stdin-close
+// grace, or the scenario tests the kill instead of the shutdown window.
+func TestExitDelayValidation(t *testing.T) {
+	doc := func(ms string) string {
+		return `{"version":1,"name":"x","provider":"claude","exitDelayMs":` + ms +
+			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+	}
+	for _, ms := range []string{"0", "1", "2500"} {
+		if _, err := Parse([]byte(doc(ms))); err != nil {
+			t.Errorf("exitDelayMs %s was rejected: %v", ms, err)
+		}
+	}
+	for _, ms := range []string{"-1", "2501", "30000"} {
+		if _, err := Parse([]byte(doc(ms))); err == nil {
+			t.Errorf("exitDelayMs %s was accepted; the cap is %d", ms, MaxExitDelayMs)
+		}
+	}
+}
+
 // TestCoalesceIsExclusiveWithPacing: coalesce says "one write", the
 // pacing knobs say "several writes, spread out". A scenario asking for
 // both has no meaning, and silently honouring one of them is how a test

@@ -135,6 +135,15 @@ func (e *engine) awaitStartupDelay() {
 	})
 }
 
+// awaitExitDelay blocks for the scenario's exitDelayMs once the app has
+// closed stdin. See scenario.Scenario.ExitDelayMs.
+func (e *engine) awaitExitDelay() {
+	if e.sc.ExitDelayMs > 0 {
+		log.Printf("exitDelayMs: exiting in %dms", e.sc.ExitDelayMs)
+		sleepMs(e.sc.ExitDelayMs)
+	}
+}
+
 // providerVersion is the version the mock claims to be: the scenario's
 // override when it declares one, otherwise the mock's own (which sits
 // above every version gate the app applies).

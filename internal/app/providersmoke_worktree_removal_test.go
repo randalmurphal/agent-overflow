@@ -197,6 +197,9 @@ func (f providerSmokeRemovalFixture) establish(t *testing.T) (codeword, sessionR
 
 // awaitStoppedAtRoot waits for the watcher to move the row to the project
 // root with no session, then holds a moment to prove nothing restarts it.
+// The row moves before the process has exited, which a CLI in the middle of a
+// command can take its full close grace to do; the notice is posted once the
+// stop and the transcript move are done, so it is awaited, not read once.
 func (f providerSmokeRemovalFixture) awaitStoppedAtRoot(t *testing.T, removedAt time.Time) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -222,11 +225,17 @@ func (f providerSmokeRemovalFixture) awaitStoppedAtRoot(t *testing.T, removedAt 
 			t.Fatalf("EXTERNAL REMOVAL FAILED: the stopped session was restarted without a send (present=%v starting=%v)", present, starting)
 		}
 	}
-	notices := warningNotices(t, f.app.store, f.thread.ID)
+	var notices []string
+	for noticeDeadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		notices = warningNotices(t, f.app.store, f.thread.ID)
+		if len(notices) > 0 || time.Now().After(noticeDeadline) {
+			break
+		}
+	}
 	if len(notices) != 1 || !strings.Contains(notices[0], "was removed outside Agent Overflow") || !strings.Contains(notices[0], "session was stopped") {
 		t.Fatalf("EXTERNAL REMOVAL FAILED: notices = %q, want one saying the worktree was removed outside the app and the session stopped", notices)
 	}
-	t.Logf("external removal notice: %s", notices[0])
+	t.Logf("external removal notice after %s: %s", time.Since(removedAt).Round(time.Millisecond), notices[0])
 }
 
 // assertTranscriptAtRoot checks the Claude transcript moved under the root's

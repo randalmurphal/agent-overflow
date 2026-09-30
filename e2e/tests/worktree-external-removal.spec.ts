@@ -10,6 +10,9 @@
 // app, and the queued message is back in the composer instead of lost.
 // Sending it starts a new session whose working directory is the project
 // root, and it is sent once.
+//
+// A session that takes seconds to exit does not hold the thread on the
+// deleted path: the row reaches the page before the process is gone.
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -111,5 +114,40 @@ test('removing a busy thread\'s worktree outside the app interrupts the turn, mo
   await expect(page.getByText('Running in Base now.')).toBeVisible();
   await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await expect(page.getByTestId('user-message-bubble').filter({ hasText: QUEUED })).toHaveCount(1);
+  await expect(errorToasts(page)).toHaveCount(0);
+});
+
+test('a worktree removed outside the app moves its thread to Base before the session finishes exiting', async ({
+  harness,
+  page,
+}) => {
+  const project = await seedWorktreeProject(harness, 'worktree-external-slow-exit', ['Slow exit thread'], ['slow-exit-wt']);
+  const [threadId] = project.threadIds;
+  const worktreePath = (await attachWorktree(harness, threadId, 'slow-exit-wt')).worktreePath!;
+  await harness.rpc('HarnessSetScenario', {
+    scenario: {
+      ...(claudeTurnsScenario('external-removal-slow-exit', [[emit([...textLines('msg-done', 'Done.'), RESULT_LINE])]]) as object),
+      exitDelayMs: 2_000,
+    },
+  });
+
+  await harness.open(page);
+  await openThread(page, 'Slow exit thread');
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText(basename(worktreePath));
+  const input = page.getByLabel('Message Input');
+  await input.fill('Warm up.');
+  await input.press('Enter');
+  const registered = await harness.waitForEvent<HarnessMockEvent>('harness:mock', (ev) => ev.report.kind === 'registered');
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  const exited = () =>
+    harness.countEvents<HarnessMockEvent>('harness:mock', (ev) => ev.mockId === registered.mockId && ev.report.kind === 'exiting');
+
+  harnessGit(harness, project.root, 'worktree', 'remove', '--force', worktreePath);
+
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base');
+  expect(exited(), 'the row moved only after the session exited').toBe(0);
+  // The session still stops, and the thread says what happened.
+  await expect.poll(exited, { timeout: 10_000 }).toBe(1);
+  await expect(page.getByText(/Worktree .*slow-exit-wt was removed outside Agent Overflow\./)).toBeVisible();
   await expect(errorToasts(page)).toHaveCount(0);
 });

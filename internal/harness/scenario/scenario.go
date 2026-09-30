@@ -72,6 +72,13 @@ type Scenario struct {
 	// window.
 	StartupDelayMs int `json:"startupDelayMs,omitempty"`
 
+	// ExitDelayMs makes the app's SHUTDOWN window drivable: after the app
+	// closes stdin the adapter sleeps this long before exiting, as a real
+	// CLI does while it finishes up. Zero (the default) exits at once.
+	// Capped at MaxExitDelayMs, below the app's stdin-close grace, so the
+	// process still exits on its own rather than testing the kill.
+	ExitDelayMs int `json:"exitDelayMs,omitempty"`
+
 	// ProviderVersion overrides the version the mock claims to be, which
 	// is what every per-method version gate in the app reads: Codex's
 	// `initialize` userAgent (`codex_cli_rs/<version>`, parsed by
@@ -435,6 +442,10 @@ func (v Vars) Substitute(line string) string {
 // testing the timeout, which is a different scenario and should say so.
 const MaxStartupDelayMs = 30_000
 
+// MaxExitDelayMs caps Scenario.ExitDelayMs below the 3s the app waits for a
+// provider to exit after closing its stdin before it signals the process.
+const MaxExitDelayMs = 2_500
+
 // providerVersionPattern bounds Scenario.ProviderVersion. Empty (the
 // default: report the mock's own version) or a dotted numeric version.
 // It is interpolated verbatim into wire strings the app then parses, so
@@ -471,6 +482,9 @@ func (s *Scenario) Validate() error {
 	}
 	if s.StartupDelayMs < 0 || s.StartupDelayMs > MaxStartupDelayMs {
 		return fmt.Errorf("scenario %q: startupDelayMs %d must be between 0 and %d", s.Name, s.StartupDelayMs, MaxStartupDelayMs)
+	}
+	if s.ExitDelayMs < 0 || s.ExitDelayMs > MaxExitDelayMs {
+		return fmt.Errorf("scenario %q: exitDelayMs %d must be between 0 and %d", s.Name, s.ExitDelayMs, MaxExitDelayMs)
 	}
 	if strings.TrimSpace(s.ProviderVersion) != s.ProviderVersion {
 		return fmt.Errorf("scenario %q: providerVersion %q must not carry surrounding whitespace", s.Name, s.ProviderVersion)

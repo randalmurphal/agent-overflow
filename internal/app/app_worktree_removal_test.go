@@ -87,6 +87,57 @@ func TestRemoveOtherWorktreeReturnsMovedRowsAndStopsSessionsQuietly(t *testing.T
 	}
 }
 
+// A CLI can take seconds to exit, so a moved thread's row is written and
+// broadcast before its process is stopped: nothing reads the deleted path
+// while the stop runs. The session is detached first, so a late event from
+// it (here a confirmed /effort, which rewrites the whole row) cannot put the
+// row back. Both the in-app and the external removal paths.
+func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(t *testing.T, f removalFixture)
+	}{
+		{"in-app", func(t *testing.T, f removalFixture) { f.remove(t) }},
+		{"external", func(t *testing.T, f removalFixture) {
+			testutil.RunGit(t, f.repo, "worktree", "remove", "--force", f.worktree)
+			f.app.reconcileProjectWorktrees(f.repo, []string{f.worktree})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRemovalFixture(t, "feature-move-first-"+tc.name)
+			const token = "token-move-first"
+			f.app.sessionManager().put(f.occupant, session{Provider: string(provider.Claude), Token: token})
+			occupant := f.row(t, f.occupant)
+			occupant.Model = "claude-opus-5"
+			occupant.ReasoningEffort = string(provider.EffortXHigh)
+			if err := f.app.store.UpdateThread(occupant); err != nil {
+				t.Fatalf("UpdateThread: %v", err)
+			}
+			var stops int
+			f.app.stopSessionFn = func(id string) error {
+				stops++
+				f.assertAtRoot(t, id)
+				rows := f.rows.fullRowsFor(id)
+				if len(rows) != 1 || !samePath(rows[0].WorkspacePath, f.repo) {
+					t.Errorf("thread:updated rows before the stop = %+v, want the moved row", rows)
+				}
+				f.app.syncThreadEffortFromWire(id, token, provider.EffortLow, false)
+				return nil
+			}
+
+			tc.remove(t, f)
+
+			if stops != 1 {
+				t.Fatalf("stops = %d, want 1", stops)
+			}
+			row := f.assertAtRoot(t, f.occupant)
+			if row.ReasoningEffort != string(provider.EffortXHigh) {
+				t.Errorf("ReasoningEffort = %q, want xhigh: the detached session wrote the row", row.ReasoningEffort)
+			}
+		})
+	}
+}
+
 // GitRemoveWorktree returns its own thread's row and every sibling's.
 func TestGitRemoveWorktreeReturnsEveryMovedRow(t *testing.T) {
 	f := newWatchFixture(t)

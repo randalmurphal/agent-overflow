@@ -141,6 +141,7 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 func (a *codexAdapter) readStdin() {
 	forEachStdinLine(a.handleLine)
 	log.Printf("stdin closed; exiting")
+	a.e.awaitExitDelay()
 	a.e.terminate(0)
 }
 

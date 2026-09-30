@@ -538,7 +538,10 @@ the server does.
 Scenario-level knobs sit beside the step lists. `startupDelayMs`
 delays the first frame that proves the provider is up (Claude's first
 `system/init`, Codex's `initialize` response), once per process and
-capped at 30s, so the app's cold-start window is drivable. `providerVersion`
+capped at 30s, so the app's cold-start window is drivable. `exitDelayMs`
+holds the process after the app closes its stdin, capped at 2.5s (below
+the app's close grace), so the window while a session shuts down is
+drivable. `providerVersion`
 downgrades the version the mock claims (Codex `initialize` userAgent,
 Claude `system/init.claude_code_version`), which is what every
 per-method version gate reads; the default is above every gate, so this

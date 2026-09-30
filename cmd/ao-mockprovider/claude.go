@@ -260,6 +260,7 @@ func (a *claudeAdapter) writeMcpToolResult(vars scenario.Vars, call mcpCall) {
 func (a *claudeAdapter) readStdin() {
 	forEachStdinLine(a.handleLine)
 	log.Printf("stdin closed; exiting")
+	a.e.awaitExitDelay()
 	a.e.terminate(0)
 }
 
