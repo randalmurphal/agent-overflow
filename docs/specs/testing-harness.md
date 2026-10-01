@@ -262,6 +262,25 @@ The CLI's WS client implements the full frame contract
 It is the Go twin of `e2e/src/harness.ts`, kept in `internal/harnessclient`
 so future Go tests can reuse it.
 
+### Network isolation
+
+On Linux, `ao-harness-e2e` starts the suite in new user and network
+namespaces. The suite sees loopback and one dummy LAN interface, `lan0` at
+`10.203.0.2/24`, multicast-capable like a real LAN interface. There is no
+default route, so a connection to any other address fails with
+`ENETUNREACH`. LAN-bind specs therefore exercise a real non-loopback
+listener, a real non-loopback peer and mDNS discovery without reaching a
+real network. The suite keeps the invoking uid and holds no capabilities:
+`CAP_NET_ADMIN` is ambient only while the launcher's helper builds the
+interfaces, and the helper clears it before it execs Playwright. If the host
+refuses unprivileged user namespaces, the launcher fails before the suite
+starts. It does not fall back to the host network.
+
+`--host-network` skips isolation for suites that need host services:
+`e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device
+through the host's adb server, and real SSH mode needs it to reach its sshd
+on host loopback. macOS and Windows run on the host network.
+
 ## 4. Frontend bridge: seeing without screenshots
 
 `/bootstrap.json` gains `"harness": true` in harness/soak modes. When

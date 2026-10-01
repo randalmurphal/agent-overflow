@@ -186,6 +186,9 @@ fi
 # `pnpm exec playwright test --config=playwright.android.config.ts` with
 # `e2e/` as its working directory. It is also what lets the spec call
 # `launchHarness`, which refuses to spawn a backend outside it.
+# --host-network: Playwright reaches the device through the host's adb
+# server, and `adb reverse` targets host loopback, so this suite cannot
+# run inside the launcher's isolated network namespace.
 echo "==> the shell smoke, in the emulator's WebView"
 cd "$repo"
-AO_ANDROID_SERIAL="$serial" bin/ao-harness-e2e --config=playwright.android.config.ts "$@"
+AO_ANDROID_SERIAL="$serial" bin/ao-harness-e2e --host-network --config=playwright.android.config.ts "$@"

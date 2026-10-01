@@ -142,7 +142,9 @@ test('rejects a flow after its owned page crosses origins and excludes concurren
   const active = first.run({ v: 1, id: 'active', actions: [], monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 100, intervalMs: 10 }] });
   await expect(second.run({ v: 1, id: 'concurrent', actions: [] })).rejects.toThrow('active run');
   await active;
-  await page.goto('https://example.com', { waitUntil: 'commit' });
+  // Fulfilled in the browser: the suite never reaches a real origin.
+  await page.route('https://flow-origin.invalid/**', (route) => route.fulfill({ contentType: 'text/html', body: '<p>elsewhere</p>' }));
+  await page.goto('https://flow-origin.invalid/', { waitUntil: 'commit' });
   expect(() => owned.assertCurrent()).toThrow('owned flow page navigated');
 });
 

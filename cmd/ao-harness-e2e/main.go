@@ -2,6 +2,11 @@
 // process and memory boundary. It deliberately accepts Playwright arguments
 // only. The command itself is fixed so `pnpm test` cannot accidentally run a
 // shell command outside containment.
+//
+// On Linux the suite also runs in its own network namespace: loopback plus
+// one private LAN interface and no route off the machine, so LAN-bind specs
+// exercise a real non-loopback listener without reaching a real network.
+// --host-network opts out for suites that need host services (adb).
 package main
 
 import (
@@ -39,12 +44,26 @@ const (
 	modeFreeze
 )
 
+// netnsHelperArg is the launcher's own argv[1] when it re-executes itself as
+// the first process inside the isolated network namespace.
+const netnsHelperArg = "__ao-harness-e2e-netns"
+
+type launchOptions struct {
+	limit       uint64
+	mode        runMode
+	hostNetwork bool
+	args        []string
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == netnsHelperArg {
+		os.Exit(runNetnsHelper(os.Args[2:], os.Stderr))
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr *os.File) int {
-	limit, mode, commandArgs, err := parseArgs(args)
+	opts, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 		return 2
@@ -94,8 +113,14 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
 		return 1
 	}
+	if !opts.hostNetwork {
+		if err := checkNetworkIsolation(stderr); err != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+			return 1
+		}
+	}
 
-	group, enforcement, err := containment.PrepareWithFallback(limit)
+	group, enforcement, err := containment.PrepareWithFallback(opts.limit)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e: install memory containment:", err)
 		return 1
@@ -117,7 +142,7 @@ func run(args []string, stdout, stderr *os.File) int {
 		Worktree:     worktree,
 		DataRoot:     worktree,
 		OwnerPID:     os.Getpid(),
-		CeilingBytes: limit,
+		CeilingBytes: opts.limit,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e: reserve host memory:", err)
@@ -132,12 +157,18 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "ao-harness-e2e: using %s; host-floor watchdog is active\n", enforcement)
 	}
 
-	command := containedCommand(mode, commandArgs)
+	command := containedCommand(opts.mode, opts.args)
 	command.Dir = testDir
 	command.Env = containedEnvironment()
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessGroup(command)
+	if !opts.hostNetwork {
+		if err := isolateNetwork(command); err != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e: isolate network:", err)
+			return 1
+		}
+	}
 	identity, ok := startContained(command, group, stderr)
 	if !ok {
 		return 1
@@ -263,61 +294,59 @@ func containedCommand(mode runMode, args []string) *exec.Cmd {
 	return exec.Command("pnpm", append([]string{"exec", "playwright", "test"}, args...)...)
 }
 
-func parseArgs(args []string) (uint64, runMode, []string, error) {
+func parseArgs(args []string) (launchOptions, error) {
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
-	limit := uint64(defaultMemoryLimit)
-	mode := modeTests
+	opts := launchOptions{limit: defaultMemoryLimit, mode: modeTests, args: make([]string, 0, len(args))}
 	modeSet := false
-	commandArgs := make([]string, 0, len(args))
+	setMode := func(arg string, mode runMode) error {
+		if modeSet {
+			return fmt.Errorf("conflicting or repeated launcher mode %q", arg)
+		}
+		opts.mode = mode
+		modeSet = true
+		return nil
+	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		var err error
 		switch {
 		case arg == "--test":
-			if modeSet {
-				return 0, 0, nil, fmt.Errorf("conflicting or repeated launcher mode %q", arg)
-			}
-			mode = modeTests
-			modeSet = true
+			err = setMode(arg, modeTests)
 		case arg == "--flow":
-			if modeSet {
-				return 0, 0, nil, fmt.Errorf("conflicting or repeated launcher mode %q", arg)
-			}
-			mode = modeFlow
-			modeSet = true
+			err = setMode(arg, modeFlow)
 		case arg == "--freeze-repro":
-			if modeSet {
-				return 0, 0, nil, fmt.Errorf("conflicting or repeated launcher mode %q", arg)
-			}
-			mode = modeFreeze
-			modeSet = true
+			err = setMode(arg, modeFreeze)
+		case arg == "--host-network":
+			opts.hostNetwork = true
 		case arg == "--memory-limit-bytes":
 			if i+1 >= len(args) {
-				return 0, 0, nil, fmt.Errorf("--memory-limit-bytes needs a value")
+				return launchOptions{}, fmt.Errorf("--memory-limit-bytes needs a value")
 			}
 			i++
-			parsed, err := strconv.ParseUint(args[i], 10, 64)
+			opts.limit, err = strconv.ParseUint(args[i], 10, 64)
 			if err != nil {
-				return 0, 0, nil, fmt.Errorf("invalid --memory-limit-bytes %q: %w", args[i], err)
+				err = fmt.Errorf("invalid --memory-limit-bytes %q: %w", args[i], err)
 			}
-			limit = parsed
 		case strings.HasPrefix(arg, "--memory-limit-bytes="):
-			parsed, err := strconv.ParseUint(strings.TrimPrefix(arg, "--memory-limit-bytes="), 10, 64)
+			opts.limit, err = strconv.ParseUint(strings.TrimPrefix(arg, "--memory-limit-bytes="), 10, 64)
 			if err != nil {
-				return 0, 0, nil, fmt.Errorf("invalid --memory-limit-bytes %q: %w", arg, err)
+				err = fmt.Errorf("invalid --memory-limit-bytes %q: %w", arg, err)
 			}
-			limit = parsed
 		case arg == "--":
 			// Accept the conventional launcher separator after the launcher's
 			// own option, while keeping it out of Playwright's argv.
 			continue
 		default:
-			commandArgs = append(commandArgs, arg)
+			opts.args = append(opts.args, arg)
+		}
+		if err != nil {
+			return launchOptions{}, err
 		}
 	}
-	if limit == 0 {
-		return 0, 0, nil, fmt.Errorf("--memory-limit-bytes must be positive")
+	if opts.limit == 0 {
+		return launchOptions{}, fmt.Errorf("--memory-limit-bytes must be positive")
 	}
-	return limit, mode, commandArgs, nil
+	return opts, nil
 }

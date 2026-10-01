@@ -45,7 +45,10 @@ launcher, typechecks all suite sources, then runs Playwright under the harness
 memory boundary. The `desktop` project runs ordinary specs; `compact` runs
 `compact-*.spec.ts` with touch and compact viewport settings. Run one file with
 `bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
-`make harness-build`, so rebuild after changing Go or frontend code.
+`make harness-build`, so rebuild after changing Go or frontend code. On Linux
+the launcher runs the suite in an isolated network namespace with one private
+LAN interface; a spec cannot reach host services or any real network. See
+[network isolation](../docs/specs/testing-harness.md#network-isolation).
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See
@@ -63,8 +66,9 @@ restart path unless the test explicitly causes abrupt loss. A version label
 alone is not release-compatibility evidence.
 
 Real SSH mode requires `AO_E2E_SSH_CONFIG` pointing to an isolated config for an
-owned loopback sshd, temporary keys, and a pinned known-hosts file. Never use the
-developer's normal SSH configuration or install a service from a test.
+owned loopback sshd, temporary keys, and a pinned known-hosts file, and
+`--host-network` so the suite can reach that sshd on host loopback. Never use
+the developer's normal SSH configuration or install a service from a test.
 
 ## Android emulator smoke
 
