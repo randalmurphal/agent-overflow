@@ -789,7 +789,7 @@ func (t threadToolsApp) searchHits(q threadtools.SearchQuery, filter store.Threa
 	hits, err := t.app.store.SearchThreads(q.Query, filter)
 	if err != nil {
 		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
-			"That search query is not valid. Use plain words, \"a phrase\" or word prefixes like build*.", err)
+			"That search query is not valid. Check for an unclosed quote or parenthesis, or an AND, OR or NOT with nothing on one side.", err)
 	}
 	return hits, nil
 }

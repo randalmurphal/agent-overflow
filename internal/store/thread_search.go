@@ -210,8 +210,11 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 // SearchThreads runs one FTS5 query over settled message text, tool-call
 // summaries and thread titles, ranked by bm25.
 //
-// `query` is FTS5 match syntax, so a malformed query comes back as an error
-// for the caller to report rather than as an empty result. Visibility is
+// `query` is FTS5 match syntax after normalizeSearchQuery quotes the words
+// FTS5 cannot parse bare, so `BLITZ-572` or `src/app.go` matches as typed. A
+// query that is still malformed (an unbalanced quote or parenthesis, a
+// dangling operator) comes back as an error for the caller to report rather
+// than as an empty result. Visibility is
 // applied by joining `owned_threads` at query time: a thread moved to
 // another computer stops matching without a reindex, and so does a scratch
 // thread the caller does not own.
@@ -228,6 +231,7 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 	if trimmed == "" {
 		return nil, errors.New("store: search threads: empty query")
 	}
+	trimmed = normalizeSearchQuery(trimmed)
 	if err := s.checkSearchQuery(trimmed); err != nil {
 		return nil, err
 	}
@@ -888,6 +892,108 @@ func inClause(column string, values []string) (string, []any) {
 		args[i] = value
 	}
 	return column + " IN (" + strings.TrimRight(strings.Repeat("?,", len(values)), ",") + ")", args
+}
+
+// normalizeSearchQuery quotes every word FTS5 would reject as a bareword, so
+// an identifier such as `BLITZ-572`, `foo.go` or `a/b.ts` is matched as the
+// phrase its tokens form instead of failing to parse. Bare words, operators,
+// parentheses, quoted phrases and a trailing `*` prefix pass through, and so
+// does the `, N` distance inside `NEAR(...)`. An unbalanced quote is copied
+// as written so FTS5 still refuses it.
+func normalizeSearchQuery(query string) string {
+	var out strings.Builder
+	out.Grow(len(query) + 8)
+	nearDepth, depth := 0, 0
+	afterNear := false
+	for i := 0; i < len(query); {
+		c := query[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			out.WriteByte(c)
+			i++
+			continue
+		case c == '(':
+			depth++
+			if afterNear {
+				nearDepth = depth
+			}
+			out.WriteByte(c)
+			i++
+		case c == ')':
+			if depth == nearDepth {
+				nearDepth = 0
+			}
+			depth--
+			out.WriteByte(c)
+			i++
+		case c == ',' && nearDepth > 0:
+			out.WriteByte(c)
+			i++
+		case c == '"':
+			end := closingQuote(query, i+1)
+			out.WriteString(query[i:end])
+			i = end
+		default:
+			end := i
+			for end < len(query) && !searchQueryDelimiter(query[end], nearDepth > 0) {
+				end++
+			}
+			word := query[i:end]
+			i = end
+			core := strings.TrimSuffix(word, "*")
+			if core == "" || isSearchBareword(core) {
+				out.WriteString(word)
+				afterNear = word == "NEAR"
+				continue
+			}
+			out.WriteByte('"')
+			out.WriteString(core)
+			out.WriteByte('"')
+			out.WriteString(word[len(core):])
+		}
+		afterNear = false
+	}
+	return out.String()
+}
+
+// closingQuote returns the index just past the quote that closes a string
+// opened before `from`, treating `""` as an escaped quote. An unclosed string
+// runs to the end of the query.
+func closingQuote(query string, from int) int {
+	for i := from; i < len(query); i++ {
+		if query[i] != '"' {
+			continue
+		}
+		if i+1 < len(query) && query[i+1] == '"' {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(query)
+}
+
+func searchQueryDelimiter(c byte, inNear bool) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '"', '(', ')':
+		return true
+	case ',':
+		return inNear
+	}
+	return false
+}
+
+// isSearchBareword reports whether FTS5 accepts word unquoted: ASCII letters,
+// digits, `_` and every non-ASCII byte.
+func isSearchBareword(word string) bool {
+	for i := 0; i < len(word); i++ {
+		c := word[i]
+		if c >= 0x80 || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // searchQueryTerms pulls the literal words out of an FTS5 match expression so

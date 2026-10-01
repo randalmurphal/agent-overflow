@@ -410,6 +410,66 @@ func TestSearchThreadsRejectsMalformedQueries(t *testing.T) {
 	}
 }
 
+// Words FTS5 cannot parse bare are quoted into phrases; everything FTS5
+// already reads, including NEAR's distance and a malformed expression it
+// must still refuse, is left as written.
+func TestNormalizeSearchQuery(t *testing.T) {
+	for _, tc := range []struct{ query, want string }{
+		{"BLITZ-572", `"BLITZ-572"`},
+		{"foo.go", `"foo.go"`},
+		{"src/a/b.ts", `"src/a/b.ts"`},
+		{"c++", `"c++"`},
+		{"BLITZ-572, BLITZ-573", `"BLITZ-572," "BLITZ-573"`},
+		{"BLITZ-5*", `"BLITZ-5"*`},
+		{"text:foo", `"text:foo"`},
+		{"build*", "build*"},
+		{"plain words", "plain words"},
+		{"café ünïcode", "café ünïcode"},
+		{`"already quoted" BLITZ-1`, `"already quoted" "BLITZ-1"`},
+		{`"say ""hi"" there-now"`, `"say ""hi"" there-now"`},
+		{"foo OR bar-baz NOT qux", `foo OR "bar-baz" NOT qux`},
+		{"(a AND b-c)", `(a AND "b-c")`},
+		{"NEAR(a b-c, 5)", `NEAR(a "b-c", 5)`},
+		{"NEAR (a b, 5) x,y", `NEAR (a b, 5) "x,y"`},
+		{`"unbalanced`, `"unbalanced`},
+		{`launcher"`, `launcher"`},
+		{"matched AND", "matched AND"},
+		{"((", "(("},
+		{"OR", "OR"},
+	} {
+		if got := normalizeSearchQuery(tc.query); got != tc.want {
+			t.Errorf("normalizeSearchQuery(%q) = %q, want %q", tc.query, got, tc.want)
+		}
+	}
+}
+
+// An identifier with punctuation matches as typed, alone, with a prefix, or
+// beside operators, and the snippet anchors on it.
+func TestSearchThreadsMatchesPunctuatedIdentifiers(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-ticket")
+	summary := strings.Repeat("filler ", 40) + "picked up BLITZ-572 in src/app/main.go today"
+	if err := s.InsertItem(Item{
+		ID: "ticket-msg", ThreadID: "t-ticket", TurnIndex: 0, ItemIndex: 0, Kind: "user_text",
+		Role: "user", Status: "completed", Summary: summary, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	for _, query := range []string{"BLITZ-572", "src/app/main.go", "BLITZ-5*", "picked AND BLITZ-572", "nothing OR main.go"} {
+		hits := mustSearch(t, s, query, ThreadSearchFilter{SnippetBudget: 40})
+		if len(hits) != 1 || hits[0].ItemID != "ticket-msg" {
+			t.Errorf("search %q hits = %v, want the ticket message", query, hitIDs(hits))
+		}
+	}
+	hits := mustSearch(t, s, "BLITZ-572", ThreadSearchFilter{SnippetBudget: 40})
+	if len(hits) == 1 && !strings.Contains(hits[0].Snippet, "BLITZ-572") {
+		t.Errorf("snippet %q is not anchored on the match", hits[0].Snippet)
+	}
+	if got := mustSearch(t, s, "BLITZ-573", ThreadSearchFilter{}); len(got) != 0 {
+		t.Errorf("a different ticket key matched: %v", hitIDs(got))
+	}
+}
+
 // seedTransfer writes one transfer row directly, so the agreement test can
 // stand every combination of direction, kind and phase beside the probe
 // without driving the phase machine to reach each one.

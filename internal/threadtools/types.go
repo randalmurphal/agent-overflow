@@ -340,7 +340,8 @@ type Payload struct {
 
 // SearchQuery is one computer's half of thread_search.
 type SearchQuery struct {
-	// Query is FTS5 match syntax. Empty means a listing by last activity.
+	// Query is an FTS5 match expression; the store quotes words FTS5
+	// cannot parse bare. Empty means a listing by last activity.
 	Query string
 	// ThreadID restricts the search to one thread.
 	ThreadID string

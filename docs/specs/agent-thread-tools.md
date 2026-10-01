@@ -134,7 +134,9 @@ error / interrupted), reachable because the handler runs inside the
 app that owns the thread.
 
 `query` is FTS5 match syntax: words are ANDed, `"quoted phrases"`
-match exactly, `OR` and a trailing `*` prefix work. Filters:
+match exactly, `OR`, `NOT` and a trailing `*` prefix work. A word FTS5
+cannot parse bare, such as `BLITZ-572` or `src/app/main.go`, is quoted
+into the phrase its tokens form, so identifiers match as typed. Filters:
 `computers` (a list of computer ids; omitted means the caller's
 computer plus every paired one; `["local"]` means only the caller's),
 `thread_id` (search within one thread), `kind` (user | assistant |

@@ -98,7 +98,7 @@ func searchSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"query": map[string]any{
 			"type":        "string",
-			"description": "FTS5 match syntax over settled user text, assistant text, tool call summaries and thread titles: words are ANDed, \"quoted phrases\" match exactly, OR works, and a trailing * is a prefix match. Tool outputs, diffs and thinking are NOT indexed; find their thread here and read them with thread_show include or thread_item. Omit to list recent threads by last activity instead of searching.",
+			"description": "Searches settled user text, assistant text, tool call summaries and thread titles: words are ANDed, \"quoted phrases\" match exactly, OR and NOT work, and a trailing * is a prefix match. Identifiers such as BLITZ-572, foo.go or src/app/main.go match as typed. Tool outputs, diffs and thinking are NOT indexed; find their thread here and read them with thread_show include or thread_item. Omit to list recent threads by last activity instead of searching.",
 		},
 		"thread_id": map[string]any{
 			"type":        "string",
