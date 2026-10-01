@@ -2,7 +2,9 @@
 // Svelte path. The first case proves the two drag gestures the spec names
 // (onto a group row = move in, onto the list outside any group = ungroup),
 // the collapsed member count, and that a member pins inside its group and
-// loses the pin on leaving it. The second proves the menu path: New Group…
+// loses the pin on leaving it. A drag that starts on a row's worktree
+// sublabel moves the thread instead of selecting the label's text. The
+// menu case proves the menu path: New Group…
 // from a thread row opens inline rename, the rename persists, a member pins
 // from its menu while the group offers no pin, the group section sits above
 // the pin blocks behind a divider, and deleting the group returns its
@@ -11,6 +13,7 @@
 // Collapse keeps only the focused member visible across pane switches,
 // backend updates and reload.
 import { test, expect, type SeedResult } from './fixtures.js';
+import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
 interface ThreadRow {
   id: string;
@@ -102,6 +105,25 @@ test('drag onto a group moves in, drag onto the list outside it moves out', asyn
     const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
     return rows.find((row) => row.id === alphaId)?.pinnedAt ?? null;
   }).toBeNull();
+});
+
+test('a drag started on the worktree sublabel moves the thread', async ({ harness, page }) => {
+  const project = await seedWorktreeProject(harness, 'groups-sublabel-drag', ['Base row', 'Worktree row'], ['sublabel-drag']);
+  const [, worktreeId] = project.threadIds;
+  await attachWorktree(harness, worktreeId, 'sublabel-drag');
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', project.projectId, 'Sublabel drop');
+
+  await harness.open(page);
+  const groupRow = page.getByTestId('thread-group-row');
+  const label = page.getByTestId('thread-row-worktree-name');
+  await expect(label).toHaveText('sublabel-drag');
+  await label.dragTo(groupRow);
+
+  await expect.poll(async () => {
+    const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+    return rows.find((row) => row.id === worktreeId)?.groupId;
+  }).toBe(group.id);
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
 });
 
 test('New Group… from a thread row renames inline, pins a member, and deletes back to the list', async ({

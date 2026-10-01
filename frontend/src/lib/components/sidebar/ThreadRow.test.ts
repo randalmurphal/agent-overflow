@@ -404,6 +404,27 @@ describe('<ThreadRow> drag source', () => {
       groupId: 'group-1',
     });
   });
+
+  it('drags the thread from the worktree sublabel instead of selecting its text', async () => {
+    const thread = makeThread({
+      id: 'drag-sublabel',
+      title: 'Drag Sublabel',
+      projectId: 'project-1',
+      worktreePath: '/tmp/worktrees/feature-demo',
+    });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    const label = rendered.getByTestId('thread-row-worktree-name');
+    // A press-and-move becomes a native drag only under a draggable
+    // ancestor; anywhere else the browser starts a text selection.
+    expect(label.closest('[draggable="true"]')).toBe(rendered.getByTestId('thread-row-shell'));
+    const dataTransfer = makeDataTransfer();
+
+    await fireEvent.dragStart(label, { dataTransfer });
+
+    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toMatchObject({
+      threadId: 'drag-sublabel',
+    });
+  });
 });
 
 describe('<ThreadRow> title tooltip', () => {
@@ -1641,7 +1662,7 @@ describe('<ThreadRow> compact layout', () => {
     const pane = createThreadPane();
     registerPaneForTest('main', pane);
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('false');
+    expect(getByTestId('thread-row-shell').getAttribute('draggable')).toBe('false');
     expect(document.querySelector('[data-popover]')).toBeNull();
 
     await fireEvent.click(getByTestId('thread-row-menu'));
@@ -1656,7 +1677,7 @@ describe('<ThreadRow> compact layout', () => {
   it('keeps the row draggable on the desktop', async () => {
     setCompactLayoutForTest(false);
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
-    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('true');
+    expect(getByTestId('thread-row-shell').getAttribute('draggable')).toBe('true');
   });
 });
 

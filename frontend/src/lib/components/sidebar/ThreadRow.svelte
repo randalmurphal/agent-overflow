@@ -428,13 +428,13 @@
   cannot be a 2px bar and a full-row ring at once.
 -->
 <!--
-  The shell, not the row, takes the pointer: click, double-click and
+  The shell, not the row, takes the pointer: click, double-click,
   contextmenu (which is also the phone's long press, via the window-level
-  bridge). The row is the focusable, draggable, ARIA button, but it is one
+  bridge) and drag. The row is the focusable ARIA button, but it is one
   line tall and the worktree / computer sublabel under it is a sibling
-  inside the shell. A tap on that sublabel must still open the thread and
-  a long press on it must still open THIS row's menu, not select the
-  label's text and fall through to the project's menu behind it. So the
+  inside the shell. A tap on that sublabel must still open the thread, a
+  long press on it must still open THIS row's menu, and a press-and-move
+  on it must drag the thread rather than select the label's text. So the
   whole shell is the target and selection is off across it under compact.
   Controls inside the row that own their click stop propagation as before.
 -->
@@ -447,6 +447,9 @@
   onclick={(e) => handleClick(e)}
   ondblclick={startRename}
   oncontextmenu={handleContextMenu}
+  ondragstart={handleDragStart}
+  ondragend={endThreadRowDrag}
+  draggable={!editing && !compact}
   class="group/thread-item relative rounded-[var(--radius-field)] transition-colors cursor-pointer compact:select-none
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
     {isOpen ? 'after:absolute after:left-0 after:inset-y-1 after:w-0.5 after:rounded-full after:bg-accent' : ''}
@@ -461,12 +464,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={rowEl}
-    ondragstart={handleDragStart}
-    ondragend={endThreadRowDrag}
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
     role="button"
     tabindex={0}
-    draggable={!editing && !compact}
     aria-pressed={selected}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 compact:h-9 compact:select-none rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
       {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}
