@@ -298,7 +298,11 @@ One WebSocket carries everything. The receiver implementation lives in
 `internal/harnessrpc`; isolated boot registers it explicitly as
 `main.Harness` with receiver-level `LocalOnly` policy:
 `ws://127.0.0.1:<port>/ws?token=<token>`, frames per
-`internal/transport/AGENTS.md`. Call methods **by name**
+`internal/transport/AGENTS.md`. The instance also serves the same mux on
+the `::1` address it publishes in `<dataDir>/control.json`;
+`harnessclient` dials that address when the file carries the instance's
+token, because under WSL virtioproxy in-distro `127.0.0.1` goes through a
+Windows relay. Call methods **by name**
 (`{type:"rpc", id, method:"HarnessInfo", params:[...]}`); both the
 `Harness` receiver and every bound `App` method (`CreateThread`,
 `SendMessage`, ...) share the wire. The whole Harness receiver is

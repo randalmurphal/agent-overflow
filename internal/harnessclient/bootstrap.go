@@ -21,10 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,7 +108,48 @@ func (b Bootstrap) ValidateFor(dataRoot, dataDir string) error {
 // Node clients in e2e most of all); the transport validates it through
 // the same function that validates a page cookie.
 func (b Bootstrap) WSURL() string {
-	return fmt.Sprintf("ws://127.0.0.1:%d/ws?token=%s", b.Port, url.QueryEscape(b.Token))
+	return fmt.Sprintf("ws://%s/ws?token=%s", b.dialAddr(), url.QueryEscape(b.Token))
+}
+
+// controlFileName and controlEndpoint restate internal/localcontrol's
+// control.json, which this package cannot import without linking the
+// transport. A drift guard in the tests compares the two.
+const controlFileName = "control.json"
+
+type controlEndpoint struct {
+	Address string `json:"address"`
+	Token   string `json:"token"`
+}
+
+// maxControlFileBytes matches localcontrol's read bound.
+const maxControlFileBytes = 4096
+
+// dialAddr is the address this process reaches the instance at: the one
+// the instance published in its data dir's control.json. That is its ::1
+// listener, which under WSL virtioproxy stays in the Linux kernel where
+// 127.0.0.1 goes through a Windows relay that refuses bursts of connects,
+// or the main bind once that listener has failed. The file speaks for this
+// instance only when it carries the same launch token; before the instance
+// publishes it (a held startup), the main bind's port is the address.
+func (b Bootstrap) dialAddr() string {
+	main := net.JoinHostPort("127.0.0.1", strconv.Itoa(b.Port))
+	if b.DataDir == "" {
+		return main
+	}
+	file, err := os.Open(filepath.Join(b.DataDir, controlFileName))
+	if err != nil {
+		return main
+	}
+	defer file.Close()
+	var endpoint controlEndpoint
+	if err := json.NewDecoder(io.LimitReader(file, maxControlFileBytes)).Decode(&endpoint); err != nil || endpoint.Token != b.Token {
+		return main
+	}
+	addr, err := netip.ParseAddrPort(endpoint.Address)
+	if err != nil || !addr.Addr().IsLoopback() {
+		return main
+	}
+	return endpoint.Address
 }
 
 // pageURLPath is the transport route that answers a page URL carrying a
@@ -139,7 +183,7 @@ func (b Bootstrap) PageURL(ctx context.Context) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, pageURLTimeout)
 	defer cancel()
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", b.Port, pageURLPath)
+	endpoint := "http://" + b.dialAddr() + pageURLPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
