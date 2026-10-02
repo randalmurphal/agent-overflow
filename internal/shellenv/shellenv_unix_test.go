@@ -136,7 +136,8 @@ func fakeShell(t *testing.T, payload string) string {
 	body := "#!/bin/sh\n" +
 		"printf '%s\\n' '" + pathStartSentinel + "'\n" +
 		"printf '%s\\n' '" + payload + "'\n" +
-		"printf '%s\\n' '" + pathEndSentinel + "'\n"
+		"printf '%s\\n' '" + pathEndSentinel + "'\n" +
+		"printf '%s\\n' '" + varsStartSentinel + "' '" + varsEndSentinel + "'\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake shell: %v", err)
 	}
@@ -149,8 +150,8 @@ func TestProbe_ReturnsSentinelPATH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	if got != "/fake/login/bin:/usr/bin" {
-		t.Fatalf("probe returned %q", got)
+	if got.path != "/fake/login/bin:/usr/bin" {
+		t.Fatalf("probe returned %q", got.path)
 	}
 }
 
@@ -223,7 +224,7 @@ func shellScript(t *testing.T, prelude, payload string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fakesh")
 	body := "#!/bin/sh\n" + prelude + "\n" +
-		"printf '%s\\n' '" + pathStartSentinel + "' '" + payload + "' '" + pathEndSentinel + "'\n"
+		"printf '%s\\n' '" + pathStartSentinel + "' '" + payload + "' '" + pathEndSentinel + "' '" + varsStartSentinel + "' '" + varsEndSentinel + "'\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake shell: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestProbeHelper(t *testing.T) {
 		os.Exit(0)
 	case "background":
 		got, err := probe(context.Background(), os.Getenv(probeHelperShell))
-		fmt.Printf("probe returned %s err=%v\n", got, err)
+		fmt.Printf("probe returned %s err=%v\n", got.path, err)
 		os.Exit(0)
 	default:
 		t.Skip("subprocess of TestProbe_InBackgroundProcessGroupCompletes")
@@ -325,8 +326,8 @@ func TestProbe_DescendantHoldingStdoutDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	if got != "/fake/login/bin" {
-		t.Fatalf("probe returned %q", got)
+	if got.path != "/fake/login/bin" {
+		t.Fatalf("probe returned %q", got.path)
 	}
 	if elapsed := time.Since(started); elapsed > probeTimeout {
 		t.Fatalf("probe took %s, past its %s cap", elapsed, probeTimeout)

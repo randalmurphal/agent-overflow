@@ -288,8 +288,8 @@ func shouldSyncShellEnv(flags cliFlags) bool {
 }
 
 func syncShellEnvForBoot() {
-	// Sync PATH from the user's login shell before any subsystem
-	// resolves a binary. Without this, the WSL backend (spawned by
+	// Sync PATH and TLS/proxy settings from the user's login shell before
+	// any subsystem resolves a binary. Without this, the WSL backend (spawned by
 	// `wsl.exe -d <distro> -- <bin>`, no shell init) and a Finder-
 	// launched .app on macOS both see only the OS's default PATH —
 	// missing nvm / asdf / ~/.local/bin / ~/.npm-global/bin and

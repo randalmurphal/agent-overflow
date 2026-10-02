@@ -387,8 +387,8 @@ func (l *Launcher) childExited(within time.Duration) bool {
 // destroys quoting and pre-expands `$` references in the memory-limit
 // wrapper's script (a zsh login shell turned `exec "$@"` into `exec ""` —
 // incident 2026-08-30, first Windows launch after the wrapper landed).
-// The backend never needed the login shell: it probes login-shell PATH
-// itself via internal/shellenv. After the command,
+// The backend never needed the login shell: it probes the login shell's
+// PATH and TLS/proxy settings itself via internal/shellenv. After the command,
 // `--print-url-fd 0` selects headless mode without overriding the backend's
 // saved network bind. It hands {port, token} back over the stdout bootstrap
 // sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
