@@ -86,6 +86,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
 	4113468152: 'home', // DiscoverComputers
+	41472159: 'thread', // DismissThreadWorktreeSetup
 	115027584: 'home', // DownloadUpdate
 	1594348919: 'selected', // FetchForgeAttachment
 	1601396603: 'home', // FinishPasskeyRegistration

@@ -25,6 +25,7 @@ import { threadHasScope } from '../transport/entityScopes';
 
 import type { WorktreeSetupEvent } from '../types/events';
 import {
+  DismissThreadWorktreeSetup,
   GetThreadWorktreeSetup,
   RetryThreadWorktreeSetup,
 } from './bindings';
@@ -53,10 +54,10 @@ export interface WorktreeSetupView {
   startedAt: number;
   finishedAt: number;
   /**
-   * Local-only: the user collapsed the panel to its one-line bar. Never
-   * pushed and never hydrated — dismissing is a view preference about this
-   * client's screen, not state the backend owns. Reset by a new run so a
-   * retry's panel opens.
+   * Local-only: the user dismissed this failure and the backend is retiring
+   * it. The panel hides at once; the backend's cancelled frame then drops the
+   * view here and in every other client. Survives a hydration of the same
+   * run; a different run is a new outcome and shows.
    */
   dismissed: boolean;
 }
@@ -103,16 +104,23 @@ export function dropWorktreeSetup(key: string): void {
   views.drop(key);
 }
 
-export function dismissWorktreeSetup(key: string): void {
+/**
+ * Retires a failed run for good. A rejected dismissal shows the failure again
+ * so the user is not left believing it is gone.
+ */
+export async function dismissWorktreeSetup(key: string): Promise<void> {
   const view = views.get(key);
-  if (!view || view.dismissed) return;
+  if (!view || view.state !== 'failed' || view.dismissed) return;
   views.set(key, { ...view, dismissed: true });
-}
-
-export function showWorktreeSetup(key: string): void {
-  const view = views.get(key);
-  if (!view || !view.dismissed) return;
-  views.set(key, { ...view, dismissed: false });
+  try {
+    await DismissThreadWorktreeSetup(key);
+  } catch (err) {
+    const current = views.get(key);
+    if (current?.runId === view.runId && current.dismissed) {
+      views.set(key, { ...current, dismissed: false });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -211,8 +219,11 @@ async function hydrateInto(key: string, fetch: () => Promise<unknown>): Promise<
   const buffered = hydrationBuffers.get(key) ?? [];
   hydrationBuffers.delete(key);
 
-  const dismissed = views.get(key)?.dismissed ?? false;
-  const view = viewFromSnapshot(snapshot, dismissed);
+  const previous = views.get(key);
+  const view = viewFromSnapshot(snapshot);
+  // A dismissal in flight applies to the run the user dismissed, not to a
+  // different run the snapshot reports.
+  if (view && previous?.dismissed && previous.runId === view.runId) view.dismissed = true;
   views.set(key, view);
   if (view?.state === 'succeeded') scheduleSuccessExpiry(key, view.runId);
   // Replayed as reconciliation, not as live input: a chunk still ahead of the
@@ -343,9 +354,6 @@ function finishRun(key: string, evt: WorktreeSetupEvent, replaying: boolean): vo
     state,
     error: evt.error ?? '',
     finishedAt: evt.finishedAt ?? 0,
-    // A failure the user had already collapsed re-opens: this is a new
-    // outcome, not the one they dismissed.
-    dismissed: state === 'failed' ? false : view.dismissed,
   });
   if (state === 'succeeded') scheduleSuccessExpiry(key, view.runId);
 }
@@ -362,7 +370,7 @@ function normalizeState(state: string | undefined): WorktreeSetupState {
   }
 }
 
-function viewFromSnapshot(snapshot: unknown, dismissed: boolean): WorktreeSetupView | null {
+function viewFromSnapshot(snapshot: unknown): WorktreeSetupView | null {
   const record = snapshot as Partial<WorktreeSetupView> & { stepStatuses?: string[] } | null;
   if (!record) return null;
   const state = normalizeState(record.state);
@@ -382,7 +390,7 @@ function viewFromSnapshot(snapshot: unknown, dismissed: boolean): WorktreeSetupV
     worktreePath: record.worktreePath ?? '',
     startedAt: record.startedAt ?? 0,
     finishedAt: record.finishedAt ?? 0,
-    dismissed,
+    dismissed: false,
   };
 }
 

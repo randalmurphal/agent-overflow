@@ -161,7 +161,9 @@ export {
   // companion to the worktree:setup event stream (a client that missed
   // every frame converges on the same state); the retry re-reads the
   // project's recipe, so fixing it in Settings and pressing Retry does
-  // what the user means. See app_worktree_setup.go.
+  // what the user means; dismiss retires a failure in every client. See
+  // app_worktree_setup.go.
+  DismissThreadWorktreeSetup,
   GetThreadWorktreeSetup,
   RetryThreadWorktreeSetup,
 

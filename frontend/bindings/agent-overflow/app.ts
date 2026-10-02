@@ -965,6 +965,15 @@ export function DiscoverComputers(): $CancellablePromise<attachedbackends$0.Disc
 }
 
 /**
+ * DismissThreadWorktreeSetup retires a thread's failed worktree setup: the
+ * panel and the sidebar pill clear in every client and do not come back. A run
+ * still in flight is refused, not cancelled.
+ */
+export function DismissThreadWorktreeSetup(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(41472159, threadID);
+}
+
+/**
  * DownloadUpdate downloads, verifies, and stages a release, then leaves it
  * pending a user-driven restart. It returns as soon as the work is launched:
  * the download blocks for seconds-to-minutes, so it runs off the RPC goroutine

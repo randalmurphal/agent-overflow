@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import type { WorktreeSetupEvent } from '../../types/events';
 
+const DismissThreadWorktreeSetup = vi.fn();
 const GetThreadWorktreeSetup = vi.fn();
 const RetryThreadWorktreeSetup = vi.fn();
 const addToast = vi.fn();
 
 vi.mock('../../stores/bindings', () => ({
+  DismissThreadWorktreeSetup: (...args: unknown[]) => DismissThreadWorktreeSetup(...args),
   GetThreadWorktreeSetup: (...args: unknown[]) => GetThreadWorktreeSetup(...args),
   RetryThreadWorktreeSetup: (...args: unknown[]) => RetryThreadWorktreeSetup(...args),
 }));
@@ -43,6 +45,7 @@ function finish(state: string, error = '', runId = 'run-1'): WorktreeSetupEvent 
 
 beforeEach(() => {
   resetWorktreeSetupForTest();
+  DismissThreadWorktreeSetup.mockReset();
   GetThreadWorktreeSetup.mockReset();
   RetryThreadWorktreeSetup.mockReset();
   addToast.mockReset();
@@ -52,7 +55,6 @@ describe('<WorktreeSetupPanel>', () => {
   it('renders nothing for a thread with no run', () => {
     const { container } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     expect(container.querySelector('[data-testid="worktree-setup-panel"]')).toBeNull();
-    expect(container.querySelector('[data-testid="worktree-setup-bar"]')).toBeNull();
   });
 
   it('shows every step with its status while running', async () => {
@@ -124,23 +126,34 @@ describe('<WorktreeSetupPanel>', () => {
     expect(getByTestId('worktree-setup-error').textContent).toContain('exit status 1');
   });
 
-  // Dismiss COLLAPSES — it does not hide. The worktree is genuinely
-  // under-provisioned until something fixes it.
-  it('collapses a failure to a one-line bar and back', async () => {
+  it('dismisses a failure entirely', async () => {
+    DismissThreadWorktreeSetup.mockResolvedValue(undefined);
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
     const { container, getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-dismiss')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-dismiss'));
-    await waitFor(() => expect(getByTestId('worktree-setup-bar')).toBeTruthy());
-    expect(container.querySelector('[data-testid="worktree-setup-panel"]')).toBeNull();
-    expect(getByTestId('worktree-setup-bar').textContent).toContain('Worktree setup failed');
-    // Retry stays reachable from the collapsed bar.
-    expect(getByTestId('worktree-setup-bar-retry')).toBeTruthy();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="worktree-setup-panel"]')).toBeNull();
+    });
+    expect(container.textContent).toBe('');
+    expect(DismissThreadWorktreeSetup).toHaveBeenCalledWith(THREAD);
+  });
 
-    await fireEvent.click(getByTestId('worktree-setup-show'));
-    await waitFor(() => expect(getByTestId('worktree-setup-panel')).toBeTruthy());
+  it('surfaces a rejected dismissal and restores the failure', async () => {
+    DismissThreadWorktreeSetup.mockRejectedValue(new Error('setup is still running'));
+    applyWorktreeSetupEvent(started());
+    applyWorktreeSetupEvent(finish('failed', 'boom'));
+    const { getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
+    await waitFor(() => expect(getByTestId('worktree-setup-dismiss')).toBeTruthy());
+
+    await fireEvent.click(getByTestId('worktree-setup-dismiss'));
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(addToast.mock.calls[0][0]).toBe('error');
+    await waitFor(() => {
+      expect(getByTestId('worktree-setup-panel').getAttribute('data-state')).toBe('failed');
+    });
   });
 
   it('retries and flips back to running', async () => {

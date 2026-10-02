@@ -12,9 +12,9 @@
   //     information the user has to act on, and the backend has already
   //     dropped the run. The store owns that timer, so a run that finishes
   //     while its thread is off screen never surfaces a stale card later.
-  //   - Failure stays, with the failed step highlighted and Retry in reach.
-  //     Dismissing it collapses to a one-line bar rather than hiding it: the
-  //     worktree is genuinely under-provisioned until something fixes it.
+  //   - Failure stays, with the failed step highlighted and Retry in reach,
+  //     until the user retries or dismisses it. Dismiss retires the failure
+  //     in the backend, so it is gone from every client for good.
   import AnsiText from './AnsiText.svelte';
   import WorktreeSetupSteps from './WorktreeSetupSteps.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -22,7 +22,6 @@
     dismissWorktreeSetup,
     getWorktreeSetup,
     retryWorktreeSetup,
-    showWorktreeSetup,
   } from '../../stores/worktreeSetup.svelte';
   import { userFacingError } from '../../utils/userFacingError';
 
@@ -75,87 +74,69 @@
       retrying = false;
     }
   }
+
+  async function onDismiss(): Promise<void> {
+    try {
+      await dismissWorktreeSetup(setupKey);
+    } catch (err) {
+      addToast('error', userFacingError(err, 'Failed to dismiss worktree setup'));
+    }
+  }
 </script>
 
-{#if view}
-  {#if view?.dismissed}
+{#if view && !view.dismissed}
+  <div
+    class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2"
+    data-testid="worktree-setup-panel"
+    data-state={view?.state}
+  >
     <div
-      class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2"
-      data-testid="worktree-setup-bar"
+      class="flex max-h-[45vh] min-h-0 flex-col border bg-surface-1/95 shadow-sheet
+        {failed ? 'border-warning/50' : 'border-border-subtle'}"
     >
-      <div class="flex items-center gap-2 border border-warning/40 bg-surface-1/95 px-3 py-1.5 text-xs shadow-sheet">
-        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true"></span>
-        <span class="min-w-0 flex-1 truncate text-text-secondary">Worktree setup failed</span>
-        <button
-          type="button"
-          class="text-fg-muted transition-colors hover:text-text-primary"
-          data-testid="worktree-setup-show"
-          onclick={() => showWorktreeSetup(setupKey)}
-        >Show</button>
-        <span class="text-fg-muted" aria-hidden="true">·</span>
-        <button
-          type="button"
-          class="text-warning transition-colors hover:text-text-primary disabled:opacity-50"
-          data-testid="worktree-setup-bar-retry"
-          disabled={retrying}
-          onclick={onRetry}
-        >Retry</button>
+      <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
+        <span
+          class="h-1.5 w-1.5 shrink-0 rounded-full {failed ? 'bg-warning' : running ? 'bg-info animate-pulse' : 'bg-success'}"
+          aria-hidden="true"
+        ></span>
+        <span class="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{headline}</span>
+        {#if elapsedLabel}
+          <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{elapsedLabel}</span>
+        {/if}
+        {#if failed}
+          <button
+            type="button"
+            class="shrink-0 border border-warning/50 px-2 py-0.5 text-[0.6875rem] text-warning transition-colors hover:bg-warning/10 disabled:opacity-50"
+            data-testid="worktree-setup-retry"
+            disabled={retrying}
+            onclick={onRetry}
+          >Retry</button>
+          <button
+            type="button"
+            class="shrink-0 text-[0.6875rem] text-fg-muted transition-colors hover:text-text-primary"
+            data-testid="worktree-setup-dismiss"
+            onclick={onDismiss}
+          >Dismiss</button>
+        {/if}
       </div>
-    </div>
-  {:else}
-    <div
-      class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2"
-      data-testid="worktree-setup-panel"
-      data-state={view?.state}
-    >
-      <div
-        class="flex max-h-[45vh] min-h-0 flex-col border bg-surface-1/95 shadow-sheet
-          {failed ? 'border-warning/50' : 'border-border-subtle'}"
-      >
-        <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
-          <span
-            class="h-1.5 w-1.5 shrink-0 rounded-full {failed ? 'bg-warning' : running ? 'bg-info animate-pulse' : 'bg-success'}"
-            aria-hidden="true"
-          ></span>
-          <span class="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{headline}</span>
-          {#if elapsedLabel}
-            <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{elapsedLabel}</span>
-          {/if}
-          {#if failed}
-            <button
-              type="button"
-              class="shrink-0 border border-warning/50 px-2 py-0.5 text-[0.6875rem] text-warning transition-colors hover:bg-warning/10 disabled:opacity-50"
-              data-testid="worktree-setup-retry"
-              disabled={retrying}
-              onclick={onRetry}
-            >Retry</button>
-            <button
-              type="button"
-              class="shrink-0 text-[0.6875rem] text-fg-muted transition-colors hover:text-text-primary"
-              data-testid="worktree-setup-dismiss"
-              onclick={() => dismissWorktreeSetup(setupKey)}
-            >Dismiss</button>
-          {/if}
-        </div>
 
-        <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-          {#if (view?.steps.length ?? 0) > 0}
-            <WorktreeSetupSteps steps={view?.steps ?? []} statuses={view?.stepStatuses ?? []} />
-          {/if}
-          {#if failed && view?.error}
-            <p
-              class="mt-2 whitespace-pre-wrap break-words text-xs text-error"
-              data-testid="worktree-setup-error"
-            >{failedStep ? `${failedStep.label}: ` : ''}{view?.error ?? ''}</p>
-          {/if}
-          {#if view?.output}
-            <AnsiText
-              source={view?.output ?? ''}
-              class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[0.6875rem] leading-relaxed text-text-secondary"
-            />
-          {/if}
-        </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        {#if (view?.steps.length ?? 0) > 0}
+          <WorktreeSetupSteps steps={view?.steps ?? []} statuses={view?.stepStatuses ?? []} />
+        {/if}
+        {#if failed && view?.error}
+          <p
+            class="mt-2 whitespace-pre-wrap break-words text-xs text-error"
+            data-testid="worktree-setup-error"
+          >{failedStep ? `${failedStep.label}: ` : ''}{view?.error ?? ''}</p>
+        {/if}
+        {#if view?.output}
+          <AnsiText
+            source={view?.output ?? ''}
+            class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[0.6875rem] leading-relaxed text-text-secondary"
+          />
+        {/if}
       </div>
     </div>
-  {/if}
+  </div>
 {/if}

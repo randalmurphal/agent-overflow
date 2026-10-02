@@ -35,8 +35,9 @@ Application service for asynchronous chat-worktree setup runs.
 
 - Do not add provider, session, or workflow-runtime behavior here.
 - Do not split any run field or lifecycle mutex back onto `App`.
-- Snapshot and retry RPCs resolve the persisted thread and its current
-  worktree; a run is never selected by a caller-supplied workspace path.
+- Snapshot, retry and dismiss RPCs resolve the persisted thread and its
+  current worktree; a run is never selected by a caller-supplied workspace path.
 - `CancelPath` exists for destructive workspace/project cleanup and must cancel
   every run whose canonical worktree matches the path before removal begins.
-- A setup failure never rolls back a chat worktree. Retain it for retry.
+- A setup failure never rolls back a chat worktree. Retain it for retry
+  until the user dismisses it.

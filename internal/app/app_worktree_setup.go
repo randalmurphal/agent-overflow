@@ -38,6 +38,15 @@ func (a *App) RetryThreadWorktreeSetup(threadID string) error {
 	return a.worktreeSetupService().RetryThreadWorktreeSetup(threadID)
 }
 
+// DismissThreadWorktreeSetup retires a thread's failed worktree setup: the
+// panel and the sidebar pill clear in every client and do not come back. A run
+// still in flight is refused, not cancelled.
+//
+//ao:scope terminal:operate
+func (a *App) DismissThreadWorktreeSetup(threadID string) error {
+	return a.worktreeSetupService().DismissThread(threadID)
+}
+
 func (a *App) worktreeSetupService() *worktreesetupapp.Service {
 	a.worktreeSetupAppOnce.Do(func() {
 		var setupStore worktreesetupapp.Store

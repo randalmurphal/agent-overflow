@@ -267,6 +267,7 @@ export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
 export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
 export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');
 export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
+export const DismissThreadWorktreeSetup = dispatch('DismissThreadWorktreeSetup');
 export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
 export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
 export const Version = dispatch('Version');

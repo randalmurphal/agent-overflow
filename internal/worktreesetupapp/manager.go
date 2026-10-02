@@ -35,7 +35,8 @@ import (
 //     snapshot RPC (GetThreadWorktreeSetup) as the reconnect companion.
 //   - NOT ROLLED BACK. A failure leaves the worktree in place.
 //   - VISIBLY FAILED. `threads.worktree_setup_state` outlives the process, so
-//     a restart still shows the sidebar pill and keeps Retry reachable.
+//     a restart still shows the sidebar pill and keeps Retry reachable until
+//     the user dismisses the failure.
 //
 // It runs on worktrees this app cut for a persisted chat thread through
 // CreateThread's worktree-branch option, PrepareThreadWorktree, or
@@ -487,6 +488,44 @@ func (s *Service) CancelThread(threadID string) {
 		// serves it with an empty run id, which this frame retires.
 		s.emitCancelled(threadID, "", previous.WorktreePath)
 	}
+}
+
+// DismissThread retires the thread's failed setup at the user's request. The
+// record drops, the durable state clears, and every client receives the same
+// cancelled frame CancelThread sends, so the panel and the sidebar pill go
+// away everywhere and stay away. A run in flight is refused rather than
+// killed: another client may have just retried it. A thread with no failure
+// is a no-op.
+func (s *Service) DismissThread(threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("dismiss worktree setup: thread id is required")
+	}
+	s.mu.Lock()
+	run := s.runs[threadID]
+	running := run != nil && run.state == runRunning
+	s.mu.Unlock()
+	if running {
+		return fmt.Errorf("dismiss worktree setup: setup for thread %s is still running", threadID)
+	}
+	if run != nil {
+		s.discardCancelledRun(run)
+		return nil
+	}
+	thread, err := s.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("dismiss worktree setup: %w", err)
+	}
+	if thread.WorktreeSetupState != store.WorktreeSetupStateFailed {
+		return nil
+	}
+	previous := s.setThreadWorktreeSetupState(threadID, store.WorktreeSetupStateNone)
+	if previous.WorktreeSetupState == store.WorktreeSetupStateFailed {
+		// Same retirement as CancelThread's for a failure that outlived its
+		// process: the snapshot served it with an empty run id.
+		s.emitCancelled(threadID, "", previous.WorktreePath)
+	}
+	return nil
 }
 
 // CancelPath stops every recipe executing in a directory and joins it before

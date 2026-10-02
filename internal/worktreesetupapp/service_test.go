@@ -303,3 +303,74 @@ func TestCancelThreadOnALiveRunEmitsOneCancelledFrame(t *testing.T) {
 	}
 	assertSetupCleared(t, service, storage, thread.ID)
 }
+
+// Dismissal retires a failure the same way cancellation does: one cancelled
+// frame for every client and no durable state left to restore it.
+func TestDismissThreadRetiresARetainedFailure(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "exit 1")
+	runID := failSetup(t, service, storage, thread)
+
+	mark := events.mark()
+	if err := service.DismissThread(thread.ID); err != nil {
+		t.Fatalf("DismissThread: %v", err)
+	}
+	assertOneCancelled(t, events, mark, runID)
+	assertSetupCleared(t, service, storage, thread.ID)
+
+	mark = events.mark()
+	if err := service.DismissThread(thread.ID); err != nil {
+		t.Fatalf("repeat DismissThread: %v", err)
+	}
+	if frames := events.cancelledSince(mark); len(frames) != 0 {
+		t.Fatalf("repeat dismiss emitted %d cancelled frames, want none", len(frames))
+	}
+}
+
+func TestDismissThreadRetiresADurableOnlyFailure(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "exit 1")
+	if err := storage.SetThreadWorktreeSetupState(thread.ID, store.WorktreeSetupStateFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.DismissThread(thread.ID); err != nil {
+		t.Fatalf("DismissThread: %v", err)
+	}
+	assertOneCancelled(t, events, 0, "")
+	assertSetupCleared(t, service, storage, thread.ID)
+}
+
+// Another client may have just retried. Dismissal must not kill that run or
+// clear the state describing it.
+func TestDismissThreadRefusesALiveRun(t *testing.T) {
+	service, storage, events, thread := newCancelTestService(t, "sleep 30")
+	if err := service.LaunchThread(thread, true); err != nil {
+		t.Fatalf("LaunchThread: %v", err)
+	}
+
+	if err := service.DismissThread(thread.ID); err == nil {
+		t.Fatal("DismissThread on a live run succeeded, want a refusal")
+	}
+	snapshot, err := service.GetThreadWorktreeSetup(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadWorktreeSetup: %v", err)
+	}
+	if snapshot.State != runRunning {
+		t.Fatalf("snapshot state = %q, want running", snapshot.State)
+	}
+	if got, _ := storage.GetThread(thread.ID); got.WorktreeSetupState != store.WorktreeSetupStateRunning {
+		t.Fatalf("durable state = %q, want running", got.WorktreeSetupState)
+	}
+	if frames := events.cancelledSince(0); len(frames) != 0 {
+		t.Fatalf("refused dismiss emitted %d cancelled frames, want none", len(frames))
+	}
+}
+
+func TestDismissThreadRefusesABadThread(t *testing.T) {
+	service, _, _, _ := newCancelTestService(t, "exit 1")
+	if err := service.DismissThread("  "); err == nil {
+		t.Fatal("DismissThread with a blank id succeeded, want an error")
+	}
+	if err := service.DismissThread("missing"); err == nil {
+		t.Fatal("DismissThread for an unknown thread succeeded, want an error")
+	}
+}

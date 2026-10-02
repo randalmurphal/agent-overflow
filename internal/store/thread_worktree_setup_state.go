@@ -10,15 +10,17 @@ import (
 // CHECK constraint and the Go writers cannot drift.
 const (
 	// WorktreeSetupStateNone is "nothing to say": the recipe never ran for
-	// this thread's worktree, it succeeded, it was cancelled, or the thread
-	// has since moved off that worktree. All four are the same absence.
+	// this thread's worktree, it succeeded, it was cancelled, the user
+	// dismissed its failure, or the thread has since moved off that worktree.
+	// All five are the same absence.
 	WorktreeSetupStateNone = ""
 	// WorktreeSetupStateRunning is written at kickoff. A row still carrying it
 	// at startup is crash residue — see SweepRunningThreadWorktreeSetups.
 	WorktreeSetupStateRunning = "running"
 	// WorktreeSetupStateFailed is the one state a restart must preserve: the
 	// worktree exists and is usable, but the recipe did not finish, so the
-	// sidebar advertises it and the retry affordance stays reachable.
+	// sidebar advertises it and the retry affordance stays reachable until
+	// the user dismisses it.
 	WorktreeSetupStateFailed = "failed"
 )
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -632,12 +633,61 @@ func TestWorktreeSetupSnapshotReportsADurableFailureWithoutARecord(t *testing.T)
 	}
 }
 
+// Dismissal through the bound method: the card's frame and the sidebar pill's
+// row update both reach clients, and nothing durable can bring the failure back.
+func TestWorktreeSetupDismissRetiresTheFailureEverywhere(t *testing.T) {
+	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
+		Run: [][]string{{"/bin/sh", "-c", "exit 3"}},
+	})
+	if err := app.launchThreadWorktreeSetup(thread, false); err != nil {
+		t.Fatalf("launchThreadWorktreeSetup: %v", err)
+	}
+	joinSetupRun(t, app, thread.ID)
+	waitForSetupState(t, app, thread.ID, store.WorktreeSetupStateFailed)
+	failedRun := recorder.terminal(t).RunID
+
+	recorder.mu.Lock()
+	rowUpdatesBefore := len(recorder.other)
+	recorder.mu.Unlock()
+	if err := app.DismissThreadWorktreeSetup(thread.ID); err != nil {
+		t.Fatalf("DismissThreadWorktreeSetup: %v", err)
+	}
+
+	terminal := recorder.terminal(t)
+	if terminal.State != worktreeSetupRunCancelled || terminal.RunID != failedRun {
+		t.Fatalf("terminal frame = %q run %q, want cancelled run %q", terminal.State, terminal.RunID, failedRun)
+	}
+	got, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.WorktreeSetupState != store.WorktreeSetupStateNone {
+		t.Fatalf("worktree setup state = %q, want empty", got.WorktreeSetupState)
+	}
+	recorder.mu.Lock()
+	rowUpdates := recorder.other[rowUpdatesBefore:]
+	recorder.mu.Unlock()
+	if !slices.Contains(rowUpdates, eventchan.ThreadUpdated.String()) {
+		t.Fatalf("events after dismiss = %v, want a thread row update for the sidebar pill", rowUpdates)
+	}
+	snapshot, err := app.GetThreadWorktreeSetup(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadWorktreeSetup: %v", err)
+	}
+	if snapshot.State != worktreeSetupRunIdle {
+		t.Fatalf("snapshot state = %q, want idle", snapshot.State)
+	}
+}
+
 func TestGetThreadWorktreeSetupRefusesABlankThreadID(t *testing.T) {
 	app, _, _ := newWorktreeSetupTestApp(t, nil)
 	if _, err := app.GetThreadWorktreeSetup("  "); err == nil {
 		t.Fatal("blank thread id reported success")
 	}
 	if err := app.RetryThreadWorktreeSetup(""); err == nil {
+		t.Fatal("blank thread id reported success")
+	}
+	if err := app.DismissThreadWorktreeSetup(""); err == nil {
 		t.Fatal("blank thread id reported success")
 	}
 }

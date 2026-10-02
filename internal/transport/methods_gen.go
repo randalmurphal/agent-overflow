@@ -115,6 +115,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                          // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},           // main.App.DiscardUnpreparedThreadTransfer
 	{Name: "DiscoverComputers", ID: 4113468152, Scope: "host", Route: "home"},                                        // main.App.DiscoverComputers
+	{Name: "DismissThreadWorktreeSetup", ID: 41472159, Scope: "terminal:operate", Route: "thread"},                   // main.App.DismissThreadWorktreeSetup
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                            // main.App.DownloadUpdate
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected"},                          // main.App.FetchForgeAttachment
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home"},                        // main.App.FinishPasskeyRegistration
