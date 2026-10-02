@@ -2,6 +2,7 @@ package tailnet
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +12,41 @@ import (
 	"testing"
 	"time"
 
+	"tailscale.com/envknob"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
+	"tailscale.com/net/portmapper"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/eventbus"
 )
+
+// TestMain turns off tsnet's port mapper for every node in this package.
+// Left on, each node probes the host's default gateway with NAT-PMP, PCP
+// and UPnP (UDP 5351 and 1900, plus SSDP multicast) looking for a router
+// to open a port on. A loopback rig has no use for a mapping, and the
+// probes are the only traffic these tests would send off the machine.
+// The knob is read through envknob, whose registered value is fixed at
+// package init, so it is set here rather than with os.Setenv.
+func TestMain(m *testing.M) {
+	envknob.Setenv("TS_DISABLE_PORTMAPPER", "true")
+	os.Exit(m.Run())
+}
+
+// TestNodesNeverProbeTheGateway pins TestMain's knob against the port
+// mapper tsnet nodes use: a probe must refuse before it looks for a
+// gateway, not after.
+func TestNodesNeverProbeTheGateway(t *testing.T) {
+	bus := eventbus.New()
+	t.Cleanup(bus.Close)
+	client := portmapper.NewClient(portmapper.Config{EventBus: bus, NetMon: netmon.NewStatic()})
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Probe(context.Background()); !errors.Is(err, portmapper.ErrPortMappingDisabled) {
+		t.Fatalf("port mapper probe = %v, want %v", err, portmapper.ErrPortMappingDisabled)
+	}
+}
 
 // The rig: an in-process coordination server plus a loopback DERP/STUN
 // pair, so no test in this package can reach Tailscale's real control
