@@ -60,6 +60,9 @@ var listenerPackageCalls = map[string]map[string]bool{
 		"ListenAndServe":    true,
 		"ListenAndServeTLS": true,
 	},
+	"agent-overflow/internal/transport": {
+		"ListenTCP": true,
+	},
 }
 
 // listenerMethodCalls are bind calls reached through a value rather than

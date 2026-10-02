@@ -16,7 +16,7 @@ import (
 // adopting a running backend. The main bind stays IPv4 because Windows
 // reaches it through WSL's localhost forwarding, which carries IPv4 only;
 // in-distro clients use ::1 so they stay in the Linux kernel
-// (loopback.Listen). ServeAuxiliary gives it the main bind's routes,
+// (loopback.EphemeralIPv6). ServeAuxiliary gives it the main bind's routes,
 // credentials and session registry, and it outlives LAN rebinds. While it
 // is down those clients use the main bind.
 type localListenerState struct {
@@ -33,7 +33,7 @@ func (a *App) startLocalListener() {
 	if srv == nil {
 		return
 	}
-	ln, err := loopback.Listen()
+	ln, err := net.Listen("tcp6", loopback.EphemeralIPv6)
 	if err != nil {
 		a.bootPhaseFailed(fmt.Errorf("local ::1 listener unavailable, local clients use %s: %w", srv.Addr(), err))
 		return

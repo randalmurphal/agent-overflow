@@ -449,6 +449,25 @@ var Listeners = []Listener{
 			"that certificate.",
 	},
 	{
+		Name:       "same-side loopback listener",
+		Package:    "internal/app",
+		Binding:    BindLoopback,
+		Credential: CredPageSession,
+		Posture:    PostureAppOrigin,
+		Sites:      []string{"internal/app/app_local_listener.go"},
+		Why: "The same application as the transport row, on an ephemeral " +
+			"::1 port for clients on the backend's side of any WSL " +
+			"boundary: the ao CLI that provider sessions run, and the " +
+			"local control client. It exists because WSL's virtioproxy " +
+			"networking relays in-distro 127.0.0.1 through Windows, which " +
+			"refuses bursts of connects, while ::1 stays in the Linux " +
+			"kernel. Like the tailnet node it is handed to " +
+			"internal/transport's ServeAuxiliary, so the credential, " +
+			"origin allow-list, Host guard and scope gate are the main " +
+			"bind's own. It never moves off ::1 and Rebind does not touch " +
+			"it, so the main bind's LAN capability does not extend to it.",
+	},
+	{
 		Name:       "--connect client stub",
 		Package:    "internal/clientmode",
 		Binding:    BindLANCapable,
@@ -558,7 +577,7 @@ var Listeners = []Listener{
 		Sites:      []string{"internal/cdprelay/endpoint.go"},
 		Why: "The WSL half of the embedded browser pane. It exists only " +
 			"where the executable built a relay (the WSL deployment), and " +
-			"it binds 127.0.0.1:0 so chromedp inside the backend can dial " +
+			"it binds an ephemeral ::1 port so chromedp inside the backend can dial " +
 			"a CDP endpoint that actually lives in the Windows launcher. " +
 			"Peer locality is the whole check, and the capability behind " +
 			"it is large: a caller reaching it drives the pane's WebView2 " +
@@ -1325,6 +1344,19 @@ var Origins = []Origin{
 			"Nothing about the bytes differs: the handler is the same " +
 			"object, so the Content-Security-Policy and the " +
 			"authored-content rule above hold here unchanged.",
+	},
+	{
+		Name:     "SPA origin (same-side loopback listener)",
+		Listener: "same-side loopback listener",
+		Author:   AuthorBuild,
+		Posture:  PostureAppOrigin,
+		Why: "The same embedded bundle from the same mux at an [::1] " +
+			"authority, a distinct browser origin from the main bind's " +
+			"for the same reason as the tailnet row. Its clients are " +
+			"native, and the page URL it mints names the main bind, so no " +
+			"desktop window loads from it; the handler is the same object " +
+			"either way, so the Content-Security-Policy and the " +
+			"authored-content rule hold here unchanged.",
 	},
 	{
 		Name:     "SPA origin (--connect stub)",

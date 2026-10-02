@@ -170,11 +170,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}, nil
 }
 
-// Start binds an ephemeral ::1 port (loopback.Listen) and serves. Returns once the listener is
+// Start binds an ephemeral ::1 port (loopback.EphemeralIPv6) and serves. Returns once the listener is
 // bound; serve errors after that are logged (the harness dying with the
 // control plane is visible enough through failed session starts).
 func (s *Server) Start() error {
-	ln, err := loopback.Listen()
+	ln, err := net.Listen("tcp6", loopback.EphemeralIPv6)
 	if err != nil {
 		return fmt.Errorf("control: listen: %w", err)
 	}

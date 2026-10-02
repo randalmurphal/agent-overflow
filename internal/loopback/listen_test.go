@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestListenBindsIPv6Loopback(t *testing.T) {
-	ln, err := Listen()
+func TestEphemeralIPv6BindsIPv6Loopback(t *testing.T) {
+	ln, err := net.Listen("tcp6", EphemeralIPv6)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestListenBindsIPv6Loopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if addr.Addr() != netip.IPv6Loopback() || addr.Port() == 0 {
-		t.Fatalf("Listen bound %s, want [::1] on an ephemeral port", addr)
+		t.Fatalf("bound %s, want [::1] on an ephemeral port", addr)
 	}
 	accepted := make(chan string, 1)
 	go func() {
@@ -35,6 +35,6 @@ func TestListenBindsIPv6Loopback(t *testing.T) {
 	}
 	conn.Close()
 	if peer := <-accepted; !PeerAddress(peer) {
-		t.Fatalf("peer %q is not loopback; clients of Listen must keep loopback trust", peer)
+		t.Fatalf("peer %q is not loopback; clients must keep loopback trust", peer)
 	}
 }

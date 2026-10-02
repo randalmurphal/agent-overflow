@@ -75,7 +75,7 @@ type compactionHooks struct {
 // records identity from SessionStart; compaction arms/finalizes the
 // compaction-summarizer capture.
 func newHookRelay(feed func(json.RawMessage), onSession func(string, string, string), compaction compactionHooks, onError func(error)) (*hookRelay, error) {
-	ln, err := loopback.Listen()
+	ln, err := net.Listen("tcp6", loopback.EphemeralIPv6)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui hook relay: bind loopback: %w", err)
 	}

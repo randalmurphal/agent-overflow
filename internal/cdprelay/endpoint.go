@@ -93,7 +93,7 @@ func New(config Config) (*Endpoint, error) {
 	if logf == nil {
 		logf = log.Printf
 	}
-	listener, err := loopback.Listen()
+	listener, err := net.Listen("tcp6", loopback.EphemeralIPv6)
 	if err != nil {
 		return nil, fmt.Errorf("cdprelay: listen on loopback: %w", err)
 	}

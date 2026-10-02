@@ -27,7 +27,7 @@ import (
 //
 // ::1 goes first because WSL's virtioproxy (consomme) networking relays
 // in-distro IPv4 loopback through Windows, which is slower and refuses
-// bursts (see Listen); a server on both families is reached in-kernel, and
+// bursts (see EphemeralIPv6); a server on both families is reached in-kernel, and
 // one on 127.0.0.1 only costs an immediate refusal on ::1 first. The
 // timeout bounds each attempt, so a host where one family blackholes costs
 // at most twice it.
