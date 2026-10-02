@@ -256,7 +256,7 @@ func Serve(cfg Config) (*Server, error) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port)
-	listener, err := net.Listen("tcp", addr)
+	listener, err := transport.ListenTCP("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: listen %s: %w", addr, err)
 	}

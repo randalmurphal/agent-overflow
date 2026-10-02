@@ -766,7 +766,7 @@ func (s *Server) bindListener(addr string) (net.Listener, error) {
 		// forwards that family to Windows ::1, stranding IPv4 clients.
 		network = "tcp4"
 	}
-	inner, err := net.Listen(network, addr)
+	inner, err := ListenTCP(network, addr)
 	if err != nil {
 		return nil, err
 	}

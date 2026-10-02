@@ -25,7 +25,8 @@ SNI: the configured canonical domain receives the domain certificate and every
 other name receives the pinned self-signed certificate. Certificate swaps must
 take effect on the next handshake without rebinding or dropping connections.
 Explicit IPv4 addresses, including `0.0.0.0`, must bind as IPv4 for WSL relay
-compatibility.
+compatibility, and inside WSL a port-0 bind becomes an explicit bind of a
+probed port (`ListenTCP`) so WSL 2.7.x virtioproxy forwards it to Windows.
 
 ## Routes and authorization
 
