@@ -45,6 +45,7 @@ import (
 func (a *App) Start(ctx context.Context) (startErr error) {
 	defer func() {
 		if startErr == nil {
+			a.startLocalListener()
 			a.publishLocalControl()
 		}
 	}()

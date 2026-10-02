@@ -10,7 +10,11 @@ func (a *App) publishLocalControl() {
 	if srv == nil || a.configDir == "" {
 		return
 	}
-	if err := localcontrol.Publish(a.configDir, srv.Addr(), srv.Token()); err != nil {
+	address := srv.Addr()
+	if local := a.localListenerAddr(); local != "" {
+		address = local
+	}
+	if err := localcontrol.Publish(a.configDir, address, srv.Token()); err != nil {
 		log.Printf("local pairing console unavailable: %v", err)
 	}
 }

@@ -584,6 +584,7 @@ type App struct {
 	tailnet                 tailnetState
 	computerPairing         computerPairingState
 	nativeNetwork           nativeNetworkState
+	localListener           localListenerState
 	computerRoutesPublished computerRoutesPublication
 	// networkApply serializes every apply of the network preferences (the
 	// settings write, the rebind and the reconciler kicks are one act) across

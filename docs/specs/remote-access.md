@@ -1027,7 +1027,10 @@ two-option control defaulting to Full access.
 
 ### Multi-listener, one session store
 
-Loopback (webview, CLI), optional LAN bind, optional tsnet listener.
+IPv4 loopback (webview, connected browser), IPv6 loopback for clients on
+the backend's own side of a WSL boundary (session CLI, local control;
+`internal/app/app_local_listener.go`), optional LAN bind, optional tsnet
+listener.
 Sessions are valid across listeners **subject
 to their binding class** (§2). Local clients never hairpin through the
 tailnet, and every listener must enforce the credential's binding class;

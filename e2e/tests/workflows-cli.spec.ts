@@ -226,7 +226,9 @@ test('an interactive session starts, waits on, and reads a run through the app b
 
   const env = await sessionEnv(harness, thread.id);
   expect(env.AO_THREAD_ID).toBe(thread.id);
-  expect(env.AO_ENDPOINT).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  // The backend's ::1 listener: the CLI runs beside the provider, where IPv6
+  // loopback stays in the Linux kernel even under WSL virtioproxy.
+  expect(env.AO_ENDPOINT).toMatch(/^http:\/\/\[::1\]:\d+$/);
   // A conversation is not inside a run: the phase half of the contract is
   // absent, which is how the CLI knows it is interactive.
   expect(env.AO_RUN_ID).toBeUndefined();

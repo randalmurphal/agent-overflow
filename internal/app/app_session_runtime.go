@@ -220,7 +220,13 @@ func (a *App) mintAOCredential(thread store.Thread) (aoSessionCredential, error)
 	if !ok {
 		return aoSessionCredential{}, nil
 	}
-	endpoint, err := aoEndpointFromOrigin(server.Origin())
+	// The CLI runs beside the provider, on this side of any WSL boundary,
+	// so it dials the ::1 listener when there is one (app_local_listener.go).
+	origin := server.Origin()
+	if local := a.localListenerAddr(); local != "" {
+		origin = "http://" + local
+	}
+	endpoint, err := aoEndpointFromOrigin(origin)
 	if err != nil {
 		return aoSessionCredential{}, err
 	}
