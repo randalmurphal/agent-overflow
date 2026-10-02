@@ -327,9 +327,8 @@ type Registry struct {
 // Listeners is every port this repository's code opens, plus the ones
 // its child processes open on its behalf.
 //
-// Verified against the tree on 2026-09-01: 10 listeners across 8
-// packages, one of them implicit. The tailnet node is the row added since
-// the count docs/specs/remote-access.md §13 recorded on 2026-08-30.
+// Verified against the tree on 2026-10-01: 15 listeners across 12
+// packages, one of them implicit.
 var Listeners = []Listener{
 	{
 		Name: "nearby computer discovery", Package: "internal/nearby",

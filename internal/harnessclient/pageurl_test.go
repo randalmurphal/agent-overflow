@@ -23,8 +23,8 @@ func TestPageURLPathMatchesTransport(t *testing.T) {
 	}
 }
 
-// bootstrapFor points a Bootstrap at a test responder. PageURL builds its
-// endpoint from the port alone, so only the port travels.
+// bootstrapFor points a Bootstrap at a test responder. With no data dir
+// there is no published control.json, so PageURL dials the port alone.
 func bootstrapFor(t *testing.T, srv *httptest.Server, token string) Bootstrap {
 	t.Helper()
 	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))

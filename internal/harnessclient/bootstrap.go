@@ -6,7 +6,9 @@
 // cmd/ao-harness share one implementation of the bootstrap contract and
 // the frame handling. It links no App code and no transport server code:
 // everything here is what a foreign process can observe — a JSON line on
-// stdout, a 0600 file in the data dir, and one WebSocket.
+// stdout, 0600 files in the data dir, and one WebSocket. Unlike the e2e
+// twin, which runs in its own network namespace, it dials the ::1 address
+// the instance publishes in control.json (see dialAddr).
 //
 // The frame shapes below mirror internal/transport/frame.go. They are
 // restated rather than imported so a CLI does not link the server; a
