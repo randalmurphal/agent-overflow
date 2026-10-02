@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/coder/websocket"
@@ -92,7 +93,7 @@ func New(config Config) (*Endpoint, error) {
 	if logf == nil {
 		logf = log.Printf
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := loopback.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("cdprelay: listen on loopback: %w", err)
 	}
@@ -108,7 +109,7 @@ func New(config Config) (*Endpoint, error) {
 	return e, nil
 }
 
-// Addr is the loopback address chromedp connects to, e.g. 127.0.0.1:41235.
+// Addr is the loopback address chromedp connects to, e.g. [::1]:41235.
 func (e *Endpoint) Addr() string { return e.addr }
 
 // Close stops accepting, drops the live tunnel, and waits for every pump

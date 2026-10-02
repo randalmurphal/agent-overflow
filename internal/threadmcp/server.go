@@ -196,7 +196,7 @@ func (s *Server[T]) ensureStarted() error {
 	if s.server != nil {
 		return nil
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := loopback.Listen()
 	if err != nil {
 		return fmt.Errorf("MCP: listen: %w", err)
 	}

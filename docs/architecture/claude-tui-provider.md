@@ -77,7 +77,7 @@ cross-provider abstraction (Core Principle 6).
    AO (claudetui.Session)  │             the real `claude` TUI            │
                           │        (Ink app in a PTY, full-access)        │
   ┌──────────┐ keystrokes  │                                              │
-  │  Send /   ├────────────▶ stdin ─┐  ANTHROPIC_BASE_URL=127.0.0.1:NN    │
+  │  Send /   ├────────────▶ stdin ─┐  ANTHROPIC_BASE_URL=[::1]:NN        │
   │ Interrupt │            │        │  CLAUDE hooks → relay subcommand     │
   └──────────┘            │        ▼                                      │
                           │   ┌──────────┐  /v1/messages SSE              │
@@ -243,8 +243,8 @@ remembered acceptances. We do **not** manage an isolated config dir; we only
 ### Flags + env
 
 ```
-ANTHROPIC_BASE_URL=http://127.0.0.1:<gateway-port>   # per session
-AO_CLAUDE_HOOK_URL=http://127.0.0.1:<relay-port>     # per session
+ANTHROPIC_BASE_URL=http://[::1]:<gateway-port>       # per session
+AO_CLAUDE_HOOK_URL=http://[::1]:<relay-port>         # per session
 AO_CLAUDE_HOOK_TOKEN=<capability token>              # per session
 claude \
   --permission-mode bypassPermissions \

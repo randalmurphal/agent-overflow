@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // longPollWindow bounds a /commands request. Mocks immediately re-poll,
@@ -168,11 +170,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}, nil
 }
 
-// Start binds 127.0.0.1:0 and serves. Returns once the listener is
+// Start binds an ephemeral ::1 port (loopback.Listen) and serves. Returns once the listener is
 // bound; serve errors after that are logged (the harness dying with the
 // control plane is visible enough through failed session starts).
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := loopback.Listen()
 	if err != nil {
 		return fmt.Errorf("control: listen: %w", err)
 	}
@@ -193,7 +195,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Addr returns the bound address ("127.0.0.1:<port>").
+// Addr returns the bound address ("[::1]:<port>").
 func (s *Server) Addr() string {
 	if s.listener == nil {
 		return ""

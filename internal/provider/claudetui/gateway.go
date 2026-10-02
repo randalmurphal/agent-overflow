@@ -91,7 +91,7 @@ func newGateway(upstream string, drive agentTurnDriver, onError func(error), onC
 	if upstream == "" {
 		upstream = defaultUpstream
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := loopback.Listen()
 	if err != nil {
 		return nil, fmt.Errorf("claudetui gateway: bind loopback: %w", err)
 	}
