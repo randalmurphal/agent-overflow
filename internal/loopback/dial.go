@@ -7,7 +7,7 @@ import (
 )
 
 // Dialer returns a net/http DialContext that IGNORES the address it is
-// handed and dials this machine, 127.0.0.1 first and ::1 second, on the
+// handed and dials this machine, ::1 first and 127.0.0.1 second, on the
 // port from that address.
 //
 // It is for one shape of caller: a client whose request URL this process
@@ -25,8 +25,12 @@ import (
 //     Plenty bind ::1 only, or 127.0.0.1 only; one resolver answer picks
 //     one of them and the other looks dead.
 //
-// The timeout bounds each attempt, so a host where 127.0.0.1 blackholes
-// costs at most twice it.
+// ::1 goes first because WSL's virtioproxy (consomme) networking relays
+// in-distro IPv4 loopback through Windows, which is slower and refuses
+// bursts (see Listen); a server on both families is reached in-kernel, and
+// one on 127.0.0.1 only costs an immediate refusal on ::1 first. The
+// timeout bounds each attempt, so a host where one family blackholes costs
+// at most twice it.
 //
 // Deliberately NOT used by internal/devserverprobe, which asks a
 // different question: it takes a URL from outside, validates that the URL
@@ -40,10 +44,10 @@ func Dialer(timeout time.Duration) func(ctx context.Context, network, address st
 		if err != nil {
 			return nil, err
 		}
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort("::1", port))
 		if err == nil {
 			return conn, nil
 		}
-		return dialer.DialContext(ctx, network, net.JoinHostPort("::1", port))
+		return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
 	}
 }

@@ -45,10 +45,10 @@ func TestDialerIgnoresTheHostAndDialsThisMachine(t *testing.T) {
 	_ = conn.Close()
 }
 
-// A dev server bound to ::1 only is still reached, which is the reason
-// both literals are tried rather than one being picked.
+// A dev server bound to 127.0.0.1 only is still reached, which is the
+// reason both literals are tried rather than one being picked.
 func TestDialerFallsBackToTheOtherAddressFamily(t *testing.T) {
-	_, port := listenOn(t, "::1")
+	_, port := listenOn(t, "127.0.0.1")
 
 	conn, err := Dialer(2*time.Second)(context.Background(), "tcp", net.JoinHostPort("localhost", port))
 	if err != nil {
@@ -73,5 +73,24 @@ func TestDialerHonoursACancelledContext(t *testing.T) {
 	cancel()
 	if _, err := Dialer(time.Second)(ctx, "tcp", net.JoinHostPort("localhost", port)); err == nil {
 		t.Fatal("a cancelled dial connected anyway")
+	}
+}
+
+// A server on both families is reached on ::1, which stays in the Linux
+// kernel under WSL virtioproxy where IPv4 loopback is relayed.
+func TestDialerPrefersIPv6Loopback(t *testing.T) {
+	_, port := listenOn(t, "::1")
+	ipv4, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Skipf("127.0.0.1:%s is taken by another process: %v", port, err)
+	}
+	defer ipv4.Close()
+	conn, err := Dialer(2*time.Second)(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if host, _, _ := net.SplitHostPort(conn.RemoteAddr().String()); host != "::1" {
+		t.Fatalf("dialed %s, want ::1 first", conn.RemoteAddr())
 	}
 }
