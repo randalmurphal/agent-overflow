@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package netisolate
 
 import (
 	"bufio"
@@ -18,14 +18,14 @@ import (
 	"time"
 )
 
-const isolationProbeEnv = "AO_E2E_NETNS_PROBE"
+const isolationProbeEnv = "AO_NETISOLATE_PROBE"
 
-// TestMain lets the test binary stand in for the launcher: isolateNetwork
-// re-executes os.Executable() as the namespace helper, and the helper then
-// execs the binary again as the probe.
+// TestMain lets the test binary stand in for a caller: Command re-executes
+// os.Executable() as the namespace helper, and the helper then execs the
+// binary again as the probe.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == netnsHelperArg {
-		os.Exit(runNetnsHelper(os.Args[2:], os.Stderr))
+	if len(os.Args) > 1 && os.Args[1] == HelperArg {
+		os.Exit(RunHelper(os.Args[2:], os.Stderr))
 	}
 	if os.Getenv(isolationProbeEnv) == "1" {
 		os.Exit(runIsolationProbe(os.Stdout))
@@ -50,7 +50,7 @@ type isolationProbe struct {
 	LANDial        string
 }
 
-// runIsolationProbe reports what the suite would see. It dials off the LAN
+// runIsolationProbe reports what an isolated command would see. It dials off the LAN
 // only after confirming that lo and lan0 are the only interfaces, so a broken
 // namespace fails the test without sending anything to a real network.
 func runIsolationProbe(out io.Writer) int {
@@ -68,7 +68,7 @@ func runIsolationProbe(out io.Writer) int {
 			entry.Addrs = append(entry.Addrs, addr.String())
 		}
 		probe.Interfaces = append(probe.Interfaces, entry)
-		if iface.Name != "lo" && iface.Name != isolatedLANName {
+		if iface.Name != "lo" && iface.Name != LANName {
 			isolated = false
 		}
 	}
@@ -83,7 +83,7 @@ func runIsolationProbe(out io.Writer) int {
 	}
 	probe.LoopbackV4Dial = selfDial("tcp4", "127.0.0.1:0")
 	probe.LoopbackV6Dial = selfDial("tcp6", "[::1]:0")
-	probe.LANDial = selfDial("tcp4", net.JoinHostPort(isolatedLANAddress.String(), "0"))
+	probe.LANDial = selfDial("tcp4", net.JoinHostPort(LANAddress.String(), "0"))
 	if err := json.NewEncoder(out).Encode(probe); err != nil {
 		return 1
 	}
@@ -160,7 +160,7 @@ func runProbe(t *testing.T) isolationProbe {
 	command.Env = append(os.Environ(), isolationProbeEnv+"=1")
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := isolateNetwork(command); err != nil {
+	if err := Command(command); err != nil {
 		t.Fatal(err)
 	}
 	if err := command.Run(); err != nil {
@@ -176,7 +176,7 @@ func runProbe(t *testing.T) isolationProbe {
 func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 	probe := runProbe(t)
 	if len(probe.Interfaces) != 2 {
-		t.Fatalf("interfaces = %+v, want exactly lo and %s", probe.Interfaces, isolatedLANName)
+		t.Fatalf("interfaces = %+v, want exactly lo and %s", probe.Interfaces, LANName)
 	}
 	for _, iface := range probe.Interfaces {
 		switch iface.Name {
@@ -184,7 +184,7 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 			if !strings.Contains(iface.Flags, "up") || !strings.Contains(iface.Flags, "loopback") {
 				t.Fatalf("lo flags = %s, want up loopback", iface.Flags)
 			}
-		case isolatedLANName:
+		case LANName:
 			// LAN discovery (network.DiscoverLocalLANIP) requires up and
 			// running; nearby discovery requires multicast.
 			for _, flag := range []string{"up", "running", "multicast"} {
@@ -192,7 +192,7 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 					t.Fatalf("%s flags = %s, want up running multicast", iface.Name, iface.Flags)
 				}
 			}
-			want := fmt.Sprintf("%s/%d", isolatedLANAddress, isolatedLANPrefix)
+			want := fmt.Sprintf("%s/%d", LANAddress, LANPrefix)
 			found := false
 			for _, addr := range iface.Addrs {
 				found = found || addr == want
@@ -204,7 +204,7 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 			t.Fatalf("unexpected interface %+v", iface)
 		}
 	}
-	if want := []string{isolatedLANName + " 0000CB0A/00FFFFFF"}; strings.Join(probe.Routes, ",") != strings.Join(want, ",") {
+	if want := []string{LANName + " 0000CB0A/00FFFFFF"}; strings.Join(probe.Routes, ",") != strings.Join(want, ",") {
 		t.Fatalf("IPv4 routes = %v, want only the LAN subnet %v", probe.Routes, want)
 	}
 	if probe.OffLANDial != "ENETUNREACH" || probe.OffLANDialMs > 1000 {
@@ -223,9 +223,9 @@ func TestIsolatedSuiteHoldsNoCapabilities(t *testing.T) {
 	}
 }
 
-func TestCheckNetworkIsolationBuildsANamespace(t *testing.T) {
+func TestCheckBuildsANamespace(t *testing.T) {
 	var stderr bytes.Buffer
-	if err := checkNetworkIsolation(&stderr); err != nil {
-		t.Fatalf("checkNetworkIsolation: %v\n%s", err, stderr.String())
+	if err := Check(&stderr); err != nil {
+		t.Fatalf("Check: %v\n%s", err, stderr.String())
 	}
 }

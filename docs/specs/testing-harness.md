@@ -265,7 +265,8 @@ so future Go tests can reuse it.
 ### Network isolation
 
 On Linux, `ao-harness-e2e` starts the suite in new user and network
-namespaces. The suite sees loopback and one dummy LAN interface, `lan0` at
+namespaces (`internal/netisolate`). The Make test targets run `go test` and
+Vitest in the same kind of namespace through `bin/ao-netns`. The suite sees loopback and one dummy LAN interface, `lan0` at
 `10.203.0.2/24`, multicast-capable like a real LAN interface. There is no
 default route, so a connection to any other address fails with
 `ENETUNREACH`. LAN-bind specs therefore exercise a real non-loopback
@@ -279,7 +280,9 @@ starts. It does not fall back to the host network.
 `--host-network` skips isolation for suites that need host services:
 `e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device
 through the host's adb server, and real SSH mode needs it to reach its sshd
-on host loopback. macOS and Windows run on the host network.
+on host loopback. The provider smoke targets also stay on the host network
+because they reach the real provider APIs. macOS and Windows run on the host
+network.
 
 ## 4. Frontend bridge: seeing without screenshots
 

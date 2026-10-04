@@ -25,6 +25,7 @@ import (
 	"agent-overflow/internal/harness/containment"
 	"agent-overflow/internal/harness/governor"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/netisolate"
 )
 
 const (
@@ -44,10 +45,6 @@ const (
 	modeFreeze
 )
 
-// netnsHelperArg is the launcher's own argv[1] when it re-executes itself as
-// the first process inside the isolated network namespace.
-const netnsHelperArg = "__ao-harness-e2e-netns"
-
 type launchOptions struct {
 	limit       uint64
 	mode        runMode
@@ -56,8 +53,8 @@ type launchOptions struct {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == netnsHelperArg {
-		os.Exit(runNetnsHelper(os.Args[2:], os.Stderr))
+	if len(os.Args) > 1 && os.Args[1] == netisolate.HelperArg {
+		os.Exit(netisolate.RunHelper(os.Args[2:], os.Stderr))
 	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -114,8 +111,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 	if !opts.hostNetwork {
-		if err := checkNetworkIsolation(stderr); err != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+		if err := netisolate.Check(stderr); err != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e:", err, "(--host-network is only for suites that need host services)")
 			return 1
 		}
 	}
@@ -164,7 +161,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	command.Stderr = stderr
 	configureProcessGroup(command)
 	if !opts.hostNetwork {
-		if err := isolateNetwork(command); err != nil {
+		if err := netisolate.Command(command); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e: isolate network:", err)
 			return 1
 		}

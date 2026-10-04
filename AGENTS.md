@@ -97,7 +97,14 @@ For Go changes, use the Make targets so platform build settings are applied:
 `make go-build` and `make go-test`, and run `gofmt -w` on every changed Go
 file before finishing. For frontend changes, run
 `cd frontend && pnpm run check`, `cd frontend && pnpm run build`, and the
-relevant Vitest tests. Changes to shared bindings, transport or build settings
+relevant Vitest tests.
+
+Tests run only inside the isolated network namespace
+([network isolation](docs/specs/testing-harness.md#network-isolation)); a
+bare `go test` or `pnpm test` runs on the host network. Narrow Go runs with
+`make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS='-run TestY'`; run
+targeted Vitest as `../bin/ao-netns pnpm exec vitest run <file>` from
+`frontend/` after `make netns-tool`. Changes to shared bindings, transport or build settings
 may require checks on both sides. Documentation-only changes need checks of
 the affected claims, links and references, not application builds or tests.
 

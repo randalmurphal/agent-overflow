@@ -1,6 +1,6 @@
 //go:build !linux
 
-package main
+package netisolate
 
 import (
 	"fmt"
@@ -8,13 +8,13 @@ import (
 	"os/exec"
 )
 
-// Network namespaces are Linux-only. Other hosts run the suite on the host
+// Network namespaces are Linux-only. Other hosts run commands on the host
 // network, as they did before isolation existed.
-func isolateNetwork(*exec.Cmd) error { return nil }
+func Command(*exec.Cmd) error { return nil }
 
-func checkNetworkIsolation(io.Writer) error { return nil }
+func Check(io.Writer) error { return nil }
 
-func runNetnsHelper(_ []string, stderr io.Writer) int {
-	fmt.Fprintln(stderr, "ao-harness-e2e: network isolation is Linux-only")
+func RunHelper(_ []string, stderr io.Writer) int {
+	fmt.Fprintln(stderr, "netisolate: network isolation is Linux-only")
 	return 2
 }

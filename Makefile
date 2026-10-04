@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -8,7 +8,7 @@
 help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
-		'Tests:   make test | make test-race' \
+		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -127,11 +127,27 @@ go-build:
 	if [ -z "$$nogui" ]; then echo "ERROR: no Go packages found for the nogui build"; exit 1; fi; \
 	go build -tags nogui $$nogui
 
-go-test:
+# Every test runs inside the isolated network namespace (loopback plus a
+# private LAN, no route off it; internal/netisolate), so a test that binds
+# every interface or dials out reaches nothing beyond the namespace in any
+# WSL networking mode. `go test` itself runs under bin/ao-netns rather than
+# through `-exec`, which would disable the test cache; `go mod download`
+# fetches anything missing on the host network first.
+# Narrow a run with GO_TEST_PKGS and GO_TEST_FLAGS:
+#   make go-test GO_TEST_PKGS=./internal/shellenv GO_TEST_FLAGS='-run TestSync -count=1'
+NETNS := $(CURDIR)/bin/ao-netns
+GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
+GO_TEST_FLAGS ?=
+
+netns-tool:
+	go build -o bin/ao-netns ./cmd/ao-netns
+
+go-test: netns-tool
 	@set -e; \
-	packages=$$(go list $(GO_PACKAGE_ROOTS)); \
+	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	go test $$packages
+	go mod download; \
+	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
 
 # test-race exercises the concurrency-sensitive packages under -race.
 # Scoped to packages with non-trivial goroutine wiring rather than the
@@ -157,8 +173,9 @@ go-test:
 # idle WSL host (2026-08-25); before it, root alone hit 1800s. The
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
-test-race:
-	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
+test-race: netns-tool
+	go mod download
+	$(NETNS) go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no
@@ -200,11 +217,12 @@ provider-smoke-revert:
 
 # Two supplied production artifacts, disposable state, mocked providers.
 .PHONY: service-artifact-smoke
-service-artifact-smoke:
+service-artifact-smoke: netns-tool
 	@test -n "$(AO_SERVICE_SMOKE_BASELINE)" -a -n "$(AO_SERVICE_SMOKE_CANDIDATE)" || \
 		{ echo 'Set AO_SERVICE_SMOKE_BASELINE and AO_SERVICE_SMOKE_CANDIDATE to absolute artifact paths.'; exit 1; }
+	go mod download
 	AO_SERVICE_SMOKE_BASELINE="$(AO_SERVICE_SMOKE_BASELINE)" AO_SERVICE_SMOKE_CANDIDATE="$(AO_SERVICE_SMOKE_CANDIDATE)" \
-		go test ./internal/supervise -run TestProductionServiceArtifact -v -count=1 -timeout 4m
+		$(NETNS) go test ./internal/supervise -run TestProductionServiceArtifact -v -count=1 -timeout 4m
 
 # import-corpus-smoke is the manual session-import gate: it runs the Claude
 # transcript reader, the Codex rollout reader, and the store writer over a COPY
@@ -232,9 +250,10 @@ service-artifact-smoke:
 # runner's own logic covered (importcorpussmoke_fixture_test.go) without ever
 # reading a provider home. Either variable may be set on its own. See
 # internal/app/importcorpussmoke_test.go.
-import-corpus-smoke:
+import-corpus-smoke: netns-tool
+	go mod download
 	AO_IMPORT_CORPUS_CLAUDE="$(AO_IMPORT_CORPUS_CLAUDE)" AO_IMPORT_CORPUS_CODEX="$(AO_IMPORT_CORPUS_CODEX)" \
-		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m ./internal/app
+		$(NETNS) go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m ./internal/app
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project
@@ -582,8 +601,8 @@ e2e-android: harness-build
 # where they must always run.
 test: $(FRONTEND_DEPS)
 	$(MAKE) go-test
-	cd frontend && AO_PERF_CONTRACT=1 pnpm test
-	cd frontend && AO_PERF_CONTRACT=1 pnpm run test:browser
+	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm test
+	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm run test:browser
 
 check: $(FRONTEND_DEPS)
 	$(MAKE) go-build
