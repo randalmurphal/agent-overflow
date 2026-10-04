@@ -1215,8 +1215,8 @@ func isolatedPprofEphemeralAddr(raw string) string {
 	case "1", "true", "TRUE", "True":
 		// Port 0: the kernel picks. The bound address is logged, and an
 		// isolated instance's discovery files already tell a tool where
-		// that instance lives.
-		return "127.0.0.1:0"
+		// that instance lives. ::1 like pprofserve's default.
+		return "[::1]:0"
 	}
 	return ""
 }

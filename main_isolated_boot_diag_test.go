@@ -9,11 +9,11 @@ import (
 )
 
 // TestIsolatedPprofEphemeralAddr: pprofserve.DefaultAddr is a fixed
-// singleton (127.0.0.1:6363) and isolated boots are the one shape run
+// singleton ([::1]:6363) and isolated boots are the one shape run
 // N-at-a-time, so a bare enable must not claim it.
 func TestIsolatedPprofEphemeralAddr(t *testing.T) {
 	for _, raw := range []string{"1", "true", "TRUE", " 1 "} {
-		if got := isolatedPprofEphemeralAddr(raw); got != "127.0.0.1:0" {
+		if got := isolatedPprofEphemeralAddr(raw); got != "[::1]:0" {
 			t.Errorf("isolatedPprofEphemeralAddr(%q) = %q, want an ephemeral loopback port", raw, got)
 		}
 	}
@@ -31,8 +31,8 @@ func TestIsolatedPprofEphemeralAddr(t *testing.T) {
 func TestUnpinIsolatedPprofPortRewritesTheEnvironment(t *testing.T) {
 	t.Setenv(pprofserve.EnvVar, "1")
 	unpinIsolatedPprofPort()
-	if got := os.Getenv(pprofserve.EnvVar); got != "127.0.0.1:0" {
-		t.Fatalf("%s = %q after unpin, want 127.0.0.1:0", pprofserve.EnvVar, got)
+	if got := os.Getenv(pprofserve.EnvVar); got != "[::1]:0" {
+		t.Fatalf("%s = %q after unpin, want [::1]:0", pprofserve.EnvVar, got)
 	}
 	// And the listener actually comes up on a port that is not the
 	// singleton — two isolated boots must be able to coexist.

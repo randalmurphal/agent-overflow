@@ -9,8 +9,14 @@
 //
 // Enable by setting AGENT_OVERFLOW_PPROF before the backend starts:
 //
-//	AGENT_OVERFLOW_PPROF=1              # binds the default 127.0.0.1:6363
+//	AGENT_OVERFLOW_PPROF=1              # binds the default [::1]:6363
 //	AGENT_OVERFLOW_PPROF=127.0.0.1:7777 # binds an explicit loopback addr
+//
+// The default is IPv6 because its clients run beside the backend, and WSL's
+// virtioproxy networking handles IPv4 loopback binds itself: a fixed
+// 127.0.0.1 port can come back bound on every interface. ::1 stays in the
+// Linux kernel. Whatever the address, the bound listener is checked and
+// closed unless it is loopback.
 //
 // The Windows launcher forwards the variable across the WSL boundary via
 // WSLENV, so setting it in the shell that runs `make dev-wsl` (or on the
@@ -34,7 +40,7 @@ import (
 const EnvVar = diagenv.Pprof
 
 // DefaultAddr is used when the variable is a bare enable ("1"/"true").
-const DefaultAddr = "127.0.0.1:6363"
+const DefaultAddr = "[::1]:6363"
 
 // StartIfEnabled starts the pprof listener when EnvVar opts in.
 // Returns the bound address ("" when disabled) and a stop func that
@@ -42,7 +48,13 @@ const DefaultAddr = "127.0.0.1:6363"
 // value means the operator asked for profiling and isn't getting it,
 // so the caller must surface it.
 func StartIfEnabled() (addr string, stop func(), err error) {
-	raw := strings.TrimSpace(os.Getenv(EnvVar))
+	return start(os.Getenv(EnvVar), func(network, addr string) (net.Listener, error) {
+		return net.Listen(network, addr)
+	})
+}
+
+func start(raw string, listen func(network, addr string) (net.Listener, error)) (addr string, stop func(), err error) {
+	raw = strings.TrimSpace(raw)
 	switch {
 	case raw == "" || raw == "0" || strings.EqualFold(raw, "false"):
 		return "", func() {}, nil
@@ -59,9 +71,18 @@ func StartIfEnabled() (addr string, stop func(), err error) {
 		return "", nil, fmt.Errorf("pprofserve: refusing non-loopback bind %q — profiling data stays on localhost", raw)
 	}
 
-	ln, err := net.Listen("tcp", raw)
+	ln, err := listen("tcp", raw)
 	if err != nil {
 		return "", nil, fmt.Errorf("pprofserve: listen %s: %w", raw, err)
+	}
+	// The requested address is loopback, but the bind is what the kernel
+	// reports: WSL virtioproxy has turned a fixed 127.0.0.1 port into a
+	// listener on every interface. Serve only what is actually loopback.
+	if bound, ok := ln.Addr().(*net.TCPAddr); !ok || !bound.IP.IsLoopback() {
+		if closeErr := ln.Close(); closeErr != nil {
+			return "", nil, fmt.Errorf("pprofserve: %s bound as %s, which is not loopback, and closing it failed: %w", raw, ln.Addr(), closeErr)
+		}
+		return "", nil, fmt.Errorf("pprofserve: %s bound as %s, which is not loopback; refusing to serve profiles there", raw, ln.Addr())
 	}
 
 	mux := http.NewServeMux()

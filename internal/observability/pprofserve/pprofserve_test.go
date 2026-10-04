@@ -3,6 +3,7 @@ package pprofserve
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -65,6 +66,48 @@ func TestServesProfilesOnLoopback(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "heap profile") {
 		t.Fatalf("body does not look like a heap profile: %.120s", body)
+	}
+}
+
+// A bare enable binds IPv6 loopback: WSL virtioproxy handles fixed IPv4
+// loopback binds itself and has left one listening on every interface.
+func TestDefaultAddrIsIPv6Loopback(t *testing.T) {
+	host, port, err := net.SplitHostPort(DefaultAddr)
+	if err != nil || host != "::1" || port != "6363" {
+		t.Fatalf("DefaultAddr = %q, want [::1]:6363", DefaultAddr)
+	}
+}
+
+// rebound reports addr as its bound address whatever it actually bound,
+// the way WSL virtioproxy turned a 127.0.0.1:6363 bind into 0.0.0.0:40561.
+type rebound struct {
+	net.Listener
+	addr *net.TCPAddr
+}
+
+func (r rebound) Addr() net.Addr { return r.addr }
+
+// The requested address passing the loopback check is not enough; the
+// listener the kernel handed back must be loopback too, or nothing serves
+// and the listener is closed.
+func TestRefusesAListenerThatDidNotBindLoopback(t *testing.T) {
+	var inner net.Listener
+	listen := func(network, addr string) (net.Listener, error) {
+		ln, err := net.Listen(network, "[::1]:0")
+		inner = ln
+		return rebound{ln, &net.TCPAddr{IP: net.IPv4zero, Port: 40561}}, err
+	}
+	addr, stop, err := start("127.0.0.1:6363", listen)
+	if err == nil {
+		stop()
+		t.Fatalf("served on %s, a listener that reported 0.0.0.0:40561", addr)
+	}
+	if !strings.Contains(err.Error(), "0.0.0.0:40561") {
+		t.Fatalf("error %q does not name the bound address", err)
+	}
+	if conn, dialErr := net.Dial("tcp", inner.Addr().String()); dialErr == nil {
+		conn.Close()
+		t.Fatal("the refused listener is still accepting")
 	}
 }
 

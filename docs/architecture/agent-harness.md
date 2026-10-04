@@ -278,7 +278,7 @@ are not:
   what keeps the gate itself production code under the harness.
 - **pprof.** Still opt-in via `AGENT_OVERFLOW_PPROF`, but a BARE enable
   (`1`/`true`) binds an ephemeral loopback port on an isolated boot
-  instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are
+  instead of `pprofserve`'s fixed `[::1]:6363`. Isolated boots are
   the one shape deliberately run N-at-a-time (a soak beside your own app,
   a harness per checkout), and the variable is usually INHERITED from a
   debug shell rather than chosen, so the second instance's listener

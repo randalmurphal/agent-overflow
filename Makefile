@@ -46,7 +46,7 @@ methodgen:
 UI_TRACE ?= $(DEBUG)
 UI_ORACLES ?= $(DEBUG)
 
-# DEBUG=1 also starts the loopback pprof listener (127.0.0.1:6363,
+# DEBUG=1 also starts the loopback pprof listener ([::1]:6363,
 # internal/observability/pprofserve). Zero cost until an endpoint is hit
 # and never bound beyond loopback. Export AGENT_OVERFLOW_PPROF yourself
 # for an explicit addr or to enable it without the rest of DEBUG.

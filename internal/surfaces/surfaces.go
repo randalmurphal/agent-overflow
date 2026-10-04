@@ -559,9 +559,12 @@ var Listeners = []Listener{
 		Credential: CredNone,
 		Posture:    PostureDiagnostic,
 		Sites:      []string{"internal/observability/pprofserve/pprofserve.go"},
-		Why: "Off unless AO_PPROF_ADDR names an address, and the bind " +
-			"address is parsed and refused unless it is loopback, so the " +
-			"opt-in plus the bind constraint are the entire boundary — " +
+		Why: "Off unless AGENT_OVERFLOW_PPROF enables it (a bare enable " +
+			"binds [::1]:6363). The requested address is refused unless it " +
+			"is loopback, and the bound listener is closed unless the " +
+			"kernel reports a loopback address, since WSL virtioproxy has " +
+			"turned a fixed 127.0.0.1 bind into one on every interface. " +
+			"The opt-in plus the bind constraint are the entire boundary — " +
 			"there is no credential to add without inventing a second " +
 			"one. Heap and goroutine dumps disclose whatever the process " +
 			"holds, so widening the bind is not a configuration change but " +
