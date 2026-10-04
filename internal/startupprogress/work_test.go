@@ -15,7 +15,8 @@ import (
 
 // TestReadProcessWorkCountsCPUAndStorage: the platform sampler sees this
 // process's CPU time grow while it computes and its storage I/O grow by
-// what it writes to a file. On Linux the I/O comes from /proc/self/io.
+// what it writes to a file. On Linux the I/O comes from /proc/self/io, and
+// a kernel without it reports no I/O counter rather than a dead one.
 func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
 	before, err := ReadProcessWork()
 	if err != nil {
@@ -54,8 +55,18 @@ func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sample: %v", err)
 	}
-	if runtime.GOOS == "linux" && after.IOSource != "/proc/self/io" {
-		t.Fatalf("I/O came from %q on Linux, want /proc/self/io", after.IOSource)
+	if runtime.GOOS == "linux" {
+		_, statErr := os.Stat("/proc/self/io")
+		if errors.Is(statErr, fs.ErrNotExist) {
+			if after.IOSource != "" || after.IO != 0 {
+				t.Fatalf("kernel has no /proc/self/io but I/O came from %q (%d)", after.IOSource, after.IO)
+			}
+			t.Log("kernel keeps no per-process I/O accounting; storage half not measurable here")
+			return
+		}
+		if after.IOSource != "/proc/self/io" {
+			t.Fatalf("I/O came from %q on Linux, want /proc/self/io", after.IOSource)
+		}
 	}
 	if after.IOSource != mid.IOSource || after.IO-mid.IO < 1<<20 {
 		t.Fatalf("I/O went from %d (%s) to %d (%s) across a 1 MiB write", mid.IO, mid.IOSource, after.IO, after.IOSource)

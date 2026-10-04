@@ -11,7 +11,8 @@ import (
 
 // ProcessWork is what this process has done since it started: CPU time and
 // bytes moved to or from storage. IOSource names the counter the bytes came
-// from; counts from different counters are not compared.
+// from; counts from different counters are not compared. IOSource is empty
+// and IO zero when the system keeps no I/O counter.
 type ProcessWork struct {
 	CPU      time.Duration
 	IO       int64

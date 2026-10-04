@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -18,7 +19,9 @@ import (
 
 // ReadProcessWork samples this process's CPU time and storage I/O. I/O
 // comes from /proc/self/io where it can be read (Linux), in bytes, and
-// otherwise from getrusage's block counts, taken as 512-byte blocks.
+// otherwise from getrusage's block counts, taken as 512-byte blocks. A Linux
+// kernel without /proc/self/io keeps no per-process I/O accounting, which
+// getrusage's block counts also come from, so I/O goes unmeasured.
 func ReadProcessWork() (ProcessWork, error) {
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
@@ -27,6 +30,11 @@ func ReadProcessWork() (ProcessWork, error) {
 	w := ProcessWork{CPU: time.Duration(ru.Utime.Nano() + ru.Stime.Nano())}
 	if n, err := readProcSelfIO(); err == nil {
 		w.IO, w.IOSource = n, "/proc/self/io"
+		return w, nil
+	} else if errors.Is(err, fs.ErrNotExist) && runtime.GOOS == "linux" {
+		procIOFailure.Do(func() {
+			log.Printf("startup progress: this kernel keeps no per-process I/O accounting, so storage I/O does not count as progress")
+		})
 		return w, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		procIOFailure.Do(func() {
@@ -37,7 +45,7 @@ func ReadProcessWork() (ProcessWork, error) {
 	return w, nil
 }
 
-// procIOFailure logs an unexpected /proc/self/io failure once.
+// procIOFailure logs once that /proc/self/io is missing or unreadable.
 var procIOFailure sync.Once
 
 // readProcSelfIO is read_bytes plus write_bytes from /proc/self/io: the
