@@ -411,6 +411,9 @@ describe('App integration — windowed thread history', () => {
     pane.setShowPlanSidebar(true);
     await flush();
 
-    await findAllByText('Deep plan');
-  });
+    // PlanSidebar is a lazy import (CompanionPane); its first load in a
+    // full-suite run pays the on-demand transform, which has outrun the
+    // default 1s wait. Same tripwire budgets as settings-launcher.test.ts.
+    await findAllByText('Deep plan', {}, { timeout: 15_000 });
+  }, 20_000);
 });
