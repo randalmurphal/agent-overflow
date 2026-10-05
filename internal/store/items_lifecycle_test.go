@@ -2587,7 +2587,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 		args  []any
 	}{
 		{
-			// HasLiveBackgroundToolCall / HasQueueBlockingBackgroundToolCall.
+			// HasQueueBlockingBackgroundToolCall.
 			name: "thread-scoped EXISTS",
 			query: `SELECT EXISTS(
 			    SELECT 1 FROM items

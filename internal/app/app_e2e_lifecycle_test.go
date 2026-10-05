@@ -846,7 +846,16 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
-func TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend(t *testing.T) {
+// TestE2E_ClaudeSendsAfterOrphanedAdvisorStayOnLiveProcess is the
+// production shape that used to block sends: the model emitted a Bash
+// call and an advisor call in one response, the API never ran the
+// advisor, and the turn finished with a background task still running.
+// The CLI drops orphaned server_tool_use blocks from every API request,
+// so the live process is healthy: both a queued flush and a direct send
+// must reach its stdin, with no restart and no refusal over the
+// background task. The mock echoes each user line as
+// --replay-user-messages does, so AO sees every send start.
+func TestE2E_ClaudeSendsAfterOrphanedAdvisorStayOnLiveProcess(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -854,73 +863,84 @@ func TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend(t *testing.T)
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// The repair restart passes an explicit --resume-session-at cursor
-	// (a-final, tracked from the wire by the live leaf tracker), and the
-	// spawn path validates explicit cursors against the session JSONL's
-	// active parentUuid branch before honoring them (invariant 28). A
-	// real CLI maintains that file as it streams; the mock script can't,
-	// so stage the transcript rows matching what the script streams
-	// below, with a-final as the file's last transcript row — i.e. the
-	// branch tip — so the wire-derived cursor survives validation
-	// exactly as it would in production.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeClaudeProjectSession(t, home, workspace, "risky-sess", `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"risky-sess","message":{"role":"user","content":"trigger risky advisor"}}
-{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","sessionId":"risky-sess","message":{"id":"msg-advisor","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}
-{"type":"assistant","uuid":"a-final","parentUuid":"u1","sessionId":"risky-sess","message":{"id":"msg-final","role":"assistant","content":[{"type":"text","text":"done"}]}}
-`)
-
 	scriptDir := t.TempDir()
 	argsLog := filepath.Join(scriptDir, "args.log")
-	countFile := filepath.Join(scriptDir, "count")
+	stdinLog := filepath.Join(scriptDir, "stdin.log")
 	script := `#!/bin/bash
 set -e
-count=0
-if [ -f ` + shellQuoteForTest(countFile) + ` ]; then
-  count=$(cat ` + shellQuoteForTest(countFile) + `)
-fi
-count=$((count + 1))
-printf '%s' "$count" > ` + shellQuoteForTest(countFile) + `
 printf '%s\n' "$*" >> ` + shellQuoteForTest(argsLog) + `
-if [ "$count" = "1" ]; then
-  read -r _ || true
-  printf '%s\n' '{"type":"system","subtype":"init","session_id":"risky-sess","model":"claude-opus-4-7","cwd":"/tmp","tools":["advisor"],"claude_code_version":"1.0"}'
-  printf '%s\n' '{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"msg-advisor","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}'
-  printf '%s\n' '{"type":"assistant","uuid":"a-final","parentUuid":"u1","message":{"id":"msg-final","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"done"}]}}'
-  printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
-  while read -r _; do :; done
-else
-  read -r _ || true
-  printf '%s\n' '{"type":"system","subtype":"init","session_id":"risky-sess","model":"claude-opus-4-7","cwd":"/tmp","tools":["advisor"],"claude_code_version":"1.0"}'
-  while read -r _; do :; done
-fi
+replay() { printf '{"isReplay":true,%s\n' "${1#\{}"; }
+IFS= read -r first || true
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"orphan-sess","model":"claude-opus-4-7","cwd":"/tmp","tools":["Bash","advisor"],"claude_code_version":"1.0"}'
+replay "$first"
+printf '%s\n' '{"type":"assistant","uuid":"a-bash","parentUuid":"u1","message":{"id":"msg-1","role":"assistant","model":"claude-opus-4-7","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"echo hi"}}]}}'
+printf '%s\n' '{"type":"assistant","uuid":"a-advisor","parentUuid":"a-bash","message":{"id":"msg-1","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}'
+printf '%s\n' '{"type":"user","uuid":"u-result","parentUuid":"a-bash","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash","content":"hi"}]}}'
+printf '%s\n' '{"type":"assistant","uuid":"a-final","parentUuid":"u-result","message":{"id":"msg-2","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"done"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+n=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"control_request"'*)
+      reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+      ;;
+    *'"type":"user"'*)
+      printf '%s\n' "$line" >> ` + shellQuoteForTest(stdinLog) + `
+      replay "$line"
+      n=$((n + 1))
+      printf '{"type":"assistant","message":{"id":"msg-pong-%s","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"pong"}]}}\n' "$n"
+      printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+      ;;
+  esac
+done
 `
-	binary := filepath.Join(scriptDir, "mock-claude-risky.sh")
+	binary := filepath.Join(scriptDir, "mock-claude-orphan.sh")
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock claude: %v", err)
 	}
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
+	waitForIdleTurn := func() {
+		t.Helper()
+		bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+		waitUntil(t, 5*time.Second, func() bool {
+			_, active, err := app.store.GetActiveTurn(thread.ID)
+			return err == nil && !active
+		})
+	}
 
-	if err := app.SendMessage(thread.ID, "trigger risky advisor", nil); err != nil {
+	if err := app.SendMessage(thread.ID, "run bash and ask the advisor", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
-	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+	waitForIdleTurn()
+	seedClaudeBackgroundTaskRow(t, app, thread.ID, "toolu_affected_gate", "task-affected-gate", time.Now().UnixMilli())
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
-		ID:      "queue:repair",
-		Message: "queued after risky advisor",
+		ID:      "queue:after-orphan",
+		Message: "queued after orphaned advisor",
 		Payload: json.RawMessage(`{}`),
 	}})
-
-	argsText := waitForFileText(t, argsLog, func(text string) bool {
-		return strings.Contains(text, "--resume risky-sess") &&
-			strings.Contains(text, "--resume-session-at a-final")
+	waitForFileText(t, stdinLog, func(text string) bool {
+		return strings.Contains(text, "queued after orphaned advisor")
 	})
-	if !strings.Contains(argsText, "--resume-session-at a-final") {
-		t.Fatalf("args log missing resume-at repair: %s", argsText)
+	waitForIdleTurn()
+
+	if err := app.SendMessage(thread.ID, "direct send after orphaned advisor", nil); err != nil {
+		t.Fatalf("SendMessage with a live background task after an orphaned advisor call: %v", err)
+	}
+	waitForFileText(t, stdinLog, func(text string) bool {
+		return strings.Contains(text, "direct send after orphaned advisor")
+	})
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if spawns := strings.Count(string(args), "\n"); spawns != 1 {
+		t.Fatalf("claude spawned %d times, want 1 (no restart after the orphaned advisor call):\n%s", spawns, args)
 	}
 	_ = app.StopSession(thread.ID)
 }

@@ -16,25 +16,14 @@ type Config struct {
 	Binary  string // default: "claude"
 	Model   string
 	WorkDir string
-	// ProjectsDir is the `<providerHome>/.claude/projects` this session's
-	// transcript lives under, injected by the app layer's one provider-home
-	// seam (App.providerHome → sessionfork.ProjectsDirForHome). It is
-	// INJECTED rather than resolved from $HOME because the process may run
-	// against a pinned provider home (isolated boots, test fixtures) that is
-	// not the OS home, and every transcript path this session resolves is a
-	// path something later writes beside. Empty means "no transcript lookup
-	// available": the one reader (findReplayUserParent) reports "could not
-	// verify" instead of guessing a home.
-	ProjectsDir string
 	// AdditionalDirs are extra roots the session may read outside its
 	// workspace, one `--add-dir <dir>` each. The app stamps the attachments
 	// root here so a Read of an attached file never raises a permission
 	// prompt (docs/specs/file-attachments.md).
 	//
-	// Stamped at spawn like ProjectsDir rather than carried on
-	// provider.SessionOptions, because the value is a process constant:
-	// letting the reconciler see it would put a never-changing field in
-	// every restart diff.
+	// Stamped at spawn rather than carried on provider.SessionOptions,
+	// because the value is a process constant: letting the reconciler see
+	// it would put a never-changing field in every restart diff.
 	AdditionalDirs []string
 	Resume         string // session ID to resume, empty for new
 	ResumeAt       string // transcript UUID to resume at inside Resume

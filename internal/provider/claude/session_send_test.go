@@ -15,38 +15,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestVerifyReplayParentFailsRiskyReplayWithoutVerifiableParent(t *testing.T) {
-	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "thread-risky",
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		expectedReplayByUUID: map[string]replayExpectation{
-			"user-wire": {parent: "leaf-expected", wasRisky: true},
-		},
-		expectedReplayOrder: []string{"user-wire"},
-	}
-	meta, _ := json.Marshal(map[string]string{
-		"provider_item_id": "user-wire",
-	})
-
-	s.verifyReplayParent(provider.ProviderEvent{
-		Kind: provider.EventUserText,
-		Meta: meta,
-	})
-
-	if len(events) != 1 {
-		t.Fatalf("events = %d, want 1", len(events))
-	}
-	if events[0].Kind != provider.EventError {
-		t.Fatalf("event kind = %q, want error", events[0].Kind)
-	}
-	if !strings.Contains(events[0].Content, "could not verify") {
-		t.Fatalf("error content = %q, want verification failure", events[0].Content)
-	}
-}
-
 func TestSendWireFormat(t *testing.T) {
 	// Verify the JSON format matches the Claude CLI input protocol.
 	msg := map[string]any{

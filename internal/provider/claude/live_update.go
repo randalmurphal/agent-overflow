@@ -25,10 +25,6 @@ import (
 //     respawn is what adds the opt-in;
 //   - an /effort or /fast apply on a session that has not advertised that
 //     command (older CLI, gated account, or no init yet);
-//   - an /effort or /fast apply while the session's transcript needs the
-//     --resume-session-at repair before any user message may be written
-//     (RequiresResumeAtBeforeUserSend) — the commands ARE user messages,
-//     and the restart is what performs the repair;
 //   - a system-prompt swap on a session whose CLI has not (yet) proved it
 //     is new enough to APPLY set_model.system_prompt, or whose current
 //     model is unknown (set_model must carry one, and there is no
@@ -384,14 +380,6 @@ func (s *Session) validateLiveUpdate(update LiveUpdate) error {
 			// launchOpts as if something had happened.
 			return fmt.Errorf("claude: thinking update carries neither a budget nor a display")
 		}
-	}
-	// The command axes are user messages on the wire. A transcript that
-	// needs the --resume-session-at repair before any user send (an
-	// unresolved server-side tool_use after a completed turn) must not
-	// receive one — it would attach at the wrong parent. The restart
-	// fallback performs exactly that repair.
-	if (update.Effort != "" || update.FastMode != FastModeUnchanged) && s.RequiresResumeAtBeforeUserSend() {
-		return ErrLiveUpdateRequiresRestart
 	}
 	return nil
 }

@@ -24,9 +24,6 @@ func TestSessionLeafScannerIgnoresOrphanAdvisorAndDuplicateReplay(t *testing.T) 
 	if state.CanonicalLeafUUID != "a-final" {
 		t.Fatalf("CanonicalLeafUUID = %q, want a-final", state.CanonicalLeafUUID)
 	}
-	if !state.RequiresResumeAtBeforeUserSend {
-		t.Fatal("RequiresResumeAtBeforeUserSend = false, want true")
-	}
 	if got, want := strings.Join(state.UnresolvedServerToolUUIDs, ","), "a-advisor"; got != want {
 		t.Fatalf("UnresolvedServerToolUUIDs = %q, want %q", got, want)
 	}
@@ -47,9 +44,6 @@ func TestSessionLeafScannerHealthyAdvisorResolves(t *testing.T) {
 	}
 	if state.CanonicalLeafUUID != "a-final" {
 		t.Fatalf("CanonicalLeafUUID = %q, want a-final", state.CanonicalLeafUUID)
-	}
-	if state.RequiresResumeAtBeforeUserSend {
-		t.Fatal("RequiresResumeAtBeforeUserSend = true, want false")
 	}
 	if len(state.UnresolvedServerToolUUIDs) != 0 {
 		t.Fatalf("UnresolvedServerToolUUIDs = %v, want empty", state.UnresolvedServerToolUUIDs)
@@ -120,9 +114,6 @@ func TestSessionLeafScannerKeepsAssistantUnresolvedUntilAllServerToolsResolve(t 
 	if state.CanonicalLeafUUID != "a-final" {
 		t.Fatalf("CanonicalLeafUUID = %q, want a-final", state.CanonicalLeafUUID)
 	}
-	if !state.RequiresResumeAtBeforeUserSend {
-		t.Fatal("RequiresResumeAtBeforeUserSend = false, want true")
-	}
 	if got, want := strings.Join(state.UnresolvedServerToolUUIDs, ","), "a-advisor"; got != want {
 		t.Fatalf("UnresolvedServerToolUUIDs = %q, want %q", got, want)
 	}
@@ -142,28 +133,32 @@ func TestSessionLeafScannerResolvesNonAdvisorServerToolResults(t *testing.T) {
 	if state.CanonicalLeafUUID != "a-search" {
 		t.Fatalf("CanonicalLeafUUID = %q, want a-search", state.CanonicalLeafUUID)
 	}
-	if state.RequiresResumeAtBeforeUserSend {
-		t.Fatal("RequiresResumeAtBeforeUserSend = true, want false")
-	}
 	if len(state.UnresolvedServerToolUUIDs) != 0 {
 		t.Fatalf("UnresolvedServerToolUUIDs = %v, want empty", state.UnresolvedServerToolUUIDs)
 	}
 }
 
-func TestLiveLeafTrackerRequiresResumeOnlyAfterTurnComplete(t *testing.T) {
+// TestLiveLeafTrackerAdvancesPastOrphanedAdvisor is the production shape
+// from a Bash call and an advisor call emitted in one response: the API
+// never runs the advisor, the CLI chains the tool_result onto the tool_use
+// row and the turn continues. The orphan stays out of the leaf (a cursor
+// must never land on it) but nothing else about the session changes.
+func TestLiveLeafTrackerAdvancesPastOrphanedAdvisor(t *testing.T) {
 	tracker := newClaudeLeafTracker("")
 	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"start"}}`))
-	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"msg-advisor","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
-	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-final","parentUuid":"u1","message":{"id":"msg-final","role":"assistant","content":[{"type":"text","text":"final"}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-bash","parentUuid":"u1","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"a-bash","message":{"id":"msg-1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
+	if got := tracker.canonicalLeaf(); got != "a-bash" {
+		t.Fatalf("canonicalLeaf on the orphaned advisor row = %q, want a-bash", got)
+	}
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"u-result","parentUuid":"a-bash","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-final","parentUuid":"u-result","message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"final"}]}}`))
 
-	if tracker.requiresResumeAtBeforeUserSend() {
-		t.Fatal("requiresResumeAtBeforeUserSend before turn complete = true, want false")
+	state := tracker.stateForColdResume()
+	if state.CanonicalLeafUUID != "a-final" {
+		t.Fatalf("CanonicalLeafUUID = %q, want a-final", state.CanonicalLeafUUID)
 	}
-	tracker.markTurnComplete()
-	if !tracker.requiresResumeAtBeforeUserSend() {
-		t.Fatal("requiresResumeAtBeforeUserSend after turn complete = false, want true")
-	}
-	if got := tracker.canonicalLeaf(); got != "a-final" {
-		t.Fatalf("canonicalLeaf = %q, want a-final", got)
+	if got, want := strings.Join(state.UnresolvedServerToolUUIDs, ","), "a-advisor"; got != want {
+		t.Fatalf("UnresolvedServerToolUUIDs = %q, want %q", got, want)
 	}
 }

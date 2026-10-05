@@ -696,35 +696,30 @@ func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
 	}
 }
 
-// TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair — /effort and
-// /fast are user messages on the wire; a transcript pending the
-// --resume-session-at repair must not receive one. The restart fallback
-// performs the repair.
-func TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair(t *testing.T) {
+// TestApplyLiveUpdateEffortStaysLiveAfterOrphanedAdvisor: an advisor
+// call that never got its result (the model emitted it beside a client
+// tool_use) leaves the live process healthy: the CLI drops orphaned
+// server_tool_use blocks from every API request (ensureToolResultPairing,
+// spike-verified on 2.1.284). /effort is a user message on the wire and
+// must still go out live, not fall back to a restart.
+func TestApplyLiveUpdateEffortStaysLiveAfterOrphanedAdvisor(t *testing.T) {
 	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
 	ingestTrackerLine(s.leafTracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}`))
-	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
-	s.leafTracker.markTurnComplete()
-	if !s.RequiresResumeAtBeforeUserSend() {
-		t.Fatal("test setup: session not in the resume-repair state")
-	}
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-bash","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"a-bash","message":{"id":"m1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"user","uuid":"u-result","parentUuid":"a-bash","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-final","parentUuid":"u-result","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done"}]}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"result","subtype":"success","is_error":false}`))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, nil)
-	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, nil); err != nil {
+		t.Fatalf("ApplyLiveUpdate after an orphaned advisor call: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
-	}
-
-	// A model-only update carries no user message and stays live even in
-	// the repair state.
-	if _, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5"}, nil); err != nil {
-		t.Fatalf("model-only ApplyLiveUpdate during repair state: %v", err)
+	lines := waitCapturedLines(t, capturePath, 1)
+	if text, _ := decodeCapturedUserCommand(t, lines[0]); text != "/effort low" {
+		t.Fatalf("wire command = %q, want /effort low", text)
 	}
 }
 

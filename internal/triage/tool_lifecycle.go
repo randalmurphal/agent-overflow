@@ -1038,11 +1038,10 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 }
 
 // stashBackgroundTaskTerminal records the host-side process exit
-// without writing a chat row. The lifecycle gates in
-// items_lifecycle.go (HasLiveBackgroundToolCall,
-// HasQueueBlockingBackgroundToolCall) join against the stash so an
-// exited-but-unobserved shell stops blocking the reaper and the flush
-// queue; the tray learns of the exit through the
+// without writing a chat row. The flush-queue gate in items_lifecycle.go
+// (HasQueueBlockingBackgroundToolCall) joins against the stash so an
+// exited-but-unobserved shell stops blocking the flush queue; the tray
+// learns of the exit through the
 // `provider:background_task_state{exited}` emit below (Tray-A: tray
 // reflects process state, not agent state).
 //

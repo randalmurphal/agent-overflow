@@ -1,9 +1,6 @@
 package claude
 
 import (
-	"agent-overflow/internal/provider/claude/sessionfork"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -187,33 +184,18 @@ func TestSessionLeafScannerEmptyContentAssistantKept(t *testing.T) {
 	}
 }
 
-// TestResumeAtOnActiveBranchRejectsFilteredRows: the explicit-cursor
-// validator must reject rows the CLI's resume filters drop — the live
-// tracker can hand the spawn path a wire-derived leaf whose
-// tool_result never reached the file (process died mid-tool).
-func TestResumeAtOnActiveBranchRejectsFilteredRows(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workspace := filepath.Join(home, "ws")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
-	canonical, err := filepath.EvalSymlinks(workspace)
+// TestSurvivingResumeCursorsDropFilteredRows: the cursor set must exclude
+// rows the CLI's resume filters drop, or a repaired cursor could still
+// hard-fail resume pre-init.
+func TestSurvivingResumeCursorsDropFilteredRows(t *testing.T) {
+	_, branch, err := scanSessionTrackerAndBranch(strings.NewReader(crashDanglingToolUseTailTranscript))
 	if err != nil {
-		t.Fatalf("eval workspace symlinks: %v", err)
+		t.Fatalf("scan: %v", err)
 	}
-	slug := strings.ReplaceAll(canonical, string(filepath.Separator), "-")
-	projectDir := filepath.Join(home, ".claude", "projects", slug)
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir project dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "sess-crash.jsonl"), []byte(crashDanglingToolUseTailTranscript+"\n"), 0o600); err != nil {
-		t.Fatalf("write session file: %v", err)
-	}
-
+	set, _ := branch.survivingResumeCursors(nil)
 	cases := []struct {
-		resumeAt string
-		want     bool
+		uuid string
+		want bool
 	}{
 		{"u-edit-result", true}, // deepest surviving row
 		{"a-edit", true},        // resolved tool_use — survives
@@ -221,12 +203,8 @@ func TestResumeAtOnActiveBranchRejectsFilteredRows(t *testing.T) {
 		{"a-think", false},      // orphaned with its sibling — CLI drops it
 	}
 	for _, tc := range cases {
-		got, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-crash", workspace, tc.resumeAt)
-		if err != nil {
-			t.Fatalf("ResumeAtOnActiveBranch(%q): %v", tc.resumeAt, err)
-		}
-		if got != tc.want {
-			t.Errorf("ResumeAtOnActiveBranch(%q) = %v, want %v", tc.resumeAt, got, tc.want)
+		if _, got := set[tc.uuid]; got != tc.want {
+			t.Errorf("%q in surviving cursors = %v, want %v", tc.uuid, got, tc.want)
 		}
 	}
 }

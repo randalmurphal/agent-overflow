@@ -554,7 +554,7 @@ func TestListLiveBackgroundTasks_CrossThreadIsolation(t *testing.T) {
 // actually protecting — a subagent's FOREGROUND tool calls flooding the
 // tray, and a subagent-scoped row blocking the flush queue — is still
 // protected: see the foreground-exclusion assertion below and
-// TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows.
+// TestHasQueueBlockingBackgroundToolCall_ExcludesSubagentScopedBackgroundRows.
 func TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
@@ -686,7 +686,7 @@ func TestListLiveBackgroundTasks_NestedAgentUnderBackgroundLaunch(t *testing.T) 
 
 	// The nested launches are foreground: none of this blocks the flush
 	// queue or counts as background work a stop would kill.
-	blocking, err := s.HasLiveBackgroundToolCall("t")
+	blocking, err := s.HasQueueBlockingBackgroundToolCall("t")
 	if err != nil {
 		t.Fatalf("has live background: %v", err)
 	}
@@ -732,7 +732,7 @@ func seedChildToolCall(
 	}
 }
 
-func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testing.T) {
+func TestHasQueueBlockingBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -773,7 +773,7 @@ func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testi
 		t.Fatalf("seed scoped launch: %v", err)
 	}
 
-	active, err := s.HasLiveBackgroundToolCall("t")
+	active, err := s.HasQueueBlockingBackgroundToolCall("t")
 	if err != nil {
 		t.Fatalf("has live background: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testi
 	}
 
 	seedBackgroundItem(t, s, "t", "top-level-bash", 0, 2, "running", "", 300)
-	active, err = s.HasLiveBackgroundToolCall("t")
+	active, err = s.HasQueueBlockingBackgroundToolCall("t")
 	if err != nil {
 		t.Fatalf("has live background after top-level seed: %v", err)
 	}

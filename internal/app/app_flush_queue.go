@@ -621,9 +621,6 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	if err != nil {
 		return nil, false, requeue, fmt.Errorf("load thread: %w", err)
 	}
-	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
-		return nil, false, requeue, err
-	}
 	sess, unlockAccount, err := a.lockProviderAccountForSendLocked(thread)
 	if err != nil {
 		return nil, false, requeue, err

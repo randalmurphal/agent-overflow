@@ -97,8 +97,8 @@ func (a *App) materializeImportedClaudeBranch(t store.Thread) store.Thread {
 	}
 
 	// A TARGETED write, not a whole-row UpdateThread. `t` was read at the top
-	// of startSessionNowWithClaudeResumeAt and everything else about the row is
-	// unread here; writing it back would revert any column another writer moved
+	// of startSessionNow and everything else about the row is unread here;
+	// writing it back would revert any column another writer moved
 	// since — an auto-generated title (which lands from a detached goroutine
 	// through its own compare-and-swap), an observed branch, a token-usage
 	// refresh. UpdateSessionRef writes session_ref, clears the pending fork

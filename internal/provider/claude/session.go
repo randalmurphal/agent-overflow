@@ -21,20 +21,10 @@ var _ provider.Session = (*Session)(nil)
 type Session struct {
 	proc     *provider.Process
 	threadID string
-	// sessionID is the CLI's session identifier — seeded from Config.Resume
-	// at construction and overwritten by every `system/init` on the READ
-	// LOOP, while SessionID() and the replay-parent lookup in
-	// session_send.go read it from binding goroutines. Atomic for the same
-	// reason codex's codexThreadID is: the two sides share no lock.
-	sessionID atomic.Pointer[string]
-	workDir   string
-	// projectsDir is Config.ProjectsDir; see its doc for why it is
-	// injected and what an empty value means. Written once at construction.
-	projectsDir string
-	onEvent     func(provider.ProviderEvent)
-	cancel      context.CancelFunc
-	closing     atomic.Bool
-	readDone    chan struct{}
+	onEvent  func(provider.ProviderEvent)
+	cancel   context.CancelFunc
+	closing  atomic.Bool
+	readDone chan struct{}
 	// systemPromptPath is the temp file cfg.SystemPrompt was written to for
 	// `--system-prompt-file`, or "" when the session carries no override.
 	// Removed by Close; see WriteSystemPromptFile for why the prompt does
@@ -179,22 +169,8 @@ type Session struct {
 	pendingPeerRenames    map[string]pendingPeerRename
 	// leafTracker tracks the canonical settled top-level Claude transcript
 	// UUID. Unresolved server-side tool-use rows are kept out of this leaf
-	// so a later user send can be forced back onto the real continuation.
+	// so a fork cut never lands on one.
 	leafTracker *claudeLeafTracker
-	// replayMu guards the expected parents for AO-authored replay user
-	// echoes, keyed by the client-minted message uuid the echo carries back
-	// as provider_item_id. Claude stream-json gives us no send-time parent
-	// override, so the replay echo is the earliest confirmation that the
-	// live process attached the user message to the expected transcript
-	// leaf. Keyed rather than a single slot because senders overlap: a
-	// config-command send (live_update.go) can land between a queued user
-	// message and its echo, and a slot would cross the two verifications.
-	// expectedReplayOrder tracks insertion order for the size cap — an
-	// entry whose echo never arrives (the CLI cancelled the queued
-	// message) would otherwise leak.
-	replayMu             sync.Mutex
-	expectedReplayByUUID map[string]replayExpectation
-	expectedReplayOrder  []string
 	// approvals is the outstanding-interactive-request ledger: which
 	// can_use_tool / AskUserQuestion requests are unanswered, and who is
 	// allowed to answer each one. Shared with codex — it owns its own leaf
@@ -272,8 +248,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		proc:                     proc,
 		systemPromptPath:         systemPromptPath,
 		threadID:                 threadID,
-		workDir:                  cfg.WorkDir,
-		projectsDir:              cfg.ProjectsDir,
 		onEvent:                  onEvent,
 		cancel:                   cancel,
 		readDone:                 make(chan struct{}),
@@ -290,9 +264,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		crossSessionEnabled:      cfg.CrossSessionEnabled,
 		peerSessionName:          SanitizePeerSessionName(cfg.PeerSessionName),
 		peerRenameSettledName:    SanitizePeerSessionName(cfg.PeerSessionName),
-	}
-	if cfg.Resume != "" {
-		s.setSessionID(cfg.Resume)
 	}
 	// Seed the parser with the configured model so result usage can be
 	// priced even if the init envelope lands late. The init handler still
@@ -311,21 +282,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	return s, nil
 }
 
-// SessionID returns the provider's session identifier.
-// Only valid after the init event has been received.
-func (s *Session) SessionID() string {
-	if id := s.sessionID.Load(); id != nil {
-		return *id
-	}
-	return ""
-}
-
-// setSessionID records the CLI-reported session id. Called from the
-// constructor (Config.Resume seed) and the read loop's init handler.
-func (s *Session) setSessionID(id string) {
-	s.sessionID.Store(&id)
-}
-
 // CanonicalLeafUUID returns the latest settled top-level Claude transcript
 // UUID observed by this live session.
 func (s *Session) CanonicalLeafUUID() string {
@@ -333,17 +289,6 @@ func (s *Session) CanonicalLeafUUID() string {
 		return ""
 	}
 	return s.leafTracker.canonicalLeaf()
-}
-
-// RequiresResumeAtBeforeUserSend reports whether the live Claude process has
-// emitted an unresolved server-side tool-use row after a completed turn. In
-// that state AO must restart Claude with --resume-session-at before writing a
-// new user message, because stream-json stdin has no parent override.
-func (s *Session) RequiresResumeAtBeforeUserSend() bool {
-	if s == nil || s.leafTracker == nil {
-		return false
-	}
-	return s.leafTracker.requiresResumeAtBeforeUserSend()
 }
 
 // PID returns the OS process id (and process-group id) of the Claude

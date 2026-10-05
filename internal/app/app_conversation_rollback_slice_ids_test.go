@@ -254,24 +254,15 @@ func TestConversationRollbackSlicesPoisonedAPIErrorTail(t *testing.T) {
 	}
 	assertClaudeSessionText(t, workspace, after.SessionRef, []string{"first", "second", "reply 1"}, []string{"third"})
 
-	// The slice's leaf must be on the active branch — i.e. the resume-at
-	// the app would pass is one claude accepts. Without the rechain the
-	// sliced file ends with off-branch api_error rows and the branch
-	// walk would skip reply 1's row.
+	// The resume-at the app would pass must be reply 1's row. Without the
+	// rechain the sliced file ends with off-branch api_error rows, the
+	// branch walk skips reply 1, and the branch-aware scan falls back to
+	// the shallower a1-mid.
 	state, err := claude.ScanSessionLeaf(testProviderProjectsDir(t), after.SessionRef, workspace)
 	if err != nil {
 		t.Fatalf("scan sliced session leaf: %v", err)
 	}
-	if state.CanonicalLeafUUID == "" {
-		t.Fatalf("sliced session has no usable leaf")
-	}
-	onBranch, err := claude.ResumeAtOnActiveBranch(
-		testProviderProjectsDir(t), after.SessionRef, workspace, state.CanonicalLeafUUID,
-	)
-	if err != nil {
-		t.Fatalf("validate sliced leaf: %v", err)
-	}
-	if !onBranch {
-		t.Fatalf("sliced session leaf %s is off the active branch — rechain did not repair the slice", state.CanonicalLeafUUID)
+	if state.CanonicalLeafUUID != "a1-final" {
+		t.Fatalf("sliced session resume-at = %q, want a1-final (rechain did not repair the slice)", state.CanonicalLeafUUID)
 	}
 }

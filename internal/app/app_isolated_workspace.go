@@ -17,8 +17,8 @@ import (
 // So a workspace is admitted only when it resolves inside the harness data
 // root (IsolationConfig.WorkspaceRoot). The check is applied where a path
 // first enters the app (CreateProject) and again where a session is spawned
-// (startSessionNowWithClaudeResumeAt), so neither a seeded path nor a
-// restored thread row can reach a real repository.
+// (startSessionNow), so neither a seeded path nor a restored thread row can
+// reach a real repository.
 
 // requireIsolatedWorkspace refuses a path outside the isolated boot's
 // workspace root. No-op when no root is configured (unit tests).

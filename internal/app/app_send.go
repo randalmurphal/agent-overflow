@@ -585,9 +585,6 @@ func (a *App) sendMessageLocked(
 		}
 	}
 	a.ensureTriageRouter()
-	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
-		return store.Item{}, fmt.Errorf("send message: %w", err)
-	}
 	if err := a.ensureProviderAccountReadyForSendLocked(thread); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}

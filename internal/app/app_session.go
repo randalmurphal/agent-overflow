@@ -53,14 +53,6 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 	return a.startSession(ctx, threadID)
 }
 
-// startSessionNow builds the provider-specific launch config, stops
-// any prior session on the thread, and spawns a fresh one. Callers go
-// through StartSession / runSessionStart so concurrent start attempts
-// share a single spawn instead of racing.
-func (a *App) startSessionNow(threadID string) error {
-	return a.startSessionNowWithClaudeResumeAt(threadID, "")
-}
-
 // buildSessionOptions composes the provider-agnostic SessionOptions bundle
 // for a thread row. Shared by
 // the spawn path and the live config reconciler (app_session_config.go) so
@@ -115,7 +107,11 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, erro
 	return opts, nil
 }
 
-func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
+// startSessionNow builds the provider-specific launch config, stops
+// any prior session on the thread, and spawns a fresh one. Callers go
+// through StartSession / runSessionStart so concurrent start attempts
+// share a single spawn instead of racing.
+func (a *App) startSessionNow(threadID string) error {
 	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
 	if admitErr != nil {
 		return admitErr
@@ -183,8 +179,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// Resolve the resume cursor only after the prior session is fully
 	// stopped: Close blocks on the read loop, and the CLI can append
 	// final transcript rows right up to exit. Scanning before the stop
-	// could validate against (or pick a leaf from) a file the dying
-	// process is still extending.
+	// could pick a leaf from a file the dying process is still extending.
 	//
 	// A fork start resolves against the SOURCE session instead
 	// (opts.Resume IS the source ref while PendingForkRef is pending),
@@ -209,7 +204,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 				opts.ResumeAt = cursor
 			}
 		} else {
-			opts.ResumeAt = resolveClaudeResumeAt(projectsDir, opts.Resume, opts.WorkDir, claudeResumeAt)
+			opts.ResumeAt = resolveClaudeResumeAt(projectsDir, opts.Resume, opts.WorkDir)
 		}
 	}
 
@@ -340,29 +335,13 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 }
 
 // resolveClaudeResumeAt picks the --resume-session-at cursor for a
-// Claude session resume. An explicit cursor (today only the live-tracker
-// leaf passed by the context-repair restart, app_claude_context.go) is
-// validated against the session file's active parentUuid branch first:
-// the tracker is wire-derived and can disagree with the file — the CLI
-// appends deferred system/api_error rows with stale parents at the NEXT
-// user send, moving the active branch out from under any cursor chosen
-// earlier (invariant 28). Claude hard-fails resume on an off-branch
-// uuid pre-init, so an unvalidated cursor would brick the restart.
-// Off-branch or unverifiable cursors are rejected loudly and the
-// branch-aware file scan decides instead; scan failure resumes with no
+// Claude session resume from the branch-aware file scan: the deepest row
+// on the session file's active parentUuid branch that survives the CLI's
+// resume filters, never an unresolved server-tool row. Claude hard-fails
+// resume on an off-branch uuid pre-init (invariant 28), which is why the
+// scan, not a wire-derived leaf, decides. Scan failure resumes with no
 // cursor at all (claude's own default-leaf semantics).
-func resolveClaudeResumeAt(projectsDir, sessionRef, workDir, explicit string) string {
-	if explicit != "" {
-		onBranch, err := claude.ResumeAtOnActiveBranch(projectsDir, sessionRef, workDir, explicit)
-		switch {
-		case err != nil:
-			log.Printf("start session: validate Claude resume-at %s against session %s: %v — falling back to file scan", explicit, sessionRef, err)
-		case onBranch:
-			return explicit
-		default:
-			log.Printf("start session: Claude resume-at %s is off the active branch of session %s — rejecting, falling back to file scan", explicit, sessionRef)
-		}
-	}
+func resolveClaudeResumeAt(projectsDir, sessionRef, workDir string) string {
 	state, err := claude.ScanSessionLeaf(projectsDir, sessionRef, workDir)
 	if err != nil {
 		log.Printf("start session: scan Claude session leaf %s: %v", sessionRef, err)
@@ -559,15 +538,6 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
-		// Injected, never resolved inside the provider package: a session
-		// that read the transcript home from $HOME would hand its readers
-		// (and every writer downstream of them) the developer's real
-		// ~/.claude on any boot whose provider home is pinned elsewhere.
-		if projectsDir, dirErr := a.claudeProjectsDir(); dirErr != nil {
-			log.Printf("start session: resolve claude projects dir: %v", dirErr)
-		} else {
-			cfg.ProjectsDir = projectsDir
-		}
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
 		// The peer-visible name rides the Config rather than the options

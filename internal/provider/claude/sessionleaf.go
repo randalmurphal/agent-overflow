@@ -20,14 +20,15 @@ const (
 )
 
 // SessionLeafState is the Claude transcript continuation state AO needs
-// before resuming or sending into a session. CanonicalLeafUUID is the latest
-// settled top-level transcript row. UnresolvedServerToolUUIDs are assistant
-// rows that contain server-side tool calls without a matching server-side
+// before resuming a session. CanonicalLeafUUID is the latest settled
+// top-level transcript row. UnresolvedServerToolUUIDs are assistant rows
+// that contain server-side tool calls without a matching server-side
 // result; they are transcript history, but not valid continuation leaves.
+// They never block a live send: the CLI drops such blocks from every API
+// request (ensureToolResultPairing), so a live process continues past them.
 type SessionLeafState struct {
-	CanonicalLeafUUID              string
-	UnresolvedServerToolUUIDs      []string
-	RequiresResumeAtBeforeUserSend bool
+	CanonicalLeafUUID         string
+	UnresolvedServerToolUUIDs []string
 }
 
 type claudeLeafTracker struct {
@@ -37,7 +38,6 @@ type claudeLeafTracker struct {
 	seenUUIDs         map[string]struct{}
 	pendingByToolID   map[string]string
 	unresolvedByUUID  map[string]map[string]struct{}
-	requiresResumeAt  bool
 }
 
 func newClaudeLeafTracker(seedCanonicalLeaf string) *claudeLeafTracker {
@@ -111,8 +111,6 @@ func (t *claudeLeafTracker) ingestRow(row claudeSessionRow) {
 		t.ingestAssistantLocked(row.UUID, row.ParentUUID, row.ParentToolUseID, row.Message)
 	case "user":
 		t.ingestUserLocked(row.UUID, row.ParentToolUseID)
-	case "result":
-		t.markTurnCompleteLocked()
 	}
 }
 
@@ -200,9 +198,6 @@ func (t *claudeLeafTracker) ingestAssistantLocked(uuid, parentUUID, parentToolUs
 		return
 	}
 	t.canonicalLeafUUID = uuid
-	if len(t.pendingByToolID) == 0 {
-		t.requiresResumeAt = false
-	}
 }
 
 func (t *claudeLeafTracker) resolveServerToolUseLocked(toolUseID string) {
@@ -221,21 +216,6 @@ func (t *claudeLeafTracker) resolveServerToolUseLocked(toolUseID string) {
 	}
 }
 
-func (t *claudeLeafTracker) markTurnComplete() {
-	if t == nil {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.markTurnCompleteLocked()
-}
-
-func (t *claudeLeafTracker) markTurnCompleteLocked() {
-	if len(t.pendingByToolID) > 0 && t.canonicalLeafUUID != "" {
-		t.requiresResumeAt = true
-	}
-}
-
 func (t *claudeLeafTracker) canonicalLeaf() string {
 	if t == nil {
 		return ""
@@ -245,15 +225,6 @@ func (t *claudeLeafTracker) canonicalLeaf() string {
 	return t.canonicalLeafUUID
 }
 
-func (t *claudeLeafTracker) requiresResumeAtBeforeUserSend() bool {
-	if t == nil {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.requiresResumeAt && t.canonicalLeafUUID != ""
-}
-
 func (t *claudeLeafTracker) stateForColdResume() SessionLeafState {
 	if t == nil {
 		return SessionLeafState{}
@@ -261,14 +232,9 @@ func (t *claudeLeafTracker) stateForColdResume() SessionLeafState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	requires := t.requiresResumeAt
-	if len(t.pendingByToolID) > 0 && t.canonicalLeafUUID != "" {
-		requires = true
-	}
 	return SessionLeafState{
-		CanonicalLeafUUID:              t.canonicalLeafUUID,
-		UnresolvedServerToolUUIDs:      sortedServerToolUUIDs(t.unresolvedByUUID),
-		RequiresResumeAtBeforeUserSend: requires,
+		CanonicalLeafUUID:         t.canonicalLeafUUID,
+		UnresolvedServerToolUUIDs: sortedServerToolUUIDs(t.unresolvedByUUID),
 	}
 }
 
@@ -370,57 +336,4 @@ func scanSessionTrackerAndBranch(r io.Reader) (*claudeLeafTracker, *claudeBranch
 		return nil, nil, fmt.Errorf("claude: scan session leaf: %w", err)
 	}
 	return tracker, branch, nil
-}
-
-func findReplayUserParent(projectsDir, sessionID, workspacePath, replayUUID string) (string, bool, error) {
-	replayUUID = strings.TrimSpace(replayUUID)
-	if replayUUID == "" {
-		return "", false, nil
-	}
-	// No projects dir means nobody injected one: the caller reports
-	// "could not verify" rather than falling back to $HOME, which is the
-	// only way this lookup could reach a foreign provider home.
-	if strings.TrimSpace(projectsDir) == "" {
-		return "", false, nil
-	}
-	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
-	if err != nil {
-		return "", false, err
-	}
-	if st, err := os.Stat(path); err != nil {
-		return "", false, fmt.Errorf("claude: stat session file for replay parent: %w", err)
-	} else if st.Size() > maxClaudeSessionLeafFileBytes {
-		return "", false, fmt.Errorf("claude: session file too large for replay parent lookup: %d bytes", st.Size())
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", false, fmt.Errorf("claude: open session file for replay parent: %w", err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), maxClaudeSessionLeafLineBytes)
-	rows := 0
-	for scanner.Scan() {
-		rows++
-		if rows > maxClaudeSessionLeafRows {
-			return "", false, fmt.Errorf("claude: session file has more than %d rows during replay parent lookup", maxClaudeSessionLeafRows)
-		}
-		line := scanner.Bytes()
-		var env struct {
-			Type       string `json:"type"`
-			UUID       string `json:"uuid"`
-			ParentUUID string `json:"parentUuid"`
-		}
-		if err := json.Unmarshal(line, &env); err != nil {
-			continue
-		}
-		if env.Type == "user" && env.UUID == replayUUID {
-			return strings.TrimSpace(env.ParentUUID), true, nil
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", false, fmt.Errorf("claude: scan replay parent: %w", err)
-	}
-	return "", false, nil
 }

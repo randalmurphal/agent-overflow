@@ -120,9 +120,6 @@ func (s *Session) readLoop() {
 			if evt.Kind == provider.EventInit && evt.Meta != nil {
 				var info provider.SessionInfo
 				if json.Unmarshal(evt.Meta, &info) == nil {
-					if info.SessionID != "" {
-						s.setSessionID(info.SessionID)
-					}
 					// `claude_code_version` is the only in-session
 					// statement of which binary is actually serving this
 					// process (the spawn-time `--version` probe answers
@@ -163,14 +160,8 @@ func (s *Session) readLoop() {
 				_ = json.Unmarshal(evt.Meta, &request)
 				s.trackPendingApprovalWithQuestions(evt.ItemID, provider.EventUserInputResolved, request.Questions)
 			}
-			if evt.Kind == provider.EventTurnComplete && s.leafTracker != nil {
-				s.leafTracker.markTurnComplete()
-			}
 			s.onEvent(evt)
 			s.noteReadLoopProgress()
-			if evt.Kind == provider.EventUserText {
-				s.verifyReplayParent(evt)
-			}
 		}
 	}
 }

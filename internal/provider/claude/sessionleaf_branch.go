@@ -1,10 +1,6 @@
 package claude
 
 import (
-	"bufio"
-	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -83,18 +79,10 @@ func (b *claudeBranchIndex) alreadySeen(uuid string) bool {
 	return ok
 }
 
-func (b *claudeBranchIndex) ingestLine(line []byte) {
-	var row claudeSessionRow
-	if err := json.Unmarshal(line, &row); err != nil {
-		return
-	}
-	b.ingestRow(row)
-}
-
-// ingestRow is the decode-free core of ingestLine, shared with
-// scanSessionLeafReader's single-decode path. Row admission uses
-// sessionfork.TranscriptTypes — the fork transform and this validator
-// must agree on what claude's walk sees (invariant 28).
+// ingestRow admits one decoded transcript row, fed by
+// scanSessionTrackerAndBranch's single-decode path. Row admission uses
+// sessionfork.TranscriptTypes — the fork transform and this index must
+// agree on what claude's walk sees (invariant 28).
 func (b *claudeBranchIndex) ingestRow(row claudeSessionRow) {
 	if row.IsSidechain {
 		return
@@ -188,73 +176,4 @@ func repairLeafForActiveBranch(state SessionLeafState, idx *claudeBranchIndex) S
 	}
 	state.CanonicalLeafUUID = deepest
 	return state
-}
-
-// ResumeAtOnActiveBranch reports whether resumeAt is a cursor that
-// `claude --resume <sessionID> --resume-session-at <resumeAt>` will
-// accept: a user/assistant row on the active parentUuid branch of the
-// session's JSONL that survives the CLI's resume deserialization
-// filters. Used by the spawn path to validate EXPLICIT resume-at
-// cursors (the live-tracker context-repair restart passes a
-// wire-derived leaf that can disagree with the file). See invariant 28.
-//
-// Unlike repairLeafForActiveBranch, this check does NOT screen the
-// cursor against unresolved server-tool rows: the only explicit-cursor
-// producer is the live claudeLeafTracker, which never advances its
-// canonical leaf onto an assistant row with unresolved server tools in
-// the first place. If a new explicit-cursor source appears, it must
-// either inherit that guarantee or this validator grows the exclusion.
-func ResumeAtOnActiveBranch(projectsDir, sessionID, workspacePath, resumeAt string) (bool, error) {
-	resumeAt = strings.TrimSpace(resumeAt)
-	if resumeAt == "" {
-		return false, fmt.Errorf("claude: empty resume-at uuid")
-	}
-	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
-	if err != nil {
-		return false, err
-	}
-	idx, err := scanBranchIndexFile(path)
-	if err != nil {
-		return false, err
-	}
-	set, _ := idx.survivingResumeCursors(nil)
-	_, ok := set[resumeAt]
-	return ok, nil
-}
-
-// scanBranchIndexFile builds a claudeBranchIndex from the session JSONL
-// at path, under the same size/row caps the leaf scan enforces.
-func scanBranchIndexFile(path string) (*claudeBranchIndex, error) {
-	st, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("claude: stat session file for branch index: %w", err)
-	}
-	if st.Size() > maxClaudeSessionLeafFileBytes {
-		return nil, fmt.Errorf("claude: session file too large for branch index: %d bytes", st.Size())
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("claude: open session file for branch index: %w", err)
-	}
-	defer f.Close()
-
-	idx := newClaudeBranchIndex()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), maxClaudeSessionLeafLineBytes)
-	rows := 0
-	for scanner.Scan() {
-		rows++
-		if rows > maxClaudeSessionLeafRows {
-			return nil, fmt.Errorf("claude: session file has more than %d rows during branch index scan", maxClaudeSessionLeafRows)
-		}
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		idx.ingestLine(line)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("claude: scan branch index: %w", err)
-	}
-	return idx, nil
 }

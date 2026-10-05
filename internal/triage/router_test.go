@@ -4115,8 +4115,8 @@ func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
 
 // TestCleanupThreadDoesNotPoisonFutureSessions verifies CleanupThread
 // is NOT sticky: when the host commits to a replacement session it
-// calls MarkThreadActive (startSessionNowWithClaudeResumeAt does this
-// pre-spawn), and events from the new session must persist again.
+// calls MarkThreadActive (startSessionNow does this pre-spawn), and
+// events from the new session must persist again.
 func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "restart")

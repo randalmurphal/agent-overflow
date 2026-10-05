@@ -108,7 +108,7 @@ type ImageAttachment struct {
 // `switch { case sess.claude != nil: ...; case sess.codex != nil: ... }`
 // for the handful of methods every provider session exposes the same
 // way. Anything that's only on one provider (e.g. Claude's
-// SessionID(), Codex's SetDynamicToolHandler) stays behind the
+// CanonicalLeafUUID(), Codex's SetDynamicToolHandler) stays behind the
 // concrete type; the wrapper in app.go still carries the typed
 // pointers so those call sites are unaffected.
 type Session interface {

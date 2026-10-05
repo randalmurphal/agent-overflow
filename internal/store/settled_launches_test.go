@@ -57,8 +57,8 @@ func assertLaunchSettledWithoutSibling(t *testing.T, s *Store, thread, launch st
 	if n, err := s.CountLiveRunningBackgroundToolCalls(thread); err != nil || n != 0 {
 		t.Fatalf("CountLiveRunningBackgroundToolCalls(%s) = %d, %v; want 0", thread, n, err)
 	}
-	if live, err := s.HasLiveBackgroundToolCall(thread); err != nil || live {
-		t.Fatalf("HasLiveBackgroundToolCall(%s) = %v, %v; want false", thread, live, err)
+	if live, err := s.HasQueueBlockingBackgroundToolCall(thread); err != nil || live {
+		t.Fatalf("HasQueueBlockingBackgroundToolCall(%s) = %v, %v; want false", thread, live, err)
 	}
 	if recoverable, err := s.ListRecoverableClaudeBackgroundLaunchesForThread(thread); err != nil || len(recoverable) != 0 {
 		t.Fatalf("launches the session-end settle would end in %s = %v, %v; want none", thread, recoverable, err)

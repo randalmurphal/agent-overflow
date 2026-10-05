@@ -562,12 +562,12 @@ func TestToolCompleteWatchTaskKeepsRunningButNotQueueBlocking(t *testing.T) {
 		t.Fatalf("watch_task must be merged onto the launch row meta; meta=%v", meta)
 	}
 
-	live, err := st.HasLiveBackgroundToolCall("t1")
+	running, err := st.ListRunningBackgroundToolCalls("t1")
 	if err != nil {
-		t.Fatalf("HasLiveBackgroundToolCall: %v", err)
+		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
 	}
-	if !live {
-		t.Fatal("a running watch IS live background work (reaper/revert/repair view)")
+	if len(running) != 1 {
+		t.Fatalf("a running watch IS live background work (reaper view); running = %d, want 1", len(running))
 	}
 	blocking, err := st.HasQueueBlockingBackgroundToolCall("t1")
 	if err != nil {
@@ -3525,7 +3525,7 @@ func TestToolCompleteUnflaggedSettlesFlaggedClaudeLaunch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || !live {
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || !live {
 		t.Fatalf("precondition: flagged launch counts as live background work (live=%v err=%v)", live, err)
 	}
 
@@ -3554,7 +3554,7 @@ func TestToolCompleteUnflaggedSettlesFlaggedClaudeLaunch(t *testing.T) {
 	if meta["is_background"] != false {
 		t.Errorf("stored meta is_background = %v, want false", meta["is_background"])
 	}
-	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || live {
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || live {
 		t.Fatalf("a refused launch must not count as live background work (live=%v err=%v)", live, err)
 	}
 	running, err := st.ListRunningBackgroundToolCalls("t1")

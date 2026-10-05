@@ -339,7 +339,7 @@ func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	launchBackgroundAgent(t, r, "t1", "toolu_settle", "task-settle")
-	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || !live {
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || !live {
 		t.Fatalf("a just-launched background agent must read as live: live=%v err=%v", live, err)
 	}
 	tickProgress(t, r, "t1", "toolu_settle", provider.SubagentProgressMeta{
@@ -381,7 +381,7 @@ func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
 	if progress.ToolUses != 3 || progress.TotalTokens != 4200 {
 		t.Fatalf("final progress = %+v", progress)
 	}
-	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || live {
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || live {
 		t.Fatalf("a settled launch must not read as live: live=%v err=%v", live, err)
 	}
 }

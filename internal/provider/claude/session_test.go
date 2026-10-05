@@ -71,29 +71,6 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 	if evt.Kind != provider.EventInit {
 		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventInit)
 	}
-	if s.SessionID() != "cat-sess" {
-		t.Errorf("sessionID: got %q, want %q", s.SessionID(), "cat-sess")
-	}
-}
-
-func TestSessionIDAccessor(t *testing.T) {
-	s, eventCh := newTestClaudeSession(t)
-
-	// Before init, session ID should be empty.
-	if s.SessionID() != "" {
-		t.Errorf("SessionID should be empty before init, got %q", s.SessionID())
-	}
-
-	// Write init to set it.
-	initLine := []byte(`{"type":"system","subtype":"init","session_id":"test-sid","model":"opus","cwd":"/","tools":[],"claude_code_version":"1.0"}`)
-	if err := s.proc.WriteLine(initLine); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	waitEvent(t, eventCh) // wait for init event to be processed
-
-	if s.SessionID() != "test-sid" {
-		t.Errorf("SessionID: got %q, want %q", s.SessionID(), "test-sid")
-	}
 }
 
 func TestCloseWaitsForDisconnectedHandler(t *testing.T) {

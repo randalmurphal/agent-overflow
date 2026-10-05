@@ -72,8 +72,8 @@ const BackgroundTaskRetentionMillis = 2000
 //
 // This is the DISPLAY query only. The reaper and queue gates in
 // items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
-// HasLiveBackgroundToolCall, HasQueueBlockingBackgroundToolCall,
-// MarkLiveBackgroundToolCallsInactive) and paging.go's
+// HasQueueBlockingBackgroundToolCall, MarkLiveBackgroundToolCallsInactive)
+// and paging.go's
 // topLevelItemsFilter KEEP the empty-`parent_id` term: whether the tray SHOWS a
 // nested background Bash and whether that Bash blocks the flush queue
 // are different questions, and the second one is still answered at the

@@ -53,8 +53,8 @@ func TestParkedStopSettlesNothing(t *testing.T) {
 	assertLive(t, s, "t", "launch")
 
 	// Every reader of the settled question still counts the launch live.
-	if live, err := s.HasLiveBackgroundToolCall("t"); err != nil || !live {
-		t.Errorf("HasLiveBackgroundToolCall = %v, %v; want true", live, err)
+	if live, err := s.HasQueueBlockingBackgroundToolCall("t"); err != nil || !live {
+		t.Errorf("HasQueueBlockingBackgroundToolCall = %v, %v; want true", live, err)
 	}
 	if n, err := s.CountLiveRunningBackgroundToolCalls("t"); err != nil || n != 1 {
 		t.Errorf("CountLiveRunningBackgroundToolCalls = %d, %v; want 1", n, err)

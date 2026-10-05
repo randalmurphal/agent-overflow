@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/provider"
 
@@ -57,7 +56,6 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 	message["content"] = blocks
 
-	s.recordExpectedReplayParent(opts.UserMessageUUID)
 	// Recorded BEFORE the stdin write: the CLI's command_lifecycle bracket
 	// for this uuid can reach the read loop before Send returns, and an
 	// unrecorded uuid would classify this app's own send as a turn some
@@ -97,7 +95,6 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
 	if err := s.proc.WriteLine(data); err != nil {
-		s.clearExpectedReplayParent(opts.UserMessageUUID)
 		// The uuid never reached stdin, so no command_lifecycle bracket will
 		// ever arrive to consume it. Leaving it in the ledger would leak one
 		// entry per failed write, and the ledger is capped: 256 failures
@@ -229,134 +226,4 @@ func (s *Session) BackgroundTask(ctx context.Context, toolUseID string) error {
 		return fmt.Errorf("claude: %s: provider refused to background the task (no matching foreground task)", opName)
 	}
 	return nil
-}
-
-// replayExpectation is the transcript parent recorded at send time for one
-// outbound user message, matched against the replay echo carrying the same
-// client-minted uuid.
-type replayExpectation struct {
-	parent   string
-	wasRisky bool
-}
-
-// maxExpectedReplayEntries bounds the expectation map. Entries are consumed
-// by their echo, but a queued message the CLI cancels never echoes; the cap
-// evicts oldest-first so those cannot accumulate. 64 is far above any real
-// number of unechoed in-flight sends.
-const maxExpectedReplayEntries = 64
-
-// recordExpectedReplayParent stores the current canonical leaf as the
-// expected parent for the echo of the message sent under uuid. A uuid-less
-// send records nothing — with no key there is no way to attribute its echo,
-// and every AO sender stamps a uuid.
-func (s *Session) recordExpectedReplayParent(uuid string) {
-	if s == nil || uuid == "" {
-		return
-	}
-	var expectation replayExpectation
-	if s.leafTracker != nil {
-		expectation.parent = s.leafTracker.canonicalLeaf()
-		expectation.wasRisky = s.leafTracker.requiresResumeAtBeforeUserSend()
-	}
-	s.replayMu.Lock()
-	defer s.replayMu.Unlock()
-	if s.expectedReplayByUUID == nil {
-		s.expectedReplayByUUID = make(map[string]replayExpectation)
-	}
-	if _, exists := s.expectedReplayByUUID[uuid]; !exists {
-		s.expectedReplayOrder = append(s.expectedReplayOrder, uuid)
-	}
-	s.expectedReplayByUUID[uuid] = expectation
-	for len(s.expectedReplayOrder) > maxExpectedReplayEntries {
-		oldest := s.expectedReplayOrder[0]
-		s.expectedReplayOrder = s.expectedReplayOrder[1:]
-		delete(s.expectedReplayByUUID, oldest)
-	}
-}
-
-// takeExpectedReplayParent consumes the expectation recorded for uuid.
-func (s *Session) takeExpectedReplayParent(uuid string) (expectation replayExpectation, ok bool) {
-	if s == nil || uuid == "" {
-		return replayExpectation{}, false
-	}
-	s.replayMu.Lock()
-	defer s.replayMu.Unlock()
-	expectation, ok = s.expectedReplayByUUID[uuid]
-	if ok {
-		delete(s.expectedReplayByUUID, uuid)
-		for i, id := range s.expectedReplayOrder {
-			if id == uuid {
-				s.expectedReplayOrder = append(s.expectedReplayOrder[:i], s.expectedReplayOrder[i+1:]...)
-				break
-			}
-		}
-	}
-	return expectation, ok
-}
-
-// clearExpectedReplayParent drops the expectation for uuid — called when the
-// stdin write failed, so no echo will ever arrive.
-func (s *Session) clearExpectedReplayParent(uuid string) {
-	if s == nil || uuid == "" {
-		return
-	}
-	_, _ = s.takeExpectedReplayParent(uuid)
-}
-
-func (s *Session) verifyReplayParent(evt provider.ProviderEvent) {
-	providerItemID, parentUUID := replayProviderIDs(evt.Meta)
-	expectation, ok := s.takeExpectedReplayParent(providerItemID)
-	if !ok || expectation.parent == "" {
-		return
-	}
-	expectedParent, wasRisky := expectation.parent, expectation.wasRisky
-	sessionID := s.SessionID()
-	if parentUUID == "" && wasRisky && providerItemID != "" && sessionID != "" {
-		if parent, found, err := findReplayUserParent(s.projectsDir, sessionID, s.workDir, providerItemID); err != nil {
-			s.emitReplayParentError(fmt.Sprintf("Claude replay omitted parentUuid and AO could not verify the transcript parent: %v", err))
-			return
-		} else if found {
-			parentUUID = parent
-		}
-	}
-	if parentUUID == "" && wasRisky {
-		s.emitReplayParentError("Claude replay omitted parentUuid and AO could not verify the transcript parent")
-		return
-	}
-	if parentUUID == "" || parentUUID == expectedParent {
-		return
-	}
-	s.emitReplayParentError(fmt.Sprintf("Claude attached the user message to transcript parent %s, expected %s", parentUUID, expectedParent))
-}
-
-func replayProviderIDs(meta json.RawMessage) (providerItemID, parentUUID string) {
-	if len(meta) == 0 {
-		return "", ""
-	}
-	var fields struct {
-		ProviderItemID string `json:"provider_item_id"`
-		ParentUUID     string `json:"parent_uuid"`
-	}
-	if err := json.Unmarshal(meta, &fields); err != nil {
-		return "", ""
-	}
-	return strings.TrimSpace(fields.ProviderItemID), strings.TrimSpace(fields.ParentUUID)
-}
-
-func (s *Session) emitReplayParentError(message string) {
-	meta, _ := json.Marshal(map[string]any{
-		"fatal": true,
-		"code":  "claude_context_parent_mismatch",
-	})
-	s.onEvent(provider.ProviderEvent{
-		Kind:      provider.EventError,
-		ThreadID:  s.threadID,
-		Content:   message,
-		Meta:      meta,
-		Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
-		Timestamp: time.Now(),
-	})
-	if s.proc != nil {
-		_ = s.proc.Close()
-	}
 }

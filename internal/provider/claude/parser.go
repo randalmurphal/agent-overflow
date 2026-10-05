@@ -284,7 +284,7 @@ type Parser struct {
 	// takeTurnUsage via advanceAccountedCost.
 	usageAccountedCostUSD float64
 	// leafTracker, when set (Session wires its own tracker in), is fed
-	// every assistant/user/result line's already-decoded top-level map
+	// every assistant/user line's already-decoded top-level map
 	// from ParseLine. Feeding it here instead of from the read loop
 	// avoids a second full json.Unmarshal of every prefix-matched line —
 	// ParseLine decodes the same map anyway. Matching on the decoded
@@ -493,7 +493,7 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	// lines before this hook existed — keep that property.
 	if p != nil && p.leafTracker != nil {
 		switch msgType {
-		case "assistant", "user", "result":
+		case "assistant", "user":
 			p.leafTracker.ingestRaw(msgType, raw)
 		}
 	}

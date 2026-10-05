@@ -462,12 +462,11 @@ Implementation:
 
 1. **`task_updated`** with status in `{completed, failed}` writes a
    row to `pending_background_task_terminals` (PK
-   `(thread_id, task_id)`). The lifecycle gates in
-   `items_lifecycle.go` (`HasLiveBackgroundToolCall`,
-   `HasQueueBlockingBackgroundToolCall`) join against this table with
-   `NOT EXISTS` on `tool_use_id`, so an exited-but-unobserved shell
-   stops blocking the reaper and the flush queue. **No chat row is
-   written yet.** The tray query does not join the stash; the
+   `(thread_id, task_id)`). The flush-queue gate in
+   `items_lifecycle.go` (`HasQueueBlockingBackgroundToolCall`) joins
+   against this table with `NOT EXISTS` on `tool_use_id`, so an
+   exited-but-unobserved shell stops blocking the flush queue. **No
+   chat row is written yet.** The tray query does not join the stash; the
    frontend learns of the exit through the
    `provider:background_task_state{state:"exited"}` emit.
 2. **Agent observation**, either `system/task_notification` (the model

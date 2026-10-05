@@ -2392,9 +2392,9 @@ OBSERVES. It never produces the result a queued user send could be
 waiting on, and a persistent one runs until session end, so the
 flush-queue drain uses the store's watch-excluding predicate
 (`HasQueueBlockingBackgroundToolCall`) and dispatches queued sends
-past a running watch, while the reaper / revert / context-repair
-consumers still count the watch as live background work (closing or
-restarting the session WOULD kill it).
+past a running watch, while the reaper and revert consumers still
+count the watch as live background work (closing or restarting the
+session WOULD kill it).
 
 Missing this signal was found the hard way: a session whose only live
 work was a persistent Monitor read as fully idle to the reaper, and
@@ -4434,9 +4434,9 @@ More spike-verified behavior (A1, B):
   branch) and the new user row's `parentUuid` is the cursor: in-file
   branching, no truncation.
 - **System rows as explicit cursors**: accepted by the CLI (spike B).
-  AO still only ever passes user/assistant rows
-  (`ResumeAtOnActiveBranch` rejects system rows by design, because resuming at
-  an error row would end context on furniture).
+  AO still only ever passes user/assistant rows (the branch index's
+  surviving-cursor set excludes system rows by design, because resuming
+  at an error row would end context on furniture).
 - Plain `--resume` with no cursor uses the CLI's own default leaf, so
   omitting `--resume-session-at` is always safe, never wrong-branch.
 
@@ -4445,7 +4445,7 @@ above. `sessionfork` re-chains deferred
 api_error tails so fork output keeps its writable tail on-branch;
 `ScanSessionLeaf` validates its file-order pick against a branch index
 and repairs picks the CLI would reject (off-branch OR filter-dropped,
-next section); `resolveClaudeResumeAt` validates explicit cursors at
+next section); `resolveClaudeResumeAt` passes that repaired pick at
 spawn. `internal/provider/claude/sessionleaf_branch.go` mirrors the row
 table above via `sessionfork.TranscriptTypes`.
 
@@ -4485,11 +4485,31 @@ The filters, in order (source: `utils/messages.ts`, 2.1.219):
 
 AO enforcement: `sessionleaf_resumefilters.go` mirrors the three
 filters over the active chain; `repairLeafForActiveBranch` substitutes
-the deepest surviving row (or no cursor at all, always safe) and
-`ResumeAtOnActiveBranch` rejects explicit cursors the filters would
-drop. The mirror is deliberately conservative. See the file header
+the deepest surviving row (or no cursor at all, always safe). The
+mirror is deliberately conservative. See the file header
 for the containment argument around
 `recoverOrphanedParallelToolResults`.
+
+## Orphaned server-side tool calls (`server_tool_use` without a result)
+
+Spike-verified on 2.1.284. When the model emits a client `tool_use` and
+an advisor `server_tool_use` in one response, the API never runs the
+advisor: no `advisor_tool_result` arrives, the `server_tool_use` row
+stays in the transcript as a dead side branch, and the CLI chains the
+`tool_result` onto the `tool_use` row. The turn continues and ends
+normally.
+
+The CLI repairs this itself. `ensureToolResultPairing`
+(`services/api/claude.ts`) strips every `server_tool_use` or
+`mcp_tool_use` block without a matching result from each API request,
+live or resumed, so the next request and a later live user send both
+succeed. AO only keeps these rows out of resume and fork cursors
+(`UnresolvedServerToolUUIDs`); a live session needs no restart. An
+interrupt cannot split an advisor call from its result in practice:
+both reach stdout within milliseconds of each other.
+
+The `isReplay` echo of a sent user message carries no `parentUuid` on
+2.1.284, so the echo cannot confirm where the CLI attached the message.
 
 ## Session JSONL: deferred `system/api_error` rows (stale parents)
 

@@ -1,9 +1,6 @@
 package claude
 
 import (
-	"agent-overflow/internal/provider/claude/sessionfork"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -164,36 +161,18 @@ func TestSessionLeafScannerOffBranchFallbackSkipsUnresolvedServerTool(t *testing
 	}
 }
 
-// TestResumeAtOnActiveBranch pins the exported validator used by the
-// spawn path for explicit resume-at cursors: true only for
+// TestSurvivingResumeCursorsFollowActiveBranch pins the cursor set the
+// cold-resume repair and the fork-pin repair choose from: only
 // user/assistant rows reachable from the file's last transcript row.
-func TestResumeAtOnActiveBranch(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	workspace := filepath.Join(home, "ws")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
-	// Slug from the CANONICAL workspace path, mirroring
-	// LocateSessionFile — on macOS t.TempDir lives under the /tmp
-	// symlink, and an unresolved slug would only pass via the
-	// scan-every-project-dir fallback instead of the primary lookup.
-	canonical, err := filepath.EvalSymlinks(workspace)
+func TestSurvivingResumeCursorsFollowActiveBranch(t *testing.T) {
+	_, branch, err := scanSessionTrackerAndBranch(strings.NewReader(offBranchAPIErrorTailTranscript))
 	if err != nil {
-		t.Fatalf("eval workspace symlinks: %v", err)
+		t.Fatalf("scan: %v", err)
 	}
-	slug := strings.ReplaceAll(canonical, string(filepath.Separator), "-")
-	projectDir := filepath.Join(home, ".claude", "projects", slug)
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir project dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "sess-branch.jsonl"), []byte(offBranchAPIErrorTailTranscript+"\n"), 0o600); err != nil {
-		t.Fatalf("write session file: %v", err)
-	}
-
+	set, _ := branch.survivingResumeCursors(nil)
 	cases := []struct {
-		resumeAt string
-		want     bool
+		uuid string
+		want bool
 	}{
 		{"u2-toolresult", true}, // on-branch content
 		{"u1", true},            // on-branch content (root)
@@ -202,16 +181,8 @@ func TestResumeAtOnActiveBranch(t *testing.T) {
 		{"no-such-uuid", false}, // unknown
 	}
 	for _, tc := range cases {
-		got, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-branch", workspace, tc.resumeAt)
-		if err != nil {
-			t.Fatalf("ResumeAtOnActiveBranch(%q): %v", tc.resumeAt, err)
+		if _, got := set[tc.uuid]; got != tc.want {
+			t.Errorf("%q in surviving cursors = %v, want %v", tc.uuid, got, tc.want)
 		}
-		if got != tc.want {
-			t.Errorf("ResumeAtOnActiveBranch(%q) = %v, want %v", tc.resumeAt, got, tc.want)
-		}
-	}
-
-	if _, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-branch", workspace, ""); err == nil {
-		t.Errorf("empty resume-at must error, not silently validate")
 	}
 }
