@@ -99,12 +99,17 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
   const LATE = FIRST_BATCH;
   let holdRunRefresh = false;
   const heldRefreshes: (() => void)[] = [];
+  // The reader's first boundary request is held too, so it is still in
+  // flight when the count refresh resolves.
+  const heldBoundary: (() => void)[] = [];
   await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
     const server = socket.connectToServer();
     socket.onMessage(message => {
       const frame = JSON.parse(String(message));
-      if (holdRunRefresh && frame.type === 'rpc' && frame.methodId === 1602023272 && frame.params[1]?.limit === 0) {
-        heldRefreshes.push(() => server.send(message));
+      const members = holdRunRefresh && frame.type === 'rpc' && frame.methodId === 1602023272 ? frame.params[1] : undefined;
+      if (members?.limit === 0) heldRefreshes.push(() => server.send(message));
+      else if (members?.direction === 'before' && heldRefreshes.length > 0 && heldBoundary.length === 0) {
+        heldBoundary.push(() => server.send(message));
       } else server.send(message);
     });
     server.onMessage(message => socket.send(message));
@@ -176,8 +181,10 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
     await page.mouse.wheel(0, -100000);
     await expect(digest.getByRole('button', { name: 'Loading…', exact: true })).toBeVisible({ timeout: 500 });
   }).toPass();
+  expect(heldBoundary).toHaveLength(1);
   holdRunRefresh = false;
   for (const release of heldRefreshes.splice(0)) release();
+  for (const release of heldBoundary.splice(0)) release();
   await expect(async () => {
     await page.mouse.wheel(0, -100000);
     await expect(child(0)).toBeVisible({ timeout: 500 });

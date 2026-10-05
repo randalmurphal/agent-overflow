@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil"
 )
 
 // startChromium against shell scripts standing in for the ways a Chromium
@@ -138,23 +141,108 @@ func TestStartChromiumFailsWhenTheOutputEndsWithoutAnEndpoint(t *testing.T) {
 	}
 }
 
+// launchBound is a launch context whose deadline passes when the test calls
+// expire, so the launch ends after the browser has printed however long the
+// machine takes to start it. macOS assesses a newly written executable on
+// its first run, which alone can outlast a short fixed bound.
+type launchBound struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newLaunchBound(t *testing.T) *launchBound {
+	b := &launchBound{Context: context.Background(), done: make(chan struct{})}
+	t.Cleanup(b.expire)
+	return b
+}
+
+func (b *launchBound) Done() <-chan struct{} { return b.done }
+
+func (b *launchBound) Err() error {
+	select {
+	case <-b.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (b *launchBound) expire() { b.once.Do(func() { close(b.done) }) }
+
 // A browser that never prints its endpoint fails the launch when the launch
-// bound ends, and is killed and reaped before the launch returns.
+// bound ends, with what it said, and is killed and reaped before the launch
+// returns.
 func TestStartChromiumTimesOutAndReapsASilentBrowser(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	binary := writeChromiumScript(t,
-		"echo $$ > "+shellQuote(pidFile)+"\n"+
-			"echo 'still starting' >&2\n"+
+		"echo 'still starting' >&2\n"+
+			"echo $$ > "+shellQuote(pidFile)+"\n"+
 			"exec sleep 300\n")
-	_, _, err := startChromium(testLaunchContext(t, 300*time.Millisecond), binary, nil, nil)
+	bound := newLaunchBound(t)
+	launched := make(chan error, 1)
+	go func() {
+		_, _, err := startChromium(bound, binary, nil, nil)
+		launched <- err
+	}()
+	pid := waitForPID(t, pidFile)
+	bound.expire()
+	err := <-launched
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %v, want the launch bound", err)
 	}
 	if !strings.Contains(err.Error(), "still starting") {
 		t.Fatalf("error %v drops what the browser said", err)
 	}
-	if pid := waitForPID(t, pidFile); alive(pid) {
+	if alive(pid) {
 		t.Fatalf("Chromium %d outlived the launch bound", pid)
+	}
+}
+
+// Before the DevTools line, what the browser printed is the launch's error.
+// stop keeps output the reader had not taken when the group died rather
+// than discard it by closing the pipe.
+func TestStopKeepsOutputTheReaderHasNotTakenYet(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	binary := writeChromiumScript(t,
+		"echo 'Failed to move to new namespace' >&2\n"+
+			"echo $$ > "+shellQuote(pidFile)+"\n"+
+			"exec sleep 300\n")
+	output, input, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := chromiumCommand(binary, nil, nil, input)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c := &chromiumProcess{
+		cmd:      cmd,
+		output:   output,
+		said:     procutil.NewTailBuffer(headlessOutputTail),
+		endpoint: make(chan string, 1),
+		drained:  make(chan struct{}),
+		exited:   make(chan struct{}),
+	}
+	go c.watchExit()
+	pid := waitForPID(t, pidFile)
+	// The reader starts only once stop has reaped the browser, so the line is
+	// still in the pipe when the group is gone.
+	go func() {
+		deadline := time.Now().Add(headlessTestDeadline)
+		for alive(pid) && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		c.read()
+	}()
+	if err := c.stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := c.failure(errors.New("launch failed")).Error(); !strings.Contains(got, "Failed to move to new namespace") {
+		t.Fatalf("error %q drops what the browser printed before stop", got)
 	}
 }
 

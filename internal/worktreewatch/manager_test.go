@@ -89,9 +89,20 @@ func newTestManager(t *testing.T, rec *recorder, cfg Config) *Manager {
 	return m
 }
 
+// resolvedTempDir is a temp dir spelled the way git records worktree paths,
+// symlinks resolved (macOS temp dirs live behind /var -> /private/var).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	return dir
+}
+
 func addWorktree(t *testing.T, repo, name string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
+	path := filepath.Join(resolvedTempDir(t), name)
 	testutil.RunGit(t, repo, "worktree", "add", "-b", name, path)
 	return path
 }
@@ -337,7 +348,7 @@ func TestCloseWaitsForCallsInFlight(t *testing.T) {
 // present, whichever way they went.
 func TestRemovedWorktreesAreReportedOnce(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
-	extra := t.TempDir()
+	extra := resolvedTempDir(t)
 	deleted := filepath.Join(extra, "feature-rm")
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature-rm", deleted)
 	removed := addWorktree(t, repo, "feature-remove")
@@ -421,5 +432,34 @@ func TestRemovalsDuringACallReachTheNextCall(t *testing.T) {
 	slices.Sort(want)
 	if len(reports) != 2 || !slices.Equal(reports[1], want) {
 		t.Fatalf("reports = %v, want a follow-up naming %v", reports, want)
+	}
+}
+
+// A repository reached through a symlink keeps the caller's project key, and
+// its removals name the worktree as the registry records it: the resolved
+// path, not the spelling the worktree was added under.
+func TestRemovalUnderSymlinkedRootIsReportedInRegistrySpelling(t *testing.T) {
+	real, err := filepath.EvalSymlinks(testutil.InitGitRepo(t))
+	if err != nil {
+		t.Fatalf("resolve repo: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Dir(real), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	project := filepath.Join(link, filepath.Base(real))
+	added := filepath.Join(link, "feature-linked")
+	testutil.RunGit(t, project, "worktree", "add", "-b", "feature-linked", added)
+	recorded := filepath.Join(filepath.Dir(real), "feature-linked")
+
+	rec := newRecorder()
+	m := newTestManager(t, rec, Config{})
+	m.SetProjects([]string{project})
+	rec.waitCount(t, project, 1, 5*time.Second)
+
+	testutil.RunGit(t, project, "worktree", "remove", "--force", added)
+	rec.waitCount(t, project, 2, 5*time.Second)
+	if got := rec.removals(project)[1]; len(got) != 1 || got[0] != recorded {
+		t.Fatalf("removals under a symlinked root = %v, want [%s]", got, recorded)
 	}
 }

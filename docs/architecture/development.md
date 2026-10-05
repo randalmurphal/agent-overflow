@@ -13,7 +13,10 @@ switches to the pinned version before applying `--dir`.
 
 Linux GUI builds need `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`
 and `gcc`. Wails uses GTK4/WebKitGTK 6.0. The SQLite driver is pure Go;
-syntax highlighting and platform webview glue require cgo.
+syntax highlighting and platform webview glue require cgo. The release
+scripts and their tests also need `git`, `zip` and `unzip`. Linux test runs
+need unprivileged user namespaces
+([network isolation](../specs/testing-harness.md#network-isolation)).
 
 `make install` installs the Wails CLI and frontend dependencies, including
 Chromium for the browser tests. `make dev` builds the dev bundle once and

@@ -47,8 +47,11 @@ for (const interrupted of [false, true]) {
     const chip = page.getByTestId('activity-rail-working');
     await expect(chip.locator('[data-activity-rail-verb]')).toHaveText('Vibing');
     if (interrupted) {
+      // The chip clears on the click; the send waits for the turn's row to settle.
+      const stopped = harness.waitForEvent('provider:turn_completed');
       await page.getByRole('button', { name: 'Interrupt current turn', exact: true }).click();
       await expect(chip).toHaveCount(0);
+      await stopped;
       await harness.rpc('SendMessage', threadId, 'answer now', null);
     } else await advance(harness, mock, 'polling');
     await waitForGate(harness, 'answer-started');

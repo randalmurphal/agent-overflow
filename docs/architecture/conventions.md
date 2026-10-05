@@ -47,6 +47,9 @@ Use synchronization that observes the event being tested. Prefer channels,
 timer-driven unit tests use fake timers. A timeout bounds a test; it does not
 prove the operation completed. Test-only callbacks or clocks should be
 introduced only when a suitable existing observation point is unavailable.
+macOS assesses an executable on its first exec, which takes from 150ms to
+over a second for a script a test has just written. Run such a script with
+`/bin/sh`, or start a deadline once the script reports that it is running.
 
 Use temporary roots and explicit fixtures. Tests must not depend on shared
 machine state. Session-capable fixtures follow

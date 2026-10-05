@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,8 +48,13 @@ func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 // spawning anything.
 func TestOpenInEditor_UnavailableEditorIDErrors(t *testing.T) {
 	app := &App{settings: settings.NewService(t.TempDir())}
+	// An openable path, so the request fails on the editor ID alone.
+	file := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	err := app.OpenInEditor("/tmp/does-not-matter", 0, 0, "", "not-a-real-editor")
+	err := app.OpenInEditor(file, 0, 0, "", "not-a-real-editor")
 	if err == nil {
 		t.Fatal("expected error when the named editor is not available")
 	}

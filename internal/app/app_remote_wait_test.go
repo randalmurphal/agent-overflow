@@ -96,6 +96,17 @@ func (f *remoteWaitFixture) run(t *testing.T, id string, wait float64) remoteMCP
 // returned channel once the reply has been written.
 func (f *remoteWaitFixture) status(t *testing.T, id string, wait float64) <-chan remoteMCPResult {
 	t.Helper()
+	// A call releases its wait just after it writes its reply, so the
+	// remote_run before this one may still be registered on the job. Wait
+	// for that release, or the registration check below would see it in
+	// place of this call's.
+	deadline := time.Now().Add(5 * time.Second)
+	for f.source.remoteWaitActive(f.peerID, id) {
+		if time.Now().After(deadline) {
+			t.Fatal("an earlier wait on the job never released")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	done := make(chan remoteMCPResult, 1)
 	go func() {
 		var receipt remoteMCPResult
@@ -105,7 +116,7 @@ func (f *remoteWaitFixture) status(t *testing.T, id string, wait float64) <-chan
 		}
 		done <- receipt
 	}()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for !f.source.remoteWaitActive(f.peerID, id) {
 		if time.Now().After(deadline) {
 			t.Fatal("wait never registered")

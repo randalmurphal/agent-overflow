@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"agent-overflow/internal/procutil"
 )
 
 // defaultRows/Cols are used when the caller does not specify a size.
@@ -95,6 +97,10 @@ type Process struct {
 
 	ptyCloseOnce sync.Once
 	ptyCloseErr  error
+
+	// pauseNudge holds Refresh's nudged winsize for refreshNudgePause.
+	// Tests replace it to hold the nudge until the child has reported it.
+	pauseNudge func(time.Duration)
 }
 
 // Start spawns the process. On success Process.Output() returns a channel of
@@ -133,11 +139,12 @@ func Start(cfg ProcessConfig) (*Process, error) {
 	}
 
 	p := &Process{
-		cmd:    cmd,
-		pty:    &osFilePty{File: master},
-		raw:    raw,
-		output: make(chan []byte, 64),
-		done:   make(chan struct{}),
+		cmd:        cmd,
+		pty:        &osFilePty{File: master},
+		raw:        raw,
+		output:     make(chan []byte, 64),
+		done:       make(chan struct{}),
+		pauseNudge: time.Sleep,
 	}
 
 	go p.pumpOutput()
@@ -242,7 +249,7 @@ func (p *Process) Refresh(rows, cols uint16) error {
 	if err := p.pty.resize(nudged, cols); err != nil {
 		return fmt.Errorf("terminal: refresh nudge: %w", err)
 	}
-	time.Sleep(refreshNudgePause)
+	p.pauseNudge(refreshNudgePause)
 	if err := p.pty.resize(rows, cols); err != nil {
 		return fmt.Errorf("terminal: refresh restore: %w", err)
 	}
@@ -268,8 +275,7 @@ func (p *Process) shutdown(initialSig syscall.Signal, grace time.Duration) error
 	p.closeOnce.Do(func() {
 		pid := p.PID()
 		if pid > 0 {
-			// Negative pid signals the whole process group.
-			if err := syscall.Kill(-pid, initialSig); err != nil && !isAlreadyDead(err) {
+			if err := procutil.SignalGroup(pid, initialSig); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				firstErr = fmt.Errorf("terminal: signal group: %w", err)
 			}
 		}
@@ -429,10 +435,4 @@ func (p *Process) awaitExit() {
 	p.exitMu.Lock()
 	p.exit = status
 	p.exitMu.Unlock()
-}
-
-// isAlreadyDead reports whether the syscall.Kill error indicates the target
-// process is already gone. These are safe to ignore.
-func isAlreadyDead(err error) bool {
-	return errors.Is(err, syscall.ESRCH)
 }

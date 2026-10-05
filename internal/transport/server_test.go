@@ -2402,6 +2402,10 @@ func TestRebind_RapidLANTogglesReleaseRetiredListeners(t *testing.T) {
 	remotetest.Require(t)
 	f := newServerFixture(t)
 	conn := f.dial(t)
+	// The client sees 101 before net/http marks the connection hijacked,
+	// and closing an evicted former server closes what it still tracks.
+	// The hello is written after the hijack, so the WebSocket exists.
+	readFrameOfType(t, conn, frameTypeHello)
 	_, port, err := net.SplitHostPort(f.srv.Addr())
 	if err != nil {
 		t.Fatal(err)

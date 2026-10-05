@@ -18,8 +18,11 @@ import (
 )
 
 // fakeWSL stands in for wsl.exe: it checks the `-d <distro> --exec` prefix
-// and runs the rest of the argv directly, so a signal the runner sends with
-// `kill` reaches the real process.
+// and runs the rest of the argv, so a signal the runner sends with `kill`
+// reaches the real process. The payload, a script written by the test, runs
+// under /bin/sh rather than being executed: macOS assesses an executable on
+// its first exec, which takes from 150ms to over a second for a file written
+// moments before, and the runner's stall clock is already running.
 type fakeWSL struct {
 	t     *testing.T
 	mu    sync.Mutex
@@ -34,7 +37,21 @@ func (f *fakeWSL) runner(ctx context.Context, name string, args ...string) *exec
 		f.t.Errorf("unexpected wsl.exe argv %q %q", name, args)
 		return exec.CommandContext(ctx, "false")
 	}
+	if isScript(args[3]) {
+		return exec.CommandContext(ctx, "/bin/sh", args[3:]...)
+	}
 	return exec.CommandContext(ctx, args[3], args[4:]...)
+}
+
+func isScript(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	head := make([]byte, 2)
+	n, _ := file.Read(head)
+	return string(head[:n]) == "#!"
 }
 
 func (f *fakeWSL) signals() []string {
@@ -70,6 +87,11 @@ const (
 	failOnTerm    = `trap 'ev "{\"type\":\"result\",\"outcome\":\"failed\",\"reason\":\"the trial was interrupted\"}"; exit 1' TERM`
 )
 
+// stallTestWindow is the window of a test that exercises the stall rule. A
+// scripted command reports within tens of milliseconds and paces its
+// reports at 100ms or less, so neither approaches it.
+const stallTestWindow = time.Second
+
 func testRunner(f *fakeWSL, rule supervise.StallRule) UpdateCommandRunner {
 	return UpdateCommandRunner{
 		Distro: "Ubuntu", Command: f.runner, Rule: rule,
@@ -104,7 +126,7 @@ func TestUpdateCommandRunnerStopsACommandThatOnlyHeartbeats(t *testing.T) {
 	f := &fakeWSL{t: t}
 	payload := commandScript(t, failOnTerm+"\n"+startedLine+"\nwhile :; do "+heartbeatLine+"; sleep 0.05; done")
 	var heartbeats int
-	_, err := testRunner(f, supervise.StallRule{Window: 400 * time.Millisecond, Ceiling: 10 * time.Second}).Run(
+	_, err := testRunner(f, supervise.StallRule{Window: stallTestWindow, Ceiling: 10 * time.Second}).Run(
 		t.Context(), payload, supervise.UpdateTrialRunCommand, nil,
 		func(startupprogress.Progress) { heartbeats++ })
 	var stopped *UpdateCommandStoppedError
@@ -137,12 +159,12 @@ func TestUpdateCommandRunnerJudgesAQuietOrSilentCommand(t *testing.T) {
 			"the " + supervise.UpdateTrialRunCommand + " step did not finish: backend stopped responding for ",
 			"in phase update.snapshot (Backing up the database)"},
 		{"silent", startedLine + "\nwhile :; do sleep 0.05; done",
-			"the " + supervise.UpdateTrialRunCommand + " step reported nothing within 400ms", ""},
+			"the " + supervise.UpdateTrialRunCommand + " step reported nothing within " + stallTestWindow.String(), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &fakeWSL{t: t}
 			payload := commandScript(t, failOnTerm+"\n"+c.body)
-			_, err := testRunner(f, supervise.StallRule{Window: 400 * time.Millisecond, Ceiling: 10 * time.Second}).Run(
+			_, err := testRunner(f, supervise.StallRule{Window: stallTestWindow, Ceiling: 10 * time.Second}).Run(
 				t.Context(), payload, supervise.UpdateTrialRunCommand, nil, func(startupprogress.Progress) {})
 			var stopped *UpdateCommandStoppedError
 			if !errors.As(err, &stopped) {
@@ -158,7 +180,7 @@ func TestUpdateCommandRunnerJudgesAQuietOrSilentCommand(t *testing.T) {
 func TestUpdateCommandRunnerKeepsACommandThatReportsProgress(t *testing.T) {
 	f := &fakeWSL{t: t}
 	payload := commandScript(t, startedLine+"\ni=0\nwhile [ $i -lt 10 ]; do "+progressLine+"; sleep 0.1; i=$((i+1)); done\nev '{\"type\":\"result\",\"outcome\":\"ok\"}'")
-	result, err := testRunner(f, supervise.StallRule{Window: 400 * time.Millisecond, Ceiling: 10 * time.Second}).Run(
+	result, err := testRunner(f, supervise.StallRule{Window: stallTestWindow, Ceiling: 10 * time.Second}).Run(
 		t.Context(), payload, supervise.UpdateSnapshotCommand, nil, nil)
 	if err != nil || result.Outcome != supervise.UpdateOutcomeOK {
 		t.Fatalf("result = %+v, %v", result, err)
@@ -182,7 +204,7 @@ func TestUpdateCommandRunnerStopsAtTheCeiling(t *testing.T) {
 func TestUpdateCommandRunnerEscalatesToSIGKILL(t *testing.T) {
 	f := &fakeWSL{t: t}
 	payload := commandScript(t, "trap '' TERM\n"+startedLine+"\nwhile :; do "+heartbeatLine+"; sleep 0.05; done")
-	runner := testRunner(f, supervise.StallRule{Window: 300 * time.Millisecond, Ceiling: 10 * time.Second})
+	runner := testRunner(f, supervise.StallRule{Window: stallTestWindow, Ceiling: 10 * time.Second})
 	runner.TermGrace = 300 * time.Millisecond
 	started := time.Now()
 	_, err := runner.Run(t.Context(), payload, supervise.UpdateTrialRunCommand, nil, nil)
@@ -202,7 +224,7 @@ func TestUpdateCommandRunnerKillsWSLWhenThePIDIsUnknown(t *testing.T) {
 	f := &fakeWSL{t: t}
 	payload := commandScript(t, "exec sleep 30")
 	started := time.Now()
-	_, err := testRunner(f, supervise.StallRule{Window: 300 * time.Millisecond, Ceiling: 10 * time.Second}).Run(
+	_, err := testRunner(f, supervise.StallRule{Window: stallTestWindow, Ceiling: 10 * time.Second}).Run(
 		t.Context(), payload, supervise.UpdateSnapshotCommand, nil, nil)
 	var stopped *UpdateCommandStoppedError
 	if !errors.As(err, &stopped) {
@@ -230,9 +252,10 @@ func TestUpdateCommandRunnerStopsOnCancel(t *testing.T) {
 	f := &fakeWSL{t: t}
 	payload := commandScript(t, failOnTerm+"\n"+startedLine+"\nwhile :; do "+progressLine+"; sleep 0.05; done")
 	ctx, cancel := context.WithCancel(t.Context())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	defer cancel()
+	// Cancelled once the command has reported, so its pid is known.
 	_, err := testRunner(f, supervise.StallRule{Window: 5 * time.Second, Ceiling: 10 * time.Second}).Run(
-		ctx, payload, supervise.UpdateTrialRunCommand, nil, nil)
+		ctx, payload, supervise.UpdateTrialRunCommand, nil, func(startupprogress.Progress) { cancel() })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}

@@ -46,8 +46,11 @@ for (const compact of [false, true]) {
       await page.getByText('MCP states', { exact: true }).click();
       const menu = page.getByRole('menu', { name: 'MCP servers' });
       async function openMenu() {
-        // Resolve the visible control at click time as the toolbar changes size.
-        await page.locator('[data-testid="composer-mcp-trigger"]:visible, [data-testid="composer-pickers-rollup"]:visible').first().click();
+        // A click keeps the element it resolved, so a short attempt is retried
+        // when the compact toolbar folds that control into the rollup.
+        await expect(async () => {
+          await page.locator('[data-testid="composer-mcp-trigger"]:visible, [data-testid="composer-pickers-rollup"]:visible').first().click({ timeout: 1_000 });
+        }).toPass();
         const picker = page.getByRole('menuitem', { name: /^MCP servers/ });
         await expect(menu.or(picker)).toBeVisible();
         if (await picker.isVisible()) await picker.click();

@@ -710,6 +710,9 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 	if receipt.State != store.ThreadReceiptCancelled {
 		t.Errorf("the destination left %s %q, want %q", ask.Token, receipt.State, store.ThreadReceiptCancelled)
 	}
+	if receipt.CollectedRevision < receipt.Revision || receipt.CollectedAt == 0 {
+		t.Errorf("the destination was not told the cancellation was stored: %+v", receipt)
+	}
 	// The thread the question was about was never the request's to delete.
 	if _, err := pair.dest.store.GetThread(target); err != nil {
 		t.Errorf("the ask's target thread went with the fork: %v", err)
@@ -1476,6 +1479,41 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 	}
 	if row := pair.request(t, spawn.Token); row.Notify {
 		t.Fatalf("a cancelled request kept its wake: %+v", row)
+	}
+	// The settlement came back on the cancel's reply, so no poll will
+	// acknowledge it.
+	if receipt.CollectedRevision < receipt.Revision || receipt.CollectedAt == 0 {
+		t.Fatalf("the destination was not told the cancellation was stored: %+v", receipt)
+	}
+}
+
+// TestThreadToolsRemoteAnswerOnACallsReplyIsAcknowledged: an answer that
+// arrives on a call's own reply, such as a spawn that finished before its
+// admission was answered, settles the source row outside the poller. The
+// later poll finds the row already collected, so the collection itself has
+// to tell the destination the answer was stored.
+func TestThreadToolsRemoteAnswerOnACallsReplyIsAcknowledged(t *testing.T) {
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	const done = "finished before anyone asked"
+	installMockClaudeReplies(t, pair.dest, done)
+	spawn := pair.spawnThere(t, "quick work over there", nil)
+	waitUntilE2E(t, 30*time.Second, "the destination settles "+spawn.Token, func() bool {
+		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(spawn.Token)
+		return err == nil && found && receipt.SettledAt != 0
+	})
+	reply, err := pair.source.callThreadRequestStatus(pair.computer, ThreadPeerPoll{Tokens: []string{spawn.Token}})
+	if err != nil || len(reply.Requests) != 1 {
+		t.Fatalf("read the destination's answer: %+v, %v", reply, err)
+	}
+	if err := pair.source.collectThreadPeerReply(spawn.Token, pair.computer, reply.Requests[0]); err != nil {
+		t.Fatalf("collect the answer: %v", err)
+	}
+	if row := pair.request(t, spawn.Token); row.State != store.ThreadRequestFinished || string(row.Answer) != done {
+		t.Fatalf("collected %s as %q %q, want finished %q", spawn.Token, row.State, row.Answer, done)
+	}
+	if receipt := pair.receipt(t, spawn.Token); receipt.CollectedRevision < receipt.Revision || receipt.CollectedAt == 0 {
+		t.Fatalf("the destination was not told the answer was stored: %+v", receipt)
 	}
 }
 

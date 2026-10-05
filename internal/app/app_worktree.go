@@ -471,7 +471,7 @@ type appWorktreeRemovals struct {
 
 // begin registers path and returns the call that releases it.
 func (r *appWorktreeRemovals) begin(path string) func() {
-	key := canonicalExistingPrefix(path)
+	key := gitops.CanonicalPath(path)
 	r.mu.Lock()
 	if r.active == nil {
 		r.active = make(map[string]int)
@@ -493,7 +493,7 @@ func (r *appWorktreeRemovals) begin(path string) func() {
 func (r *appWorktreeRemovals) contains(path string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.active[canonicalExistingPrefix(path)] > 0
+	return r.active[gitops.CanonicalPath(path)] > 0
 }
 
 // mutableWorkspaceThreads filters a locked occupant set down to the threads
@@ -602,36 +602,17 @@ func (a *App) worktreeTerminalCount(path string) int {
 	}))
 }
 
-// pathWithin reports whether path is root or lies below it. Both sides are
-// resolved through their longest existing ancestor, so a directory that was
-// just deleted still compares equal to the spelling it had before.
+// pathWithin reports whether path is root or lies below it, compared as
+// canonical paths, so a directory that was just deleted still matches.
 func pathWithin(path, root string) bool {
 	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
 		return false
 	}
-	rel, err := filepath.Rel(canonicalExistingPrefix(root), canonicalExistingPrefix(path))
+	rel, err := filepath.Rel(gitops.CanonicalPath(root), gitops.CanonicalPath(path))
 	if err != nil {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
-}
-
-// canonicalExistingPrefix resolves symlinks in the longest ancestor of path
-// that exists and appends the rest unchanged.
-func canonicalExistingPrefix(path string) string {
-	path = filepath.Clean(path)
-	rest := ""
-	for current := path; ; {
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return path
-		}
-		rest = filepath.Join(filepath.Base(current), rest)
-		current = parent
-	}
 }
 
 // detachSessionForRemovedWorkspace takes the live session of a thread whose

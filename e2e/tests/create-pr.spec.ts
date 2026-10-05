@@ -7,7 +7,7 @@ import { expect } from './fixtures.js';
 import { createPRFlow } from './create-pr-flow.js';
 
 async function openFromPalette(page: Page): Promise<void> {
-  await page.keyboard.press('Control+Shift+K');
+  await page.keyboard.press('ControlOrMeta+Shift+K');
   const input = page.getByTestId('command-palette-input');
   await expect(input).toBeVisible();
   await input.fill('Git: Open Pull/Merge Request');

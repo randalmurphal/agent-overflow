@@ -202,20 +202,24 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 	}
 }
 
+// readLoopEpoch anchors readLoopProgress on the monotonic clock, so a
+// wall-clock step cannot fake or hide the read loop's silence.
+var readLoopEpoch = time.Now()
+
 // noteReadLoopProgress records that the read loop read a line or
 // delivered an event.
 func (s *Session) noteReadLoopProgress() {
-	s.readLoopProgress.Store(time.Now().UnixNano())
+	s.readLoopProgress.Store(int64(time.Since(readLoopEpoch)))
 }
 
 // readLoopSilence is how long the read loop has made no progress, counted
 // from since at the earliest.
 func (s *Session) readLoopSilence(since time.Time) time.Duration {
-	last := since.UnixNano()
-	if progress := s.readLoopProgress.Load(); progress > last {
+	last := since.Sub(readLoopEpoch)
+	if progress := time.Duration(s.readLoopProgress.Load()); progress > last {
 		last = progress
 	}
-	return time.Duration(time.Now().UnixNano() - last)
+	return time.Since(readLoopEpoch) - last
 }
 
 // interpretControlResponse converts a delivered control_response into

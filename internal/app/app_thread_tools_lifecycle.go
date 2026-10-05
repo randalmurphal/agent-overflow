@@ -176,8 +176,7 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 	if reply.Request == nil {
 		return nil
 	}
-	_, err := a.applyThreadPeerRequest(row.Token, row.TargetComputerID, *reply.Request)
-	return err
+	return a.collectThreadPeerReply(row.Token, row.TargetComputerID, *reply.Request)
 }
 
 // settleReceiptsForThread is the target side: a thread that is being deleted

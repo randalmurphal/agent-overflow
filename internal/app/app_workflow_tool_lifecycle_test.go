@@ -23,11 +23,11 @@ import (
 func TestWorkflowToolPhaseWatchdogKillsTheProcessGroup(t *testing.T) {
 	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
 	pidPath := filepath.Join(t.TempDir(), "pids")
-	// The window must outlast script startup: on macOS, spawning a freshly
-	// written script can take longer than 100ms, and a group killed before the
-	// script runs its first line never records the pids this test waits on.
+	// The window must outlast the command's startup: a group killed before
+	// the script runs its first line never records the pids this test waits
+	// on. silentSleepCommand runs no freshly written file for that reason.
 	fixture.writeProfile(t, map[string][]string{
-		"verify": {writeSilentSleepScript(t, pidPath)},
+		"verify": silentSleepCommand(pidPath),
 	}, nil, "reliability:\n  watchdog: 500ms\n  backoff: [1ms]\n")
 	item := fixture.start(t, "watchdog")
 
@@ -51,7 +51,7 @@ func TestWorkflowToolPhaseCancelKillsTheProcessGroup(t *testing.T) {
 	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
 	pidPath := filepath.Join(t.TempDir(), "pids")
 	fixture.writeProfile(t, map[string][]string{
-		"verify": {writeSilentSleepScript(t, pidPath)},
+		"verify": silentSleepCommand(pidPath),
 	}, nil, "reliability:\n  watchdog: 1h\n  backoff: [1ms]\n")
 	item := fixture.start(t, "cancel")
 
@@ -78,15 +78,15 @@ const toolLifecyclePhase = `
       routes:
         - to: done`
 
-// writeSilentSleepScript backgrounds a child, records both PIDs, and then
-// blocks without ever writing to stdout or stderr.
-func writeSilentSleepScript(t *testing.T, pidPath string) string {
-	t.Helper()
-	return writeExecutable(t, "sleep-quietly.sh", "#!/bin/sh\n"+
-		"sleep 300 &\n"+
-		"child=$!\n"+
-		"printf '%d %d\\n' $$ $child > "+pidPath+"\n"+
-		"wait $child\n")
+// silentSleepCommand backgrounds a child, records both PIDs, and then blocks
+// without ever writing to stdout or stderr. It runs through /bin/sh -c
+// because macOS assesses a freshly written executable on its first exec,
+// which can hold the script for longer than the watchdog window.
+func silentSleepCommand(pidPath string) []string {
+	return []string{"/bin/sh", "-c", "sleep 300 &\n" +
+		"child=$!\n" +
+		"printf '%d %d\\n' $$ $child > '" + pidPath + "'\n" +
+		"wait $child\n"}
 }
 
 func waitForRecordedPIDs(t *testing.T, path string) []int {

@@ -66,6 +66,22 @@ func waitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.Provider
 	}
 }
 
+// waitForFakeCLI waits for a fake CLI script to create readyPath, its first
+// action, so a test's timing starts after the script is running.
+func waitForFakeCLI(t *testing.T, readyPath string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fake CLI did not start: %s was never created", readyPath)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func waitCapturedLines(t *testing.T, path string, want int) []string {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

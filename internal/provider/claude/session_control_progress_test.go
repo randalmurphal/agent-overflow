@@ -25,15 +25,20 @@ const (
 // Frame counts interruptBurstScript takes for a CLI that never answers.
 const (
 	burstSilent  = -1 // reads the interrupt and writes nothing
-	burstEndless = -2 // writes a kill frame every 50 ms and never acks
+	burstEndless = -2 // writes kill frames as fast as they are read and never acks
 )
 
 // interruptBurstScript answers an interrupt with frames task_updated
 // kill frames, then the ack, or never answers (burstSilent, burstEndless).
+// It announces itself with a tool_progress line before it reads, and it
+// answers with shell builtins only, so neither its startup nor a fork
+// counts against the wait: every gap in progress after the interrupt is
+// the consumer's.
 func interruptBurstScript(frames int) string {
 	return fmt.Sprintf(`#!/bin/sh
 set -u
 frames=%d
+printf '{"type":"tool_progress"}\n'
 while IFS= read -r line; do
     case "$line" in
         *'"subtype":"interrupt"'*)
@@ -43,10 +48,10 @@ while IFS= read -r line; do
                 while :; do
                     printf '{"type":"system","subtype":"task_updated","task_id":"task-%%s","tool_use_id":"tu-%%s","patch":{"status":"killed"}}\n' "$i" "$i"
                     i=$((i+1))
-                    sleep 0.05
                 done
             fi
-            reqid=$(printf '%%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            reqid=${line#*'"request_id":"'}
+            reqid=${reqid%%%%'"'*}
             i=0
             while [ "$i" -lt "$frames" ]; do
                 printf '{"type":"system","subtype":"task_updated","task_id":"task-%%s","tool_use_id":"tu-%%s","patch":{"status":"killed"}}\n' "$i" "$i"
@@ -71,11 +76,18 @@ func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.Pr
 		cancel()
 		t.Fatalf("spawn: %v", err)
 	}
+	ready := make(chan struct{})
 	s := &Session{
-		proc:                  proc,
-		threadID:              testThread,
-		parser:                NewParser(),
-		onEvent:               onEvent,
+		proc:     proc,
+		threadID: testThread,
+		parser:   NewParser(),
+		onEvent: func(evt provider.ProviderEvent) {
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "tool_progress" {
+				close(ready)
+				return
+			}
+			onEvent(evt)
+		},
 		cancel:                cancel,
 		readDone:              make(chan struct{}),
 		controlRequestTimeout: progressTestTimeout,
@@ -83,6 +95,11 @@ func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.Pr
 	}
 	go s.readLoop()
 	t.Cleanup(func() { _ = s.Close() })
+	select {
+	case <-ready:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the fake CLI did not start")
+	}
 	return s
 }
 
@@ -127,9 +144,15 @@ func TestInterrupt_ASilentCLITimesOut(t *testing.T) {
 // error that names the CLI, though the read loop never goes quiet.
 func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
 	var delivered atomic.Int32
+	var settled atomic.Bool
 	s := newInterruptBurstSession(t, burstEndless, func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventBackgroundTaskTerminal {
 			delivered.Add(1)
+			// Paces the burst while Interrupt waits; the CLI blocks once
+			// the pipe is full. Close drains the rest unpaced.
+			if !settled.Load() {
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 4*progressTestCeiling)
@@ -137,6 +160,7 @@ func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
 	start := time.Now()
 	err := s.Interrupt(ctx)
 	elapsed := time.Since(start)
+	settled.Store(true)
 	if err == nil || !strings.Contains(err.Error(), "the Claude CLI kept writing") {
 		t.Fatalf("Interrupt after %s = %v, want the ceiling's timeout", elapsed, err)
 	}

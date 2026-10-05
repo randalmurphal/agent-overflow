@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -240,6 +241,11 @@ func TestHarnessRegistryDirEscapesTheWebviewStorageRedirect(t *testing.T) {
 	// way a windowed boot does and proves the captured value did not
 	// follow it (the bug this ordering exists to prevent, seen live
 	// 2026-08-26).
+	if runtime.GOOS != "linux" {
+		// isolateWebviewStorage moves XDG_CACHE_HOME only on Linux, and
+		// os.UserCacheDir reads it only there.
+		t.Skip("the webview storage redirect is Linux-only")
+	}
 	if harnessRegistryDir == "" {
 		t.Skip("no user cache dir on this host")
 	}

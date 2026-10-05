@@ -62,8 +62,7 @@ func ConfiguredGroupAlive(command *exec.Cmd) bool {
 	if command == nil || command.Process == nil {
 		return false
 	}
-	err := syscall.Kill(-command.Process.Pid, 0)
-	return !errors.Is(err, syscall.ESRCH)
+	return !errors.Is(SignalGroup(command.Process.Pid, 0), os.ErrProcessDone)
 }
 
 // groupConfigured reports whether the command leads its own process group.
@@ -76,8 +75,18 @@ func signalConfiguredGroup(command *exec.Cmd, signal syscall.Signal) error {
 	if command.Process == nil {
 		return os.ErrProcessDone
 	}
-	err := syscall.Kill(-command.Process.Pid, signal)
-	if errors.Is(err, syscall.ESRCH) {
+	return SignalGroup(command.Process.Pid, signal)
+}
+
+// SignalGroup sends signal to every process in group pgid; signal 0 only
+// checks the group. It returns os.ErrProcessDone when no process in the
+// group can still run: the group is gone, or, on macOS, every member has
+// exited and waits to be reaped, which kill(2) refuses there with EPERM
+// rather than ESRCH. Any other EPERM is a member this process may not
+// signal.
+func SignalGroup(pgid int, signal syscall.Signal) error {
+	err := syscall.Kill(-pgid, signal)
+	if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) && groupExited(pgid) {
 		return os.ErrProcessDone
 	}
 	return err

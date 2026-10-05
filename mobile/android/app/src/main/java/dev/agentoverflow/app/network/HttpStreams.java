@@ -115,6 +115,7 @@ public final class HttpStreams implements AutoCloseable {
                 // races httpHeaders and hides a certificate error as "gone".
                 // The body writer can reach the bridge before its header
                 // reader; both must retain the original network failure.
+                clients.dropIdle();
                 transfer.close(failure);
             }
             public void onResponse(Call call, Response response) { transfer.received(response); }

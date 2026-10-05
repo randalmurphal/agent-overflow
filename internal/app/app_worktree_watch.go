@@ -131,7 +131,21 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 		log.Printf("worktree watch: project %s: %v", project.Path, err)
 		return
 	}
+	// gone maps each vanished directory's canonical path to the spelling the
+	// sweep and its announcement use. A reported removal keeps git's
+	// spelling, the one the worktree list gives clients; a row's own
+	// spelling, which can differ through a symlink, matches it canonically.
 	gone := make(map[string]string)
+	announced := make(map[string]struct{}, len(removed))
+	for _, path := range removed {
+		canonical := gitops.CanonicalPath(path)
+		if _, ok := live[canonical]; ok {
+			// Back on disk by the time this read ran.
+			continue
+		}
+		announced[canonical] = struct{}{}
+		gone[canonical] = path
+	}
 	for _, ref := range refs {
 		for _, path := range []string{ref.WorktreePath, ref.WorkspacePath} {
 			path = strings.TrimSpace(path)
@@ -151,18 +165,6 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 			}
 			// An unreadable ownership answer counts the path: the sweep
 			// rechecks under the thread lock and reports what it cannot.
-			gone[canonical] = path
-		}
-	}
-	announced := make(map[string]struct{}, len(removed))
-	for _, path := range removed {
-		canonical := gitops.CanonicalPath(path)
-		if _, ok := live[canonical]; ok {
-			// Back on disk by the time this read ran.
-			continue
-		}
-		announced[canonical] = struct{}{}
-		if _, ok := gone[canonical]; !ok {
 			gone[canonical] = path
 		}
 	}

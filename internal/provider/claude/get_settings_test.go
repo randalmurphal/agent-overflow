@@ -150,23 +150,27 @@ func getSettingsTestSession(t *testing.T, cfg Config, responsePayload, errMsg st
 	t.Helper()
 	scriptPath := filepath.Join(t.TempDir(), "fake-claude")
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	readyPath := filepath.Join(t.TempDir(), "ready")
 
 	answer := `printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":` + responsePayload + `}}\n' "$reqid"`
 	if errMsg != "" {
 		answer = `printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"` + errMsg + `"}}\n' "$reqid"`
 	}
+	// Shell builtins only, so no process starts between a request and its
+	// answer; the ready file marks the script running.
 	script := `#!/bin/sh
 set -eu
 capture="${CAPTURE_FILE:?}"
+: > '` + readyPath + `'
 while IFS= read -r line; do
     printf '%s\n' "$line" >> "$capture"
+    reqid=${line#*'"request_id":"'}
+    reqid=${reqid%%'"'*}
     case "$line" in
         *'"subtype":"get_settings"'*)
-            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
             ` + answer + `
             ;;
         *'"type":"control_request"'*)
-            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
             printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
             ;;
     esac
@@ -187,6 +191,9 @@ done
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	s.controlRequestTimeout = 2 * time.Second
+	// macOS assesses a freshly written executable on its first exec, which
+	// can take over a second; the 2s window is for the answer, not that.
+	waitForFakeCLI(t, readyPath)
 	return s, capturePath
 }
 

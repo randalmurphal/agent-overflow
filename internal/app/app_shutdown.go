@@ -386,6 +386,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("close thread MCP server", a.threadMCPServer().Close())
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
+		// Session renewals write profile files and call the other
+		// computers; they stop here, after the last peer caller above.
+		a.backends.Close()
+		record("stop attached computer renewals", nil)
 	}
 
 	a.browser.applyWG.Wait()

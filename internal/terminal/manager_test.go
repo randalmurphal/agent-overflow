@@ -1,3 +1,5 @@
+//go:build !windows
+
 package terminal
 
 import (
@@ -300,10 +302,10 @@ func TestManagerShutdownClosesEverything(t *testing.T) {
 // the exact desync the refresh feature exists to clear.
 //
 // The shell traps WINCH and reports `stty size` per signal. We start a Refresh,
-// wait for its shrink ("23 80") so it is provably mid-pause, then Resize to
-// 30x120. With resizeMu the Resize blocks until Refresh's restore completes, so
-// the PTY settles at the resized 30x120. Without it, the restore lands last and
-// rolls the child back to 24x80 — which fails the settle assertion.
+// hold it inside its pause, then Resize to 30x120. With resizeMu the Resize
+// blocks until Refresh's restore completes, so the PTY settles at the resized
+// 30x120. Without it, the Resize lands inside the pause, the restore lands last
+// and rolls the child back to 24x80, which fails the settle assertion.
 func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
 	var mu sync.Mutex
 	var buf strings.Builder
@@ -336,17 +338,35 @@ func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
 	// as TestProcessRefreshNudgesAndRestores).
 	waitForOutput(t, captured, "READY", 3*time.Second)
 
+	sess, err := m.get(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	pausing := make(chan struct{})
+	resized := make(chan struct{})
+	sess.proc.pauseNudge = func(time.Duration) {
+		close(pausing)
+		// An unserialized Resize completes inside the pause. A serialized
+		// one waits for this Refresh, so the timeout ends the pause.
+		select {
+		case <-resized:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 	done := make(chan error, 1)
 	go func() { done <- m.Refresh(id) }()
 
-	// Block until the shrink nudge is observed: Refresh has snapshotted the
-	// pre-resize size (24) and is now inside its restore pause. Issuing Resize
-	// here lands it squarely in the shrink→restore window.
-	waitForOutput(t, captured, "23 80", 3*time.Second)
-
+	// Refresh has snapshotted the pre-resize size (24) and is inside its
+	// pause: a Resize issued now lands in the shrink to restore window.
+	select {
+	case <-pausing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Refresh did not reach its pause")
+	}
 	if err := m.Resize(id, 30, 120); err != nil {
 		t.Fatalf("Resize: %v", err)
 	}
+	close(resized)
 	if err := <-done; err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}

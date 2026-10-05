@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"agent-overflow/internal/harness/containment"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
+	"agent-overflow/internal/procutil"
 )
 
 func configureProcessGroup(command *exec.Cmd) {
@@ -25,7 +28,7 @@ func terminateProcessTree(command *exec.Cmd, _ containment.Group) error {
 	if command.Process == nil {
 		return nil
 	}
-	if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+	if err := procutil.SignalGroup(command.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("kill owned process group: %w", err)
 	}
 	return nil
@@ -78,6 +81,5 @@ func waitForProcessTree(command *exec.Cmd, _ containment.Group, timeout time.Dur
 }
 
 func processGroupAlive(pid int) bool {
-	err := syscall.Kill(-pid, 0)
-	return err == nil || err == syscall.EPERM
+	return !errors.Is(procutil.SignalGroup(pid, 0), os.ErrProcessDone)
 }

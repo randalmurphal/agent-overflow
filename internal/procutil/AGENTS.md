@@ -3,7 +3,13 @@
 This package owns two utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
-  child process group using the platform implementation.
+  child process group using the platform implementation. On Unix,
+  `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
+  still run, including the exited, unreaped group that macOS refuses with
+  EPERM. Use it wherever a group signal's result is checked.
+  `Exited` reports a process that has exited but is not yet reaped, which
+  signal 0 still finds. On macOS, `RunningGroupMembers` and `RunningInGroup`
+  read group membership without counting exited members.
 - `TailBuffer` retains the last bounded bytes written to it and reports
   whether older bytes were discarded.
 

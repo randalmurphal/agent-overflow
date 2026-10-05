@@ -81,7 +81,7 @@ func Check(stderr io.Writer) error {
 // Check.
 func RunHelper(args []string, stderr io.Writer) int {
 	if err := configureIsolatedNetwork(); err != nil {
-		fmt.Fprintln(stderr, "netisolate: configure isolated network:", err)
+		fmt.Fprintln(stderr, "netisolate: configure isolated network:", explainConfigureError(err))
 		return 1
 	}
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
@@ -98,6 +98,16 @@ func RunHelper(args []string, stderr io.Writer) int {
 	err := syscall.Exec(args[0], args[2:], os.Environ())
 	fmt.Fprintln(stderr, "netisolate: start isolated command:", err)
 	return 1
+}
+
+// explainConfigureError names the usual cause of EPERM here: the kernel
+// created the user namespace but gave it no capabilities. Ubuntu 23.10 and
+// later do that for unprivileged processes through AppArmor.
+func explainConfigureError(err error) error {
+	if !errors.Is(err, unix.EPERM) {
+		return err
+	}
+	return fmt.Errorf("%w (the user namespace holds no capabilities; on Ubuntu 23.10 and later AppArmor restricts unprivileged user namespaces while kernel.apparmor_restrict_unprivileged_userns is 1)", err)
 }
 
 func configureIsolatedNetwork() error {

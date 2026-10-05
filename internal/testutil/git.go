@@ -154,8 +154,8 @@ func GonePruneRepo(t *testing.T) string {
 	return repo
 }
 
-// CanonicalPath resolves symlinks and cleans the path, suitable for comparing
-// filesystem paths that may go through /tmp symlinks on macOS.
+// CanonicalPath resolves symlinks and cleans the path; a path that does not
+// exist resolves through its longest existing ancestor.
 //
 // This duplicates git.CanonicalPath intentionally to avoid a circular import
 // (internal/git test files import testutil, so testutil cannot import
@@ -165,9 +165,17 @@ func CanonicalPath(t *testing.T, path string) string {
 	if t != nil {
 		t.Helper()
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(resolved)
+	path = filepath.Clean(path)
+	rest := ""
+	for current := path; ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+		current = parent
 	}
-	return filepath.Clean(path)
 }

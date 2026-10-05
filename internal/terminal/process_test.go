@@ -5,6 +5,7 @@ package terminal
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -123,7 +124,7 @@ func TestProcessResize(t *testing.T) {
 // TestProcessRefreshNudgesAndRestores verifies Refresh delivers a SIGWINCH by
 // briefly shrinking the winsize and then restores the original. A shell traps
 // WINCH and reports `stty size` on each one: the shrunk "23 80" proves the nudge
-// reached the child, and the trailing "24 80" proves the size was restored.
+// reached the child, and a later "24 80" proves the size was restored.
 //
 // The shell echoes READY only after installing the trap, and the test waits for
 // it before nudging. Without that sync, a startup race lets the first (shrink)
@@ -150,18 +151,23 @@ func TestProcessRefreshNudgesAndRestores(t *testing.T) {
 		t.Fatalf("shell did not signal trap readiness, got %q", ready)
 	}
 
+	// The shell runs its trap only after the current sleep, and `stty size`
+	// reads the winsize when it runs, so a fixed pause can end before the
+	// child reports the nudge. Hold the nudge until it has.
+	var nudged string
+	p.pauseNudge = func(time.Duration) {
+		nudged = drainUntil(t, p.Output(), "23 80", 3*time.Second)
+	}
 	if err := p.Refresh(24, 80); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-
-	// The shrink nudge fires SIGWINCH and the child reports the smaller "23 80";
-	// the restore returns it to the original "24 80" (fail-safe: never mis-sized).
-	// Both are matched against one accumulating buffer so the two reports landing
-	// in a single read chunk can't strand the second assertion.
-	needles := []string{"23 80", "24 80"}
-	out := drainOrdered(t, p.Output(), needles, 3*time.Second)
-	if !containsInOrder(out, needles) {
-		t.Fatalf("expected nudged '23 80' then restored '24 80' in output, got %q", out)
+	if !strings.Contains(nudged, "23 80") {
+		t.Fatalf("expected the nudged '23 80' during the nudge, got %q", nudged)
+	}
+	// Everything read from here on was written after the restore
+	// (fail-safe: never mis-sized).
+	if restored := drainUntil(t, p.Output(), "24 80", 3*time.Second); !strings.Contains(restored, "24 80") {
+		t.Fatalf("expected the restored '24 80' after the nudge, got %q", restored)
 	}
 }
 
@@ -254,23 +260,32 @@ func TestProcessEndsWhenTheShellExitsWhileAJobHoldsThePTY(t *testing.T) {
 }
 
 // Everything the shell wrote before it exited is delivered, though the pty
-// stays open behind a background job. Nothing reads the output until the
-// shell has exited, so the output channel fills and the rest of the shell's
-// output is still in the pty when it exits.
+// stays open behind a background job. On Linux nothing reads the output
+// until the shell has exited, so the output channel fills and the rest of
+// the shell's output is still in the pty when it exits. Darwin holds an
+// exiting session leader until its terminal's output has been read, so the
+// shell cannot exit first there and the test reads before waiting.
 func TestProcessDeliversTheShellsLastOutputWhileAJobHoldsThePTY(t *testing.T) {
 	const lines = 80 // more reads than the output channel holds
 	p, _ := startShellWithBackgroundJob(t,
 		`i=0; while [ $i -lt 80 ]; do printf 'line\n'; sleep 0.005; i=$((i+1)); done; printf 'TAIL\n'; exit 0`)
 
-	select {
-	case <-p.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("process did not report the shell's exit")
+	awaitShellExit := func() {
+		t.Helper()
+		select {
+		case <-p.Done():
+		case <-time.After(10 * time.Second):
+			t.Fatal("process did not report the shell's exit")
+		}
+	}
+	if runtime.GOOS == "linux" {
+		awaitShellExit()
 	}
 	out, closed := collectOutput(p.Output(), 10*time.Second)
 	if !closed {
 		t.Fatalf("output still open after the shell exited; got %q", out)
 	}
+	awaitShellExit()
 	if got := strings.Count(out, "line"); got != lines || !strings.Contains(out, "TAIL") {
 		t.Fatalf("delivered %d of %d lines (tail seen: %v) the shell wrote before exiting",
 			got, lines, strings.Contains(out, "TAIL"))
@@ -383,46 +398,6 @@ func drainUntil(t *testing.T, ch <-chan []byte, needle string, timeout time.Dura
 			return sb.String()
 		}
 	}
-}
-
-// drainOrdered reads chunks into one accumulating buffer until every needle has
-// appeared in order, or the deadline passes. Unlike chaining drainUntil calls,
-// the single buffer means two needles arriving in one read chunk are both seen —
-// chaining would consume both while matching the first and then block forever on
-// the second.
-func drainOrdered(t *testing.T, ch <-chan []byte, needles []string, timeout time.Duration) string {
-	t.Helper()
-	var sb strings.Builder
-	deadline := time.After(timeout)
-	for {
-		if containsInOrder(sb.String(), needles) {
-			return sb.String()
-		}
-		select {
-		case chunk, ok := <-ch:
-			if !ok {
-				return sb.String()
-			}
-			sb.Write(chunk)
-		case <-deadline:
-			return sb.String()
-		}
-	}
-}
-
-// containsInOrder reports whether every needle occurs in s in the given order
-// (each match consuming the text before it, so repeats must be distinct
-// occurrences).
-func containsInOrder(s string, needles []string) bool {
-	off := 0
-	for _, n := range needles {
-		i := strings.Index(s[off:], n)
-		if i < 0 {
-			return false
-		}
-		off += i + len(n)
-	}
-	return true
 }
 
 func extractChildPID(t *testing.T, ch <-chan []byte, timeout time.Duration) int {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -104,6 +105,11 @@ func TestDesktopApplyWindowDisablesQuitWhileItRuns(t *testing.T) {
 	window.quitApp = func() { quits++ }
 	// As runDesktopApplyWindow does before the application exists.
 	window.running.Store(true)
+	if runtime.GOOS == "darwin" {
+		// macOS's default menu roles read the application, which
+		// runDesktopApplyWindow creates before it installs the menu.
+		application.New(application.Options{DisableDefaultSignalHandler: true})
+	}
 	var menus recordedMenus
 	window.installMenu(&menus, "darwin")
 	if len(menus.set) != 1 || window.quitItem == nil || menus.set[0].FindByRole(application.Quit) != window.quitItem {

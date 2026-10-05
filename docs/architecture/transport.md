@@ -142,9 +142,11 @@ Every executable boot binds its listener before `App.Start` and calls
   heartbeat since the previous one. Work is the database file or its
   `-wal` changing size, the process using at least a twentieth of a CPU
   (user plus system time), or the process moving at least 64 KiB/s to or
-  from storage (`/proc/self/io` on Linux, `getrusage` elsewhere on Unix,
-  `GetProcessIoCounters` on Windows). A sort, a `PRAGMA foreign_key_check`,
-  a cold read and a rebuild all count. A table rebuild also reports a step
+  from storage (`/proc/self/io` on Linux, `proc_pid_rusage` disk bytes on
+  macOS, `GetProcessIoCounters` on Windows). A Linux kernel without
+  `/proc/self/io` has no I/O counter, so only CPU and file sizes count
+  there. A sort, a `PRAGMA foreign_key_check`, a cold read and a rebuild
+  all count. A table rebuild also reports a step
   before each index build and before its foreign key check, so the detail
   names what is running. `aliveAt` advances on every heartbeat and means
   only that the backend is running. Both stop when no boot phase is open.

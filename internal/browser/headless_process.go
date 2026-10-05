@@ -84,6 +84,12 @@ const chromiumReadSize = 4 << 10
 // caller remove what it may still write.
 const chromiumExitTimeout = 5 * time.Second
 
+// chromiumDrainGrace bounds how long a stop before the DevTools line waits,
+// once the group is gone, for the reader to take what the group wrote. The
+// output ends at once unless a process outside the group, a crash handler,
+// still holds the pipe.
+const chromiumDrainGrace = 250 * time.Millisecond
+
 // startChromium starts binary with args, and env added to the inherited
 // environment, and waits, within ctx, for the DevTools websocket URL it
 // prints. On error the process has been killed and reaped, and the error
@@ -221,13 +227,23 @@ func (c *chromiumProcess) close(timeout time.Duration) error {
 
 // stop kills Chromium's process group and returns once nothing in it can
 // still write: every process in the group has exited and the browser
-// process is reaped. It then ends the reader. It is safe to call more than
-// once and from several goroutines; every caller returns after the first
-// stop completes. An error means something Chromium started may still be
-// running.
+// process is reaped. It then ends the reader. Before the DevTools line the
+// output is the launch's error, so the reader first gets up to
+// chromiumDrainGrace to take everything the group wrote; closing the pipe
+// discards what it has not read. It is safe to call more than once and from
+// several goroutines; every caller returns after the first stop completes.
+// An error means something Chromium started may still be running.
 func (c *chromiumProcess) stop() error {
 	c.stopOnce.Do(func() {
 		c.stopErr = c.kill()
+		if c.stopErr == nil && c.wsURL == "" {
+			timer := time.NewTimer(chromiumDrainGrace)
+			select {
+			case <-c.drained:
+			case <-timer.C:
+			}
+			timer.Stop()
+		}
 		if err := c.output.Close(); err != nil {
 			c.stopErr = errors.Join(c.stopErr, fmt.Errorf("close Chromium's output: %w", err))
 		}

@@ -550,6 +550,23 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	return a.collectRemoteThreadRequest(row, answer)
 }
 
+// collectThreadPeerReply applies an answer that came back on a call's own
+// reply rather than from the poller, and acknowledges what it collected.
+// The ack cannot wait for a poll: a row this answer settled is polled at
+// most once more, and that poll finds it already collected, so nothing
+// would tell the destination the answer was stored.
+func (a *App) collectThreadPeerReply(token, computerID string, answer ThreadPeerRequest) error {
+	revision, err := a.applyThreadPeerRequest(token, computerID, answer)
+	if err != nil || revision == 0 {
+		return err
+	}
+	ack := ThreadPeerPoll{Ack: []ThreadPeerAck{{Token: token, Revision: revision}}}
+	if _, err := a.callThreadRequestStatus(computerID, ack); err != nil {
+		logThreadRequestSweep("acknowledge collected request "+token+" on "+computerID, err)
+	}
+	return nil
+}
+
 // threadPeerTarget reports the target thread to record for one answer, empty
 // when the row already names it under the name the destination gave it.
 //

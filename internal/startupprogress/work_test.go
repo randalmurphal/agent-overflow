@@ -15,8 +15,8 @@ import (
 
 // TestReadProcessWorkCountsCPUAndStorage: the platform sampler sees this
 // process's CPU time grow while it computes and its storage I/O grow by
-// what it writes to a file. On Linux the I/O comes from /proc/self/io, and
-// a kernel without it reports no I/O counter rather than a dead one.
+// what it writes to a file, from the platform's counter. A system without a
+// working counter reports none rather than a dead one.
 func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
 	before, err := ReadProcessWork()
 	if err != nil {
@@ -55,22 +55,42 @@ func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sample: %v", err)
 	}
-	if runtime.GOOS == "linux" {
-		_, statErr := os.Stat("/proc/self/io")
-		if errors.Is(statErr, fs.ErrNotExist) {
-			if after.IOSource != "" || after.IO != 0 {
-				t.Fatalf("kernel has no /proc/self/io but I/O came from %q (%d)", after.IOSource, after.IO)
-			}
-			t.Log("kernel keeps no per-process I/O accounting; storage half not measurable here")
-			return
-		}
-		if after.IOSource != "/proc/self/io" {
-			t.Fatalf("I/O came from %q on Linux, want /proc/self/io", after.IOSource)
-		}
+	want := wantIOSource()
+	if after.IOSource != want {
+		t.Fatalf("I/O came from %q (%d) on %s, want %q", after.IOSource, after.IO, runtime.GOOS, want)
 	}
-	if after.IOSource != mid.IOSource || after.IO-mid.IO < 1<<20 {
+	if want == "" {
+		if after.IO != 0 {
+			t.Fatalf("no I/O counter but I/O is %d", after.IO)
+		}
+		t.Log("no per-process I/O counter here; storage half not measurable")
+		return
+	}
+	if mid.IOSource != want || after.IO-mid.IO < 1<<20 {
 		t.Fatalf("I/O went from %d (%s) to %d (%s) across a 1 MiB write", mid.IO, mid.IOSource, after.IO, after.IOSource)
 	}
+}
+
+// wantIOSource is the I/O counter ReadProcessWork must use here, or "" where
+// there is none: a Linux kernel without /proc/self/io keeps no I/O
+// accounting, and macOS's disk counters need cgo because getrusage's block
+// counts stay at zero there.
+func wantIOSource() string {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := os.Stat("/proc/self/io"); errors.Is(err, fs.ErrNotExist) {
+			return ""
+		}
+		return "/proc/self/io"
+	case "darwin":
+		if cgoEnabled {
+			return "proc_pid_rusage"
+		}
+		return ""
+	case "windows":
+		return "GetProcessIoCounters"
+	}
+	return "getrusage"
 }
 
 // spinCPU keeps one goroutine computing for d without touching storage.

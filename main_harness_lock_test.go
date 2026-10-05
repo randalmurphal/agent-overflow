@@ -22,6 +22,9 @@ func newHarnessLockDir(t *testing.T) string {
 // purpose — but a test cannot fork a backend just to kill it.
 func (l *harnessInstanceLock) releaseForTest(t *testing.T) {
 	t.Helper()
+	if heldHarnessLock == l {
+		heldHarnessLock = nil
+	}
 	if err := l.file.Close(); err != nil {
 		t.Fatalf("release harness lock: %v", err)
 	}
@@ -137,22 +140,27 @@ func TestPrepareHarnessTakesTheInstanceLock(t *testing.T) {
 	t.Setenv("HOME", os.Getenv("HOME"))
 	t.Setenv("USERPROFILE", os.Getenv("USERPROFILE"))
 	root := t.TempDir()
+	// t.TempDir follows the umask, and prepareHarness refuses a group- or
+	// world-writable data root before it takes the lock.
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// prepareHarness fails later (no mock provider binary resolvable in a
 	// bare temp dir), but the lock is taken before that — which is the
 	// point: every write below it lands in a tree a live backend may own.
-	_, _ = prepareHarness(cliFlags{dataDir: root, harness: true})
+	_, prepareErr := prepareHarness(cliFlags{dataDir: root, harness: true})
 
 	dataDir := filepath.Join(root, "agent-overflow")
 	held, err := acquireHarnessInstanceLock(dataDir, "harness")
 	if err == nil {
 		held.releaseForTest(t)
-		t.Fatal("prepareHarness left the data root unlocked")
+		t.Fatalf("prepareHarness left the data root unlocked (prepareHarness: %v)", prepareErr)
 	}
-	if !strings.Contains(err.Error(), harnessLockFileName) {
-		t.Fatalf("unexpected error %v", err)
+	if !strings.Contains(err.Error(), "already holds") {
+		t.Fatalf("second lock was not refused as held: %v (prepareHarness: %v)", err, prepareErr)
 	}
-	if heldHarnessLock != nil {
-		heldHarnessLock.releaseForTest(t)
-		heldHarnessLock = nil
+	if heldHarnessLock == nil {
+		t.Fatal("prepareHarness holds no harness lock")
 	}
+	heldHarnessLock.releaseForTest(t)
 }

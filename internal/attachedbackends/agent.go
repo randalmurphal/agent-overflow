@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
 )
 
@@ -77,7 +78,7 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 	return atomicfile.WriteJSON(filepath.Join(m.dir, "agent-access.json"), access)
 }
 
-// CallAgentPeer opens one authenticated RPC exchange using the carrier's
+// CallAgentPeer makes one authenticated RPC call using the carrier's
 // EXISTING rotating credential owner. It neither retries mutations nor copies
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
@@ -127,7 +128,7 @@ var threadPeerMethods = map[string]struct{}{
 	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {},
 }
 
-// CallThreadPeer opens one authenticated RPC exchange for the agent thread
+// CallThreadPeer makes one authenticated RPC call for the agent thread
 // tools, on the same rotating credential CallAgentPeer uses.
 //
 // There is no opt-in check: reach is pairing alone. Pairing a computer is
@@ -146,8 +147,9 @@ func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result 
 	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
 }
 
-// callPeer is the shared body: load the carrier, open an RPC that proves
-// the destination advertises `capability`, and make the call. The
+// callPeer is the shared body: load the carrier, take or open an RPC that
+// proves the destination advertises `capability` (peerconns.go), and make
+// the call. The
 // capability is the only thing that differs between the two surfaces, and
 // it is what turns an older destination into a clear refusal instead of a
 // method error.
@@ -159,20 +161,41 @@ func (m *Manager) callPeer(ctx context.Context, id, capability, method string, r
 		}
 		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 	}
+	rpc := held.peers.take(ctx, capability)
+	if rpc == nil {
+		rpc, err = openPeerRPC(ctx, held, capability)
+		if err != nil {
+			return err
+		}
+	}
+	err = rpc.Call(ctx, method, result, params...)
+	var answered *rpcclient.Error
+	if err != nil && !errors.As(err, &answered) {
+		// The connection may hold a reply this call no longer reads.
+		rpc.Close()
+		return err
+	}
+	held.reached()
+	held.peers.put(capability, rpc)
+	return err
+}
+
+// openPeerRPC dials a new connection for callPeer and maps the refusals
+// raised before any call is made onto the agent surfaces' codes.
+func openPeerRPC(ctx context.Context, held *carrier, capability string) (*rpcclient.Client, error) {
 	rpc, err := held.openRPC(ctx, capability)
 	if err != nil {
 		switch {
 		case errors.Is(err, errUnsupportedPeerOperation):
-			return unsupportedPeerError(capability, err)
+			return nil, unsupportedPeerError(capability, err)
 		case errors.Is(err, deviceclient.ErrAwaitingConfirmation):
-			return errorsx.Public("remote_pairing_pending", "Pairing is waiting for approval. Confirm the matching verification number on the destination computer.", err)
+			return nil, errorsx.Public("remote_pairing_pending", "Pairing is waiting for approval. Confirm the matching verification number on the destination computer.", err)
 		case errors.Is(err, deviceclient.ErrSessionEnded), errors.Is(err, deviceclient.ErrNoSession):
-			return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access.", err)
+			return nil, errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access.", err)
 		}
-		return err
+		return nil, err
 	}
-	defer rpc.Close()
-	return rpc.Call(ctx, method, result, params...)
+	return rpc, nil
 }
 
 // unsupportedPeerError names the surface an older destination does not

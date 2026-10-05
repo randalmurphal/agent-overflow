@@ -1,7 +1,7 @@
-//go:build !windows && !linux
+//go:build !windows && !linux && !darwin
 
 package harnessclient
 
-// Non-Linux Unix hosts do not expose a stable procfs shape here. The signal-0
+// Other Unix hosts do not expose a stable procfs shape here. The signal-0
 // result remains the conservative liveness answer on those platforms.
 func processGroupHasLiveMember(int) bool { return true }

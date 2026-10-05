@@ -36,17 +36,18 @@ const (
 	// (minified-file insurance, same rationale as the old worker).
 	maxLineBytes = 1000
 
-	// parseTimeout bounds one tree-sitter parse. It must comfortably
-	// clear a cap-sized (1 MB) input — ~75k lines of Python parses in
-	// the high hundreds of ms on a loaded WSL host — so only
-	// adversarial or pathological inputs hit it and degrade to plain
-	// text. A timed-out parser is retired, never pooled (see pool.go).
-	parseTimeout = time.Second
-
 	// maxInjectionDepth bounds nested language injection (markdown →
 	// html → script → …).
 	maxInjectionDepth = 3
 )
+
+// parseTimeout bounds one tree-sitter parse in wall-clock time. It must
+// comfortably clear a cap-sized (1 MB) input (~75k lines of Python
+// parses in the high hundreds of ms on a loaded WSL host), so only
+// adversarial or pathological inputs hit it and degrade to plain text.
+// A timed-out parser is retired, never pooled (see pool.go). A var so
+// tests whose subject is not the deadline can lift it (0 disables it).
+var parseTimeout = time.Second
 
 // patchParseBudget bounds one patch's aggregate parse time across
 // hunks. Each hunk parses two virtual documents, so a many-hunk patch

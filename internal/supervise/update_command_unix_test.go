@@ -83,11 +83,26 @@ func flockAcquire(dataDir string) func(context.Context, time.Duration) (*os.File
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			file.Close()
-			return nil, nil, err
+		// It waits as the production acquire does: a stopped trial's
+		// descendant can hold the inherited descriptor for a moment after
+		// the trial is reaped, between its fork and its exec.
+		deadline := time.Now().Add(wait)
+		for {
+			err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err == nil {
+				return file, func() { file.Close() }, nil
+			}
+			if !time.Now().Before(deadline) {
+				file.Close()
+				return nil, nil, err
+			}
+			select {
+			case <-ctx.Done():
+				file.Close()
+				return nil, nil, ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
-		return file, func() { file.Close() }, nil
 	}
 }
 
@@ -101,7 +116,7 @@ func (r *commandRig) command(id string) UpdateCommand {
 func (r *commandRig) trialOptions(behavior string, attempt int) TrialRunOptions {
 	cfg := r.config(r.script(helloProgress, behavior))
 	return TrialRunOptions{
-		Binary: cfg.Binary, Env: cfg.Env, TargetVersion: "2.0.0", Attempt: attempt,
+		Binary: cfg.Binary, Args: cfg.Args, Env: cfg.Env, TargetVersion: "2.0.0", Attempt: attempt,
 		Rule: cfg.Rule, StopTimeout: cfg.StopTimeout,
 	}
 }
@@ -360,7 +375,6 @@ func interruptAttempt(t *testing.T, r *commandRig) {
 	opts := r.trialOptions(`printf 'half-migrated' > "$DB"
 progress store.migrate "Applying migration 1 of 9"
 serve_until_stopped`, 1)
-	opts.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
 	if result := r.command("u1").TrialRun(context.Background(), opts); result.Outcome != UpdateOutcomeFailed {
 		t.Fatalf("interrupted attempt = %+v", result)
 	}
@@ -560,7 +574,6 @@ func TestTrialRunCommandStopsWithoutRestoringWhenItsOutputCloses(t *testing.T) {
 progress store.migrate "Applying migration 1 of 9"
 note ready
 serve_until_stopped`, 1)
-	opts.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
 	result := r.command("u1").TrialRun(context.Background(), opts)
 	if result.Outcome != UpdateOutcomeFailed || !strings.Contains(result.Reason, "interrupted") {
 		t.Fatalf("result = %+v", result)

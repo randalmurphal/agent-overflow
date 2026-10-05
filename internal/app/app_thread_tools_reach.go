@@ -294,7 +294,7 @@ func (t threadToolsApp) startRemoteRequest(
 		// same work again; the poller reconciles the row either way.
 		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 	}
-	if _, err := t.app.applyThreadPeerRequest(row.Token, computerID, reply); err != nil {
+	if err := t.app.collectThreadPeerReply(row.Token, computerID, reply); err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	return t.ackRequest(ctx, caller, row.Token, waitSeconds)

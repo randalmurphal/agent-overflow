@@ -530,10 +530,10 @@ func TestGitListWorktreesMarksARegisteredWorktreeWhoseDirectoryIsGone(t *testing
 	}
 	missing := map[string]bool{}
 	for _, item := range items {
-		missing[canonicalExistingPrefix(item.Path)] = item.Missing
+		missing[gitops.CanonicalPath(item.Path)] = item.Missing
 	}
 	for path, want := range map[string]bool{f.repo: false, live: false, deleted: true} {
-		got, ok := missing[canonicalExistingPrefix(path)]
+		got, ok := missing[gitops.CanonicalPath(path)]
 		if !ok || got != want {
 			t.Errorf("%s: listed=%v missing=%v, want listed with missing=%v (items %+v)", path, ok, got, want, items)
 		}
@@ -663,5 +663,92 @@ func TestWorkflowWorktreeRemovalReleasesThePathWhenGitFails(t *testing.T) {
 	notices := f.notices(t, occupant.ID)
 	if len(notices) != 1 || !strings.Contains(notices[0], "was removed outside Agent Overflow") {
 		t.Errorf("notices = %q, want the outside removal reported", notices)
+	}
+}
+
+// symlinkedWorktree cuts a linked worktree through a symlinked parent and
+// returns the link spelling a thread row can hold and the resolved spelling
+// git records, which the worktree list and the registry watcher report.
+func symlinkedWorktree(t *testing.T, f watchFixture, branch string) (viaLink, recorded string) {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	viaLink = filepath.Join(link, branch)
+	testutil.RunGit(t, f.repo, "worktree", "add", "-b", branch, viaLink)
+	return viaLink, filepath.Join(real, branch)
+}
+
+// A row spelled through a symlink still belongs to the worktree after git
+// deleted it, when the removal names git's spelling as the picker does.
+func TestRemoveOtherWorktreeReattachesRowsSpelledThroughSymlink(t *testing.T) {
+	f := newWatchFixture(t)
+	viaLink, recorded := symlinkedWorktree(t, f, "feature-in-app-link")
+	occupant := f.thread(t, "thread-in-app-link", viaLink, "feature-in-app-link")
+
+	removal, err := f.app.RemoveOtherWorktree(WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: f.repo}, recorded, true)
+	if err != nil {
+		t.Fatalf("RemoveOtherWorktree: %v", err)
+	}
+
+	if len(removal.Reattached) != 1 || removal.Reattached[0].ID != occupant.ID {
+		t.Fatalf("Reattached = %+v, want the occupant", removal.Reattached)
+	}
+	f.assertAtRoot(t, occupant.ID)
+	removals := f.removals()
+	if len(removals) != 1 || removals[0].Path != recorded || !slices.Equal(removals[0].ThreadIDs, []string{occupant.ID}) {
+		t.Fatalf("worktree:removed events = %+v, want one for %s naming the occupant", removals, recorded)
+	}
+}
+
+// The watcher reports git's spelling. A row holding the link's spelling is
+// the same directory: one sweep, and one announcement in the reported
+// spelling naming the moved row.
+func TestReconcileProjectWorktreesMatchesReportedRemovalToRowSpelledThroughSymlink(t *testing.T) {
+	f := newWatchFixture(t)
+	viaLink, recorded := symlinkedWorktree(t, f, "feature-watch-link")
+	occupant := f.thread(t, "thread-watch-link", viaLink, "feature-watch-link")
+	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", viaLink)
+
+	f.app.reconcileProjectWorktrees(f.project.Path, []string{recorded})
+
+	f.assertAtRoot(t, occupant.ID)
+	removals := f.removals()
+	if len(removals) != 1 || removals[0].Path != recorded || !slices.Equal(removals[0].ThreadIDs, []string{occupant.ID}) {
+		t.Fatalf("worktree:removed events = %+v, want one for %s naming the occupant", removals, recorded)
+	}
+}
+
+// End to end through the registry watcher, whose report carries git's
+// spelling rather than the row's. The removal can reach the watcher as one
+// pass or as two (the directory first, then the registry entry), so what
+// holds either way is checked: the occupant moves once, and git's spelling
+// is announced. One pass's spellings are matched in the test above.
+func TestWorktreeWatchReattachesSymlinkedWorktreeAndAnnouncesGitsSpelling(t *testing.T) {
+	f := newWatchFixture(t)
+	viaLink, recorded := symlinkedWorktree(t, f, "feature-watched-link")
+	occupant := f.thread(t, "thread-watched-link", viaLink, "feature-watched-link")
+	startWorktreeWatchForTest(t, f.app)
+	waitUntil(t, 5*time.Second, func() bool { return slices.Contains(f.app.worktreeWatch.Projects(), f.project.Path) })
+
+	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", viaLink)
+
+	waitUntil(t, 5*time.Second, func() bool {
+		return slices.ContainsFunc(f.removals(), func(removal WorktreeRemovedEvent) bool { return removal.Path == recorded })
+	})
+	f.assertAtRoot(t, occupant.ID)
+	named := 0
+	for _, removal := range f.removals() {
+		if slices.Contains(removal.ThreadIDs, occupant.ID) {
+			named++
+		}
+	}
+	if named != 1 {
+		t.Fatalf("worktree:removed events = %+v, want the occupant named once", f.removals())
 	}
 }

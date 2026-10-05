@@ -1,7 +1,9 @@
 package attachedbackends
 
 import (
+	"bytes"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -111,5 +113,92 @@ func TestRemovingACarrierStopsItsRenewal(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	if p.rotations.Load() != 0 {
 		t.Fatalf("rotations = %d after removal, want none", p.rotations.Load())
+	}
+}
+
+// TestCloseJoinsRenewalsAndRefusesNewCarriers: Close is the shutdown join.
+// A rotation already sent runs to completion, because the far side may have
+// committed it, and Close returns only after it and the renewal loop have
+// ended. Nothing starts another renewal afterwards.
+func TestCloseJoinsRenewalsAndRefusesNewCarriers(t *testing.T) {
+	remotetest.Require(t)
+	manager, dir := newManager(t)
+	p := newPeer(t)
+	p.held, p.release = make(chan struct{}, 1), make(chan struct{})
+	var release sync.Once
+	answer := func() { release.Do(func() { close(p.release) }) }
+	// Runs before the peer's own cleanup, which waits for this handler.
+	t.Cleanup(answer)
+	seedExpiring(t, dir, p, renewMargin)
+	if _, err := manager.carrier("peer"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the renewal never reached the far side")
+	}
+	closed := make(chan struct{})
+	go func() {
+		manager.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a rotation was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	answer()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return after the rotation was answered")
+	}
+	requireNoRenewals(t)
+	if session, err := deviceclient.LoadSession(dir, "peer"); err != nil || session.Credential != "credential-1" {
+		t.Fatalf("the rotation's successor was not saved: %+v, %v", session, err)
+	}
+	if _, err := manager.carrier("peer"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("carrier after Close = %v, want ErrClosed", err)
+	}
+	manager.Close()
+}
+
+// TestCloseJoinsAnIdleRenewal: a renewal loop waiting for its next window
+// has ended by the time Close returns.
+func TestCloseJoinsAnIdleRenewal(t *testing.T) {
+	manager, dir := newManager(t)
+	p := newPeer(t)
+	seedExpiring(t, dir, p, time.Hour)
+	if _, err := manager.carrier("peer"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the renewal loop starts", func() bool { return renewalRunning() })
+	// One P: the cancelled loop cannot run until Close blocks, so only a
+	// Close that waits for it sees it gone.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	manager.Close()
+	requireNoRenewals(t)
+	if p.rotations.Load() != 0 {
+		t.Fatalf("rotations = %d, want none before the window", p.rotations.Load())
+	}
+}
+
+func renewalStacks() []byte {
+	stacks := make([]byte, 1<<20)
+	return stacks[:runtime.Stack(stacks, true)]
+}
+
+func renewalRunning() bool {
+	return bytes.Contains(renewalStacks(), []byte("(*carrier).keepRenewed"))
+}
+
+func requireNoRenewals(t *testing.T) {
+	t.Helper()
+	stacks := renewalStacks()
+	for _, frame := range []string{"(*carrier).keepRenewed", "(*Client).renew.func"} {
+		if bytes.Contains(stacks, []byte(frame)) {
+			t.Fatalf("%s outlived Close:\n%s", frame, stacks)
+		}
 	}
 }

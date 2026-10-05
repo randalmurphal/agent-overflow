@@ -19,18 +19,26 @@ var noremoteForbiddenImports = []string{
 	"golang.org/x/oauth2/google",
 }
 
-// goListDeps answers the import graph of one build configuration.
+// goListDeps answers the import graph of one build configuration. cgo is
+// set as the release build sets it (build/windows/Taskfile.yml): the Linux
+// payload needs it for internal/highlight, and the launcher is built
+// without it. Go turns cgo off by default when GOOS names another platform,
+// so leaving it unset would list a different graph on a macOS host.
 func goListDeps(t *testing.T, goos, tags, pkg string) []string {
 	t.Helper()
+	cgo := "0"
+	if goos == "linux" {
+		cgo = "1"
+	}
 	cmd := exec.Command("go", "list", "-deps", "-tags", tags, pkg)
-	cmd.Env = append(os.Environ(), "GOOS="+goos)
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "CGO_ENABLED="+cgo)
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr string
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			stderr = string(exitErr.Stderr)
 		}
-		t.Fatalf("go list -deps -tags %s %s (GOOS=%s): %v\n%s", tags, pkg, goos, err, stderr)
+		t.Fatalf("go list -deps -tags %s %s (GOOS=%s CGO_ENABLED=%s): %v\n%s", tags, pkg, goos, cgo, err, stderr)
 	}
 	return strings.Fields(string(out))
 }

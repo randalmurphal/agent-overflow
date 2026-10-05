@@ -13,21 +13,22 @@ var parserPool = struct {
 }{pool: make(chan *tree_sitter.Parser, 8)}
 
 func acquireParser() *tree_sitter.Parser {
+	var p *tree_sitter.Parser
 	select {
-	case p := <-parserPool.pool:
-		return p
+	case p = <-parserPool.pool:
 	default:
-		p := tree_sitter.NewParser()
-		// Timeout via the parser-level deadline, NOT ParseWithOptions:
-		// go-tree-sitter v0.25.0's ParseWithOptions leaks its options
-		// payload on every call (pointer.Save with no matching Unref,
-		// parser.go:350), permanently retaining each parse's callback.
-		// SetTimeoutMicros is deprecated upstream but leak-free; the
-		// setting persists on the parser across pooled reuses. Revisit
-		// when upgrading past v0.25 (0.26 removes this API).
-		p.SetTimeoutMicros(uint64(parseTimeout.Microseconds()))
-		return p
+		p = tree_sitter.NewParser()
 	}
+	// Timeout via the parser-level deadline, NOT ParseWithOptions:
+	// go-tree-sitter v0.25.0's ParseWithOptions leaks its options
+	// payload on every call (pointer.Save with no matching Unref,
+	// parser.go:350), permanently retaining each parse's callback.
+	// SetTimeoutMicros is deprecated upstream but leak-free. It is set
+	// on every acquire so a pooled parser carries the current
+	// parseTimeout. Revisit when upgrading past v0.25 (0.26 removes
+	// this API).
+	p.SetTimeoutMicros(uint64(parseTimeout.Microseconds()))
+	return p
 }
 
 // releaseParser returns a parser whose last parse COMPLETED to the
@@ -50,9 +51,8 @@ func releaseParser(p *tree_sitter.Parser) {
 }
 
 // parseWithDeadline parses src, halting at the parser's configured
-// timeout (set once at construction in acquireParser). Returns nil on
-// timeout — the caller must Close the parser (see releaseParser) and
-// degrade to plain text.
+// timeout (set by acquireParser). Returns nil on timeout; the caller
+// must Close the parser (see releaseParser) and degrade to plain text.
 func parseWithDeadline(p *tree_sitter.Parser, src []byte) *tree_sitter.Tree {
 	return p.Parse(src, nil)
 }

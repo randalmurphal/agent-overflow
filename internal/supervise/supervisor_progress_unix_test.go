@@ -131,7 +131,7 @@ func TestATrialWithOnlyAHeartbeatIsRolledBackAsStalled(t *testing.T) {
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorHeartbeat)
 	config := rig.config()
-	config.TrialRule = StallRule{Window: 400 * time.Millisecond, Ceiling: time.Minute}
+	config.TrialRule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
 	config.LegacyTrialBudget = time.Minute
 
 	record := rig.runUntilRolledBack(config)
@@ -148,11 +148,11 @@ func TestATrialThatReportsNoProgressIsRolledBackAtTheWindow(t *testing.T) {
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorHang)
 	config := rig.config()
-	config.TrialRule = StallRule{Window: 400 * time.Millisecond, Ceiling: time.Minute}
+	config.TrialRule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
 	config.LegacyTrialBudget = time.Minute
 
 	record := rig.runUntilRolledBack(config)
-	if want := "the new version reported no progress within 400ms of starting"; record.Reason != want {
+	if want := "the new version reported no progress within " + stallTestWindow.String() + " of starting"; record.Reason != want {
 		t.Errorf("reason = %q, want %q", record.Reason, want)
 	}
 }

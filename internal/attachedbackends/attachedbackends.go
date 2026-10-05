@@ -70,7 +70,14 @@ type Manager struct {
 	mu       sync.Mutex
 	carriers map[string]*carrier
 	profiles *keyedlock.Registry
+	// closed refuses new carriers once Close has begun, and renewals joins
+	// the renewal goroutine each carrier runs.
+	closed   bool
+	renewals sync.WaitGroup
 }
+
+// ErrClosed answers a carrier asked for after Close.
+var ErrClosed = errors.New("attachedbackends: manager is closed")
 
 // New builds a manager over one device profile directory. The directory
 // need not exist yet — it is created by the first pairing.
@@ -122,6 +129,9 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	defer unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil, ErrClosed
+	}
 	if held, ok := m.carriers[id]; ok {
 		if !held.client.Retired() {
 			return held, nil
@@ -150,12 +160,36 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 }
 
 // wire attaches this manager's hooks to a freshly built carrier and starts
-// its session renewal, which reports through those hooks.
+// its session renewal, which reports through those hooks. Caller holds m.mu
+// and has checked m.closed, so Close cannot miss the renewal.
 func (m *Manager) wire(built *carrier, id string) {
 	built.labelGetter, built.platform = m.localLabel, m.platform
 	built.nameSyncChanged = func() { m.notifyChanged(SetChange{Action: SetDeviceNameSync, ID: id}) }
 	built.onEnded = func() { m.endSession(id, built) }
-	built.keepRenewed(id)
+	built.keepRenewed(id, &m.renewals)
+}
+
+// Close stops every carrier's session renewal and waits for it to end,
+// including a rotation already sent, which runs to completion so its
+// successor is saved. Later carrier requests fail with ErrClosed. Carriers
+// already handed out keep their sessions; only the renewal stops. Close is
+// idempotent.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	m.closed = true
+	held := make([]*carrier, 0, len(m.carriers))
+	for id, c := range m.carriers {
+		held = append(held, c)
+		delete(m.carriers, id)
+	}
+	m.mu.Unlock()
+	for _, c := range held {
+		c.leave()
+	}
+	m.renewals.Wait()
+	for _, c := range held {
+		c.client.WaitRenewal()
+	}
 }
 
 // endSession is the verdict path: the far side stopped honouring one
@@ -175,7 +209,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 	if !current {
 		return
 	}
-	held.stopRenewal()
+	held.leave()
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
@@ -350,7 +384,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
-		old.stopRenewal()
+		old.leave()
 		old.client.Retire()
 	}
 	delete(m.carriers, link.BackendID)
@@ -369,9 +403,12 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 	}
 	m.mu.Lock()
 	// A re-pairing with a machine already attached replaces the carrier,
-	// because the session behind the old one was just superseded.
-	m.wire(built, link.BackendID)
-	m.carriers[link.BackendID] = built
+	// because the session behind the old one was just superseded. After
+	// Close the pairing stays on disk and nothing is cached or renewed.
+	if !m.closed {
+		m.wire(built, link.BackendID)
+		m.carriers[link.BackendID] = built
+	}
 	m.mu.Unlock()
 	return Attachment{
 		ID:                 link.BackendID,
@@ -437,7 +474,7 @@ func (m *Manager) forgetLocked(id string) error {
 	if held == nil {
 		return deviceclient.ForgetSession(m.dir, id)
 	}
-	held.stopRenewal()
+	held.leave()
 	if err := held.client.Forget(); err != nil {
 		held.client.Retire()
 		return err
@@ -491,6 +528,8 @@ type carrier struct {
 	proxy         *backendproxy.Carrier
 	// stopRenewal ends keepRenewed when this carrier leaves the manager.
 	stopRenewal context.CancelFunc
+	// peers holds the connections agent calls left open (callPeer).
+	peers peerConns
 
 	// lastReachedMs is when this machine last answered, Unix
 	// milliseconds. One atomic, written where an answer arrives and read
@@ -525,10 +564,12 @@ func newCarrier(client *deviceclient.Client, name string) (*carrier, error) {
 // window; a rotation only at dial time left them refused for age between
 // the window closing and the next dial. A verdict from the far side takes
 // the same path a refused manifest does.
-func (c *carrier) keepRenewed(id string) {
+func (c *carrier) keepRenewed(id string, wg *sync.WaitGroup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.stopRenewal = cancel
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		err := c.client.KeepRenewed(ctx, func(err error) {
 			log.Printf("attachedbackends: renew the session with %s: %v", id, err)
 		})
@@ -537,6 +578,13 @@ func (c *carrier) keepRenewed(id string) {
 		}
 		log.Printf("attachedbackends: session renewal with %s stopped: %v", id, err)
 	}()
+}
+
+// leave stops what a carrier runs on its own once the manager drops it:
+// its session renewal and its idle agent connections.
+func (c *carrier) leave() {
+	c.stopRenewal()
+	c.peers.close()
 }
 
 func (c *carrier) reached() { c.lastReachedMs.Store(time.Now().UnixMilli()) }

@@ -313,13 +313,15 @@ for (const [name, make] of forges) {
       }
 
       await copyImage(page, images.centered);
-      expect(await clipboardPng(page)).toEqual({ types: ['image/png'], width: PNG_WIDTH, height: PNG_HEIGHT });
+      await expect.poll(() => clipboardPng(page)).toEqual({ types: ['image/png'], width: PNG_WIDTH, height: PNG_HEIGHT });
 
       // An SVG is rasterised at its intrinsic size times the copy scale
       // (pngClipboard.ts rasteriseSvg: devicePixelRatio clamped to 2..4).
+      // Polled: the first copy's toast is still up, so copyImage's toast
+      // wait does not mark the end of this write.
       await copyImage(page, images.diagram);
       const scale = await page.evaluate(() => Math.max(2, Math.min(4, window.devicePixelRatio || 1)));
-      expect(await clipboardPng(page)).toEqual({
+      await expect.poll(() => clipboardPng(page)).toEqual({
         types: ['image/png'],
         width: SVG_WIDTH * scale,
         height: SVG_HEIGHT * scale,

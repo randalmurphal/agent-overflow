@@ -43,6 +43,14 @@ const dialTimeout = 5 * time.Second
 // pinnedDialer is that default. A variable so a test can watch it dial.
 var pinnedDialer = &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 
+// pinnedIdleConnTimeout is how long a finished request's connection is
+// kept for the next one. A path that died without a close (a network
+// change, a NAT rebinding) leaves its idle connections looking healthy,
+// and a request sent on one waits out its whole deadline, so reuse covers
+// a burst, such as a page's assets or an agent's calls, and nothing
+// longer. A variable so a test need not wait it out.
+var pinnedIdleConnTimeout = 5 * time.Second
+
 // pinnedTLSConfig is what a Go-native client does with the fingerprint the
 // pairing payload handed it.
 //
@@ -86,8 +94,8 @@ func pinnedTLSConfig(certFingerprint string) *tls.Config {
 // NewPinnedTransport is the RoundTripper every request this client makes goes
 // through, including the WebSocket upgrade a `--connect` stub carries.
 //
-// One transport per client rather than one per call: connection reuse is
-// what keeps a poll loop from repeating a TLS handshake every few seconds,
+// One transport per client rather than one per call: connection reuse
+// within a burst saves a TLS handshake per request (pinnedIdleConnTimeout),
 // and the pin is a property of the transport, so sharing it is also what
 // makes "every request from this device is verified" true by construction
 // rather than by every call site remembering.
@@ -110,6 +118,7 @@ func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport 
 		cloned.Proxy = nil
 	}
 	cloned.TLSClientConfig = pinnedTLSConfig(certFingerprint)
+	cloned.IdleConnTimeout = pinnedIdleConnTimeout
 	// ForceAttemptHTTP2 would ask for h2 by ALPN, and the backend answers
 	// http/1.1 only because the `/ws` upgrade needs the raw-connection
 	// takeover h2 does not offer. Asking for something the server will

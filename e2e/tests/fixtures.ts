@@ -3,6 +3,7 @@
 // instead of '@playwright/test'.
 import { test as base, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
+import { webkitKeychainHome } from '../src/webkit-keychain.js';
 
 interface WorkerFixtures {
   harnessWorker: HarnessApp;
@@ -18,6 +19,22 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       const app = await launchHarness();
       await use(app);
       await app.close();
+    },
+    { scope: 'worker' },
+  ],
+  // WebKit launches with a HOME of its own keychain (src/webkit-keychain.ts).
+  launchOptions: [
+    async ({ launchOptions, browserName }, use) => {
+      if (browserName !== 'webkit') {
+        await use(launchOptions);
+        return;
+      }
+      const keychain = await webkitKeychainHome();
+      try {
+        await use(keychain.env ? { ...launchOptions, env: { ...keychain.env, ...launchOptions.env, HOME: keychain.env.HOME } } : launchOptions);
+      } finally {
+        await keychain.close();
+      }
     },
     { scope: 'worker' },
   ],

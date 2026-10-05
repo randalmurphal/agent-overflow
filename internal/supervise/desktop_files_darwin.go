@@ -14,7 +14,7 @@ import (
 )
 
 // NativeDesktopFiles swaps a bundle into place with renamex_np(RENAME_SWAP)
-// and keeps a bundle lsof finds in use.
+// and keeps a bundle or executable lsof finds in use.
 func NativeDesktopFiles() DesktopFiles {
 	return DesktopFiles{
 		Replace: func(staged, install, previous string) error {
@@ -32,14 +32,24 @@ func NativeDesktopFiles() DesktopFiles {
 // lsofInUseTimeout bounds one lsof walk of a bundle.
 const lsofInUseTimeout = 30 * time.Second
 
-// lsofInUse reports whether any process has a file under path open, as
-// scripts/macos-bundle.sh decides before it deletes a retired bundle.
-// lsof exits 1 when nothing is open; anything it prints, a process or an
-// error, keeps the bundle.
+// lsofInUse reports whether any process has path, or a file under a
+// directory path, open, as scripts/macos-bundle.sh decides before it
+// deletes a retired bundle. lsof exits 1 when nothing is open; anything it
+// prints, a process or an error, keeps the path. +D takes only a
+// directory: given a file, lsof prints its usage, so a file is named
+// directly.
 func lsofInUse(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	args := []string{"-nP", "-t", "--", path}
+	if info.IsDir() {
+		args = []string{"-nP", "-t", "+D", path}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), lsofInUseTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-t", "+D", path).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", args...).CombinedOutput()
 	if len(bytes.TrimSpace(out)) > 0 {
 		return true, nil
 	}

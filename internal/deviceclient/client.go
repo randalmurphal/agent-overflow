@@ -556,6 +556,19 @@ func (c *Client) renewIfStale(ctx context.Context) error {
 // dead one refuses the rotation and answers ErrSessionEnded.
 func (c *Client) Renew(ctx context.Context) error { return c.renew(ctx) }
 
+// WaitRenewal blocks until the rotation in flight, if any, has finished and
+// saved its outcome. Shutdown calls it so that a rotation the backend may
+// already have committed is not cut off before its successor is saved. The
+// HTTP client's timeout bounds the wait.
+func (c *Client) WaitRenewal() {
+	c.mu.Lock()
+	flight := c.renewing
+	c.mu.Unlock()
+	if flight != nil {
+		<-flight.done
+	}
+}
+
 // renew coalesces callers in this process. The profile transaction and saved
 // successor also coordinate independent processes; see refresh_recovery.go.
 //

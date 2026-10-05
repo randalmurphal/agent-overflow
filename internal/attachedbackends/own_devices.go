@@ -140,8 +140,15 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	// Introductions are already approved and must not create a human
 	// confirmation wait. Their activation still verifies the issued session.
 	m.mu.Lock()
-	held := m.carriers[link.BackendID]
+	held, closed := m.carriers[link.BackendID], m.closed
 	m.mu.Unlock()
+	if closed {
+		return false, ErrClosed
+	}
+	if held == nil {
+		// The far side ended the new session before this read.
+		return false, fmt.Errorf("attachedbackends: the pairing with %s ended before it activated", link.BackendID)
+	}
 	if err := held.client.AwaitActivation(ctx); err != nil {
 		return false, err
 	}

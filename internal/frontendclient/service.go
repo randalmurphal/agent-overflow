@@ -132,6 +132,7 @@ func (s *service) close() {
 	s.ssh.Close()
 	s.jobs.Wait()
 	s.computers.WaitOwnDevices()
+	s.computers.Close()
 	_ = s.nameWatch.Close()
 	_ = s.themeWatch.Close()
 	_ = s.spinnerWatch.Close()

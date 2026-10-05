@@ -31,6 +31,7 @@ func newManager(t *testing.T) (*Manager, string) {
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
+	t.Cleanup(manager.Close)
 	return manager, dir
 }
 

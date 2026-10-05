@@ -26,10 +26,11 @@ type Stream struct {
 	end        tree_sitter.Point
 	tree       *tree_sitter.Tree
 	lines      []EncodedLine
-	// full makes the next append repaint the whole document: nothing has
-	// been painted yet, or a failed parse left the lines behind the source.
-	full bool
-	over bool
+	// stale is the first byte whose lines are behind the source, or -1
+	// when every line is current: nothing has been painted yet, or a failed
+	// parse left the lines from that byte behind.
+	stale int
+	over  bool
 }
 
 // StreamState is the outcome of one Append.
@@ -49,7 +50,7 @@ const (
 // NewStream starts an empty document in lang. Unknown languages stream
 // plain lines.
 func NewStream(lang Lang) *Stream {
-	return &Stream{eng: engineFor(lang), lineStarts: []int{0}, lines: []EncodedLine{{}}, full: true}
+	return &Stream{eng: engineFor(lang), lineStarts: []int{0}, lines: []EncodedLine{{}}, stale: 0}
 }
 
 // Append adds p to the end of the document and reports the first line whose
@@ -60,7 +61,7 @@ func (s *Stream) Append(p []byte, keepTree bool) (from int, state StreamState) {
 	if s.over {
 		return len(s.lines), StreamOverCap
 	}
-	if len(p) == 0 && !s.full {
+	if len(p) == 0 && s.stale < 0 {
 		return len(s.lines), StreamOK
 	}
 	oldLen, oldEnd := len(s.src), s.end
@@ -91,24 +92,35 @@ func (s *Stream) Append(p []byte, keepTree bool) (from int, state StreamState) {
 	}
 
 	var reuse *tree_sitter.Tree
-	if s.tree != nil && !s.full {
+	if s.tree != nil {
 		s.tree.Edit(&tree_sitter.InputEdit{
 			StartByte: uint(oldLen), OldEndByte: uint(oldLen), NewEndByte: uint(len(s.src)),
 			StartPosition: oldEnd, OldEndPosition: oldEnd, NewEndPosition: s.end,
 		})
 		reuse = s.tree
-	} else {
-		s.dropTree()
 	}
 	tree := s.eng.parse(s.src, reuse)
 	if tree == nil {
-		s.dropTree()
-		s.full = true
+		// The parse ran out of time, which a loaded host can cause on its
+		// own. The edited tree still describes the painted lines, so it is
+		// kept and the next append parses incrementally again rather than
+		// reparsing the whole document, which would only take longer.
+		if !keepTree {
+			s.dropTree()
+		}
+		if s.stale < 0 || oldLen < s.stale {
+			s.stale = oldLen
+		}
 		return len(s.lines), StreamIncomplete
 	}
 	start := 0
 	if reuse != nil {
+		// The changed ranges are measured from the tree the lines were
+		// painted with, and stale covers what was appended since.
 		start = oldLen
+		if s.stale >= 0 {
+			start = min(start, s.stale)
+		}
 		for _, r := range reuse.ChangedRanges(tree) {
 			start = min(start, int(r.StartByte))
 		}
@@ -124,7 +136,7 @@ func (s *Stream) Append(p []byte, keepTree bool) (from int, state StreamState) {
 	lo := s.lineStarts[first]
 	classes := make([]uint16, len(s.src)-lo)
 	s.eng.paintCaptures(tree, s.src, lo, len(s.src), classes)
-	s.full = false
+	s.stale = -1
 	return s.replaceLines(first, encodeLines(s.src[lo:], classes)), StreamOK
 }
 
@@ -132,10 +144,10 @@ func (s *Stream) Append(p []byte, keepTree bool) (from int, state StreamState) {
 func (s *Stream) repaintAll() (int, StreamState) {
 	classes, complete := s.eng.classify(s.src)
 	if classes == nil || !complete {
-		s.full = true
+		s.stale = 0
 		return len(s.lines), StreamIncomplete
 	}
-	s.full = false
+	s.stale = -1
 	return s.replaceLines(0, encodeLines(s.src, classes)), StreamOK
 }
 

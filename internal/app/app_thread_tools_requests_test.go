@@ -1313,7 +1313,8 @@ func TestThreadSpawnRunsOnAnExistingBranchWhereverItIsCheckedOut(t *testing.T) {
 	sibling := t.TempDir()
 	testutil.RunGit(t, sibling, "clone", bare, ".")
 	testutil.RunGit(t, sibling, "checkout", "-b", "feature/mr")
-	testutil.RunGit(t, sibling, "commit", "--allow-empty", "-m", "mr work")
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sibling",
+		"commit", "--allow-empty", "-m", "mr work")
 	testutil.RunGit(t, sibling, "push", "origin", "feature/mr")
 	mrTip := gitRevParse(t, sibling, "HEAD")
 	runGit(t, repo, "branch", "scratch")

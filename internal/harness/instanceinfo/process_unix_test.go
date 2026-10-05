@@ -97,11 +97,18 @@ func TestProcessStartIsTheIdentitysBirthMarker(t *testing.T) {
 	if start, alive, err := ProcessStart(os.Getpid()); err != nil || !alive || start != self.StartTime {
 		t.Fatalf("ProcessStart(self) = %q, %v, %v; want %q, alive", start, alive, err, self.StartTime)
 	}
-	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	// The child runs until its identity is captured: a zombie has no
+	// executable to read.
+	cmd := exec.Command("/bin/sh", "-c", "read _")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	identity, err := CaptureProcessIdentity(cmd.Process.Pid)
+	_ = stdin.Close()
 	if err != nil {
 		_ = cmd.Wait()
 		t.Fatal(err)

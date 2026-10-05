@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import okhttp3.ConnectionPool;
 import okhttp3.ConnectionSpec;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
@@ -19,12 +20,25 @@ import okhttp3.Protocol;
  * An explicitly empty pin uses ordinary platform TLS verification for route
  * health probes; malformed/nonempty pins can never fall back to that path. */
 public final class PinnedClients implements AutoCloseable {
-    private final OkHttpClient base = new OkHttpClient.Builder()
-            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
-            .connectionSpecs(List.of(ConnectionSpec.MODERN_TLS)).protocols(List.of(Protocol.HTTP_1_1))
-            .connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS).build();
+    /** A path that died without a close (a network change, a NAT rebinding)
+     * leaves its idle connections looking healthy, and a request sent on one
+     * waits out its read timeout. Reuse covers a burst of requests, as Go
+     * deviceclient's pinnedIdleConnTimeout does, and dropIdle clears the rest
+     * after a failure. Every pinned client shares this pool. */
+    static final long IDLE_MILLIS = 5_000;
+    private final OkHttpClient base;
     private final LinkedHashMap<String, OkHttpClient> clients = new LinkedHashMap<>(16, .75f, true);
+
+    public PinnedClients() { this(IDLE_MILLIS); }
+
+    PinnedClients(long idleMillis) {
+        base = new OkHttpClient.Builder()
+                .connectionPool(new ConnectionPool(5, idleMillis, TimeUnit.MILLISECONDS))
+                .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+                .connectionSpecs(List.of(ConnectionSpec.MODERN_TLS)).protocols(List.of(Protocol.HTTP_1_1))
+                .connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS).build();
+    }
 
     public static HttpUrl endpoint(String value) {
         HttpUrl url = HttpUrl.get(value.replaceFirst("^wss:", "https:"));
@@ -70,6 +84,10 @@ public final class PinnedClients implements AutoCloseable {
         if (clients.size() > 16) clients.remove(clients.keySet().iterator().next());
         return client;
     }
+
+    /** Closes every idle connection after a request failed: they may share
+     * its dead path, so the next request dials instead of waiting on one. */
+    public void dropIdle() { base.connectionPool().evictAll(); }
 
     @Override public void close() {
         base.dispatcher().cancelAll();

@@ -275,7 +275,11 @@ real network. The suite keeps the invoking uid and holds no capabilities:
 `CAP_NET_ADMIN` is ambient only while the launcher's helper builds the
 interfaces, and the helper clears it before it execs Playwright. If the host
 refuses unprivileged user namespaces, the launcher fails before the suite
-starts. It does not fall back to the host network.
+starts. It does not fall back to the host network. Ubuntu 23.10 and later
+refuse them through AppArmor while
+`kernel.apparmor_restrict_unprivileged_userns` is 1; set it to 0 or give
+`bin/ao-netns` and `bin/ao-harness-e2e` an AppArmor profile that allows
+`userns`.
 
 `--host-network` skips isolation for suites that need host services:
 `e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device

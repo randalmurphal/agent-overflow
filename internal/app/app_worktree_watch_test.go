@@ -35,11 +35,14 @@ type watchFixture struct {
 func newWatchFixture(t *testing.T) watchFixture {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
-	project, err := app.ensureProjectForWorkspace(repo)
+	project, err := app.ensureProjectForWorkspace(testutil.InitGitRepo(t))
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
+	// The project row's spelling, symlinks resolved: the key the watcher
+	// hands reconcileProjectWorktrees. Rows spelled through a symlink are
+	// covered by symlinkedWorktree.
+	repo := project.Path
 	rows := &threadRowRecorder{}
 	events := &emitRecorder{}
 	app.testEmitHook = func(name string, data any) {

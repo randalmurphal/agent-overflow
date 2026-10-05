@@ -23,6 +23,12 @@ import (
 // The trial's children are scripted like the supervisor's: shell scripts on
 // the real inherited descriptors, with PATH and a temp HOME only.
 
+// stallTestWindow is the window of a test that exercises the stall rule. A
+// scripted child reports its first frame within tens of milliseconds and
+// paces its reports at 250ms or less, so neither approaches it, and a stall
+// is still observed within a few seconds.
+const stallTestWindow = time.Second
+
 const fakeTrialScript = `#!/bin/sh
 OBS='__OBS__'
 DB='__DB__'
@@ -34,8 +40,10 @@ trap 'note stopped; exit 0' TERM INT
 serve_until_stopped() {
 	while :; do
 		# The sleep must not inherit descriptor 5: the real trial makes it
-		# close-on-exec, and a sleeping child would hold the lock.
-		sleep 5 5>&- &
+		# close-on-exec, and a sleeping child would hold the lock. It is
+		# short because a signal that lands just before wait runs the trap
+		# only when the sleep ends, which must be well inside StopTimeout.
+		sleep 1 5>&- &
 		wait $! 2>/dev/null
 	done
 }
@@ -95,7 +103,7 @@ func (r *trialRig) script(hello, behavior string) string {
 	r.t.Helper()
 	body := strings.NewReplacer("__OBS__", r.obs, "__DB__", r.db, "__HELLO__", hello, "__BEHAVIOR__", behavior).Replace(fakeTrialScript)
 	path := filepath.Join(r.dir, "trial.sh")
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		r.t.Fatal(err)
 	}
 	return path
@@ -106,14 +114,18 @@ func (r *trialRig) read(name string) string {
 	return string(data)
 }
 
-func (r *trialRig) config(binary string) TrialConfig {
+// config runs script with /bin/sh rather than executing it. macOS assesses
+// an executable file on its first exec, which takes from 150ms to over a
+// second for a script written moments before, and the trial's clock is
+// already running. The rule and budget are long, so a test that is not
+// about them never races them; a test that is sets its own.
+func (r *trialRig) config(script string) TrialConfig {
 	return TrialConfig{
-		Binary: binary,
-		Env:    []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
-		// The rule is shrunk so a stall is observed in a test's time; the
-		// behaviors below are scaled to it.
-		Rule:          StallRule{Window: 400 * time.Millisecond, Ceiling: 10 * time.Second},
-		LegacyBudget:  400 * time.Millisecond,
+		Binary:        "/bin/sh",
+		Args:          []string{script},
+		Env:           []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
+		Rule:          StallRule{Window: time.Minute, Ceiling: time.Minute},
+		LegacyBudget:  time.Minute,
 		StopTimeout:   5 * time.Second,
 		UpdateID:      "u1",
 		TargetVersion: "2.0.0",
@@ -166,17 +178,22 @@ serve_until_stopped`))
 
 func TestProgressKeepsATrialAlivePastTheWindow(t *testing.T) {
 	r := newTrialRig(t)
-	// Ten real steps 100 ms apart outlast the 400 ms window twice over.
+	// Ten steps 250ms apart outlast the window twice over.
 	cfg := r.config(r.script(helloProgress, `i=0
 while [ $i -lt 10 ]; do
 	i=$((i+1))
 	progress store.migrate "Applying migration $i of 10"
-	sleep 0.1
+	sleep 0.25
 done
 printf '{"type":"prepared"}\n' >&4
 serve_until_stopped`))
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
+	started := time.Now()
 	if err := RunTrial(context.Background(), cfg); err != nil {
 		t.Fatalf("RunTrial: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 2*stallTestWindow {
+		t.Fatalf("the trial prepared after %s, inside two windows, so the test proved nothing", elapsed)
 	}
 }
 
@@ -195,13 +212,14 @@ done`))
 		}
 		last = p
 	}
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
 	started := time.Now()
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
 	if !strings.HasPrefix(reason, "the new version did not finish starting: no progress for ") ||
 		!strings.Contains(reason, "in phase store.migrate (Applying migration 3 of 7 add_index)") {
 		t.Fatalf("reason = %q, want no progress naming the phase and step", reason)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	if elapsed := time.Since(started); elapsed > 3*stallTestWindow {
 		t.Fatalf("the stall took %s to be noticed", elapsed)
 	}
 	if heartbeats == 0 {
@@ -210,12 +228,15 @@ done`))
 }
 
 // A trial whose reports stop altogether, heartbeat included, stopped
-// responding, which says more than no progress.
+// responding, which says more than no progress. The stall is judged a
+// window after the last progress, so the trial is unresponsive then only
+// if that progress was its last sign of life: a heartbeat sent after it
+// would race the timer.
 func TestATrialWhoseHeartbeatStopsStoppedResponding(t *testing.T) {
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 3 of 7 add_index"
-heartbeat store.migrate "Applying migration 3 of 7 add_index"
 serve_until_stopped`))
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
 	if !strings.HasPrefix(reason, "the new version did not finish starting: backend stopped responding for ") ||
 		!strings.Contains(reason, "in phase store.migrate (Applying migration 3 of 7 add_index)") {
@@ -226,8 +247,9 @@ serve_until_stopped`))
 func TestASilentTrialStallsAtTheWindow(t *testing.T) {
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `serve_until_stopped`))
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
-	if !strings.Contains(reason, "reported no progress within 400ms") {
+	if !strings.Contains(reason, "reported no progress within "+stallTestWindow.String()) {
 		t.Fatalf("reason = %q", reason)
 	}
 	if !strings.Contains(r.read("log"), "stopped") {
@@ -243,9 +265,9 @@ while :; do
 	progress store.migrate "step $i"
 	sleep 0.05
 done`))
-	cfg.Rule = StallRule{Window: 400 * time.Millisecond, Ceiling: 900 * time.Millisecond}
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: 2 * stallTestWindow}
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
-	if !strings.Contains(reason, "did not finish starting within 900ms (last step: step") {
+	if !strings.Contains(reason, "did not finish starting within "+(2*stallTestWindow).String()+" (last step: step") {
 		t.Fatalf("reason = %q", reason)
 	}
 }
@@ -302,7 +324,9 @@ exit 1`, "Applying migration 1 of 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newTrialRig(t)
-			err := RunTrial(context.Background(), r.config(r.script(helloProgress, tc.behavior)))
+			cfg := r.config(r.script(helloProgress, tc.behavior))
+			cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
+			err := RunTrial(context.Background(), cfg)
 			var failed *TrialFailedError
 			if !errors.As(err, &failed) || failed.Step != tc.step {
 				t.Fatalf("RunTrial = %#v, want the step %q", err, tc.step)
@@ -313,7 +337,9 @@ exit 1`, "Applying migration 1 of 1"},
 
 func TestATrialThatCannotStartFails(t *testing.T) {
 	r := newTrialRig(t)
-	reason := trialFailure(t, RunTrial(context.Background(), r.config(filepath.Join(r.dir, "missing"))))
+	cfg := r.config("")
+	cfg.Binary, cfg.Args = filepath.Join(r.dir, "missing"), nil
+	reason := trialFailure(t, RunTrial(context.Background(), cfg))
 	if !strings.Contains(reason, "did not start") {
 		t.Fatalf("reason = %q", reason)
 	}
@@ -323,7 +349,6 @@ func TestCancellingATrialStopsItWithoutAVerdict(t *testing.T) {
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `note ready
 serve_until_stopped`))
-	cfg.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- RunTrial(ctx, cfg) }()
@@ -352,7 +377,6 @@ func TestTheTrialHoldsTheInheritedLockUntilItExits(t *testing.T) {
 	}
 	cfg := r.config(r.script(helloProgress, `note ready
 serve_until_stopped`))
-	cfg.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
 	cfg.Lock = lock
 	started := make(chan struct{}, 1)
 	logf := cfg.Log
@@ -385,8 +409,14 @@ serve_until_stopped`))
 	}
 	cancel()
 	<-done
-	if !lockable(t, lockPath) {
-		t.Fatal("the data root stayed locked after the trial exited")
+	// The trial's last fork can hold the descriptor between its fork and
+	// its exec, after the trial itself is reaped, so the lock is polled.
+	deadline := time.Now().Add(time.Second)
+	for !lockable(t, lockPath) {
+		if !time.Now().Before(deadline) {
+			t.Fatal("the data root stayed locked after the trial exited")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

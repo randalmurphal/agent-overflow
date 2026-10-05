@@ -616,7 +616,7 @@ func (l *Launched) cleanupUnverified(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("capture unverified backend process tree: %w", proofErr))
 		proof = emptyOwnedGroupProof(l.PID)
 	}
-	if err := killUnverifiedProcessTree(l.cmd); err != nil && processAlive(l.PID) {
+	if err := killUnverifiedProcessTree(l.cmd); err != nil && !errors.Is(err, os.ErrProcessDone) && processAlive(l.PID) {
 		errs = append(errs, fmt.Errorf("kill unverified backend process group: %w", err))
 	}
 	if err := waitForCommandAndGroup(ctx, l, proof); err != nil {

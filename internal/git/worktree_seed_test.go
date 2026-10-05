@@ -408,7 +408,8 @@ func originOnlyBranch(t *testing.T, bare, branch string) {
 	sibling := t.TempDir()
 	testutil.RunGit(t, sibling, "clone", bare, ".")
 	testutil.RunGit(t, sibling, "checkout", "-b", branch)
-	testutil.RunGit(t, sibling, "commit", "--allow-empty", "-m", "on "+branch)
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sibling",
+		"commit", "--allow-empty", "-m", "on "+branch)
 	testutil.RunGit(t, sibling, "push", "origin", branch)
 }
 

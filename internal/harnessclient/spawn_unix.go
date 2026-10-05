@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"agent-overflow/internal/procutil"
 )
 
 // applyDetachAttrs gives the backend its own session so it survives the
@@ -35,7 +37,7 @@ func signalOwnedGroup(pid int, force bool) error {
 	if force {
 		sig = syscall.SIGKILL
 	}
-	return syscall.Kill(-pid, sig)
+	return procutil.SignalGroup(pid, sig)
 }
 
-func requestKillProcessGroup(pid int) error { return syscall.Kill(-pid, syscall.SIGKILL) }
+func requestKillProcessGroup(pid int) error { return procutil.SignalGroup(pid, syscall.SIGKILL) }

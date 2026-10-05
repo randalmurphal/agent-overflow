@@ -775,8 +775,10 @@ func TestSession_StopTask_SubprocessDeathUnblocksCaller(t *testing.T) {
 	// the read loop: io.EOF with a pending caller.
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/fake-claude"
+	readyPath := scriptDir + "/ready"
 	script := `#!/bin/sh
 set -u
+: > '` + readyPath + `'
 # Drain exactly one line, then exit without writing anything back.
 read -r _discard
 sleep 0.05
@@ -805,6 +807,9 @@ exit 0
 	}
 	go s.readLoop()
 	t.Cleanup(func() { _ = s.Close() })
+	// The clock starts once the script runs, not while macOS assesses the
+	// freshly written file on its first exec.
+	waitForFakeCLI(t, readyPath)
 
 	start := time.Now()
 	err = s.StopTask(context.Background(), "task-vanish")

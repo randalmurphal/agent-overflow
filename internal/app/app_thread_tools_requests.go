@@ -648,7 +648,7 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		report.Effect = threadtools.EffectNothing
 	}
 	if reply.Request != nil {
-		if _, err := t.app.applyThreadPeerRequest(row.Token, row.TargetComputerID, *reply.Request); err != nil {
+		if err := t.app.collectThreadPeerReply(row.Token, row.TargetComputerID, *reply.Request); err != nil {
 			return threadtools.CancelReport{}, err
 		}
 	}

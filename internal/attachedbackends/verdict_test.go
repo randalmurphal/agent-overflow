@@ -33,6 +33,10 @@ type peer struct {
 	// test shortens it to bring the next renewal due.
 	window    time.Duration
 	rotations atomic.Int32
+	// held, when set, parks every rotation: it is signalled when one
+	// arrives, and the rotation is answered once release is closed.
+	held    chan struct{}
+	release chan struct{}
 }
 
 // newPeer honours nothing until its first rotation: the credential a test
@@ -80,6 +84,10 @@ func (p *peer) route(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"ticket": "ticket"})
 	case "/auth/token":
+		if p.held != nil {
+			p.held <- struct{}{}
+			<-p.release
+		}
 		issued := int(p.rotations.Add(1))
 		p.mu.Lock()
 		refusal := p.refusal

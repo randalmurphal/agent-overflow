@@ -20,9 +20,9 @@ import (
 // which isn't equal to "/etc" any more.
 //
 // Intentionally distinct from gitops.CanonicalPath: that helper does
-// best-effort resolution and falls back to the original on error,
-// because non-existent paths are a normal case for branch comparison /
-// diff display. Subscribe-time MUST surface errors instead so a bad
+// best-effort resolution and never fails, resolving a non-existent path
+// through its longest existing ancestor, because non-existent paths are
+// a normal case for comparison. Subscribe-time MUST surface errors instead so a bad
 // cwd doesn't quietly install a watcher rooted at the literal user
 // input.
 func canonicalize(p string) (abs, canon string, err error) {

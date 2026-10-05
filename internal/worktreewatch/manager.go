@@ -49,7 +49,10 @@ type Config struct {
 	// registered and present on disk then, not both now. The first read of
 	// a project has nothing to compare against and reports none. Removals
 	// observed while a call runs are carried into the next call, and a
-	// path that reappears before that call is dropped from it.
+	// path that reappears before that call is dropped from it. Each path is
+	// spelled as the registry records it (git writes the symlink-resolved
+	// path), which can differ from the spelling a caller holds; compare with
+	// git.CanonicalPath.
 	OnChange func(project string, removed []string)
 
 	// ExtraDir names a second directory whose direct entries are worktrees

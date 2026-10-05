@@ -53,9 +53,9 @@ func (a *App) updateWorkReason() (string, error) {
 
 // waitForUpdateIdle returns once work admission is closed with nothing
 // running, or with ctx's error. onWaiting receives each new reason the host
-// is not idle yet.
-func (a *App) waitForUpdateIdle(ctx context.Context, onWaiting func(reason string)) error {
-	var previous string
+// is not idle yet; published is a reason the caller has already announced.
+func (a *App) waitForUpdateIdle(ctx context.Context, published string, onWaiting func(reason string)) error {
+	previous := published
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

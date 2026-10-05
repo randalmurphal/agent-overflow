@@ -93,7 +93,7 @@ func (r *desktopRig) update(version, executable, install, behavior string) Deskt
 	opts := r.trialOptions(behavior, 0)
 	return DesktopUpdate{
 		DataDir: r.dataDir, Version: version, Executable: executable, InstallPath: install, Lock: r.lock,
-		Trial:         TrialRunOptions{Binary: opts.Binary, Env: opts.Env, Rule: opts.Rule, StopTimeout: opts.StopTimeout},
+		Trial:         TrialRunOptions{Binary: opts.Binary, Args: opts.Args, Env: opts.Env, Rule: opts.Rule, StopTimeout: opts.StopTimeout},
 		SchemaVersion: func() (int, error) { return r.schema, nil },
 		Files:         r.files(),
 		Progress: func(p startupprogress.Progress) {

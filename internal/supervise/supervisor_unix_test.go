@@ -48,8 +48,10 @@ serve_until_stopped() {
 	trap 'note "stopped $VERSION"; exit 0' TERM INT
 	while :; do
 		# A backgrounded sleep plus wait, so the trap runs the instant the
-		# signal lands rather than after a foreground sleep finishes.
-		sleep 5 &
+		# signal lands rather than after a foreground sleep finishes. One
+		# that lands just before wait runs the trap only when the sleep
+		# ends, so the sleep is short against StopTimeout.
+		sleep 1 &
 		wait $! 2>/dev/null
 	done
 }

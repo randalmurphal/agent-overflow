@@ -84,9 +84,10 @@ test('committing a resolved merge says it completes the merge and records the me
   await dialog.getByLabel('Subject').fill('Merge side into main');
   await dialog.getByRole('button', { name: 'Commit', exact: true }).click();
 
+  // The dialog closes once the commit returns; HEAD is read after that.
+  await expect(dialog).toHaveCount(0);
   const head = harnessGit(harness, root, 'rev-parse', 'HEAD');
   await expect(page.getByRole('alert').filter({ hasText: `Committed ${head.slice(0, 7)}` })).toBeVisible();
-  await expect(dialog).toHaveCount(0);
   expect(head).not.toBe(mainHead);
   expect(harnessGit(harness, root, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ')).toEqual([head, mainHead, sideHead]);
   expect(harnessGit(harness, root, 'log', '-1', '--format=%s')).toBe('Merge side into main');

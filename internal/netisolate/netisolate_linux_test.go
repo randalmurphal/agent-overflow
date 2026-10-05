@@ -229,3 +229,18 @@ func TestCheckBuildsANamespace(t *testing.T) {
 		t.Fatalf("Check: %v\n%s", err, stderr.String())
 	}
 }
+
+// TestExplainConfigureErrorNamesTheAppArmorRestriction: a namespace without
+// capabilities fails its first netlink request with EPERM, which alone does
+// not say why.
+func TestExplainConfigureErrorNamesTheAppArmorRestriction(t *testing.T) {
+	eperm := fmt.Errorf("bring up loopback: %w", &net.OpError{Op: "receive", Err: syscall.EPERM})
+	got := explainConfigureError(eperm)
+	if !errors.Is(got, syscall.EPERM) || !strings.Contains(got.Error(), "apparmor_restrict_unprivileged_userns") {
+		t.Fatalf("EPERM explained as %v", got)
+	}
+	other := errors.New("find loopback: no such interface")
+	if got := explainConfigureError(other); got != other {
+		t.Fatalf("unrelated error rewritten to %v", got)
+	}
+}

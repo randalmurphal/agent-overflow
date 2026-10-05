@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"agent-overflow/internal/appupdate"
@@ -372,4 +373,26 @@ func TestShutdownJoinsAWaitingRestart(t *testing.T) {
 			t.Fatalf("shutdown published %+v", frame)
 		}
 	}
+}
+
+// TestRestartToUpdateAnnouncesEachWaitingReasonOnce: the wait loop starts
+// from the reason RestartToUpdate already published, so its first check of
+// the same running work adds no second frame.
+func TestRestartToUpdateAnnouncesEachWaitingReasonOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rig := newRestartRig(t)
+		release := rig.holdWork()
+		if err := rig.app.RestartToUpdate(); err != nil {
+			release()
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		// The wait goroutine has made its first check and sleeps to the next.
+		synctest.Wait()
+		release()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if frames := rig.snapshot(); !equalPhases(frames, restartPhaseWaiting, restartPhaseRestarting) {
+			t.Fatalf("frames = %+v, want one waiting frame then restarting", frames)
+		}
+	})
 }

@@ -93,11 +93,15 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 //ao:scope host
 //ao:route home
 func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID string) error {
-	// editor.ResolvePath (called inside editor.Open) is the single source
-	// of truth for the path-shape contract: empty / non-canonical / UNC
-	// inputs and openability refusals (missing outside the workspace,
-	// directories anywhere) all surface as errors there. We don't
-	// pre-check here so the boundary stays in one place.
+	// editor.ResolvePath is the single source of truth for the path-shape
+	// contract: empty / non-canonical / UNC inputs and openability
+	// refusals (missing outside the workspace, directories anywhere) all
+	// surface as errors there. It runs before editor detection so a bad
+	// path is reported as such whether or not an editor is installed;
+	// editor.Open checks it again as the spawn floor.
+	if _, err := editor.ResolvePath(path, workspacePath); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 	detected := editor.DetectEditors(ctx)

@@ -10,7 +10,7 @@
 // and the later phases with no failure recorded, and the repaired thread
 // renders its rows.
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -45,7 +45,8 @@ const count = async (dbPath: string, sql: string) => (await query<{ n: number }>
 const watermark = async (dbPath: string) => (await query<{ user_version: number }>(dbPath, 'PRAGMA user_version'))[0].user_version;
 
 test('an upgrade from v118 repairs stored history in the background', async ({ page }) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'ao-history-repair-'));
+  // The harness reports its data dir with symlinks resolved (macOS /var).
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'ao-history-repair-')));
   const dbPath = path.join(root, 'agent-overflow', 'agent-overflow.db');
   let host: HarnessApp | undefined;
   try {

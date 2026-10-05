@@ -164,6 +164,10 @@ func (t *routeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.failed = true
 		}
 		t.mu.Unlock()
+		// The route's other idle connections may share the failure, such as
+		// a path that died without a close. The next request or health
+		// probe dials instead of waiting out its deadline on one of them.
+		closeIdleRoute(route)
 	}
 	return response, err
 }

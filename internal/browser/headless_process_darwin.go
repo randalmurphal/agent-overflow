@@ -14,10 +14,6 @@ import (
 	"agent-overflow/internal/procutil"
 )
 
-// darwinZombie is SZOMB from <sys/proc.h>, a process that has exited and
-// waits to be reaped.
-const darwinZombie = 5
-
 // configureChromiumProcess puts Chromium in a process group of its own.
 // macOS has no parent-death signal, so Dispose is what stops it.
 func configureChromiumProcess(cmd *exec.Cmd) {
@@ -54,7 +50,7 @@ func awaitExit(pid int) error {
 // the group was killed, so the group gains no members. kqueue reports each
 // member's exit whether or not anything reaps it and whoever its parent is.
 func waitGroupExited(pgid int, timeout time.Duration) error {
-	members, err := runningGroupMembers(pgid)
+	members, err := procutil.RunningGroupMembers(pgid)
 	if err != nil {
 		return err
 	}
@@ -67,14 +63,14 @@ func waitGroupExited(pgid int, timeout time.Duration) error {
 	for _, pid := range members {
 		if err := notifyOnExit(kq, pid); err != nil {
 			// kqueue refuses a process that has exited.
-			if !runningInGroup(pid, pgid) {
+			if !procutil.RunningInGroup(pid, pgid) {
 				continue
 			}
 			return fmt.Errorf("watch Chromium process %d: %w", pid, err)
 		}
 		// The registration names whichever process has the pid now. A
 		// process outside the group took the pid of a member that is gone.
-		if runningInGroup(pid, pgid) {
+		if procutil.RunningInGroup(pid, pgid) {
 			waiting[uint64(pid)] = true
 		}
 	}
@@ -110,29 +106,6 @@ func notifyOnExit(kq, pid int) error {
 }
 
 func groupStillRunning(pgid int, timeout time.Duration) error {
-	members, _ := runningGroupMembers(pgid)
+	members, _ := procutil.RunningGroupMembers(pgid)
 	return fmt.Errorf("Chromium processes %v were still running %s after their group (%d) was killed", members, timeout, pgid)
-}
-
-// runningGroupMembers lists the processes in group pgid that have not
-// exited.
-func runningGroupMembers(pgid int) ([]int, error) {
-	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
-	if err != nil {
-		return nil, fmt.Errorf("list process group %d: %w", pgid, err)
-	}
-	var members []int
-	for _, proc := range procs {
-		if proc.Proc.P_stat != darwinZombie {
-			members = append(members, int(proc.Proc.P_pid))
-		}
-	}
-	return members, nil
-}
-
-// runningInGroup reports whether pid is a process in group pgid that has not
-// exited.
-func runningInGroup(pid, pgid int) bool {
-	proc, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	return err == nil && int(proc.Eproc.Pgid) == pgid && proc.Proc.P_stat != darwinZombie
 }

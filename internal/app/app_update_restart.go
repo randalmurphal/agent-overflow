@@ -130,13 +130,13 @@ func (a *App) RestartToUpdate() error {
 		return a.handOffRestartToUpdate(ctx, cancel, handoff)
 	}
 	a.publishRestartWaiting(reason)
-	go a.waitThenRestartToUpdate(ctx, cancel, handoff, done)
+	go a.waitThenRestartToUpdate(ctx, cancel, handoff, reason, done)
 	return nil
 }
 
 // waitThenRestartToUpdate owns a restart that waits for running work.
-func (a *App) waitThenRestartToUpdate(ctx context.Context, cancel context.CancelFunc, handoff restartHandoff, done chan struct{}) {
-	err := a.waitForUpdateIdle(ctx, a.publishRestartWaiting)
+func (a *App) waitThenRestartToUpdate(ctx context.Context, cancel context.CancelFunc, handoff restartHandoff, published string, done chan struct{}) {
+	err := a.waitForUpdateIdle(ctx, published, a.publishRestartWaiting)
 	close(done)
 	if err == nil {
 		// The error already reached updater:restart; this call has no

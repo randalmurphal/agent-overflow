@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 )
 
 // streamSamples holds, per grammar, source with the multi-line constructs
@@ -114,6 +115,11 @@ func TestStreamPlainLanguageCountsLines(t *testing.T) {
 }
 
 func TestStreamStopsAtInputCap(t *testing.T) {
+	// The appends under the cap parse up to 1 MB; on a loaded host the
+	// wall-clock parse deadline would turn them into StreamIncomplete.
+	prev := parseTimeout
+	parseTimeout = 0
+	defer func() { parseTimeout = prev }()
 	s := NewStream(LangGo)
 	defer s.Close()
 	line := []byte(strings.Repeat("x", 99) + "\n")
@@ -122,6 +128,9 @@ func TestStreamStopsAtInputCap(t *testing.T) {
 		if _, state := s.Append(chunk, true); state != StreamOK {
 			t.Fatalf("under the cap: state %d", state)
 		}
+	}
+	if !s.HoldsTree() {
+		t.Fatal("under the cap: the stream kept no tree")
 	}
 	if _, state := s.Append(chunk, true); state != StreamOverCap {
 		t.Fatalf("past the cap: state %d, want StreamOverCap", state)
@@ -155,4 +164,40 @@ func TestStreamCloseKeepsLinesAndReparses(t *testing.T) {
 		}
 	}
 	s.Close()
+}
+
+func TestStreamKeepsItsTreeAcrossATimedOutParse(t *testing.T) {
+	prev := parseTimeout
+	parseTimeout = 0
+	defer func() { parseTimeout = prev }()
+	src := streamSamples[LangGo]
+	half := strings.Index(src, "func ")
+	s := NewStream(LangGo)
+	defer s.Close()
+	s.Append([]byte(src[:half]), true)
+	// A large append under a deadline no parse can meet stands in for a
+	// loaded host.
+	filler := strings.Repeat("// filler line\n", 20000)
+	parseTimeout = time.Microsecond
+	if _, state := s.Append([]byte(filler), true); state != StreamIncomplete {
+		t.Fatalf("state %d under an expired deadline, want StreamIncomplete", state)
+	}
+	if !s.HoldsTree() {
+		t.Fatal("a timed-out parse dropped the tree, so every later append reparses the whole document")
+	}
+	parseTimeout = 0
+	if from, state := s.Append([]byte(src[half:]), true); state != StreamOK || from > strings.Count(src[:half], "\n") {
+		t.Fatalf("after the retry: state %d from line %d, want StreamOK covering the lines the failed append added", state, from)
+	}
+	full := src[:half] + filler + src[half:]
+	want := Highlight(LangGo, []byte(full)).Lines
+	got := s.Lines(0)
+	if len(got) != len(want) {
+		t.Fatalf("%d lines, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !sameRuns(got[i], want[i]) {
+			t.Fatalf("line %d runs %v, want %v", i, got[i].Runs, want[i].Runs)
+		}
+	}
 }

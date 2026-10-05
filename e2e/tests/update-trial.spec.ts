@@ -56,16 +56,22 @@ interface Sandbox {
 
 // A data root, a home and fake provider and forge CLIs. The environment is
 // built from nothing, so no provider home override, WSL interop variable or
-// user PATH entry reaches the backend; the login-shell PATH probe runs
-// /bin/sh against the empty home.
+// user PATH entry reaches the backend. The login-shell PATH probe runs a
+// stand-in shell that skips login files: a system profile (macOS path_helper,
+// Linux /etc/profile) puts directories such as /opt/homebrew/bin ahead of the
+// fakes, where a real provider CLI may be installed.
 async function sandbox(): Promise<Sandbox> {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-update-trial-'));
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
   const dataDir = path.join(root, 'data');
   const calls = path.join(root, 'cli-calls.log');
+  const shell = path.join(root, 'login-shell');
   await mkdir(home, { recursive: true });
   await mkdir(bin, { recursive: true });
+  // shellenv runs `$SHELL -ilc <script>`.
+  await writeFile(shell, ['#!/bin/sh', '[ "$1" = -ilc ] && shift', 'exec /bin/sh -c "$1"', ''].join('\n'));
+  await chmod(shell, 0o755);
   await mkdir(path.join(dataDir, 'agent-overflow'), { recursive: true });
   const versions: Record<string, string> = {
     claude: '2.1.200 (Claude Code)',
@@ -92,7 +98,7 @@ async function sandbox(): Promise<Sandbox> {
     XDG_CACHE_HOME: home,
     APPDATA: home,
     LOCALAPPDATA: home,
-    SHELL: '/bin/sh',
+    SHELL: shell,
     PATH: `${bin}:/usr/bin:/bin`,
     LANG: 'C.UTF-8',
     TMPDIR: path.join(root, 'tmp'),
