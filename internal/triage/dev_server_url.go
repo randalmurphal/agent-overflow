@@ -9,12 +9,11 @@ import (
 // startup ("Local: http://localhost:5173") so a command row can offer an
 // "open in browser" affordance without the user expanding the output.
 //
-// This scan is a CANDIDATE generator, not proof a server exists —
-// output that merely mentions a loopback URL (a `tail` of a file
-// containing one) matches identically. The frontend gates the chip on
-// ProbeDevServerURL (internal/devserverprobe), which confirms a
-// listener on the port; textual filters here only need to pick the
-// right candidate, never to prove liveness.
+// Nothing dials the URL to confirm a listener: the chip is shown on this
+// text alone and the click is the check. So a URL qualifies only when its
+// line, or the line before it, reads like a server announcing itself
+// (devServerBannerWords). A loopback URL that output merely mentions, in a
+// request log, a test failure or a config dump, offers no chip.
 //
 // This runs inside ExtractCommandOutputMeta, which already makes one full
 // pass over the same bytes (strings.Count for lineCount). The scan below
@@ -37,10 +36,22 @@ const maxDevServerURLBytes = 2048
 // startup banner never puts one of these directly against the scheme.
 const devServerURLEmbedPrefixes = "([{<\"'`="
 
+// devServerBannerWords are the words dev servers use to announce their
+// address: "Local:" (Vite, Next, CRA, Astro), "Listening on" (Puma,
+// Express), "Running on" (Flask, Uvicorn), "Starting development server
+// at" (Django), "Serving at", "Server running at", "available at" (Hugo),
+// "started on" (Storybook), "Ready at", "Open ... in your browser",
+// "bound to". Matched case-insensitively in the text before the URL on its
+// line and on the line before it (Gatsby prints the URL on its own line).
+var devServerBannerWords = []string{
+	"local", "listen", "running", "serving", "server", "started", "starting",
+	"ready", "available", "bound to", "open", "browser",
+}
+
 // DetectDevServerURL returns the first loopback HTTP(S) URL in command
-// output that looks like a running local server, normalized for the
-// browser (0.0.0.0 / :: rewritten to localhost, IPv6 bracketed). It
-// returns "" when the output announces no such server.
+// output that a dev server announced, normalized for the browser
+// (0.0.0.0 / :: rewritten to localhost, IPv6 bracketed). It returns ""
+// when the output announces no such server.
 func DetectDevServerURL(output string) string {
 	for offset := 0; offset+3 <= len(output); {
 		rel := strings.Index(output[offset:], "://")
@@ -54,7 +65,7 @@ func DetectDevServerURL(output string) string {
 			continue
 		}
 		url, end := parseDevServerURL(output, schemeStart, scheme, sep+3)
-		if url != "" {
+		if url != "" && announcesServer(output, schemeStart) {
 			return url
 		}
 		if end <= sep+3 {
@@ -63,6 +74,33 @@ func DetectDevServerURL(output string) string {
 		offset = end
 	}
 	return ""
+}
+
+// announcesServer reports whether the text before schemeStart on its
+// line, or the nearest non-blank line before that, carries a banner word.
+func announcesServer(output string, schemeStart int) bool {
+	lineStart := strings.LastIndexByte(output[:schemeStart], '\n') + 1
+	if hasBannerWord(output[lineStart:schemeStart]) {
+		return true
+	}
+	for end := lineStart - 1; end > 0; {
+		start := strings.LastIndexByte(output[:end], '\n') + 1
+		if line := output[start:end]; strings.TrimSpace(line) != "" {
+			return hasBannerWord(line)
+		}
+		end = start - 1
+	}
+	return false
+}
+
+func hasBannerWord(text string) bool {
+	lowered := strings.ToLower(text)
+	for _, word := range devServerBannerWords {
+		if strings.Contains(lowered, word) {
+			return true
+		}
+	}
+	return false
 }
 
 // devServerScheme walks backwards from the "://" separator to confirm an

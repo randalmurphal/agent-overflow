@@ -31,12 +31,6 @@ import (
 // one on 127.0.0.1 only costs an immediate refusal on ::1 first. The
 // timeout bounds each attempt, so a host where one family blackholes costs
 // at most twice it.
-//
-// Deliberately NOT used by internal/devserverprobe, which asks a
-// different question: it takes a URL from outside, validates that the URL
-// is loopback at all, and preserves the literal the URL named rather than
-// discarding it. Folding the two together would mean either dropping that
-// validation or bolting URL parsing onto a dialer.
 func Dialer(timeout time.Duration) func(ctx context.Context, network, address string) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: timeout}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {

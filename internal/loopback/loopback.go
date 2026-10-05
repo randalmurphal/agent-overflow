@@ -33,11 +33,6 @@
 //     resolved at bind time, so accepting a name there would mean
 //     accepting whatever it resolves to then; that is a stricter rule
 //     than any predicate here and it belongs beside the bind.
-//   - internal/devserverprobe dials loopback too, but from a URL it was
-//     handed rather than a port this process chose: it validates that the
-//     URL is loopback at all and keeps the literal the URL named. Dialer
-//     discards the host on purpose, so one of the two would have to give
-//     up what it exists for.
 //   - internal/triage's normalizeLoopbackHost is a normalizer, not a
 //     predicate: it rewrites wildcard bind addresses to "localhost" and
 //     returns a canonical spelling for a dev-server URL. Sharing a

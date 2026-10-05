@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
-	"agent-overflow/internal/devserverprobe"
 	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
@@ -443,14 +442,6 @@ type App struct {
 	// reads. Lazy construction keeps focused tests that build a bare App cheap.
 	codexAppOnce sync.Once
 	codexApp     *codexapp.Service
-	// devServerProber dials loopback ports to gate the dev-server chip:
-	// triage's textual detection only proves command output mentioned a
-	// URL, so ProbeDevServerURL checks a listener actually exists before
-	// the chip renders. Verdicts are TTL-bounded (internal/devserverprobe).
-	// Lazy-init through devServerProbe() so tests building a bare App{}
-	// don't have to wire it.
-	devServerProbeOnce sync.Once
-	devServerProber    *devserverprobe.Prober
 	// highlightApp owns cached parsing, live code highlighting, and persisted
 	// span workers.
 	// Lazy construction keeps bare App test fixtures cheap.

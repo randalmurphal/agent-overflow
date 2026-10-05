@@ -85,8 +85,18 @@ func TestDetectDevServerURLStartupBanners(t *testing.T) {
 		},
 		{
 			name:   "first loopback wins over a later one",
-			output: "app on http://localhost:3000\napi on http://localhost:4000\n",
+			output: "app listening on http://localhost:3000\napi listening on http://localhost:4000\n",
 			want:   "http://localhost:3000",
+		},
+		{
+			name:   "url alone under the line that announces it",
+			output: "You can now view gatsby-starter in the browser.\n\n  http://localhost:8000/\n",
+			want:   "http://localhost:8000/",
+		},
+		{
+			name:   "a mentioned url before the announced one is skipped",
+			output: "GET http://localhost:9999/api 200 3ms\n\n  ➜  Local:   http://localhost:5173/\n",
+			want:   "http://localhost:5173/",
 		},
 		{
 			name:   "network url before local url is skipped",
@@ -134,6 +144,10 @@ func TestDetectDevServerURLRejects(t *testing.T) {
 		{name: "port out of range", output: "listening on http://localhost:70000\n"},
 		{name: "unbracketed ipv6", output: "listening on http://::1:3000\n"},
 		{name: "no host", output: "http:///nowhere\n"},
+		{name: "request log", output: "GET http://localhost:3000/api/users 200 12ms\n"},
+		{name: "test failure", output: "expected redirect to http://localhost:3000/login, got /home\n"},
+		{name: "config dump", output: "baseUrl: http://localhost:8080\ntimeout: 30\n"},
+		{name: "fetch error", output: "FetchError: request to http://localhost:4000/graphql failed\n"},
 	}
 
 	for _, tc := range cases {

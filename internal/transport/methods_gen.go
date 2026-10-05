@@ -300,7 +300,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                 // main.App.PreviewNotificationSound
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                               // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                // main.App.ProbeCodexAccount
-	{Name: "ProbeDevServerURL", ID: 3448359500, Scope: "host", Route: "home"},                                        // main.App.ProbeDevServerURL
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                         // main.App.ProjectDeletionPreview
 	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                        // main.App.PromoteScratchThread
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalAttach

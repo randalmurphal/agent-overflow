@@ -1371,8 +1371,7 @@ thread whose machine is not the page's:
   no tailnet or LAN address to share it on."
 
 Both the markdown path and `CommandOutput`'s dev-server chip read the
-same per-backend list store; the chip stops probing off-host and uses
-the list. The rewrite happens at marked-extension token time (the
+same per-backend list store when the thread is off-host. The rewrite happens at marked-extension token time (the
 `pathLinkExtension` model) with data attributes, so the static HTML
 fast path stays.
 
@@ -1471,9 +1470,8 @@ exact-port `OriginPatterns` fix and `pagecookie_contract_test.go` (an
 AST gate: every reader of the page cookie calls `OriginAllowed` in the
 same body, plus a behavioural check that the six cookie-reading routes
 404 a preview-shaped Origin) close the cookie leak structurally. One
-loopback dialer (`loopback.Dialer`) serves the probe and the proxy;
-`devserverprobe` keeps its own on purpose (it validates a URL it was
-handed). **Affordances**: the markdown rewrite is an inline marked
+loopback dialer (`loopback.Dialer`) serves the probe and the proxy.
+**Affordances**: the markdown rewrite is an inline marked
 extension AHEAD of the path-link one, both renderers spelling the
 anchor from `markdown/render/previewLink.ts`; the delegate swallows
 the click in EVERY state (following it would load whatever answers on

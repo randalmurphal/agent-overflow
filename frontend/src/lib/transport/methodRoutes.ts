@@ -271,7 +271,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2105157519: 'home', // PreviewNotificationSound
 	1313986574: 'home', // ProbeClaudeAccount
 	2614227175: 'home', // ProbeCodexAccount
-	3448359500: 'home', // ProbeDevServerURL
 	2575010484: 'project', // ProjectDeletionPreview
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach

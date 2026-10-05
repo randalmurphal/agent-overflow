@@ -3,12 +3,6 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import CommandOutput from './CommandOutput.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import {
-  DEV_SERVER_PROBE_MAX_DEAD_PROBES,
-  DEV_SERVER_PROBE_RETRY_MS,
-  DEV_SERVER_PROBE_VERIFY_MS,
-  resetDevServerProbeForTest,
-} from '../../utils/devServerProbe';
 import type { CommandOutputMeta } from '../../types/models';
 import {
   REMOTE_BACKEND_UUID,
@@ -731,23 +725,11 @@ describe('<CommandOutput>', () => {
   });
   // Dev-server affordance. Detection happens in triage (see
   // internal/triage/dev_server_url.go); the row re-validates it as a
-  // loopback URL, holds the first detection so the chip survives the
-  // per-flush-window meta rewrites while streaming, and renders the chip
-  // only after the backend confirms something is listening on the port
-  // (utils/devServerProbe.ts) — detection alone only proves the output
-  // mentioned the URL. While the command runs the row re-probes: fast
-  // while unconfirmed (bounded), slower to re-verify a confirmed URL.
+  // loopback URL and holds the first detection so the chip survives the
+  // per-flush-window meta rewrites while streaming. Nothing dials the URL:
+  // the chip shows on detection and the click opens it.
   describe('dev-server chip', () => {
-    beforeEach(() => {
-      resetDevServerProbeForTest();
-    });
-
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
     it('is absent for a command that announced no server', () => {
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       const { queryByTestId } = render(CommandOutput, {
         props: {
           item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
@@ -756,98 +738,39 @@ describe('<CommandOutput>', () => {
       });
 
       expect(queryByTestId('dev-server-chip')).toBeNull();
-      expect(probe).not.toHaveBeenCalled();
     });
 
-    it('renders the chip once the probe confirms a listener and opens the URL externally', async () => {
-      setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
+    it('shows the announced URL at once and opens it externally on click', async () => {
       const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
       const { getByTestId } = render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
-          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      const chip = await waitFor(() => getByTestId('dev-server-chip'));
-      expect(chip.textContent).toContain('localhost:5173');
-
-      await fireEvent.click(chip);
-      expect(open).toHaveBeenCalledWith('http://localhost:5173/');
-    });
-
-    it('stays hidden when nothing is listening on a settled row, with no retry', async () => {
-      vi.useFakeTimers();
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => false));
-
-      const { queryByTestId } = render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
-          meta: commandMeta({ command: 'cat notes.md', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(probe).toHaveBeenCalledWith('http://localhost:5173/');
-      expect(queryByTestId('dev-server-chip')).toBeNull();
-
-      // Settled row: a dead verdict is final — no retry timer exists.
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS * 3);
-      expect(probe).toHaveBeenCalledTimes(1);
-      expect(queryByTestId('dev-server-chip')).toBeNull();
-    });
-
-    it('treats a probe failure as not live', async () => {
-      vi.useFakeTimers();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const probe = setBindingMock(
-        'ProbeDevServerURL',
-        vi.fn(async () => {
-          throw new Error('wire broke');
-        }),
-      );
-
-      const { queryByTestId } = render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
-          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(probe).toHaveBeenCalled();
-      expect(queryByTestId('dev-server-chip')).toBeNull();
-      expect(warn).toHaveBeenCalled();
-      warn.mockRestore();
-    });
-
-    it('retries while the command is still running until the server answers', async () => {
-      vi.useFakeTimers();
-      let live = false;
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => live));
-
-      const { queryByTestId } = render(CommandOutput, {
         props: {
           item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
           meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
         },
       });
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(probe).toHaveBeenCalledTimes(1);
-      expect(queryByTestId('dev-server-chip')).toBeNull();
+      const chip = getByTestId('dev-server-chip');
+      expect(chip.textContent).toContain('localhost:5173');
 
-      live = true;
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS);
-      expect(probe).toHaveBeenCalledTimes(2);
-      expect(queryByTestId('dev-server-chip')).not.toBeNull();
+      await fireEvent.click(chip);
+      expect(open).toHaveBeenCalledWith('http://localhost:5173/');
+    });
+
+    it('shows on a settled row too', () => {
+      const { getByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'completed' }),
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+        },
+      });
+
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
     });
 
     // The row's thread is on another machine, so `localhost` here is not the
-    // port the command announced. The probe binding asks the PAGE's backend
-    // and therefore cannot answer for it; the machine's own list can, and
-    // does, for both halves of the question the probe was asking.
+    // port the command announced; that machine's own dev-server list decides
+    // the chip.
     describe('when the command ran on another machine', () => {
       const THREAD = 'thread-on-laptop';
 
@@ -887,8 +810,7 @@ describe('<CommandOutput>', () => {
         resetStagedBackends();
       });
 
-      it('never probes, and offers the chip once that machine says the port is live and shared', async () => {
-        const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
+      it('offers the chip once that machine says the port is live and shared', async () => {
         const mint = setBindingMock(
           'MintPreviewURL',
           vi.fn(async () => 'https://laptop.tail.ts.net/preview/5173/app?t=1'),
@@ -912,7 +834,6 @@ describe('<CommandOutput>', () => {
           return found as HTMLElement;
         });
         expect(chip.getAttribute('aria-label')).toBe('Open localhost:5173 on Laptop');
-        expect(probe).not.toHaveBeenCalled();
 
         await fireEvent.click(chip);
         await waitFor(() => expect(mint).toHaveBeenCalledWith(THREAD, 5173, '/app'));
@@ -922,7 +843,6 @@ describe('<CommandOutput>', () => {
       });
 
       it('offers nothing when that machine sees no listener on the port', async () => {
-        setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
         const { queryByTestId } = render(CommandOutput, {
           props: {
             pane: laptopPane(),
@@ -944,7 +864,6 @@ describe('<CommandOutput>', () => {
       });
 
       it('offers nothing when the port is live but not shared', async () => {
-        setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
         const { queryByTestId } = render(CommandOutput, {
           props: {
             pane: laptopPane(),
@@ -966,97 +885,7 @@ describe('<CommandOutput>', () => {
       });
     });
 
-    it('stops retrying an unconfirmed candidate after the dead-probe budget', async () => {
-      vi.useFakeTimers();
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => false));
-
-      render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
-          meta: commandMeta({ command: 'tail -f app.log', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS * DEV_SERVER_PROBE_MAX_DEAD_PROBES);
-      expect(probe).toHaveBeenCalledTimes(DEV_SERVER_PROBE_MAX_DEAD_PROBES);
-
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS * 5);
-      expect(probe).toHaveBeenCalledTimes(DEV_SERVER_PROBE_MAX_DEAD_PROBES);
-    });
-
-    it('a settle mid-wait still delivers the pending probe as one final attempt', async () => {
-      vi.useFakeTimers();
-      let live = false;
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => live));
-      const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
-      const devMeta = commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' });
-
-      const { queryByTestId, rerender } = render(CommandOutput, {
-        props: { item, meta: devMeta },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(probe).toHaveBeenCalledTimes(1);
-
-      // The command settles while the retry timer is pending; the server
-      // bound in that window. The pending tick must still fire and win.
-      live = true;
-      await rerender({ item: { ...item, status: 'completed', updatedAt: item.updatedAt + 1 }, meta: devMeta });
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS);
-      expect(probe).toHaveBeenCalledTimes(2);
-      expect(queryByTestId('dev-server-chip')).not.toBeNull();
-
-      // Settled: the loop schedules nothing further.
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_VERIFY_MS * 2);
-      expect(probe).toHaveBeenCalledTimes(2);
-    });
-
-    it('retracts a confirmed chip when its server dies mid-run', async () => {
-      vi.useFakeTimers();
-      let live = true;
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => live));
-
-      const { queryByTestId } = render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
-          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(queryByTestId('dev-server-chip')).not.toBeNull();
-
-      live = false;
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_VERIFY_MS);
-      expect(probe).toHaveBeenCalledTimes(2);
-      expect(queryByTestId('dev-server-chip')).toBeNull();
-
-      // A retraction resumes the fast unconfirmed cadence while running.
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS);
-      expect(probe).toHaveBeenCalledTimes(3);
-    });
-
-    it('unmount cancels the probe loop', async () => {
-      vi.useFakeTimers();
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => false));
-
-      const { unmount } = render(CommandOutput, {
-        props: {
-          item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
-          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(probe).toHaveBeenCalledTimes(1);
-
-      unmount();
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS * 3);
-      expect(probe).toHaveBeenCalledTimes(1);
-    });
-
     it('opening the chip does not expand the row', async () => {
-      setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
       const { getByTestId } = render(CommandOutput, {
@@ -1067,13 +896,12 @@ describe('<CommandOutput>', () => {
         },
       });
 
-      await fireEvent.click(await waitFor(() => getByTestId('dev-server-chip')));
+      await fireEvent.click(getByTestId('dev-server-chip'));
 
       expect(getByTestId('command-output-toggle').getAttribute('aria-expanded')).toBe('false');
     });
 
     it('falls back to the raw payloadMeta when no normalized meta prop is passed', async () => {
-      setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       const { getByTestId } = render(CommandOutput, {
         props: {
           item: makeItem({
@@ -1088,7 +916,6 @@ describe('<CommandOutput>', () => {
     });
 
     it('ignores a non-loopback URL that reached meta', () => {
-      const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       const { queryByTestId } = render(CommandOutput, {
         props: {
           item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
@@ -1097,11 +924,9 @@ describe('<CommandOutput>', () => {
       });
 
       expect(queryByTestId('dev-server-chip')).toBeNull();
-      expect(probe).not.toHaveBeenCalled();
     });
 
     it('keeps the chip when a later streaming window carries no URL', async () => {
-      setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
       const { getByTestId, rerender } = render(CommandOutput, {
         props: {
@@ -1110,7 +935,7 @@ describe('<CommandOutput>', () => {
         },
       });
 
-      await waitFor(() => expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/'));
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
 
       await rerender({
         item: { ...item, updatedAt: item.updatedAt + 1 },
@@ -1121,7 +946,6 @@ describe('<CommandOutput>', () => {
     });
 
     it('upgrades to a newly detected URL', async () => {
-      setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
       const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
       const { getByTestId, rerender } = render(CommandOutput, {
         props: {
@@ -1136,35 +960,6 @@ describe('<CommandOutput>', () => {
       });
 
       await waitFor(() => expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:4173/'));
-    });
-
-    it('retains a confirmed chip when a newly mentioned URL probes dead', async () => {
-      vi.useFakeTimers();
-      const liveByUrl: Record<string, boolean> = {
-        'http://localhost:5173/': true,
-        'http://localhost:9999/': false,
-      };
-      setBindingMock('ProbeDevServerURL', vi.fn(async (url: string) => liveByUrl[url] === true));
-      const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
-
-      const { getByTestId, rerender } = render(CommandOutput, {
-        props: {
-          item,
-          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-        },
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
-
-      // Later output merely MENTIONS another loopback URL. The verified
-      // chip must not blank while the new candidate fails to confirm.
-      await rerender({
-        item: { ...item, updatedAt: item.updatedAt + 1 },
-        meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:9999/' }),
-      });
-      await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS * 3);
-      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
     });
   });
 });

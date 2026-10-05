@@ -268,10 +268,6 @@ export {
   GetEditorSettings,
   SetEditorSettings,
 
-  // Liveness gate for the dev-server chip: loopback-only on the wire,
-  // so a remote session's probe fails and the chip stays hidden there.
-  ProbeDevServerURL,
-
   // The port gateway (docs/specs/remote-access.md §7): one machine's
   // shareable dev-server ports, and a single-use URL to open one from
   // another device. Read through stores/devServers.svelte.ts.

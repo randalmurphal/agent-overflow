@@ -15,12 +15,6 @@
   import { loopbackDevServerURL } from '../../utils/externalLinks';
   import { previewChipFor, previewRouted } from '../../stores/devServers.svelte';
   import {
-    DEV_SERVER_PROBE_MAX_DEAD_PROBES,
-    DEV_SERVER_PROBE_RETRY_MS,
-    DEV_SERVER_PROBE_VERIFY_MS,
-    probeDevServerURL,
-  } from '../../utils/devServerProbe';
-  import {
     createPayloadExpansion,
     formatPayloadSize,
     keepExpandedPayloadFresh,
@@ -221,82 +215,36 @@
       payloadMeta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
-  // Dev-server affordance (internal/triage/dev_server_url.go), two stages.
+  // Dev-server affordance (internal/triage/dev_server_url.go). The chip
+  // shows the URL a server announced; nothing dials it first, because the
+  // click is the check.
   //
-  // Stage 1, candidate latch: streaming payload meta is rebuilt from each
-  // 100ms flush window, so a startup banner is only present in the window
-  // that carried it — the chip would blink out the moment the server
-  // logged its first request. The completion rebuild recomputes the field
-  // over the cumulative output and persists it; between those two points
-  // the row keeps the first detection. This is last-known-value smoothing
-  // of a jittering SERVER field, not remembered reader intent, which is
-  // why it lives here rather than in a pane registry: a windowing remount
-  // re-reads meta and the persisted value takes over at settle, so
-  // nothing is durably lost.
+  // Streaming payload meta is rebuilt from each 100ms flush window, so a
+  // startup banner is only present in the window that carried it, and the
+  // chip would blink out the moment the server logged its first request.
+  // The completion rebuild recomputes the field over the cumulative output
+  // and persists it; between those two points the row keeps the first
+  // detection. This is last-known-value smoothing of a jittering SERVER
+  // field, not remembered reader intent, which is why it lives here rather
+  // than in a pane registry: a windowing remount re-reads meta and the
+  // persisted value takes over at settle, so nothing is durably lost.
   //
-  // Stage 2, liveness gate: the candidate only proves the output
-  // MENTIONED a loopback URL, so the chip renders only after the backend
-  // confirms a listener (utils/devServerProbe.ts). While the command
-  // runs, an unconfirmed candidate re-probes on a bounded cadence (a
-  // banner can print a beat before listen()) and a confirmed one is
-  // re-verified on a slower one, retracting the chip if its server dies
-  // mid-run. The candidate moving to a different URL deliberately does
-  // NOT retract a confirmed chip: the settle rebuild recomputes the
-  // candidate as the FIRST URL in cumulative output, so a later mere
-  // mention of some other loopback URL would otherwise blank a verified
-  // chip — a dead confirmed URL is retracted by verification instead.
-  // The probe loop depends only on the candidate: a settle doesn't tear
-  // it down, it just stops rescheduling, so the last pending tick lands
-  // as one final on-cadence probe and a settled row then keeps its
-  // verdict until remount.
-  //
-  // Stage 2 has a second form. The probe asks the PAGE's own backend whether
-  // something answers on a loopback port, which only means anything when the
-  // command ran on that machine and this session can act there. Anywhere else
-  // — a thread on an attached machine, or this page read from a browser — the
-  // machine's own dev-server list is the authority on both questions the
-  // probe was asking (is anything listening, and can this page reach it), and
-  // there is nothing for a probe here to reach. So the loop does not start,
-  // and the chip is read from that list instead.
+  // `localhost` means the page's own machine only when the command ran
+  // there and this session can act there. Anywhere else, a thread on an
+  // attached machine or this page read from a browser, the chip comes from
+  // that machine's dev-server list instead (previewChipFor).
   let detectedDevServerURL = $state<string | null>(null);
-  let confirmedDevServerURL = $state<string | null>(null);
   let threadId = $derived(pane?.threadId ?? '');
   let previewChip = $derived(previewChipFor(threadId, detectedDevServerURL ?? ''));
+  let localDevServerURL = $derived(
+    detectedDevServerURL && !previewRouted(threadId) ? detectedDevServerURL : null,
+  );
   let liveDevServerURL = $derived(
     loopbackDevServerURL(meta?.devServerUrl ?? (payloadMeta?.devServerUrl as string | undefined)),
   );
   $effect(() => {
     const next = liveDevServerURL;
     if (next && next !== untrack(() => detectedDevServerURL)) detectedDevServerURL = next;
-  });
-  $effect(() => {
-    const url = detectedDevServerURL;
-    if (!url || previewRouted(threadId)) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let deadStreak = 0;
-    const attempt = () => {
-      void probeDevServerURL(url).then((live) => {
-        if (cancelled) return;
-        const running = untrack(() => isRunning);
-        if (live) {
-          deadStreak = 0;
-          confirmedDevServerURL = url;
-          if (running) timer = setTimeout(attempt, DEV_SERVER_PROBE_VERIFY_MS);
-          return;
-        }
-        if (untrack(() => confirmedDevServerURL) === url) confirmedDevServerURL = null;
-        deadStreak += 1;
-        if (running && deadStreak < DEV_SERVER_PROBE_MAX_DEAD_PROBES) {
-          timer = setTimeout(attempt, DEV_SERVER_PROBE_RETRY_MS);
-        }
-      });
-    };
-    attempt();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) clearTimeout(timer);
-    };
   });
 
   let compactCollapsedPreview = $derived.by(() => {
@@ -330,8 +278,8 @@
   {#snippet headerActions()}
     {#if previewChip}
       <DevServerChip url={previewChip.url} preview={previewChip} />
-    {:else if confirmedDevServerURL}
-      <DevServerChip url={confirmedDevServerURL} />
+    {:else if localDevServerURL}
+      <DevServerChip url={localDevServerURL} />
     {/if}
     {#if canBackground}
       <button
