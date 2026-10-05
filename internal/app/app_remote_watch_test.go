@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -168,6 +169,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 }
 
 func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t *testing.T) {
+	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source, rec := newAppForFlushQueueRPC(t)
 	peers, err := attachedbackends.New(t.TempDir(), "source", "test")

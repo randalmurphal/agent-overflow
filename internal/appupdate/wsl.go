@@ -49,19 +49,27 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
-const (
-	// wslUpdaterPlatform is the release-asset platform token this backend
-	// installs for. It is NOT runtime.GOOS: a linux/amd64 process fetches a
-	// Windows .exe for the launcher to swap in, so the assets it can install
-	// are the ones named for "wsl".
-	wslUpdaterPlatform = "wsl"
+// wslUpdaterPlatform is the release-asset platform token this backend
+// installs for. It is NOT runtime.GOOS: a linux/amd64 process fetches a
+// Windows .exe for the launcher to swap in, so the assets it can install
+// are the ones named for "wsl". A build without remote access installs only
+// its own variant, agent-overflow-wsl-noremote-<arch>.exe, and the exact
+// matcher keeps either build from taking the other's launcher.
+func wslUpdaterPlatform() string {
+	if buildvariant.RemoteAccess {
+		return "wsl"
+	}
+	return "wsl-noremote"
+}
 
+const (
 	// wslInstallACKTimeout bounds how long RestartToUpdate waits for the
 	// launcher to answer an install directive. The launcher acknowledges before
 	// it starts any work, so this is generous; the point is that a launcher
@@ -144,6 +152,12 @@ type LauncherFailure struct {
 	Reason string
 }
 
+// errNoReleaseProject refuses the updater of a build without remote access
+// that was not linked with a GitLab project
+// (scripts/build-release-noremote.sh). Such a build updates only from that
+// project, never from the standard build's GitHub releases.
+var errNoReleaseProject = errors.New("updater: this build updates only from its release project, and none was linked in")
+
 // ConfigureWSL builds the headless updater and reconciles the previous
 // launcher's install marker. Environment gating remains the caller's job.
 func (a *Service) ConfigureWSL(config WSLConfig) error {
@@ -152,6 +166,9 @@ func (a *Service) ConfigureWSL(config WSLConfig) error {
 	}
 	if config.MarkerDir == "" {
 		return errors.New("updater: WSL marker directory is empty")
+	}
+	if gitlabProject == "" && !buildvariant.RemoteAccess {
+		return errNoReleaseProject
 	}
 	if config.ACKTimeout <= 0 {
 		config.ACKTimeout = wslInstallACKTimeout
@@ -168,7 +185,7 @@ func (a *Service) ConfigureWSL(config WSLConfig) error {
 	}
 	providerConfig := config.Provider
 	providerConfig.CurrentVersion = config.CurrentVersion
-	providerConfig.Platform = wslUpdaterPlatform
+	providerConfig.Platform = wslUpdaterPlatform()
 	providerConfig.Arch = config.Arch
 
 	u := updater.New(wslUpdaterHost{service: a})
@@ -176,6 +193,7 @@ func (a *Service) ConfigureWSL(config WSLConfig) error {
 		return err
 	}
 	a.updater.wsl = mode
+	log.Printf("updater: WSL target %s/%s from %s releases", providerConfig.Platform, providerConfig.Arch, a.updater.provider.Name())
 	reconcileWSLUpdateMarker(a, config.CurrentVersion, mode)
 	return nil
 }

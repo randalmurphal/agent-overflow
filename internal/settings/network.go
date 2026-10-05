@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"agent-overflow/internal/buildvariant"
 )
 
 // NetworkSettings groups everything about how the embedded transport
@@ -117,6 +119,29 @@ func (n NetworkSettings) HasExternalPair() bool {
 	return n.ExternalCertFile != "" && n.ExternalKeyFile != ""
 }
 
+// remoteField names the first setting in n that enables remote access,
+// or "" when n keeps the transport on loopback. ListenPort is not one: it
+// pins the loopback port too.
+func (n NetworkSettings) remoteField() string {
+	switch {
+	case n.BindAll:
+		return "network.bindAll"
+	case n.CanonicalDomain != "":
+		return "network.canonicalDomain"
+	case len(n.ACMEDNSHook) > 0:
+		return "network.acmeDnsHook"
+	case n.ExternalCertFile != "" || n.ExternalKeyFile != "":
+		return "network.externalCertFile"
+	case n.TailnetEnabled:
+		return "network.tailnetEnabled"
+	case n.TailnetControlURL != "":
+		return "network.tailnetControlUrl"
+	case len(n.PreviewPorts) > 0:
+		return "network.previewPorts"
+	}
+	return ""
+}
+
 // MaxListenPort is the top of the TCP port range. Named rather than
 // spelled, because the refusal message quotes it and a reader should see
 // the same number in both places.
@@ -139,6 +164,11 @@ const MaxPreviewPorts = 64
 // serving side would otherwise have to answer at handshake time, where
 // there is nobody to tell.
 func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
+	if !buildvariant.RemoteAccess {
+		if field := n.remoteField(); field != "" {
+			return NetworkSettings{}, fmt.Errorf("%s: %w", field, buildvariant.ErrRemoteAccessUnavailable)
+		}
+	}
 	if n.ListenPort < 0 || n.ListenPort > MaxListenPort {
 		// Refused rather than clamped. A clamp would bind SOME port and
 		// report success, and the operator would then be looking for
@@ -286,6 +316,13 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 // nothing on screen saying so; the log line names the value, and the
 // setting is re-typed once.
 func sanitizeNetwork(n NetworkSettings) NetworkSettings {
+	if !buildvariant.RemoteAccess {
+		if field := n.remoteField(); field != "" {
+			log.Printf("settings: ignoring saved remote-access network settings (%s and any others): %v",
+				field, buildvariant.ErrRemoteAccessUnavailable)
+			n = NetworkSettings{ListenPort: n.ListenPort}
+		}
+	}
 	sanitized, err := validateNetwork(n)
 	if err == nil {
 		return sanitized

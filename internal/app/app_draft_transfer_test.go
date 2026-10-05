@@ -10,12 +10,14 @@ import (
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
 func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
+	remotetest.Require(t)
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) { testDraftProjectTransfer(t, providerName) })
 	}

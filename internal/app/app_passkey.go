@@ -218,6 +218,7 @@ type PasskeyStepUpGrant struct {
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) BeginPasskeyRegistration(label string) (PasskeyChallengeResult, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -254,6 +255,7 @@ func (a *App) BeginPasskeyRegistration(label string) (PasskeyChallengeResult, er
 //
 //ao:scope access:admin
 //ao:route home
+//ao:remote
 func (a *App) FinishPasskeyRegistration(ceremonyID string, response json.RawMessage) (PasskeySummary, error) {
 	state, err := a.accessState()
 	if err != nil {

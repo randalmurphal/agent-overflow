@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/buildvariant"
 )
 
 // Auxiliary listeners: a second (or third) way in, answered by exactly
@@ -87,6 +89,11 @@ const auxShutdownTimeout = 5 * time.Second
 func (s *Server) ServeAuxiliary(ln net.Listener, fail func(error)) (*AuxListener, error) {
 	if ln == nil {
 		return nil, fmt.Errorf("transport: ServeAuxiliary needs a listener")
+	}
+	// Local clients beside the providers use a ::1 listener in every build;
+	// any other address is remote access.
+	if !buildvariant.RemoteAccess && !loopbackListener(ln) {
+		return nil, fmt.Errorf("transport: auxiliary listener on %s: %w", ln.Addr(), buildvariant.ErrRemoteAccessUnavailable)
 	}
 	if s.shutDown.Load() {
 		return nil, fmt.Errorf("transport: server is shut down")

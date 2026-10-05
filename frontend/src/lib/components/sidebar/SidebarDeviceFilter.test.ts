@@ -2,6 +2,8 @@ import { beforeEach, afterEach, expect, it } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
+import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
+import { stageNoRemoteBuild } from '../../../test/helpers/buildVariant';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { noteProject, noteThread } from '../../transport/entityIndex';
@@ -65,4 +67,11 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   expect(pane.thread?.id).toBe(elsewhere.id);
   await fireEvent.click(view.getByRole('menuitem', { name: 'All computers' })); await tick();
   expect(view.getByText('GPU work')).toBeInTheDocument();
+});
+
+for (const remote of [true, false]) it(`renders the Projects heading as ${remote ? 'a computer filter' : 'plain text in a build without remote access'}`, () => {
+  if (!remote) stageNoRemoteBuild();
+  const view = render(SidebarDeviceFilter);
+  expect(view.queryByRole('button', { name: 'Filter projects by computer' }) !== null).toBe(remote);
+  expect(view.getByText('Projects')).toBeInTheDocument();
 });

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/backendproxy"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/eventchan"
@@ -22,6 +23,7 @@ import (
 )
 
 func TestNativeRouteChangesInvalidateOnlyAfterUsableAddressChanges(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, conn, cfg := nativeNetworkBackend(t)
 	bus := transport.NewEventBus(16)
 	b.app.SetEventBus(bus)
@@ -65,6 +67,7 @@ func TestNativeRouteChangesInvalidateOnlyAfterUsableAddressChanges(t *testing.T)
 }
 
 func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *testing.T) {
+	remotetest.Require(t)
 	var current atomic.Value
 	current.Store([]computerroute.Route(nil))
 	backend := newPairedBackend(t, func(cfg *transport.Config) {
@@ -128,6 +131,7 @@ func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *test
 }
 
 func TestSurvivingSocketRepairsRoutesAfterListenerMoves(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	var app *App
 	backend := newPairedBackend(t, func(cfg *transport.Config) {
@@ -207,6 +211,7 @@ func TestSurvivingSocketRepairsRoutesAfterListenerMoves(t *testing.T) {
 }
 
 func TestEnablingTailnetPreservesActiveNativeLANRelay(t *testing.T) {
+	remotetest.Require(t)
 	backend, ctx, _, cfg := nativeNetworkBackend(t)
 	report := nativeReport(backend, cfg)
 	if err := backend.app.ReportNativeNetworkState(ctx, report); err != nil {

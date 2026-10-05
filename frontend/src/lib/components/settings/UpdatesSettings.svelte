@@ -9,6 +9,7 @@
   import VersionPicker from './VersionPicker.svelte';
   import MachineUpdates from './MachineUpdates.svelte';
   import { PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
+  import { remoteAccessAvailable } from '../../transport/buildVariant';
   import {
     getUpdateState,
     isDownloadInFlight,
@@ -142,6 +143,9 @@
               <span>{phaseLabel}</span>
               {#if s.phase === 'downloading' && s.total > 0}
                 <span class="tabular-nums">{formatMB(s.written)} / {formatMB(s.total)} MB</span>
+              {:else if s.phase === 'downloading' && s.written > 0}
+                <!-- A release feed that names no size (GitLab) still shows the bytes received. -->
+                <span class="tabular-nums">{formatMB(s.written)} MB</span>
               {/if}
             </div>
             <div class="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
@@ -211,5 +215,8 @@
     {/if}
   {/if}
 
-  <MachineUpdates />
+  <!-- Other computers' updates: a build without remote access reaches none. -->
+  {#if remoteAccessAvailable()}
+    <MachineUpdates />
+  {/if}
 </div>

@@ -22,6 +22,9 @@ var releaseTargets = []struct {
 	{"linux", "amd64", "agent-overflow-linux-amd64"},
 	{"darwin", "arm64", "agent-overflow-darwin-arm64.zip"},
 	{"wsl", "amd64", "agent-overflow-wsl-amd64.exe"},
+	// The Windows/WSL launcher built without remote access
+	// (scripts/build-release-noremote.sh).
+	{"wsl-noremote", "amd64", "agent-overflow-wsl-noremote-amd64.exe"},
 }
 
 func assetsNamed(names ...string) []github.ReleaseAsset {
@@ -54,6 +57,7 @@ func fullReleaseListing() []github.ReleaseAsset {
 		"agent-overflow-headless-linux-amd64",
 		"agent-overflow-linux-amd64",
 		"agent-overflow-wsl-amd64.exe",
+		"agent-overflow-wsl-noremote-amd64.exe",
 		"appicon.png",
 		"install.sh",
 	)
@@ -146,26 +150,39 @@ var releaseArtifactPattern = regexp.MustCompile(`\$OUT_DIR/([A-Za-z0-9._-]+)`)
 //
 // A NEW artifact whose name a target also matches fails here, at the commit
 // that adds it, rather than in an install some weeks later.
+//
+// Both release scripts are read together: the standard release and the
+// release without remote access ship launchers whose names differ only by a
+// qualifier, and neither build may take the other's.
 func TestReleaseAssetMatcherAgreesWithTheReleaseScript(t *testing.T) {
-	script := filepath.Join("..", "..", "scripts", "build-release.sh")
-	body, err := os.ReadFile(script)
-	if err != nil {
-		t.Fatalf("read %s: %v", script, err)
+	scripts := []string{
+		filepath.Join("..", "..", "scripts", "build-release.sh"),
+		filepath.Join("..", "..", "scripts", "build-release-noremote.sh"),
 	}
-
 	seen := map[string]bool{}
 	var names []string
-	for _, m := range releaseArtifactPattern.FindAllStringSubmatch(string(body), -1) {
-		if seen[m[1]] {
-			continue
+	for _, script := range scripts {
+		body, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatalf("read %s: %v", script, err)
 		}
-		seen[m[1]] = true
-		names = append(names, m[1])
+		found := 0
+		for _, m := range releaseArtifactPattern.FindAllStringSubmatch(string(body), -1) {
+			found++
+			if seen[m[1]] {
+				continue
+			}
+			seen[m[1]] = true
+			names = append(names, m[1])
+		}
+		if found == 0 {
+			t.Fatalf("found no artifact names in %s — has the script changed shape?", script)
+		}
 	}
 	sort.Strings(names)
 	if len(names) < len(releaseTargets) {
-		t.Fatalf("found %d artifact names in %s (%v), want at least %d — has the script changed shape?",
-			len(names), script, names, len(releaseTargets))
+		t.Fatalf("found %d artifact names in %v (%v), want at least %d — has a script changed shape?",
+			len(names), scripts, names, len(releaseTargets))
 	}
 
 	assets := assetsNamed(names...)

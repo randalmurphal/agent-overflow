@@ -71,7 +71,9 @@ supported first-parameter shapes; all other methods declare
 answers which attached backend receives the call.
 
 Fresh-confirmation operations also declare the supported step-up metadata and
-must pass the runtime step-up check. Method IDs remain FNV-1a 32-bit hashes of
+must pass the runtime step-up check. A method that only serves remote access
+declares `//ao:remote`; a build without remote access refuses it in the
+dispatcher ([build without remote access](../../docs/architecture/noremote-build.md)). Method IDs remain FNV-1a 32-bit hashes of
 `<package>.<typeName>.<methodName>` for Wails compatibility.
 
 Run `make methodgen` after changing bound methods, scope or route vocabulary, or

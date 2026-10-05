@@ -10,9 +10,10 @@ import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
-import { SETTINGS_FIELDS, SETTINGS_PROVIDERS } from './fields';
+import { SETTINGS_FIELDS, SETTINGS_PROVIDERS, settingsFields } from './fields';
 import { SETTINGS_PAGES } from './pages';
-import { SETTINGS_SECTIONS } from './sections';
+import { SETTINGS_SECTIONS, settingsSectionAvailable, type SettingsSection } from './sections';
+import { stageNoRemoteBuild } from '../../../test/helpers/buildVariant';
 
 
 async function settle(): Promise<void> {
@@ -36,6 +37,43 @@ describe('settings field index', () => {
   });
 });
 
+/**
+ * Mounts one page and compares its anchors with the fields this build's
+ * index registers for it.
+ */
+async function expectPageRendersItsFields(section: SettingsSection): Promise<void> {
+  const { container } = render(SETTINGS_PAGES[section]);
+  await settle();
+
+  const rendered = new Map<string, { label: string | undefined; hint: string | undefined }>();
+  for (const el of container.querySelectorAll<HTMLElement>('[data-settings-field]')) {
+    const id = el.dataset.settingsField ?? '';
+    expect(rendered.has(id), `${section} renders ${id} twice`).toBe(false);
+    rendered.set(id, { label: el.dataset.settingsLabel, hint: el.dataset.settingsHint });
+  }
+
+  const expected = settingsFields().filter((f) => f.section === section);
+  const expectedIds = new Set(expected.map((f) => f.id));
+
+  for (const id of rendered.keys()) {
+    expect(expectedIds.has(id), `${section} renders unregistered field ${id}`).toBe(true);
+  }
+
+  for (const field of expected) {
+    const got = rendered.get(field.id);
+    if (!got) {
+      expect(field.conditional ?? false, `${field.id} is registered but not rendered`).toBe(
+        true,
+      );
+      continue;
+    }
+    expect(got.label, `${field.id} label`).toBe(field.label);
+    if (field.hint !== undefined && got.hint !== undefined) {
+      expect(got.hint, `${field.id} hint`).toBe(field.hint);
+    }
+  }
+}
+
 describe('every page renders exactly its registered fields', () => {
   beforeEach(async () => {
     await seedSettingsPages();
@@ -43,36 +81,48 @@ describe('every page renders exactly its registered fields', () => {
 
   for (const section of SETTINGS_SECTIONS) {
     it(`${section.id}`, async () => {
-      const { container } = render(SETTINGS_PAGES[section.id]);
-      await settle();
-
-      const rendered = new Map<string, { label: string | undefined; hint: string | undefined }>();
-      for (const el of container.querySelectorAll<HTMLElement>('[data-settings-field]')) {
-        const id = el.dataset.settingsField ?? '';
-        expect(rendered.has(id), `${section.id} renders ${id} twice`).toBe(false);
-        rendered.set(id, { label: el.dataset.settingsLabel, hint: el.dataset.settingsHint });
-      }
-
-      const expected = SETTINGS_FIELDS.filter((f) => f.section === section.id);
-      const expectedIds = new Set(expected.map((f) => f.id));
-
-      for (const id of rendered.keys()) {
-        expect(expectedIds.has(id), `${section.id} renders unregistered field ${id}`).toBe(true);
-      }
-
-      for (const field of expected) {
-        const got = rendered.get(field.id);
-        if (!got) {
-          expect(field.conditional ?? false, `${field.id} is registered but not rendered`).toBe(
-            true,
-          );
-          continue;
-        }
-        expect(got.label, `${field.id} label`).toBe(field.label);
-        if (field.hint !== undefined && got.hint !== undefined) {
-          expect(got.hint, `${field.id} hint`).toBe(field.hint);
-        }
-      }
+      await expectPageRendersItsFields(section.id);
     });
   }
+});
+
+describe('without remote access, every offered page renders exactly its registered fields', () => {
+  beforeEach(async () => {
+    stageNoRemoteBuild();
+    await seedSettingsPages();
+  });
+
+  for (const section of SETTINGS_SECTIONS) {
+    it(`${section.id}`, async () => {
+      if (!settingsSectionAvailable(section.id)) {
+        expect(settingsFields().some((f) => f.section === section.id), section.id).toBe(false);
+        return;
+      }
+      await expectPageRendersItsFields(section.id);
+    });
+  }
+
+  it('excludes remote fields from this build and keeps them in the full index', () => {
+    const offered = new Set(settingsFields().map((f) => f.id));
+    for (const id of [
+      'notifications.phone-push',
+      'notifications.phone-push-credential',
+      'theme.copy-files',
+      'spinner.copy-files',
+      'remote.tailnet',
+      'systems.device-name',
+    ]) {
+      expect(offered.has(id), id).toBe(false);
+      expect(SETTINGS_FIELDS.some((f) => f.id === id), id).toBe(true);
+    }
+    expect(settingsFields().find((f) => f.id === 'notifications.quiet-when')?.hint).toBe(
+      'Held back on this screen only.',
+    );
+  });
+});
+
+describe('with remote access, the index is the full list', () => {
+  it('offers every registered field', () => {
+    expect(settingsFields()).toBe(SETTINGS_FIELDS);
+  });
 });

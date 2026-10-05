@@ -1,5 +1,11 @@
 package aocli
 
+import (
+	"strings"
+
+	"agent-overflow/internal/buildvariant"
+)
+
 const remoteUsage = `Usage: agent-overflow remote <command> [options]
 
   list                     List enabled computers and registered projects
@@ -26,9 +32,32 @@ restart marks unfinished work interrupted; it never reruns it automatically.
 // is readable in one place, and so adding a subcommand without documenting it is
 // an obvious omission rather than a hidden one.
 
-const rootUsage = `Usage: agent-overflow <command> [options]
+// rootUsage is the root help text. A build without remote access
+// (internal/buildvariant) omits the host commands and `remote`, which it
+// refuses.
+var rootUsage = rootUsageFor(buildvariant.RemoteAccess)
 
-Host commands (run on the machine the backend lives on):
+func rootUsageFor(remoteAccess bool) string {
+	var b strings.Builder
+	b.WriteString(rootUsageHead)
+	if remoteAccess {
+		b.WriteString(rootUsageHostCommands)
+	}
+	b.WriteString(rootUsageOfflineCommands)
+	b.WriteString(rootUsageSessionCommands)
+	if remoteAccess {
+		b.WriteString(rootUsageRemoteCommand)
+	}
+	b.WriteString("\n")
+	b.WriteString(rootUsageFooter)
+	return b.String()
+}
+
+const rootUsageHead = `Usage: agent-overflow <command> [options]
+
+`
+
+const rootUsageHostCommands = `Host commands (run on the machine the backend lives on):
   serve              Run the backend with no window, for access from elsewhere
   service install    Run that backend at login, and keep it running
   service start      Start an installed backend without a window
@@ -37,20 +66,27 @@ Host commands (run on the machine the backend lives on):
   service uninstall  Stop it and remove the service
   service status     Report what the service manager says about it
 
-Offline commands (work anywhere):
+`
+
+const rootUsageOfflineCommands = `Offline commands (work anywhere):
   workflow new       Scaffold a workflow definition
   workflow validate  Validate a workflow definition
   workflow list      List resolved workflow definitions
   workflow schema    Print the workflow authoring JSON schema
 
-Session commands (run inside an Agent Overflow agent session):
+`
+
+const rootUsageSessionCommands = `Session commands (run inside an Agent Overflow agent session):
   run                Start, observe, and control workflow runs
   memory             Record and read this campaign's accumulated lessons
   notes              Read and write an automation's continuity notes
   schedule           Create a cron automation for a workflow
-  remote             Run and inspect commands on enabled paired computers
+`
 
-Exit codes: 0 success, 1 the asked-about thing said no (a run resting in a
+const rootUsageRemoteCommand = `  remote             Run and inspect commands on enabled paired computers
+`
+
+const rootUsageFooter = `Exit codes: 0 success, 1 the asked-about thing said no (a run resting in a
 state other than done, validation findings, an absent record), 2 error.
 "run watch" adds two of its own: 3 its --timeout expired, 4 the app stopped
 answering.

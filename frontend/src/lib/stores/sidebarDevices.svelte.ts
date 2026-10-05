@@ -4,6 +4,7 @@ import { onBackendIdentity } from '../transport/backendIdentity';
 import type { BackendKey } from '../transport/backendKey';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { remoteAccessAvailable } from '../transport/buildVariant';
 
 const KEY = 'sidebar-hidden-computers';
 const MAX_HIDDEN = 128;
@@ -20,6 +21,9 @@ onFrontendValueChanged(KEY, () => { hidden = readHidden(); });
 
 const hiddenRoutes = $derived.by(() => {
   void identityRevision;
+  // A build without remote access offers no filter, so a stored exclusion
+  // must not hide projects the person has no control to show again.
+  if (!remoteAccessAvailable()) return new Set<BackendKey>();
   return new Set(getAttachedBackends().filter((entry) => entry.backendId && hidden.has(entry.backendId)).map((entry) => entry.id));
 });
 const devices = $derived.by(() => {

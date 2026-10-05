@@ -76,7 +76,7 @@ func (a *Service) desktopDownloaded(rel *updater.Release) (terminal func()) {
 	if rel == nil {
 		log.Printf("updater: the download reported success but names no release")
 		return a.updaterErrorEmitter(updater.ErrorInfo{
-			Stage: updater.StageInstall, Message: "the download names no release", Provider: "github",
+			Stage: updater.StageInstall, Message: "the download names no release", Provider: a.providerName(),
 		})
 	}
 	a.updater.mu.Lock()

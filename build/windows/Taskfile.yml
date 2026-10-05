@@ -112,7 +112,7 @@ tasks:
       # the prior build, and `go build -o` refuses to overwrite a file
       # that isn't a recognized Go binary.
       - rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - GOOS=linux GOARCH={{.ARCH | default "amd64"}} CGO_ENABLED=1 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
+      - GOOS=linux GOARCH={{.ARCH | default "amd64"}} CGO_ENABLED=1 go build -tags production,nogui{{if .WSL_GO_TAGS}},{{.WSL_GO_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}{{if .WSL_LDFLAGS}} {{.WSL_LDFLAGS}}{{end}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
       # Stash a copy in bin/ (gitignored) so package:wsl:zip and any
       # follow-on consumer can read the real ELF after the build:wsl
       # task restores the embed-dir placeholder.
@@ -159,7 +159,7 @@ tasks:
       # Embed the payload built by our prerequisite, before the public task
       # restores the checked-in placeholder.
       - cp {{.BIN_DIR | default "bin"}}/agent-overflow-linux cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}} -X main.launcherMode={{.WSL_LAUNCHER_MODE | default "prod"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
+      - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build{{if .WSL_GO_TAGS}} -tags {{.WSL_GO_TAGS}}{{end}} -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}} -X main.launcherMode={{.WSL_LAUNCHER_MODE | default "prod"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
     vars:
       ARCH: '{{.ARCH | default "amd64"}}'
       WSL_LAUNCHER_SYSO: 'cmd/agent-overflow-windows/wails_windows_{{.ARCH}}.syso'

@@ -8,8 +8,8 @@ import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import {
-  SETTINGS_SECTION_GROUPS,
-  SETTINGS_SECTION_IDS,
+  settingsSectionGroups,
+  settingsSectionIds,
   SETTINGS_SECTIONS,
 } from './sections';
 
@@ -45,7 +45,7 @@ async function seed(): Promise<void> {
 
 describe('settings section map', () => {
   it('groups every page under exactly one nav cluster, in render order', () => {
-    expect(SETTINGS_SECTION_GROUPS.map((g) => g.label)).toEqual([
+    expect(settingsSectionGroups().map((g) => g.label)).toEqual([
       'Appearance',
       'App',
       'Agents',
@@ -53,7 +53,7 @@ describe('settings section map', () => {
       'Remote access',
       'Data',
     ]);
-    expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
+    expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'discussions'],
@@ -64,8 +64,8 @@ describe('settings section map', () => {
   });
 
   it('derives the keyboard-nav order from the same grouped list', () => {
-    expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length);
-    expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.map((s) => s.id)));
+    expect(settingsSectionIds()).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(new Set(settingsSectionIds())).toEqual(new Set(SETTINGS_SECTIONS.map((s) => s.id)));
   });
 
   it('gives every page a one-line description for the page header', () => {
@@ -82,8 +82,8 @@ describe('<SettingsView> tabs', () => {
 
   it('renders every page as a tab plus a decorative group label', async () => {
     const { getAllByRole, getByText } = render(SettingsView, { onClose: vi.fn() });
-    expect(getAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length);
-    for (const group of SETTINGS_SECTION_GROUPS) {
+    expect(getAllByRole('tab')).toHaveLength(settingsSectionIds().length);
+    for (const group of settingsSectionGroups()) {
       const label = getByText(group.label);
       expect(label.getAttribute('aria-hidden')).toBe('true');
       // Group labels must not be tabs, or roving focus would land on them.
@@ -223,7 +223,7 @@ describe('<SettingsView> search', () => {
 
     await fireEvent.click(getByTestId('settings-search-clear'));
     expect(queryByTestId('settings-search-results')).toBeNull();
-    expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length);
+    expect(queryAllByRole('tab')).toHaveLength(settingsSectionIds().length);
   });
 
   it('opens the hit page and flashes the field', async () => {
@@ -269,7 +269,7 @@ describe('<SettingsView> search', () => {
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
     input.dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(true);
-    await waitFor(() => expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTION_IDS.length));
+    await waitFor(() => expect(queryAllByRole('tab')).toHaveLength(settingsSectionIds().length));
 
     // With no query the press is left alone so `settings.close` can act on it.
     const escapeAgain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });

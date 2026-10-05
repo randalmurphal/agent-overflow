@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/transport"
@@ -123,6 +124,7 @@ func seedPeer(t *testing.T, dir string, p *peer, own bool) {
 // the second is a typed verdict that evicts the carrier and tells the
 // observer, instead of the 503 every outage answers.
 func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) {
+	remotetest.Require(t)
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedPeer(t, dir, p, false)
@@ -176,6 +178,7 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 // starting report is reached and starting, not unreachable, so the hop
 // can show the peer's progress.
 func TestManifestReportsAStartingPeer(t *testing.T) {
+	remotetest.Require(t)
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedPeer(t, dir, p, false)

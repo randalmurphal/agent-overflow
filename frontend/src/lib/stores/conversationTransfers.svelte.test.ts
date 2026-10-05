@@ -9,8 +9,9 @@ import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { takePinnedBackend } from '../transport/backends';
 import type { TransportHello } from '../transport/wsClient';
 import { TransportError } from '../transport/wsClient';
+import { stageNoRemoteBuild } from '../../test/helpers/buildVariant';
 import {
-  computerTransfers, initConversationTransfers, openConversationTransfer, pendingConversationTransfer,
+  canOfferConversationTransfer, computerTransfers, initConversationTransfers, openConversationTransfer, pendingConversationTransfer,
   recoverConversationTransfer, refreshComputerTransfers, resetConversationTransfersForTest,
   submitConversationTransfer, type ConversationTransfer,
 } from './conversationTransfers.svelte';
@@ -130,4 +131,12 @@ it('finishes a recovered draft reservation without starting an ordinary conversa
   expect(begin).not.toHaveBeenCalled();
   expect(offer).toHaveBeenCalledWith(intent, 'project-target', '', '');
   expect(pendingConversationTransfer()?.error).toBe('');
+});
+
+it('offers and opens no transfer in a build without remote access', () => {
+  expect(canOfferConversationTransfer(thread)).toBe(true);
+  stageNoRemoteBuild();
+  expect(canOfferConversationTransfer(thread)).toBe(false);
+  openConversationTransfer(thread);
+  expect(pendingConversationTransfer()).toBeNull();
 });

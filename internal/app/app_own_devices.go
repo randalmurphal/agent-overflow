@@ -232,6 +232,7 @@ func (a *App) ListOwnDevices(ctx context.Context) (OwnDeviceList, error) {
 
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) RegisterOwnDevice(ctx context.Context, member OwnDeviceMember) (OwnDeviceList, error) {
 	caller, e := a.ownCaller(ctx)
 	if e != nil {
@@ -256,6 +257,7 @@ func (a *App) RegisterOwnDevice(ctx context.Context, member OwnDeviceMember) (Ow
 
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) SyncOwnDevices(ctx context.Context, members []OwnDeviceMember) (OwnDeviceList, error) {
 	caller, e := a.ownCaller(ctx)
 	if e != nil {
@@ -273,6 +275,7 @@ func (a *App) SyncOwnDevices(ctx context.Context, members []OwnDeviceMember) (Ow
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, networkChoice string) (PairingInvite, error) {
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return PairingInvite{}, err
@@ -289,6 +292,7 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) (ComputerPairingWindow, error) {
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return ComputerPairingWindow{}, err
@@ -301,6 +305,7 @@ func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) 
 
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) MintOwnDeviceIntroduction(ctx context.Context, keyThumbprint string) (PairingInvite, error) {
 	caller, e := a.ownCaller(ctx)
 	if e != nil {
@@ -341,6 +346,7 @@ func (a *App) mintOwnIntroduction(caller OwnDeviceMember, key string) (PairingIn
 
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) IntroduceOwnDevice(ctx context.Context, targetBackendID string) (PairingInvite, error) {
 	caller, e := a.ownCaller(ctx)
 	if e != nil {
@@ -377,6 +383,7 @@ func (a *App) IntroduceOwnDevice(ctx context.Context, targetBackendID string) (P
 
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) error {
 	_, e := a.ownCaller(ctx)
 	if e != nil {
@@ -491,6 +498,7 @@ func (a *App) ensureOwnDeviceHosting() error {
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) MintOwnDevicePairing(ctx context.Context, deviceClass string) (PairingInvite, error) {
 	if e := a.ownPairingAdmin(ctx); e != nil {
 		return PairingInvite{}, e

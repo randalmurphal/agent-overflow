@@ -53,3 +53,15 @@ it('keeps the previous filter if saving fails and All computers also reveals fut
   expect(store.sidebarBackendVisible('future')).toBe(true);
   resetStagedBackends();
 });
+
+it('applies no stored exclusion in a build without remote access, which offers no filter', async () => {
+  const { stageNoRemoteBuild } = await import('../../test/helpers/buildVariant');
+  stageNoRemoteBuild();
+  localStorage.setItem(KEY, JSON.stringify(['computer-id']));
+  const store = await import('./sidebarDevices.svelte');
+  const { stageBackend, resetStagedBackends } = await import('../../test/helpers/backends');
+  stageBackend({ id: 'home', backendId: 'computer-id', name: 'Desk' });
+  expect(store.sidebarBackendVisible('home')).toBe(true);
+  expect(store.sidebarDeviceFilterActive()).toBe(false);
+  resetStagedBackends();
+});

@@ -39,6 +39,7 @@ import { __resetWorkspaceChangeLockForTest } from '../lib/stores/workspaceChange
 import { __resetReplicaForTest } from '../lib/replica';
 import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
+import { resetBuildVariantPage } from './helpers/buildVariant';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -253,6 +254,8 @@ beforeEach(() => {
 afterEach(() => {
   resetDiffReviewCommentsForTest();
   cleanup();
+  // A test that staged the no-remote page must not leave it for the next.
+  resetBuildVariantPage();
   // The review pane remembers scroll positions per subject for the
   // session in module state, saved at unmount. Clear them after cleanup
   // so a jump in one test does not restore into the next test's mount.

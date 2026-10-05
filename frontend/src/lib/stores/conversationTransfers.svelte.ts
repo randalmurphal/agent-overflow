@@ -14,6 +14,7 @@ import { TransportError } from '../transport/wsClient';
 import { backendReachable, threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { getTransportHelloFor, onBackendHelloChange } from './transportStatus.svelte';
 import { hasScope } from '../transport/scopes';
+import { remoteAccessAvailable } from '../transport/buildVariant';
 import { projectBackend } from '../transport/entityIndex';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { wailsEventOn } from './wailsEvents';
@@ -51,6 +52,8 @@ export function supportsConversationTransfer(backend: BackendKey): boolean {
 export function computerTransfers(backend: BackendKey): ComputerTransfers { return computers.get(backend); }
 export function pendingConversationTransfer(): TransferRequest | null { return pending; }
 export function openConversationTransfer(thread: Thread, destination?: BackendKey): void {
+  // A transfer needs another computer, which a build without remote access cannot reach.
+  if (!remoteAccessAvailable()) return;
   if (pending?.thread.id === thread.id && pending.submitted) {
     const previous = computers.get(pending.source).rows.find((row) => row.id === pending?.operationID);
     if (!previous || !terminal(previous)) { pending = { ...pending, open: true }; return; }
@@ -58,6 +61,7 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
   pending = { operationID: randomId(), thread, source: threadMachine(thread.id, thread.projectId), destination, open: true, submitted: false, submitting: false, error: '' };
 }
 export function canOfferConversationTransfer(thread: Thread): boolean {
+  if (!remoteAccessAvailable()) return false;
   const source = threadMachine(thread.id, thread.projectId);
   return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.parentThreadId && !thread.discussionId && !thread.mode?.startsWith('workflow') &&
     supportsConversationTransfer(source) && getAttachedBackends().some((entry) => entry.id !== source && supportsConversationTransfer(entry.id));

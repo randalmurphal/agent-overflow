@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/servercert"
@@ -160,6 +161,7 @@ func (b *pairedBackend) mintLink(t *testing.T, access string) (PairingInvite, de
 // proof's three easy details wrong, or dialled the cleartext half, or
 // carried the session header instead of a ticket, fails here.
 func TestAPairedDeviceAttachesOverPinnedTLS(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 
@@ -252,6 +254,7 @@ func TestAPairedDeviceAttachesOverPinnedTLS(t *testing.T) {
 // link is refused an execute-tier call by the per-RPC gate rather than by
 // anything this client decides for itself.
 func TestAViewOnlyLinkGrantsOnlyWhatItNamed(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessViewOnly))
 
@@ -294,6 +297,7 @@ func TestAViewOnlyLinkGrantsOnlyWhatItNamed(t *testing.T) {
 // so a backend presenting other bytes never receives this device's link
 // token, its proof, or its session credential.
 func TestAFingerprintMismatchRefusesBeforeAnyCredentialLeaves(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	_, link := backend.mintLink(t, string(identity.PairingAccessFull))
 	// Same endpoint, a fingerprint that is not this listener's.
@@ -322,6 +326,7 @@ func TestAFingerprintMismatchRefusesBeforeAnyCredentialLeaves(t *testing.T) {
 // the client owes the person is the one thing that works, which is pairing
 // again — and it must not sit in a retry loop instead.
 func TestARevokedDeviceIsRefusedAndTheClientNamesTheRemedy(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 
@@ -381,6 +386,7 @@ func TestARevokedDeviceIsRefusedAndTheClientNamesTheRemedy(t *testing.T) {
 // notice and clear, rather than to keep presenting a credential the
 // backend has already ended.
 func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 

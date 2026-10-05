@@ -531,6 +531,7 @@ func (a *App) previewHost() string {
 // `preview:open` is, on the machine that answers.
 //
 //ao:scope preview:open
+//ao:remote
 func (a *App) MintPreviewURL(ctx context.Context, threadID string, port int, path string) (string, error) {
 	if threadID == "" {
 		return "", fmt.Errorf("a preview URL is minted for a thread; none was named")
@@ -589,6 +590,7 @@ func (a *App) GetDevServers(ctx context.Context) (devscan.DevServerList, error) 
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:remote
 func (a *App) AllowPreviewPort(ctx context.Context, port int) ([]int, error) {
 	if err := a.refuseSelfHeldPreviewPort(ctx, port); err != nil {
 		return nil, err

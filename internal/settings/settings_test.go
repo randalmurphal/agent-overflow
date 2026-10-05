@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/buildvariant/remotetest"
 )
 
 func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
@@ -174,6 +176,7 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 // step-up-annotated SetNetworkSettings RPC, and a generic patch must
 // not carry the same change past that requirement.
 func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
+	remotetest.Require(t)
 	dir := t.TempDir()
 	svc := NewService(dir)
 

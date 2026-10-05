@@ -18,6 +18,7 @@ import { isCompactLayout } from './layoutMode.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import {
   DEFAULT_SETTINGS_SECTION,
+  settingsSectionAvailable,
   type SettingsSection,
 } from '../components/settings/sections';
 
@@ -57,18 +58,20 @@ export function hideSettingsRail(): void {
 
 /**
  * The one settings-open path. Omitting `nextSection` keeps whichever tab was
- * last shown.
+ * last shown. A page this build does not offer opens Settings on the default
+ * page instead.
  */
 export function openSettingsOverlay(nextSection: SettingsSection = section, backend?: BackendKey): void {
+  const target = settingsSectionAvailable(nextSection) ? nextSection : DEFAULT_SETTINGS_SECTION;
   // Settings and the workflows overlay are both full-height layers over the
   // pane strip, each with its own focus trap; stacking them has no coherent
   // Esc. The reverse direction runs off `openWorkflowsOverlay`, the one writer
   // of that store's `open` (armed at the bottom of this module).
   closeWorkflowsOverlay();
-  section = nextSection;
+  section = target;
   computer = backend ?? null;
   // A deep link to a specific section lands on that page directly.
-  railOpen = nextSection === DEFAULT_SETTINGS_SECTION;
+  railOpen = target === DEFAULT_SETTINGS_SECTION;
   open = true;
 }
 

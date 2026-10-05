@@ -64,6 +64,7 @@ func (a *App) remoteCommandOwner(ctx context.Context) (string, error) {
 // the requesting screen or its WebSocket does not cancel the command.
 //
 //ao:scope terminal:operate
+//ao:remote
 func (a *App) RemoteCommandStart(ctx context.Context, workspace gitapp.WorkspaceRef, request RemoteCommandRequest) (RemoteCommand, error) {
 	endAdmission, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
@@ -183,6 +184,7 @@ type AgentComputer struct {
 //ao:scope access:admin
 //ao:route selected
 //ao:stepup
+//ao:remote
 func (a *App) PairAgentComputer(ctx context.Context, pairingLink string) (BackendAttachment, error) {
 	if err := a.requireStepUp(ctx, "pair another computer for agent commands"); err != nil {
 		return BackendAttachment{}, err
@@ -216,6 +218,7 @@ func (a *App) ListAgentComputers() ([]AgentComputer, error) {
 
 //ao:scope terminal:operate
 //ao:route selected
+//ao:remote
 func (a *App) SetAgentComputerEnabled(ctx context.Context, id string, enabled bool) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
@@ -319,6 +322,7 @@ type AgentRemoteRequest struct {
 
 //ao:scope terminal:operate
 //ao:route selected
+//ao:remote
 func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (RemoteCommand, error) {
 	scope, err := a.remoteAgentScope(ctx)
 	if err != nil {

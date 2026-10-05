@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/buildvariant/remotetest"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -65,6 +66,7 @@ func transferTestBackendOn(t *testing.T, backend *pairedBackend, readiness ...fu
 }
 
 func TestConversationTransferUsesHostJobsAndNativeSessions(t *testing.T) {
+	remotetest.Require(t)
 	for _, kind := range []string{"copy", "move"} {
 		for _, fork := range []bool{false, true} {
 			label := kind
@@ -77,6 +79,7 @@ func TestConversationTransferUsesHostJobsAndNativeSessions(t *testing.T) {
 }
 
 func TestConversationTransferWaitsForDestinationAccountBeforeRetiringSource(t *testing.T) {
+	remotetest.Require(t)
 	testConversationTransfer(t, "move", false, true)
 }
 
@@ -342,6 +345,7 @@ func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bo
 // its deleted source became, and writes nothing: the fork shows the same
 // rows at the same stamp after it, and the copy carries them all.
 func TestPointerForkTransferReadsThroughItsDeletedSource(t *testing.T) {
+	remotetest.Require(t)
 	app, dbPath := newTestAppWithStorePath(t)
 	if err := app.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)

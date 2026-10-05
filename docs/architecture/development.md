@@ -90,3 +90,5 @@ and download before checksumming and publishing;
 `TestReleaseWorkflowCarriesEveryArtifactToPackaging` checks that handoff.
 For installation, pairing and Android signing, follow
 [remote access setup](remote-access-setup.md).
+The Windows/WSL release without remote access has its own script and feed:
+[build without remote access](noremote-build.md).

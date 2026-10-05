@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/transferwire"
@@ -59,6 +60,7 @@ func TestTransferClientRefusesUnsafeOffersBeforeConnecting(t *testing.T) {
 }
 
 func TestTransferClientPinsTLSAndBindsEachReply(t *testing.T) {
+	remotetest.Require(t)
 	for _, change := range []string{"none", "certificate", "backend", "operation", "version", "phase", "progress", "incomplete preparation", "untrusted error", "oversized reply"} {
 		t.Run(change, func(t *testing.T) {
 			offer := testOffer()

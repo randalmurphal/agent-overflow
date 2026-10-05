@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/startupprogress"
 
@@ -1546,6 +1547,7 @@ func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
 // retries, and only fails for genuinely-foreign holders. Pre-fix this
 // test failed on Linux with "bind: address already in use".
 func TestRebind_SamePortHostFlip(t *testing.T) {
+	remotetest.Require(t)
 	f := newServerFixture(t)
 	conn := f.dial(t)
 
@@ -1776,6 +1778,7 @@ func TestServer_BootstrapAcceptsTheCanonicalDomainAndNoOtherName(t *testing.T) {
 // a persisted LAN preference set no patterns at all and answered its own
 // share URL with 404 for as long as that inference stood.
 func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
+	remotetest.Require(t)
 	f := newServerFixture(t)
 
 	get := func(t *testing.T) int {
@@ -2396,6 +2399,7 @@ func TestBootstrapOmitsAnUnknownBackendName(t *testing.T) {
 }
 
 func TestRebind_RapidLANTogglesReleaseRetiredListeners(t *testing.T) {
+	remotetest.Require(t)
 	f := newServerFixture(t)
 	conn := f.dial(t)
 	_, port, err := net.SplitHostPort(f.srv.Addr())

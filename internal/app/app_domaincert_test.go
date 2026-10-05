@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
 )
@@ -83,6 +84,7 @@ func domainCertApp(t *testing.T) (*App, string) {
 // The escape hatch, end to end: the user's own certificate is loaded,
 // published for the canonical domain, and reported as external.
 func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
+	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
@@ -117,6 +119,7 @@ func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
 // mistake the user has to be told about, not a certificate to serve
 // under a name it is not valid for.
 func TestAnExternalPairForAnotherNameIsRefusedAndReported(t *testing.T) {
+	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "somewhere.else", 90*24*time.Hour)
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
@@ -144,6 +147,7 @@ func TestAnExternalPairForAnotherNameIsRefusedAndReported(t *testing.T) {
 // The second look at unchanged files does not re-read them, and a file
 // the user's renewal tool rewrote does.
 func TestAnExternalPairIsRereadOnlyWhenItChanges(t *testing.T) {
+	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
@@ -255,6 +259,7 @@ func TestIssuanceFailuresBackOffAndAreBounded(t *testing.T) {
 // already holds one for: the external pair wins, and issuance is not
 // reached at all.
 func TestTheExternalPairWinsOverIssuance(t *testing.T) {
+	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
@@ -285,6 +290,7 @@ func TestTheExternalPairWinsOverIssuance(t *testing.T) {
 // reacted to the error by clearing the field kept reading it under a screen
 // that was no longer trying to serve anything.
 func TestClearingTheCertificateSourceEndsTheFailureItWasAbout(t *testing.T) {
+	remotetest.Require(t)
 	for _, tc := range []struct {
 		name  string
 		after settings.NetworkSettings

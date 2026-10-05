@@ -7,11 +7,13 @@ import (
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 )
 
 func TestGoCarrierPublishesDeviceNameThroughAuthenticatedAppRPC(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 	profile := t.TempDir()

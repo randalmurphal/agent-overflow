@@ -19,8 +19,8 @@
   import UpdateBadge from '../shared/UpdateBadge.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
   import {
-    SETTINGS_SECTION_GROUPS,
-    SETTINGS_SECTION_IDS,
+    settingsSectionGroups,
+    settingsSectionIds,
     type SettingsSection,
   } from './sections';
   import {
@@ -38,6 +38,10 @@
     onSelectSection: (section: SettingsSection) => void;
     onSelectHit: (hit: SettingsSearchHit) => void;
   } = $props();
+
+  // Fixed for the page lifetime: the build variant decides which pages exist.
+  const groups = settingsSectionGroups();
+  const sectionIds = settingsSectionIds();
 
   let query = $state('');
   let hits = $derived(searchSettings(query));
@@ -84,7 +88,7 @@
   }
 
   function handleTabKeydown(e: KeyboardEvent): void {
-    const ids = SETTINGS_SECTION_IDS;
+    const ids = sectionIds;
     const idx = ids.indexOf(activeSection);
     let next: SettingsSection | null = null;
     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
@@ -184,7 +188,7 @@
       aria-label="Settings Sections"
       aria-orientation="vertical"
     >
-      {#each SETTINGS_SECTION_GROUPS as group (group.label)}
+      {#each groups as group (group.label)}
         <div role="presentation" class="flex flex-col gap-0.5">
           <p
             class="px-1.5 pb-1 text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-fg"

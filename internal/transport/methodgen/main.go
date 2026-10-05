@@ -19,7 +19,9 @@
 // its doc comment, in the same comment-directive form as
 // //wails:ignore, naming a scope internal/transport/scopes.go declares;
 // an optional `//ao:stepup` line marks the calls that re-key the system
-// (docs/specs/remote-access.md §4, §5). A method with no scope, or one
+// (docs/specs/remote-access.md §4, §5), and an optional `//ao:remote` line
+// marks the calls that exist only for remote access, which a build
+// without remote access refuses (internal/buildvariant). A method with no scope, or one
 // naming a scope nobody declared, fails the run with every offending
 // name listed — the completeness gate is the generator, not a test.
 //
@@ -305,6 +307,7 @@ type MethodEntry struct {
 	Scope  string
 	Route  string
 	StepUp bool
+	Remote bool
 }
 
 func main() {
@@ -515,10 +518,11 @@ func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[s
 				}
 				claimed[name] = fqn
 
-				scope, route, stepUp, err := methodAnnotations(fn.Doc)
+				ann, err := methodAnnotations(fn.Doc)
 				if err != nil {
 					return nil, fmt.Errorf("%s (%s): %w", name, path, err)
 				}
+				scope, route := ann.scope, ann.route
 				switch {
 				case scope == "":
 					unannotated = append(unannotated, name)
@@ -545,7 +549,8 @@ func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[s
 					FQN:    fqn,
 					Scope:  scope,
 					Route:  route,
-					StepUp: stepUp,
+					StepUp: ann.stepUp,
+					Remote: ann.remote,
 				})
 			}
 		}
@@ -663,7 +668,7 @@ func isContextType(expr ast.Expr) bool {
 
 // methodAnnotations reads the //ao: directives out of one method's doc
 // comment: the mandatory `//ao:scope <name>`, the route override
-// `//ao:route <name>`, and the optional `//ao:stepup`.
+// `//ao:route <name>`, and the optional `//ao:stepup` and `//ao:remote`.
 //
 // Comment directives rather than struct tags or a side table, for the
 // same reason //wails:ignore is one: the classification travels with the
@@ -676,37 +681,46 @@ func isContextType(expr ast.Expr) bool {
 // A malformed or repeated directive IS an error: it is a typo in a line
 // somebody wrote on purpose, and guessing which one they meant would
 // silently classify a method.
-func methodAnnotations(doc *ast.CommentGroup) (scope, route string, stepUp bool, err error) {
+func methodAnnotations(doc *ast.CommentGroup) (methodAnnotation, error) {
+	var ann methodAnnotation
 	if doc == nil {
-		return "", "", false, nil
+		return ann, nil
 	}
 	for _, c := range doc.List {
 		switch {
 		case c.Text == stepUpDirective:
-			stepUp = true
+			ann.stepUp = true
+		case c.Text == remoteDirective:
+			ann.remote = true
 		case strings.HasPrefix(c.Text, scopeDirective):
 			value := strings.TrimSpace(strings.TrimPrefix(c.Text, scopeDirective))
 			if value == "" {
-				return "", "", false, fmt.Errorf("%s directive names no scope", scopeDirective)
+				return methodAnnotation{}, fmt.Errorf("%s directive names no scope", scopeDirective)
 			}
-			if scope != "" {
-				return "", "", false, fmt.Errorf("two %s directives (%q and %q); a method exercises one capability",
-					scopeDirective, scope, value)
+			if ann.scope != "" {
+				return methodAnnotation{}, fmt.Errorf("two %s directives (%q and %q); a method exercises one capability",
+					scopeDirective, ann.scope, value)
 			}
-			scope = value
+			ann.scope = value
 		case strings.HasPrefix(c.Text, routeDirective):
 			value := strings.TrimSpace(strings.TrimPrefix(c.Text, routeDirective))
 			if value == "" {
-				return "", "", false, fmt.Errorf("%s directive names no route", routeDirective)
+				return methodAnnotation{}, fmt.Errorf("%s directive names no route", routeDirective)
 			}
-			if route != "" {
-				return "", "", false, fmt.Errorf("two %s directives (%q and %q); a call belongs to one backend",
-					routeDirective, route, value)
+			if ann.route != "" {
+				return methodAnnotation{}, fmt.Errorf("two %s directives (%q and %q); a call belongs to one backend",
+					routeDirective, ann.route, value)
 			}
-			route = value
+			ann.route = value
 		}
 	}
-	return scope, route, stepUp, nil
+	return ann, nil
+}
+
+// methodAnnotation is what one method's //ao: directives declare.
+type methodAnnotation struct {
+	scope, route   string
+	stepUp, remote bool
 }
 
 // The directive spellings, named once so the parser and every error
@@ -716,6 +730,7 @@ const (
 	scopeDirective  = "//ao:scope"
 	routeDirective  = "//ao:route"
 	stepUpDirective = "//ao:stepup"
+	remoteDirective = "//ao:remote"
 )
 
 // isPointerReceiver returns true when expr is "*<typeName>" — the
@@ -791,12 +806,17 @@ package transport
 // on this side reads it — one connection is one backend — so it travels
 // to the client through the generated mirror at
 // frontend/src/lib/transport/methodRoutes.ts.
+//
+// Remote comes from //ao:remote and marks a method that exists only for
+// remote access; a build without it refuses the call
+// (internal/buildvariant).
 type MethodMeta struct {
 	Name   string
 	ID     uint32
 	Scope  Scope
 	Route  MethodRoute
 	StepUp bool
+	Remote bool
 }
 
 // GeneratedMethods is the static, sorted-by-name list of every method
@@ -809,6 +829,9 @@ var GeneratedMethods = []MethodMeta{
 		fmt.Fprintf(&buf, "\t{Name: %q, ID: %d, Scope: %q, Route: %q", e.Name, e.ID, e.Scope, e.Route)
 		if e.StepUp {
 			buf.WriteString(", StepUp: true")
+		}
+		if e.Remote {
+			buf.WriteString(", Remote: true")
 		}
 		fmt.Fprintf(&buf, "}, // %s\n", e.FQN)
 	}

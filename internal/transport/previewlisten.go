@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/buildvariant"
 )
 
 // Where a preview listener comes from and how one is opened and retired:
@@ -72,6 +74,9 @@ func (p *PreviewLANSource) PreviewHost() string {
 // server already holds the same port on loopback, and a wildcard bind
 // would collide with it on every machine.
 func (p *PreviewLANSource) ListenPreview(port int) (net.Listener, error) {
+	if err := buildvariant.RequireRemoteAccess(); err != nil {
+		return nil, err
+	}
 	host := p.PreviewHost()
 	if host == "" {
 		return nil, errors.New("no LAN address to serve previews on")

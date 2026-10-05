@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 )
 
 func TestForwardedWindowsIngressDrivesPairingAndRouteTrust(t *testing.T) {
+	remotetest.Require(t)
 	previousInterfaces, previousAddrs := Interfaces, InterfaceAddrs
 	t.Cleanup(func() { Interfaces, InterfaceAddrs = previousInterfaces, previousAddrs })
 	Interfaces = func() ([]net.Interface, error) {

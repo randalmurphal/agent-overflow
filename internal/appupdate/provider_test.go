@@ -33,7 +33,7 @@ var platformAssetName = "agent-overflow-" + runtime.GOOS + "-" + runtime.GOARCH 
 // wslAssetName is the asset the headless WSL backend targets: a Windows binary
 // the launcher swaps in, named for platform "wsl" rather than the linux/amd64
 // process that downloads it.
-const wslAssetName = "agent-overflow-wsl-amd64.exe"
+var wslAssetName = "agent-overflow-" + wslUpdaterPlatform() + "-amd64.exe"
 
 // headlessAssetName is the windowless serve binary, and headlessPlatform is
 // the token a serve host targets it with. It is in these fixtures because it
@@ -243,11 +243,10 @@ func newTestTargetable(srv *httptest.Server, current string) *targetableProvider
 
 func newTestTargetableFor(srv *httptest.Server, current, platform, arch string) *targetableProvider {
 	return &targetableProvider{
-		repo:          testRepo,
+		feed:          newGitHubFeed(testRepo, srv.URL, srv.Client()),
+		assetURLKey:   githubAssetURLKey,
 		checksumAsset: "SHASUMS256",
 		req:           updater.CheckRequest{CurrentVersion: current, Platform: platform, Arch: arch},
-		baseURL:       srv.URL,
-		httpClient:    srv.Client(),
 		matcher:       matchReleaseAsset,
 	}
 }
@@ -384,7 +383,7 @@ func TestTargetableProviderResolveTagAllowsDowngrade(t *testing.T) {
 }
 
 func TestTargetableProviderResolveTagRejectsInvalidTag(t *testing.T) {
-	tp := &targetableProvider{repo: testRepo, checksumAsset: "SHASUMS256", matcher: matchReleaseAsset}
+	tp := &targetableProvider{feed: newGitHubFeed(testRepo, "", nil), assetURLKey: githubAssetURLKey, checksumAsset: "SHASUMS256", matcher: matchReleaseAsset}
 	if _, err := tp.resolveTag(context.Background(), "../etc/passwd", platformRequest()); err == nil {
 		t.Fatal("expected resolveTag to reject an unsafe tag, got nil error")
 	}
@@ -491,7 +490,7 @@ func TestTargetableProviderTargetsConfiguredPlatform(t *testing.T) {
 		{tag: "v0.0.8", name: "WSL + desktop", withPlatform: true, withWSL: true, withChecksum: true},
 		{tag: "v0.0.7", name: "desktop only", withPlatform: true, withChecksum: true}, // no wsl asset
 	}, sumsForPlatform)
-	tp := newTestTargetableFor(srv, "0.0.7", "wsl", "amd64")
+	tp := newTestTargetableFor(srv, "0.0.7", wslUpdaterPlatform(), "amd64")
 
 	got, err := tp.listReleases(context.Background())
 	if err != nil {
@@ -514,8 +513,8 @@ func TestTargetableProviderTargetsConfiguredPlatform(t *testing.T) {
 	if got := rel.Metadata["github.asset.url"]; got != srv.URL+"/dl/wsl/v0.0.8" {
 		t.Fatalf("asset url = %v, want %s/dl/wsl/v0.0.8", got, srv.URL)
 	}
-	if rel.Artifact.Platform != "wsl" || rel.Artifact.Arch != "amd64" {
-		t.Fatalf("artifact platform/arch = %s/%s, want wsl/amd64", rel.Artifact.Platform, rel.Artifact.Arch)
+	if rel.Artifact.Platform != wslUpdaterPlatform() || rel.Artifact.Arch != "amd64" {
+		t.Fatalf("artifact platform/arch = %s/%s, want %s/amd64", rel.Artifact.Platform, rel.Artifact.Arch, wslUpdaterPlatform())
 	}
 }
 
@@ -651,8 +650,7 @@ func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*Service
 		t.Fatalf("newGitHubProvider: %v", err)
 	}
 	req := updater.CheckRequest{CurrentVersion: current, Platform: runtime.GOOS, Arch: runtime.GOARCH}
-	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", req, srv.Client())
-	tp.baseURL = srv.URL // override the production api.github.com base for the mock
+	tp := newTargetableProvider(gh, newGitHubFeed(testRepo, srv.URL, srv.Client()), githubAssetURLKey, "SHASUMS256", req)
 	up := updater.New(noopUpdaterHost{})
 	if err := up.Init(updater.Config{
 		CurrentVersion: req.CurrentVersion,
@@ -696,6 +694,9 @@ func TestDownloadUpdateByTagResolveFailureEmitsError(t *testing.T) {
 	case info := <-got:
 		if info.Stage != updater.StageCheck {
 			t.Fatalf("emitted error stage = %q, want %q", info.Stage, updater.StageCheck)
+		}
+		if info.Provider != "github" {
+			t.Fatalf("emitted error provider = %q, want github", info.Provider)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for updater:error from a failed by-tag resolve")

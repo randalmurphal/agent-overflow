@@ -371,6 +371,7 @@ func (a *App) ListServiceReleases() ([]ReleaseSummary, error) {
 //ao:scope access:admin
 //ao:stepup
 //ao:route selected
+//ao:remote
 func (a *App) RequestServiceUpdate(ctx context.Context, tag string) error {
 	if err := a.requireStepUp(ctx, "installing a different version of this backend"); err != nil {
 		return err

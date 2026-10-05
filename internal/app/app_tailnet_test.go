@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/tailnet"
@@ -73,6 +74,7 @@ func TestTailnetIsOffByDefaultAndBuildsNothing(t *testing.T) {
 // rides the existing step-up-gated write rather than a second RPC, and
 // comes back on the read the screen polls.
 func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := newTailnetTestApp(t)
 
 	saved, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
@@ -115,6 +117,7 @@ func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
 // on disk records, and the owner's admin panel showing a device with no
 // way back.
 func TestForgetTailnetNodeRefusesWhileEnabled(t *testing.T) {
+	remotetest.Require(t)
 	app, root := newTailnetTestApp(t)
 	seedTailnetState(t, root)
 
@@ -166,6 +169,7 @@ func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
 // feature: a bring-up that could not happen is carried on the status the
 // screen renders, verbatim, and cleared by the next settled pass.
 func TestTailnetFailuresAreUserFacingState(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 	// No config root, which is the one bring-up failure reachable without
 	// a network: there is nowhere to keep the node's identity.
@@ -311,6 +315,7 @@ func TestTailnetRetiresOnlyListenersWhoseConfigurationChanged(t *testing.T) {
 // Running has to take them back, or the status keeps reporting HTTPS for a
 // node nothing can reach and the Host guard keeps admitting its names.
 func TestTailnetNodeLeavingRunningRetiresListeners(t *testing.T) {
+	remotetest.Require(t)
 	app, root := newTailnetTestApp(t)
 	srv := app.transportServer.Load()
 	for _, slot := range []**tailnetSlot{&app.tailnet.plain, &app.tailnet.secure} {

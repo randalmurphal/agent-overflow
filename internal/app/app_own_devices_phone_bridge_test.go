@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -16,6 +17,7 @@ import (
 )
 
 func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	// Observe the production emit funnel on both receiving hosts. An outgoing
@@ -131,6 +133,7 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 }
 
 func TestOwnIntroductionSelectsReachableRouteBeforeRedemption(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)

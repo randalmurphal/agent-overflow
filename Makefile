@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -118,6 +118,10 @@ endif
 # file set under both tag sets, so the build cache answers them outright), ~35s
 # from a cold cache. `TestGoBuildCompilesTheNoguiHalf` fails if this pass is
 # removed.
+#
+# The `noremote` passes compile the variant without remote access
+# (internal/buildvariant): the desktop half the noremote harness binary
+# uses, the nogui half its WSL payload ships, and its Windows launcher.
 go-build:
 	@set -e; \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
@@ -125,7 +129,12 @@ go-build:
 	go build $$packages; \
 	nogui=$$(go list -tags nogui -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$nogui" ]; then echo "ERROR: no Go packages found for the nogui build"; exit 1; fi; \
-	go build -tags nogui $$nogui
+	go build -tags nogui $$nogui; \
+	noremote=$$(go list -tags noremote -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
+	go build -tags noremote $$noremote; \
+	noremote_nogui=$$(go list -tags nogui,noremote -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
+	go build -tags nogui,noremote $$noremote_nogui; \
+	GOOS=windows CGO_ENABLED=0 go build -tags noremote -o /dev/null ./cmd/agent-overflow-windows
 
 # Every test runs inside the isolated network namespace (loopback plus a
 # private LAN, no route off it; internal/netisolate), so a test that binds
@@ -473,7 +482,7 @@ soak-contract:
 build-wsl: $(FRONTEND_DEPS)
 	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
-	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) DEV="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo true ;; *) echo false ;; esac)" WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
+	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) DEV="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo true ;; *) echo false ;; esac)" WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" WSL_GO_TAGS="$(WSL_GO_TAGS)" WSL_LDFLAGS="$(WSL_LDFLAGS)" wails3 task windows:build:wsl
 
 ifeq ($(shell uname -s),Darwin)
 build: $(FRONTEND_DEPS)
@@ -522,6 +531,7 @@ mockforge:
 harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
+	go build -tags noremote -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow-noremote .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
 	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
 	go test -c -o bin/ao-frontendclient-test ./internal/frontendclient
@@ -613,6 +623,13 @@ verify:
 
 release:
 	./scripts/build-release.sh --version "$(VERSION)"
+
+# release-wsl-noremote builds the Windows/WSL release without remote access
+# (internal/buildvariant), updating from the GitLab project in
+# UPDATE_SOURCE (host/group/project):
+#   make release-wsl-noremote UPDATE_SOURCE=gitlab.example.com/group/agent-overflow
+release-wsl-noremote:
+	./scripts/build-release-noremote.sh --version "$(VERSION)" --update-source "$(UPDATE_SOURCE)"
 
 release-macos:
 	./scripts/build-release.sh --version "$(VERSION)" --only-macos

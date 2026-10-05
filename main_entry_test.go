@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/appupdate"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/serviceinstall"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsllauncher"
@@ -144,6 +145,7 @@ func TestTheInstalledUnitStartsTheVerbThisBinaryRoutes(t *testing.T) {
 // is the one verb in it that this package routes rather than aocli. A usage
 // string that stopped naming it would leave the mode undiscoverable.
 func TestRootUsageNamesTheServeVerb(t *testing.T) {
+	remotetest.Require(t)
 	if !strings.Contains(aocli.Usage(), "  "+serveVerb+" ") {
 		t.Fatalf("aocli.Usage() does not document the %q verb:\n%s", serveVerb, aocli.Usage())
 	}

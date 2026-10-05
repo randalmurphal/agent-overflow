@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
@@ -109,6 +110,7 @@ func (*legacyRemoteDiscovery) RemoteCommandProjects() []RemoteCommandProject {
 }
 
 func TestRemoteDiscoveryKeepsProjectsFromPeerWithoutEnvironmentRPC(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t, func(cfg *transport.Config) {
 		dispatcher := transport.NewDispatcher()
 		if _, err := dispatcher.Register(&legacyRemoteDiscovery{}, transport.RegisterOptions{Package: "main", TypeName: "App", AllowList: map[string]bool{"RemoteCommandProjects": true}}); err != nil {

@@ -58,6 +58,7 @@ type transferDestinationDetails struct {
 // operation ID so a lost response can retry without creating another copy.
 //
 //ao:scope threads:operate
+//ao:remote
 func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, destinationBackendID, kind string, includeWorkspace bool) (ThreadTransferIntent, error) {
 	return a.beginThreadTransfer(ctx, threadID, operationID, destinationBackendID, kind, includeWorkspace, nil)
 }
@@ -66,6 +67,7 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 // Completion consumes its exact source snapshot without retiring the worktree.
 //
 //ao:scope threads:operate
+//ao:remote
 func (a *App) BeginDraftProjectTransfer(ctx context.Context, threadID, operationID, destinationBackendID string, snapshot DraftSnapshot) (ThreadTransferIntent, error) {
 	draft, err := encodeThreadDraft(threadID, snapshot)
 	if err != nil {
@@ -189,6 +191,7 @@ func (a *App) transferIntent(row store.ThreadTransfer, details transferSourceDet
 //
 //ao:scope threads:operate
 //ao:route selected
+//ao:remote
 func (a *App) CreateThreadTransferOffer(ctx context.Context, intent ThreadTransferIntent, projectID, workspacePath, branch string) (transferclient.Offer, error) {
 	release, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
@@ -315,6 +318,7 @@ func (a *App) makeTransferOffer(row store.ThreadTransfer, grant string) (transfe
 // work then belongs to the host and continues when the frontend disconnects.
 //
 //ao:scope threads:operate
+//ao:remote
 func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string, offer transferclient.Offer) (store.ThreadTransfer, error) {
 	release, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {

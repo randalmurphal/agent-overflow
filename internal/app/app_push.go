@@ -332,6 +332,7 @@ func (a *App) callerPushDevice(ctx context.Context) (store.Device, error) {
 //
 //ao:scope session
 //ao:route home
+//ao:remote
 func (a *App) RegisterPushToken(ctx context.Context, platform, token string) error {
 	token = strings.TrimSpace(token)
 	if err := validPushToken(token); err != nil {
@@ -410,6 +411,7 @@ func (a *App) UnregisterPushToken(ctx context.Context) error {
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) SetPushSenderCredential(credentialJSON string) error {
 	if a.store == nil {
 		return fmt.Errorf("push: the store is unavailable")

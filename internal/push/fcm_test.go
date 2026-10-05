@@ -1,3 +1,5 @@
+//go:build !noremote
+
 package push
 
 import (

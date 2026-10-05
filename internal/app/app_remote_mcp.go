@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/mcpapp"
@@ -77,7 +78,11 @@ func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
 
 // An explicit destination opt-in controls registration and discovery. A saved
 // pairing alone is insufficient; temporary network outages retain the opt-in.
+// A build without remote access never offers the remote tools.
 func (a *App) remoteMCPEnabled() (bool, error) {
+	if !buildvariant.RemoteAccess {
+		return false, nil
+	}
 	rows, err := a.ListAgentComputers()
 	if err != nil {
 		return false, err

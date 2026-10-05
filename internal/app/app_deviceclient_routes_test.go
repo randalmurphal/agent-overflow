@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/backendproxy"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -42,6 +43,7 @@ func alternatePairedListener(t *testing.T, backend *pairedBackend) computerroute
 // transport, identity and SQLite store. The proxy target never changes; its
 // paired client must carry both HTTP and WS over the newly verified route.
 func TestPairedProxySwitchesListenersWithoutChangingComputerOrSession(t *testing.T) {
+	remotetest.Require(t)
 	var advertised atomic.Value
 	advertised.Store([]computerroute.Route(nil))
 	backend := newPairedBackend(t, func(cfg *transport.Config) {

@@ -46,7 +46,8 @@
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { SELECT_CLASS } from './styles';
-  import type { SettingsFieldId } from './fields';
+  import { settingsFieldHint, type SettingsFieldId } from './fields';
+  import { remoteAccessAvailable } from '../../transport/buildVariant';
   import { playNotificationCue } from '../../stores/notificationSound';
   import {
     customSoundsLoaded,
@@ -59,6 +60,8 @@
     browserNotificationPermission,
     pagePresentsNotificationsLocally,
   } from '../../stores/browserNotificationPresenter.svelte';
+
+  const quietWhenHint = settingsFieldHint('notifications.quiet-when') ?? '';
 
   const QUIET_WHEN_OPTIONS: Array<{
     value: NotifyQuietWhen;
@@ -494,11 +497,11 @@
         class="pt-3"
         data-settings-field="notifications.quiet-when"
         data-settings-label="Quiet when"
-        data-settings-hint="Held back on this screen only. A paired phone is still woken."
+        data-settings-hint={quietWhenHint}
       >
         <SettingsHeader
           title="Quiet when"
-          description="Held back on this screen only. A paired phone is still woken."
+          description={quietWhenHint}
         />
         <div
           class="grid gap-2"
@@ -578,6 +581,8 @@
       </div>
     {/if}
 
-    <PhonePushBlock />
+    {#if remoteAccessAvailable()}
+      <PhonePushBlock />
+    {/if}
   </div>
 </section>

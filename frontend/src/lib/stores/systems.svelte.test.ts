@@ -17,6 +17,7 @@ import {
   systemStatus,
 } from './systems.svelte';
 import { getToasts, removeToast } from './toast.svelte';
+import { stageNoRemoteBuild } from '../../test/helpers/buildVariant';
 
 const LAPTOP = {
   id: 'laptop',
@@ -315,5 +316,28 @@ describe('systems store', () => {
     applyBackendSetChange({ action: 'attached' as never, id: 'laptop' });
 
     expect(publishedRows().map((row) => row[0])).toEqual(['laptop']);
+  });
+});
+
+describe('systems store without remote access', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    __resetSystemsForTest();
+  });
+
+  it('lists no computers, including on a membership event or gap', async () => {
+    let calls = 0;
+    setBindingMock('ListBackends', async () => { calls += 1; return []; });
+    await loadSystems();
+    expect(calls).toBe(1);
+
+    __resetSystemsForTest();
+    stageNoRemoteBuild();
+    await loadSystems();
+    applyBackendSetChange({ action: 'membership', id: '' });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    expect(systemsLoaded()).toBe(false);
+    expect(getToasts()).toEqual([]);
   });
 });

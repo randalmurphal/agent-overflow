@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -18,6 +19,7 @@ import (
 // The source watcher is deliberately never started: a successful direct RPC
 // must update remote_jobs and the background tray before that tool returns.
 func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
+	remotetest.Require(t)
 	for _, method := range []string{"status", "wait", "retry", "cancel", "tray-cancel"} {
 		t.Run(method, func(t *testing.T) {
 			source, receiver, ctx, input := remoteAdmissionFixture(t)

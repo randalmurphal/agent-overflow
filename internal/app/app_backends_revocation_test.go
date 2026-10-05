@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/owndevices"
 )
@@ -59,6 +60,7 @@ func revokeDeviceLabelled(t *testing.T, host ownConnectionHost, label string) {
 // carries the reason — which a local removal, the only removal the page
 // ever asked for, deliberately does not.
 func TestAFarSideRevocationRemovesTheProfileAndSaysWho(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	target := ownConnectionBackend(t)
 	source, err := attachedbackends.New(t.TempDir(), "Revoked desk", "linux")

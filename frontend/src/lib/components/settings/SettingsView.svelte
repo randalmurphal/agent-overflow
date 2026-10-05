@@ -27,12 +27,14 @@
   import {
     DEFAULT_SETTINGS_SECTION,
     settingsSectionDef,
+    settingsSectionDescription,
     settingsUsesComputer,
     type SettingsSection,
   } from './sections';
   import { revealSettingsField, type SettingsSearchHit } from './settingsSearch';
   import { SECTION_PROSE_CLASS } from './styles';
   import { Version } from '../../stores/bindings';
+  import { remoteAccessAvailable } from '../../transport/buildVariant';
   import ComputerSelect from '../primitives/ComputerSelect.svelte';
   import ComputerSettingsPage from './ComputerSettingsPage.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
@@ -64,6 +66,7 @@
 
   let activeSection: SettingsSection = $state(DEFAULT_SETTINGS_SECTION);
   let needsComputer = $derived(settingsUsesComputer(activeSection));
+  const namesComputer = remoteAccessAvailable();
 
   // Compact renders Settings as stacked screens, not the desktop two-pane
   // spread: the rail is a full-width screen and picking a section drills
@@ -153,14 +156,18 @@
             </button>
           {/if}
           <h3 class="text-[1.125rem] font-semibold tracking-tight text-fg">{page.label}</h3>
-          <p class={SECTION_PROSE_CLASS}>{page.description}</p>
-          {#if needsComputer && hasMultipleBackends()}
-            <div class="mt-3 max-w-sm">
-              <ComputerSelect value={computer} onchange={setSettingsComputer} />
-            </div>
-          {:else if needsComputer}
-            {@const owner = attachedBackendEntry(computer)}
-            <p class="mt-2 text-xs text-fg-subtle">Computer: {owner ? backendDisplayName(owner) : 'Unavailable'}</p>
+          <p class={SECTION_PROSE_CLASS}>{settingsSectionDescription(page)}</p>
+          {#if needsComputer}
+            <!-- A build without remote access has one computer by
+                 construction, so naming it says nothing. -->
+            {#if namesComputer && hasMultipleBackends()}
+              <div class="mt-3 max-w-sm">
+                <ComputerSelect value={computer} onchange={setSettingsComputer} />
+              </div>
+            {:else if namesComputer}
+              {@const owner = attachedBackendEntry(computer)}
+              <p class="mt-2 text-xs text-fg-subtle">Computer: {owner ? backendDisplayName(owner) : 'Unavailable'}</p>
+            {/if}
           {:else if activeSection !== 'systems' && activeSection !== 'updates'}
             <p class="mt-2 text-xs text-fg-subtle">Saved on this device.</p>
           {/if}

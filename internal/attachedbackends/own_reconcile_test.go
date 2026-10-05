@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/transport"
@@ -131,6 +132,7 @@ func ownPeer(t *testing.T, catalog owndevices.List) *httptest.Server {
 // when a stale local generation still believes this device is a member:
 // rejoining takes a fresh approval over there, never a retry from here.
 func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
+	remotetest.Require(t)
 	manager, dir := newManager(t)
 	key, err := manager.OwnIdentity()
 	if err != nil {
@@ -185,6 +187,7 @@ func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
 // is the same verdict a manifest reads: the profile is gone, the carrier
 // with it, the observer is told, and the pass is not a failure to retry.
 func TestASessionThePeerEndedRetiresItsOwnDeviceProfile(t *testing.T) {
+	remotetest.Require(t)
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	p.revoke()

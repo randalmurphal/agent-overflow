@@ -8,6 +8,7 @@ SYSTEM=0
 DRY_RUN=0
 UNINSTALL=0
 DOWNLOAD=0
+NOREMOTE=0
 VERSION=""
 SOURCE=""
 REPO=${AO_INSTALL_REPO:-randalmurphal/agent-overflow}
@@ -22,18 +23,26 @@ usage() {
 	cat <<'USAGE'
 Usage:
   ./install.sh [--linux|--macos|--wsl] [PATH] [--download] [--version VERSION] [--source DIR_OR_URL] [--repo OWNER/REPO] [--dry-run]
+  ./install.sh --wsl --noremote --download --source DIR_OR_URL [--dry-run]
   ./install.sh --linux PATH [--prefix DIR|--system] [--dry-run]
   ./install.sh --macos PATH [--system] [--dry-run]
   ./install.sh --wsl PATH [--dry-run]
   ./install.sh --uninstall [--linux|--macos|--wsl] [--prefix DIR|--system] [--dry-run]
 
 With no PATH, the installer auto-detects the platform, downloads the matching
-GitHub release artifact, verifies SHASUMS256, and installs it.
+GitHub release artifact, verifies SHASUMS256, and installs it. With --source,
+artifacts come from DIR_OR_URL instead; a local directory never contacts
+GitHub.
+
+--noremote installs the Windows/WSL launcher built without remote access,
+agent-overflow-wsl-noremote-amd64.exe. It applies only to --wsl, and its
+downloads need --source because that release is not published on GitHub.
 
 Examples:
   curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/latest/download/install.sh | sh
   curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/download/v0.0.1/install.sh | sh -s -- --version 0.0.1
   ./scripts/install.sh --wsl --download --source ./dist/release/0.0.1
+  ./scripts/install.sh --wsl --noremote --download --source ./dist/release-noremote/0.0.1
 
 The installer copies already-built Agent Overflow artifacts. It does not build
 from source.
@@ -71,6 +80,10 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--download)
 			DOWNLOAD=1
+			shift
+			;;
+		--noremote)
+			NOREMOTE=1
 			shift
 			;;
 		--version)
@@ -205,7 +218,11 @@ artifact_name_for_mode() {
 			;;
 		wsl)
 			require_amd64
-			printf '%s\n' agent-overflow-wsl-amd64.exe
+			if [ "$NOREMOTE" -eq 1 ]; then
+				printf '%s\n' agent-overflow-wsl-noremote-amd64.exe
+			else
+				printf '%s\n' agent-overflow-wsl-amd64.exe
+			fi
 			;;
 		macos)
 			printf '%s\n' agent-overflow-darwin-arm64.zip
@@ -534,8 +551,18 @@ if [ -z "$MODE" ]; then
 	MODE=$(detect_mode)
 fi
 
+if [ "$NOREMOTE" -eq 1 ] && [ "$MODE" != wsl ]; then
+	echo "ERROR: --noremote applies only to --wsl" >&2
+	exit 2
+fi
+
 if [ "$UNINSTALL" -eq 0 ] && [ -z "$ARTIFACT" ]; then
 	DOWNLOAD=1
+fi
+
+if [ "$NOREMOTE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && [ "$DOWNLOAD" -eq 1 ] && [ -z "$SOURCE" ]; then
+	echo "ERROR: --noremote downloads need --source DIR_OR_URL; the release without remote access is not published on GitHub" >&2
+	exit 2
 fi
 
 if [ "$UNINSTALL" -eq 0 ] && [ "$DOWNLOAD" -eq 1 ]; then

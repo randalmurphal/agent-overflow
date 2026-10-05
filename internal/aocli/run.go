@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/workflow/def"
 )
@@ -25,6 +26,9 @@ const (
 type topLevelCommand struct {
 	name string
 	run  func(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int
+	// remote marks a command that exists only for remote access; a build
+	// without it refuses the command (internal/buildvariant).
+	remote bool
 }
 
 // topLevelCommands is the single source of truth for what a top-level command
@@ -42,10 +46,10 @@ type topLevelCommand struct {
 var topLevelCommands = []topLevelCommand{
 	{name: "remote", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return remoteCommand(args, lookupEnv, stdout, stderr)
-	}},
+	}, remote: true},
 	{name: "pair", run: func(args []string, root string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		return pairCommand(args, root, os.Stdin, stdout, stderr)
-	}},
+	}, remote: true},
 	{name: "help", run: func(_ []string, _ string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		if err := writeOutput(stdout, rootUsage); err != nil {
 			return operationalError(stderr, err)
@@ -54,7 +58,7 @@ var topLevelCommands = []topLevelCommand{
 	}},
 	{name: "service", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return serviceCommand(args, hostServiceEnv(lookupEnv), stdout, stderr)
-	}},
+	}, remote: true},
 	{name: "workflow", run: func(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return runWorkflow(args, configRoot, lookupEnv, stdout, stderr)
 	}},
@@ -130,6 +134,10 @@ func RunWithEnv(args []string, lookupEnv func(string) (string, bool), stdout, st
 	for _, command := range topLevelCommands {
 		if command.name != rest[0] {
 			continue
+		}
+		if command.remote && !buildvariant.RemoteAccess {
+			fmt.Fprintf(stderr, "agent-overflow %s: %v\n", command.name, buildvariant.ErrRemoteAccessUnavailable)
+			return exitError
 		}
 		return command.run(rest[1:], *configRoot, lookupEnv, stdout, stderr)
 	}

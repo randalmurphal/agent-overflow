@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/devscan"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
@@ -144,6 +145,7 @@ func TestGetDevServersSurfacesAHaltedScan(t *testing.T) {
 }
 
 func TestAllowAndDisallowPreviewPortsMoveTheStoredSet(t *testing.T) {
+	remotetest.Require(t)
 	scanner := &fakeScanner{}
 	app := newPreviewTestApp(t, scanner)
 	ctx := context.Background()

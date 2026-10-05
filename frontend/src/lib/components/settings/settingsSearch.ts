@@ -9,13 +9,16 @@
 // Pages match on their own label and description and rank with label hits,
 // so "keybindings" finds the page even though it registers no fields.
 
-import { SETTINGS_FIELDS, type SettingsFieldDef } from './fields';
+import { settingsFields, type SettingsFieldDef } from './fields';
 import {
   SETTINGS_SECTIONS,
+  settingsSectionAvailable,
   settingsSectionDef,
+  settingsSectionDescription,
   type SettingsSection,
   type SettingsSectionDef,
 } from './sections';
+import { remoteAccessAvailable } from '../../transport/buildVariant';
 
 export type SettingsSearchHit =
   | { kind: 'field'; field: SettingsFieldDef; page: SettingsSectionDef }
@@ -38,26 +41,41 @@ interface IndexedField {
   rest: string;
 }
 
-// Lowercased once at module init: the index is static and a keystroke
-// should cost a scan, not a re-lowercase of every hint.
-const FIELD_INDEX: readonly IndexedField[] = SETTINGS_FIELDS.map((field) => {
-  const page = settingsSectionDef(field.section);
-  return {
-    field,
-    page,
-    label: field.label.toLowerCase(),
-    heading: (field.heading ?? '').toLowerCase(),
-    rest: [field.hint ?? '', ...(field.keywords ?? []), page.label, page.group]
-      .join(' ')
-      .toLowerCase(),
-  };
-});
+interface IndexedPage {
+  page: SettingsSectionDef;
+  label: string;
+  rest: string;
+}
 
-const PAGE_INDEX = SETTINGS_SECTIONS.map((page) => ({
-  page,
-  label: page.label.toLowerCase(),
-  rest: `${page.description} ${page.group}`.toLowerCase(),
-}));
+// Lowercased once per build variant: the index is static and a keystroke
+// should cost a scan, not a re-lowercase of every hint. Built on first
+// search; the variant is fixed for the page lifetime, and keying on it keeps
+// a test that switches variants from reading the other variant's index.
+let index: { remote: boolean; fields: readonly IndexedField[]; pages: readonly IndexedPage[] } | null = null;
+
+function searchIndex(): NonNullable<typeof index> {
+  const remote = remoteAccessAvailable();
+  if (index?.remote === remote) return index;
+  const fields = settingsFields().map((field) => {
+    const page = settingsSectionDef(field.section);
+    return {
+      field,
+      page,
+      label: field.label.toLowerCase(),
+      heading: (field.heading ?? '').toLowerCase(),
+      rest: [field.hint ?? '', ...(field.keywords ?? []), page.label, page.group]
+        .join(' ')
+        .toLowerCase(),
+    };
+  });
+  const pages = SETTINGS_SECTIONS.filter((page) => settingsSectionAvailable(page.id)).map((page) => ({
+    page,
+    label: page.label.toLowerCase(),
+    rest: `${settingsSectionDescription(page)} ${page.group}`.toLowerCase(),
+  }));
+  index = { remote, fields, pages };
+  return index;
+}
 
 const RANK_LABEL = 0;
 const RANK_HEADING = 1;
@@ -84,17 +102,18 @@ export function searchSettings(query: string): SettingsSearchHit[] {
   const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return [];
 
+  const { fields, pages } = searchIndex();
   const ranked: Array<{ rank: number; order: number; hit: SettingsSearchHit }> = [];
-  for (const [order, entry] of PAGE_INDEX.entries()) {
+  for (const [order, entry] of pages.entries()) {
     const rank = rankOf(tokens, entry.label, '', entry.rest);
     if (rank !== null) ranked.push({ rank, order, hit: { kind: 'page', page: entry.page } });
   }
-  for (const [order, entry] of FIELD_INDEX.entries()) {
+  for (const [order, entry] of fields.entries()) {
     const rank = rankOf(tokens, entry.label, entry.heading, entry.rest);
     if (rank === null) continue;
     ranked.push({
       rank,
-      order: PAGE_INDEX.length + order,
+      order: pages.length + order,
       hit: { kind: 'field', field: entry.field, page: entry.page },
     });
   }

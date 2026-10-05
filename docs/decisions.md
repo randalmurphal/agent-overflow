@@ -341,6 +341,12 @@ and anti-changes that live only here:
   public exposure of the personal backend (no tunnel, no public session
   class); release signing is cut (sha256 sidecar over HTTPS is the trust
   line).
+- A Windows/WSL release without remote access ships for company machines
+  (`noremote` tag). Remote features cannot be turned on in it; everything
+  else, including history, is unchanged. It updates only to that build, from
+  a private GitLab project through the user's `glab` login, with no stored
+  token. It does not clean up remote state, since its users have none.
+  `docs/architecture/noremote-build.md`.
 - Cross-device advisory toasts are not worth fixing; only sticky
   misattributed banners get connection attribution.
 - Browser pane: an embedded real engine per platform, never a streamed

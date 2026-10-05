@@ -3,13 +3,21 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT_DIR=${1:-}
+WSL_ONLY=0
+if [ "${2:-}" = "--wsl-only" ]; then
+	WSL_ONLY=1
+elif [ -n "${2:-}" ]; then
+	echo "ERROR: unknown argument: $2" >&2
+	exit 2
+fi
 
 usage() {
 	cat <<'USAGE'
-Usage: scripts/package-release-assets.sh OUT_DIR
+Usage: scripts/package-release-assets.sh OUT_DIR [--wsl-only]
 
 Copies install-time assets into an existing release directory and writes a
-unified SHASUMS256 for every file in that directory.
+unified SHASUMS256 for every file in that directory. --wsl-only copies only
+install.sh, for a release that ships the Windows/WSL launcher alone.
 USAGE
 }
 
@@ -39,7 +47,9 @@ checksum_dir() {
 }
 
 copy_file "$ROOT_DIR/scripts/install.sh" "$OUT_DIR/install.sh"
-copy_file "$ROOT_DIR/scripts/macos-bundle.sh" "$OUT_DIR/macos-bundle.sh"
-copy_file "$ROOT_DIR/build/appicon.png" "$OUT_DIR/appicon.png"
+if [ "$WSL_ONLY" -eq 0 ]; then
+	copy_file "$ROOT_DIR/scripts/macos-bundle.sh" "$OUT_DIR/macos-bundle.sh"
+	copy_file "$ROOT_DIR/build/appicon.png" "$OUT_DIR/appicon.png"
+fi
 chmod +x "$OUT_DIR/install.sh"
 checksum_dir "$OUT_DIR"

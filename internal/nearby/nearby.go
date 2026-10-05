@@ -1,3 +1,5 @@
+//go:build !noremote
+
 package nearby
 
 import (
@@ -32,24 +34,6 @@ const (
 	maxPackets     = 256
 	maxPacketBytes = 8192
 )
-
-// Advertisement contains public installation metadata, never pairing secrets.
-// Name is read for every query so a rename takes effect without restarting.
-type Advertisement struct {
-	// Addresses optionally restricts advertisements to the native listener addresses.
-	Addresses []string
-	BackendID string
-	Name      func() string
-	Port      int
-}
-
-// Host is an untrusted hint. Pairing must independently verify the host and
-// receive owner confirmation before granting access or persisting trust.
-type Host struct {
-	BackendID string `json:"backendId"`
-	Name      string `json:"name"`
-	Address   string `json:"address"`
-}
 
 // Server owns the advertisements on the interfaces present at Start.
 // The caller restarts it after network changes and closes it when LAN sharing ends.
@@ -354,10 +338,6 @@ func validText(value string, limit int) bool {
 	}
 	return !strings.ContainsFunc(value, unicode.IsControl)
 }
-
-// Interfaces enumerates the host's interfaces; a test seam, as in
-// internal/network, so a fixture can advertise on none.
-var Interfaces = net.Interfaces
 
 func lanInterfaces() ([]net.Interface, error) {
 	interfaces, err := Interfaces()

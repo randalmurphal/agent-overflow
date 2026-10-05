@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
@@ -17,6 +18,7 @@ import (
 // Use the production settings reader, bind resolver, port pin and real TLS
 // listener. No App/provider runtime is needed to exercise the boot contract.
 func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing.T) {
+	remotetest.Require(t)
 	for _, tc := range []struct {
 		name     string
 		lan      bool

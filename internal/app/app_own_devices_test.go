@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"context"
@@ -48,6 +49,7 @@ func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	}
 }
 func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
+	remotetest.Require(t)
 	b := newPairedBackend(t)
 	manager, e := attachedbackends.New(t.TempDir(), "Host", "test")
 	if e != nil {

@@ -38,6 +38,7 @@ func (s *appSSHSetup) close() {
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) StartSSHConnection(request sshsetup.Request) (sshsetup.Status, error) {
 	m, err := a.sshSetup.get()
 	if err != nil {
@@ -62,6 +63,7 @@ func (a *App) GetSSHConnection(id string) (sshsetup.Status, error) {
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) ConfirmSSHConnection(ctx context.Context, id, number string) error {
 	m, err := a.sshSetup.get()
 	if err != nil {
@@ -88,6 +90,7 @@ func (a *App) CancelSSHConnection(id string) error {
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) StartSSHComputer(ctx context.Context, request sshsetup.Request) error {
 	m, err := a.sshSetup.get()
 	if err != nil {

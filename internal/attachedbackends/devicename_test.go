@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
@@ -16,6 +17,7 @@ import (
 )
 
 func TestDeviceNameSyncChecksPeerAndPersistsOnlySuccess(t *testing.T) {
+	remotetest.Require(t)
 	for _, tc := range []struct {
 		name, peer                  string
 		capability, refuse, success bool

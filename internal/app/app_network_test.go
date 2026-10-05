@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
@@ -100,6 +101,7 @@ func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
 // preserved so any URL the user already shared keeps working at the
 // host-only differing address.
 func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
+	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
 
@@ -156,6 +158,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 // untrusted network. Loopback URLs are also http:// but never
 // traverse a network — they stay safe and are not flagged.
 func TestNetworkSettings_InsecureFlag(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 
 	// Default: loopback bind. http:// but not insecure (it stays on
@@ -214,6 +217,7 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 // and neither is a rebind — an open connection must survive a user
 // typing their domain into the settings screen.
 func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
+	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	addr := srv.Addr()
 
@@ -274,6 +278,7 @@ func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
 // with the current status and refuses only what it can answer for
 // immediately.
 func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 
 	if _, err := app.RenewCanonicalDomainCert(atTheMachine()); err == nil {
@@ -354,6 +359,7 @@ func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
 // from previous rebinds (origin patterns reverting, listener leak,
 // addr churn). Each toggle must land on the right bind host.
 func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
+	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
 
@@ -481,6 +487,7 @@ func withheldFrom(full network.Settings) network.Settings {
 }
 
 func TestGetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 
 	// A configuration worth reading remotely, written from the machine.
@@ -565,6 +572,7 @@ func TestRedactionKeepsTheTailnetSignInLink(t *testing.T) {
 // token to that device — so the write a phone made handed it the one
 // credential the read is careful never to.
 func TestSetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 
 	// The remote owner's own step-up proof, which is what reaches this
@@ -611,6 +619,7 @@ func TestSetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) 
 // reason the rule is applied wherever the shape leaves the process rather
 // than per method.
 func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
+	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 	remote := callFrom(session.ID, false)
 	// The config root the reconciler would have been handed at boot, so
@@ -653,6 +662,7 @@ func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
 // hold the other back, or the worker's read-modify-write lands on top of
 // the save and the port the operator chose is gone.
 func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
+	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
 	if chosen == portFromAddr(srv.Addr()) {

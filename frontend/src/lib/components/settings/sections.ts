@@ -7,7 +7,7 @@
 //
 // Pages are clustered under a group label in the nav rail. `group` is part of
 // the section shape rather than a parallel table so a new page cannot be
-// added without placing it, and SETTINGS_SECTION_GROUPS / SETTINGS_SECTION_IDS
+// added without placing it, and settingsSectionGroups / settingsSectionIds
 // are both derived from that one array — visual order and keyboard-nav order
 // are the same list by construction, not by convention.
 //
@@ -17,6 +17,7 @@
 // header inside the page.
 
 import { getProviderDefinition } from '../../providers/catalog';
+import { remoteAccessAvailable } from '../../transport/buildVariant';
 import type { ProviderID } from '../../types/providers';
 
 export const SETTINGS_GROUPS = ['Appearance', 'App', 'Agents', 'Workspace', 'Remote access', 'Data'] as const;
@@ -80,6 +81,7 @@ export const SETTINGS_SECTIONS = [
     group: 'App',
     description:
       'Desktop alerts and phone push for turns that finish or need you, and which threads they cover.',
+    localDescription: 'Desktop alerts for turns that finish or need you, and which threads they cover.',
   },
   {
     id: 'updates',
@@ -149,6 +151,7 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'systems',
+    remote: true,
     label: 'Connect to a computer',
     group: 'Remote access',
     description:
@@ -156,6 +159,7 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'remote',
+    remote: true,
     label: 'Allow device access',
     group: 'Remote access',
     description:
@@ -163,6 +167,7 @@ export const SETTINGS_SECTIONS = [
   },
   {
     id: 'agent-access',
+    remote: true,
     label: 'Agent remote tools',
     group: 'Remote access',
     description: 'Allow agents to run commands on your other computers.',
@@ -184,7 +189,11 @@ export const SETTINGS_SECTIONS = [
   label: string;
   group: SettingsGroup;
   description: string;
+  /** Wording for a build without remote access, where `description` names a remote feature. */
+  localDescription?: string;
   navigation?: boolean;
+  /** Exists only in a build with remote access. */
+  remote?: boolean;
 }>;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]['id'];
@@ -195,21 +204,38 @@ export type SettingsSectionDef = (typeof SETTINGS_SECTIONS)[number];
 export const DEFAULT_SETTINGS_SECTION: SettingsSection = 'theme';
 
 /**
+ * Whether this build offers a page at all. A build without remote access
+ * has no remote pages: they are absent from the rail, search and deep links.
+ */
+export function settingsSectionAvailable(id: SettingsSection): boolean {
+  return remoteAccessAvailable() || !('remote' in settingsSectionDef(id));
+}
+
+/** The page's subtitle in this build. */
+export function settingsSectionDescription(def: SettingsSectionDef): string {
+  return !remoteAccessAvailable() && 'localDescription' in def ? def.localDescription : def.description;
+}
+
+/**
  * Nav-rail clusters, in render order. A group whose pages have all been
  * removed is dropped rather than rendered as a bare label with nothing under
  * it.
  */
-export const SETTINGS_SECTION_GROUPS = SETTINGS_GROUPS.map((label) => ({
-  label,
-  sections: SETTINGS_SECTIONS.filter((s) => s.group === label && !('navigation' in s && s.navigation === false)),
-})).filter((group) => group.sections.length > 0);
+export function settingsSectionGroups(): { label: SettingsGroup; sections: SettingsSectionDef[] }[] {
+  return SETTINGS_GROUPS.map((label) => ({
+    label,
+    sections: SETTINGS_SECTIONS.filter((s) => s.group === label && settingsSectionAvailable(s.id)
+      && !('navigation' in s && s.navigation === false)),
+  })).filter((group) => group.sections.length > 0);
+}
 
 /**
- * Every page id in visual order — derived from the groups, so arrow/Home/End
+ * Every page id in visual order, derived from the groups, so arrow/Home/End
  * roving focus can never disagree with what the rail renders.
  */
-export const SETTINGS_SECTION_IDS: readonly SettingsSection[] =
-  SETTINGS_SECTION_GROUPS.flatMap((g) => g.sections.map((s) => s.id));
+export function settingsSectionIds(): SettingsSection[] {
+  return settingsSectionGroups().flatMap((g) => g.sections.map((s) => s.id));
+}
 
 export function settingsSectionDef(id: SettingsSection): SettingsSectionDef {
   // The ids are a closed union derived from the array, so the lookup cannot

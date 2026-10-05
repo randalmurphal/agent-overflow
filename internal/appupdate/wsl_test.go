@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
 
@@ -151,9 +152,8 @@ func newWSLTestApp(t *testing.T, srv *httptest.Server, current string, deadlines
 	if err != nil {
 		t.Fatalf("github.New: %v", err)
 	}
-	req := updater.CheckRequest{CurrentVersion: current, Platform: wslUpdaterPlatform, Arch: "amd64"}
-	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", req, srv.Client())
-	tp.baseURL = srv.URL
+	req := updater.CheckRequest{CurrentVersion: current, Platform: wslUpdaterPlatform(), Arch: "amd64"}
+	tp := newTargetableProvider(gh, newGitHubFeed(testRepo, srv.URL, srv.Client()), githubAssetURLKey, "SHASUMS256", req)
 	u := updater.New(wslUpdaterHost{service: a})
 	if err := u.Init(updater.Config{
 		CurrentVersion: req.CurrentVersion,
@@ -202,6 +202,7 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 		StagingRoot:     stagingRoot,
 		MarkerDir:       markerDir,
 		LauncherFailure: failure,
+		Provider:        wslTestProvider(t),
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}
@@ -210,8 +211,8 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 		t.Fatalf("expected configured updater, got handle=%v provider=%v mode=%v",
 			a.updater.handle, a.updater.provider, a.updater.wsl)
 	}
-	if a.updater.provider.req.Platform != wslUpdaterPlatform {
-		t.Fatalf("provider platform = %q, want %q", a.updater.provider.req.Platform, wslUpdaterPlatform)
+	if a.updater.provider.req.Platform != wslUpdaterPlatform() {
+		t.Fatalf("provider platform = %q, want %q", a.updater.provider.req.Platform, wslUpdaterPlatform())
 	}
 	if a.updater.provider.req.Arch != "amd64" {
 		t.Fatalf("provider arch = %q, want amd64", a.updater.provider.req.Arch)
@@ -1310,6 +1311,7 @@ func TestInitWSLUpdaterSurfacesApplyFailureThroughCheck(t *testing.T) {
 		Arch:           "amd64",
 		StagingRoot:    appData,
 		MarkerDir:      markerDir,
+		Provider:       wslTestProvider(t),
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}
@@ -1360,6 +1362,7 @@ func TestConfigureWSLNamesTheLauncherReason(t *testing.T) {
 		StagingRoot:     appData,
 		MarkerDir:       markerDir,
 		LauncherFailure: LauncherFailure{To: "0.0.11", Reason: "the trial did not finish within 30m0s"},
+		Provider:        wslTestProvider(t),
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}
@@ -1469,4 +1472,16 @@ func TestInstallDirectiveMarshalsForTheLauncher(t *testing.T) {
 			t.Fatalf("directive JSON %s is missing %s", raw, key)
 		}
 	}
+}
+
+// wslTestProvider is the provider config of the ConfigureWSL tests above. A
+// build without remote access configures only with a linked release project,
+// so there they link the fake one. None of these tests reads a feed.
+func wslTestProvider(t *testing.T) Config {
+	t.Helper()
+	if buildvariant.RemoteAccess {
+		return Config{}
+	}
+	setGitLabProject(t, testGitLabProject)
+	return Config{GlabRunner: newFakeGitLab(t).runner()}
 }

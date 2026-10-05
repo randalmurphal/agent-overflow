@@ -69,6 +69,7 @@ type computerPairingState struct {
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access string) (ComputerPairingWindow, error) {
 	return a.openComputerPairing(ctx, networkChoice, access, "")
 }

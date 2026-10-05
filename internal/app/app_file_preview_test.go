@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/transport"
 )
@@ -44,6 +45,7 @@ func TestFilePreviewUsesAuthenticatedHostPresence(t *testing.T) {
 }
 
 func TestSharingPolicyChangeRetiresExistingPreviewGateway(t *testing.T) {
+	remotetest.Require(t)
 	app := newPreviewTestApp(t, &fakeScanner{})
 	app.SetTransportServer(startTestTransportServer(t))
 	t.Cleanup(func() { _ = app.closePreviewGateway() })

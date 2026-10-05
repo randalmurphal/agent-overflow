@@ -39,3 +39,9 @@ Before changing computer nickname fields or visibility, read
 SSH setup is a guided capability check, not an alternate transport. Validate
 host input, surface command failures, and keep generated commands free of
 secrets that do not need to appear.
+
+A build without remote access (`transport/buildVariant.ts`) offers none of
+this. Mark a page or field that only serves other computers `remote: true` in
+`sections.ts` or `fields.ts`, and gate a remote-only block on a page that stays
+on `remoteAccessAvailable()`. Rail, search and deep links read the filtered
+views (`settingsSectionGroups`, `settingsFields`, `settingsSectionAvailable`).

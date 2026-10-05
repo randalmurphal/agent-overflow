@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/loopback"
@@ -759,9 +761,17 @@ func (s *Server) listen() (net.Listener, error) {
 // that quietly does not. A client pinning the certificate would read
 // that as the backend disappearing, and only on the paths a user reaches
 // by toggling LAN access.
+//
+// A build without remote access binds loopback only: it refuses any other
+// requested host, and closes a listener the kernel did not report bound to
+// loopback, since WSL virtioproxy has been seen to turn a fixed 127.0.0.1
+// bind into one on every interface.
 func (s *Server) bindListener(addr string) (net.Listener, error) {
 	network := "tcp"
 	host, _, _ := net.SplitHostPort(addr)
+	if !buildvariant.RemoteAccess && !loopbackIP(host) {
+		return nil, fmt.Errorf("transport: bind %s: %w", addr, buildvariant.ErrRemoteAccessUnavailable)
+	}
 	if net.ParseIP(host).To4() != nil {
 		// Go may promote 0.0.0.0 to an IPv6 dual-stack socket. WSL
 		// forwards that family to Windows ::1, stranding IPv4 clients.
@@ -771,7 +781,38 @@ func (s *Server) bindListener(addr string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !buildvariant.RemoteAccess {
+		if err := requireLoopbackBound(addr, inner); err != nil {
+			return nil, err
+		}
+	}
 	return sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout), nil
+}
+
+// requireLoopbackBound closes ln and refuses it unless the kernel reports
+// it bound to a loopback address.
+func requireLoopbackBound(addr string, ln net.Listener) error {
+	if loopbackListener(ln) {
+		return nil
+	}
+	if err := ln.Close(); err != nil {
+		return fmt.Errorf("transport: %s bound as %s, which is not loopback, and closing it failed: %w", addr, ln.Addr(), err)
+	}
+	return fmt.Errorf("transport: %s bound as %s, which is not loopback: %w", addr, ln.Addr(), buildvariant.ErrRemoteAccessUnavailable)
+}
+
+// loopbackListener reports whether the kernel bound ln to a loopback
+// address. A listener that is not TCP, such as a tailnet one, is not.
+func loopbackListener(ln net.Listener) bool {
+	bound, ok := ln.Addr().(*net.TCPAddr)
+	return ok && bound.IP.IsLoopback()
+}
+
+// loopbackIP reports whether host is a literal loopback address. A name
+// is refused: what it resolves to is not this function's to know.
+func loopbackIP(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 // explicitPortAttempts bounds how often ListenTCP re-probes when another

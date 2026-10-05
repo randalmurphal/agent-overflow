@@ -13,17 +13,20 @@ package appupdate
 // and the release listing are reimplemented here; matching and downloading are
 // reused. verifiedProvider still wraps this, so every selected version is
 // checksum-verified or rejected fail-closed.
+//
+// The release host is behind releaseFeed (feed.go). A build linked with a
+// GitLab project (gitlab.go) swaps the GitHub feed and the stock provider for
+// the GitLab feed and gitlabProvider; the matcher, the checksum parsing and
+// the verification above are the same for both.
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -46,9 +49,12 @@ type Config struct {
 	ChecksumAsset  string
 	BaseURL        string
 	HTTPClient     *http.Client
+	// GlabRunner runs `glab api` for a build linked with a GitLab release
+	// project (gitlabProject). Unused by the GitHub feed.
+	GlabRunner GlabRunner
 }
 
-// Configure wires a Wails updater handle to the GitHub release provider and
+// Configure wires a Wails updater handle to the release provider and
 // retains the targetable provider used by ListReleases and tagged downloads.
 //
 // The chain comes from NewReleaseSource rather than being built here, so the
@@ -126,12 +132,13 @@ type ReleaseSummary struct {
 }
 
 // targetableProvider is an updater.Provider that resolves either the latest
-// release (empty target, via the stock provider) or a specific tag.
+// release (empty target, via inner) or a specific tag.
 //
 // inner is the stock provider as an interface, not *github.Provider: this type
 // only ever delegates Check (latest), Download, and Name to it, and keeping it
 // behind the interface both loosens the coupling and lets tests substitute a
-// recording fake for the delegation path.
+// recording fake for the delegation path. A GitLab build's inner is
+// gitlabProvider.
 //
 // req is the build's own target: the platform/arch tokens release assets are
 // named for, plus the running version. Every asset-matching decision this type
@@ -141,31 +148,36 @@ type ReleaseSummary struct {
 // process that installs `agent-overflow-wsl-amd64.exe` for the Windows launcher
 // to swap in, so it targets platform "wsl".
 type targetableProvider struct {
-	inner         updater.Provider // stock provider: latest Check + Download
-	repo          string           // "owner/repo"
+	inner         updater.Provider // latest Check + Download
+	feed          releaseFeed      // listing, by-tag release, sidecar reads
+	assetURLKey   string           // Release.Metadata key inner.Download reads the asset URL from
 	checksumAsset string           // sidecar asset name, e.g. "SHASUMS256"
 	req           updater.CheckRequest
-	baseURL       string // GitHub API base (overridable for tests)
-	httpClient    *http.Client
 	matcher       github.AssetMatcher // reused asset picker
 	target        atomic.Pointer[string]
 }
 
-// newTargetableProvider builds the provider around an already-constructed stock
-// github provider so both share the same matching/verification configuration.
+// githubAssetURLKey is the stock github.Provider.Download contract: it reads
+// the asset URL back off this Release.Metadata key. Populating it is what
+// lets the by-tag path reuse the stock download (auth, redirect-strip,
+// progress) instead of reimplementing it — keep the key in sync with the
+// provider.
+const githubAssetURLKey = "github.asset.url"
+
+// newTargetableProvider builds the provider around an already-constructed
+// inner provider so both share the same matching/verification configuration.
 //
 // req must be the same CheckRequest the caller configures the Updater with
 // (updater.Config's CurrentVersion / Platform / Arch), so the passive latest
-// check the stock provider serves and the listing this type serves describe the
+// check the inner provider serves and the listing this type serves describe the
 // same set of assets.
-func newTargetableProvider(inner updater.Provider, repo, checksumAsset string, req updater.CheckRequest, httpClient *http.Client) *targetableProvider {
+func newTargetableProvider(inner updater.Provider, feed releaseFeed, assetURLKey, checksumAsset string, req updater.CheckRequest) *targetableProvider {
 	return &targetableProvider{
 		inner:         inner,
-		repo:          repo,
+		feed:          feed,
+		assetURLKey:   assetURLKey,
 		checksumAsset: checksumAsset,
 		req:           req,
-		baseURL:       defaultGitHubAPIBase,
-		httpClient:    httpClient,
 		matcher:       matchReleaseAsset,
 	}
 }
@@ -195,8 +207,8 @@ func (p *targetableProvider) Check(ctx context.Context, req updater.CheckRequest
 	return p.inner.Check(ctx, req)
 }
 
-// Download reuses the stock provider, which reads the asset URL that resolveTag
-// (or the stock Check) stashed on Release.Metadata.
+// Download reuses the inner provider, which reads the asset URL that resolveTag
+// (or the inner Check) stashed on Release.Metadata.
 func (p *targetableProvider) Download(ctx context.Context, rel *updater.Release, dst io.Writer, onProgress func(written, total int64)) error {
 	return p.inner.Download(ctx, rel, dst, onProgress)
 }
@@ -206,18 +218,18 @@ func (p *targetableProvider) Download(ctx context.Context, rel *updater.Release,
 // SHASUMS256 digest on Verification. No IsNewer gate — the caller chose this
 // version explicitly, including downgrades.
 func (p *targetableProvider) resolveTag(ctx context.Context, tag string, req updater.CheckRequest) (*updater.Release, error) {
+	feedName := p.feed.name()
 	if !validReleaseTag(tag) {
-		return nil, fmt.Errorf("github: refusing to resolve unsafe release tag %q", tag)
+		return nil, fmt.Errorf("%s: refusing to resolve unsafe release tag %q", feedName, tag)
 	}
-	var rel apiRelease
-	endpoint := p.baseURL + "/repos/" + p.repo + "/releases/tags/" + url.PathEscape(tag)
-	if err := p.getJSON(ctx, endpoint, &rel); err != nil {
-		return nil, fmt.Errorf("github: fetch release %s: %w", tag, err)
+	rel, err := p.feed.byTag(ctx, tag)
+	if err != nil {
+		return nil, fmt.Errorf("%s: fetch release %s: %w", feedName, tag, err)
 	}
 
 	idx := p.matcher(req, toReleaseAssets(rel.Assets))
 	if idx < 0 || idx >= len(rel.Assets) {
-		return nil, fmt.Errorf("github: release %s has no asset for %s/%s", tag, req.Platform, req.Arch)
+		return nil, fmt.Errorf("%s: release %s has no asset for %s/%s", feedName, tag, req.Platform, req.Arch)
 	}
 	picked := rel.Assets[idx]
 
@@ -231,30 +243,59 @@ func (p *targetableProvider) resolveTag(ctx context.Context, tag string, req upd
 			Platform: req.Platform,
 			Arch:     req.Arch,
 		},
-		// "github.asset.url" is the stock github.Provider.Download contract: it
-		// reads the asset URL back off this key. Populating it is what lets the
-		// by-tag path reuse the stock download (auth, redirect-strip, progress)
-		// instead of reimplementing it — keep the key in sync with the provider.
-		Metadata: map[string]any{"github.asset.url": picked.BrowserDownloadURL},
+		Metadata: map[string]any{p.assetURLKey: picked.BrowserDownloadURL},
 	}
 
 	if p.checksumAsset != "" {
 		digest, err := p.fetchChecksum(ctx, rel.Assets, p.checksumAsset, picked.Name)
 		if err != nil {
-			return nil, fmt.Errorf("github: load checksum for %s: %w", tag, err)
+			return nil, fmt.Errorf("%s: load checksum for %s: %w", feedName, tag, err)
 		}
 		out.Verification = &updater.Verification{DigestAlgo: "sha256", Digest: digest}
 	}
 	return out, nil
 }
 
+// resolveLatest resolves the newest installable release when it is newer
+// than the running version, and nil otherwise. It serves the latest check
+// of a feed whose host has no "latest release for this asset" answer of its
+// own (gitlabProvider); GitHub's stock provider serves it there.
+func (p *targetableProvider) resolveLatest(ctx context.Context) (*updater.Release, error) {
+	releases, err := p.listReleases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest := latestInstallable(releases)
+	if latest == nil {
+		return nil, nil
+	}
+	return p.resolveTag(ctx, latest.Tag, p.req)
+}
+
+// latestInstallable is the newest stable release of a listing when it is
+// news to the running version, or nil. An unstamped running version that
+// semver cannot compare leaves both annotations false, so the newest
+// release is reported.
+func latestInstallable(releases []ReleaseSummary) *ReleaseSummary {
+	for i := range releases {
+		if !releases[i].IsLatest {
+			continue
+		}
+		if releases[i].IsCurrent || releases[i].IsOlder {
+			return nil
+		}
+		found := releases[i]
+		return &found
+	}
+	return nil
+}
+
 // listReleases enumerates installable releases (those with an asset for the
 // configured target and a checksum sidecar), newest first, annotated relative to
 // the running version.
 func (p *targetableProvider) listReleases(ctx context.Context) ([]ReleaseSummary, error) {
-	var raw []apiRelease
-	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=%d", p.baseURL, p.repo, releaseListPageSize)
-	if err := p.getJSON(ctx, endpoint, &raw); err != nil {
+	raw, err := p.feed.list(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -282,7 +323,7 @@ func (p *targetableProvider) listReleases(ctx context.Context) ([]ReleaseSummary
 				s.IsOlder = true
 			}
 		}
-		// GitHub returns releases newest-first; the first non-prerelease is the
+		// Feeds return releases newest-first; the first non-prerelease is the
 		// "latest" the passive check (/releases/latest) would resolve.
 		if !latestMarked && !r.Prerelease {
 			s.IsLatest = true
@@ -311,60 +352,21 @@ func (p *targetableProvider) installable(req updater.CheckRequest, r apiRelease)
 // fetchChecksum downloads the named sidecar and extracts the sha256 digest for
 // targetName.
 func (p *targetableProvider) fetchChecksum(ctx context.Context, assets []apiAsset, sidecarName, targetName string) ([]byte, error) {
-	sidecarURL := ""
-	for _, a := range assets {
-		if a.Name == sidecarName {
-			sidecarURL = a.BrowserDownloadURL
+	var sidecar *apiAsset
+	for i := range assets {
+		if assets[i].Name == sidecarName {
+			sidecar = &assets[i]
 			break
 		}
 	}
-	if sidecarURL == "" {
+	if sidecar == nil || sidecar.BrowserDownloadURL == "" {
 		return nil, fmt.Errorf("release ships no %s asset", sidecarName)
 	}
-	body, err := p.getRaw(ctx, sidecarURL, maxChecksumBytes)
+	body, err := p.feed.readSidecar(ctx, *sidecar, maxChecksumBytes)
 	if err != nil {
 		return nil, err
 	}
 	return parseChecksumDigest(string(body), targetName)
-}
-
-func (p *targetableProvider) getJSON(ctx context.Context, endpoint string, dst any) error {
-	resp, err := p.do(ctx, endpoint, "application/vnd.github+json")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return fmt.Errorf("GET %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(snippet)))
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxReleaseListBytes)).Decode(dst)
-}
-
-func (p *targetableProvider) getRaw(ctx context.Context, endpoint string, limit int64) ([]byte, error) {
-	resp, err := p.do(ctx, endpoint, "application/octet-stream")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET %s: HTTP %d", endpoint, resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, limit))
-}
-
-// do issues the GET. It sets no Authorization header — this build targets a
-// public repo with no token — so following GitHub's cross-host asset redirect
-// (api.github.com → the release CDN) carries no credential to leak. If a token
-// is ever added here, add redirect-stripping too (cf. the stock provider's
-// followAndStrip), or a cross-host hop would forward it.
-func (p *targetableProvider) do(ctx context.Context, endpoint, accept string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", accept)
-	return p.httpClient.Do(req)
 }
 
 // parseChecksumDigest extracts the sha256 digest for target from sha256sum-style
@@ -415,7 +417,8 @@ func ensureVPrefix(s string) string {
 }
 
 // apiRelease / apiAsset mirror the subset of the GitHub releases API the picker
-// needs. (The stock provider has equivalents but keeps them unexported.)
+// needs. (The stock provider has equivalents but keeps them unexported.) The
+// GitLab feed maps its releases onto the same shape.
 type apiRelease struct {
 	TagName     string     `json:"tag_name"`
 	Name        string     `json:"name"`

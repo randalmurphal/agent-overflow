@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/nearby"
@@ -70,6 +71,7 @@ func redeemComputerInvitation(t *testing.T, b *pairedBackend, invite pairbootstr
 }
 
 func TestComputerPairingRealTLSRequiresOwnerSASAndKeepsConfirmedSession(t *testing.T) {
+	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, sas := exchangeComputerPairing(t, b)
 	view, err := b.app.ComputerPairingStatus(window.WindowID)
@@ -110,6 +112,7 @@ func TestComputerPairingRealTLSRequiresOwnerSASAndKeepsConfirmedSession(t *testi
 }
 
 func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
+	remotetest.Require(t)
 	for _, redeem := range []bool{false, true} {
 		name := "before redemption"
 		if redeem {
@@ -145,6 +148,7 @@ func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
 }
 
 func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *testing.T) {
+	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, _ := exchangeComputerPairing(t, b)
 	client := redeemComputerInvitation(t, b, invite)
@@ -192,6 +196,7 @@ func TestComputerPairingRequiresExplicitOpenAndLeaksNoOwnerData(t *testing.T) {
 }
 
 func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *testing.T) {
+	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	ordinary, link := b.mintLink(t, "full")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -232,6 +237,7 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 }
 
 func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
+	remotetest.Require(t)
 	a, path := newTestAppWithStorePath(t)
 	if err := a.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
@@ -327,6 +333,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 // the fence; closing the same window again is a no-op, never a second
 // write or an error.
 func TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent(t *testing.T) {
+	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, _ := exchangeComputerPairing(t, b)
 	redeemComputerInvitation(t, b, invite)
@@ -375,6 +382,7 @@ func TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent(t *testing.T) {
 // since typed-address pairing works without them, and the window says why
 // nobody will find it instead of leaving the owner waiting.
 func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
+	remotetest.Require(t)
 	a := identityApp(t)
 	stored, err := a.store.Identity()
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/push"
@@ -437,6 +438,7 @@ var serviceAccountJSON = sync.OnceValue(func() string {
 // none may: whether Google accepts the key is a question only a real send
 // asks, and the answer arrives through lastError.
 func TestTheSenderCredentialIsAcceptedOnShapeAndSurvivesABoot(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := pushApp(t)
 	app.installPushSender(nil, "", "")
 

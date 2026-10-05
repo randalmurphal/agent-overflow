@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/errorsx"
 	"context"
 	"crypto/rand"
@@ -331,6 +332,11 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 			Message: "too many parameters",
 		}
 	}
+	// Every call path reaches the method here, so this is where a build
+	// without remote access refuses the methods marked //ao:remote.
+	if fe := refuseRemoteOnly(m.Name); fe != nil {
+		return nil, fe
+	}
 
 	args, fe := d.buildArgs(ctx, m, params)
 	if fe != nil {
@@ -554,4 +560,13 @@ func (d *Dispatcher) Methods() []*Method {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FQN < out[j].FQN })
 	return out
+}
+
+// refuseRemoteOnly answers the refusal for a method that exists only for
+// remote access, in a build compiled without it (internal/buildvariant).
+func refuseRemoteOnly(methodName string) *FrameError {
+	if buildvariant.RemoteAccess || !classify(methodName).Remote {
+		return nil
+	}
+	return &FrameError{Code: ErrCodeMethodError, Message: buildvariant.ErrRemoteAccessUnavailable.Error()}
 }

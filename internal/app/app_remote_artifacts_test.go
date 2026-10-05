@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
@@ -151,6 +152,7 @@ func TestRemoteArtifactHashStopsOnCancellation(t *testing.T) {
 }
 
 func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *testing.T) {
+	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
 	source.configDir = t.TempDir()

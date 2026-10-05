@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/supervise"
 )
 
@@ -65,6 +66,7 @@ func runService(t *testing.T, env serviceEnv, args ...string) (code int, stdout,
 }
 
 func TestServiceIsATopLevelCommand(t *testing.T) {
+	remotetest.Require(t)
 	if !IsCommand("service") {
 		t.Fatal("service is not a top-level command")
 	}

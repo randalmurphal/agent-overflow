@@ -87,14 +87,15 @@ func (a *Service) emit(name eventchan.Channel, data any) {
 // reports the feature unsupported rather than panicking.
 //
 // Trust model: integrity-only. Releases are verified against the SHA-256
-// SHASUMS256 sidecar published alongside each GitHub release (not cryptographic
+// SHASUMS256 sidecar published alongside each release (not cryptographic
 // signatures). verifiedProvider below fails the check closed if that sidecar is
 // missing, so an update never installs unverified. The sidecar is fetched over
 // the same TLS channel as the binary and is NOT independently signed, so it
 // guards against corruption and partial/missing assets — not against an attacker
 // who can publish a matching {binary, SHASUMS256} pair. The trust root is
 // therefore the release-publishing pipeline (the workflow's GITHUB_TOKEN and
-// maintainer credentials); if that ever needs hardening, Wails supports an
+// maintainer credentials, or for a GitLab-fed build whoever can publish to
+// that project); if that ever needs hardening, Wails supports an
 // ed25519 PublicKey + signature in updater.Config.
 //
 // UX contract: nothing is downloaded, installed, or restarted without an
@@ -102,7 +103,8 @@ func (a *Service) emit(name eventchan.Channel, data any) {
 // DownloadUpdate and RestartToUpdate are each driven by a distinct button.
 
 const (
-	// updaterCheckTimeout bounds a single CheckForUpdate round trip to GitHub.
+	// updaterCheckTimeout bounds a single CheckForUpdate round trip to the
+	// release feed.
 	updaterCheckTimeout = 30 * time.Second
 	// updaterDownloadTimeout bounds the whole download+verify+stage flow. The
 	// release binary is tens of MB; this leaves generous headroom for slow
@@ -472,12 +474,12 @@ func (a *Service) DownloadUpdate(tag string) error {
 			// this platform (no matching asset).
 			if err != nil {
 				log.Printf("updater: resolve %s failed: %v", tag, err)
-				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: "github"})
+				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: a.providerName()})
 				return
 			}
 			if rel == nil {
 				log.Printf("updater: resolve %s returned no installable release", tag)
-				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: fmt.Sprintf("release %s is not installable on this platform", tag), Provider: "github"})
+				terminal = a.updaterErrorEmitter(updater.ErrorInfo{Stage: updater.StageCheck, Message: fmt.Sprintf("release %s is not installable on this platform", tag), Provider: a.providerName()})
 				return
 			}
 		}
@@ -507,6 +509,15 @@ func (a *Service) DownloadUpdate(tag string) error {
 		}
 	}()
 	return nil
+}
+
+// providerName labels updater:error payloads with the configured release
+// feed ("github" or "gitlab"), or "" before Configure.
+func (a *Service) providerName() string {
+	if a.updater.provider == nil {
+		return ""
+	}
+	return a.updater.provider.Name()
 }
 
 // updaterErrorEmitter defers one updater:error emission. Used for the terminal

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
@@ -127,6 +128,7 @@ func (f *remoteWaitFixture) watch(t *testing.T, id string) store.RemoteWatch {
 // of the output; the completion then arrives once, as a message, carrying the
 // same excerpt shape.
 func TestRemoteRunBackgroundsAfterWaitAndCompletionArrivesAsMessage(t *testing.T) {
+	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
 	receipt := f.run(t, id, 0.3)
@@ -190,6 +192,7 @@ func TestRemoteRunBackgroundsAfterWaitAndCompletionArrivesAsMessage(t *testing.T
 // leaves a job alone while a call is parked on it, and the watch is dismissed
 // once that call has answered, so no completion message follows.
 func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
+	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
 	if receipt := f.run(t, id, 0.2); receipt.State != "running" {
@@ -228,6 +231,7 @@ func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
 // The wait is bounded by the tool schema, and an interrupt ends a parked call
 // at once with a backgrounded receipt while the command keeps running.
 func TestRemoteWaitIsCappedAndInterruptEndsIt(t *testing.T) {
+	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
 	tooLong := map[string]any{"computer_id": f.peerID, "project_id": f.project.ID, "request_id": id, "argv": []string{"test-helper"}, "wait_seconds": maxRemoteWaitSeconds + 1}

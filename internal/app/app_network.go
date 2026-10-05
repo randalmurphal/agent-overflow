@@ -265,6 +265,7 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) RenewCanonicalDomainCert(ctx context.Context) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")

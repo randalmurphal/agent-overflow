@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/buildvariant/remotetest"
 )
 
 func TestIdlePreviewRetentionFollowsTicketsAndBrowserGrants(t *testing.T) {
@@ -233,6 +235,7 @@ func TestSetPortsBindsRetiresAndLeavesTheRestAlone(t *testing.T) {
 // gateway wants. That is not a failure to report as one: the page is
 // reachable already, and the note says so.
 func TestABindCollisionBecomesTheNoteAPersonReads(t *testing.T) {
+	remotetest.Require(t)
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

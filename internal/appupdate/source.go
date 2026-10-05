@@ -92,7 +92,16 @@ func (c *Config) applyDefaults() {
 // token would match no asset in any release and report every release
 // uninstallable, which reads as "there are no updates" rather than as the
 // configuration mistake it is.
+//
+// The feed is the GitLab project linked into this build (gitlabProject) when
+// there is one, and the GitHub repository otherwise.
 func NewReleaseSource(config Config) (*ReleaseSource, error) {
+	return newReleaseSource(config, gitlabProject)
+}
+
+// newReleaseSource is NewReleaseSource with the linked GitLab project passed
+// in, so tests can build either feed without a link-time stamp.
+func newReleaseSource(config Config, project string) (*ReleaseSource, error) {
 	config.applyDefaults()
 	if strings.TrimSpace(config.Platform) == "" {
 		return nil, errors.New("updater: a release source needs the artifact platform token this host installs")
@@ -100,19 +109,26 @@ func NewReleaseSource(config Config) (*ReleaseSource, error) {
 	if strings.TrimSpace(config.Arch) == "" {
 		return nil, errors.New("updater: a release source needs the artifact arch token this host installs")
 	}
-
-	provider, err := newGitHubProvider(config.Repository, config.ChecksumAsset, config.BaseURL, config.HTTPClient)
-	if err != nil {
-		return nil, fmt.Errorf("github provider: %w", err)
-	}
 	req := updater.CheckRequest{
 		CurrentVersion: config.CurrentVersion,
 		Platform:       config.Platform,
 		Arch:           config.Arch,
 	}
-	targetable := newTargetableProvider(provider, config.Repository, config.ChecksumAsset, req, config.HTTPClient)
-	if config.BaseURL != "" {
-		targetable.baseURL = config.BaseURL
+
+	var targetable *targetableProvider
+	if project != "" {
+		var err error
+		targetable, err = newGitLabTargetable(project, config, req)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		provider, err := newGitHubProvider(config.Repository, config.ChecksumAsset, config.BaseURL, config.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("github provider: %w", err)
+		}
+		feed := newGitHubFeed(config.Repository, config.BaseURL, config.HTTPClient)
+		targetable = newTargetableProvider(provider, feed, githubAssetURLKey, config.ChecksumAsset, req)
 	}
 	return &ReleaseSource{
 		targetable: targetable,
@@ -150,17 +166,7 @@ func (s *ReleaseSource) Latest(ctx context.Context) (*ReleaseSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range releases {
-		if !releases[i].IsLatest {
-			continue
-		}
-		if releases[i].IsCurrent || releases[i].IsOlder {
-			return nil, nil
-		}
-		found := releases[i]
-		return &found, nil
-	}
-	return nil, nil
+	return latestInstallable(releases), nil
 }
 
 // Fetch resolves one tag and writes its verified bytes to dst.

@@ -1,3 +1,5 @@
+//go:build !noremote
+
 package tailnet
 
 import (
@@ -215,5 +217,13 @@ func TestCertificateDomainsRefreshWhileRunning(t *testing.T) {
 		awaitStatus(t, node, "updated certificate domains", func(s Status) bool {
 			return s.Running() && strings.Join(s.CertDomains, ",") == strings.Join(domains, ",")
 		})
+	}
+}
+
+// StateRunning restates tailscale's Running state so the package's types
+// compile without tailscale in a build without remote access.
+func TestStateRunningMatchesTailscale(t *testing.T) {
+	if StateRunning != ipn.Running.String() {
+		t.Fatalf("StateRunning = %q, tailscale says %q", StateRunning, ipn.Running.String())
 	}
 }

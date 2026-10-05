@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/transferclient"
@@ -118,6 +119,7 @@ func handoffFixture(t *testing.T) (*Server, *handoffReceiver, string) {
 }
 
 func TestThreadTransferWireStreamsAndRecoversLostAcknowledgments(t *testing.T) {
+	remotetest.Require(t)
 	server, receiver, backend := handoffFixture(t)
 	handler := server.buildHTTPServer().Handler
 	var loseChunk, loseActivation atomic.Bool

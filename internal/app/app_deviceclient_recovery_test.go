@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/backendproxy"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -20,6 +21,7 @@ import (
 // The relay loses exactly one successful token response AFTER the real server
 // commits. Both legs use verified TLS; no auth or database behavior is mocked.
 func TestDeviceClientRecoversLostCommittedRenewalOverHTTP(t *testing.T) {
+	remotetest.Require(t)
 	for _, alternate := range []bool{false, true} {
 		name := "same listener"
 		if alternate {

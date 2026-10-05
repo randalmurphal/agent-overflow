@@ -141,6 +141,7 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
 	return a.mintDevicePairing(deviceClass, access, "")
 }
@@ -152,6 +153,7 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 //ao:scope access:admin
 //ao:route home
 //ao:stepup
+//ao:remote
 func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice string) (PairingInvite, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return PairingInvite{}, fmt.Errorf("choose Local network or Tailscale for this invitation")
@@ -266,6 +268,7 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 //
 //ao:scope access:admin
 //ao:route home
+//ao:remote
 func (a *App) ConfirmDevicePairing(linkID string) error {
 	// A fenced link whose bootstrap window is gone is refused here; the
 	// store's own settled-state guard decides every interleaving after that.
@@ -368,6 +371,7 @@ func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error
 //
 //ao:scope access:admin
 //ao:route home
+//ao:remote
 func (a *App) RestoreAccessDevice(deviceID string) error {
 	state, err := a.accessState()
 	if err != nil {

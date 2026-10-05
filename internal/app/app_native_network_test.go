@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/nativenetwork"
 	"agent-overflow/internal/nearby"
 	"agent-overflow/internal/network"
@@ -56,6 +57,7 @@ func newNativeNetworkBackend(t *testing.T) *pairedBackend {
 // catalog pinned it. ExpectNativeNetwork is the boot saying the poll is
 // coming; the desktop boot, which never calls it, keeps its own address.
 func TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports(t *testing.T) {
+	remotetest.Require(t)
 	desktop := newNativeNetworkBackend(t)
 	if desktop.app.nativeLANStatus() != nil {
 		t.Fatal("a boot with no launcher reported native ingress")
@@ -93,6 +95,7 @@ func nativeReport(b *pairedBackend, cfg nativenetwork.Config) nativenetwork.Stat
 }
 
 func TestNativeNetworkOwnerHandoverRetiresOldObservations(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, old, cfg := nativeNetworkBackend(t)
 	report := nativeReport(b, cfg)
 	if err := b.app.ReportNativeNetworkState(ctx, report); err != nil {
@@ -129,6 +132,7 @@ func TestNativeNetworkOwnerHandoverRetiresOldObservations(t *testing.T) {
 }
 
 func TestNativeNetworkRejectsMalformedOrSupersededReports(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, _, cfg := nativeNetworkBackend(t)
 	good := nativeReport(b, cfg)
 	for name, mutate := range map[string]func(*nativenetwork.State){
@@ -196,6 +200,7 @@ func startNativeScan(t *testing.T, a *App, owner context.Context) (uint64, <-cha
 }
 
 func TestNativeDiscoveryKeepsResultsWithTheirScanAndRetiresOnOwnerLoss(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, conn, cfg := nativeNetworkBackend(t)
 	firstID, first := startNativeScan(t, b.app, ctx)
 	report := nativeReport(b, cfg)
@@ -255,6 +260,7 @@ func TestForwardedLANAddressDoesNotFallBackToWSLWhenUnavailable(t *testing.T) {
 }
 
 func TestNativeDiscoveryTimeoutAllowsFreshScan(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, conn, _ := nativeNetworkBackend(t)
 	firstID, first := startNativeScan(t, b.app, ctx)
 	select {
@@ -274,6 +280,7 @@ func TestNativeDiscoveryTimeoutAllowsFreshScan(t *testing.T) {
 }
 
 func TestNativeNetworkDoesNotAdvertiseAnExplicitLoopbackListener(t *testing.T) {
+	remotetest.Require(t)
 	b, ctx, _, cfg := nativeNetworkBackend(t)
 	if err := b.app.ReportNativeNetworkState(ctx, nativeReport(b, cfg)); err != nil {
 		t.Fatal(err)

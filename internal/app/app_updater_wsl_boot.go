@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"io"
 	"log"
 	"runtime"
 
@@ -42,11 +44,20 @@ func initWSLUpdaterIn(a *App, currentVersion, markerDir string, failure appupdat
 		StagingRoot:     configDir,
 		MarkerDir:       markerDir,
 		LauncherFailure: failure,
+		Provider:        appupdate.Config{GlabRunner: a.glabAPIRunner},
 	}); err != nil {
 		log.Printf("updater: init failed: %v — in-app updates disabled", err)
 		return
 	}
-	log.Printf("updater: configured (current version %s, target wsl/%s, staging root %s)", currentVersion, runtime.GOARCH, configDir)
+	log.Printf("updater: configured (current version %s, staging root %s)", currentVersion, configDir)
+}
+
+// glabAPIRunner runs `glab api` for a build that updates from a GitLab
+// project. It goes through this App's git Core so an isolated boot runs its
+// fake glab. The Core is resolved per call: the updater is configured before
+// Start builds a.git.
+func (a *App) glabAPIRunner(ctx context.Context, args []string, dst io.Writer, limit int64) (int, string, error) {
+	return a.gitCore().StreamGitLabAPI(ctx, args, dst, limit)
 }
 
 // ReportUnsuccessfulUpdate records the notice for an update from this

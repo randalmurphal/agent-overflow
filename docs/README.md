@@ -48,6 +48,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`computer-pairing.md`](architecture/computer-pairing.md) | Desktop LAN/tailnet discovery, address pairing, comparison trust and Windows forwarding. |
 | [`computer-routes.md`](architecture/computer-routes.md) | Contract for verified LAN/tailnet routes, failure recovery and platform boundaries; implementation in progress. |
 | [`serve-mode.md`](architecture/serve-mode.md) | Operating `agent-overflow serve`: the windowless boot, first-device enrollment from the console, credential storage, bind and port configuration, and installing it as a service. |
+| [`noremote-build.md`](architecture/noremote-build.md) | The `noremote` Windows/WSL build: where remote access is refused, how it is tested and released. |
 
 ### Providers and sessions
 

@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 )
 
 func TestComputerRoutesFollowActualListenersAndTrust(t *testing.T) {
+	remotetest.Require(t)
 	srv := shareURLServer(t)
 	s := Settings{BindAll: true, CanonicalDomain: "backend.example", TLS: TLSStatus{SelfSignedFingerprint: "sha256:" + strings.Repeat("a", 64)},
 		Tailnet: TailnetStatus{Running: true, HTTPS: true, DNSName: "gpu.test.ts.net"}}

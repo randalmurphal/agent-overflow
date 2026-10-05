@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/nearby"
 )
 
@@ -19,8 +20,12 @@ type Bridge interface {
 
 // Run binds only while the authenticated backend explicitly enables LAN access.
 // Configuration, errors and scan results use the existing owner RPC connection.
-// A lost bridge closes the relay before its next bounded retry.
+// A lost bridge closes the relay before its next bounded retry. A build
+// without remote access never binds and never polls.
 func Run(ctx context.Context, bridge Bridge) {
+	if !buildvariant.RemoteAccess {
+		return
+	}
 	host := hostNetwork{}
 	defer host.close()
 	ticker := time.NewTicker(3 * time.Second)

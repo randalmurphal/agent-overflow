@@ -3,6 +3,7 @@ package app
 import (
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 )
 
@@ -14,6 +15,7 @@ import (
 // re-pairing (Manager.Add), never to own-device re-enrollment, which runs
 // the same addLinkLocked primitive underneath.
 func TestOwnDeviceReconcileKeepsAgentAccessOptIn(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b, c := ownConnectionBackend(t), ownConnectionBackend(t), ownConnectionBackend(t)
 

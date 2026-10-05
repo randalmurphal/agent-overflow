@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
 )
@@ -63,6 +64,7 @@ func TestSetNetworkSettings_MovesTheListenerToTheChosenPort(t *testing.T) {
 // The port and the bind host are one address, so changing both is one
 // rebind rather than two.
 func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
+	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
 
@@ -136,6 +138,7 @@ func TestSetNetworkSettings_RecordsTheBoundPortWhenTheOperatorTouchesIt(t *testi
 // A save that did not touch the port writes nothing to the cache: the
 // listener has not moved, so there is nothing new to record.
 func TestSetNetworkSettings_LeavesTheCacheAloneForAnUnrelatedSave(t *testing.T) {
+	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 	var recorded []int
 	app.boundPortRecorder = func(port int) { recorded = append(recorded, port) }

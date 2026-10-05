@@ -44,6 +44,27 @@ describe('<UpdatesSettings>', () => {
     });
   });
 
+  describe('download progress', () => {
+    it('shows received and total megabytes when the release names its size', () => {
+      const s = getUpdateState();
+      s.phase = 'downloading';
+      s.written = 5 * 1024 * 1024;
+      s.total = 20 * 1024 * 1024;
+      const { container } = render(UpdatesSettings);
+      expect(container.textContent).toContain('5.0 / 20.0 MB');
+    });
+
+    it('shows the megabytes received when the release names no size', () => {
+      const s = getUpdateState();
+      s.phase = 'downloading';
+      s.written = 5 * 1024 * 1024;
+      s.total = 0;
+      const { container } = render(UpdatesSettings);
+      expect(container.textContent).toContain('5.0 MB');
+      expect(container.textContent).not.toContain(' / ');
+    });
+  });
+
   describe('last-apply-failure notice', () => {
     const notice = 'Update to 2.0.0 didn’t apply — still running 1.0.0.';
 

@@ -21,7 +21,8 @@
 // neither label nor hint says, or replaces the hint where the rendered one
 // is computed from state.
 
-import type { SettingsSection } from './sections';
+import { remoteAccessAvailable } from '../../transport/buildVariant';
+import { settingsSectionAvailable, type SettingsSection } from './sections';
 
 export interface SettingsFieldDef {
   readonly id: string;
@@ -32,6 +33,10 @@ export interface SettingsFieldDef {
   readonly hint?: string;
   readonly keywords?: readonly string[];
   readonly conditional?: boolean;
+  /** Exists only in a build with remote access. */
+  readonly remote?: boolean;
+  /** The hint a build without remote access renders, where `hint` names a remote feature. */
+  readonly localHint?: string;
 }
 
 /** The providers that get a settings page each. Mirrors `PROVIDER_SETTINGS_ORDER`. */
@@ -135,7 +140,7 @@ const STATIC_FIELDS = [
   {
     id: 'theme.copy-files', section: 'theme', label: 'Copy themes',
     hint: 'Replace this device’s custom files with a copy from a computer. Your selections stay the same.',
-    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true,
+    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true, remote: true,
   },
 
   // --- Typography ---------------------------------------------------------
@@ -282,7 +287,7 @@ const STATIC_FIELDS = [
   {
     id: 'spinner.copy-files', section: 'spinner', label: 'Copy animations',
     hint: 'Replace this device’s custom files with a copy from a computer. Your selections stay the same.',
-    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true,
+    keywords: ['import', 'custom', 'offline', 'phone', 'files'], conditional: true, remote: true,
   },
 
   // --- Threads ------------------------------------------------------------
@@ -755,6 +760,7 @@ const STATIC_FIELDS = [
     heading: 'Quiet when',
     label: 'Quiet when',
     hint: 'Held back on this screen only. A paired phone is still woken.',
+    localHint: 'Held back on this screen only.',
     keywords: ['quiet', 'focus', 'foreground', 'visible', 'pane', 'open thread', 'mute', 'while using'],
     conditional: true,
   },
@@ -811,6 +817,7 @@ const STATIC_FIELDS = [
     hint: 'Wakes a paired phone that is not connected. The message says what happened and which computer, never the thread.',
     keywords: ['fcm', 'firebase', 'mobile', 'android', 'wake'],
     conditional: true,
+    remote: true,
   },
   {
     id: 'notifications.phone-push-credential',
@@ -820,6 +827,7 @@ const STATIC_FIELDS = [
     hint: 'Use a service-account JSON key from the Firebase project built into your Android APK. Other projects will not work. Saved only on this computer.',
     keywords: ['fcm', 'firebase', 'service account', 'json', 'credential'],
     conditional: true,
+    remote: true,
   },
 
   // --- Observability ------------------------------------------------------
@@ -888,3 +896,21 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
     ...STATIC_FIELDS.filter((f) => f.section === provider),
   ]),
 ];
+
+/**
+ * The index as this build presents it: without remote access, the remote
+ * pages' fields and remote-only controls are absent and local wording
+ * replaces remote wording.
+ */
+export function settingsFields(): readonly SettingsFieldDef[] {
+  if (remoteAccessAvailable()) return SETTINGS_FIELDS;
+  return SETTINGS_FIELDS
+    .filter((f) => !f.remote && settingsSectionAvailable(f.section))
+    .map((f) => (f.localHint === undefined ? f : { ...f, hint: f.localHint }));
+}
+
+/** The hint a field renders in this build. */
+export function settingsFieldHint(id: SettingsFieldId): string | undefined {
+  const field = SETTINGS_FIELDS.find((f) => f.id === id);
+  return !remoteAccessAvailable() && field?.localHint !== undefined ? field.localHint : field?.hint;
+}

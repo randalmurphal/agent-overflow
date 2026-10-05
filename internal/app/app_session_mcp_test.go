@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/store"
 	"github.com/google/uuid"
@@ -103,7 +104,7 @@ func TestFailedSessionStartRevokesEveryToolURL(t *testing.T) {
 	thread := makeWorkspaceThread(t, a, uuid.NewString())
 	// An earlier registration stays unless the start replaces it with its
 	// own, so the remote row below fails if the start skipped remote tools.
-	if config, err := a.remoteMCPConfigForThread(thread, uuid.NewString()); err != nil || len(config) == 0 {
+	if config, err := a.remoteMCPConfigForThread(thread, uuid.NewString()); err != nil || buildvariant.RemoteAccess && len(config) == 0 {
 		t.Fatalf("remote tools unavailable to the thread: %v, %v", config, err)
 	}
 	if _, err := a.settings.Update(map[string]any{"codexBinaryPath": filepath.Join(t.TempDir(), "missing-codex")}); err != nil {

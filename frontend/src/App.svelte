@@ -4,6 +4,7 @@
   import { installOwnDeviceSync } from './lib/stores/ownDevices.svelte';
   import { anyBackendStarting, onBackendStatusChange } from './lib/stores/transportStatus.svelte';
   import { isPassiveConnectionFailure } from './lib/transport/passiveReadFailure';
+  import { remoteAccessAvailable } from './lib/transport/buildVariant';
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
   import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
@@ -417,15 +418,21 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // A build without remote access reaches no other computer, so the
+    // machinery that serves only other computers is not started:
+    // supervised-host updates, conversation transfers, preview ports,
+    // personal-device introductions and paired route refresh.
+    const remote = remoteAccessAvailable();
+    const noop = () => {};
     // The supervised machines this client can update over the wire: their
     // status on every hello, and their flow frames. Silent where no backend
     // reports a supervisor.
-    const cleanupServiceUpdates = initServiceUpdates();
-    const cleanupConversationTransfers = initConversationTransfers();
+    const cleanupServiceUpdates = remote ? initServiceUpdates() : noop;
+    const cleanupConversationTransfers = remote ? initConversationTransfers() : noop;
     // Which ports each attached machine will share a preview of, and the
     // two actions the external-link delegate calls. Silent on a machine
     // this session holds no `preview:open` for.
-    const cleanupDevServers = initDevServers();
+    const cleanupDevServers = remote ? initDevServers() : noop;
     // appStorage hydration gates the view-state consumers: pane layout
     // restore reads the per-client bucket, and the sidebar syncs adopt
     // the durable copies over the pre-hydration cache. A failed
@@ -541,8 +548,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
     const cleanupDeviceNames = installDeviceNameSync();
-    const cleanupOwnDevices = installOwnDeviceSync();
-    const cleanupComputerRoutes = installComputerRouteUpdates();
+    const cleanupOwnDevices = remote ? installOwnDeviceSync() : noop;
+    const cleanupComputerRoutes = remote ? installComputerRouteUpdates() : noop;
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.

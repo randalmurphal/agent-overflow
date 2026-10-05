@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -87,6 +88,7 @@ func reconcileOwnConnection(t *testing.T, host ownConnectionHost) {
 }
 
 func TestOwnDeviceConnectionsJoinThreeHostsAndControllerWithoutPermanentHub(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b, c := ownConnectionBackend(t), ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
@@ -134,6 +136,7 @@ func TestOwnDeviceConnectionsJoinThreeHostsAndControllerWithoutPermanentHub(t *t
 }
 
 func TestOwnDeviceConnectionsDoNotEnrollOrdinaryPairings(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, false)
@@ -147,6 +150,7 @@ func TestOwnDeviceConnectionsDoNotEnrollOrdinaryPairings(t *testing.T) {
 }
 
 func TestOwnDeviceLocalRemovalSurvivesReconciliationAndRestart(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
@@ -167,6 +171,7 @@ func TestOwnDeviceLocalRemovalSurvivesReconciliationAndRestart(t *testing.T) {
 }
 
 func TestOwnDeviceConnectionsRetryOfflineMemberUpgradeLegacyAndPropagateRemoval(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b, c := ownConnectionBackend(t), ownConnectionBackend(t), ownConnectionBackend(t)
 	var offline atomic.Bool
@@ -272,6 +277,7 @@ func dialOwnFixture(ctx context.Context, network, address string) (net.Conn, err
 }
 
 func TestOwnDeviceConnectionsMergePreviouslySeparateGroups(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b, c, d := ownConnectionBackend(t), ownConnectionBackend(t), ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
@@ -298,6 +304,7 @@ func TestOwnDeviceConnectionsMergePreviouslySeparateGroups(t *testing.T) {
 }
 
 func TestOwnDeviceConnectionsReconcileWithoutAWindowAndStopWithHost(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
@@ -324,6 +331,7 @@ func TestOwnDeviceConnectionsReconcileWithoutAWindowAndStopWithHost(t *testing.T
 // and a peer that received our row stored what it was told. Moving the
 // listener then changes what the next read says with no write at all.
 func TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes(t *testing.T) {
+	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)

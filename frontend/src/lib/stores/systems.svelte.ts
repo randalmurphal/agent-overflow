@@ -38,6 +38,7 @@ import {
   type AttachedBackend,
 } from './bindings';
 import { hasScope } from '../transport/scopes';
+import { remoteAccessAvailable } from '../transport/buildVariant';
 import { backendById, detachBackend } from '../transport/backends';
 import { purgeClientState } from '../transport/clientPurge';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -118,10 +119,11 @@ export function getPendingAttachments(): readonly PendingAttachment[] {
 
 /**
  * Load the list. A passive caller (a section mount) gets its empty answer
- * without an RPC when this session cannot hold `host`.
+ * without an RPC when this session cannot hold `host`, or when this build
+ * has no remote access and so no other computers to list.
  */
 export function loadSystems(): Promise<void> {
-  if (!hasScope('host')) return Promise.resolve();
+  if (!hasScope('host') || !remoteAccessAvailable()) return Promise.resolve();
   if (loadInFlight) return loadInFlight;
   loadInFlight = (async () => {
     try {

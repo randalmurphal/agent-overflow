@@ -1,3 +1,5 @@
+//go:build !noremote
+
 package acmecert
 
 import (
@@ -44,26 +46,6 @@ type CA interface {
 	Accept(ctx context.Context, challenge *acme.Challenge) (*acme.Challenge, error)
 	WaitAuthorization(ctx context.Context, url string) (*acme.Authorization, error)
 	CreateOrderCert(ctx context.Context, url string, csr []byte, bundle bool) ([][]byte, string, error)
-}
-
-// Config is what an issuance needs. Every field is required.
-type Config struct {
-	// Dir is the app's config root: where the account key and the issued
-	// certificate live.
-	Dir string
-
-	// Domain is the canonical domain the certificate is for. Exactly one:
-	// a certificate covering names the user did not ask for is a
-	// certificate the CA logs under names they did not ask for.
-	Domain string
-
-	// Hook is the argv of the command that publishes and removes the
-	// challenge TXT record. See the package doc for its contract.
-	Hook []string
-
-	// HookTimeout bounds ONE hook invocation. Zero means
-	// DefaultHookTimeout.
-	HookTimeout time.Duration
 }
 
 // Issuer runs orders for one domain. Build it with New; the zero value
@@ -328,12 +310,4 @@ func parseAccountKey(stored []byte) (crypto.Signer, error) {
 		return nil, fmt.Errorf("a %T cannot sign", parsed)
 	}
 	return key, nil
-}
-
-func encodeKey(key crypto.Signer) ([]byte, error) {
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("acmecert: marshal the private key: %w", err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }

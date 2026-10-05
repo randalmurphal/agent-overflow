@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/servercert"
 )
@@ -50,6 +51,7 @@ func testRelay(t *testing.T, target string) (string, context.CancelFunc, <-chan 
 }
 
 func TestRelayPreservesHostTLSAndDoesNotInjectCredentials(t *testing.T) {
+	remotetest.Require(t)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Ao-Session") != "" || r.Header.Get("X-Forwarded-For") != "" {
 			t.Error("relay injected HTTP authority")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/store"
@@ -840,6 +841,7 @@ func TestMintDevicePairing_NeedsATransportToPointAt(t *testing.T) {
 }
 
 func TestMintDevicePairingOnNetworkKeepsLANTrustInPayloadAndRecord(t *testing.T) {
+	remotetest.Require(t)
 	app := accessApp(t)
 	previousInterfaces, previousAddrs := network.Interfaces, network.InterfaceAddrs
 	t.Cleanup(func() { network.Interfaces, network.InterfaceAddrs = previousInterfaces, previousAddrs })

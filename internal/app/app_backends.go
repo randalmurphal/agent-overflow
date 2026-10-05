@@ -99,6 +99,7 @@ func (a *App) ListBackends() ([]AttachedBackend, error) {
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) AddBackend(pairingLink string) (BackendAttachment, error) {
 	if a.backends == nil {
 		return BackendAttachment{}, errNoBackendProfiles
@@ -116,6 +117,7 @@ func (a *App) AddBackend(pairingLink string) (BackendAttachment, error) {
 //
 //ao:scope host
 //ao:route home
+//ao:remote
 func (a *App) RepairBackendAddress(ctx context.Context, id, endpoint string) (string, error) {
 	if a.backends == nil {
 		return "", errNoBackendProfiles

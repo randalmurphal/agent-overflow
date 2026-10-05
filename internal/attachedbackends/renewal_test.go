@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 )
 
@@ -47,6 +48,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // good, the verdict evicts the carrier and tells the observer, exactly as
 // a refused manifest would.
 func TestCarrierRenewsBeforeItsWindowClosesAndReportsTheVerdict(t *testing.T) {
+	remotetest.Require(t)
 	manager, dir := newManager(t)
 	p := newPeer(t)
 	seedExpiring(t, dir, p, renewMargin+200*time.Millisecond)

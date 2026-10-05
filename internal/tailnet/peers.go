@@ -1,3 +1,5 @@
+//go:build !noremote
+
 package tailnet
 
 import (
@@ -12,14 +14,6 @@ import (
 )
 
 const maxDiscoveryCandidates = 64
-
-// Candidate is an online tailnet peer, not an authenticated AO installation.
-// Callers probe only its HTTPS endpoint and still require ordinary pairing.
-type Candidate struct {
-	Name    string
-	DNSName string
-	Address string
-}
 
 // DiscoverCandidates reads a fresh bounded list from this application's own
 // tailnet node. It needs neither an OS Tailscale installation nor LAN multicast.

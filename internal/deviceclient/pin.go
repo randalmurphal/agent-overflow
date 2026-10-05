@@ -1,6 +1,7 @@
 package deviceclient
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/servercert"
 )
 
@@ -100,6 +102,13 @@ func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport 
 		cloned.DialTLSContext, cloned.DialTLS = nil, nil
 		cloned.Proxy = nil
 	}
+	if !buildvariant.RemoteAccess {
+		// Every connection to another computer is made through a pinned
+		// transport, so a build without remote access refuses them here.
+		cloned.DialContext = refuseRemoteDial
+		cloned.DialTLSContext, cloned.DialTLS = nil, nil
+		cloned.Proxy = nil
+	}
 	cloned.TLSClientConfig = pinnedTLSConfig(certFingerprint)
 	// ForceAttemptHTTP2 would ask for h2 by ALPN, and the backend answers
 	// http/1.1 only because the `/ws` upgrade needs the raw-connection
@@ -116,4 +125,8 @@ func credentialHTTPClient(fingerprint string, opts ...Option) *http.Client {
 	return &http.Client{Transport: NewPinnedTransport(fingerprint, opts...), Timeout: pinTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+func refuseRemoteDial(_ context.Context, network, address string) (net.Conn, error) {
+	return nil, fmt.Errorf("dial %s %s: %w", network, address, buildvariant.ErrRemoteAccessUnavailable)
 }

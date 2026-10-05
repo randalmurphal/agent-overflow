@@ -232,6 +232,38 @@ func TestScanReceivers_ParsesStepUp(t *testing.T) {
 	}
 }
 
+// TestScanReceivers_ParsesRemote pins the optional //ao:remote directive.
+// A dropped one is a remote-only call that a build without remote access
+// would quietly answer.
+func TestScanReceivers_ParsesRemote(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/remote", Receiver: "Zeta", Package: "main"}}
+	entries, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err != nil {
+		t.Fatalf("scanReceivers: %v", err)
+	}
+	got := map[string]MethodEntry{}
+	for _, e := range entries {
+		got[e.Name] = e
+	}
+	if len(got) != 2 {
+		t.Fatalf("collected %d entries, want 2: %v", len(got), got)
+	}
+	if !got["PairsAComputer"].Remote {
+		t.Error("PairsAComputer lost its //ao:remote mark")
+	}
+	if got["Local"].Remote {
+		t.Error("Local is marked remote without the directive")
+	}
+	rendered, err := renderFile(entries)
+	if err != nil {
+		t.Fatalf("renderFile: %v", err)
+	}
+	if !strings.Contains(string(rendered), `Name: "PairsAComputer", ID: `) ||
+		!strings.Contains(string(rendered), `Remote: true}, // main.Zeta.PairsAComputer`) {
+		t.Errorf("rendered table does not carry the Remote column:\n%s", rendered)
+	}
+}
+
 // TestLoadScopeVocabulary_ReadsTheDeclaredSet reads the real
 // internal/transport/scopes.go, because the generator's whole defence
 // against a typo is that the vocabulary comes from the same file the

@@ -10,6 +10,7 @@ import { installIOSInputZoomGuard } from './lib/utils/iosInputZoom';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { installStepUpProof } from './lib/transport/stepUp';
 import { isFrontendOnly } from './lib/transport/runMode';
+import { admitPairingLink } from './lib/transport/buildVariant';
 import { HOME_BACKEND, attachedBackends, backendById, syncAttachedBackends } from './lib/transport/backends';
 import { initializeSelectedBackend } from './lib/stores/selectedBackend.svelte';
 import { loadSystems } from './lib/stores/systems.svelte';
@@ -92,7 +93,7 @@ async function mountApp(): Promise<void> {
   // arrive with one too (the emulator smoke navigates to it, and an app
   // link would), and a shell that has never paired learns its endpoint
   // from the payload exactly as the first-run scanner's does.
-  if (location.hash.startsWith('#pair=')) {
+  if (admitPairingLink()) {
     const session = await import('./lib/transport/deviceSession');
     let payload: import('./lib/transport/deviceSession').PairingPayload | null = null;
     let parseError = '';

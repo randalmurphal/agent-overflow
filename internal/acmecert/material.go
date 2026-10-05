@@ -186,3 +186,11 @@ func materialFrom(cert tls.Certificate) (Material, error) {
 	cert.Leaf = leaf
 	return Material{Certificate: cert, NotAfter: leaf.NotAfter}, nil
 }
+
+func encodeKey(key crypto.Signer) ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("acmecert: marshal the private key: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}

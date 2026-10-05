@@ -191,6 +191,9 @@ func main() {
 	if err != nil {
 		fatalf("%v", err)
 	}
+	if err := refuseRemoteBoot(serveMode, superviseMode, flags); err != nil {
+		fatalf("%v", err)
+	}
 	if serveMode {
 		if err := checkBackendVerbFlags(serveVerb, flags); err != nil {
 			fatalf("%v", err)
@@ -1361,5 +1364,9 @@ func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler ht
 	}
 	// Nothing is read here: the walk is lazy, so a backend no shell ever
 	// pairs with never hashes the tree at all.
-	return http.FileServer(http.FS(embeddedSPA)), false, bundle.New(embeddedSPA, version), nil
+	handler, err = withVariantIndex(embeddedSPA, http.FileServer(http.FS(embeddedSPA)))
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return handler, false, bundle.New(embeddedSPA, version), nil
 }

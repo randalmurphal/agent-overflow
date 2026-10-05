@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -99,6 +100,7 @@ func remoteMCPCall(t *testing.T, endpoint, name string, args any, wantError bool
 }
 
 func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
+	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source := identityApp(t)
 	manager, err := attachedbackends.New(t.TempDir(), "source", "test")
@@ -414,6 +416,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 }
 
 func TestRemoteMCPRequiresEnabledPairedComputer(t *testing.T) {
+	remotetest.Require(t)
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {
 			a := identityApp(t)

@@ -4,6 +4,7 @@
   import { backendDisplayName, backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { hasScope } from '../../transport/scopes';
+  import { remoteAccessAvailable } from '../../transport/buildVariant';
   import { userFacingError } from '../../utils/userFacingError';
   import SettingsField from './SettingsField.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
@@ -33,7 +34,8 @@
   }
 </script>
 
-{#if usesFrontendAssetLibrary()}
+<!-- Copies from another computer; a build without remote access reaches none. -->
+{#if remoteAccessAvailable() && usesFrontendAssetLibrary()}
   <SettingsField
     id={kind === 'themes' ? 'theme.copy-files' : 'spinner.copy-files'}
     {label}
