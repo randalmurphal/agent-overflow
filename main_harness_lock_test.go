@@ -132,6 +132,10 @@ func TestHarnessBootModeNamesTheFlag(t *testing.T) {
 // path, not just available to it — `make harness` calls prepareHarness
 // directly and has no other liveness check at all.
 func TestPrepareHarnessTakesTheInstanceLock(t *testing.T) {
+	// prepareHarness redirects HOME (and USERPROFILE on Windows) for the
+	// process; restore them for the tests after this one.
+	t.Setenv("HOME", os.Getenv("HOME"))
+	t.Setenv("USERPROFILE", os.Getenv("USERPROFILE"))
 	root := t.TempDir()
 	// prepareHarness fails later (no mock provider binary resolvable in a
 	// bare temp dir), but the lock is taken before that — which is the
