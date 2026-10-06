@@ -33,11 +33,11 @@ const previewEndedPage = "This preview session ended. Open the link again from A
 const previewUpstreamDialTimeout = 5 * time.Second
 
 // handler builds the http.Handler for one preview port.
-func (g *PreviewGateway) handler(target PreviewTarget, conns *previewConns) http.Handler {
+func (g *PreviewGateway) handler(target PreviewTarget, upstream *previewUpstream, conns *previewConns) http.Handler {
 	port := target.Port
 	content := g.content
 	if content == nil {
-		content = g.proxy(target)
+		content = g.proxy(target, upstream)
 	}
 	cookieName := previewCookiePrefix + strconv.Itoa(port)
 
@@ -261,7 +261,7 @@ func previewEnded(w http.ResponseWriter) {
 //   - Sec-WebSocket-Protocol is forwarded unchanged (`vite-hmr`).
 //     httputil copies it with every other header; it is named here so a
 //     future header filter does not quietly drop it.
-func (g *PreviewGateway) proxy(target PreviewTarget) *httputil.ReverseProxy {
+func (g *PreviewGateway) proxy(target PreviewTarget, upstream *previewUpstream) *httputil.ReverseProxy {
 	port := target.Port
 	upstreamHost := net.JoinHostPort("localhost", strconv.Itoa(port))
 	upstreamOrigin := target.Scheme + "://" + upstreamHost
@@ -277,12 +277,17 @@ func (g *PreviewGateway) proxy(target PreviewTarget) *httputil.ReverseProxy {
 			// code chose, not to a name anything else resolved.
 			// Verifying would refuse every https dev server and prove
 			// nothing about the one hop involved. Same reasoning, same
-			// wording, as the devscan probe that found it.
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback-only, see above
+			// wording, as the devscan probe that found it. SNI says
+			// localhost, like the Host header, though the dial names a
+			// literal address.
+			TLSClientConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}, //nolint:gosec // loopback-only, see above
 		},
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.Out.URL.Scheme = target.Scheme
-			r.Out.URL.Host = upstreamHost
+			// The URL names the socket discovery found, so the dial
+			// reaches that process; the Host header below still says
+			// localhost, the name the dev server expects.
+			r.Out.URL.Host = upstream.authority(port)
 			// Both spellings, so a path with encoded segments in it
 			// reaches the upstream exactly as it arrived.
 			r.Out.URL.Path = r.In.URL.Path

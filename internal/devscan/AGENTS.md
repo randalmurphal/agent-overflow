@@ -6,6 +6,9 @@ Discovers local development servers for preview routing. It combines attributed 
 - A listening socket is a candidate. Probe attributed and otherwise-seen ports
   for a document response before presenting them. A hand-allowed port remains
   visible by owner choice, but still gets a bounded scheme probe.
+- A row carries the loopback address of the socket held by the process it
+  names (`DevServer.Addr`); the probe and the preview proxy dial it, because
+  another process can hold the same port on the other family.
 - Keep configured ports visible even while closed, and retain bounded recent observations so transient restarts do not reorder the UI.
 - Preserve source and status in results; callers need to distinguish discovery, configuration, and observation.
 - Keep enumeration platform-specific. Unsupported platforms return a clear capability result.

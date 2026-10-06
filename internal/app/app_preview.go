@@ -311,7 +311,7 @@ func previewTargets(servers []devscan.DevServer) []transport.PreviewTarget {
 		if !row.Allowed {
 			continue
 		}
-		targets = append(targets, transport.PreviewTarget{Port: row.Port, Scheme: row.Scheme})
+		targets = append(targets, transport.PreviewTarget{Port: row.Port, Scheme: row.Scheme, Addr: row.Addr})
 	}
 	return targets
 }

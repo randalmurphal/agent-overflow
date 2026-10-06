@@ -2,6 +2,8 @@
 
 package devscan
 
+import "net/netip"
+
 // Every platform with no enumerator. In practice that is a NATIVE
 // Windows or BSD build and nothing that ships: the Windows deployment is
 // the WSL launcher plus a Linux payload, so a Windows install's backend
@@ -18,6 +20,9 @@ package devscan
 // compiles on a platform that can never produce one.
 type listener struct {
 	Port int
+	// Addr is the loopback address that reaches this socket: the bound
+	// address, or the family's loopback for a wildcard bind.
+	Addr netip.Addr
 	PID  int
 	PPID int
 	PGID int

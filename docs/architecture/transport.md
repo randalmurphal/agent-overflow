@@ -36,15 +36,22 @@ address it still needs. The IPv4 wildcard is served by two sockets on one port:
 beside it. Turning LAN access on binds only the wildcard; turning it off
 retires only the wildcard, so the embedded webview's socket is never closed.
 Linux admits the pair only when both sockets set `SO_REUSEPORT`
-(`shareport_linux.go`); macOS admits it through the `SO_REUSEADDR` Go sets on
-every listener. Any bind failure leaves the working listeners intact. Before it
+(`shareport_linux.go`). Once the wildcard has bound, Linux also admits
+another same-uid process that sets the option, until the loopback socket
+closes on restart or a port change; a wildcard that fails to bind leaves the
+loopback socket exclusive. macOS admits the pair through the
+`SO_REUSEADDR` Go sets on every listener. Any bind failure leaves the working
+listeners intact. Before it
 returns, a retired server also stops HTTP keep-alive, so no request reaches the
 old address after the move. Upgraded WebSockets continue on their own
 connections.
 
 Every package-created listener passes through `bindListener`. Explicit IPv4
 addresses use `tcp4`, including `0.0.0.0`, so WSL's Windows relay receives an
-IPv4 listener. The Windows launcher may perform one explicit
+IPv4 listener. A literal loopback request that the kernel reports bound to
+another address is closed and refused in every build (`ListenTCP`, used by the
+server and clientmode), because WSL virtioproxy has been seen to widen a fixed
+`127.0.0.1` bind to every interface. The Windows launcher may perform one explicit
 `--reset-transport-port` retry when the WSL backend bound successfully but
 cannot be reached from Windows.
 

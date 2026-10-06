@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -200,11 +199,22 @@ func candidateShells() []string {
 		out = append(out, s)
 	}
 	add(os.Getenv("SHELL"))
-	if runtime.GOOS == "darwin" {
-		add("/bin/zsh")
+	for _, shell := range fallbackShells {
+		add(shell)
 	}
-	add("/bin/bash")
 	return out
+}
+
+// fallbackShells follow $SHELL in candidateShells. Tests replace them, so a
+// failing fake shell never falls through to the developer's real login
+// shell and its rc files.
+var fallbackShells = platformFallbackShells()
+
+func platformFallbackShells() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"/bin/zsh", "/bin/bash"}
+	}
+	return []string{"/bin/bash"}
 }
 
 // probe runs `<shell> -ilc 'echo <START>; printenv PATH; echo <END>; ...'`
@@ -259,13 +269,10 @@ func probe(ctx context.Context, shell string) (loginShell, error) {
 	// canonical "this is not a TTY" signal.
 	cmd.Stdin = nil
 
+	// Something the rc files started may still hold stdout after the shell
+	// exits; RunDrained stops waiting for it once the shell's output is in.
 	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = io.Discard
-
-	// ErrWaitDelay means the shell exited successfully while something its
-	// rc files started still holds stdout; the output is complete.
-	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+	if err := procutil.RunDrained(pctx, cmd, &stdout, nil, time.Second); err != nil {
 		return loginShell{}, fmt.Errorf("shellenv: %s -ilc: %w", shell, err)
 	}
 

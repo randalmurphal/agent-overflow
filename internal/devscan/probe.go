@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,10 +23,12 @@ import (
 // GET decides, and the verdict is the same shape t3code shipped: HTML, or
 // a redirect that names where the HTML is.
 //
-// The dial goes through loopback.Dialer, which resolves `localhost`
-// statically to 127.0.0.1 and ::1 and never asks a resolver. The reasons
-// live there; the one that matters here is that a verdict must not be
-// steerable by a resolver answer.
+// The dial goes through loopback.Dialer: it asks the loopback address
+// discovery found the port's process bound to, or, with none, resolves
+// `localhost` statically to ::1 and 127.0.0.1 and never asks a resolver.
+// The reasons live there; the ones that matter here are that a verdict
+// must not be steerable by a resolver answer and must describe the
+// process the row names.
 const (
 	// probeTimeout bounds one candidate. Loopback answers in
 	// milliseconds, so a second is generous; what it really bounds is a
@@ -74,8 +77,7 @@ type verdict struct {
 
 func newProber(now func() time.Time) *prober {
 	// One transport, and its dialer is the whole static-resolution rule:
-	// the address net/http hands it is discarded and the two loopback
-	// literals are tried in order.
+	// it dials only this machine (see loopback.Dialer).
 	transport := &http.Transport{
 		DialContext:         loopback.Dialer(probeTimeout),
 		MaxIdleConnsPerHost: 2,
@@ -85,7 +87,11 @@ func newProber(now func() time.Time) *prober {
 		// connection is to a loopback literal this code chose, not to a
 		// name anything else resolved. Verifying here would refuse every
 		// https dev server and prove nothing about the one hop involved.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback-only, see above
+		//
+		// ServerName stays `localhost`: the request dials a literal
+		// address, which would otherwise send no SNI, and a dev server
+		// selecting its certificate by name answers to localhost.
+		TLSClientConfig: &tls.Config{ServerName: "localhost", InsecureSkipVerify: true}, //nolint:gosec // loopback-only, see above
 	}
 	return &prober{
 		client: &http.Client{
@@ -111,16 +117,17 @@ func newProber(now func() time.Time) *prober {
 // port has to dial the same way, and a bool would have made every https
 // dev server a listed preview that 502s.
 //
-// The verdict is keyed by port AND pid, so a port that changed hands is
-// re-probed rather than inheriting the previous occupant's answer.
-func (p *prober) pageScheme(ctx context.Context, port, pid int) (string, bool) {
-	key := strconv.Itoa(port) + "/" + strconv.Itoa(pid)
+// The verdict is keyed by port, pid AND address, so a port that changed
+// hands is re-probed rather than inheriting the previous occupant's answer.
+// addr is the socket to ask (see DevServer.Addr).
+func (p *prober) pageScheme(ctx context.Context, port, pid int, addr netip.Addr) (string, bool) {
+	key := strconv.Itoa(port) + "/" + strconv.Itoa(pid) + "/" + addr.String()
 	if scheme, ok := p.cached(key); ok {
 		return scheme, scheme != ""
 	}
 	answered := ""
 	for _, scheme := range []string{"http", "https"} {
-		if p.request(ctx, scheme, port) {
+		if p.request(ctx, scheme, port, addr) {
 			answered = scheme
 			break
 		}
@@ -138,13 +145,16 @@ func (p *prober) pageScheme(ctx context.Context, port, pid int) (string, bool) {
 	return answered, answered != ""
 }
 
-// request performs one GET and judges the response.
-func (p *prober) request(ctx context.Context, scheme string, port int) bool {
-	url := scheme + "://localhost:" + strconv.Itoa(port) + "/"
+// request performs one GET to addr and judges the response. The Host
+// header stays `localhost`, which is what a dev server expects to be
+// called whichever loopback address reached it.
+func (p *prober) request(ctx context.Context, scheme string, port int, addr netip.Addr) bool {
+	url := scheme + "://" + loopback.Authority(addr, port) + "/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}
+	req.Host = loopback.Authority(netip.Addr{}, port)
 	resp, err := p.client.Do(logging.TraceHTTPRequest(req, "devscan"))
 	if err != nil {
 		return false

@@ -306,7 +306,7 @@ func (a *App) makeTransferOffer(row store.ThreadTransfer, grant string) (transfe
 	}
 	backendID, _ := a.backendIdentity()
 	offer := transferclient.Offer{Version: transferwire.Version, OwnershipEpoch: row.OwnershipEpoch, BackendID: backendID, OperationID: row.ID, Endpoint: endpoint, CertFingerprint: fingerprint, Grant: grant}
-	client, err := transferclient.New(offer)
+	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return transferclient.Offer{}, err
 	}
@@ -336,7 +336,7 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 	if row.ThreadID != threadID || row.Direction != "outgoing" || row.PeerBackendID != offer.BackendID || row.OwnershipEpoch != offer.OwnershipEpoch {
 		return row, errors.New("The destination offer belongs to another transfer.")
 	}
-	client, err := transferclient.New(offer)
+	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return row, err
 	}

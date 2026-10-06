@@ -1332,9 +1332,12 @@ gates (`TestFrontendScopeVocabularyMatches`,
 devices cannot open previews, which is what execute tier means.
 
 **The proxy.** One `http.Server` per preview listener,
-`httputil.ReverseProxy` to loopback (the upstream dials `localhost`
-resolved statically to `127.0.0.1` and `::1`, because a `::1`-only
-dev server is common). WebSocket upgrades forward unchanged (HMR).
+`httputil.ReverseProxy` to loopback. The upstream dials the loopback
+address discovery found the dev server's process bound to, because
+another process can hold the same port on the other family; a port
+with no discovered address dials `localhost` resolved statically to
+`::1` then `127.0.0.1`. An address change updates the listener in place.
+WebSocket upgrades forward unchanged (HMR).
 Toward the upstream, `Host` is rewritten to `localhost:<port>` on every
 request including the upgrade (spiked 2026-09-02 against Vite 8.2.2:
 it refuses any other `Host` with 403 on HTTP and 400 on the HMR
@@ -1470,7 +1473,8 @@ exact-port `OriginPatterns` fix and `pagecookie_contract_test.go` (an
 AST gate: every reader of the page cookie calls `OriginAllowed` in the
 same body, plus a behavioural check that the six cookie-reading routes
 404 a preview-shaped Origin) close the cookie leak structurally. One
-loopback dialer (`loopback.Dialer`) serves the probe and the proxy.
+loopback dialer (`loopback.Dialer`) serves the probe and the proxy,
+both asking the row's discovered address (`DevServer.Addr`).
 **Affordances**: the markdown rewrite is an inline marked
 extension AHEAD of the path-link one, both renderers spelling the
 anchor from `markdown/render/previewLink.ts`; the delegate swallows

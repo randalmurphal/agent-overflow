@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/procutil"
 )
 
+// gitPipeWaitDelay is how long a run waits on an empty output pipe that a
+// process git started still holds after git exits.
 var gitPipeWaitDelay = time.Second
 
 // runGit runs `git <args>` with the given extra env vars. allowNonZero lets
@@ -29,26 +32,12 @@ func runGit(
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspace
 	cmd.Env = gitEnv(extraEnv)
-	cmd.WaitDelay = gitPipeWaitDelay
 	var out, errBuf strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	runErr := cmd.Run()
+	runErr := procutil.RunDrained(ctx, cmd, &out, &errBuf, gitPipeWaitDelay)
 	stdout = out.String()
 	stderr = errBuf.String()
-	// ErrWaitDelay means git exited successfully while a child it started
-	// still held a pipe; git's own output is complete.
-	if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
-		return stdout, stderr, 0, nil
-	}
-	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-		code = exitErr.ExitCode()
-		if allowNonZero {
-			return stdout, stderr, code, nil
-		}
-	}
-	return stdout, stderr, code, fmt.Errorf("git %s: exit=%d: %s",
-		strings.Join(args, " "), code, strings.TrimSpace(stderr))
+	code, err = gitResult(ctx, runErr, allowNonZero, args, stderr)
+	return stdout, stderr, code, err
 }
 
 func runGitWithStdin(
@@ -62,27 +51,31 @@ func runGitWithStdin(
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspace
 	cmd.Env = gitEnv(extraEnv)
-	cmd.WaitDelay = gitPipeWaitDelay
 	cmd.Stdin = bytes.NewReader(stdin)
 	var out, errBuf strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	runErr := cmd.Run()
+	runErr := procutil.RunDrained(ctx, cmd, &out, &errBuf, gitPipeWaitDelay)
 	stdout = out.String()
 	stderr = errBuf.String()
-	// ErrWaitDelay means git exited successfully while a child it started
-	// still held a pipe; git's own output is complete.
-	if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
-		return stdout, stderr, 0, nil
+	code, err = gitResult(ctx, runErr, allowNonZero, args, stderr)
+	return stdout, stderr, code, err
+}
+
+// gitResult classifies a finished run. allowNonZero excuses only git's own
+// exit status: a run the context ended is an error whatever git exited
+// with, because a killed probe is not a negative answer.
+func gitResult(ctx context.Context, runErr error, allowNonZero bool, args []string, stderr string) (int, error) {
+	if runErr == nil {
+		return 0, nil
 	}
+	code := 0
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code = exitErr.ExitCode()
-		if allowNonZero {
-			return stdout, stderr, code, nil
+		if allowNonZero && ctx.Err() == nil {
+			return code, nil
 		}
 	}
-	return stdout, stderr, code, fmt.Errorf("git %s: exit=%d: %s",
-		strings.Join(args, " "), code, strings.TrimSpace(stderr))
+	return code, fmt.Errorf("git %s: exit=%d: %s: %w",
+		strings.Join(args, " "), code, strings.TrimSpace(stderr), runErr)
 }
 
 // gitEnv strips diff-driver overrides so user config can't inject an

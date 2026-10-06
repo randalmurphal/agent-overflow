@@ -17,7 +17,7 @@ API, so the refusal does not depend on a caller.
 |---|---|---|
 | Remote-access dependencies | `internal/tailnet`, `internal/nearby`, `internal/acmecert`, `internal/push` | Tagged stubs refuse; tailscale, mDNS, ACME and FCM clients are not linked |
 | Bound methods | `//ao:remote` in `internal/app`, `Dispatcher.InvokeForOrigin` | Every remote-only RPC is refused on every call path |
-| Listeners | `transport.bindListener`, `ServeAuxiliary`, `PreviewLANSource` | The main bind and auxiliary listeners (the local `::1` one included) must be loopback, both as requested and as the kernel reports them; LAN preview listeners are refused |
+| Listeners | `transport.bindListener`, `ListenTCP`, `ServeAuxiliary`, `PreviewLANSource` | The main bind and auxiliary listeners (the local `::1` one included) must be loopback, both as requested and as the kernel reports them; LAN preview listeners are refused |
 | Outbound peer connections | `deviceclient.NewPinnedTransport` | Dials are refused |
 | Settings | `settings.validateNetwork`, `sanitizeNetwork` | Remote network fields are refused on write and ignored on load; the listen port remains |
 | Executable | `refuseRemoteBoot` in `main_buildvariant.go`, `internal/aocli` | `serve`, `--supervise`, `--connect`, `--frontend`, non-loopback `--listen` and the `remote`, `pair` and `service` commands are refused |

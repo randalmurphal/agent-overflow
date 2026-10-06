@@ -17,12 +17,13 @@ import (
 //
 // Two read-only commands, both bounded:
 //
-//	lsof -iTCP -sTCP:LISTEN -P -n -F pcn
+//	lsof -iTCP -sTCP:LISTEN -P -n -F pctn
 //	ps -eo pid=,ppid=,pgid=,comm=
 //
-// `-F pcn` is lsof's machine-readable form: one field per line, tagged by
-// its first byte, `p` opening a process record and every later `n` naming
-// a socket that process holds. `-P` and `-n` turn off port-name and host
+// `-F pctn` is lsof's machine-readable form: one field per line, tagged by
+// its first byte, `p` opening a process record, `f` opening each file in
+// it, `t` giving that file's type (IPv4 or IPv6) and `n` naming the
+// socket. `-P` and `-n` turn off port-name and host
 // lookups, which is both faster and the difference between a bounded
 // command and one that waits on DNS.
 //
@@ -39,6 +40,9 @@ const enumerateCommandTimeout = 3 * time.Second
 // holding it. Same shape as the Linux half.
 type listener struct {
 	Port int
+	// Addr is the loopback address that reaches this socket: the bound
+	// address, or the family's loopback for a wildcard bind.
+	Addr netip.Addr
 	PID  int
 	PPID int
 	PGID int
@@ -51,7 +55,7 @@ type listener struct {
 // procRoot is unused here and named for the interface the Linux half
 // defines: nothing on macOS reads a proc tree.
 func enumerateListeners(_ string) ([]listener, map[int]int, error) {
-	sockets, err := runEnumerator("lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn")
+	sockets, err := runEnumerator("lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pctn")
 	if err != nil {
 		return nil, nil, fmt.Errorf("devscan: list listening sockets: %w", err)
 	}
@@ -93,11 +97,13 @@ type procStat struct {
 	pgid int
 }
 
-// parseLSOF reads `-F pcn` output. A `p` line opens a process record and
-// resets the command; every `n` line inside it is one socket.
+// parseLSOF reads `-F pctn` output. A `p` line opens a process record and
+// resets the command; every `n` line inside it is one socket, of the
+// family the preceding `t` line of the same `f` record named.
 func parseLSOF(output string) []listener {
 	var listeners []listener
 	pid, comm := 0, ""
+	ipv6 := false
 	for _, line := range strings.Split(output, "\n") {
 		if len(line) < 2 {
 			continue
@@ -113,12 +119,16 @@ func parseLSOF(output string) []listener {
 			pid, comm = parsed, ""
 		case 'c':
 			comm = value
+		case 'f':
+			ipv6 = false
+		case 't':
+			ipv6 = value == "IPv6"
 		case 'n':
-			port, ok := parseLSOFAddress(value)
+			addr, port, ok := parseLSOFAddress(value, ipv6)
 			if !ok || pid == 0 {
 				continue
 			}
-			listeners = append(listeners, listener{Port: port, PID: pid, Comm: comm})
+			listeners = append(listeners, listener{Port: port, Addr: addr, PID: pid, Comm: comm})
 		}
 	}
 	return listeners
@@ -127,30 +137,36 @@ func parseLSOF(output string) []listener {
 // parseLSOFAddress accepts the loopback and wildcard spellings lsof
 // prints for a listening socket and refuses everything else, which is the
 // same filter the Linux half applies to the socket table: a listener
-// already bound to a routable address is somebody else's service.
-func parseLSOFAddress(name string) (int, bool) {
+// already bound to a routable address is somebody else's service. The
+// address returned is the one that reaches the socket (see dialAddr).
+func parseLSOFAddress(name string, ipv6 bool) (netip.Addr, int, bool) {
 	// `->` marks a connected socket. LISTEN rows never carry one, but the
 	// check costs nothing and a stray row must not parse as a port.
 	if strings.Contains(name, "->") {
-		return 0, false
+		return netip.Addr{}, 0, false
 	}
 	colon := strings.LastIndexByte(name, ':')
 	if colon < 0 {
-		return 0, false
+		return netip.Addr{}, 0, false
 	}
 	port, err := strconv.Atoi(name[colon+1:])
 	if err != nil || port <= 0 || port > 65535 {
-		return 0, false
+		return netip.Addr{}, 0, false
 	}
 	host := strings.TrimSuffix(strings.TrimPrefix(name[:colon], "["), "]")
 	if host == "*" {
-		return port, true
+		// lsof prints both wildcards as `*:port`; only the file's type
+		// says which family it is.
+		if ipv6 {
+			return dialAddr(netip.IPv6Unspecified()), port, true
+		}
+		return dialAddr(netip.IPv4Unspecified()), port, true
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil || (!addr.IsLoopback() && !addr.IsUnspecified()) {
-		return 0, false
+		return netip.Addr{}, 0, false
 	}
-	return port, true
+	return dialAddr(addr), port, true
 }
 
 // parsePSTable reads `pid ppid pgid comm` rows. The command is last so it

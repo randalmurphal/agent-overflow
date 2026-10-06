@@ -2,6 +2,7 @@ package gitdiff
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -36,5 +37,43 @@ func TestGitSucceedsWhenAChildHoldsAPipe(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
 		t.Fatalf("returned after %s, held by the child", elapsed)
+	}
+}
+
+// TestGitReportsCancellationDespiteAllowedExit: a run the context ended is
+// an error even for a caller that accepts nonzero exits, and the error
+// carries the context's. A descendant that keeps writing holds the run
+// open until the deadline. A plain nonzero exit is still excused.
+func TestGitReportsCancellationDespiteAllowedExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell alias is unix-only")
+	}
+	original := gitPipeWaitDelay
+	gitPipeWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { gitPipeWaitDelay = original })
+	noisy := "(i=0; while [ $i -lt 100 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & "
+	run := map[string]func(ctx context.Context, args ...string) (int, error){
+		"runGit": func(ctx context.Context, args ...string) (int, error) {
+			_, _, code, err := runGit(ctx, t.TempDir(), nil, true, args...)
+			return code, err
+		},
+		"runGitWithStdin": func(ctx context.Context, args ...string) (int, error) {
+			_, _, code, err := runGitWithStdin(ctx, t.TempDir(), nil, nil, true, args...)
+			return code, err
+		},
+	}
+	for name, run := range run {
+		for _, exit := range []string{"exit 0", "exit 1"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			_, err := run(ctx, "-c", "alias.noisy=!"+noisy+exit, "noisy")
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s with a noisy descendant and %s = %v, want the context's error", name, exit, err)
+			}
+		}
+		code, err := run(context.Background(), "-c", "alias.fail=!exit 1", "fail")
+		if err != nil || code != 1 {
+			t.Errorf("%s exit 1 = code %d, err %v; want code 1 and no error", name, code, err)
+		}
 	}
 }

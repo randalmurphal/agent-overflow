@@ -606,6 +606,20 @@ var Listeners = []Listener{
 			"the gate matches on the bind.",
 	},
 	{
+		Name:       "loopback test servers",
+		Package:    "internal/loopback/loopbacktest",
+		Binding:    BindLoopback,
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Sites:      []string{"internal/loopback/loopbacktest/server.go"},
+		Why: "Used only by tests; no application package imports it. It " +
+			"moves an httptest server " +
+			"from 127.0.0.1 to loopback.EphemeralIPv6 so that a test " +
+			"dialing localhost through loopback.Dialer, which tries ::1 " +
+			"first, reaches that server and not an unrelated listener on " +
+			"the same port number. The handler is the test's own.",
+	},
+	{
 		Name:       "managed Chrome DevTools port",
 		Package:    "internal/threadmcp",
 		Binding:    BindLoopback,

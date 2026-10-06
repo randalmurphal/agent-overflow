@@ -5,8 +5,12 @@ deviceclient's TLS comparison against the exact saved certificate bytes, but
 owns no device key or session.
 
 - Offers bind endpoint, certificate, backend, operation and one-operation grant.
-  Only HTTPS or literal loopback transport is admitted; loopback dialing cannot
-  be redirected by DNS. Redirects never receive the grant or activation secret.
+  Only HTTPS or loopback transport is admitted. A literal loopback address is
+  dialed as given and `localhost` is never resolved (`loopback.Dialer`). HTTPS
+  uses the caller's dialer, the app's route to paired computers including its
+  built-in tailnet node. Every dial goes through `deviceclient.NewPinnedTransport`,
+  so a `noremote` build refuses it. Redirects never receive the grant or
+  activation secret.
 - Every acknowledgment must match both identities and the wire version, including
   errors. Replies are bounded; peer error prose is treated as data and is not displayed.
 - A request is attempted once. The coordinator resolves unknown outcomes through

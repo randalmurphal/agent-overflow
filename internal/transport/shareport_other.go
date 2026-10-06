@@ -14,4 +14,6 @@ import (
 
 func sharePort(net.Listener) error { return nil }
 
+func unsharePort(net.Listener) error { return nil }
+
 func sharePortControl(string, string, syscall.RawConn) error { return nil }

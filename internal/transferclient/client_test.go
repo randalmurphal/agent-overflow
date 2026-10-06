@@ -8,12 +8,15 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
@@ -31,7 +34,7 @@ func TestTransferClientRefusesUnsafeOffersBeforeConnecting(t *testing.T) {
 		t.Run(endpoint, func(t *testing.T) {
 			offer := testOffer()
 			offer.Endpoint = endpoint
-			if c, err := New(offer); err == nil {
+			if c, err := New(offer, nil); err == nil {
 				c.Close()
 				t.Fatal("accepted unsafe endpoint")
 			}
@@ -52,7 +55,7 @@ func TestTransferClientRefusesUnsafeOffersBeforeConnecting(t *testing.T) {
 			case "certificate":
 				offer.CertFingerprint = "bad"
 			}
-			if c, err := New(offer); err == nil {
+			if c, err := New(offer, nil); err == nil {
 				c.Close()
 				t.Fatal("accepted malformed offer")
 			}
@@ -100,7 +103,7 @@ func TestTransferClientPinsTLSAndBindsEachReply(t *testing.T) {
 			if change == "certificate" {
 				offer.CertFingerprint = "sha256:" + strings.Repeat("a", 64)
 			}
-			client, err := New(offer)
+			client, err := New(offer, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +139,7 @@ func TestTransferClientNeverFollowsRedirectWithAuthority(t *testing.T) {
 	defer redirect.Close()
 	offer := testOffer()
 	offer.Endpoint = redirect.URL
-	client, err := New(offer)
+	client, err := New(offer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +166,7 @@ func TestTransferClientLoopbackIgnoresProxyConfiguration(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = base })
 	offer := testOffer()
 	offer.Endpoint = "http://localhost:3437"
-	client, err := New(offer)
+	client, err := New(offer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +182,7 @@ func (f transferRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error
 
 func TestTransferChunkReturnFencesLateHTTPBodyReaders(t *testing.T) {
 	offer := testOffer()
-	client, err := New(offer)
+	client, err := New(offer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,5 +200,74 @@ func TestTransferChunkReturnFencesLateHTTPBodyReaders(t *testing.T) {
 	var data [32]byte
 	if n, err := late.Read(data[:]); n != 0 || !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("late writer read a reused buffer: %d %v", n, err)
+	}
+}
+
+// A literal loopback endpoint receives the grant; another process holding
+// the same port on the other family does not.
+func TestTransferClientDialsTheLoopbackAddressItWasOffered(t *testing.T) {
+	remotetest.Require(t)
+	ln6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	port := strconv.Itoa(ln6.Addr().(*net.TCPAddr).Port)
+	ln4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		_ = ln6.Close()
+		t.Skipf("127.0.0.1:%s is taken by another process: %v", port, err)
+	}
+	var hits [2]atomic.Int32
+	for i, ln := range []net.Listener{ln4, ln6} {
+		srv := &http.Server{ReadHeaderTimeout: time.Second, ErrorLog: log.New(io.Discard, "", 0),
+			Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits[i].Add(1) })}
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+	}
+	for i, host := range []string{"127.0.0.1", "[::1]"} {
+		offer := testOffer()
+		offer.Endpoint = "http://" + host + ":" + port
+		client, err := New(offer, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = client.Status(context.Background())
+		client.Close()
+		if hits[i].Load() != 1 || hits[1-i].Load() != 0 {
+			t.Fatalf("%s: hits = [%d %d], want only the offered address", host, hits[0].Load(), hits[1-i].Load())
+		}
+		hits[i].Store(0)
+	}
+}
+
+// An https offer travels over the dialer it was given, the application's
+// route to a peer reachable only through its built-in tailnet node. The
+// endpoint's own address has nothing listening, so the OS dialer would
+// fail without leaving the machine.
+func TestTransferClientCarriesHTTPSOverTheSuppliedDialer(t *testing.T) {
+	remotetest.Require(t)
+	offer := testOffer()
+	host := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(transferwire.Reply{Version: 1, BackendID: offer.BackendID, OperationID: offer.OperationID, State: &transferwire.State{Phase: "preparing"}})
+	}))
+	host.Config.ErrorLog = log.New(io.Discard, "", 0)
+	host.StartTLS()
+	defer host.Close()
+	offer.Endpoint = "https://127.0.0.1:1"
+	offer.CertFingerprint = servercert.Fingerprint(host.Certificate().Raw)
+	var dialed atomic.Value
+	client, err := New(offer, func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed.Store(address)
+		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if state, err := client.Status(context.Background()); err != nil || state.Phase != "preparing" {
+		t.Fatalf("Status = %+v, %v; want the reply carried by the supplied dialer", state, err)
+	}
+	if got, _ := dialed.Load().(string); got != "127.0.0.1:1" {
+		t.Fatalf("supplied dialer saw %q, want the offer's endpoint", got)
 	}
 }

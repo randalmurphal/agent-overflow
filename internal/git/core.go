@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/procutil"
 )
 
 const (
@@ -631,8 +632,8 @@ type commandSpec struct {
 	args     []string
 }
 
-// pipeWaitDelay bounds how long runSpec waits for output pipes after the
-// command exits or is killed.
+// pipeWaitDelay is how long runSpec waits on an empty output pipe that a
+// process the command started still holds after the command exits.
 var pipeWaitDelay = time.Second
 
 // runSpec is the shared runner behind every git / gh / glab subprocess.
@@ -668,10 +669,6 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
-	// A child the CLI leaves behind (a hook, a helper) can hold stdout or
-	// stderr open after the CLI exits or is killed. Without a bound, Run
-	// waits for that child and the timeout stops nothing.
-	cmd.WaitDelay = pipeWaitDelay
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
 	// optimization for git, but it fires an fs event under the watched
@@ -699,19 +696,17 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 
 	stdoutBuf := newLimitedBuffer(maxBytes)
 	stderrBuf := newLimitedBuffer(maxBytes)
-	cmd.Stdout = stdoutBuf
-	cmd.Stderr = stderrBuf
+	var stdout io.Writer = stdoutBuf
 	var streamed *commandStreamWriter
 	if spec.output != nil {
 		streamed = &commandStreamWriter{writer: spec.output, remaining: spec.outputLimit, cancel: cancel}
-		cmd.Stdout = streamed
+		stdout = streamed
 	}
 
-	err = cmd.Run()
-	if errors.Is(err, exec.ErrWaitDelay) {
-		// The CLI itself succeeded; only a leftover child kept the pipes.
-		err = nil
-	}
+	// A child the CLI leaves behind (a hook, a helper) can hold stdout or
+	// stderr open after the CLI exits or is killed; RunDrained stops waiting
+	// for it once the CLI's own output is drained.
+	err = procutil.RunDrained(ctx, cmd, stdout, stderrBuf, pipeWaitDelay)
 	result := commandResult{
 		stdout: stdoutBuf.String(),
 		stderr: stderrBuf.String(),

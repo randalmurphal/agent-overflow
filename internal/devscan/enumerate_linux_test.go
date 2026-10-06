@@ -4,6 +4,7 @@ package devscan
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -134,11 +135,19 @@ func TestEnumerateKeepsLoopbackAndWildcardListenersOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enumerate: %v", err)
 	}
+	wantAddr := map[int]netip.Addr{
+		portDev:   netip.MustParseAddr("127.0.0.1"),
+		portAPI:   netip.IPv6Loopback(), // the IPv6 wildcard
+		portOther: netip.IPv6Loopback(),
+	}
 	var ports []int
 	for _, l := range listeners {
 		ports = append(ports, l.Port)
 		if l.PID != 4242 || l.Comm != "node" {
 			t.Errorf("port %d: pid/comm = %d/%q, want 4242/node", l.Port, l.PID, l.Comm)
+		}
+		if l.Addr != wantAddr[l.Port] {
+			t.Errorf("port %d: addr = %v, want %v", l.Port, l.Addr, wantAddr[l.Port])
 		}
 	}
 	sort.Ints(ports)

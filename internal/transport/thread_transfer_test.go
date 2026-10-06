@@ -144,7 +144,7 @@ func TestThreadTransferWireStreamsAndRecoversLostAcknowledgments(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, err := transferclient.New(transferclient.Offer{Version: 1, BackendID: backend, OperationID: receiver.id, Endpoint: httpServer.URL, CertFingerprint: servercert.Fingerprint(httpServer.Certificate().Raw), Grant: receiver.grant})
+	client, err := transferclient.New(transferclient.Offer{Version: 1, BackendID: backend, OperationID: receiver.id, Endpoint: httpServer.URL, CertFingerprint: servercert.Fingerprint(httpServer.Certificate().Raw), Grant: receiver.grant}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

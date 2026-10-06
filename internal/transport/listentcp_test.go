@@ -107,3 +107,49 @@ func TestListenTCPReprobesOnlyAPortTakenInBetween(t *testing.T) {
 		t.Fatalf("binds = %d, want %d bounded attempts", len(rec.addrs), 2*explicitPortAttempts)
 	}
 }
+
+// widenedListen binds as asked and reports the bound address as the
+// wildcard, the way WSL virtioproxy has widened a fixed 127.0.0.1 bind.
+type widenedListen struct{ inner []net.Listener }
+
+func (w *widenedListen) listen(network, addr string) (net.Listener, error) {
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return nil, err
+	}
+	w.inner = append(w.inner, ln)
+	return widened{ln}, nil
+}
+
+type widened struct{ net.Listener }
+
+func (w widened) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4zero, Port: w.Listener.Addr().(*net.TCPAddr).Port}
+}
+
+// A loopback request the kernel did not bind to loopback is closed and
+// refused in every build, on every path through ListenTCP (the server's
+// own binds and clientmode's); a wildcard request is not second-guessed.
+func TestListenTCPRefusesALoopbackBindThatCameBackWidened(t *testing.T) {
+	for _, wsl := range []bool{false, true} {
+		w := &widenedListen{}
+		if ln, err := listenTCP("tcp4", "127.0.0.1:0", wsl, w.listen); err == nil {
+			_ = ln.Close()
+			t.Fatalf("wsl=%v: a widened loopback bind was accepted", wsl)
+		}
+		last := w.inner[len(w.inner)-1]
+		if _, err := last.Accept(); err == nil {
+			t.Fatalf("wsl=%v: the refused listener was left open", wsl)
+		}
+	}
+	// The wildcard request is served from a loopback socket that reports
+	// the wildcard, so the test binds nothing off loopback.
+	w := &widenedListen{}
+	ln, err := listenTCP("tcp4", "0.0.0.0:0", false, func(network, _ string) (net.Listener, error) {
+		return w.listen(network, "127.0.0.1:0")
+	})
+	if err != nil {
+		t.Fatalf("a wildcard request was refused: %v", err)
+	}
+	_ = ln.Close()
+}

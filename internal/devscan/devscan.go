@@ -3,6 +3,7 @@ package devscan
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +28,13 @@ type DevServer struct {
 	// Process is that process's command name, for the person reading the
 	// list. Never used for attribution.
 	Process string `json:"process,omitempty"`
+
+	// Addr is the loopback address that reaches the socket of the process
+	// this row names. The probe asks it and the preview proxy dials it,
+	// because another process can hold the same port on the other family.
+	// The zero Addr (a hand-named port nothing is listening on) dials
+	// `localhost`; see loopback.Dialer. Never sent to clients.
+	Addr netip.Addr `json:"-"`
 
 	// ThreadID is the thread whose provider session or terminal this
 	// listener descends from, or "" when nothing claimed it.
@@ -161,6 +169,7 @@ type graceEntry struct {
 	process  string
 	scheme   string
 	pid      int
+	addr     netip.Addr
 	until    time.Time
 }
 
@@ -217,7 +226,9 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 	// One row per PORT, not per socket: a dev server bound to both
 	// loopback families is two rows in the kernel's table and one thing on
 	// screen. The first socket seen wins the process fields, and a later
-	// one only ever adds attribution.
+	// one only ever adds attribution. Addr always follows the process the
+	// row names, so the probe and the proxy reach that process and not
+	// whatever else holds the port on the other family.
 	rows := make(map[int]DevServer, len(listeners))
 	for _, listener := range listeners {
 		row, seen := rows[listener.Port]
@@ -226,15 +237,21 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 				Port:      listener.Port,
 				PID:       listener.PID,
 				Process:   listener.Comm,
+				Addr:      listener.Addr,
 				Listening: true,
 				Source:    SourceSeen,
 			}
+		} else if listener.PID != 0 && listener.PID == row.PID && listener.Addr.Is6() {
+			// The same process on both families is reached on ::1, the
+			// family loopback.Dialer prefers.
+			row.Addr = listener.Addr
 		}
 		if row.ThreadID == "" {
 			if threadID, ok := attribute(listener, owners, parents); ok {
 				row.ThreadID = threadID
 				row.PID = listener.PID
 				row.Process = listener.Comm
+				row.Addr = listener.Addr
 			}
 		}
 		rows[listener.Port] = row
@@ -340,6 +357,7 @@ func (s *Scanner) applyGrace(servers []DevServer) []DevServer {
 			process:  row.Process,
 			scheme:   row.Scheme,
 			pid:      row.PID,
+			addr:     row.Addr,
 			until:    now.Add(attributedGrace),
 		}
 	}
@@ -355,6 +373,7 @@ func (s *Scanner) applyGrace(servers []DevServer) []DevServer {
 			Port:      port,
 			PID:       entry.pid,
 			Process:   entry.process,
+			Addr:      entry.addr,
 			ThreadID:  entry.threadID,
 			Allowed:   true,
 			Source:    SourceAttributed,
@@ -446,7 +465,7 @@ func (s *Scanner) probePorts(
 
 	for _, port := range ports {
 		wg.Add(1)
-		go func(port, pid int) {
+		go func(port, pid int, addr netip.Addr) {
 			defer wg.Done()
 			inFlight <- struct{}{}
 			defer func() { <-inFlight }()
@@ -455,14 +474,14 @@ func (s *Scanner) probePorts(
 				// now would only produce a request that cannot finish.
 				return
 			}
-			scheme, ok := s.probe.pageScheme(ctx, port, pid)
+			scheme, ok := s.probe.pageScheme(ctx, port, pid, addr)
 			if !ok {
 				return
 			}
 			mu.Lock()
 			schemes[port] = scheme
 			mu.Unlock()
-		}(port, rows[port].PID)
+		}(port, rows[port].PID, rows[port].Addr)
 	}
 	wg.Wait()
 	return schemes
@@ -477,4 +496,17 @@ func schemeOrHTTP(scheme string) string {
 		return "http"
 	}
 	return scheme
+}
+
+// dialAddr is the address that reaches a socket bound to addr: the address
+// itself for a loopback bind, the family's loopback for a wildcard.
+func dialAddr(addr netip.Addr) netip.Addr {
+	addr = addr.Unmap()
+	switch addr {
+	case netip.IPv4Unspecified():
+		return netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	case netip.IPv6Unspecified():
+		return netip.IPv6Loopback()
+	}
+	return addr
 }

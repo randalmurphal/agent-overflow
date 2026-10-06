@@ -19,6 +19,14 @@ import (
 	"github.com/creack/pty"
 )
 
+// TestMain removes the system fallback shells, so no test runs the
+// developer's real login shell; a test that needs a fallback installs a fake
+// one.
+func TestMain(m *testing.M) {
+	fallbackShells = nil
+	os.Exit(m.Run())
+}
+
 func TestMergePath_DedupesPreservesLoginOrdering(t *testing.T) {
 	login := "/usr/local/bin:/home/u/.nvm/versions/node/v24/bin:/home/u/.local/bin"
 	current := "/usr/bin:/usr/local/bin:/bin"
@@ -92,18 +100,35 @@ func TestCandidateShells_PrefersUserShell(t *testing.T) {
 	}
 }
 
-func TestCandidateShells_FallsBackToBashOnLinux(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skipf("linux-specific fallback: skipping on %s", runtime.GOOS)
+func TestPlatformFallbackShellsEndWithBash(t *testing.T) {
+	got := platformFallbackShells()
+	if len(got) == 0 || got[len(got)-1] != "/bin/bash" {
+		t.Fatalf("platform fallbacks = %v, want /bin/bash last", got)
 	}
+	if runtime.GOOS == "darwin" && got[0] != "/bin/zsh" {
+		t.Fatalf("macOS fallbacks = %v, want /bin/zsh first", got)
+	}
+}
+
+// useFallbackShells installs fallbacks for one test.
+func useFallbackShells(t *testing.T, shells ...string) {
+	t.Helper()
+	previous := fallbackShells
+	fallbackShells = shells
+	t.Cleanup(func() { fallbackShells = previous })
+}
+
+func TestCandidateShells_FallsBackWhenSHELLIsEmpty(t *testing.T) {
+	useFallbackShells(t, "/bin/bash")
 	t.Setenv("SHELL", "")
 	got := candidateShells()
-	if len(got) == 0 || got[0] != "/bin/bash" {
-		t.Fatalf("expected /bin/bash fallback when SHELL is empty; got %v", got)
+	if len(got) != 1 || got[0] != "/bin/bash" {
+		t.Fatalf("expected only the fallback when SHELL is empty; got %v", got)
 	}
 }
 
 func TestCandidateShells_DropsDuplicates(t *testing.T) {
+	useFallbackShells(t, "/bin/bash")
 	t.Setenv("SHELL", "/bin/bash")
 	got := candidateShells()
 	// /bin/bash from $SHELL and the linux fallback are the same string;
@@ -191,30 +216,15 @@ func TestSync_NoOpWhenLoginPathSubsetOfCurrent(t *testing.T) {
 }
 
 func TestSync_FallsBackWhenPrimaryShellFails(t *testing.T) {
-	// Primary shell exits non-zero; the loop should fall through to
-	// the next candidate. We can't easily test the system fallback
-	// (/bin/bash) without depending on the host so we install the
-	// "primary" as a non-existent path and a working stub as $SHELL —
-	// then ensure the wrong $SHELL isn't fatal.
-	failingShell := filepath.Join(t.TempDir(), "missing")
-	t.Setenv("SHELL", failingShell)
-	if runtime.GOOS != "linux" {
-		t.Skip("relies on /bin/bash being present and working")
-	}
-	if _, err := os.Stat("/bin/bash"); err != nil {
-		t.Skipf("/bin/bash not available: %v", err)
-	}
-
+	useFallbackShells(t, fakeShell(t, "/fallback/bin:/usr/bin"))
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing"))
 	t.Setenv("PATH", "/usr/bin")
+
 	if err := Sync(context.Background()); err != nil {
-		// Bash on the test host may or may not produce sentinels — it
-		// runs our actual probe script. The important thing is that
-		// the missing primary shell didn't kill the call entirely;
-		// surfaces both as nil error or a different (bash-shaped)
-		// error rather than the file-not-found from the missing shell.
-		if strings.Contains(err.Error(), failingShell) {
-			t.Fatalf("Sync error still references missing primary shell: %v", err)
-		}
+		t.Fatalf("Sync: %v", err)
+	}
+	if got, want := os.Getenv("PATH"), "/fallback/bin:/usr/bin"; got != want {
+		t.Fatalf("PATH = %q, want the fallback shell's %q", got, want)
 	}
 }
 

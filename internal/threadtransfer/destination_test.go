@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -520,6 +521,7 @@ func TestDestinationStatusDoesNotWaitForInstallation(t *testing.T) {
 }
 
 func TestSourceAndDestinationHandoffThroughRealHTTP(t *testing.T) {
+	remotetest.Require(t)
 	f := newDestinationFixture(t)
 	ctx := context.Background()
 	backendID := entityid.New()
@@ -562,7 +564,7 @@ func TestSourceAndDestinationHandoffThroughRealHTTP(t *testing.T) {
 	if _, err := sourceStore.BindThreadTransferArchive(row.ID, f.upload); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewSource(sourceStore, root, nil, func(context.Context, store.ThreadTransfer) error { return nil })
+	source, err := NewSource(sourceStore, root, nil, func(context.Context, store.ThreadTransfer) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

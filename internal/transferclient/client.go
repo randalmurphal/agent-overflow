@@ -47,7 +47,12 @@ type Error struct {
 func (e *Error) Error() string { return "Conversation transfer: " + e.Code }
 func (e *Error) Unwrap() error { return e.cause }
 
-func New(offer Offer) (*Client, error) {
+// New validates offer and builds its client. dial carries an https offer to
+// another computer, the application's dialer (nil uses the OS), so a peer
+// reached only through the app's built-in tailnet node is reached here as
+// it is for paired calls. An http offer is loopback and always uses
+// loopback.Dialer.
+func New(offer Offer, dial deviceclient.DialContextFunc) (*Client, error) {
 	if offer.Version != transferwire.Version || offer.OwnershipEpoch < 0 || offer.OwnershipEpoch > transferwire.MaxOwnershipEpoch || !entityid.Valid(offer.BackendID) || !entityid.Valid(offer.OperationID) {
 		return nil, &Error{Code: "invalid_offer"}
 	}
@@ -74,11 +79,18 @@ func New(offer Offer) (*Client, error) {
 		}
 	}
 	offer.Endpoint = endpoint.Scheme + "://" + endpoint.Host
-	transport := deviceclient.NewPinnedTransport(offer.CertFingerprint)
 	if endpoint.Scheme == "http" {
-		transport.Proxy = nil
-		transport.DialContext = loopback.Dialer(10 * time.Second)
+		// A literal address is dialed as given and `localhost` is never
+		// resolved, so the grant reaches only the socket the offer named.
+		dial = loopback.Dialer(10 * time.Second)
 	}
+	// NewPinnedTransport applies a build's remote-access refusal after the
+	// dialer, so a build without remote access sends nothing.
+	var opts []deviceclient.Option
+	if dial != nil {
+		opts = append(opts, deviceclient.WithDialContext(dial))
+	}
+	transport := deviceclient.NewPinnedTransport(offer.CertFingerprint, opts...)
 	transport.ResponseHeaderTimeout = 2 * time.Minute
 	transport.MaxConnsPerHost = 2
 	return &Client{offer: offer, transport: transport, http: &http.Client{Transport: transport, Timeout: 2 * time.Minute,

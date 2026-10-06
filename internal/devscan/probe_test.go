@@ -2,10 +2,16 @@ package devscan
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,8 +38,73 @@ func loopbackPort(t *testing.T, srv *httptest.Server) int {
 // pageOf keeps the rows below reading as the yes/no question they are
 // asking. The scheme has its own tests.
 func pageOf(p *prober, ctx context.Context, port, pid int) bool {
-	_, ok := p.pageScheme(ctx, port, pid)
+	_, ok := p.pageScheme(ctx, port, pid, netip.Addr{})
 	return ok
+}
+
+// samePortServers serves v4 on 127.0.0.1 and v6 on ::1 at one port: two
+// processes that share a port number on different loopback families.
+func samePortServers(t *testing.T, v4, v6 http.Handler) int {
+	t.Helper()
+	ln6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	port := ln6.Addr().(*net.TCPAddr).Port
+	ln4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		_ = ln6.Close()
+		t.Skipf("127.0.0.1:%d is taken by another process: %v", port, err)
+	}
+	for _, pair := range []struct {
+		ln      net.Listener
+		handler http.Handler
+	}{{ln4, v4}, {ln6, v6}} {
+		srv := &http.Server{Handler: pair.handler, ReadHeaderTimeout: time.Second}
+		go func() { _ = srv.Serve(pair.ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+	}
+	return port
+}
+
+func htmlHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	_, _ = w.Write([]byte("<!doctype html>"))
+}
+
+func jsonHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{}`))
+}
+
+// The probe asks the socket discovery named, not whatever holds the same
+// port on the other family, and still sends Host: localhost.
+func TestProbeAsksTheDiscoveredAddress(t *testing.T) {
+	var hosts []string
+	var mu sync.Mutex
+	record := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hosts = append(hosts, r.Host)
+			mu.Unlock()
+			next(w, r)
+		}
+	}
+	port := samePortServers(t, record(htmlHandler), record(jsonHandler))
+	probe := newProber(time.Now)
+	if _, ok := probe.pageScheme(context.Background(), port, 1, netip.MustParseAddr("127.0.0.1")); !ok {
+		t.Fatal("the page on 127.0.0.1 was judged by the API on ::1")
+	}
+	if _, ok := probe.pageScheme(context.Background(), port, 1, netip.IPv6Loopback()); ok {
+		t.Fatal("the API on ::1 was judged by the page on 127.0.0.1")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, host := range hosts {
+		if host != "localhost:"+strconv.Itoa(port) {
+			t.Fatalf("Host = %q, want localhost:%d", host, port)
+		}
+	}
 }
 
 func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
@@ -158,7 +229,7 @@ func TestACancelledProbeIsNotAVerdict(t *testing.T) {
 	if pageOf(probe, ctx, port, 7) {
 		t.Fatal("a cancelled probe returned a verdict")
 	}
-	if _, ok := probe.cached(strconv.Itoa(port) + "/7"); ok {
+	if _, ok := probe.cached(strconv.Itoa(port) + "/7/" + netip.Addr{}.String()); ok {
 		t.Fatal("a cancelled probe was remembered as a verdict")
 	}
 
@@ -168,5 +239,50 @@ func TestACancelledProbeIsNotAVerdict(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("server hits = %d, want 1 (the cancelled attempt never reached it)", hits)
+	}
+}
+
+func TestDialAddrReachesTheBoundSocket(t *testing.T) {
+	for _, tc := range []struct{ bound, want string }{
+		{"127.0.0.1", "127.0.0.1"},
+		{"127.0.0.2", "127.0.0.2"},
+		{"::1", "::1"},
+		{"0.0.0.0", "127.0.0.1"},
+		{"::", "::1"},
+		{"::ffff:127.0.0.1", "127.0.0.1"},
+	} {
+		if got := dialAddr(netip.MustParseAddr(tc.bound)); got != netip.MustParseAddr(tc.want) {
+			t.Errorf("dialAddr(%s) = %v, want %s", tc.bound, got, tc.want)
+		}
+	}
+}
+
+// sniLocalhostServer is a TLS page that refuses a handshake whose SNI is
+// not localhost, the shape of a dev server selecting its certificate by
+// name.
+func sniLocalhostServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(htmlHandler))
+	srv.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if hello.ServerName != "localhost" {
+			return nil, fmt.Errorf("SNI %q, want localhost", hello.ServerName)
+		}
+		return nil, nil
+	}}
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// An https dev server reached at a discovered literal address still gets
+// SNI localhost.
+func TestProbeSendsLocalhostSNIToADiscoveredAddress(t *testing.T) {
+	srv := sniLocalhostServer(t)
+	addr := srv.Listener.Addr().(*net.TCPAddr)
+	probe := newProber(time.Now)
+	scheme, ok := probe.pageScheme(context.Background(), addr.Port, 1, netip.MustParseAddr(addr.IP.String()))
+	if !ok || scheme != "https" {
+		t.Fatalf("pageScheme = %q, %v; want https", scheme, ok)
 	}
 }

@@ -2,10 +2,14 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,6 +97,14 @@ func newPreviewRigOn(t *testing.T, scheme string, handler http.HandlerFunc) *pre
 	})
 	upstream := loopbacktest.NewUnstartedServer(t, record)
 	if scheme == "https" {
+		// The proxy dials the discovered literal address and must still
+		// send SNI localhost, the name a dev server answers to.
+		upstream.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			if hello.ServerName != "localhost" {
+				return nil, fmt.Errorf("SNI %q, want localhost", hello.ServerName)
+			}
+			return nil, nil
+		}}
 		upstream.StartTLS()
 	} else {
 		upstream.Start()
@@ -114,7 +126,9 @@ func newPreviewRigOn(t *testing.T, scheme string, handler http.HandlerFunc) *pre
 		SessionLive: func(sessionID string) bool { return rig.live(sessionID) },
 	})
 	t.Cleanup(rig.gw.Close)
-	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: scheme}})
+	// The address discovery would report for the upstream's socket.
+	upstreamAddr := netip.MustParseAddr(upstream.Listener.Addr().(*net.TCPAddr).IP.String())
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: scheme, Addr: upstreamAddr}})
 	rig.addr = previewAddr(t, rig.gw, port)
 	return rig
 }
@@ -536,6 +550,117 @@ func TestAPortThatChangesSchemeIsRebound(t *testing.T) {
 	}
 	if len(source.binds) != 2 {
 		t.Fatalf("binds = %v, want two: the first bind and the rebuild", source.binds)
+	}
+}
+
+// The proxy dials the dev server's own socket when another process holds
+// the same port on the other loopback family, follows an address change
+// without rebinding the port, and keeps the last address through a row
+// that has none.
+func TestTheProxyDialsTheDiscoveredUpstreamAddress(t *testing.T) {
+	ln6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	port := ln6.Addr().(*net.TCPAddr).Port
+	ln4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		_ = ln6.Close()
+		t.Skipf("127.0.0.1:%d is taken by another process: %v", port, err)
+	}
+	hosts := make(chan string, 8)
+	for _, pair := range []struct {
+		ln   net.Listener
+		body string
+	}{{ln4, "v4"}, {ln6, "v6"}} {
+		srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hosts <- r.Host
+			_, _ = w.Write([]byte(pair.body))
+		})}
+		go func() { _ = srv.Serve(pair.ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+	}
+
+	rig := &previewRig{port: port, live: func(string) bool { return true }}
+	rig.gw = newTestGateway(t, &stubPreviewSource{host: "backend.test"})
+	v4, v6 := netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: "http", Addr: v4}})
+	rig.addr = previewAddr(t, rig.gw, port)
+	cookie := rig.open(t, "session-1", "/")
+	get := func() string {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, rig.url("/"), nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.AddCookie(cookie)
+		resp, err := noRedirectClient().Do(req)
+		if err != nil {
+			t.Fatalf("proxied get: %v", err)
+		}
+		body, _ := readAllAndClose(resp)
+		if host := <-hosts; host != "localhost:"+strconv.Itoa(port) {
+			t.Fatalf("upstream saw Host = %q, want localhost", host)
+		}
+		return body
+	}
+
+	if got := get(); got != "v4" {
+		t.Fatalf("body = %q, want the dev server on 127.0.0.1", got)
+	}
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: "http", Addr: v6}})
+	if again := previewAddr(t, rig.gw, port); again != rig.addr {
+		t.Fatalf("an address change rebound the port: %s then %s", rig.addr, again)
+	}
+	if got := get(); got != "v6" {
+		t.Fatalf("body = %q, want the dev server on ::1 after the address moved", got)
+	}
+	// Back to 127.0.0.1, then a row with no address: localhost would
+	// reach ::1 first, so only the kept address answers v4.
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: "http", Addr: v4}})
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: "http"}})
+	if got := get(); got != "v4" {
+		t.Fatalf("body = %q, want the last known address kept", got)
+	}
+}
+
+// A target with no address keeps the port's last known one through a
+// scheme rebuild and through a bind that failed, and loses it once the
+// port leaves the set. TestTheProxyDialsTheDiscoveredUpstreamAddress
+// shows the stored address is the one the proxy dials.
+func TestAKnownUpstreamAddressOutlivesItsListener(t *testing.T) {
+	source := &stubPreviewSource{host: "backend.test"}
+	gw := newTestGateway(t, source)
+	v4 := netip.MustParseAddr("127.0.0.1")
+	upstream := func() netip.Addr {
+		t.Helper()
+		gw.mu.Lock()
+		defer gw.mu.Unlock()
+		listener := gw.ports[5173]
+		if listener == nil {
+			t.Fatalf("port 5173 is not served: %q", gw.notes[5173])
+		}
+		return listener.upstream.current()
+	}
+
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "https", Addr: v4}})
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "http"}})
+	if got := upstream(); got != v4 {
+		t.Fatalf("after a scheme rebuild, upstream = %v, want the known %v", got, v4)
+	}
+
+	source.err = errors.New("source down")
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "https"}})
+	source.err = nil
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "https"}})
+	if got := upstream(); got != v4 {
+		t.Fatalf("after a failed bind and a retry, upstream = %v, want the known %v", got, v4)
+	}
+
+	gw.SetPorts(nil)
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "https"}})
+	if got := upstream(); got.IsValid() {
+		t.Fatalf("a port that left the set came back with upstream %v, want none", got)
 	}
 }
 

@@ -3,13 +3,11 @@ package loopback
 import (
 	"context"
 	"net"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
-
-// The dialer's whole job is to IGNORE the host it is handed. These bind
-// loopback on an ephemeral port and dial with a host that would go
-// somewhere else entirely if it were honoured.
 
 func listenOn(t *testing.T, host string) (net.Listener, string) {
 	t.Helper()
@@ -25,24 +23,67 @@ func listenOn(t *testing.T, host string) (net.Listener, string) {
 	return ln, port
 }
 
-func TestDialerIgnoresTheHostAndDialsThisMachine(t *testing.T) {
+// localhost is never resolved, and a host that is neither localhost nor a
+// loopback literal is refused rather than rewritten.
+func TestDialerDialsOnlyThisMachine(t *testing.T) {
 	_, port := listenOn(t, "127.0.0.1")
 
 	dial := Dialer(2 * time.Second)
-	// A name that must never be resolved. If the dialer asked a resolver
-	// this would leave the machine or fail; it does neither, because the
-	// host is discarded and only the port is used.
 	conn, err := dial(context.Background(), "tcp", net.JoinHostPort("localhost", port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	_ = conn.Close()
 
-	conn, err = dial(context.Background(), "tcp", net.JoinHostPort("not-a-real-host.invalid", port))
-	if err != nil {
-		t.Fatalf("dial with a host that should have been discarded: %v", err)
+	// A cancelled context: a regression that dialed would fail with the
+	// context's error, never with the refusal, and sends nothing.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, host := range []string{"not-a-real-host.invalid", "192.0.2.1", "::", "fe80::1%lo0"} {
+		_, err := dial(cancelled, "tcp", net.JoinHostPort(host, port))
+		if err == nil || !strings.Contains(err.Error(), "refusing to dial") {
+			t.Fatalf("dial %s = %v, want a refusal", host, err)
+		}
 	}
-	_ = conn.Close()
+}
+
+// A literal loopback address reaches that socket, not another process on
+// the other family at the same port.
+func TestDialerHonoursALoopbackLiteral(t *testing.T) {
+	v6, port := listenOn(t, "::1")
+	v4, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Skipf("127.0.0.1:%s is taken by another process: %v", port, err)
+	}
+	defer v4.Close()
+	for _, want := range []net.Listener{v4, v6} {
+		host, _, _ := net.SplitHostPort(want.Addr().String())
+		conn, err := Dialer(2*time.Second)(context.Background(), "tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			t.Fatalf("dial %s: %v", host, err)
+		}
+		got, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		_ = conn.Close()
+		if got != host {
+			t.Fatalf("dialed %s, want %s", got, host)
+		}
+	}
+}
+
+func TestAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		addr netip.Addr
+		want string
+	}{
+		{netip.Addr{}, "localhost:5173"},
+		{netip.MustParseAddr("127.0.0.1"), "127.0.0.1:5173"},
+		{netip.MustParseAddr("::1"), "[::1]:5173"},
+		{netip.MustParseAddr("::ffff:127.0.0.1"), "127.0.0.1:5173"},
+	} {
+		if got := Authority(tc.addr, 5173); got != tc.want {
+			t.Fatalf("Authority(%v) = %q, want %q", tc.addr, got, tc.want)
+		}
+	}
 }
 
 // A dev server bound to 127.0.0.1 only is still reached, which is the

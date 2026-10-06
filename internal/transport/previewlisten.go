@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,9 +112,18 @@ type PreviewListenerSource interface {
 // the dial: a dev server on https that was proxied to over http answered
 // every request with a gateway error, while the list happily called it
 // previewable.
+//
+// Addr is the loopback address of the dev server's socket (see
+// devscan.DevServer.Addr); the zero Addr dials `localhost`. Unlike the
+// scheme it is not part of a listener's identity: discovery learns it
+// after a hand-named port is bound, or sees a restart move families, and
+// SetPorts updates it in place rather than dropping the port's sockets.
+// A zero Addr keeps the last known one for as long as the port stays in
+// the set, across a scheme rebuild and a bind that failed.
 type PreviewTarget struct {
 	Port   int
 	Scheme string
+	Addr   netip.Addr
 }
 
 // SetPorts reconciles the served set against want: bind what is new,
@@ -126,6 +136,7 @@ type PreviewTarget struct {
 // the next tick tries again.
 func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
 	wanted := make(map[int]string, len(want))
+	addrs := make(map[int]netip.Addr, len(want))
 	for _, target := range want {
 		if target.Port <= 0 || target.Port > 65535 {
 			continue
@@ -139,6 +150,7 @@ func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
 			scheme = "http"
 		}
 		wanted[target.Port] = scheme
+		addrs[target.Port] = target.Addr
 	}
 
 	g.mu.Lock()
@@ -146,9 +158,17 @@ func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
 		g.mu.Unlock()
 		return
 	}
+	for port, addr := range addrs {
+		if addr.IsValid() {
+			g.addrs[port] = addr
+		} else {
+			addrs[port] = g.addrs[port]
+		}
+	}
 	var retire []*previewListener
 	for port, listener := range g.ports {
 		if scheme, keep := wanted[port]; keep && scheme == listener.scheme {
+			listener.upstream.set(addrs[port])
 			continue
 		}
 		// Gone from the set, or still in it speaking something else.
@@ -161,10 +181,15 @@ func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
 			delete(g.notes, port)
 		}
 	}
+	for port := range g.addrs {
+		if _, keep := wanted[port]; !keep {
+			delete(g.addrs, port)
+		}
+	}
 	var fresh []PreviewTarget
 	for port, scheme := range wanted {
 		if _, served := g.ports[port]; !served {
-			fresh = append(fresh, PreviewTarget{Port: port, Scheme: scheme})
+			fresh = append(fresh, PreviewTarget{Port: port, Scheme: scheme, Addr: addrs[port]})
 		}
 	}
 	g.mu.Unlock()
@@ -198,8 +223,10 @@ func (g *PreviewGateway) bind(target PreviewTarget) {
 		// whole port is one route, and registering it says so where
 		// internal/surfaces' gate can read it.
 		conns := &previewConns{}
+		upstream := &previewUpstream{}
+		upstream.set(target.Addr)
 		mux := http.NewServeMux()
-		mux.Handle("/", g.handler(target, conns))
+		mux.Handle("/", g.handler(target, upstream, conns))
 		listener := &previewListener{
 			ln: ln,
 			srv: &http.Server{
@@ -211,9 +238,10 @@ func (g *PreviewGateway) bind(target PreviewTarget) {
 				// this request was admitted for.
 				ConnContext: withPreviewConn,
 			},
-			host:   host,
-			scheme: target.Scheme,
-			conns:  conns,
+			host:     host,
+			scheme:   target.Scheme,
+			upstream: upstream,
+			conns:    conns,
 		}
 		g.mu.Lock()
 		if g.closed || g.ports[port] != nil {

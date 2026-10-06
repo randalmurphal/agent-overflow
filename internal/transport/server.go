@@ -814,9 +814,8 @@ func listenerPort(ep *endpoint) string {
 // closing (sharePort, shareport_linux.go).
 //
 // A build without remote access binds loopback only: it refuses any other
-// requested host, and closes a listener the kernel did not report bound to
-// loopback, since WSL virtioproxy has been seen to turn a fixed 127.0.0.1
-// bind into one on every interface.
+// requested host. listenTCP refuses a loopback request the kernel did not
+// bind to loopback, in every build.
 func (s *Server) bindListener(addr string, beside *endpoint) (*endpoint, error) {
 	network := "tcp"
 	host, _, _ := net.SplitHostPort(addr)
@@ -835,26 +834,31 @@ func (s *Server) bindListener(addr string, beside *endpoint) (*endpoint, error) 
 	}
 	inner, err := s.bindTCP(network, addr, beside != nil)
 	if err != nil {
-		return nil, err
-	}
-	if !buildvariant.RemoteAccess {
-		if err := requireLoopbackBound(addr, inner); err != nil {
-			return nil, err
+		if beside != nil {
+			if unshareErr := unsharePort(beside.tcp); unshareErr != nil {
+				return nil, fmt.Errorf("%w (restoring %s's exclusive port also failed: %v)", err, beside.tcp.Addr(), unshareErr)
+			}
 		}
+		return nil, err
 	}
 	return &endpoint{tcp: inner, ln: sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout)}, nil
 }
 
 // requireLoopbackBound closes ln and refuses it unless the kernel reports
-// it bound to a loopback address.
+// it bound to a loopback address. In a build without remote access the
+// refusal is ErrRemoteAccessUnavailable.
 func requireLoopbackBound(addr string, ln net.Listener) error {
 	if loopbackListener(ln) {
 		return nil
 	}
-	if err := ln.Close(); err != nil {
-		return fmt.Errorf("transport: %s bound as %s, which is not loopback, and closing it failed: %w", addr, ln.Addr(), err)
+	refusal := fmt.Errorf("transport: %s bound as %s, which is not loopback", addr, ln.Addr())
+	if !buildvariant.RemoteAccess {
+		refusal = fmt.Errorf("%w: %w", refusal, buildvariant.ErrRemoteAccessUnavailable)
 	}
-	return fmt.Errorf("transport: %s bound as %s, which is not loopback: %w", addr, ln.Addr(), buildvariant.ErrRemoteAccessUnavailable)
+	if err := ln.Close(); err != nil {
+		return fmt.Errorf("%w, and closing it failed: %w", refusal, err)
+	}
+	return refusal
 }
 
 // loopbackListener reports whether the kernel bound ln to a loopback
@@ -901,7 +905,25 @@ func listenTCPSharing(network, addr string, sharePort bool) (net.Listener, error
 	})
 }
 
+// A literal loopback request must come back bound to loopback, or the
+// listener is closed and refused: WSL virtioproxy has been seen to turn a
+// fixed 127.0.0.1 bind into one on every interface, which would serve a
+// loopback-only backend (LAN access off, an isolated instance) to the
+// network.
 func listenTCP(network, addr string, wsl bool, listen func(network, addr string) (net.Listener, error)) (net.Listener, error) {
+	ln, err := listenTCPPort(network, addr, wsl, listen)
+	if err != nil {
+		return nil, err
+	}
+	if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && loopbackIP(host) {
+		if err := requireLoopbackBound(addr, ln); err != nil {
+			return nil, err
+		}
+	}
+	return ln, nil
+}
+
+func listenTCPPort(network, addr string, wsl bool, listen func(network, addr string) (net.Listener, error)) (net.Listener, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if !wsl || err != nil || port != "0" {
 		return listen(network, addr)

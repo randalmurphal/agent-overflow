@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // The port gateway: one TLS listener per port in this machine's preview
@@ -138,6 +142,11 @@ type PreviewGateway struct {
 	// Read back into the dev-server list, so the sentence a person sees
 	// is the one this file wrote.
 	notes map[int]string
+	// addrs is the last discovered upstream address per port in the set.
+	// It outlives any one listener, so a target that names no address
+	// (a restart in its grace period) still reaches the socket discovery
+	// last saw, even after a scheme rebuild or a failed bind.
+	addrs map[int]netip.Addr
 	// grants maps an opaque cookie token to what it admits.
 	grants map[string]previewGrant
 	// exchanges holds the ticket-to-cookie handoff across principal validation.
@@ -155,10 +164,42 @@ type previewListener struct {
 	// different upstream, so SetPorts rebuilds rather than keeping one
 	// that would 502.
 	scheme string
+	// upstream is the dev server address the proxy dials, updated in
+	// place by SetPorts.
+	upstream *previewUpstream
 	// conns is what this listener is currently carrying, so retiring it
 	// and revoking a principal both reach an upgraded socket that
 	// nothing else can (previewconns.go).
 	conns *previewConns
+}
+
+// previewUpstream is the loopback address one preview proxy dials. The
+// zero value dials `localhost`, which loopback.Dialer tries as ::1 then
+// 127.0.0.1.
+type previewUpstream struct {
+	addr atomic.Pointer[netip.Addr]
+}
+
+// set records a discovered address. The zero Addr keeps the last one: a
+// row with nothing listening (a restart in its grace period) says nothing
+// about where the server will come back.
+func (u *previewUpstream) set(addr netip.Addr) {
+	if addr.IsValid() {
+		u.addr.Store(&addr)
+	}
+}
+
+// current is the last discovered address, or the zero Addr.
+func (u *previewUpstream) current() netip.Addr {
+	if p := u.addr.Load(); p != nil {
+		return *p
+	}
+	return netip.Addr{}
+}
+
+// authority is the URL host for the next upstream request.
+func (u *previewUpstream) authority(port int) string {
+	return loopback.Authority(u.current(), port)
 }
 
 // previewGrant is what one preview cookie admits.
@@ -214,6 +255,7 @@ func newPreviewGateway(cfg PreviewGatewayConfig, content http.Handler, scheme st
 		stop:        make(chan struct{}),
 		ports:       make(map[int]*previewListener),
 		notes:       make(map[int]string),
+		addrs:       make(map[int]netip.Addr),
 		grants:      make(map[string]previewGrant),
 	}
 	go g.sweepLiveness()
@@ -407,5 +449,6 @@ func (g *PreviewGateway) takePortsLocked() []*previewListener {
 		delete(g.ports, port)
 	}
 	g.notes = make(map[int]string)
+	g.addrs = make(map[int]netip.Addr)
 	return listeners
 }

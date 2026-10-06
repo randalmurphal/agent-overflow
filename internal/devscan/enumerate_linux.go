@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,9 @@ import (
 // holding it.
 type listener struct {
 	Port int
+	// Addr is the loopback address that reaches this socket: the bound
+	// address, or the family's loopback for a wildcard bind.
+	Addr netip.Addr
 	PID  int
 	PPID int
 	PGID int
@@ -44,7 +48,7 @@ type listener struct {
 // enumerateListeners returns this machine's loopback/wildcard LISTEN
 // sockets and the pid → ppid map attribution walks.
 func enumerateListeners(procRoot string) ([]listener, map[int]int, error) {
-	inodes := map[uint64]int{}
+	inodes := map[uint64]socket{}
 	for _, name := range []string{"net/tcp", "net/tcp6"} {
 		raw, err := os.ReadFile(filepath.Join(procRoot, name))
 		if err != nil {
@@ -64,22 +68,31 @@ func enumerateListeners(procRoot string) ([]listener, map[int]int, error) {
 	owners := socketOwners(procRoot, inodes)
 	stats := map[int]procStat{}
 	listeners := make([]listener, 0, len(owners))
-	for inode, port := range inodes {
+	// Inode order, so the socket Scan sees first for a port, whose process
+	// fields win when nothing claims the port, does not change between
+	// scans with map order.
+	order := make([]uint64, 0, len(inodes))
+	for inode := range inodes {
+		order = append(order, inode)
+	}
+	slices.Sort(order)
+	for _, inode := range order {
+		sock := inodes[inode]
 		pid, ok := owners[inode]
 		if !ok {
 			// Nothing readable holds it. Still worth reporting: the port
 			// is open, the probe decides whether it answers like a page,
 			// and attribution simply finds no owner.
-			listeners = append(listeners, listener{Port: port})
+			listeners = append(listeners, listener{Port: sock.port, Addr: sock.addr})
 			continue
 		}
 		stat, ok := readStatCached(procRoot, pid, stats)
 		if !ok {
-			listeners = append(listeners, listener{Port: port, PID: pid})
+			listeners = append(listeners, listener{Port: sock.port, Addr: sock.addr, PID: pid})
 			continue
 		}
 		listeners = append(listeners, listener{
-			Port: port, PID: pid, PPID: stat.ppid, PGID: stat.pgid, Comm: stat.comm,
+			Port: sock.port, Addr: sock.addr, PID: pid, PPID: stat.ppid, PGID: stat.pgid, Comm: stat.comm,
 		})
 	}
 
@@ -93,9 +106,16 @@ func enumerateListeners(procRoot string) ([]listener, map[int]int, error) {
 	return listeners, parents, nil
 }
 
-// parseSocketTable reads one /proc/net/tcp* table, recording inode → port
+// socket is one LISTEN row: its port and the loopback address that
+// reaches it.
+type socket struct {
+	port int
+	addr netip.Addr
+}
+
+// parseSocketTable reads one /proc/net/tcp* table, recording inode → socket
 // for every LISTEN row bound to loopback or the wildcard.
-func parseSocketTable(table string, into map[uint64]int) {
+func parseSocketTable(table string, into map[uint64]socket) {
 	for _, line := range strings.Split(table, "\n") {
 		fields := strings.Fields(line)
 		// sl local rem st tx:rx tr:tm retrnsmt uid timeout inode
@@ -113,7 +133,7 @@ func parseSocketTable(table string, into map[uint64]int) {
 		if err != nil || inode == 0 {
 			continue
 		}
-		into[inode] = port
+		into[inode] = socket{port: port, addr: dialAddr(addr)}
 	}
 }
 
@@ -149,7 +169,7 @@ func parseHexAddr(cell string) (netip.Addr, int, bool) {
 
 // socketOwners walks /proc/<pid>/fd once, looking only for the inodes the
 // socket tables named.
-func socketOwners(procRoot string, inodes map[uint64]int) map[uint64]int {
+func socketOwners(procRoot string, inodes map[uint64]socket) map[uint64]int {
 	owners := make(map[uint64]int, len(inodes))
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {

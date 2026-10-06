@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -173,7 +176,7 @@ func sourceFixture(t *testing.T, kind string, large bool, hostSnapshot ...bool) 
 	if _, err := st.BindThreadTransferPeer(row.ID, offer); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewSource(st, root, nil, func(context.Context, store.ThreadTransfer) error { return nil })
+	source, err := NewSource(st, root, nil, func(context.Context, store.ThreadTransfer) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +196,7 @@ func resumeSource(t *testing.T, previous *Source, peer *sourceTestPeer) *Source 
 		t.Fatal(err)
 	}
 	previous.store, peer.store = opened, opened
-	resumed, err := NewSource(previous.store, previous.root, previous.snapshot, previous.finalize)
+	resumed, err := NewSource(previous.store, previous.root, previous.snapshot, previous.finalize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,5 +374,30 @@ func TestSourceFinalizationFailureRemainsRecoverableAfterRestart(t *testing.T) {
 	jobs, err = source.store.NextThreadTransferJobs(10)
 	if err != nil || len(jobs) != 0 || attempts != 2 || peer.activations != 1 {
 		t.Fatalf("recovery: %+v %v, finalizations %d activations %d", jobs, err, attempts, peer.activations)
+	}
+}
+
+// The source reaches its destination through the dialer it was built with,
+// the application's route to paired computers.
+func TestSourcePeerUsesTheSuppliedDialer(t *testing.T) {
+	remotetest.Require(t)
+	errDialed := errors.New("supplied dialer")
+	var dialed string
+	source, err := NewSource(storetest.Clone(t), t.TempDir(), nil, func(context.Context, store.ThreadTransfer) error { return nil },
+		func(_ context.Context, _, address string) (net.Conn, error) {
+			dialed = address
+			return nil, errDialed
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := source.peer(transferclient.Offer{Version: 1, BackendID: entityid.New(), OperationID: entityid.New(), Endpoint: "https://127.0.0.1:1",
+		CertFingerprint: "sha256:" + strings.Repeat("a", 64), Grant: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	if _, err := peer.Status(context.Background()); !errors.Is(err, errDialed) || dialed != "127.0.0.1:1" {
+		t.Fatalf("Status = %v after dialing %q, want the supplied dialer used for the offer's endpoint", err, dialed)
 	}
 }

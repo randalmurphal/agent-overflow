@@ -4,13 +4,13 @@ package devscan
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/loopback/loopbacktest"
 )
 
 // Scan end to end: a fixture proc tree names the ports, and the ports are
@@ -19,7 +19,7 @@ import (
 
 func htmlServer(t *testing.T) (*httptest.Server, int) {
 	t.Helper()
-	srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))
@@ -54,7 +54,7 @@ func TestScanSeparatesOwnedFromSeenFromNotAPage(t *testing.T) {
 	_, ownedPort := htmlServer(t)
 	_, strangerPort := htmlServer(t)
 
-	api := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -105,7 +105,7 @@ func TestScanSeparatesOwnedFromSeenFromNotAPage(t *testing.T) {
 // even though the same answer would drop a candidate nobody chose.
 func TestScanPublishesHandNamedPortsWhateverTheyAnswer(t *testing.T) {
 	var hits atomic.Int32
-	api := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
@@ -241,7 +241,15 @@ func TestScanDropsASeenPortThatWentAway(t *testing.T) {
 // A dev server bound to both loopback families is two rows in the
 // kernel's table and one thing on screen.
 func TestScanFoldsBothAddressFamiliesIntoOneRow(t *testing.T) {
-	_, port := htmlServer(t)
+	// The page is on ::1, the family the folded row dials.
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: http.HandlerFunc(htmlHandler)}}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	port := loopbackPort(t, srv)
 
 	f := newProcFixture(t)
 	f.listenRow(false, hexLoopbackV4, port, 100)
@@ -260,6 +268,38 @@ func TestScanFoldsBothAddressFamiliesIntoOneRow(t *testing.T) {
 	}
 	if servers[0].ThreadID != "thread-a" {
 		t.Errorf("row = %+v, want thread-a", servers[0])
+	}
+	if servers[0].Addr != netip.IPv6Loopback() {
+		t.Errorf("addr = %v, want ::1 for a process on both families", servers[0].Addr)
+	}
+}
+
+// A thread's dev server on 127.0.0.1 shares its port with another
+// process's API on ::1. The row names the dev server, and the probe and
+// the address the proxy will dial follow it rather than the other family.
+func TestScanFollowsTheAttributedProcessAcrossFamilies(t *testing.T) {
+	port := samePortServers(t, http.HandlerFunc(htmlHandler), http.HandlerFunc(jsonHandler))
+
+	// The API's socket has the lower inode, so Scan meets it first.
+	f := newProcFixture(t)
+	f.listenRow(true, hexLoopbackV6, port, 100)
+	f.listenRow(false, hexLoopbackV4, port, 101)
+	f.process(t, 600, 1, 600, "api", 100)
+	f.process(t, 500, 300, 300, "vite", 101)
+	f.process(t, 300, 1, 300, "claude")
+	root := f.write(t)
+
+	scanner := newScanner(root, time.Now)
+	servers, err := scanner.Scan(context.Background(), []Owner{{ThreadID: "thread-a", PID: 300, PGID: 300}}, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	row := rowFor(t, servers, port)
+	if row.ThreadID != "thread-a" || row.PID != 500 || row.Scheme != "http" {
+		t.Fatalf("row = %+v, want thread-a's vite answering http", row)
+	}
+	if row.Addr != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("addr = %v, want 127.0.0.1", row.Addr)
 	}
 }
 
@@ -310,7 +350,7 @@ func TestScanProbesCandidatesInParallel(t *testing.T) {
 
 	f := newProcFixture(t)
 	for i := range candidates {
-		srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(serve)
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte("<!doctype html>"))
@@ -351,7 +391,7 @@ func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
 	plain, plainPort := htmlServer(t)
 	_ = plain
 
-	secure := loopbacktest.NewTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))
@@ -385,7 +425,7 @@ func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
 // keeps the scheme it was serving on. It comes back on the same one, and
 // the listener held through the grace has to keep speaking it.
 func TestTheGraceRowKeepsTheScheme(t *testing.T) {
-	secure := loopbacktest.NewTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))

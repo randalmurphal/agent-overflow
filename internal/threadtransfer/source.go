@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transferclient"
@@ -66,12 +67,14 @@ type Source struct {
 	finalize SourceFinalizer
 }
 
-func NewSource(st *store.Store, root string, snapshot SourceSnapshotter, finalize SourceFinalizer) (*Source, error) {
+// NewSource builds the sending half. dial reaches the destination computer
+// the way paired calls do (see transferclient.New); nil uses the OS.
+func NewSource(st *store.Store, root string, snapshot SourceSnapshotter, finalize SourceFinalizer, dial deviceclient.DialContextFunc) (*Source, error) {
 	if st == nil || !filepath.IsAbs(root) || finalize == nil {
 		return nil, errors.New("transfer: missing source store, operations directory, or finalizer")
 	}
 	return &Source{store: st, root: root, locks: keyedlock.New(), slots: make(chan struct{}, 4), snapshot: snapshot, finalize: finalize,
-		peer: func(offer transferclient.Offer) (sourcePeer, error) { return transferclient.New(offer) }}, nil
+		peer: func(offer transferclient.Offer) (sourcePeer, error) { return transferclient.New(offer, dial) }}, nil
 }
 
 // Run resumes the durable operation. Network errors preserve its phase and
