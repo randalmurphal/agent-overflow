@@ -41,6 +41,7 @@ func requireToolURLStatus(t *testing.T, urls map[string]string, want int, when s
 }
 
 func TestSessionEndRevokesEveryToolURL(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  func(*App, string, string)
@@ -85,6 +86,7 @@ func TestSessionEndRevokesEveryToolURL(t *testing.T) {
 }
 
 func TestFailedSessionStartRevokesEveryToolURL(t *testing.T) {
+	t.Parallel()
 	a := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = a.ServiceShutdown() })
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})

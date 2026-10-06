@@ -11,6 +11,7 @@ import (
 )
 
 func TestRecoverChildOwnershipUsesOriginalSpawnAndKeepsNestedScope(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "sh", Args: []string{"-c", `

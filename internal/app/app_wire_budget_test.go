@@ -163,6 +163,7 @@ const (
 )
 
 func TestColdWindowWireBudget(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
@@ -192,6 +193,7 @@ func TestColdWindowWireBudget(t *testing.T) {
 // the other half of the shape rule, that a page whose runs all fit the
 // window ships every row it covers and still pays a stub for each run.
 func TestProseWindowWireBudget(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, proseRunThreadShape())
 
@@ -234,6 +236,7 @@ func TestProseWindowWireBudget(t *testing.T) {
 // of the rows carrying elidable fields, which is the other mechanism and
 // is measured on its own below.
 func TestColdWindowWireBudget_ProjectionIsWhatMakesIt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, proseRunThreadShape())
 
@@ -279,6 +282,7 @@ func TestColdWindowWireBudget_ProjectionIsWhatMakesIt(t *testing.T) {
 // window opened to its ceiling, both projected, so the run window is the
 // only difference.
 func TestColdWindowWireBudget_TheRunWindowIsWhatMakesIt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 

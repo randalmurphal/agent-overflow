@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // turnIdentityScript is a fake app-server that records every frame it is sent
@@ -45,9 +46,7 @@ while IFS= read -r line; do
 done
 `, capturePath, steerBranch)
 	path := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -84,6 +83,7 @@ func capturedFrameParams(t *testing.T, capturePath, method string) map[string]an
 // has existed since 0.136 — below AO's 0.143 provider floor — so it is sent
 // unconditionally with no version gate.
 func TestTurnVerbsStampTheClientUserMessageID(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  turnIdentityScript(t, capture, ""),
@@ -125,6 +125,7 @@ func TestTurnVerbsStampTheClientUserMessageID(t *testing.T) {
 // for a producer that supplies none, so an explicit empty string would be a
 // value no echo could ever match rather than an absence.
 func TestTurnVerbsOmitAnAbsentClientUserMessageID(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  turnIdentityScript(t, capture, ""),
@@ -163,6 +164,7 @@ func TestTurnVerbsOmitAnAbsentClientUserMessageID(t *testing.T) {
 //   - a non-steerable turn means one IS running and starting a second would
 //     interleave the user's message with a review or a compaction.
 func TestSteerRejectionsAreClassified(t *testing.T) {
+	t.Parallel()
 	notSteerableData := `{"message":"cannot steer a review turn",` +
 		`"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}},` +
 		`"additionalDetails":null}`
@@ -241,6 +243,7 @@ func TestSteerRejectionsAreClassified(t *testing.T) {
 // state from the two precondition races, which arrive with the same code and
 // no data at all.
 func TestSteerNotSteerableReachesTheCallerThroughTheWire(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	binary := turnIdentityScript(t, capture,
 		`{"code":-32600,"message":"cannot steer a review turn",`+

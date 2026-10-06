@@ -29,6 +29,35 @@ func (r *recordingTB) Errorf(format string, args ...any) {
 	r.errors = append(r.errors, fmt.Sprintf(format, args...))
 }
 
+// errRecordedFatal is the panic Fatal and Fatalf raise in place of Goexit, so
+// expectFatal can return the message to the test.
+type errRecordedFatal struct{ message string }
+
+func (r *recordingTB) Fatal(args ...any) { panic(errRecordedFatal{fmt.Sprint(args...)}) }
+
+func (r *recordingTB) Fatalf(format string, args ...any) {
+	panic(errRecordedFatal{fmt.Sprintf(format, args...)})
+}
+
+// expectFatal runs fn and returns the message it failed the test with, or
+// fails t when fn returned normally.
+func expectFatal(t *testing.T, fn func()) (message string) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		fatal, ok := recovered.(errRecordedFatal)
+		if !ok {
+			if recovered != nil {
+				panic(recovered)
+			}
+			t.Fatal("expected a fatal failure, got none")
+		}
+		message = fatal.message
+	}()
+	fn()
+	return ""
+}
+
 // runCleanups runs the recorded cleanups LIFO, the way testing does.
 func (r *recordingTB) runCleanups() {
 	for i := len(r.cleanups) - 1; i >= 0; i-- {
@@ -182,4 +211,125 @@ func TestStubTextGenerationExecutorAlwaysErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "text generation is stubbed in tests") {
 		t.Errorf("stub executor error = %v, want the stubbed-generation error", err)
 	}
+}
+
+// setProcessHome stands in for DetachProcessHome having run in TestMain, and
+// restores the package state after the test.
+func setProcessHome(t *testing.T, home string) {
+	t.Helper()
+	previous := processHome
+	processHome = home
+	t.Cleanup(func() { processHome = previous })
+}
+
+// TestDetachProcessHomeDetachesTheWholeProcess pins the process-wide half of
+// the guard: the same environment DetachHome installs per test, applied with
+// os.Setenv to a fresh empty directory, overrides removed by presence.
+func TestDetachProcessHomeDetachesTheWholeProcess(t *testing.T) {
+	for _, key := range homeVars {
+		t.Setenv(key, os.Getenv(key)) // registers the restore
+	}
+	for _, key := range providerHomeOverrideVars {
+		t.Setenv(key, "/tmp/developer-exported-"+key)
+	}
+	setProcessHome(t, "")
+	real, _ := os.UserHomeDir()
+
+	remove, err := DetachProcessHome()
+	if err != nil {
+		t.Fatalf("DetachProcessHome() error = %v", err)
+	}
+	home := processHome
+	if home == "" || home == real {
+		t.Fatalf("process home = %q, want a temp dir distinct from %q", home, real)
+	}
+	for _, key := range homeVars {
+		if got := os.Getenv(key); got != home {
+			t.Errorf("%s = %q, want the process home %q", key, got, home)
+		}
+	}
+	for _, key := range providerHomeOverrideVars {
+		if got, present := os.LookupEnv(key); present {
+			t.Errorf("%s survived DetachProcessHome as %q; it must be UNSET", key, got)
+		}
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", home, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("process home is not empty: %v", entries)
+	}
+
+	if _, err := DetachProcessHome(); err == nil {
+		t.Error("second DetachProcessHome() error = nil, want a refusal")
+	}
+	if err := remove(); err != nil {
+		t.Fatalf("remove process home: %v", err)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Errorf("process home after remove: stat error = %v, want not-exist", err)
+	}
+}
+
+func TestIsolateProcessSpawnsRequiresADetachedProcess(t *testing.T) {
+	setProcessHome(t, "")
+
+	message := expectFatal(t, func() { IsolateProcessSpawns(&recordingTB{TB: t}) })
+
+	if !strings.Contains(message, "DetachProcessHome") {
+		t.Errorf("fatal = %q, want it to name DetachProcessHome", message)
+	}
+}
+
+func TestIsolateProcessSpawnsRefusesAProviderHomeOverride(t *testing.T) {
+	setProcessHome(t, t.TempDir())
+	t.Setenv("CODEX_HOME", "/tmp/developer-exported-CODEX_HOME")
+
+	message := expectFatal(t, func() { IsolateProcessSpawns(&recordingTB{TB: t}) })
+
+	if !strings.Contains(message, "CODEX_HOME") {
+		t.Errorf("fatal = %q, want it to name CODEX_HOME", message)
+	}
+}
+
+// TestIsolateProcessSpawnsAllowsParallelTests pins what the process-wide home
+// buys: the per-test half installs the poison and tripwire without touching
+// the environment, so it runs inside parallel tests.
+func TestIsolateProcessSpawnsAllowsParallelTests(t *testing.T) {
+	home := t.TempDir()
+	setProcessHome(t, home)
+	for _, key := range providerHomeOverrideVars {
+		if _, present := os.LookupEnv(key); present {
+			t.Skipf("%s is exported by the shell running this test", key)
+		}
+	}
+	homeBefore := os.Getenv("HOME")
+
+	t.Run("group", func(t *testing.T) {
+		for _, name := range []string{"a", "b"} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				rec := &recordingTB{TB: t}
+				isolation := IsolateProcessSpawns(rec)
+
+				if isolation.Home != home {
+					t.Errorf("Home = %q, want the process home %q", isolation.Home, home)
+				}
+				if got := os.Getenv("HOME"); got != homeBefore {
+					t.Errorf("HOME = %q, want it untouched (%q)", got, homeBefore)
+				}
+				if _, err := os.Stat(isolation.PoisonedBinary); err != nil {
+					t.Errorf("poisoned binary missing: %v", err)
+				}
+				if err := exec.Command(isolation.PoisonedBinary).Run(); err == nil {
+					t.Fatal("poisoned binary exited 0")
+				}
+				rec.runCleanups()
+				if len(rec.errors) != 1 || !strings.Contains(rec.errors[0], "spawned a provider binary without a mock") {
+					t.Errorf("tripwire errors = %v, want the spawn reported", rec.errors)
+				}
+			})
+		}
+	})
 }

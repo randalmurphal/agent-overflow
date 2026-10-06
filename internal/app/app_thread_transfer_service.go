@@ -68,7 +68,7 @@ func (a *App) startThreadTransfers() error {
 		if err := a.announceTransferredDraft(row); err != nil {
 			log.Printf("app: announce transferred draft: %v", err)
 		}
-	}, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) })
+	}, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) }, a.transferPendingRetry)
 	if err != nil {
 		return err
 	}

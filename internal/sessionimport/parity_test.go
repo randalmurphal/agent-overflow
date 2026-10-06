@@ -2,13 +2,13 @@ package sessionimport
 
 import (
 	"database/sql"
-	"path/filepath"
 	"reflect"
 	"testing"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -276,7 +276,7 @@ func TestImportBuildIsDeterministic(t *testing.T) {
 			workspace := t.TempDir()
 			importOnce := func() (store.ImportBatch, []string) {
 				t.Helper()
-				path := filepath.Join(t.TempDir(), "history.db")
+				path := storetest.ClonePath(t)
 				st, err := store.New(path)
 				if err != nil {
 					t.Fatalf("new store: %v", err)

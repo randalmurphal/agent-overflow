@@ -27,6 +27,7 @@ func slowHandler(rec *seqRecorder) func(provider.ProviderEvent) {
 }
 
 func TestProviderEventDrainWaitsForABacklogThatKeepsMoving(t *testing.T) {
+	t.Parallel()
 	const threadID = "thread-drain-backlog"
 	qs := providerEventQueues{drainStall: drainTestStall}
 	rec := &seqRecorder{}
@@ -44,6 +45,7 @@ func TestProviderEventDrainWaitsForABacklogThatKeepsMoving(t *testing.T) {
 }
 
 func TestProviderEventDrainAllWaitsForEveryBacklogThatKeepsMoving(t *testing.T) {
+	t.Parallel()
 	qs := providerEventQueues{drainStall: drainTestStall}
 	recs := map[string]*seqRecorder{}
 	for n := range 3 {

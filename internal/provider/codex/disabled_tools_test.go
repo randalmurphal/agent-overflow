@@ -12,12 +12,14 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The table is the whole feature: a wrong or missing key leaves a tool the
 // user disabled in the model's context. Verified against rust-v0.147.0 —
 // docs/references/codex-instructions-tools.md carries the source citations.
 func TestDisabledToolConfigOverridesMapsEveryToggle(t *testing.T) {
+	t.Parallel()
 	want := map[string]map[string]any{
 		"web_search":         {"web_search": "disabled"},
 		"update_plan":        {"tools.update_plan.enabled": false},
@@ -47,6 +49,7 @@ func TestDisabledToolConfigOverridesMapsEveryToggle(t *testing.T) {
 }
 
 func TestDisabledToolConfigOverridesMergesAndIgnoresUnknownIDs(t *testing.T) {
+	t.Parallel()
 	// An id this build does not know is skipped, never fatal: the list is
 	// settings data that outlives any one AO version.
 	got := DisabledToolConfigOverrides([]string{"web_search", "  ", "not_a_real_toggle", "view_image"})
@@ -66,6 +69,7 @@ func TestDisabledToolConfigOverridesMergesAndIgnoresUnknownIDs(t *testing.T) {
 }
 
 func TestBuildThreadParamsCarriesDisabledToolConfigKeys(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{
 		DisabledTools:   []string{"update_plan", "collab_agents"},
 		ReasoningEffort: "high",
@@ -90,6 +94,7 @@ func TestBuildThreadParamsCarriesDisabledToolConfigKeys(t *testing.T) {
 }
 
 func TestConfigFromOptionsCarriesDisabledTools(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:      "codex",
 		DisabledTools: []string{"web_search"},
@@ -102,6 +107,7 @@ func TestConfigFromOptionsCarriesDisabledTools(t *testing.T) {
 // The config map and baseInstructions are start-time only — Codex re-reads
 // neither per turn — so a change in either must fall out as a restart.
 func TestPlanLiveUpdateRequiresRestartForOverrideAxes(t *testing.T) {
+	t.Parallel()
 	base := provider.SessionOptions{Provider: "codex", Model: "gpt-5.6-sol"}
 
 	withTools := base
@@ -124,6 +130,7 @@ func TestPlanLiveUpdateRequiresRestartForOverrideAxes(t *testing.T) {
 // they do because they share buildThreadParams. This drives a real
 // (mock-backed) session so a future split of that call site fails here.
 func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	script := "#!/bin/bash\n" +
@@ -134,9 +141,7 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"thread\":{\"id\":\"mock-thread\"}}}\\n' \"$id\"\n" +
 		"done\n"
 	binary := filepath.Join(dir, "codex")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock app-server: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 
 	cfg := Config{
 		Binary:        binary,
@@ -197,6 +202,7 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 // all. Same two-sided-copy pin as TestReservedEnvNamesMatchTheProviderPins,
 // parsing the mirror the way internal/highlight pins its JS hash parity.
 func TestDisabledToolTogglesMatchTheFrontendMirror(t *testing.T) {
+	t.Parallel()
 	const mirror = "frontend/src/lib/utils/promptOverrides.ts"
 	source := readRepoFile(t, mirror)
 	frontend := setOf(exportedArrayLiterals(t, source, mirror, "CODEX_TOOL_TOGGLES", `\bid:\s*'([^']*)'`))

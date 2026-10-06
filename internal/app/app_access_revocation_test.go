@@ -19,6 +19,7 @@ import (
 // held stops resolving on all three transport hooks at once. They share
 // Sessions.Live, which is exactly why there is nothing to check per hook.
 func TestRevokedDeviceIsRefusedByEveryHook(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	const thumbprint = "thumb-revoked-hooks"
 	grant := pairedDeviceGrant(t, app, thumbprint)
@@ -62,6 +63,7 @@ func TestRevokedDeviceIsRefusedByEveryHook(t *testing.T) {
 // a credential that survived a first revocation is exactly the one worth
 // reaching. The early return that made it a no-op is the incident.
 func TestReRevokingADeviceStillSweepsAndCloses(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	conns := &recordingConns{}
 	AttachSessionConns(app, conns)
@@ -95,6 +97,7 @@ func TestReRevokingADeviceStillSweepsAndCloses(t *testing.T) {
 // revoked; restoring it is the one deliberate remedy, and even that hands
 // back no credential.
 func TestARevokedDeviceCannotRegainAccess(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, session := pairDevice(t, app, "A browser", "thumb-regain")
 	if _, err := app.RevokeAccessDevice(device.ID); err != nil {

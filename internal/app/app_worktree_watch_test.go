@@ -35,7 +35,7 @@ type watchFixture struct {
 func newWatchFixture(t *testing.T) watchFixture {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	project, err := app.ensureProjectForWorkspace(testutil.InitGitRepo(t))
+	project, err := app.ensureProjectForWorkspace(initMainGitRepo(t))
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
@@ -140,10 +140,10 @@ func (f watchFixture) assertAtRoot(t *testing.T, id string) store.Thread {
 }
 
 func TestReconcileProjectWorktreesReattachesThreadsOfExternallyRemovedWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-ext")
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, f.app)
 	const sessionID = "0192bbbb-external-remove"
 	attached := f.thread(t, "thread-ext-attached", worktree, "feature-ext")
 	attached.SessionRef = sessionID
@@ -182,7 +182,7 @@ func TestReconcileProjectWorktreesReattachesThreadsOfExternallyRemovedWorktree(t
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Errorf("stale transcript under the dead slug not purged: err=%v", err)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, f.repo); err != nil || !samePath(located, wantDest) {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, f.app), sessionID, f.repo); err != nil || !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile from root = %q, %v; want %q", located, err, wantDest)
 	}
 
@@ -200,6 +200,7 @@ func TestReconcileProjectWorktreesReattachesThreadsOfExternallyRemovedWorktree(t
 // `rm -rf` leaves the registration behind. A registered checkout that is not
 // on disk is as gone as an unregistered one.
 func TestReconcileProjectWorktreesReattachesDeletedButRegisteredWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-rm")
 	attached := f.thread(t, "thread-rm-attached", worktree, "feature-rm")
@@ -213,6 +214,7 @@ func TestReconcileProjectWorktreesReattachesDeletedButRegisteredWorktree(t *test
 }
 
 func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	kept := f.worktree(t, "feature-kept")
 	removed := f.worktree(t, "feature-removed")
@@ -243,6 +245,7 @@ func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
 // A thread whose repository root is not a checkout (deleted repository) has
 // nowhere to be reattached to; the sweep must not move it onto that path.
 func TestReconcileProjectWorktreesSkipsProjectWhoseRootIsGone(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-orphan")
 	attached := f.thread(t, "thread-orphan", worktree, "feature-orphan")
@@ -261,6 +264,7 @@ func TestReconcileProjectWorktreesSkipsProjectWhoseRootIsGone(t *testing.T) {
 // neither CLI exits when its cwd is deleted, and a restart nobody asked for
 // would start work the user did not send. The thread is told why.
 func TestReconcileProjectWorktreesStopsIdleSessionWithoutRestart(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-idle")
 	attached := f.thread(t, "thread-idle-session", worktree, "feature-idle")
@@ -301,6 +305,7 @@ func TestReconcileProjectWorktreesStopsIdleSessionWithoutRestart(t *testing.T) {
 // message queued behind it goes back to the composer instead of being
 // dropped. Nothing restarts it.
 func TestReconcileProjectWorktreesStopsSessionMidTurn(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-busy")
 	attached := f.thread(t, "thread-mid-turn", worktree, "feature-busy")
@@ -348,6 +353,7 @@ func TestReconcileProjectWorktreesStopsSessionMidTurn(t *testing.T) {
 // End to end: the registry watcher sees a terminal's removal and the row
 // heals without anyone viewing or touching the thread.
 func TestWorktreeWatchReattachesAfterExternalRemoval(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-watched")
 	attached := f.thread(t, "thread-watched", worktree, "feature-watched")
@@ -363,6 +369,7 @@ func TestWorktreeWatchReattachesAfterExternalRemoval(t *testing.T) {
 // The watched set follows the project rows through the broadcast chokepoints,
 // so no binding has to know the watcher exists.
 func TestSyncWorktreeWatchFollowsProjectRows(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	startWorktreeWatchForTest(t, f.app)
 	// The store template carries a project of its own, so membership is
@@ -371,7 +378,7 @@ func TestSyncWorktreeWatchFollowsProjectRows(t *testing.T) {
 		t.Fatalf("Projects() = %v, want %s among them", got, f.project.Path)
 	}
 
-	second := testutil.InitGitRepo(t)
+	second := initMainGitRepo(t)
 	added, err := f.app.ensureProjectForWorkspace(second)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace(second): %v", err)
@@ -408,6 +415,7 @@ func startWorktreeWatchForTest(t *testing.T, app *App) {
 // A failed auto-reconnect is reported on the thread, not only logged: the
 // death banner alone would leave the user guessing why nothing came back.
 func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto-reconnect-fails")
 	thread.SessionRef = "claude-resume-fails"
@@ -437,6 +445,7 @@ func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
 // Nothing is watched before the activation gate opens: a sweep moves rows
 // and restarts sessions, which a supervisor trial must not do.
 func TestSyncWorktreeWatchWaitsForActivation(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	f.app.startWorktreeWatch()
 	t.Cleanup(f.app.closeWorktreeWatch)
@@ -458,10 +467,10 @@ func TestSyncWorktreeWatchWaitsForActivation(t *testing.T) {
 // relocation: the Claude-only branch must not create a Claude projects dir
 // for it.
 func TestReconcileProjectWorktreesReattachesCodexThreadWithoutRelocation(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-codex")
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, f.app)
 	const threadRef = "codex-thread-external-remove"
 	attached := f.thread(t, "thread-codex-external", worktree, "feature-codex")
 	attached.Provider = string(provider.Codex)
@@ -495,10 +504,10 @@ func TestReconcileProjectWorktreesReattachesCodexThreadWithoutRelocation(t *test
 // does; the root-slug transcript must then hold them, with no copy left
 // under the dead slug, so a resume from Base finds the whole conversation.
 func TestReconcileProjectWorktreesMovesLiveTranscriptAfterTheStop(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-live-transcript")
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, f.app)
 	const sessionID = "0192cccc-live-transcript"
 	attached := f.thread(t, "thread-live-transcript", worktree, "feature-live-transcript")
 	attached.SessionRef = sessionID
@@ -545,7 +554,7 @@ func TestReconcileProjectWorktreesMovesLiveTranscriptAfterTheStop(t *testing.T) 
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Errorf("a copy remains under the dead slug: err=%v", err)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, f.repo); err != nil || !samePath(located, dest) {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, f.app), sessionID, f.repo); err != nil || !samePath(located, dest) {
 		t.Errorf("LocateSessionFile from root = %q, %v; want %q", located, err, dest)
 	}
 }

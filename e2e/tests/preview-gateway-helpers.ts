@@ -382,6 +382,29 @@ const PHONE_LABEL = 'Preview phone';
 /** The refusal a request with no live grant gets, verbatim. */
 const PREVIEW_ENDED = 'This preview session ended. Open the link again from Agent Overflow.';
 
+// devServerScanInterval in internal/app/app_preview.go.
+const DEV_SERVER_SCAN_INTERVAL_MS = 3_000;
+
+/**
+ * Waits until the discovery loop has completed a tick with no remote reader
+ * attached. While one is attached every tick publishes `devserver:list`; a
+ * tick without one publishes nothing and releases idle listeners instead. So
+ * an interval that passes with no new list after the last one proves such a
+ * tick ran. The margin covers the tick's own work and the event's delivery.
+ */
+async function awaitDiscoveryTickWithoutReader(harness: HarnessApp, page: Page): Promise<void> {
+  const lastList = () => Math.max(0, ...harness.eventTimes('devserver:list'));
+  let last = lastList();
+  expect(last, 'the attached phone must have received discovery lists').toBeGreaterThan(0);
+  for (;;) {
+    const quietUntil = last + DEV_SERVER_SCAN_INTERVAL_MS + 500;
+    await page.waitForTimeout(Math.max(0, quietUntil - Date.now()));
+    const latest = lastList();
+    if (latest === last) return;
+    last = latest;
+  }
+}
+
 /**
  * The `CommandOutputMeta` triage wrote for one row. It rides the heavy
  * PAYLOAD rather than the item, which is also where `CommandOutput.svelte`
@@ -401,12 +424,13 @@ function commandMetaOf(item: Item): { devServerUrl?: string } {
  */
 export function definePreviewGatewaySuite(surface: PreviewSurface): void {
   test.describe.serial(`dev-server preview gateway (${surface.name})`, () => {
-    // Not green-washed: a host with no non-loopback interface genuinely
-    // has no preview address, and the whole gateway is about serving one.
+    // Not green-washed: outside the test network namespace (macOS) there
+    // is no LAN preview address to serve without LAN traffic, and the
+    // whole gateway is about serving one.
     // A skip is visible in the report; a vacuous pass is not.
     test.skip(
       lanIP === null,
-      'no non-loopback IPv4 interface on this host, so this machine has no preview address',
+      'outside the test network namespace, so this machine has no LAN preview address',
     );
 
     let harness: HarnessApp;
@@ -627,11 +651,11 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
         ).toEqual([]);
 
         // An external preview has its own browser grant. Let the app's last
-        // remote connection disappear across a complete 3s discovery tick;
-        // the request below must still reach the dev server. Fake-clock unit
+        // remote connection disappear across a complete discovery tick; the
+        // request below must still reach the dev server. Fake-clock unit
         // tests cover the ticket/grant expiry boundaries without this delay.
         await phone.goto('about:blank');
-        await phone.waitForTimeout(4_000);
+        await awaitDiscoveryTickWithoutReader(harness, phone);
 
         // The path and query, byte for byte, and the Host the upstream
         // insists on. `%2F` stays encoded: a re-encoded path is an HMR

@@ -83,7 +83,7 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 	if _, err := identity.PairingAccess(access).Grants(); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	address, err := network.PairingAddressOnNetwork(a.transportServer.Load(), a.persistedNetworkSettings(), networkChoice)
+	address, err := network.PairingAddressOnNetwork(a.transportServer.Load(), a.persistedNetworkSettings(), a.netReach, networkChoice)
 	if err != nil {
 		return ComputerPairingWindow{}, err
 	}
@@ -151,14 +151,19 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 
 // advertiseComputerPairing starts the LAN responders for one window with mu
 // released, then adopts them only while that window is still the open one.
-// A failure is the window's user-facing state, not a log line.
+// A failure is the window's user-facing state, not a log line. A loopback
+// Reach starts none and says so the same way.
 func (a *App) advertiseComputerPairing(book *pairbootstrap.Book, windowID string) {
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return
 	}
-	id, _ := a.backendIdentity()
-	adv, err := nearby.Start(nearby.Advertisement{BackendID: id, Name: a.backendDisplayName, Port: portFromAddr(srv.Addr())})
+	var adv *nearby.Server
+	err := nearby.ErrIsolated
+	if !a.netReach.LoopbackOnly() {
+		id, _ := a.backendIdentity()
+		adv, err = nearby.Start(nearby.Advertisement{BackendID: id, Name: a.backendDisplayName, Port: portFromAddr(srv.Addr())})
+	}
 	s := &a.computerPairing
 	s.mu.Lock()
 	adopt := s.windowID == windowID && book.Snapshot(windowID).Open

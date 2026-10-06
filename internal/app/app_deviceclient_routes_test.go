@@ -43,6 +43,7 @@ func alternatePairedListener(t *testing.T, backend *pairedBackend) computerroute
 // transport, identity and SQLite store. The proxy target never changes; its
 // paired client must carry both HTTP and WS over the newly verified route.
 func TestPairedProxySwitchesListenersWithoutChangingComputerOrSession(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	var advertised atomic.Value
 	advertised.Store([]computerroute.Route(nil))

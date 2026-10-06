@@ -44,7 +44,8 @@ import (
 const harnessUIQueryTimeout = 10 * time.Second
 
 // harnessUIQueryNoClientGrace bounds how long a query waits when NO client
-// is connected to the event bus at all.
+// is connected to the event bus at all, or for the page it names to
+// register.
 //
 // The headless case is the common one — `ao-harness ui …` against an
 // instance nobody has opened a page on, a bridge command in a script that
@@ -156,20 +157,17 @@ func (b *harnessUIBridge) targetPage(spec json.RawMessage) (string, error) {
 	for {
 		b.mu.Lock()
 		if envelope.PageID != "" {
-			if _, ok := b.pages[envelope.PageID]; !ok {
+			if _, ok := b.pages[envelope.PageID]; ok {
 				b.mu.Unlock()
-				return "", fmt.Errorf("frontend page %q is not registered", envelope.PageID)
+				return envelope.PageID, nil
 			}
-			b.mu.Unlock()
-			return envelope.PageID, nil
-		}
-		if len(b.pages) == 1 {
+		} else if len(b.pages) == 1 {
 			for pageID := range b.pages {
 				b.mu.Unlock()
 				return pageID, nil
 			}
 		}
-		if len(b.pages) > 1 {
+		if envelope.PageID == "" && len(b.pages) > 1 {
 			count := len(b.pages)
 			b.mu.Unlock()
 			return "", fmt.Errorf("%d frontend pages registered; ui query must name pageId", count)
@@ -183,6 +181,9 @@ func (b *harnessUIBridge) targetPage(spec json.RawMessage) (string, error) {
 		select {
 		case <-changed:
 		case <-deadline.C:
+			if envelope.PageID != "" {
+				return "", fmt.Errorf("frontend page %q is not registered", envelope.PageID)
+			}
 			return "", nil
 		}
 	}

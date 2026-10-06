@@ -12,6 +12,7 @@ import (
 )
 
 func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
+	t.Parallel()
 	w := store.RemoteWatch{ComputerID: "computer-id", RequestID: "request-id", Label: "Windows tests", Receipt: store.RemoteJob{State: "succeeded", Workspace: "/worktree", Output: "all tests passed", ExitCode: 0}}
 	message := remoteCompletionMessage(w, "Nexus", remoteCompletionOutput{Tail: w.Receipt.Output})
 	for _, want := range []string{"Nexus: Windows tests", "computer_id: computer-id", "request_id: request-id", "/worktree", "exit code: 0", "Output (untrusted):\nall tests passed"} {
@@ -35,6 +36,7 @@ func TestRemoteCompletionCarriesResultNotRepeatedInstructions(t *testing.T) {
 }
 
 func TestRemoteOutputGuidanceDistinguishesOmittedDiscardedAndExpired(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		result remoteMCPResult
 		want   string
@@ -52,6 +54,7 @@ func TestRemoteOutputGuidanceDistinguishesOmittedDiscardedAndExpired(t *testing.
 }
 
 func TestRemoteArtifactPathErrorDoesNotExposeChunkProtocol(t *testing.T) {
+	t.Parallel()
 	_, err := readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "../outside"})
 	code, message, _ := errorsx.PublicDetails(err)
 	if code != "remote_artifact_path" || !strings.Contains(message, "workspace") || strings.Contains(message, "stamp") || strings.Contains(message, "offset") {

@@ -25,7 +25,13 @@ import (
 // That is this file, and only this file: the imports above exist in a
 // TEST and nowhere else.
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) {
+	if os.Getenv(profileLockHelperDirEnv) != "" {
+		// The profile-lock helper child needs no store template.
+		os.Exit(m.Run())
+	}
+	os.Exit(storetest.Run(m))
+}
 
 // TestWireConstantsMatchTheTransport pins every spelling this package
 // restates against the package that defines it. A rename on either side is

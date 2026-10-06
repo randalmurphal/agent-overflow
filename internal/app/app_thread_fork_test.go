@@ -37,9 +37,9 @@ func assertForkUserProviderIDs(t *testing.T, app *App, threadID string, want map
 // ids the fork's rows carry from the source name entries in the fork's
 // own transcript.
 func TestForkThreadFromMessageKeepsClaudeUUIDs(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-ids-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
@@ -53,14 +53,14 @@ func TestForkThreadFromMessageKeepsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
-	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
+	sourceRows := readClaudeSessionRows(t, app, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
 		t.Fatalf("fork from message: %v", err)
 	}
 
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork.SessionRef, sourceRows[:4])
 	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"first": "u0", "second": "u1"})
 	items, err := app.store.ListItems(fork.ID)
 	if err != nil {
@@ -86,9 +86,9 @@ func TestForkThreadFromMessageKeepsClaudeUUIDs(t *testing.T) {
 // `lookupTurnAnchorClaudeUUID` helper (the user_text at the first
 // turn DROPPED from the fork); the id contract is the message-keyed one.
 func TestForkThreadAtTurnIndexKeepsClaudeUUIDs(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-turn-ids"
 	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
@@ -100,7 +100,7 @@ func TestForkThreadAtTurnIndexKeepsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"u0"}`)
 	insertUserItemWithMeta(t, app.store, source.ID, "user:1", 1, "second", `{"provider_item_id":"u1"}`)
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
-	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
+	sourceRows := readClaudeSessionRows(t, app, workspace, sessionID)
 
 	atTurn := 1
 	fork, err := app.ForkThread(t.Context(), source.ID, &atTurn)
@@ -108,7 +108,7 @@ func TestForkThreadAtTurnIndexKeepsClaudeUUIDs(t *testing.T) {
 		t.Fatalf("fork at turn: %v", err)
 	}
 
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork.SessionRef, sourceRows[:4])
 	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"first": "u0", "second": "u1"})
 }
 
@@ -117,9 +117,9 @@ func TestForkThreadAtTurnIndexKeepsClaudeUUIDs(t *testing.T) {
 // uuids, so the provider ids inherited through both forks name entries in
 // fork2's own transcript.
 func TestForkOfForkKeepsClaudeUUIDs(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-of-fork-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
@@ -133,7 +133,7 @@ func TestForkOfForkKeepsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
-	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
+	sourceRows := readClaudeSessionRows(t, app, workspace, sessionID)
 
 	fork1, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestForkOfForkKeepsClaudeUUIDs(t *testing.T) {
 	if fork2.SessionRef == fork1.SessionRef || fork2.SessionRef == sessionID {
 		t.Fatalf("fork2 session ref = %q, want its own slice", fork2.SessionRef)
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork2.SessionRef, sourceRows[:2])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork2.SessionRef, sourceRows[:2])
 	assertForkUserProviderIDs(t, app, fork2.ID, map[string]string{"first": "u0"})
 }
 
@@ -165,9 +165,9 @@ func TestForkOfForkKeepsClaudeUUIDs(t *testing.T) {
 // work before the queued message) in the fork, matching the session-file
 // slice which cuts at the message uuid, not the turn boundary.
 func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-midturn-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-midturn-source","message":{"role":"user","content":"first"}}
@@ -189,7 +189,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 1, "queued", `{"provider_item_id":"uq"}`)
 	insertAssistantTextItem(t, app.store, source.ID, "a:q", 1, "queued reply")
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 1, "uq", "a1")
-	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
+	sourceRows := readClaudeSessionRows(t, app, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
@@ -209,7 +209,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 		t.Errorf("fork items = %v, want %v", got, want)
 	}
 
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork.SessionRef, sourceRows[:4])
 	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"second": "u1"})
 }
 
@@ -218,9 +218,9 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 // keep turn 0's prefix and slice the session, not start empty (the turn-0
 // shortcut only applies to an anchor that OPENS turn 0).
 func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-midturn0-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-midturn0-source","message":{"role":"user","content":"first"}}
@@ -237,7 +237,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 	insertAssistantTextItem(t, app.store, source.ID, "a:0", 0, "reply 0")
 	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 0, "queued", `{"provider_item_id":"uq"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 0, "uq", "a0")
-	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
+	sourceRows := readClaudeSessionRows(t, app, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
@@ -259,13 +259,14 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 	if fork.SessionRef == "" {
 		t.Fatal("mid-turn-0 fork must slice the session, not start fresh")
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:2])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork.SessionRef, sourceRows[:2])
 }
 
 // TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem locks the helper's
 // happy path: a turn with a stamped user_text row returns that row's
 // provider_item_id so the UUID-keyed fork-slice branch can be taken.
 func TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-happy", "claude", t.TempDir())
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, "first", `{"provider_item_id":"u0"}`)
@@ -284,6 +285,7 @@ func TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem(t *testing.T) {
 // requested turn must not be picked as the anchor — those rows aren't
 // turn-boundary anchors and would mis-slice the fork.
 func TestLookupTurnAnchorClaudeUUIDSkipsWireOnlyUserItems(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-wireonly", "claude", t.TempDir())
 	// AO-authored row that opens turn 1 (gets the anchor).
@@ -302,6 +304,7 @@ func TestLookupTurnAnchorClaudeUUIDSkipsWireOnlyUserItems(t *testing.T) {
 // dispatch to the ordinal-walk fallback rather than passing an empty
 // UUID into WriteForkFileForUserMessageUUID.
 func TestLookupTurnAnchorClaudeUUIDReturnsEmptyForUnstamped(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-unstamped", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
@@ -321,9 +324,9 @@ func TestLookupTurnAnchorClaudeUUIDReturnsEmptyForUnstamped(t *testing.T) {
 // and starts a fresh provider session instead of attempting an empty
 // slice.
 func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-headheal-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-headheal-source","message":{"role":"user","content":"first"}}
@@ -375,9 +378,9 @@ func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
 // SQLite clone and the provider cut both derive from the item, so the
 // two histories stay aligned and the fork succeeds.
 func TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "fork-drift-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-drift-source","message":{"role":"user","content":"first"}}
@@ -401,7 +404,7 @@ func TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift(t *testing.T) {
 	}
 	// The synthesized anchor keys the slice on the ITEM's provider id
 	// (u1), so the fork keeps exactly turn 0.
-	assertClaudeSessionText(t, workspace, fork.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, fork.SessionRef, []string{"first"}, []string{"second"})
 	items, err := app.store.ListItems(fork.ID)
 	if err != nil {
 		t.Fatalf("list fork items: %v", err)

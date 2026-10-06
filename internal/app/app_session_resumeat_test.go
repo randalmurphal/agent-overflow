@@ -2,6 +2,8 @@ package app
 
 import (
 	"testing"
+
+	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
 // resumeAtTestSession is the incident topology (see
@@ -19,13 +21,12 @@ const resumeAtTestSession = `{"type":"user","uuid":"u1","parentUuid":null,"messa
 {"type":"system","subtype":"api_error","uuid":"err2","parentUuid":"err1","level":"error","retryAttempt":2,"error":{"message":"Connection error."}}
 `
 
-func writeResumeAtTestSession(t *testing.T) (workspace string) {
+func writeResumeAtTestSession(t *testing.T) (projectsDir, workspace string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	workspace = t.TempDir()
 	writeClaudeProjectSession(t, home, workspace, "resume-at-session", resumeAtTestSession)
-	return workspace
+	return sessionfork.ProjectsDirForHome(home), workspace
 }
 
 // TestResolveClaudeResumeAtUsesBranchAwareScan pins the spawn-time cursor:
@@ -33,13 +34,14 @@ func writeResumeAtTestSession(t *testing.T) (workspace string) {
 // resume-at would kill the session pre-init, so the scan's deepest
 // on-branch row decides.
 func TestResolveClaudeResumeAtUsesBranchAwareScan(t *testing.T) {
-	workspace := writeResumeAtTestSession(t)
-	if got := resolveClaudeResumeAt(testProviderProjectsDir(t), "resume-at-session", workspace); got != "u2" {
+	t.Parallel()
+	projectsDir, workspace := writeResumeAtTestSession(t)
+	if got := resolveClaudeResumeAt(projectsDir, "resume-at-session", workspace); got != "u2" {
 		t.Fatalf("resolveClaudeResumeAt = %q, want u2 from the branch-aware scan", got)
 	}
 	// A missing session file resumes with no cursor: the app then omits
 	// --resume-session-at entirely.
-	if got := resolveClaudeResumeAt(testProviderProjectsDir(t), "no-such-session", workspace); got != "" {
+	if got := resolveClaudeResumeAt(projectsDir, "no-such-session", workspace); got != "" {
 		t.Fatalf("resolveClaudeResumeAt = %q, want empty when the session file is missing", got)
 	}
 }

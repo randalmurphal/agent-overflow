@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -27,9 +28,7 @@ func writeClaudeStdinRecorderBinary(t *testing.T, logPath string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-stdin-recorder.sh")
 	script := fmt.Sprintf("#!/bin/sh\nset -u\nwhile IFS= read -r line; do\n    printf '%%s\\n' \"$line\" >> '%s'\ndone\n", logPath)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write recorder binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -127,9 +126,9 @@ func flushQueuePayloadJSON(t *testing.T, payload flushQueuePayload) json.RawMess
 // anchor, one response turn. Revert to that row then cuts the SQLite timeline
 // and the provider transcript at the same place.
 func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 
 	const sessionID = "joined-flush-session"
@@ -343,7 +342,7 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 	}
 	// Provider cut: the joined entry and everything after it is gone, the
 	// work before it survives.
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"original prompt", "working on it"},
 		[]string{messages[0], messages[1], messages[2], "answer to all three"})
 	// SQLite cut agrees: one row removed, not one of three with two orphans.
@@ -371,6 +370,7 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 // failure on its third member must leave nothing on the wire, nothing
 // persisted, and all three messages back on the queue in order.
 func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-join-fail")
@@ -461,6 +461,7 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 // answered for; re-dispatching it must keep all of them on the fresh row, or a
 // retry of a member other than the first would send a duplicate.
 func TestDispatchFlush_Claude_RedispatchKeepsInheritedSendIDs(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-rejoin")
@@ -615,6 +616,7 @@ func waitForCapturedUserEnvelopeParts(t *testing.T, capturePath string, want int
 // The STORED summary is renumbered by the same walk as the wire text, so both
 // stay true to the joined attachment order.
 func TestDispatchFlush_Claude_JoinRenumbersImageMarkers(t *testing.T) {
+	t.Parallel()
 	app := newMixedTurnApp(t)
 	thread, capturePath := newMixedTurnThread(t, app, "thread-join-images")
 

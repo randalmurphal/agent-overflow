@@ -96,6 +96,7 @@ func v2ActivityLine(threadID, turnID, itemID, kind, childThreadID, agentPath str
 // row — turn-end reconciliation then flipped it to errored, leaving permanent
 // junk in the timeline.
 func TestMultiAgentV2ActivityStartedLegIsDropped(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"started", "interacted", "interrupted"} {
 		t.Run(kind, func(t *testing.T) {
 			params := v2ActivityParams("root-provider-thread", "root-turn", "activity-1", kind, "child-a", "/root/reviewer")
@@ -114,6 +115,7 @@ func TestMultiAgentV2ActivityStartedLegIsDropped(t *testing.T) {
 // dropping the started leg is only safe while the completed leg keeps
 // synthesizing the full contract for every kind.
 func TestMultiAgentV2ActivityCompletedLegClassification(t *testing.T) {
+	t.Parallel()
 	type wantEvent struct {
 		kind     provider.EventKind
 		itemType string
@@ -171,6 +173,7 @@ func TestMultiAgentV2ActivityCompletedLegClassification(t *testing.T) {
 // started+completed wire pair through the session, which is the sequence that
 // left errored `subAgentActivity` tool rows in production thread 4567bd49.
 func TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -194,6 +197,7 @@ func TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus(t *testing.T) {
 }
 
 func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -246,6 +250,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 }
 
 func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -284,6 +289,7 @@ func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
 }
 
 func TestMultiAgentV2NestedChildrenNeverEnterParentLifecycle(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -334,6 +340,7 @@ func TestMultiAgentV2NestedChildrenNeverEnterParentLifecycle(t *testing.T) {
 }
 
 func TestMultiAgentV2ChildCompletionAndInterruptAreScopedStatuses(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -355,6 +362,7 @@ func TestMultiAgentV2ChildCompletionAndInterruptAreScopedStatuses(t *testing.T) 
 }
 
 func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -389,6 +397,7 @@ func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
 }
 
 func TestMultiAgentV2CompletedActivitySettlesTheExistingLaunch(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -410,6 +419,7 @@ func TestMultiAgentV2CompletedActivitySettlesTheExistingLaunch(t *testing.T) {
 }
 
 func TestMultiAgentV2SpawnDoesNotExposeEncryptedRawMessage(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -437,6 +447,7 @@ func TestMultiAgentV2SpawnDoesNotExposeEncryptedRawMessage(t *testing.T) {
 }
 
 func TestMultiAgentV2ChildThreadWideEventsAreSuppressedAndErrorsAreNonFatal(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -475,6 +486,7 @@ func TestMultiAgentV2ChildThreadWideEventsAreSuppressedAndErrorsAreNonFatal(t *t
 }
 
 func TestMultiAgentV2DeferredChildApprovalDrainsAfterOwnership(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -493,6 +505,7 @@ func TestMultiAgentV2DeferredChildApprovalDrainsAfterOwnership(t *testing.T) {
 }
 
 func TestMultiAgentV2RawExecResultStaysInAOThreadAndChildScope(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -512,6 +525,7 @@ func TestMultiAgentV2RawExecResultStaysInAOThreadAndChildScope(t *testing.T) {
 }
 
 func TestMultiAgentV2OwnershipRejectsSelfAndConflictingRemap(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, nil)
 	if s.registerChildOwnership("root-provider-thread", "root-provider-thread", "/root", "spawn-self") {
 		t.Fatal("registered root provider thread as its own child")
@@ -528,6 +542,7 @@ func TestMultiAgentV2OwnershipRejectsSelfAndConflictingRemap(t *testing.T) {
 }
 
 func TestMultiAgentV2OwnershipAllowsPathReuseByNewChildAfterRestart(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, nil)
 	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
 		t.Fatal("register historical child ownership")
@@ -563,6 +578,7 @@ func TestMultiAgentV2OwnershipAllowsPathReuseByNewChildAfterRestart(t *testing.T
 }
 
 func TestMultiAgentV2HistoryCannotReplaceLivePathOwner(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, nil)
 	if !s.registerChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
 		t.Fatal("register live child ownership")
@@ -583,6 +599,7 @@ func TestMultiAgentV2HistoryCannotReplaceLivePathOwner(t *testing.T) {
 }
 
 func TestMultiAgentV2PathReuseDrainsBufferedChildCompletion(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -618,6 +635,7 @@ func TestMultiAgentV2PathReuseDrainsBufferedChildCompletion(t *testing.T) {
 }
 
 func TestMultiAgentV2LegacyConversationApprovalUsesChildScope(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -633,6 +651,7 @@ func TestMultiAgentV2LegacyConversationApprovalUsesChildScope(t *testing.T) {
 }
 
 func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -654,6 +673,7 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 }
 
 func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	providerThreadID := strings.Repeat("x", maxDeferredChildThreadIDBytes+1)
 	line, err := json.Marshal(map[string]any{
@@ -673,6 +693,7 @@ func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
 }
 
 func TestCollabResumeOwnershipsSupportV1AndV2(t *testing.T) {
+	t.Parallel()
 	ownerships, err := collabResumeOwnerships([]ResumeCollabLaunch{
 		{
 			ItemID: "spawn-v1",
@@ -698,6 +719,7 @@ func TestCollabResumeOwnershipsSupportV1AndV2(t *testing.T) {
 }
 
 func TestCollabResumeOwnershipsKeepValidRowsWhenOneIsMalformed(t *testing.T) {
+	t.Parallel()
 	ownerships, err := collabResumeOwnerships([]ResumeCollabLaunch{
 		{ItemID: "broken", Meta: json.RawMessage(`{"input":`)},
 		{ItemID: "valid", Meta: json.RawMessage(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-valid"]}}`)},
@@ -711,6 +733,7 @@ func TestCollabResumeOwnershipsKeepValidRowsWhenOneIsMalformed(t *testing.T) {
 }
 
 func TestCollabResumeOwnershipRecoveryHasNoTotalChildLimit(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	// Keep the test at the ownership boundary: a closed session suppresses the
 	// asynchronous metadata reads after every edge has been registered.
@@ -732,6 +755,7 @@ func TestCollabResumeOwnershipRecoveryHasNoTotalChildLimit(t *testing.T) {
 }
 
 func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "requests.jsonl")
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -810,6 +834,7 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 }
 
 func TestCollabHistoryTerminalReconciliation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		snapshot   collabThreadSnapshot
@@ -890,6 +915,7 @@ func TestCollabHistoryTerminalReconciliation(t *testing.T) {
 }
 
 func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)

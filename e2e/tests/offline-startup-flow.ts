@@ -15,6 +15,29 @@ export function offlineStartupFlow(): void {
     const toasts: string[] = [];
     await page.exposeFunction('__recordStartupToast', (text: string) => { if (capture) toasts.push(text); });
     await page.addInitScript(() => {
+      // Boot reads race a 2.5s deadline (COMPUTER_READ_DEADLINE_MS and the
+      // UI-state read, both through readBeforeDeadline). Track every timer
+      // of that length so the outage can end once each has fired or been
+      // cleared, instead of after a fixed sleep.
+      const deadlines = { armed: 0, fired: 0, pending: new Set<unknown>() };
+      (window as unknown as { __bootDeadlines: typeof deadlines }).__bootDeadlines = deadlines;
+      const nativeSet = window.setTimeout.bind(window);
+      const nativeClear = window.clearTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+        if (delay !== 2500 || typeof handler !== 'function') return nativeSet(handler, delay, ...args);
+        deadlines.armed++;
+        const id = nativeSet(() => {
+          deadlines.pending.delete(id);
+          deadlines.fired++;
+          (handler as (...a: unknown[]) => void)(...args);
+        }, delay);
+        deadlines.pending.add(id);
+        return id;
+      }) as typeof window.setTimeout;
+      window.clearTimeout = ((id?: number) => {
+        deadlines.pending.delete(id);
+        nativeClear(id);
+      }) as typeof window.clearTimeout;
       const seen = new Set<string>();
       new MutationObserver(() => {
         for (const element of document.querySelectorAll('[data-testid="toast"]')) {
@@ -43,15 +66,14 @@ export function offlineStartupFlow(): void {
       capture = true;
       await page.reload();
       await expect(page.getByTestId('transport-status-banner')).toBeVisible();
-      // Keep the outage longer than the catalog's 2.5-second startup budget.
-      await page.waitForTimeout(3000);
+      // Keep the outage past every boot read's deadline.
+      await page.waitForFunction(() => {
+        const deadlines = (window as unknown as { __bootDeadlines: { fired: number; pending: Set<unknown> } }).__bootDeadlines;
+        return deadlines.fired > 0 && deadlines.pending.size === 0;
+      });
       expect(toasts).toEqual([]);
       online = true;
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0, { timeout: 20_000 });
-      // Compact boot opens the sidebar. Prove history recovered before a
-      // click can trigger another load, then reveal the already-restored pane.
-      await expect(page.getByText('Ready.', { exact: true })).toBeAttached();
-      if (test.info().project.name === 'compact') await page.getByTestId('thread-row').click();
       await expect(page.getByText('Ready.', { exact: true })).toBeVisible();
       await expect(page.getByLabel('Message Input')).toBeEnabled();
       await expect(page.getByLabel('Message Input')).toHaveValue('Keep this draft');

@@ -10,6 +10,7 @@ import (
 )
 
 func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
+	t.Parallel()
 	b := newPairedBackend(t)
 	manager, e := attachedbackends.New(t.TempDir(), "Host", "test")
 	if e != nil {
@@ -49,6 +50,7 @@ func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	}
 }
 func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	b := newPairedBackend(t)
 	manager, e := attachedbackends.New(t.TempDir(), "Host", "test")

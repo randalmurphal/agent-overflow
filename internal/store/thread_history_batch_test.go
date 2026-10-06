@@ -333,3 +333,188 @@ func TestInsertThreadHistoryIndexesEveryBatchAndSkipsStreamingRows(t *testing.T)
 		t.Fatalf("%d rows missing from search", len(want))
 	}
 }
+
+// chunkedHistoryFixture is a block long enough for multi-row statements:
+// runs of rows that adopt nothing span several chunks and end mid-chunk,
+// broken by rows written alone (anchors). Trigger effects inside a chunk
+// and across the break are both present: a background launch settled by a
+// completion in the same run, a completion stored before the anchor that
+// launches it, error rows, and payload rows.
+func chunkedHistoryFixture(threadID string) ThreadHistoryBatch {
+	var batch ThreadHistoryBatch
+	at := int64(historyTurnStart)
+	row := func(turn, index int, kind, summary string) Item {
+		at += 10
+		role := "assistant"
+		if kind == "user_text" {
+			role = "user"
+		}
+		return Item{
+			ID: fmt.Sprintf("r-%d-%d", turn, index), TurnIndex: turn, ItemIndex: index,
+			Kind: kind, Role: role, Summary: summary, CreatedAt: at, UpdatedAt: at,
+		}
+	}
+	add := func(item Item) { batch.Rows = append(batch.Rows, HistoryRow{Item: item}) }
+	for turn := range 4 {
+		batch.Turns = append(batch.Turns, Turn{TurnID: fmt.Sprintf("%s:%d", threadID, turn), TurnIndex: turn, StartedAt: at})
+		add(row(turn, 0, "user_text", fmt.Sprintf("turn %d", turn)))
+		for index := 1; index <= 150; index++ {
+			item := row(turn, index, "assistant_text", fmt.Sprintf("swept region %d of turn %d", index, turn))
+			switch {
+			case index%37 == 0:
+				item.Kind = "error"
+				item.Summary = fmt.Sprintf("tick %d stalled", index)
+			case index%23 == 0:
+				item.Kind = "thinking"
+				item.PayloadID = item.ID + "-payload"
+				add(item)
+				batch.Rows[len(batch.Rows)-1].Payload = &Payload{
+					ID: item.PayloadID, Kind: "thinking", Data: []byte(item.Summary), CreatedAt: item.CreatedAt,
+				}
+				continue
+			}
+			add(item)
+		}
+		switch turn {
+		case 1:
+			// A launch that adopts nothing and its completion, in one run.
+			launch := row(turn, 151, "tool_call", "spawn")
+			launch.ID, launch.ToolName, launch.Status, launch.IsBackground = "collab-launch", "collab_agent", "running", true
+			add(launch)
+			done := row(turn, 152, "tool_completion", "spawn done")
+			done.CompletionOf = launch.ID
+			add(done)
+		case 2:
+			// A completion stored before the anchor that launches it.
+			done := row(turn, 151, "tool_completion", "bash done")
+			done.ID, done.CompletionOf = "early-completion", "bash-launch"
+			add(done)
+			add(row(turn, 152, "assistant_text", "between"))
+			launch := row(turn, 153, "tool_call", "Bash")
+			launch.ID, launch.ToolName, launch.Status, launch.IsBackground = "bash-launch", "Bash", "running", true
+			add(launch)
+		}
+		anchor := row(turn, 160, "tool_call", "Read")
+		anchor.ToolName = "Read"
+		add(anchor)
+		batch.Completions = append(batch.Completions, TurnCompletion{
+			TurnID: fmt.Sprintf("%s:%d", threadID, turn), CompletedAt: at + 1, StopReason: "end_turn",
+		})
+	}
+	return batch
+}
+
+// threadHistoryDump renders everything a history write leaves behind for
+// threadID, in write order, without values a second thread cannot share.
+func threadHistoryDump(t *testing.T, s *Store, threadID string) string {
+	t.Helper()
+	var out strings.Builder
+	dump := func(label, query string) {
+		rows, err := s.db.Query(query, threadID)
+		if err != nil {
+			t.Fatalf("dump %s: %v", label, err)
+		}
+		defer rows.Close()
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("dump %s columns: %v", label, err)
+		}
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		for rows.Next() {
+			if err := rows.Scan(pointers...); err != nil {
+				t.Fatalf("dump %s row: %v", label, err)
+			}
+			fmt.Fprintf(&out, "%s", label)
+			for _, value := range values {
+				if b, ok := value.([]byte); ok {
+					value = string(b)
+				}
+				fmt.Fprintf(&out, "|%v", value)
+			}
+			out.WriteByte('\n')
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("dump %s: %v", label, err)
+		}
+	}
+	dump("thread", `SELECT history_rev, history_epoch, newest_turn_error_at, newest_turn_error_turn
+		FROM threads WHERE id = ?`)
+	dump("turn", `SELECT turn_index, started_at, completed_at, stop_reason, assistant_message_id,
+		token_usage_json, error_message, provider_turn_id FROM turns WHERE thread_id = ? ORDER BY turn_index`)
+	dump("item", `SELECT id, turn_index, item_index, kind, role, status, summary, payload_id, input_payload_id,
+		parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at, rev
+		FROM items WHERE thread_id = ? ORDER BY rowid`)
+	dump("payload", `SELECT id, kind, meta, data, created_at, preview_spans, spans
+		FROM payloads WHERE thread_id = ? ORDER BY rowid`)
+	dump("search", `SELECT r.item_id, r.source, r.kind, f.text FROM thread_search_rows r
+		JOIN thread_search f ON f.rowid = r.rowid WHERE r.thread_id = ? ORDER BY r.rowid`)
+	dump("card", `SELECT item_id, state, descendant_count, latest_child_summary, transcript_count,
+		tool_summary, tool_turn, tool_item, tool_id, pick_turn, pick_item, pick_id, newest_turn, newest_item,
+		transcript_newest_turn, transcript_newest_item FROM subagent_aggregates WHERE thread_id = ? ORDER BY item_id`)
+	return out.String()
+}
+
+// TestInsertThreadHistoryChunksMatchOneAtATimeWrites pins the multi-row
+// statements to the writers they replace: rows, write order, stamps,
+// trigger effects, search rows and cards equal those of InsertTurn,
+// InsertItem / InsertItemWithPayload and UpdateTurnCompleted per row.
+func TestInsertThreadHistoryChunksMatchOneAtATimeWrites(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-chunked")
+	mustCreateThread(t, s, "t-row-by-row")
+
+	batch := chunkedHistoryFixture("t-chunked")
+	if len(batch.Rows) < 4*historyRowsPerInsert {
+		t.Fatalf("fixture has %d rows, too few to fill chunks of %d", len(batch.Rows), historyRowsPerInsert)
+	}
+	if err := s.InsertThreadHistory("t-chunked", batch); err != nil {
+		t.Fatalf("insert chunked history: %v", err)
+	}
+
+	single := chunkedHistoryFixture("t-row-by-row")
+	for _, turn := range single.Turns {
+		turn.ThreadID = "t-row-by-row"
+		if err := s.InsertTurn(turn); err != nil {
+			t.Fatalf("insert turn %s: %v", turn.TurnID, err)
+		}
+	}
+	for _, row := range single.Rows {
+		row.Item.ThreadID = "t-row-by-row"
+		var err error
+		if row.Payload == nil {
+			err = s.InsertItem(row.Item)
+		} else {
+			err = s.InsertItemWithPayload(row.Item, *row.Payload)
+		}
+		if err != nil {
+			t.Fatalf("insert item %s: %v", row.Item.ID, err)
+		}
+	}
+	for _, completion := range single.Completions {
+		if err := s.UpdateTurnCompleted(completion.TurnID, completion.CompletedAt, completion.StopReason, "", "", ""); err != nil {
+			t.Fatalf("complete turn %s: %v", completion.TurnID, err)
+		}
+	}
+
+	chunked, rowByRow := threadHistoryDump(t, s, "t-chunked"), threadHistoryDump(t, s, "t-row-by-row")
+	if chunked != rowByRow {
+		chunkedLines, singleLines := strings.Split(chunked, "\n"), strings.Split(rowByRow, "\n")
+		for i := range min(len(chunkedLines), len(singleLines)) {
+			if chunkedLines[i] != singleLines[i] {
+				t.Fatalf("first difference at line %d:\nchunked:    %s\nrow by row: %s", i, chunkedLines[i], singleLines[i])
+			}
+		}
+		t.Fatalf("chunked dump has %d lines, row by row %d", len(chunkedLines), len(singleLines))
+	}
+	for _, want := range []string{
+		"|collab-launch|", "|early-completion|", `"live_background_active":false`, "\nsearch|r-3-150|",
+	} {
+		if !strings.Contains(chunked, want) {
+			t.Errorf("dump lacks %q; the fixture no longer covers what it names", want)
+		}
+	}
+}

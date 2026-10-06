@@ -8,6 +8,7 @@ import (
 )
 
 func TestSanitizeWorktreePathSegment(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -34,6 +35,7 @@ func TestSanitizeWorktreePathSegment(t *testing.T) {
 }
 
 func TestDefaultWorktreesBaseDir(t *testing.T) {
+	t.Parallel()
 	got := DefaultWorktreesBaseDir("/home/u/repos/agent-overflow")
 	want := filepath.Join("/home/u/repos", "agent-overflow-worktrees")
 	if got != want {
@@ -42,6 +44,7 @@ func TestDefaultWorktreesBaseDir(t *testing.T) {
 }
 
 func TestUniqueWorktreePathReturnsInputWhenAbsent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "feature-login")
 	got, err := UniqueWorktreePath(target)
@@ -54,6 +57,7 @@ func TestUniqueWorktreePathReturnsInputWhenAbsent(t *testing.T) {
 }
 
 func TestUniqueWorktreePathSuffixesWhenPresent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	base := filepath.Join(dir, "feature")
 	if err := os.MkdirAll(base, 0o755); err != nil {

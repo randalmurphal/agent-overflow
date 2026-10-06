@@ -96,6 +96,7 @@ func localChannelSession(t *testing.T, app *App) store.Session {
 }
 
 func TestValidClientID(t *testing.T) {
+	t.Parallel()
 	valid := []string{
 		"11111111-2222-3333-4444-555555555555", // uuid shape (Go + crypto.randomUUID)
 		"abcd1234",                             // minimum length
@@ -127,6 +128,7 @@ func TestValidClientID(t *testing.T) {
 // the unit device-tier state is scoped to, and the screen's declared client
 // id must not move that bucket.
 func TestUIStateScope_PairedSessionGetsTheDeviceBucket(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	device, session := pairDevice(t, app, "A browser", "thumb-browser")
 
@@ -154,6 +156,7 @@ func TestUIStateScope_PairedSessionGetsTheDeviceBucket(t *testing.T) {
 // session names the BACKEND's own channel, not one screen, so two screens
 // sharing it must keep two buckets.
 func TestUIStateScope_LocalChannelKeepsPerScreenBuckets(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	session := localChannelSession(t, app)
 	const screenA = "11111111-2222-3333-4444-555555555555"
@@ -189,6 +192,7 @@ func TestUIStateScope_LocalChannelKeepsPerScreenBuckets(t *testing.T) {
 // scope would hand a revoked device a working bucket by ignoring the
 // credential it presented.
 func TestUIStateScope_RevokedSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	_, session := pairDevice(t, app, "A browser", "thumb-browser")
 	if _, err := app.identityState().sessions.RevokeSession(session.ID); err != nil {
@@ -205,6 +209,7 @@ func TestUIStateScope_RevokedSessionIsRefused(t *testing.T) {
 // declared screen is an error. An anonymous bucket would be one every
 // anonymous connection shares.
 func TestUIStateScope_AnonymousConnectionHasNoBucket(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	for _, ctx := range []context.Context{
 		context.Background(), // not a transport connection at all
@@ -220,6 +225,7 @@ func TestUIStateScope_AnonymousConnectionHasNoBucket(t *testing.T) {
 // TestUIStateBindings_ReadsOnlyTheCallersBucket covers the
 // launch-credential path: no session, a declared screen, today's buckets.
 func TestUIStateBindings_ReadsOnlyTheCallersBucket(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	const clientA = "11111111-2222-3333-4444-555555555555"
 	const clientB = "99999999-8888-7777-6666-555555555555"
@@ -248,6 +254,7 @@ func TestUIStateBindings_ReadsOnlyTheCallersBucket(t *testing.T) {
 }
 
 func TestMigrateUIStateFromSettings_MovesLegacyKeysOnce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	configDir := t.TempDir()
 
@@ -299,6 +306,7 @@ func TestMigrateUIStateFromSettings_MovesLegacyKeysOnce(t *testing.T) {
 }
 
 func TestMigrateUIStateFromSettings_NoFileIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	configDir := t.TempDir()
 
@@ -315,6 +323,7 @@ func TestMigrateUIStateFromSettings_NoFileIsNoOp(t *testing.T) {
 }
 
 func TestUIStateBindings_NilStore(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	ctx := clientCtx("11111111-2222-3333-4444-555555555555")
 	if _, err := app.GetUIState(ctx); err == nil {

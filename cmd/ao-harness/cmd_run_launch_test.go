@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harnessrun"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestLaunchManagedHarnessBindsFreshRoot(t *testing.T) {
@@ -24,15 +25,17 @@ while [ $# -gt 0 ]; do if [ "$1" = "--data-dir" ]; then root=$2; shift 2; else s
 printf '__AO_HARNESS__: {"url":"http://127.0.0.1:1/","port":1,"token":"test","dataRoot":"%s","dataDir":"%s/agent-overflow","pid":%d,"version":"test"}\n' "$root" "$root" $$
 sleep 30
 `
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	plan := harnessrun.RunPlan{Version: harnessrun.PlanVersion, RunID: "launch", Workload: "bench", DataRoot: root, Ownership: harnessrun.OwnershipFresh, Adapter: harnessrun.AdapterBench, Binary: binary}
 	launched, err := launchManagedHarness(context.Background(), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = launched.Terminate(context.Background()) }()
+	defer func() {
+		if err := launched.Terminate(context.Background()); err != nil {
+			t.Errorf("terminate: %v", err)
+		}
+	}()
 	if err := sameManagedRoot(launched.Bootstrap.DataRoot, root); err != nil {
 		t.Fatalf("bootstrap root = %q, want %q: %v", launched.Bootstrap.DataRoot, root, err)
 	}

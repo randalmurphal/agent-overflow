@@ -2,11 +2,11 @@ package claude
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestNewSessionWithMock(t *testing.T) {
@@ -40,9 +40,7 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 	// Create a script that ignores args and acts like cat.
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/mock-claude"
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\nexec cat\n"), 0755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, "#!/bin/bash\nexec cat\n")
 
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)

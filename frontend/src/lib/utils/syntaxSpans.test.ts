@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { initSyntaxClassNames, spanSegments, type EncodedLine } from './syntaxSpans';
@@ -12,7 +12,8 @@ const inheritedFamilies = [
   'embedded',
 ];
 
-beforeAll(() => {
+// Some cases install their own table; every case starts from this one.
+beforeEach(() => {
   initSyntaxClassNames(['none', 'keyword', 'string', 'string-special', 'comment']);
 });
 

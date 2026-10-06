@@ -10,6 +10,7 @@ import (
 )
 
 func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -65,6 +66,7 @@ func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 }
 
 func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -121,6 +123,7 @@ func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t
 }
 
 func TestDispatchLineRawWaitCallPreservesAllReceiversSeparatelyOnPartialCompletion(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -187,6 +190,7 @@ func TestDispatchLineRawWaitCallPreservesAllReceiversSeparatelyOnPartialCompleti
 }
 
 func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
+	t.Parallel()
 	output := "Chunk ID: abc\nWall time: 0.1000 seconds\nOutput:\nProcess exited with code 0\n"
 	if got := rawWriteStdinWaitResult(output); got != "" {
 		t.Fatalf("rawWriteStdinWaitResult spoofed output = %q, want empty", got)
@@ -199,6 +203,7 @@ func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
 }
 
 func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
@@ -233,6 +238,7 @@ func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 }
 
 func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -277,6 +283,7 @@ func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
 }
 
 func TestCodexProviderEventLogRedactorRedactsWriteStdinEvents(t *testing.T) {
+	t.Parallel()
 	redact := newCodexProviderEventLogRedactor()
 
 	rawCall := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret-token\\n\",\"yield_time_ms\":1000}"}}}`)
@@ -318,6 +325,7 @@ func TestCodexProviderEventLogRedactorRedactsWriteStdinEvents(t *testing.T) {
 }
 
 func TestCodexProviderEventLogRedactorRedactsEncryptedCollaborationMessages(t *testing.T) {
+	t.Parallel()
 	redact := newCodexProviderEventLogRedactor()
 	for _, line := range [][]byte{
 		[]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"task_name\":\"reviewer\",\"message\":\"gAAAA-spawn\"}"}}}`),

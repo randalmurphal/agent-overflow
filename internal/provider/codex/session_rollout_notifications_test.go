@@ -15,6 +15,7 @@ import (
 )
 
 func TestRolloutSubagentNotificationLineEmitsEvent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -61,6 +62,7 @@ func TestRolloutSubagentNotificationLineEmitsEvent(t *testing.T) {
 }
 
 func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -87,6 +89,7 @@ func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T
 }
 
 func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -125,6 +128,7 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 }
 
 func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
 	if err := os.WriteFile(path, nil, 0644); err != nil {
 		t.Fatalf("write empty rollout: %v", err)
@@ -196,6 +200,7 @@ func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
 }
 
 func TestReadRolloutAppendStartsAfterExistingHistory(t *testing.T) {
+	t.Parallel()
 	const threadID = "0199c0de-dead-beef-cafe-000000000001"
 	path := filepath.Join(t.TempDir(), "rollout-2026-08-24T00-00-00-"+threadID+".jsonl")
 	historical := append(rolloutUserSubagentNotificationLine(t, "child-old", "completed"), '\n')
@@ -240,6 +245,7 @@ func TestReadRolloutAppendStartsAfterExistingHistory(t *testing.T) {
 }
 
 func TestPrepareRolloutSubagentNotificationObserverValidatesPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	valid := filepath.Join(dir, "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
 	if err := os.WriteFile(valid, []byte("history\n"), 0644); err != nil {
@@ -283,6 +289,7 @@ func TestPrepareRolloutSubagentNotificationObserverValidatesPath(t *testing.T) {
 // polling its rollout file every 150ms for the life of the session buys
 // nothing — which is what this thread's resume used to do unconditionally.
 func TestResumeArmsRolloutTailOnlyWithUnresolvedSubagents(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		unresolved bool
@@ -336,6 +343,7 @@ func TestResumeArmsRolloutTailOnlyWithUnresolvedSubagents(t *testing.T) {
 // (V1 `collabAgentToolCall spawn_agent`, V2 `subAgentActivity kind:"started"`),
 // never a string sniff of the wire.
 func TestSpawnObservedMidSessionArmsRolloutTail(t *testing.T) {
+	t.Parallel()
 	const providerThreadID = "0199c0de-dead-beef-cafe-000000000002"
 	dir := t.TempDir()
 	rollout := filepath.Join(dir, "rollout-2026-08-25T00-00-00-"+providerThreadID+".jsonl")
@@ -365,6 +373,7 @@ func TestSpawnObservedMidSessionArmsRolloutTail(t *testing.T) {
 // for it, so every arming site is a no-op rather than a judgement call at each
 // call site.
 func TestRolloutTailIsNeverArmedOnAFreshThread(t *testing.T) {
+	t.Parallel()
 	events := make(chan provider.ProviderEvent, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -392,6 +401,7 @@ func TestRolloutTailIsNeverArmedOnAFreshThread(t *testing.T) {
 // aliases the buffer's own array, so the copy is also the case a naive
 // implementation gets wrong.
 func TestRetainRolloutPartialLineReusesBufferAcrossTicks(t *testing.T) {
+	t.Parallel()
 	// Sized like the steady state the loop settles into: a buffer that has
 	// already grown past the fragment it is asked to hold.
 	buf := retainRolloutPartialLine(make([]byte, 0, 256), []byte(`{"type":"resp`))
@@ -431,6 +441,7 @@ func TestRetainRolloutPartialLineReusesBufferAcrossTicks(t *testing.T) {
 // rolloutSubagentNotificationMaxLineBytes, and keeping that capacity would pin
 // it for the rest of the session on the strength of a single record.
 func TestRetainRolloutPartialLineShedsOversizedCapacity(t *testing.T) {
+	t.Parallel()
 	huge := make([]byte, 0, rolloutSubagentNotificationPartialKeepBytes*4)
 
 	// While the long line is still incomplete the buffer must survive — the
@@ -472,6 +483,7 @@ func TestRetainRolloutPartialLineShedsOversizedCapacity(t *testing.T) {
 // fourth carrying the start of a second record. Reusing the partial buffer must
 // not disturb either boundary.
 func TestWatchRolloutSubagentNotificationsAssemblesAcrossManyTicks(t *testing.T) {
+	t.Parallel()
 	const providerThreadID = "0199c0de-dead-beef-cafe-000000000003"
 	path := filepath.Join(t.TempDir(), "rollout-2026-08-25T00-00-00-"+providerThreadID+".jsonl")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {

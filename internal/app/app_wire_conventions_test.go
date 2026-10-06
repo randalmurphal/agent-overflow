@@ -66,6 +66,7 @@ var exemptWireNames = map[string]map[string]bool{
 }
 
 func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
+	t.Parallel()
 	for _, file := range collectGoSources(t) {
 		exempt := exemptWireNames[filepath.ToSlash(file)]
 		fileSet := token.NewFileSet()

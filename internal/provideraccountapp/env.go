@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"io/fs"
 	"log"
 	"maps"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 )
 
 func (m *Manager) providerProbeCacheKey(providerName, binary string) provider.ProbeCacheKey {
@@ -146,19 +148,29 @@ func (m *Manager) ClaudeProbeConfig(binary string, pins map[string]string) claud
 //
 // nil when there is no credential store to read — a state in which no probe
 // can run at all, so there is nothing to protect.
+//
+// An absent credential reads as fs.ErrNotExist, the probe's signal for
+// "nothing to rotate". The macOS Keychain reports absence as
+// ErrCredentialMissing, which the probe would otherwise treat as unreadable
+// and hold every CLI open for the full rotation settle window.
 func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]byte, error) {
 	credentials := m.credentials
 	if credentials == nil {
 		return nil
 	}
+	read := func() (provideraccounts.CredentialSnapshot, error) {
+		return credentials.ReadCredentialSnapshot(string(provider.Claude), "", true)
+	}
 	if home := pins["CLAUDE_CONFIG_DIR"]; home != "" {
-		return func() ([]byte, error) {
-			snapshot, err := credentials.ReadCredentialAtHome(string(provider.Claude), home)
-			return snapshot.Data, err
+		read = func() (provideraccounts.CredentialSnapshot, error) {
+			return credentials.ReadCredentialAtHome(string(provider.Claude), home)
 		}
 	}
 	return func() ([]byte, error) {
-		snapshot, err := credentials.ReadCredentialSnapshot(string(provider.Claude), "", true)
+		snapshot, err := read()
+		if provideraccounts.IsCredentialMissing(err) {
+			return nil, fs.ErrNotExist
+		}
 		return snapshot.Data, err
 	}
 }

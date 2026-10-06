@@ -5,6 +5,7 @@ import (
 )
 
 func TestAccountReadShapeCarriesChatGPTIdentity(t *testing.T) {
+	t.Parallel()
 	info, err := decodeAccountInfo(
 		[]byte(`{"account":{"type":"chatgpt","email":"user@example.com","planType":"pro"},"requiresOpenaiAuth":true}`),
 	)

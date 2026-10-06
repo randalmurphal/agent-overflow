@@ -81,7 +81,7 @@ func DefaultCaches() *Caches {
 	defaultCachesMu.Lock()
 	defer defaultCachesMu.Unlock()
 	if defaultCaches == nil {
-		defaultCaches = newCaches()
+		defaultCaches = NewCaches()
 	}
 	return defaultCaches
 }
@@ -90,11 +90,13 @@ func DefaultCaches() *Caches {
 // before constructing the App under test, never concurrently with a probe.
 func ResetDefaultCachesForTest() {
 	defaultCachesMu.Lock()
-	defaultCaches = newCaches()
+	defaultCaches = NewCaches()
 	defaultCachesMu.Unlock()
 }
 
-func newCaches() *Caches {
+// NewCaches returns empty discovery caches for a Service that must not share
+// the process-wide ones.
+func NewCaches() *Caches {
 	return &Caches{
 		Claude:      provider.NewProbeCache(claude.DefaultProbeTTL),
 		Codex:       provider.NewProbeCache(codex.DefaultProbeTTL),

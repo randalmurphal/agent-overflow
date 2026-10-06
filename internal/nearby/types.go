@@ -1,6 +1,9 @@
 package nearby
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
 // Advertisement contains public installation metadata, never pairing secrets.
 // Name is read for every query so a rename takes effect without restarting.
@@ -23,3 +26,8 @@ type Host struct {
 // Interfaces enumerates the host's interfaces; a test seam, as in
 // internal/network, so a fixture can advertise on none.
 var Interfaces = net.Interfaces
+
+// ErrIsolated is the scan result of an isolated instance confined to this
+// machine. It sends no multicast, so nothing on the LAN can find it or be
+// found by it; typed addresses still work.
+var ErrIsolated = errors.New("nearby discovery is off in an isolated instance")

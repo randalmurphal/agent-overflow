@@ -208,6 +208,7 @@ func (h *wakeHarness) usageScope(t *testing.T, providerName, accountID string, g
 }
 
 func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-thread")
 	item := h.run(t, "wake-done", engine.StateDone, "")
@@ -247,6 +248,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 }
 
 func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-busy")
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
@@ -274,6 +276,7 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 }
 
 func TestWorkflowUsageLimitStormNotifiesOncePerAccountAndWatcher(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage")
 	scope := h.usageScope(t, string(provider.Claude), "acct-a", 4)
@@ -320,6 +323,7 @@ func TestWorkflowUsageLimitStormNotifiesOncePerAccountAndWatcher(t *testing.T) {
 }
 
 func TestWorkflowUsageAttentionQueuedResumeRaceCannotSilenceLateFailure(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-busy")
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
@@ -368,6 +372,7 @@ func TestWorkflowUsageAttentionQueuedResumeRaceCannotSilenceLateFailure(t *testi
 }
 
 func TestWorkflowUsageAttentionBootSweepRedeliversAnUnsettledClaim(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-restart")
 	scope := h.usageScope(t, string(provider.Codex), "acct", 12)
@@ -412,6 +417,7 @@ func TestWorkflowUsageAttentionBootSweepRedeliversAnUnsettledClaim(t *testing.T)
 }
 
 func TestWorkflowUsageAttentionBootSweepReselectsAnAffectedRunWhenSourceResolved(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-reselect")
 	scope := h.usageScope(t, string(provider.Codex), "acct", 16)
@@ -464,6 +470,7 @@ func TestWorkflowUsageAttentionBootSweepReselectsAnAffectedRunWhenSourceResolved
 }
 
 func TestWorkflowUsageAttentionComposerRecoverySettlesTheBootClaim(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-draft")
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
@@ -515,6 +522,7 @@ func TestWorkflowUsageAttentionComposerRecoverySettlesTheBootClaim(t *testing.T)
 }
 
 func TestWorkflowUsageAttentionBootSweepResurfacesTheParkedDescendant(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-descendant-restart")
 	scope := h.usageScope(t, string(provider.Codex), "acct", 14)
@@ -548,6 +556,7 @@ func TestWorkflowUsageAttentionBootSweepResurfacesTheParkedDescendant(t *testing
 }
 
 func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-usage-child-birth")
 	scope := h.usageScope(t, string(provider.Claude), "acct", 15)
@@ -603,6 +612,7 @@ func TestWorkflowCalledChildBirthDoesNotRearmProviderUsageAttention(t *testing.T
 }
 
 func TestWorkflowMixedFanOutFailureIsNeverHiddenByUsageCoalescing(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-mixed")
 	scope := h.usageScope(t, string(provider.Codex), "acct", 3)
@@ -638,6 +648,7 @@ func TestWorkflowMixedFanOutFailureIsNeverHiddenByUsageCoalescing(t *testing.T) 
 }
 
 func TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-deleted")
 	item := h.run(t, "wake-orphan", engine.StateFailed, engine.ReasonAgentError)
@@ -671,6 +682,7 @@ func TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone(t *testing.T) {
 }
 
 func TestWorkflowWakeIgnoresUnboundAndCalledRuns(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	unbound := h.run(t, "wake-unbound", engine.StateDone, "")
 	h.app.afterWorkflowStateEvent(engine.StateEvent{
@@ -703,6 +715,7 @@ func TestWorkflowWakeIgnoresUnboundAndCalledRuns(t *testing.T) {
 // A grandchild parking while the root waits is announced at the ROOT — the run
 // a human watches and the run that carries the binding.
 func TestWorkflowDescendantParkSurfacesAtTheRoot(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-root")
 	root := h.run(t, "tree-root", engine.StateRunning, "")
@@ -753,6 +766,7 @@ func TestWorkflowDescendantParkSurfacesAtTheRoot(t *testing.T) {
 // Once the root itself rests, its own transition is the surface; announcing the
 // descendant again would be a duplicate.
 func TestWorkflowDescendantParkIsSilentOnceTheRootRests(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-settled")
 	root := h.run(t, "settled-root", engine.StateNeedsHuman, engine.ReasonChildFailed)
@@ -782,6 +796,7 @@ func TestWorkflowDescendantParkIsSilentOnceTheRootRests(t *testing.T) {
 // takes: the parked run's id, the waves between it and the root, and the failed
 // units of THAT run rather than of the root.
 func TestWorkflowDescendantParkCarriesTheChainAndItsOwnFailedUnits(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-campaign")
 	root := h.run(t, "campaign-root", engine.StateRunning, "")
@@ -865,6 +880,7 @@ func TestWorkflowDescendantParkCarriesTheChainAndItsOwnFailedUnits(t *testing.T)
 // The one park that is not a fault: the stop a human asked for. It must not read
 // like every other one, at either level of the tree.
 func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-checkpoint")
 	root := h.run(t, "checkpoint-root", engine.StateRunning, "")
@@ -909,6 +925,7 @@ func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 }
 
 func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-refs")
 	item := h.run(t, "wake-refs", engine.StateNeedsHuman, engine.ReasonUnitFailed)
@@ -963,6 +980,7 @@ func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.
 // that their own units failed. The note is what keeps the report truthful, and
 // it never displaces the id or the thread a repair verb takes.
 func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-paused")
 	item := h.run(t, "wake-paused", engine.StateNeedsHuman, engine.ReasonPaused)
@@ -1017,6 +1035,7 @@ func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
 // narrative on disk therefore carries no narrative reference — while everything
 // else it does have still does.
 func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-missing")
 	item := h.run(t, "wake-missing", engine.StateNeedsHuman, engine.ReasonStuck)
@@ -1075,6 +1094,7 @@ func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
 // one has to carry its diagnosis: the phase authored no envelope, and without
 // the cause the message says only that a run stopped.
 func TestWorkflowWakeCarriesTheEngineParkCause(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-cause")
 	item := h.run(t, "wake-cause", engine.StateNeedsHuman, engine.ReasonSetupFailed)
@@ -1103,6 +1123,7 @@ func TestWorkflowWakeCarriesTheEngineParkCause(t *testing.T) {
 // A descendant's park is announced at the root, so the cause travelling with it
 // must be the DESCENDANT's — the root ran nothing to have a cause of its own.
 func TestWorkflowDescendantWakeCarriesTheDescendantsParkCause(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-cause-root")
 	root := h.run(t, "cause-root", engine.StateRunning, "")
@@ -1144,6 +1165,7 @@ func TestWorkflowDescendantWakeCarriesTheDescendantsParkCause(t *testing.T) {
 // the root's own park reason on a descendant wake; the descendant's real
 // outputs ride the message as AttemptOutputs.
 func TestWorkflowDescendantParkOmitsTheRootsDeclaredOutputs(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-carryforward")
 	root := h.run(t, "campaign-root", engine.StateRunning, "")
@@ -1272,6 +1294,7 @@ func TestWorkflowWakeSuppressesTheSameAskAndSaysSo(t *testing.T) {
 }
 
 func TestWorkflowWakeDeliversAgainAfterSomebodyActsOnTheRun(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-acted")
 	item := h.boundRun(t, "acted-run", thread.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
@@ -1293,6 +1316,7 @@ func TestWorkflowWakeDeliversAgainAfterSomebodyActsOnTheRun(t *testing.T) {
 }
 
 func TestWorkflowWakeAlwaysDeliversAGenuinelyNewState(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		apply func(t *testing.T, h *wakeHarness, item store.WorkItem)
@@ -1344,6 +1368,7 @@ func TestWorkflowWakeAlwaysDeliversAGenuinelyNewState(t *testing.T) {
 // A descendant resumed and re-parked identically is a new ask at the root: the
 // record the root carries is spent by an action anywhere in its tree.
 func TestWorkflowWakeClearsTheRootRecordWhenADescendantIsActedOn(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-tree")
 	root := h.boundRun(t, "tree-root", thread.ID, engine.StateRunning, "")
@@ -1375,6 +1400,7 @@ func TestWorkflowWakeClearsTheRootRecordWhenADescendantIsActedOn(t *testing.T) {
 // K3: the two facts a woken agent used to have to go and fetch — where the work
 // lives, and what the parked attempt produced.
 func TestWorkflowWakeCarriesTheWorkspaceAndTheGateOutputs(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-rich")
 	item := h.boundRun(t, "rich-run", thread.ID, engine.StateNeedsHuman, engine.ReasonGate)
@@ -1415,6 +1441,7 @@ func TestWorkflowWakeCarriesTheWorkspaceAndTheGateOutputs(t *testing.T) {
 // what it left out — a digest that hides its own truncation is how a reader
 // concludes an output does not exist.
 func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-bounded")
 	item := h.boundRun(t, "bounded-run", thread.ID, engine.StateNeedsHuman, engine.ReasonGate)
@@ -1446,6 +1473,7 @@ func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
 // to make or already carries its own account, and outputs on every message
 // would put the bytes back that bounding exists to save.
 func TestWorkflowWakeOmitsTheAttemptDigestOutsideAGate(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-nondigest")
 	item := h.boundRun(t, "nondigest-run", thread.ID, engine.StateNeedsHuman, engine.ReasonStuck)
@@ -1480,6 +1508,7 @@ func TestWorkflowWakeOmitsTheAttemptDigestOutsideAGate(t *testing.T) {
 //
 // The trade is the one the guidance slot makes: redeliver over lose.
 func TestWorkflowWakeRecordsALiveDeliveryOnlyOnceItDispatches(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-durable")
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
@@ -1537,6 +1566,7 @@ func TestWorkflowWakeRecordsALiveDeliveryOnlyOnceItDispatches(t *testing.T) {
 // The claim written at hand-off is what the action spends, and the promotion is
 // a compare-and-set against it, so a spent claim can never become a record.
 func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-overtaken")
 	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
@@ -1577,6 +1607,7 @@ func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.
 // advance of every run in the app, so the one place that unbinds has to spend
 // the record.
 func TestWorkflowWakeStaleBindingSpendsTheRecord(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-unbound-later")
 	item := h.boundRun(t, "unbound-later-run", thread.ID, engine.StateNeedsHuman, engine.ReasonQuestion)

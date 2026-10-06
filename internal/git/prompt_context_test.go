@@ -9,6 +9,7 @@ import (
 )
 
 func TestPromptSnapshotReadsBranchStatusAndCommits(t *testing.T) {
+	t.Parallel()
 	dir := seedRepo(t)
 	core := NewCore()
 
@@ -44,6 +45,7 @@ func TestPromptSnapshotReadsBranchStatusAndCommits(t *testing.T) {
 }
 
 func TestPromptSnapshotOnACleanRepoHasNoStatusSection(t *testing.T) {
+	t.Parallel()
 	snapshot, err := NewCore().PromptSnapshot(seedRepo(t))
 	if err != nil {
 		t.Fatalf("PromptSnapshot() error = %v", err)
@@ -56,6 +58,7 @@ func TestPromptSnapshotOnACleanRepoHasNoStatusSection(t *testing.T) {
 // Not being a repository is an ANSWER, not a failure: the caller renders
 // an empty git block and the session starts either way.
 func TestPromptSnapshotOutsideARepositoryIsNotAnError(t *testing.T) {
+	t.Parallel()
 	snapshot, err := NewCore().PromptSnapshot(t.TempDir())
 	if err != nil {
 		t.Fatalf("PromptSnapshot() error = %v, want nil outside a repository", err)
@@ -66,6 +69,7 @@ func TestPromptSnapshotOutsideARepositoryIsNotAnError(t *testing.T) {
 }
 
 func TestPromptSnapshotCapsTheStatusSection(t *testing.T) {
+	t.Parallel()
 	dir := seedRepo(t)
 	for i := 0; i < 400; i++ {
 		name := filepath.Join(dir, strings.Repeat("f", 40)+string(rune('a'+i%26))+".txt")
@@ -86,6 +90,7 @@ func TestPromptSnapshotCapsTheStatusSection(t *testing.T) {
 // truncated answer must be byte-identical to what an unbounded walk would
 // have produced — and the branch header must survive the stop.
 func TestSplitShortStatusBoundsAccumulationWithoutChangingTheOutput(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("## main...origin/main [ahead 1]\n")
 	for i := 0; b.Len() < PromptStatusLimit*3; i++ {
@@ -129,6 +134,7 @@ func unboundedSplitShortStatus(stdout string) string {
 // PromptBlock is what the {{GIT_BLOCK}} placeholder renders to; a section
 // with nothing to say is omitted rather than left as an empty heading.
 func TestPromptSnapshotPromptBlock(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		snapshot PromptSnapshot
@@ -175,6 +181,7 @@ func TestPromptSnapshotPromptBlock(t *testing.T) {
 }
 
 func TestParseShortStatusBranchHandlesEveryHeaderShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		header string
 		want   string

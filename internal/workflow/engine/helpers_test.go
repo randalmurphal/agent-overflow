@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/profile"
 )
@@ -500,7 +501,7 @@ func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, 
 
 func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 	t.Helper()
-	database, err := store.New(filepath.Join(t.TempDir(), "engine.sqlite"))
+	database, err := store.New(storetest.ClonePath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

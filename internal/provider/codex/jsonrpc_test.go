@@ -13,6 +13,7 @@ import (
 )
 
 func TestIsThreadNotFoundRequiresTheResumeErrorShape(t *testing.T) {
+	t.Parallel()
 	for _, message := range []string{
 		"no rollout found for thread id 00000000-0000-4000-8000-000000000001",
 		"thread not found: abc",
@@ -40,6 +41,7 @@ func TestIsThreadNotFoundRequiresTheResumeErrorShape(t *testing.T) {
 // -- Session unit tests --
 
 func TestWriteNotificationFormat(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Call the actual writeNotification method. With the cat-backed session,
@@ -66,6 +68,7 @@ func TestWriteNotificationFormat(t *testing.T) {
 }
 
 func TestDispatchLineResponse(t *testing.T) {
+	t.Parallel()
 	// Create a session with a pending request.
 	s := &Session{
 		pending: make(map[int64]chan json.RawMessage),
@@ -89,6 +92,7 @@ func TestDispatchLineResponse(t *testing.T) {
 }
 
 func TestDispatchLineNotification(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "t1",
@@ -110,6 +114,7 @@ func TestDispatchLineNotification(t *testing.T) {
 }
 
 func TestDispatchLineInvalidJSON(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		pending: make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {},
@@ -119,6 +124,7 @@ func TestDispatchLineInvalidJSON(t *testing.T) {
 }
 
 func TestDispatchLineResponseNonIntegerID(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		pending: make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {},
@@ -128,6 +134,7 @@ func TestDispatchLineResponseNonIntegerID(t *testing.T) {
 }
 
 func TestDispatchLineResponseNoMatchingPending(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		pending: make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {},
@@ -137,6 +144,7 @@ func TestDispatchLineResponseNoMatchingPending(t *testing.T) {
 }
 
 func TestDispatchLineServerRequest(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "t1",
@@ -170,6 +178,7 @@ func TestDispatchLineServerRequest(t *testing.T) {
 }
 
 func TestDispatchLineServerRequestNonIntegerID(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		pending: make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {},
@@ -179,6 +188,7 @@ func TestDispatchLineServerRequestNonIntegerID(t *testing.T) {
 }
 
 func TestCodexWriteNotification(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	if err := s.writeNotification("initialized", nil); err != nil {
@@ -190,6 +200,7 @@ func TestCodexWriteNotification(t *testing.T) {
 }
 
 func TestCodexWriteResponse(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	if err := s.writeResponse(42, map[string]any{"ok": true}); err != nil {
@@ -198,6 +209,7 @@ func TestCodexWriteResponse(t *testing.T) {
 }
 
 func TestCodexReadLoopDispatchesNotification(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Write a turn/started notification through cat.
@@ -216,6 +228,7 @@ func TestCodexReadLoopDispatchesNotification(t *testing.T) {
 }
 
 func TestCodexReadLoopRoutesResponseToPending(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	// Set up a pending request.
@@ -245,6 +258,7 @@ func TestCodexReadLoopRoutesResponseToPending(t *testing.T) {
 }
 
 func TestCodexSendRequestViaCat(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	// With cat: request echoes -> dispatchLine sees server request (id + method) ->
@@ -261,6 +275,7 @@ func TestCodexSendRequestViaCat(t *testing.T) {
 }
 
 func TestCodexSendRequestContextCancel(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -273,6 +288,7 @@ func TestCodexSendRequestContextCancel(t *testing.T) {
 }
 
 func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
+	t.Parallel()
 	ctx, cancelProc := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
@@ -423,6 +439,7 @@ func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
 // that all time out and later see late responses do not accumulate
 // pending-map entries, buffered channel records, or goroutines.
 func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
+	t.Parallel()
 	ctx, cancelProc := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
@@ -467,6 +484,7 @@ func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
 }
 
 func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
@@ -511,6 +529,7 @@ func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 // emission when the process exited cleanly or when WaitProcessExitErr
 // hit its 100ms timeout before the OS reaped the child.
 func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -557,6 +576,7 @@ func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
 }
 
 func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -610,6 +630,7 @@ func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 }
 
 func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
 	if err != nil {

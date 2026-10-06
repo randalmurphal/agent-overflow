@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -107,28 +108,82 @@ func insertHistoryTurnsTx(tx *sql.Tx, threadID string, turns []Turn) error {
 	if len(turns) == 0 {
 		return nil
 	}
-	stmt, err := tx.Prepare(
+	one, chunk, err := prepareHistoryInsertTx(tx,
 		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
-		 VALUES (?, ?, ?, ?, NULL, '', '', '', '', ?)`)
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)`,
+		`(?, ?, ?, ?, NULL, '', '', '', '', ?)`, len(turns))
 	if err != nil {
 		return fmt.Errorf("store: prepare thread history turn insert for thread %s: %w", threadID, err)
 	}
-	defer stmt.Close()
+	defer one.Close()
+	if chunk != nil {
+		defer chunk.Close()
+	}
+	err = execHistoryRows(one, chunk, turns, func(turn Turn) []any {
+		return []any{turn.TurnID, turn.ThreadID, turn.TurnIndex, turn.StartedAt, turn.ProviderTurnID}
+	}, func(turn Turn) string { return turn.TurnID })
+	if err != nil {
+		return fmt.Errorf("store: insert thread history turn %w", err)
+	}
+	return nil
+}
 
-	for _, turn := range turns {
-		if _, err := stmt.Exec(
-			turn.TurnID, turn.ThreadID, turn.TurnIndex, turn.StartedAt, turn.ProviderTurnID,
-		); err != nil {
-			return fmt.Errorf("store: insert thread history turn %s: %w", turn.TurnID, err)
+// historyRowsPerInsert is how many rows one multi-row INSERT of
+// InsertThreadHistory writes. An items or turns INSERT fires triggers and
+// can abort, so inside a transaction SQLite first copies every existing
+// page it changes to a statement journal, a temp file once it passes
+// 64 KiB. A statement per row copies the same index leaves and thread row
+// once per row; a statement per chunk copies them once per chunk. The
+// driver binds parameters in time quadratic in their number per
+// statement, which bounds the chunk.
+const historyRowsPerInsert = 64
+
+// prepareHistoryInsertTx prepares the single-row INSERT prefix+values and,
+// when rows can fill one, the INSERT of historyRowsPerInsert rows.
+// Prepared statements keep the chunk text out of the statement cache.
+func prepareHistoryInsertTx(tx *sql.Tx, prefix, values string, rows int) (one, chunk *sql.Stmt, err error) {
+	one, err = tx.Prepare(prefix + ` VALUES ` + values)
+	if err != nil || rows < historyRowsPerInsert {
+		return one, nil, err
+	}
+	chunk, err = tx.Prepare(importInsertQuery(prefix, values, historyRowsPerInsert))
+	if err != nil {
+		return nil, nil, errors.Join(err, one.Close())
+	}
+	return one, chunk, nil
+}
+
+// execHistoryRows inserts rows in order: each full chunk through chunk,
+// the rest through one. SQLite fires row triggers for each row in
+// insertion order within a statement, so the rows, stamps and trigger
+// effects are those of a statement per row.
+func execHistoryRows[T any](one, chunk *sql.Stmt, rows []T, argsFor func(T) []any, label func(T) string) error {
+	for chunk != nil && len(rows) >= historyRowsPerInsert {
+		block := rows[:historyRowsPerInsert]
+		var args []any
+		for _, row := range block {
+			args = append(args, argsFor(row)...)
+		}
+		if _, err := chunk.Exec(args...); err != nil {
+			return fmt.Errorf("%s..%s: %w", label(block[0]), label(block[len(block)-1]), err)
+		}
+		rows = rows[historyRowsPerInsert:]
+	}
+	for _, row := range rows {
+		if _, err := one.Exec(argsFor(row)...); err != nil {
+			return fmt.Errorf("%s: %w", label(row), err)
 		}
 	}
 	return nil
 }
 
 // insertHistoryRowsTx writes each row's payload before the item that
-// references it, and runs the settle-time search index hook per row, which
-// is what insertItemTx does for a single row, as it records each row in w.
+// references it, and runs the settle-time search index hook on the rows
+// in order, which is what insertItemTx does for a single row, as it
+// records each row in w. A row that may adopt rows already stored (an
+// anchor, or a row with a parent) is written alone so its RETURNING sees
+// every row before it; the runs of other rows between them go through
+// execHistoryRows.
 func insertHistoryRowsTx(tx *sql.Tx, w *cardWrite, rows []HistoryRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -139,11 +194,14 @@ func insertHistoryRowsTx(tx *sql.Tx, w *cardWrite, rows []HistoryRow) error {
 		return fmt.Errorf("store: prepare thread history payload insert for thread %s: %w", threadID, err)
 	}
 	defer payloadStmt.Close()
-	itemStmt, err := tx.Prepare(itemInsertSQL)
+	itemStmt, chunkStmt, err := prepareHistoryInsertTx(tx, itemInsertPrefix, itemInsertValues, len(rows))
 	if err != nil {
 		return fmt.Errorf("store: prepare thread history item insert for thread %s: %w", threadID, err)
 	}
 	defer itemStmt.Close()
+	if chunkStmt != nil {
+		defer chunkStmt.Close()
+	}
 	adoptingStmt, err := tx.Prepare(itemInsertAdoptingSQL)
 	if err != nil {
 		return fmt.Errorf("store: prepare thread history adopting item insert for thread %s: %w", threadID, err)
@@ -151,6 +209,34 @@ func insertHistoryRowsTx(tx *sql.Tx, w *cardWrite, rows []HistoryRow) error {
 	defer adoptingStmt.Close()
 
 	indexBatch := make([]Item, 0, 128)
+	written := func(item Item) error {
+		indexBatch = append(indexBatch, item)
+		if len(indexBatch) < cap(indexBatch) {
+			return nil
+		}
+		err := indexSettledItemsTx(tx, indexBatch, ThreadSearchSourceItem)
+		indexBatch = indexBatch[:0]
+		return err
+	}
+	// rows[plain:end] are rows that adopt nothing, not yet written.
+	plain := 0
+	flush := func(end int) error {
+		run := rows[plain:end]
+		plain = end
+		if err := execHistoryRows(itemStmt, chunkStmt, run,
+			func(row HistoryRow) []any { return itemInsertArgs(row.Item) },
+			func(row HistoryRow) string { return row.Item.ID },
+		); err != nil {
+			return fmt.Errorf("store: insert thread history item %w", err)
+		}
+		for _, row := range run {
+			w.inserted(subagentRowOf(row.Item), false)
+			if err := written(row.Item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for i, row := range rows {
 		if row.Payload != nil {
 			if _, err := payloadStmt.Exec(payloadInsertArgs(threadID, *row.Payload)...); err != nil {
@@ -161,22 +247,24 @@ func insertHistoryRowsTx(tx *sql.Tx, w *cardWrite, rows []HistoryRow) error {
 		if err := w.check(card); err != nil {
 			return err
 		}
+		if !card.anchorable() && card.parentID == "" {
+			continue
+		}
+		if err := flush(i); err != nil {
+			return err
+		}
+		plain = i + 1
 		hasChild := false
-		if card.anchorable() || card.parentID != "" {
-			if err := adoptingStmt.QueryRow(itemInsertArgs(row.Item)...).Scan(&hasChild); err != nil {
-				return fmt.Errorf("store: insert thread history item %s: %w", row.Item.ID, err)
-			}
-		} else if _, err := itemStmt.Exec(itemInsertArgs(row.Item)...); err != nil {
+		if err := adoptingStmt.QueryRow(itemInsertArgs(row.Item)...).Scan(&hasChild); err != nil {
 			return fmt.Errorf("store: insert thread history item %s: %w", row.Item.ID, err)
 		}
 		w.inserted(card, hasChild)
-		indexBatch = append(indexBatch, row.Item)
-		if len(indexBatch) == cap(indexBatch) || i == len(rows)-1 {
-			if err := indexSettledItemsTx(tx, indexBatch, ThreadSearchSourceItem); err != nil {
-				return err
-			}
-			indexBatch = indexBatch[:0]
+		if err := written(row.Item); err != nil {
+			return err
 		}
 	}
-	return nil
+	if err := flush(len(rows)); err != nil {
+		return err
+	}
+	return indexSettledItemsTx(tx, indexBatch, ThreadSearchSourceItem)
 }

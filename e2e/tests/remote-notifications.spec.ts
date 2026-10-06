@@ -130,12 +130,12 @@ const lanIP = nonLoopbackIPv4();
 const THREAD_TITLE = 'Remote notification thread';
 
 test.describe.serial('notifications on a remote screen', () => {
-  // A host with no non-loopback interface genuinely cannot produce the peer
-  // this spec is about. A visible skip is the honest outcome; a vacuous pass
+  // Outside the test network namespace (macOS) no off-host peer can be
+  // produced without LAN traffic. A visible skip is the honest outcome; a vacuous pass
   // is not.
   test.skip(
     lanIP === null,
-    'no non-loopback IPv4 interface on this host, so no off-host peer can be produced',
+    'outside the test network namespace, so no off-host peer can be produced without LAN traffic',
   );
 
   let harness: HarnessApp;

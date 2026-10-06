@@ -24,6 +24,7 @@ import (
 // change races with a session lifecycle.
 
 func TestMode_CreateThreadWithExplicitDefault(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-default", "claude-sonnet-4-6", "chat")
@@ -44,6 +45,7 @@ func TestMode_CreateThreadWithExplicitDefault(t *testing.T) {
 }
 
 func TestMode_CreateThreadWithDiscussion(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	_, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-discussion", "claude-sonnet-4-6", "discussion")
@@ -56,6 +58,7 @@ func TestMode_CreateThreadWithDiscussion(t *testing.T) {
 }
 
 func TestMode_CreateThreadWithPlan(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-plan", "claude-sonnet-4-6", "plan")
@@ -79,6 +82,7 @@ func TestMode_CreateThreadWithPlan(t *testing.T) {
 // in the manual-selection set (including gibberish, and specifically the
 // "discussion" mode which is reserved for StartDiscussion).
 func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	cases := []string{
@@ -105,6 +109,7 @@ func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 }
 
 func TestMode_SetInteractionModeChangesPersistentRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-setmode", "claude-sonnet-4-6", "")
@@ -133,6 +138,7 @@ func TestMode_SetInteractionModeChangesPersistentRow(t *testing.T) {
 }
 
 func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -167,6 +173,7 @@ func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 // via the GetThread pre-check (so callers can distinguish "not found" from validation
 // errors).
 func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	_, err := app.UpdateThreadMode("nonexistent-thread", "plan")
@@ -184,6 +191,7 @@ func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
 // user-input request creation) — bumping on every mode flip would
 // reshuffle the sidebar for non-interactions.
 func TestMode_SetInteractionModeDoesNotBumpUpdatedAt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-updated", "claude-sonnet-4-6", "")
@@ -217,12 +225,13 @@ func TestMode_SetInteractionModeDoesNotBumpUpdatedAt(t *testing.T) {
 // TestMode_ForkInheritsInteractionMode: ForkThread copies the source mode onto
 // the fork so plan-first behavior survives branching.
 func TestMode_ForkInheritsInteractionMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-fork-mode")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-abc"
-	fixture := newMidTurnForkFixture(t, "claude-session-abc", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "claude-session-abc", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	source.Mode = "plan"
 	if err := app.store.CreateThread(source); err != nil {
@@ -254,6 +263,7 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 // "discussion" — thread type is immutable post-creation, mirroring the
 // discussion-thread immutability.
 func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// CreateThread rejects the discussion mode directly.
@@ -273,6 +283,7 @@ func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 }
 
 func TestMode_CreateThreadDefaultWhenEmpty(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/ws-empty", "gpt-5.4", "")
@@ -310,6 +321,7 @@ func TestMode_CreateThreadDefaultWhenEmpty(t *testing.T) {
 //
 // Run with -race.
 func TestMode_ConcurrentSetModeRace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-race", "claude-sonnet-4-6", "")
@@ -364,6 +376,7 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 //     process; chat/plan are applied on the next turn without reconnect)
 //   - emits a thread:mode_changed event with NeedsReconnect=false for chat/plan.
 func TestMode_SetModeDuringActiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
@@ -437,6 +450,7 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 // refresh its cached thread row, but NeedsReconnect is false because nothing
 // is running to be out of sync.
 func TestMode_SetModeWithoutActiveSessionNoReconnect(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 

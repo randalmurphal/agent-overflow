@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import UsageFooter from '../UsageFooter.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
@@ -24,6 +24,10 @@ function providerBucket(provider: string, overrides: Partial<UsageBucket> = {}):
 }
 
 describe('<UsageFooter>', () => {
+  // The modal is a lazy chunk. Load it before the tests so a cold transform
+  // under load is paid in the hook, not inside a one-second findByRole wait.
+  beforeAll(() => import('../../usage/UsageModal.svelte'));
+
   beforeEach(() => {
     resetUsagePeriodForTest();
     resetUsageRefreshForTest();

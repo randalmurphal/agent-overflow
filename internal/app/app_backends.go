@@ -257,6 +257,9 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 	a.backends = manager
 	if manager != nil {
 		manager.SetNetwork(func() string { id, _ := a.backendIdentity(); return id }, a.dialComputer)
+		if a.netReach.LoopbackOnly() {
+			manager.DisableLANDiscovery()
+		}
 		manager.SetChanged(func(change attachedbackends.SetChange) {
 			a.emit(eventchan.BackendSetChanged, change)
 			a.signalRemotePeers()

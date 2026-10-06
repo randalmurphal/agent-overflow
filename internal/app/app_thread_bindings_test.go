@@ -13,11 +13,11 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
 )
 
 func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
 	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
@@ -48,6 +48,7 @@ func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
 }
 
 func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
 	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
@@ -89,6 +90,7 @@ func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
 // though the session is "live".
 
 func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tp", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -109,6 +111,7 @@ func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
 }
 
 func TestCreateThreadRefusesAClaudeAlias(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	_, err := createTestThread(t, app, string(provider.Claude), "/tmp/talias-create", "opus", "")
 	if !errors.Is(err, provider.ErrModelAlias) {
@@ -120,6 +123,7 @@ func TestCreateThreadRefusesAClaudeAlias(t *testing.T) {
 }
 
 func TestCreateThreadStampsInitialReadBaseline(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/thread-baseline", "claude-sonnet-4-6", "")
@@ -158,6 +162,7 @@ func TestCreateThreadStampsInitialReadBaseline(t *testing.T) {
 // --- StartTerminal (terminal-mode thread creation) ---
 
 func TestStartTerminalPerProjectRootsAtProjectPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace("/tmp/term-proj")
 	if err != nil {
@@ -199,6 +204,7 @@ func TestStartTerminalPerProjectRootsAtProjectPath(t *testing.T) {
 }
 
 func TestStartTerminalStandaloneRootsAtHome(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -231,6 +237,7 @@ func TestStartTerminalStandaloneRootsAtHome(t *testing.T) {
 }
 
 func TestStartTerminalCwdOverrideAndCustomTitle(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace("/tmp/term-cwd-proj")
 	if err != nil {
@@ -257,6 +264,7 @@ func TestStartTerminalCwdOverrideAndCustomTitle(t *testing.T) {
 }
 
 func TestStartTerminalRejectsUnknownProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.StartTerminal(t.Context(), StartTerminalOptions{ProjectID: "does-not-exist"}); err == nil {
 		t.Fatal("StartTerminal(unknown project) error = nil, want resolve error")
@@ -264,6 +272,7 @@ func TestStartTerminalRejectsUnknownProject(t *testing.T) {
 }
 
 func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/talias-update", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -289,6 +298,7 @@ func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
 //     and leaves the provider column untouched,
 //  3. asserting an idempotent same-provider call still succeeds.
 func TestUpdateThreadProviderLocksAfterFirstItem(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tlock", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -339,6 +349,7 @@ func TestUpdateThreadProviderLocksAfterFirstItem(t *testing.T) {
 }
 
 func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/te", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -359,6 +370,7 @@ func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
 }
 
 func TestUpdateThreadReasoningEffortAcceptsCodexMaxAndUltra(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/tcmax", "gpt-5.6-sol", "")
 	if err != nil {
@@ -383,6 +395,7 @@ func TestUpdateThreadReasoningEffortAcceptsCodexMaxAndUltra(t *testing.T) {
 }
 
 func TestUpdateThreadFastModeToggles(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tfm", "claude-opus-4-7", "")
 	if err != nil {
@@ -411,6 +424,7 @@ func TestUpdateThreadFastModeToggles(t *testing.T) {
 }
 
 func TestUpdateThreadFastModeRejectsUnsupportedModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/tfm-unsupported", "gpt-5.4-mini", "")
 	if err != nil {
@@ -423,6 +437,7 @@ func TestUpdateThreadFastModeRejectsUnsupportedModel(t *testing.T) {
 }
 
 func TestCreateThreadRejectsUnsupportedExplicitFastMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace("/tmp/create-fast-unsupported")
 	if err != nil {
@@ -443,6 +458,7 @@ func TestCreateThreadRejectsUnsupportedExplicitFastMode(t *testing.T) {
 }
 
 func TestUpdateThreadContextWindowValidates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tcw", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -463,6 +479,7 @@ func TestUpdateThreadContextWindowValidates(t *testing.T) {
 }
 
 func TestCreateThreadRejectsUnsupportedContextWindow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace("/tmp/create-context")
 	if err != nil {
@@ -481,6 +498,7 @@ func TestCreateThreadRejectsUnsupportedContextWindow(t *testing.T) {
 }
 
 func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/trm", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -501,6 +519,7 @@ func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 }
 
 func TestUpdateNewThreadDefaultsRefusesAClaudeAlias(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -518,6 +537,7 @@ func TestUpdateNewThreadDefaultsRefusesAClaudeAlias(t *testing.T) {
 }
 
 func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -563,6 +583,7 @@ func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
 }
 
 func TestUpdateNewThreadDefaultsValidatesRuntimeMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -580,6 +601,7 @@ func TestUpdateNewThreadDefaultsValidatesRuntimeMode(t *testing.T) {
 }
 
 func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -605,6 +627,7 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 // validates at the door rather than trusting that its only caller happens to
 // have read the value off a git status.
 func TestUpdateThreadBranchRejectsUnsafeBranchNames(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-unsafe", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -635,6 +658,7 @@ func TestUpdateThreadBranchRejectsUnsafeBranchNames(t *testing.T) {
 // sitting in that workspace must learn it from one observation. Two panes on
 // one worktree is the normal case.
 func TestUpdateThreadBranchFansOutAcrossTheWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	first, err := createTestThread(t, app, "claude", "/tmp/tbw-shared", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -669,6 +693,7 @@ func TestUpdateThreadBranchFansOutAcrossTheWorkspace(t *testing.T) {
 // panes keep the superseded branch until something else refreshes them. A
 // write that changed nothing must stay silent.
 func TestUpdateThreadBranchBroadcastsChangedRows(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-broadcast", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -716,6 +741,7 @@ func TestUpdateThreadBranchBroadcastsChangedRows(t *testing.T) {
 // branch observed in a workspace every thread has since left must land
 // nowhere rather than following the thread to its new checkout.
 func TestUpdateThreadBranchDropsStaleWorkspaceObservation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-stale", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -756,8 +782,9 @@ func TestUpdateThreadBranchDropsStaleWorkspaceObservation(t *testing.T) {
 }
 
 func TestUpdateThreadWorkspaceSwitchesRegisteredWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -811,6 +838,7 @@ func TestUpdateThreadWorkspaceSwitchesRegisteredWorktree(t *testing.T) {
 // through the App binding surface, verifying each flips last_read_at as the
 // sidebar expects.
 func TestMarkThreadReadUnreadLifecycle(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/read", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -858,6 +886,7 @@ func TestMarkThreadReadUnreadLifecycle(t *testing.T) {
 }
 
 func TestCreateThreadInGroupPublishesGroupedDraft(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	group, err := app.store.CreateThreadGroup(defaultTestProjectID, "Drafts")
 	if err != nil {

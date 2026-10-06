@@ -25,6 +25,7 @@ func unpushedMainClone(t *testing.T) string {
 }
 
 func TestResolveBaseRefPrefersTheRemoteTrackingRef(t *testing.T) {
+	t.Parallel()
 	repo, _ := testutil.InitGitRepoWithOrigin(t)
 
 	got, err := resolveBaseRef(context.Background(), repo, "main")
@@ -37,6 +38,7 @@ func TestResolveBaseRefPrefersTheRemoteTrackingRef(t *testing.T) {
 }
 
 func TestResolveBaseRefFallsBackToTheLocalBranch(t *testing.T) {
+	t.Parallel()
 	// No remote at all, and a remote-less repo must behave exactly as it
 	// did before the preference existed.
 	repo := testutil.InitGitRepo(t)
@@ -61,6 +63,7 @@ func TestResolveBaseRefFallsBackToTheLocalBranch(t *testing.T) {
 }
 
 func TestResolveBaseRefHonorsAConfiguredUpstreamOverOrigin(t *testing.T) {
+	t.Parallel()
 	// A fork: `origin` is the user's copy, `upstream` is what PRs target,
 	// and the local main tracks upstream.
 	fork, _ := testutil.InitGitRepoWithOrigin(t)
@@ -81,6 +84,7 @@ func TestResolveBaseRefHonorsAConfiguredUpstreamOverOrigin(t *testing.T) {
 }
 
 func TestResolveBaseRefIgnoresALocalBranchUpstream(t *testing.T) {
+	t.Parallel()
 	// `branch.<name>.remote = .` makes the upstream another LOCAL branch.
 	// Treating that as a remote-tracking ref would re-point the diff base
 	// at a branch that has nothing to do with the remote.
@@ -99,6 +103,7 @@ func TestResolveBaseRefIgnoresALocalBranchUpstream(t *testing.T) {
 }
 
 func TestResolveBaseRefKeepsAnExplicitRemoteRef(t *testing.T) {
+	t.Parallel()
 	// app_forge_review.go passes "origin/<base>" already resolved.
 	repo, _ := testutil.InitGitRepoWithOrigin(t)
 	got, err := resolveBaseRef(context.Background(), repo, "origin/main")
@@ -111,6 +116,7 @@ func TestResolveBaseRefKeepsAnExplicitRemoteRef(t *testing.T) {
 }
 
 func TestResolveNamedRefPrefersTheLocalBranch(t *testing.T) {
+	t.Parallel()
 	repo, _ := testutil.InitGitRepoWithOrigin(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "pushed.txt", "pushed\n", "pushed commit")
@@ -136,6 +142,7 @@ func TestResolveNamedRefPrefersTheLocalBranch(t *testing.T) {
 }
 
 func TestResolveNamedRefResolvesRemoteOnlyBranches(t *testing.T) {
+	t.Parallel()
 	clone := cloneWithRemoteOnlyBranch(t)
 	got, err := resolveNamedRef(context.Background(), clone, "release")
 	if err != nil {
@@ -147,6 +154,7 @@ func TestResolveNamedRefResolvesRemoteOnlyBranches(t *testing.T) {
 }
 
 func TestResolveRefsRejectBadNames(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	for _, name := range []string{"", "  ", "--all"} {
 		if _, err := resolveBaseRef(context.Background(), repo, name); err == nil {
@@ -159,6 +167,7 @@ func TestResolveRefsRejectBadNames(t *testing.T) {
 }
 
 func TestListCommitsMeasuresAgainstTheRemoteBase(t *testing.T) {
+	t.Parallel()
 	repo := unpushedMainClone(t)
 
 	commits, err := ListCommits(context.Background(), repo, "main")
@@ -178,6 +187,7 @@ func TestListCommitsMeasuresAgainstTheRemoteBase(t *testing.T) {
 }
 
 func TestListCommitsWithoutARemoteUsesTheLocalBase(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "main-only.txt", "local main work\n", "local main work")
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
@@ -193,6 +203,7 @@ func TestListCommitsWithoutARemoteUsesTheLocalBase(t *testing.T) {
 }
 
 func TestBranchBaseDiffMeasuresAgainstTheRemoteBase(t *testing.T) {
+	t.Parallel()
 	repo := unpushedMainClone(t)
 	writeFile(t, repo, "dirty.txt", "uncommitted\n")
 
@@ -209,6 +220,7 @@ func TestBranchBaseDiffMeasuresAgainstTheRemoteBase(t *testing.T) {
 }
 
 func TestListBranchCommitsCountsUnpushedCommitsOnTheDescribedBranch(t *testing.T) {
+	t.Parallel()
 	repo, _ := testutil.InitGitRepoWithOrigin(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "pushed.txt", "pushed\n", "pushed commit")

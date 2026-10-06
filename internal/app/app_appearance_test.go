@@ -27,11 +27,13 @@ func newThemeTestApp(t *testing.T) (*App, string) {
 // A nil watcher is the production shape when fsnotify was unavailable at
 // boot; the appearance write path must not care.
 func TestSuppressThemeWatchIsNilSafe(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.suppressThemeWatch("/tmp/whatever/appearance.json")
 }
 
 func TestGetThemeFilesAndSetAppearanceRoundTrip(t *testing.T) {
+	t.Parallel()
 	app, configDir := newThemeTestApp(t)
 
 	files, err := app.GetThemeFiles()
@@ -75,6 +77,7 @@ func TestGetThemeFilesAndSetAppearanceRoundTrip(t *testing.T) {
 }
 
 func TestSetAppearanceRejectsInvalidSelection(t *testing.T) {
+	t.Parallel()
 	app, _ := newThemeTestApp(t)
 	err := app.SetAppearance(theme.Appearance{Mode: "midnight"})
 	if err == nil {
@@ -86,6 +89,7 @@ func TestSetAppearanceRejectsInvalidSelection(t *testing.T) {
 }
 
 func TestSetWindowBackgroundColorValidatesThenApplies(t *testing.T) {
+	t.Parallel()
 	app, _ := newThemeTestApp(t)
 
 	// No native window (the headless WSL backend shape): a valid color
@@ -123,6 +127,7 @@ func TestSetWindowBackgroundColorValidatesThenApplies(t *testing.T) {
 // it. This is the whole user-visible promise of retiring the field — someone
 // who chose Light two releases ago does not get a dark app back.
 func TestInitThemeDirectorySeedsModeFromRetiredSettingsField(t *testing.T) {
+	t.Parallel()
 	configDir := t.TempDir()
 	settingsPath := filepath.Join(configDir, "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(`{"theme":"light","timestampFormat":"24-hour"}`), 0o600); err != nil {
@@ -182,6 +187,7 @@ func TestInitThemeDirectorySeedsModeFromRetiredSettingsField(t *testing.T) {
 // therefore lives in the process for as long as the process does, and the
 // seed heals the instant the blocker is gone.
 func TestThemeSeedSurvivesABlockedBootAndHealsOnTheNextRead(t *testing.T) {
+	t.Parallel()
 	configDir := t.TempDir()
 	settingsPath := filepath.Join(configDir, "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(`{"theme":"light"}`), 0o600); err != nil {
@@ -252,6 +258,7 @@ func newSpinnerTestApp(t *testing.T) (*App, string) {
 }
 
 func TestGetSpinnerFilesListsUserSprites(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSpinnerTestApp(t)
 
 	files, err := app.GetSpinnerFiles()
@@ -305,6 +312,7 @@ func TestGetSpinnerFilesListsUserSprites(t *testing.T) {
 // initSpinnerDirectory is boot: it materializes the directory, seeds the
 // authoring reference, and arms live reload. None of it may fail boot.
 func TestInitSpinnerDirectorySeedsTheReferenceAndArmsTheWatcher(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSpinnerTestApp(t)
 	app.initSpinnerDirectory()
 	t.Cleanup(func() {
@@ -326,6 +334,7 @@ func TestInitSpinnerDirectorySeedsTheReferenceAndArmsTheWatcher(t *testing.T) {
 // moves on, the RPC still answers, and the seed heals from the next read
 // once the blocker is gone.
 func TestInitSpinnerDirectorySurvivesABlockedBoot(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSpinnerTestApp(t)
 	blocker := filepath.Join(configDir, spinner.DirName)
 	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {

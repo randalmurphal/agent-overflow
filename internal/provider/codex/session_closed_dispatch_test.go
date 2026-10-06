@@ -23,6 +23,7 @@ import (
 // "" and fail on the dead pipe) matches the pre-campaign behavior and no
 // caller classifies its error.
 func TestClosedSessionDispatchRefusesAsErrSessionClosed(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	// `cat` is a stand-in process, never a provider CLI: Close needs a real
 	// *provider.Process to close and this test must not spawn codex.

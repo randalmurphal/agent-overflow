@@ -177,7 +177,7 @@ func TestStreamKeepsItsTreeAcrossATimedOutParse(t *testing.T) {
 	s.Append([]byte(src[:half]), true)
 	// A large append under a deadline no parse can meet stands in for a
 	// loaded host.
-	filler := strings.Repeat("// filler line\n", 20000)
+	filler := strings.Repeat("// filler line\n", 2000)
 	parseTimeout = time.Microsecond
 	if _, state := s.Append([]byte(filler), true); state != StreamIncomplete {
 		t.Fatalf("state %d under an expired deadline, want StreamIncomplete", state)

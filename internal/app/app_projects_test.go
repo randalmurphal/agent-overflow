@@ -9,6 +9,7 @@ import (
 )
 
 func TestAppDeleteProjectReturnsThreadIDs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	dir := t.TempDir()
 	p, err := app.CreateProject(dir)
@@ -47,6 +48,7 @@ func TestAppDeleteProjectReturnsThreadIDs(t *testing.T) {
 }
 
 func TestAppDeleteProjectRejectsRunningThread(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		seed func(*testing.T, *App, string)
@@ -113,6 +115,7 @@ func TestAppDeleteProjectRejectsRunningThread(t *testing.T) {
 }
 
 func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	p, err := app.CreateProject(t.TempDir())
 	if err != nil {
@@ -141,6 +144,7 @@ func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
 }
 
 func TestAppCreateThreadRequiresProjectID(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	_, err := app.CreateThread(t.Context(), CreateThreadOptions{})
 	if err == nil {
@@ -152,6 +156,7 @@ func TestAppCreateThreadRequiresProjectID(t *testing.T) {
 }
 
 func TestAppCreateThreadResolvesProvider(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	dir := t.TempDir()
 	p, err := app.CreateProject(dir)

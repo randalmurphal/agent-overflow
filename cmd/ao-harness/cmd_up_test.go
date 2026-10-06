@@ -11,17 +11,18 @@ import (
 	"agent-overflow/internal/appdirs"
 )
 
-// configRootFixture points the OS config lookup at a temp tree and
-// returns (configRoot, realAppDataDir) — the two paths an isolated boot
-// must refuse, because it seeds and wipes its data root wholesale.
+// configRootFixture returns (configRoot, realAppDataDir): the two paths an
+// isolated boot must refuse, because it seeds and wipes its data root
+// wholesale. TestMain points the OS config lookup at a private temp tree for
+// the whole process, so these name that tree, never the developer's.
 func configRootFixture(t *testing.T) (string, string) {
 	t.Helper()
-	base := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", base)
-	t.Setenv("HOME", base)
 	realAppData, err := appdirs.Root()
 	if err != nil {
 		t.Fatalf("resolve fixture app data: %v", err)
+	}
+	if testConfigBase == "" || !strings.HasPrefix(realAppData, testConfigBase+string(filepath.Separator)) {
+		t.Fatalf("app data %s is outside the test config root %q", realAppData, testConfigBase)
 	}
 	return filepath.Dir(realAppData), realAppData
 }

@@ -10,6 +10,7 @@ import (
 )
 
 func TestRespondToApprovalAccept(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
@@ -25,6 +26,7 @@ func TestRespondToApprovalAccept(t *testing.T) {
 }
 
 func TestRespondToApprovalDecline(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
@@ -39,6 +41,7 @@ func TestRespondToApprovalDecline(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultDecision(t *testing.T) {
+	t.Parallel()
 	// Codex-native decision values are passed through directly -- no translation.
 	tests := []struct {
 		name     string
@@ -76,6 +79,7 @@ func TestBuildApprovalResponseResultDecision(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultStructuredDecision(t *testing.T) {
+	t.Parallel()
 	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
 		RequestID:     "19",
 		DecisionValue: json.RawMessage(`{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}}`),
@@ -94,6 +98,7 @@ func TestBuildApprovalResponseResultStructuredDecision(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultRejectsMixedResponseModes(t *testing.T) {
+	t.Parallel()
 	tests := []provider.ApprovalResponse{
 		{
 			RequestID:     "42",
@@ -114,6 +119,7 @@ func TestBuildApprovalResponseResultRejectsMixedResponseModes(t *testing.T) {
 }
 
 func TestBuildUserInputResponseResultAnswers(t *testing.T) {
+	t.Parallel()
 	rpcID, result, err := buildUserInputResponseResult(provider.UserInputResponse{
 		RequestID: "7",
 		Answers: map[string]provider.UserInputAnswer{
@@ -145,6 +151,7 @@ func TestBuildUserInputResponseResultAnswers(t *testing.T) {
 }
 
 func TestBuildUserInputResponseResultRejectsUnknownDecision(t *testing.T) {
+	t.Parallel()
 	_, _, err := buildUserInputResponseResult(provider.UserInputResponse{
 		RequestID: "7",
 		Decision:  "bogus",
@@ -155,6 +162,7 @@ func TestBuildUserInputResponseResultRejectsUnknownDecision(t *testing.T) {
 }
 
 func TestBuildUserInputResponseResultAcceptsDeclineDecisions(t *testing.T) {
+	t.Parallel()
 	for _, decision := range []string{"decline", "cancel", "deny"} {
 		t.Run(decision, func(t *testing.T) {
 			_, result, err := buildUserInputResponseResult(provider.UserInputResponse{
@@ -172,6 +180,7 @@ func TestBuildUserInputResponseResultAcceptsDeclineDecisions(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultPermission(t *testing.T) {
+	t.Parallel()
 	enabled := true
 	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
 		RequestID: "9",
@@ -200,6 +209,7 @@ func TestBuildApprovalResponseResultPermission(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
+	t.Parallel()
 	_, _, err := buildApprovalResponseResult(provider.ApprovalResponse{RequestID: "not-a-number"})
 	if err == nil {
 		t.Fatal("expected invalid request ID error")
@@ -207,6 +217,7 @@ func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
 }
 
 func TestCodexRespondToApprovalMethod(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
@@ -222,6 +233,7 @@ func TestCodexRespondToApprovalMethod(t *testing.T) {
 // -- buildApprovalResponseResult: elicitation branch --
 
 func TestBuildApprovalResponseResultElicitation(t *testing.T) {
+	t.Parallel()
 	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
 		RequestID: "15",
 		Elicitation: &provider.ElicitationResolution{

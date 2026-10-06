@@ -74,6 +74,7 @@ func (r *threadBroadcasts) expectSilence(what string) {
 // exercised here for both halves of the contract — the changed row goes out,
 // and repeating the same write says nothing.
 func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
+	t.Parallel()
 	t.Run("empty draft cleanup announces deletion only after content is cleared", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
@@ -388,6 +389,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 // so the no-change test is the fields the switch owns rather than a
 // rows-affected count.
 func TestThreadWorkspaceSwitchBroadcastsOnlyRealMoves(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo := initBroadcastRepo(t, app)
 	thread := mustCreateBroadcastThreadIn(t, app, repo)
@@ -406,6 +408,7 @@ func TestThreadWorkspaceSwitchBroadcastsOnlyRealMoves(t *testing.T) {
 // write that changes the derivation broadcasts the row — the in-turn
 // persist (covered in triage), and these two App-side settles.
 func TestProposedPlanStateChangesBroadcastTheThreadRow(t *testing.T) {
+	t.Parallel()
 	t.Run("ensure-state settle raises the pill", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
@@ -506,7 +509,7 @@ func mustCreateBroadcastThreadIn(t *testing.T, app *App, workspace string) store
 
 func initBroadcastRepo(t *testing.T, app *App) string {
 	t.Helper()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	if _, err := app.ensureProjectForWorkspace(repo); err != nil {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
@@ -517,6 +520,7 @@ func initBroadcastRepo(t *testing.T, app *App) string {
 // sweep found outside the thread bindings: the git paths persist a branch
 // onto the row directly, so they carry the same broadcast obligation.
 func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo := initBroadcastRepo(t, app)
 	testutil.RunGit(t, repo, "branch", "feature/broadcast")
@@ -539,6 +543,7 @@ func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
 }
 
 func TestImportedLineageUpdatesExistingRowsWithoutRelistingThem(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	parent := mustCreateBroadcastThread(t, app)
 	child := mustCreateBroadcastThread(t, app)

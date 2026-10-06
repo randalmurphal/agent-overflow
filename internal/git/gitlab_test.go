@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // These tests target the gitlab forge implementation directly via
@@ -16,6 +16,7 @@ import (
 // the Core.forgeFor dispatch logic.
 
 func TestGitLabForgeIDAndBinary(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	f := core.ForgeByID("gitlab")
 	if f.ID() != "gitlab" {
@@ -38,9 +39,7 @@ cat <<'JSON'
 [{"web_url": "https://gitlab.com/group/repo/-/merge_requests/3", "iid": 3, "title": "Feature MR", "state": "opened"}]
 JSON
 `
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -79,9 +78,7 @@ func TestGitLabListOpenPRsUsesAPIEndpointWithEncodedSourceBranch(t *testing.T) {
 echo "$@" > %q
 echo '[]'
 `, argLog)
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -124,9 +121,7 @@ cat <<'JSON'
 [{"web_url": "https://gitlab.com/group/repo/-/merge_requests/8", "iid": 8, "title": "Old glab compatible", "state": "opened"}]
 JSON
 `
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -147,9 +142,7 @@ func TestGitLabListOpenPRsHandlesEmpty(t *testing.T) {
 	binDir := t.TempDir()
 	glabPath := filepath.Join(binDir, "glab")
 	script := "#!/bin/sh\necho '[]'\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -163,6 +156,7 @@ func TestGitLabListOpenPRsHandlesEmpty(t *testing.T) {
 }
 
 func TestGitLabListOpenPRsRequiresHead(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	_, err := core.ForgeByID("gitlab").ListOpenPRs(t.TempDir(), "  ")
 	if err == nil {
@@ -181,9 +175,7 @@ func TestGitLabListOpenPRsHandlesNonZeroExit(t *testing.T) {
 	binDir := t.TempDir()
 	glabPath := filepath.Join(binDir, "glab")
 	script := "#!/bin/sh\necho 'auth required' 1>&2\nexit 1\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -214,13 +206,11 @@ func TestGitLabCreatePRReturnsURL(t *testing.T) {
 		t.Skip("shell script mock glab is unix-only")
 	}
 
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	binDir := t.TempDir()
 	glabPath := filepath.Join(binDir, "glab")
 	script := "#!/bin/sh\necho 'https://gitlab.com/group/repo/-/merge_requests/12'\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -238,7 +228,7 @@ func TestGitLabCreatePRPassesExpectedFlags(t *testing.T) {
 		t.Skip("shell script mock glab is unix-only")
 	}
 
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	binDir := t.TempDir()
 	argLog := filepath.Join(binDir, "args.log")
 	glabPath := filepath.Join(binDir, "glab")
@@ -246,9 +236,7 @@ func TestGitLabCreatePRPassesExpectedFlags(t *testing.T) {
 echo "$@" > %q
 echo "https://gitlab.com/x/y/-/merge_requests/1"
 `, argLog)
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -287,6 +275,7 @@ echo "https://gitlab.com/x/y/-/merge_requests/1"
 }
 
 func TestGitLabCreatePRRequiresTitle(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	_, err := core.ForgeByID("gitlab").CreatePR(t.TempDir(), "  ", "body", "", false)
 	if err == nil {
@@ -302,13 +291,11 @@ func TestGitLabCreatePRHandlesNonZeroExit(t *testing.T) {
 		t.Skip("shell script mock glab is unix-only")
 	}
 
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	binDir := t.TempDir()
 	glabPath := filepath.Join(binDir, "glab")
 	script := "#!/bin/sh\necho 'auth failed' 1>&2\nexit 1\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -322,7 +309,7 @@ func TestGitLabCreatePRHandlesNonZeroExit(t *testing.T) {
 }
 
 func TestGitLabCreatePRHandlesMissingGlab(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	t.Setenv("PATH", t.TempDir())
 
 	core := NewCore()
@@ -339,14 +326,12 @@ func TestGitLabCreatePRHandlesEmptyURL(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script mock glab is unix-only")
 	}
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 
 	binDir := t.TempDir()
 	glabPath := filepath.Join(binDir, "glab")
 	script := "#!/bin/sh\necho ''\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -367,9 +352,7 @@ func TestGitLabListOpenPRsHandlesNullStdout(t *testing.T) {
 	glabPath := filepath.Join(binDir, "glab")
 	// glab can emit `null` (not `[]`) for some queries.
 	script := "#!/bin/sh\necho 'null'\n"
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -383,6 +366,7 @@ func TestGitLabListOpenPRsHandlesNullStdout(t *testing.T) {
 }
 
 func TestExtractMRCreateURL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input string
 		want  string
@@ -444,9 +428,7 @@ case "$*" in
   ;;
 esac
 `, argLog)
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()

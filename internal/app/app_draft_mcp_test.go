@@ -7,6 +7,7 @@ import (
 )
 
 func TestDraftMovePreservesMCPChoicesAcrossTransitions(t *testing.T) {
+	t.Parallel()
 	a := draftMoveApp(t)
 	a.browser.mcp = appbrowser.NewMCPServer(nil, true)
 	t.Cleanup(func() {

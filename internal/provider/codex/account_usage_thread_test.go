@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // threadUsageFakeScript builds a fake app-server that answers initialize with
@@ -49,9 +50,7 @@ done
 	)
 
 	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -81,6 +80,7 @@ func newThreadUsageSession(t *testing.T, binary string) *Session {
 // happy path: a 0.149 app-server, a thread-scoped request carrying the ROOT
 // codex thread id, and a USD figure that comes back verbatim in micros.
 func TestSession_ReadThreadUsage_PresentEstimate(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"dailyUsageBuckets":null,"threadUsage":{` +
 		`"threadId":"codex-thread-usage","estimatedUsageCreditsMicros":4200000,` +
@@ -138,6 +138,7 @@ func TestSession_ReadThreadUsage_PresentEstimate(t *testing.T) {
 // so it must resolve to ErrThreadUsageUnavailable rather than an error a caller
 // would log every turn.
 func TestSession_ReadThreadUsage_NullThreadUsage(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"dailyUsageBuckets":null,"threadUsage":null}`
 	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
@@ -153,6 +154,7 @@ func TestSession_ReadThreadUsage_NullThreadUsage(t *testing.T) {
 // from a response that omits the key entirely — the shape a future codex could
 // answer with, since upstream marks the field `#[serde(default)]`.
 func TestSession_ReadThreadUsage_AbsentThreadUsage(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"dailyUsageBuckets":null}`
 	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
@@ -169,6 +171,7 @@ func TestSession_ReadThreadUsage_AbsentThreadUsage(t *testing.T) {
 // `Option<i64>` upstream, and a credit figure is not a dollar figure — so this
 // is unavailable too, and the rate table stays.
 func TestSession_ReadThreadUsage_CreditsOnly(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"threadUsage":{"threadId":"codex-thread-usage",` +
 		`"estimatedUsageCreditsMicros":900000,"estimatedUsageUsdMicros":null,"groups":[]}}`
@@ -187,6 +190,7 @@ func TestSession_ReadThreadUsage_CreditsOnly(t *testing.T) {
 // not learn from the failure. The absent capture file is the assertion: no
 // request left the client.
 func TestSession_ReadThreadUsage_OldVersionSendsNothing(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{}}`
 	binary := threadUsageFakeScript(t, "codex_cli_rs/0.147.0 (Linux)", "codex-thread-usage", reply, capture)
@@ -206,6 +210,7 @@ func TestSession_ReadThreadUsage_OldVersionSendsNothing(t *testing.T) {
 // existing fake app-server in this package answers initialize with `{}`, so
 // this is not a hypothetical shape.
 func TestSession_ReadThreadUsage_UnknownVersionSendsNothing(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{}}`
 	binary := threadUsageFakeScript(t, "", "codex-thread-usage", reply, capture)
@@ -227,6 +232,7 @@ func TestSession_ReadThreadUsage_UnknownVersionSendsNothing(t *testing.T) {
 // backend errored (not a 403/404, which upstream converts to a null field), so
 // this must NOT resolve to ErrThreadUsageUnavailable — a caller should see it.
 func TestSession_ReadThreadUsage_RPCError(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"error":{"code":-32603,"message":"failed to fetch thread usage: upstream 500"}`
 	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
@@ -246,6 +252,7 @@ func TestSession_ReadThreadUsage_RPCError(t *testing.T) {
 // upstream refuses it with a generic invalid_request whose message is the only
 // distinguishing mark.
 func TestSession_ReadThreadUsage_AuthRefusalIsAState(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"error":{"code":-32602,"message":"chatgpt authentication required to read token usage"}`
 	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
@@ -262,6 +269,7 @@ func TestSession_ReadThreadUsage_AuthRefusalIsAState(t *testing.T) {
 // evidence available, so a mismatch is a wire fault the caller must see — NOT
 // a state answer that silently keeps the fallback forever.
 func TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"threadUsage":{"threadId":"some-other-thread",` +
 		`"estimatedUsageCreditsMicros":1,"estimatedUsageUsdMicros":1,"groups":[]}}`
@@ -282,6 +290,7 @@ func TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault(t *testing.T) {
 // architecture that follow all carry digits, so a loose first-semver-token
 // scan over the whole string is exactly what this must not do.
 func TestParseAppServerVersion(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		userAgent string
@@ -314,6 +323,7 @@ func TestParseAppServerVersion(t *testing.T) {
 // 0.148, this gate becomes dead code and should be deleted rather than left to
 // rot.
 func TestThreadUsageFloorIsAboveTheProviderFloor(t *testing.T) {
+	t.Parallel()
 	if provider.CodexCLIVersionAtLeast("0.143.0", threadUsageMinimumCodexVersion) {
 		t.Fatalf("the provider launch floor now covers %s; the per-method gate is dead code",
 			threadUsageMinimumCodexVersion)
@@ -321,6 +331,7 @@ func TestThreadUsageFloorIsAboveTheProviderFloor(t *testing.T) {
 }
 
 func TestThreadUsageRejectsNegativeEstimatesAndPreservesZero(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{
 		`{"threadUsage":{"threadId":"t","estimatedUsageUsdMicros":-1}}`,
 		`{"threadUsage":{"threadId":"t","estimatedUsageUsdMicros":0,"estimatedUsageCreditsMicros":-1}}`,

@@ -26,6 +26,7 @@ import (
 // persisted only when the provider echoes the message with a stable
 // provider_item_id.
 func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -123,6 +124,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 // queued message above content the agent had already produced. See
 // the bug walkthrough in pendingSend's doc comment.
 func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-echo-insert-position")
@@ -213,6 +215,7 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 }
 
 func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-id-pending")
@@ -257,6 +260,7 @@ func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
 }
 
 func TestDispatchFlush_EmitsQueueFlushedBeforeQueueDrainedSnapshot(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-boundary-no-send-bridge")
@@ -330,6 +334,7 @@ func TestDispatchFlush_EmitsQueueFlushedBeforeQueueDrainedSnapshot(t *testing.T)
 // surface as a hard failure — it triggers a fresh Send that opens a
 // new turn carrying the queued content.
 func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -455,6 +460,7 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 // trigger fire and dispatcher arrival — the dispatcher must not panic
 // or persist a half-baked item.
 func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -492,6 +498,7 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 // but item 2's wire dispatch fails, item 3 must not be attempted —
 // preserving wire-visible ordering trumps best-effort delivery.
 func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -573,6 +580,7 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 }
 
 func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-failed-no-zone2")
@@ -622,6 +630,7 @@ func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
 }
 
 func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-steer-timeout")
@@ -699,6 +708,7 @@ func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
 }
 
 func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-dispatch-nonblocking")
@@ -766,6 +776,7 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 }
 
 func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-dispatch-serialized")
@@ -820,6 +831,7 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 }
 
 func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -850,6 +862,7 @@ func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
 // ids but in a different namespace, and never collide with the seed
 // `user:<turnIndex>` row that opens the turn.
 func TestNextFlushUserItemID_NeverCollidesWithSeedOrSteer(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-id-alloc")
@@ -909,6 +922,7 @@ func TestNextFlushUserItemID_NeverCollidesWithSeedOrSteer(t *testing.T) {
 // TestNextFlushUserItemID_StartsAtOneOnEmptyTurn pins the empty case:
 // a turn with no user rows still allocates `user:<turnIndex>:flush:1`.
 func TestNextFlushUserItemID_StartsAtOneOnEmptyTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-id-empty")
@@ -933,6 +947,7 @@ func TestNextFlushUserItemID_StartsAtOneOnEmptyTurn(t *testing.T) {
 // Send only. Exercised at the unit level so the full trigger →
 // dispatch → session test infra isn't needed for this branch.
 func TestDispatchFlushToProvider_RoutesByProviderType(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// A nil-codex / nil-claude session should fail fast with
@@ -957,6 +972,7 @@ func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session,
 // The row is deferred until wire echo, so the assertion runs after
 // provider confirmation.
 func TestDispatchFlush_PayloadDecoding(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -1039,6 +1055,7 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 // time the dispatcher reads it. The persisted user_text row must
 // land at the NEXT logical turn index, not at the closed prior one.
 func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-no-active-turn")
@@ -1092,6 +1109,7 @@ func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testi
 // Codex happy-path: when the active turn exists and the session is
 // Codex, we steer into the active turn's index.
 func TestDispatchFlush_ResolveTurnIndex_CodexPrefersActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-active-turn")
@@ -1130,6 +1148,7 @@ func TestDispatchFlush_ResolveTurnIndex_CodexPrefersActiveTurn(t *testing.T) {
 // opens a new logical response turn so setOpenTurn cannot reset counters
 // and produce segment ID collisions.
 func TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-claude-skip-active")
@@ -1181,6 +1200,7 @@ func TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn(t *testing.T) {
 // distinct turn indices. The first dispatch claims turn N+1; the
 // second must advance to N+2 via MaxPendingSendTurnIndex.
 func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, app.emitWithReplay())
 
@@ -1237,6 +1257,7 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 // position. The pending send is registered at the next turn so
 // resolveTurnIndexOnStart opens a fresh turn for the response.
 func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-eager")
@@ -1406,6 +1427,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 // the queued row to the turn tail so it lands AFTER that content — not
 // stranded at its dispatch-time slot above it.
 func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-reposition")
@@ -1546,6 +1568,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 // that on interrupt, quietly-persisted flush messages are bumped to
 // MAX(item_index)+1 so they sort AFTER the "Stopped by user" marker.
 func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-interrupt")
@@ -1680,6 +1703,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 // the deferred persistence path (same as Codex) — the item appears in
 // the timeline only after the provider echoes it.
 func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-claude-no-active")
@@ -1878,6 +1902,7 @@ func newAppForFlushQueueRPC(t *testing.T) (*App, *emitRecorder) {
 }
 
 func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("rpc-add")
@@ -1910,6 +1935,7 @@ func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 }
 
 func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("restore-queued-on-death")
@@ -1975,6 +2001,7 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 }
 
 func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("restore-draft-failure")
@@ -2013,6 +2040,7 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 // memory, so skipping the restore (as routing through the generic
 // teardownAndCloseSession would) silently discards the user's text.
 func TestPreInitTeardownRestoresQueuedSendsToDraft(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("doa-restore")
@@ -2047,6 +2075,7 @@ func TestPreInitTeardownRestoresQueuedSendsToDraft(t *testing.T) {
 }
 
 func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
+	t.Parallel()
 	for _, providerType := range []provider.ProviderKind{provider.Claude, provider.Codex} {
 		t.Run(string(providerType), func(t *testing.T) {
 			app, rec := newAppForFlushQueueRPC(t)
@@ -2097,6 +2126,7 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 }
 
 func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("restore-flushed-on-death")
@@ -2171,6 +2201,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 // Without the retry, the timeline shows the message twice: the stale
 // unconsumed row plus the new dispatch's row.
 func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-stale-cleanup")
@@ -2246,6 +2277,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 // and must survive for the next retry; a cleanup at the top of the
 // dispatch would delete it and then fail, losing the message entirely.
 func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-stale-keep")
@@ -2295,6 +2327,7 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 // twice. Requeuing with the old marker (row already deleted) or no
 // marker (fresh row left behind) both duplicate.
 func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-postpersist-marker")
@@ -2371,6 +2404,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 // must carry that id, which is what lets a client take the message back out
 // of its flushed zone instead of rendering it twice.
 func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-requeue-republish")
@@ -2465,6 +2499,7 @@ func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.
 // requeues (the TUI restores unconsumed input to the composer; the
 // queue path was the pre-parity behavior, round-13 CT13-2).
 func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("codex-resend-requeue")
@@ -2544,6 +2579,7 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 // and the row removal must still reach the frontend so no ghost
 // timeline row outlives its deleted store row.
 func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("codex-resend-draft-fail")
@@ -2627,6 +2663,7 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 // sit in the queue indefinitely. StartSession must drain the queue
 // once the new session can accept sends.
 func TestStartSession_FlushesRequeuedItems(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-on-start")
@@ -2688,6 +2725,7 @@ func TestStartSession_FlushesRequeuedItems(t *testing.T) {
 // the drain retries the cleanup — the message restores to the draft
 // only once the stale row is gone.
 func TestSessionDeathRetriesStaleRowCleanupForQueuedItem(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("death-stale-retry")
@@ -2738,6 +2776,7 @@ func TestSessionDeathRetriesStaleRowCleanupForQueuedItem(t *testing.T) {
 // still finds them. The store is closed to make the stale-row cleanup
 // fail, which is the production shape that produces a requeue.
 func TestTeardownDeadPreInitSession_KeepsRequeuedItems(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("preinit-requeue")
@@ -2774,6 +2813,7 @@ func TestTeardownDeadPreInitSession_KeepsRequeuedItems(t *testing.T) {
 // keep StaleUserItemID so the redispatch (or the next death drain)
 // still knows about the stale row.
 func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
+	t.Parallel()
 	queued, ok := queuedFlushItemFromUnconfirmed(triage.UnconfirmedFlushItem{
 		QueueItemID:     "queue:x",
 		Message:         "still stale",
@@ -2789,6 +2829,7 @@ func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
 }
 
 func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("restore-current-dedupe")
@@ -2850,6 +2891,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 }
 
 func TestRegisterQueueItem_RejectsEmptyThreadID(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	if _, err := app.RegisterQueueItem(context.Background(), "", "x", SendMessageOptions{}); err == nil {
 		t.Errorf("expected error for empty threadID")
@@ -2857,6 +2899,7 @@ func TestRegisterQueueItem_RejectsEmptyThreadID(t *testing.T) {
 }
 
 func TestRegisterQueueItem_RejectsTooManyAttachments(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-attach-cap")
 	thread.WorkspacePath = t.TempDir()
@@ -2878,6 +2921,7 @@ func TestRegisterQueueItem_RejectsTooManyAttachments(t *testing.T) {
 }
 
 func TestRegisterQueueItem_RejectsRevisionCommentsWithoutPlan(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-rev-comments")
 	thread.WorkspacePath = t.TempDir()
@@ -2894,6 +2938,7 @@ func TestRegisterQueueItem_RejectsRevisionCommentsWithoutPlan(t *testing.T) {
 }
 
 func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-snapshot")
 	thread.WorkspacePath = t.TempDir()
@@ -2928,6 +2973,7 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 // The snapshot now reads the whole chain and drops an item only once its
 // queue_flushed is about to be emitted.
 func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := testThread("queue-snapshot-handoff")
 	thread.WorkspacePath = t.TempDir()
@@ -2990,6 +3036,7 @@ func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
 }
 
 func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-live-state")
 	thread.WorkspacePath = t.TempDir()
@@ -3100,6 +3147,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 }
 
 func TestQueueStateChanged_PayloadDecodesAttachmentIDs(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-payload")
 	thread.WorkspacePath = t.TempDir()
@@ -3139,6 +3187,7 @@ var (
 // a merely-slow ack re-sent content Codex had already consumed. The
 // resend must instead leave the pending confirmation for the echo.
 func TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("codex-resend-ambiguous")
@@ -3187,6 +3236,7 @@ func TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation(t *t
 // aborts the resend into the draft restore — content and attachment
 // ref both land back in the composer instead of degrading.
 func TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	attStore, err := attachment.NewStore(attachment.Config{
@@ -3259,6 +3309,7 @@ func TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft(t *testing.T) 
 // treat delivery as ambiguous — keep the re-registered pending entry,
 // persist no error row, and requeue nothing.
 func TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-start-timeout")
@@ -3319,6 +3370,7 @@ func TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation(t *testing.
 // payload keeps the source refs (provenance) and attachment ids but
 // drops the comment IDs.
 func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
+	t.Parallel()
 	meta := `{
 		"attachments":[{"id":"att-1","threadId":"t1","filename":"a.png","mimeType":"image/png","size":9}],
 		"sourceProposedPlan":{"itemId":"plan-src"},
@@ -3356,6 +3408,7 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 }
 
 func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T) {
+	t.Parallel()
 	raw := queuePayloadFromUserItem(store.Item{
 		Meta: `{"expandComposerCommands":true}`,
 	}, nil)
@@ -3373,6 +3426,7 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 // the zero struct without error, which would silently drop attachments
 // and provenance. Both decode helpers must fail loudly instead.
 func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
+	t.Parallel()
 	if _, err := flushPayloadFromUserMeta("null"); err == nil {
 		t.Error("flushPayloadFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
@@ -3392,6 +3446,7 @@ func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 // dispatch requeues the message, and an injector that had already recorded it
 // as delivered would go silent about a message nobody ever received.
 func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
+	t.Parallel()
 	t.Run("a successful dispatch fires it", func(t *testing.T) {
 		app, _ := newAppForFlushQueueRPC(t)
 

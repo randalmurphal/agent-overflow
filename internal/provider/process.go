@@ -22,7 +22,11 @@ const (
 	// a single provider line may contain (particularly when Claude emits
 	// a turn/diff/updated notification with the full cumulative patch).
 	maxLineSize = 32 * 1024 * 1024
+)
 
+// The escalation graces are variables only so tests can shorten them; nothing
+// else assigns them.
+var (
 	// shutdownGrace is how long to wait after closing stdin before sending SIGTERM.
 	shutdownGrace = 3 * time.Second
 

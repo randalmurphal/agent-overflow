@@ -73,12 +73,12 @@ const QUEUED_TEXT = 'and then run the whole suite';
 const WRITE_PATH = 'note.txt';
 
 test.describe.serial('off-host live thread state', () => {
-  // Not green-washed: a host with no non-loopback interface genuinely
-  // cannot produce the peer this spec is about, and saying so is the
-  // honest outcome. A skip is visible in the report; a vacuous pass is not.
+  // Not green-washed: outside the test network namespace (macOS) no
+  // off-host peer can be produced without LAN traffic, and saying so is
+  // the honest outcome. A skip is visible in the report; a vacuous pass is not.
   test.skip(
     lanIP === null,
-    'no non-loopback IPv4 interface on this host, so no off-host peer can be produced',
+    'outside the test network namespace, so no off-host peer can be produced without LAN traffic',
   );
 
   let harness: HarnessApp;

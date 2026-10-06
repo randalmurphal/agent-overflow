@@ -13,6 +13,7 @@ import (
 )
 
 func TestThreadTurnInFlightTransitions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-settings-push-gate")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -59,6 +60,7 @@ func TestThreadTurnInFlightTransitions(t *testing.T) {
 }
 
 func TestPushCodexThreadSettingsIgnoresEmptyWork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.pushCodexThreadSettings("thread-x", nil, codex.ThreadSettingsPush{Model: true})
 	app.pushCodexThreadSettings("thread-x", nil, codex.ThreadSettingsPush{})
@@ -69,6 +71,7 @@ func TestPushCodexThreadSettingsIgnoresEmptyWork(t *testing.T) {
 // basename — which would name every thread of a project identically. The
 // derivation exists to make a thread pickable out of a peer's ListAgents.
 func TestPeerSessionNameForThreadPrefersTheTitle(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.store.CreateProject(store.Project{
 		ID: "p1", Path: "/repos/agent-overflow", Name: "Agent Overflow", Slug: "agent-overflow",
@@ -98,6 +101,7 @@ func TestPeerSessionNameForThreadPrefersTheTitle(t *testing.T) {
 // session over — the name is a label. It degrades to the workspace
 // basename, which is still project-specific.
 func TestPeerSessionNameForThreadFallsBackToTheWorkspaceBasename(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := store.Thread{
 		ID:            "abcdef0123456789",
@@ -114,6 +118,7 @@ func TestPeerSessionNameForThreadFallsBackToTheWorkspaceBasename(t *testing.T) {
 // A title that only sanitizes down to nothing must not produce an empty
 // name — the fallback carries it.
 func TestPeerSessionNameForThreadIsAlreadySanitized(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := store.Thread{
 		ID:            "0123456789abcdef",
@@ -139,6 +144,7 @@ func TestPeerSessionNameForThreadIsAlreadySanitized(t *testing.T) {
 // land the CLI in its mode-parity hold, which drops peer messages
 // silently after a timeout.
 func TestClaudeCrossSessionOptionResolvesThePolicy(t *testing.T) {
+	t.Parallel()
 	got := claudeCrossSessionOption(settings.ClaudeCrossSession{Enabled: true})
 	if !got.Enabled || got.Inbound != settings.ClaudeCrossSessionInboundAccept {
 		t.Fatalf("claudeCrossSessionOption(enabled, unset) = %+v", got)
@@ -157,6 +163,7 @@ func TestClaudeCrossSessionOptionResolvesThePolicy(t *testing.T) {
 // thread with no live session at all. It must be inert there rather than
 // panicking on a nil session or a missing row.
 func TestSyncPeerSessionNameIsInertWithoutALiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.syncPeerSessionName("")
 	app.syncPeerSessionName("no-such-thread")

@@ -1,10 +1,10 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,9 +75,7 @@ done
 `, threadID, steerBranch, startBranch)
 
 	path := filepath.Join(t.TempDir(), "codex-steer.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex-steer binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -117,6 +115,7 @@ func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerO
 // marker for triage to consume, and forwards the wire payload through
 // turn/steer.
 func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -189,6 +188,7 @@ func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.
 // path. The frontend never routes here for Claude threads, but the
 // backend defends against a stray RPC the same way.
 func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -222,6 +222,7 @@ func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
 // frontend's wire-side path string-matches against the error message
 // for the same fallback.
 func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -253,6 +254,7 @@ func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
 // `error` row so the timeline shows the failure next to the optimistic
 // user_text row.
 func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -319,6 +321,7 @@ func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *
 // turn/steer RPC fires. Mirrors app_send_test's source-plan coverage
 // for the mid-turn injection path.
 func TestSteerMessageWithOptions_MarksProposedPlanImplemented(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 

@@ -53,6 +53,7 @@ func (s *recordingWorkflowNotificationSender) snapshot() []recordedWorkflowNotif
 }
 
 func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 4)}
 	app.osNotifications = sender
@@ -109,6 +110,7 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 // coalesced drain summary died with the queue, so a run reaching done is
 // silent — only needs-human and failed interrupt the user.
 func TestDoneItemSendsNoNotification(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
 	app.osNotifications = sender
@@ -131,6 +133,7 @@ func TestDoneItemSendsNoNotification(t *testing.T) {
 }
 
 func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
+	t.Parallel()
 	failed := workflowTemplateDigest(store.WorkItem{
 		State: string(engine.StateFailed), Reason: string(engine.ReasonCheckFailedGenuine),
 	}, "verify", nil, "go-test")
@@ -146,6 +149,7 @@ func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
 }
 
 func TestWorkflowTemplateDigestExplainsProviderUsageRecovery(t *testing.T) {
+	t.Parallel()
 	digest := workflowTemplateDigest(store.WorkItem{
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonProviderUsageLimited),
 	}, "implement", nil, "")
@@ -158,6 +162,7 @@ func TestWorkflowTemplateDigestExplainsProviderUsageRecovery(t *testing.T) {
 }
 
 func TestWorkflowDigestAsyncUpgradePersistsAndReemits(t *testing.T) {
+	t.Parallel()
 	app, events := setupE2EApp(t)
 	app.testEmitHook = events.emit
 	bus := transport.NewEventBus(16)
@@ -215,6 +220,7 @@ func TestWorkflowDigestAsyncUpgradePersistsAndReemits(t *testing.T) {
 }
 
 func TestWorkflowDigestAsyncFailureAndStaleResultKeepTemplate(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		stale bool
@@ -303,6 +309,7 @@ func waveNotify(itemID string, attempt int) engine.NotifyEvent {
 }
 
 func TestWorkflowGateNotifyWakesTheBoundThreadWithoutParking(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-progress")
 	item := h.boundRun(t, "progress-run", thread.ID, engine.StateRunning, "")
@@ -348,6 +355,7 @@ func TestWorkflowGateNotifyWakesTheBoundThreadWithoutParking(t *testing.T) {
 // Every wave of a loop is its own news. Coalescing must separate them, or the
 // mechanism built to report progress would report the first lap and go quiet.
 func TestWorkflowGateNotifyCoalescesPerTraversalNotPerRoute(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-waves")
 	item := h.boundRun(t, "waves-run", thread.ID, engine.StateRunning, "")
@@ -381,6 +389,7 @@ func phraseForAttempt(attempt int) string {
 // descendant — the same rule a descendant's park follows, for the same reason:
 // only a root binds a thread.
 func TestWorkflowGateNotifyFromACalledRunSurfacesAtTheRoot(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-campaign-progress")
 	root := h.boundRun(t, "campaign-root", thread.ID, engine.StateRunning, "")
@@ -420,6 +429,7 @@ func TestWorkflowGateNotifyFromACalledRunSurfacesAtTheRoot(t *testing.T) {
 // notify is simply inert there rather than reaching for the OS notification a
 // run that needs a human gets.
 func TestWorkflowGateNotifyIsInertForAnUnboundRun(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	item := h.run(t, "unbound-progress", engine.StateRunning, "")
 	h.phase(t, item.ID, "wave", 1, "completed", "phase-thread",
@@ -441,6 +451,7 @@ func TestWorkflowGateNotifyIsInertForAnUnboundRun(t *testing.T) {
 // A progress wake never delays or fails the run it reports on: a record it
 // cannot read costs the outputs, not the message.
 func TestWorkflowGateNotifyStillReportsWhenTheAttemptIsUnreadable(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-unreadable")
 	item := h.boundRun(t, "unreadable-run", thread.ID, engine.StateRunning, "")

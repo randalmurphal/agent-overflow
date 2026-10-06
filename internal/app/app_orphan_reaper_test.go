@@ -17,6 +17,7 @@ import (
 // only when TestMain dispatches the subcommand as main() does. It then
 // exits on the control pipe's EOF, and Close returns promptly.
 func TestOrphanReaperSidecarRunsAsTheReaper(t *testing.T) {
+	t.Parallel()
 	a := NewApp()
 	if err := a.startOrphanReaper(t.TempDir()); err != nil {
 		t.Fatalf("startOrphanReaper: %v", err)

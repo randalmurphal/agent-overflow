@@ -11,6 +11,7 @@ import (
 // so the acknowledgement reaches the caller over a transport the teardown
 // is about to drain.
 func TestShutdownBackendHandsTheRequestOffAndAnswersFirst(t *testing.T) {
+	t.Parallel()
 	requested := make(chan struct{})
 	a := &App{}
 	ConfigureBackendShutdown(a, func() error {
@@ -32,6 +33,7 @@ func TestShutdownBackendHandsTheRequestOffAndAnswersFirst(t *testing.T) {
 // window close racing its own backstop: every call reaches the installed
 // path, which owns the once-only teardown.
 func TestShutdownBackendRepeatsSafely(t *testing.T) {
+	t.Parallel()
 	requests := make(chan struct{}, 4)
 	a := &App{}
 	ConfigureBackendShutdown(a, func() error {
@@ -59,6 +61,7 @@ func TestShutdownBackendRepeatsSafely(t *testing.T) {
 // the caller has to learn that rather than wait for an exit that is not
 // coming.
 func TestShutdownBackendRefusesWithoutAnInstalledPath(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	if err := a.ShutdownBackend(); !errors.Is(err, ErrShutdownNotOwned) {
 		t.Fatalf("ShutdownBackend on a boot with no door = %v, want %v", err, ErrShutdownNotOwned)

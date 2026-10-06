@@ -1464,36 +1464,9 @@ func TestRebind_InvalidAddrLeavesStateIntact(t *testing.T) {
 	}
 }
 
-// TestSamePort verifies the port-comparison helper used by
-// bindRebindListener to scope the EADDRINUSE recovery. Both addrs must
-// parse cleanly with net.SplitHostPort; either malformed yields false
-// (better to skip recovery than guess on a partially-parsed addr).
-func TestSamePort(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want bool
-	}{
-		{"127.0.0.1:8080", "0.0.0.0:8080", true},
-		{"[::]:8080", "127.0.0.1:8080", true},
-		{"127.0.0.1:8080", "127.0.0.1:9090", false},
-		{"127.0.0.1:8080", "", false},
-		{"", "127.0.0.1:8080", false},
-		{"not-an-addr", "127.0.0.1:8080", false},
-	}
-	for _, c := range cases {
-		if got := samePort(c.a, c.b); got != c.want {
-			t.Errorf("samePort(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
-		}
-	}
-}
-
-// TestRebind_ForeignHolderDifferentPortLeavesStateIntact pins the
-// scoping rule on the EADDRINUSE recovery path: when the rebind target
-// is on a different port from the live listener, the kernel's
-// "address already in use" must be a foreign holder, not Linux's
-// self-overlap rule. Closing our own listener wouldn't help — so the
-// error propagates directly and the existing listener stays exactly
-// as it was.
+// TestRebind_ForeignHolderDifferentPortLeavesStateIntact pins that an
+// address held by another socket fails the rebind with the existing
+// listener exactly as it was.
 func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
 	f := newServerFixture(t)
 	preAddr := f.srv.Addr()
@@ -1506,10 +1479,7 @@ func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
 	}
 
 	// Stage a foreign holder on a fresh ephemeral port (different from
-	// f.srv's port). The first net.Listen will return EADDRINUSE
-	// because the foreign listener owns it; the recovery path's
-	// samePort check sees the port mismatch and propagates without
-	// touching our listener.
+	// f.srv's port), so the bind returns EADDRINUSE.
 	foreign, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("stage foreign listener: %v", err)
@@ -1522,7 +1492,7 @@ func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
 		t.Fatalf("expected rebind to fail when target addr is held by a foreign listener")
 	}
 
-	// Addr unchanged — recovery never fired.
+	// Addr unchanged.
 	if got := f.srv.Addr(); got != preAddr {
 		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
 	}
@@ -1537,15 +1507,10 @@ func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
 	}
 }
 
-// TestRebind_SamePortHostFlip pins the Linux self-overlap recovery
-// path: rebinding from 127.0.0.1:N to 0.0.0.0:N (the LAN-bind toggle's
-// shape) must succeed even though Linux refuses to bind 0.0.0.0:N
-// while 127.0.0.1:N is still held by the same process. macOS allows
-// the overlap and would have succeeded with the optimistic
-// "bind new before retiring old" pattern; Linux requires us to release
-// the old listener first. The recovery path closes the old listener,
-// retries, and only fails for genuinely-foreign holders. Pre-fix this
-// test failed on Linux with "bind: address already in use".
+// TestRebind_SamePortHostFlip pins the LAN-bind toggle's shape: from
+// 127.0.0.1:N to 0.0.0.0:N and back. Linux refuses the wildcard beside
+// the loopback socket unless both share the port (shareport_linux.go);
+// macOS admits it. Both directions keep existing connections.
 func TestRebind_SamePortHostFlip(t *testing.T) {
 	remotetest.Require(t)
 	f := newServerFixture(t)
@@ -2256,8 +2221,8 @@ func TestServer_UnusableBindAddrFailsDespiteFallback(t *testing.T) {
 // TestAddrInUseIsNarrowerThanPortUnavailable pins the split between the
 // two bind predicates. portUnavailable answers "would port 0 do better?"
 // (the ephemeral fallback's question) and therefore includes EACCES;
-// addrInUse answers "would releasing our own listener help?" (the rebind
-// recovery's question) and therefore must not.
+// addrInUse answers "would another probed port help?" (the WSL probe
+// loop's question) and therefore must not.
 func TestAddrInUseIsNarrowerThanPortUnavailable(t *testing.T) {
 	bindErr := func(errno syscall.Errno) error {
 		return &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", errno)}
@@ -2286,16 +2251,9 @@ func TestAddrInUseIsNarrowerThanPortUnavailable(t *testing.T) {
 	}
 }
 
-// TestBindRebindListener_PermissionErrorKeepsOldListener is the reason
-// the two predicates are separate. The rebind recovery cures a bind
-// failure by closing the live listener and retrying; a permission /
-// reservation refusal is identical afterwards, so a rebind that hits one
-// must propagate with the old listener untouched — otherwise the LAN
-// toggle destroys a working server for an error it cannot fix.
-//
-// Both addrs name the same port so samePort() cannot be what stops the
-// recovery: the predicate is the only thing under test.
-func TestBindRebindListener_PermissionErrorKeepsOldListener(t *testing.T) {
+// TestRebind_PermissionErrorKeepsOldListener pins that a permission or
+// reservation refusal fails the rebind with the live listener serving.
+func TestRebind_PermissionErrorKeepsOldListener(t *testing.T) {
 	const privilegedAddr = "127.0.0.1:80"
 	probe, probeErr := net.Listen("tcp", privilegedAddr)
 	if probeErr == nil {
@@ -2307,23 +2265,18 @@ func TestBindRebindListener_PermissionErrorKeepsOldListener(t *testing.T) {
 	}
 
 	f := newServerFixture(t)
-	old, err := net.Listen("tcp", "127.0.0.1:0")
+	preAddr := f.srv.Addr()
+	if err := f.srv.Rebind(privilegedAddr, nil); err == nil {
+		t.Fatal("Rebind bound a privileged port")
+	}
+	if got := f.srv.Addr(); got != preAddr {
+		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
+	}
+	resp, err := http.Get("http://" + preAddr + HealthPath)
 	if err != nil {
-		t.Fatalf("stage old listener: %v", err)
+		t.Fatalf("live listener stopped serving after a refused rebind: %v", err)
 	}
-	defer old.Close()
-
-	listener, err := f.srv.bindRebindListener(privilegedAddr, old, "0.0.0.0:80")
-	if err == nil {
-		_ = listener.Close()
-		t.Fatal("bindRebindListener bound a privileged port")
-	}
-
-	// A second Close on a listener this call already closed returns
-	// net.ErrClosed; on a live one it returns nil.
-	if closeErr := old.Close(); closeErr != nil {
-		t.Fatalf("bindRebindListener closed the live listener for an unrecoverable bind error (%v); close reported %v", err, closeErr)
-	}
+	_ = resp.Body.Close()
 }
 
 func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {

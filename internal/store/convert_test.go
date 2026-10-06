@@ -41,8 +41,16 @@ func mustSeedLegacyDatabase(t *testing.T, path string) {
 // newLegacyStore opens a migrated store whose file is auto_vacuum=none.
 func newLegacyStore(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy.sqlite")
-	mustSeedLegacyDatabase(t, path)
+	path := fixtureCopy(t, "legacy.sqlite", func(t *testing.T, path string) {
+		mustSeedLegacyDatabase(t, path)
+		s, err := New(path)
+		if err != nil {
+			t.Fatalf("migrate the legacy database: %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("close the legacy database: %v", err)
+		}
+	})
 	s, err := New(path)
 	if err != nil {
 		t.Fatalf("new legacy store: %v", err)

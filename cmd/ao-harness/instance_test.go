@@ -106,7 +106,28 @@ func startAttachableBackend(t *testing.T, token string) int {
 		}
 		defer conn.CloseNow()
 		for {
-			if _, _, err := conn.Read(r.Context()); err != nil {
+			_, data, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			// Answer every RPC, so attach's capabilities handshake settles
+			// instead of waiting out its dial timeout.
+			var frame struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if json.Unmarshal(data, &frame) != nil || frame.Type != "rpc" {
+				continue
+			}
+			reply, err := json.Marshal(map[string]any{
+				"type":   "rpc",
+				"id":     frame.ID,
+				"result": map[string]int{"protocolRevision": cliHarnessProtocolRevision},
+			})
+			if err != nil {
+				return
+			}
+			if err := conn.Write(r.Context(), websocket.MessageText, reply); err != nil {
 				return
 			}
 		}
@@ -215,13 +236,16 @@ func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
 		bs.Token = token
 	})
 
-	e, _, _ := testEnv(t.TempDir())
+	e, _, stderr := testEnv(t.TempDir())
 	e.instance = root
 	client, target, bs, err := e.attach(context.Background())
 	if err != nil {
 		t.Fatalf("attach across PID namespace: %v", err)
 	}
 	defer client.Close()
+	if stderr.Len() != 0 {
+		t.Fatalf("attach warned: %s", stderr.String())
+	}
 	if target.ID != instanceinfo.ID(root) {
 		t.Fatalf("target id = %s, want %s", target.ID, instanceinfo.ID(root))
 	}

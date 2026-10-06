@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,9 +11,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseCodexMCPList_OAuthWithTools(t *testing.T) {
+	t.Parallel()
 	body, err := json.Marshal(map[string]any{
 		"data": []map[string]any{
 			{
@@ -51,6 +52,7 @@ func TestParseCodexMCPList_OAuthWithTools(t *testing.T) {
 }
 
 func TestParseCodexMCPList_NotLoggedIn(t *testing.T) {
+	t.Parallel()
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
 			{"name": "linear", "authStatus": "notLoggedIn", "tools": map[string]any{}},
@@ -70,6 +72,7 @@ func TestParseCodexMCPList_NotLoggedIn(t *testing.T) {
 // resources-only server, or one whose tool list is empty) is connected.
 // The old tool-count-only rule called this "starting" forever.
 func TestParseCodexMCPList_ServerInfoWithZeroTools(t *testing.T) {
+	t.Parallel()
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
 			{
@@ -94,6 +97,7 @@ func TestParseCodexMCPList_ServerInfoWithZeroTools(t *testing.T) {
 // so an oAuth server that came back with neither serverInfo nor tools
 // failed to initialize. It used to render as "starting" indefinitely.
 func TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed(t *testing.T) {
+	t.Parallel()
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
 			{"name": "atlassian", "authStatus": "oAuth", "tools": map[string]any{}},
@@ -113,6 +117,7 @@ func TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed(t *testing.T) {
 }
 
 func TestParseCodexMCPList_ServerInfoAbsentButToolsPresent(t *testing.T) {
+	t.Parallel()
 	// Safety net: tools can only exist past a completed initialize, so a
 	// response that somehow omits serverInfo while listing tools is still
 	// connected.
@@ -131,6 +136,7 @@ func TestParseCodexMCPList_ServerInfoAbsentButToolsPresent(t *testing.T) {
 // requirement outranks any liveness evidence — the row's action is a
 // sign-in either way.
 func TestParseCodexMCPList_NotLoggedInIgnoresServerInfo(t *testing.T) {
+	t.Parallel()
 	body, _ := json.Marshal(map[string]any{
 		"data": []map[string]any{
 			{
@@ -148,6 +154,7 @@ func TestParseCodexMCPList_NotLoggedInIgnoresServerInfo(t *testing.T) {
 }
 
 func TestParseCodexMCPList_EmptyResponse(t *testing.T) {
+	t.Parallel()
 	cases := [][]byte{
 		nil,
 		[]byte{},
@@ -165,6 +172,7 @@ func TestParseCodexMCPList_EmptyResponse(t *testing.T) {
 }
 
 func TestParseCodexMCPList_MalformedReturnsError(t *testing.T) {
+	t.Parallel()
 	if _, err := parseMCPList([]byte(`not json`), time.Now()); err == nil {
 		t.Fatal("expected decode error")
 	}
@@ -173,9 +181,7 @@ func TestParseCodexMCPList_MalformedReturnsError(t *testing.T) {
 func writeMockCodexAppServer(t *testing.T, dir, scriptBody string) string {
 	t.Helper()
 	binPath := filepath.Join(dir, "codex")
-	if err := os.WriteFile(binPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write mock codex: %v", err)
-	}
+	mockexec.Write(t, binPath, scriptBody)
 	return binPath
 }
 
@@ -202,6 +208,7 @@ done
 `
 
 func TestMCPStatusFetcher_Fetch_UsesMockBinary(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
@@ -239,6 +246,7 @@ func TestMCPStatusFetcher_Fetch_UsesMockBinary(t *testing.T) {
 }
 
 func TestMCPStatusFetcher_Fetch_InitializeError(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
@@ -264,6 +272,7 @@ done
 }
 
 func TestMCPStatusFetcher_Fetch_ListError(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
@@ -293,6 +302,7 @@ done
 }
 
 func TestMCPStatusFetcher_Fetch_MissingBinary(t *testing.T) {
+	t.Parallel()
 	f := &MCPStatusFetcher{Binary: ""}
 	if _, err := f.Fetch(context.Background(), mcpstatus.ProviderCodex); err == nil {
 		t.Fatal("expected error for missing binary path")
@@ -324,6 +334,7 @@ sleep 5
 // connection attempts, so "still booting" is not an answer this
 // projector can give — only a startup notification can.
 func TestMCPStatusFromList(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		auth          string
 		hasServerInfo bool
@@ -376,6 +387,7 @@ func TestMCPStatusFromList(t *testing.T) {
 }
 
 func TestMCPStatusFromListPrefersRuntimeStatus(t *testing.T) {
+	t.Parallel()
 	stringPtr := func(value string) *string { return &value }
 	for _, tc := range []struct {
 		runtime string
@@ -414,6 +426,7 @@ func TestMCPStatusFromListPrefersRuntimeStatus(t *testing.T) {
 // legacy fallback lifecycle or error context in the app-layer merge. An
 // explicit 0.150 runtimeStatus always wins.
 func TestMCPStartupUpdateTerminalFailure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		state string
 		want  bool
@@ -434,6 +447,7 @@ func TestMCPStartupUpdateTerminalFailure(t *testing.T) {
 }
 
 func TestMCPStatusFromNotif(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		update MCPStartupUpdate

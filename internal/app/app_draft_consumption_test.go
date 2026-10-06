@@ -15,6 +15,7 @@ import (
 // The predicate uses all persisted fields, not expanded provider text or a
 // timestamp. Matching and clearing share SaveDraft's encoding/normalization.
 func TestDraftConsumptionMatchesPersistedState(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(*DraftSnapshot){
 		"content":     func(d *DraftSnapshot) { d.Content += " next" },
 		"attachments": func(d *DraftSnapshot) { d.AttachmentIDs = []string{"new-upload"} },
@@ -62,6 +63,7 @@ func TestDraftConsumptionMatchesPersistedState(t *testing.T) {
 }
 
 func TestComposerAdmissionConsumesOnlyCapturedDraft(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"direct", "queue", "busy-direct"} {
 		for _, newer := range []bool{false, true} {
 			name := "matching"
@@ -124,6 +126,7 @@ func TestComposerAdmissionConsumesOnlyCapturedDraft(t *testing.T) {
 }
 
 func TestQueueDispatchPreservesDraftWrittenAfterAdmission(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("draft-after-queue")
 	thread.Provider = string(provider.Codex)

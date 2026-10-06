@@ -9,8 +9,9 @@ import (
 )
 
 func TestWriteWorkspaceFile(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	workspace := testutil.InitGitRepo(t)
+	workspace := initMainGitRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
 
 	writtenPath, err := app.WriteWorkspaceFile(ref, "plans/ship-it.md", "# Ship it\n")
@@ -45,7 +46,7 @@ func TestWriteWorkspaceFile(t *testing.T) {
 // the plan-save dialog, not a git action.
 func TestWriteWorkspaceFileAcceptsRegisteredWorktree(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -68,8 +69,9 @@ func TestWriteWorkspaceFileAcceptsRegisteredWorktree(t *testing.T) {
 // The ref is the trust boundary: a directory that is not a checkout of the
 // named project can never be written to, however it is spelled.
 func TestWriteWorkspaceFileRefusesNonCheckout(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -99,8 +101,9 @@ func TestWriteWorkspaceFileRefusesNonCheckout(t *testing.T) {
 }
 
 func TestWriteWorkspaceFileRejectsParentEscape(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	workspace := testutil.InitGitRepo(t)
+	workspace := initMainGitRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
 
 	if _, err := app.WriteWorkspaceFile(ref, "../outside.md", "nope"); err == nil {

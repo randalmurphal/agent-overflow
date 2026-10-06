@@ -353,6 +353,10 @@ type bootTransportOptions struct {
 	// is an explicit operator opt-in, so the "dirty shell must not
 	// replace release assets" rule that gates dev builds doesn't apply.
 	AllowDevServerAssets bool
+	// HarnessTiming is the harness boot's shortened product intervals; the
+	// transport and attached-computer ones are applied here. Only harness
+	// mode sets it.
+	HarnessTiming harnessTiming
 }
 
 // bootBrowserCDPRelay binds the loopback endpoint the Windows launcher's
@@ -463,7 +467,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// not a failure to abort on — the four admin methods answer it, the
 	// routes are absent, and the local backend still works.
 	appservice.SetDeviceNameIdentity(appService.App, appidentity.NewDeviceName(bootSettingsDir()))
-	attached := bootAttachedBackends()
+	attached := bootAttachedBackends(opts.HarnessTiming.PairingProbe)
 	if attached != nil {
 		appservice.SetAttachedBackends(appService.App, attached)
 	}
@@ -489,6 +493,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// it gets thread_unsupported. Gated on the harness receiver, so an
 		// ordinary boot cannot be talked out of a capability it has.
 		OmitThreadToolsCapability: opts.HarnessReceiver != nil && envTruthy(os.Getenv(diagenv.HarnessOldPeer)),
+		WatermarkInterval:         opts.HarnessTiming.Watermark,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
@@ -561,7 +566,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
 	applyServerCertificate(&cfg, appService)
-	settingsPort, canonicalDomain, err := configureTransportNetwork(&cfg, listenAddr, opts.IgnorePersistedNetwork)
+	settingsPort, canonicalDomain, err := configureTransportNetwork(&cfg, appService, listenAddr, opts.IgnorePersistedNetwork)
 	if err != nil {
 		fatalf("transport: %v", err)
 	}
@@ -1291,8 +1296,9 @@ func deviceLabel() string {
 }
 
 // bootAttachedBackends builds the set of other machines this installation
-// drives, or nil when there is nowhere to keep pairings.
-func bootAttachedBackends() *attachedbackends.Manager {
+// drives, or nil when there is nowhere to keep pairings. activationProbe is
+// a harness boot's pairing confirmation poll; zero keeps the product one.
+func bootAttachedBackends(activationProbe time.Duration) *attachedbackends.Manager {
 	dir, err := deviceProfileDir()
 	if err != nil {
 		log.Printf("attached backends: %v", err)
@@ -1301,6 +1307,7 @@ func bootAttachedBackends() *attachedbackends.Manager {
 	manager, err := attachedbackends.New(dir, deviceLabel(), runtime.GOOS)
 	if manager != nil {
 		manager.SetLabelGetter(appidentity.NewDeviceName(bootSettingsDir()).Get)
+		manager.SetActivationProbe(activationProbe)
 	}
 	if err != nil {
 		log.Printf("attached backends: %v", err)

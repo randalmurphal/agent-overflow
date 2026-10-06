@@ -24,6 +24,7 @@ import (
 // threads must cost zero usage requests), activity is scoped per provider,
 // and a mark taken after the last activity reads as "no new turns".
 func TestProviderTurnActivity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	if app.providerLifecycleService().TurnCompletedSince(string(provider.Claude), time.Time{}) {
@@ -51,12 +52,11 @@ func TestProviderTurnActivity(t *testing.T) {
 // probe call succeeds, the snapshot lands on the provider:usage channel,
 // and the event carries no threadId (rate limits are account-wide).
 func TestProbeClaudeRateLimits_EmitsOnSuccess(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	// Seed the canonical credential AFTER the fixture's HOME detach so the
-	// probe finds it under the home this test controls.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
+	// Seed the canonical credential in the fixture's provider home, where
+	// the probe looks for it.
+	tmpHome := testProviderHome(t, app)
 	credsDir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(credsDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -123,12 +123,9 @@ func TestProbeClaudeRateLimits_EmitsOnSuccess(t *testing.T) {
 // Without this contract every probe cadence tick would log noise on a
 // freshly installed system.
 func TestProbeClaudeRateLimits_SwallowsMissingCredentials(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-	// Deliberately do NOT create ~/.claude/.credentials.json.
-
+	t.Parallel()
 	app := newTestAppWithStore(t)
+	// The fixture's provider home is empty: no .claude/.credentials.json.
 	var emitted atomic.Int32
 	app.testEmitHook = func(name string, _ any) {
 		if name == "provider:usage" {
@@ -150,12 +147,11 @@ func TestProbeClaudeRateLimits_SwallowsMissingCredentials(t *testing.T) {
 // install that retries into a live window extends the penalty for all of
 // them — the "rate limits never update anymore" symptom.
 func TestProbeClaudeRateLimits_UnmanagedProbe429RecordsAndEnforcesItsHold(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	// Seed the canonical credential AFTER the fixture's HOME detach so the
-	// probe finds it under the home this test controls.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
+	// Seed the canonical credential in the fixture's provider home, where
+	// the probe looks for it.
+	tmpHome := testProviderHome(t, app)
 	credsDir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(credsDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -195,6 +191,7 @@ func TestProbeClaudeRateLimits_UnmanagedProbe429RecordsAndEnforcesItsHold(t *tes
 // short-circuits if the app is already in shutdown — no HTTP call,
 // no emit. Protects against late ticker firings after Shutdown begins.
 func TestProbeClaudeRateLimits_RespectsShuttingDownGate(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.shuttingDown.Store(true)
 
@@ -226,6 +223,7 @@ func TestProbeClaudeRateLimits_RespectsShuttingDownGate(t *testing.T) {
 }
 
 func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -293,7 +291,7 @@ func (rt redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())

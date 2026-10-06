@@ -3,6 +3,7 @@ package git
 import "testing"
 
 func TestParsePRURLCreatePRFormats(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		url  string
@@ -33,6 +34,7 @@ func TestParsePRURLCreatePRFormats(t *testing.T) {
 }
 
 func TestParsePRURLRejectsMalformedOrUnsupportedValues(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"owner/repo/pull/9",
 		"https://github.com/owner/repo/pull/0",

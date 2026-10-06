@@ -66,6 +66,7 @@ func (f *requestFixture) scheduleDelay(t *testing.T, token string) time.Duration
 // of its retention. The cadence now doubles towards its ceiling and the row
 // leaves the poll for good once there is nothing left to ask for.
 func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
 
@@ -153,6 +154,7 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 // branches of thread_status are refused rather than answered with whatever
 // local rows the sender's thread id happens to match.
 func TestForwardedCallCannotReadThisComputersRequestLedger(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	adapter := f.adapter()
 	caller := f.callerIdentity()
@@ -182,6 +184,7 @@ func TestForwardedCallCannotReadThisComputersRequestLedger(t *testing.T) {
 // trusted "Agent request" footer of a user message, is one this app mints.
 // A peer that sends something else is refused rather than trusted.
 func TestForwardedRequestRefusesIdsThisAppDidNotMint(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	owner := uuid.NewString()
 	good := threadtools.Caller{ThreadID: uuid.NewString(), ComputerID: uuid.NewString()}
@@ -216,6 +219,7 @@ func TestForwardedRequestRefusesIdsThisAppDidNotMint(t *testing.T) {
 // A title another computer chose is rendered into this computer's message
 // footer, so its length and its line count are this computer's business.
 func TestForwardedTitleIsClippedToThisComputersBound(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("e", threadtools.MaxTitleRunes+50)
 	if got := threadPeerTitle(long); len([]rune(got)) != threadtools.MaxTitleRunes {
 		t.Fatalf("clipped title is %d runes, want %d", len([]rune(got)), threadtools.MaxTitleRunes)
@@ -246,6 +250,7 @@ func isThreadToolCode(err error, code string) bool {
 // delivery was attempted again, so the retry now backs off, ends, and leaves
 // the reason on the row where thread_status reads it.
 func TestUndeliverableWakeBacksOffAndIsAbandoned(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	token := f.seedRemoteRequest(t, uuid.NewString())
 	if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {
@@ -320,6 +325,7 @@ func TestUndeliverableWakeBacksOffAndIsAbandoned(t *testing.T) {
 // wake rendered after a restart named nothing at all. The name its own
 // computer reported is recorded with the target.
 func TestRemoteTargetTitleSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
 	token := f.seedRemoteRequest(t, computer)
@@ -341,6 +347,7 @@ func TestRemoteTargetTitleSurvivesARestart(t *testing.T) {
 // the reason to bring the thread back: a wake queued behind a row the
 // sidebar does not show would sit unread.
 func TestWakeUnarchivesTheCallerItIsFor(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
@@ -371,6 +378,7 @@ func TestWakeUnarchivesTheCallerItIsFor(t *testing.T) {
 // reminders and wake retries beside them are not: a reminder due during a
 // slow poll is served on its own clock, not the poll's timeout.
 func TestSweepScheduleKeepsRemindersWhileAPollIsInFlight(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	remote := f.seedRemoteRequest(t, uuid.NewString())
 	if err := f.app.store.RescheduleThreadRequest(remote, time.Now().Add(time.Minute).UnixMilli(), 0, ""); err != nil {

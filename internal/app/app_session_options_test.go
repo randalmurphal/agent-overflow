@@ -13,6 +13,7 @@ import (
 // path for a Claude thread at xhigh effort. Claude now receives native CLI
 // flags instead of a system-prompt prefix.
 func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-claude-xhigh")
 	thread.Provider = string(provider.Claude)
@@ -47,6 +48,7 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 }
 
 func TestSessionOptionsFromThreadToCodexConfigXHigh(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-codex-xhigh")
 	thread.Provider = string(provider.Codex)
@@ -77,6 +79,7 @@ func TestSessionOptionsFromThreadToCodexConfigXHigh(t *testing.T) {
 }
 
 func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
+	t.Parallel()
 	thread := testThread("thread-stale-sonnet-xhigh")
 	thread.Provider = string(provider.Claude)
 	thread.Model = "claude-sonnet-4-6"
@@ -94,6 +97,7 @@ func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
 }
 
 func TestSessionOptionsPreservesStoredCodexEffort(t *testing.T) {
+	t.Parallel()
 	thread := testThread("thread-stale-codex-max")
 	thread.Provider = string(provider.Codex)
 	thread.Model = "gpt-5.5"
@@ -111,6 +115,7 @@ func TestSessionOptionsPreservesStoredCodexEffort(t *testing.T) {
 }
 
 func TestSessionOptionsFastModePreservesClaudeModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fast-opus")
 	thread.Provider = string(provider.Claude)
@@ -135,6 +140,7 @@ func TestSessionOptionsFastModePreservesClaudeModel(t *testing.T) {
 }
 
 func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fast-gpt5")
 	thread.Provider = string(provider.Codex)
@@ -162,6 +168,7 @@ func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
 // ultimately ships the bypass-permissions mode plus the explicit skip flag on
 // the CLI command line.
 func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fullaccess-args")
 	thread.Provider = string(provider.Claude)

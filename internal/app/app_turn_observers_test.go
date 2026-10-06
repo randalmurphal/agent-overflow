@@ -15,6 +15,7 @@ import (
 )
 
 func TestTurnObserversDispatchByScope(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	var received []string
 
@@ -42,6 +43,7 @@ func TestTurnObserversDispatchByScope(t *testing.T) {
 }
 
 func TestTurnObserverUnsubscribeIsIdempotentAndCleansBucket(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	var calls int
 	unsubscribe := app.subscribeThreadTurnObserver("thread-a", func(string, provider.ProviderEvent) {
@@ -63,6 +65,7 @@ func TestTurnObserverUnsubscribeIsIdempotentAndCleansBucket(t *testing.T) {
 }
 
 func TestTurnObserverCanUnsubscribeAndRegisterDuringCallback(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	var selfCalls, addedCalls int
 	var unsubscribe func()
@@ -86,6 +89,7 @@ func TestTurnObserverCanUnsubscribeAndRegisterDuringCallback(t *testing.T) {
 }
 
 func TestTurnObserversDispatchAfterTriage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-observer-order")
@@ -116,6 +120,7 @@ func TestTurnObserversDispatchAfterTriage(t *testing.T) {
 }
 
 func TestDiscussionTurnObserverPreservesWireErrorMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-discussion-observer-error")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -155,6 +160,7 @@ func TestDiscussionTurnObserverPreservesWireErrorMessage(t *testing.T) {
 }
 
 func TestTurnObserversConcurrentRegisterDispatchAndUnsubscribe(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	const (
 		workers    = 64

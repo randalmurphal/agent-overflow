@@ -1,14 +1,35 @@
 package app
 
 import (
-	"os"
+	"agent-overflow/internal/testutil/mockexec"
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/settings"
 )
+
+// resetClaudeProbeCacheForTest gives the test fresh process-wide probe caches
+// and Claude catalog, and resets them again when it ends so a serial test
+// leaves no provider answers for the parallel tests that follow. A test that
+// calls it must not call t.Parallel.
+//
+// It resets the probe-enriched model catalog and command list with the
+// identity cache, because one probe fills all three: a test that cleared only
+// the identity cache would re-probe and then compare against another test's
+// model list.
+func resetClaudeProbeCacheForTest(t testing.TB) {
+	t.Helper()
+	reset := func() {
+		providerdiscoveryapp.ResetDefaultCachesForTest()
+		claudecatalog.Reset()
+	}
+	reset()
+	t.Cleanup(reset)
+}
 
 // claudeProbeShapeAfterASwitch is what a HEALTHY Claude Max login reports once
 // `~/.claude.json`'s `oauthAccount` record is gone — which AO itself deletes on
@@ -42,15 +63,13 @@ func writeProbeMockBinary(t *testing.T, accountJSON string) string {
 		`read -r _ || true` + "\n" +
 		`printf '%s\n' '` + respLine + `'` + "\n" +
 		`exit 0` + "\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
 func TestProbeClaudeAccountReturnsInfo(t *testing.T) {
 	// Reset the package-level cache so prior tests don't leak results.
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -73,7 +92,7 @@ func TestProbeClaudeAccountReturnsInfo(t *testing.T) {
 }
 
 func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -97,14 +116,12 @@ func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
 
 	// Overwrite the binary in-place with a different account.
 	respLine := `{"type":"control_response","response":{"subtype":"success","request_id":"ao-probe-init","response":{"account":{"subscriptionType":"second"}}}}`
-	if err := os.WriteFile(binary, []byte(
+	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
 			`read -r _ || true`+"\n"+
 			`printf '%s\n' '`+respLine+`'`+"\n"+
 			"exit 0\n",
-	), 0755); err != nil {
-		t.Fatalf("rewrite mock: %v", err)
-	}
+	)
 
 	// Second call hits the cache, not the binary.
 	second, err := app.ProbeClaudeAccount()
@@ -118,7 +135,7 @@ func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
 }
 
 func TestProbeClaudeAccountSurfacesSpawnErrors(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -140,7 +157,7 @@ func TestProbeClaudeAccountSurfacesSpawnErrors(t *testing.T) {
 // return that stale entry forever (well, for 5 minutes). Recheck must
 // evict and re-probe.
 func TestRecheckClaudeAccountBypassesCachedZeroValue(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -162,14 +179,12 @@ func TestRecheckClaudeAccountBypassesCachedZeroValue(t *testing.T) {
 	// Rewrite the mock to emit a populated account — simulates the
 	// user running `claude login` between the two calls.
 	respLine := `{"type":"control_response","response":{"subtype":"success","request_id":"ao-probe-init","response":{"account":{"subscriptionType":"Claude Max"}}}}`
-	if err := os.WriteFile(binary, []byte(
+	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
 			`read -r _ || true`+"\n"+
 			`printf '%s\n' '`+respLine+`'`+"\n"+
 			"exit 0\n",
-	), 0755); err != nil {
-		t.Fatalf("rewrite mock: %v", err)
-	}
+	)
 
 	// Without Recheck, this would hit the cache and return empty —
 	// the regression we're guarding against. Recheck must invalidate
@@ -190,7 +205,7 @@ func TestRecheckClaudeAccountBypassesCachedZeroValue(t *testing.T) {
 // already has the value). This test pins both behaviors so a future
 // edit can't accidentally make Recheck silent.
 func TestProbeClaudeAccountEmitsAccountOnMissOnly(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -257,7 +272,7 @@ func claudeUnauthBannerCount(t *testing.T, app *App) *int {
 
 func newClaudeProbeIdentityApp(t *testing.T, accountJSON string) *App {
 	t.Helper()
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	binary := writeProbeMockBinary(t, accountJSON)

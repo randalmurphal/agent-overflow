@@ -118,6 +118,7 @@ func attachmentTransportApp(t *testing.T) (*App, string) {
 }
 
 func TestAttachmentUploadRoundTripsOverHTTP(t *testing.T) {
+	t.Parallel()
 	app, base := attachmentTransportApp(t)
 	payload := realPNGBytes(t)
 
@@ -196,6 +197,7 @@ func TestAttachmentUploadRoundTripsOverHTTP(t *testing.T) {
 // about attachment rows, so a stale cross-thread id has to die here rather
 // than become a ticket.
 func TestMintAttachmentDownloadTicketRejectsCrossThreadID(t *testing.T) {
+	t.Parallel()
 	app, base := attachmentTransportApp(t)
 	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", pngSignature())
 
@@ -226,6 +228,7 @@ func TestMintAttachmentDownloadTicketRejectsCrossThreadID(t *testing.T) {
 }
 
 func TestMintAttachmentDownloadTicketMissingReturnsError(t *testing.T) {
+	t.Parallel()
 	app, _ := attachmentTransportApp(t)
 	if _, err := app.MintAttachmentDownloadTicket("thr-a", "nope"); err == nil {
 		t.Fatal("expected error for missing attachment")
@@ -236,6 +239,7 @@ func TestMintAttachmentDownloadTicketMissingReturnsError(t *testing.T) {
 // mint exists for: a payload over the cap is refused for the price of one
 // RPC instead of one full transfer.
 func TestMintAttachmentUploadTicketRefusesOversize(t *testing.T) {
+	t.Parallel()
 	app, _ := attachmentTransportApp(t)
 	oversize := app.attachments.MaxSizeFor(store.AttachmentKindImage) + 1
 	_, err := app.MintAttachmentUploadTicket("thr-a", "huge.png", "image/png", oversize)
@@ -251,6 +255,7 @@ func TestMintAttachmentUploadTicketRefusesOversize(t *testing.T) {
 // type refusal left now that any file is an attachment: a declared content
 // type past the store's byte cap is refused at mint, before a byte moves.
 func TestMintAttachmentUploadTicketRefusesAnOverlongDeclaredType(t *testing.T) {
+	t.Parallel()
 	app, _ := attachmentTransportApp(t)
 	overlong := strings.Repeat("x", attachment.MaxDeclaredMIMEBytes+1)
 	if _, err := app.MintAttachmentUploadTicket("thr-a", "blob.bin", overlong, 128); err == nil {
@@ -263,6 +268,7 @@ func TestMintAttachmentUploadTicketRefusesAnOverlongDeclaredType(t *testing.T) {
 // spelled. Otherwise the row a transfer creates could disagree with the
 // mint that authorized it.
 func TestMintAttachmentUploadTicketNormalizesTheType(t *testing.T) {
+	t.Parallel()
 	app, base := attachmentTransportApp(t)
 	payload := realPNGBytes(t)
 
@@ -299,6 +305,7 @@ func TestMintAttachmentUploadTicketNormalizesTheType(t *testing.T) {
 // fixed a content type, and the signature is what decides whether the
 // bytes agree with it. Nothing survives on disk when they do not.
 func TestAttachmentUploadRefusesABodyThatIsNotTheDeclaredImage(t *testing.T) {
+	t.Parallel()
 	app, base := attachmentTransportApp(t)
 	notAnImage := []byte("this text is not a PNG, whatever the ticket says")
 
@@ -331,6 +338,7 @@ func TestAttachmentUploadRefusesABodyThatIsNotTheDeclaredImage(t *testing.T) {
 // transport serves there is nothing to mint against, and the answer is an
 // error rather than an empty URL a client would fetch.
 func TestAttachmentMintsRequireATransport(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	if _, err := app.MintAttachmentDownloadTicket("thr-a", "any"); err == nil {
 		t.Fatal("expected a download mint with no transport to be refused")
@@ -341,6 +349,7 @@ func TestAttachmentMintsRequireATransport(t *testing.T) {
 }
 
 func TestAttachmentMintsRequireAnInitialisedStore(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	if _, err := app.MintAttachmentUploadTicket("thr-a", "hero.png", "image/png", 8); err == nil ||
 		!strings.Contains(err.Error(), "not initialized") {
@@ -353,6 +362,7 @@ func TestAttachmentMintsRequireAnInitialisedStore(t *testing.T) {
 }
 
 func TestGetAttachmentThumbnailReturnsThumb(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	// Use a real (decodable) PNG so the generator can read it.
 	record := uploadTestAttachment(t, app, "thr-a", "shot.png", "image/png", realPNGBytes(t))
@@ -380,6 +390,7 @@ func TestGetAttachmentThumbnailReturnsThumb(t *testing.T) {
 }
 
 func TestGetAttachmentThumbnailRejectsCrossThread(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	thread := store.Thread{
 		ID:            "thr-b",
@@ -402,6 +413,7 @@ func TestGetAttachmentThumbnailRejectsCrossThread(t *testing.T) {
 }
 
 func TestDeleteAttachmentBinding(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", pngSignature())
 
@@ -423,6 +435,7 @@ func TestDeleteAttachmentBinding(t *testing.T) {
 // call it with any id it can guess or has gone stale in a closed
 // composer.
 func TestDeleteAttachmentRefusesAnotherThreadsAttachment(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", realPNGBytes(t))
 
@@ -444,6 +457,7 @@ func TestDeleteAttachmentRefusesAnotherThreadsAttachment(t *testing.T) {
 }
 
 func TestListAttachmentsEmptyIsNonNil(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	list, err := app.ListAttachments("thr-a")
 	if err != nil {
@@ -459,6 +473,7 @@ func TestListAttachmentsEmptyIsNonNil(t *testing.T) {
 // be five times an image; an image declared as one stays at the image cap
 // however big it claims to be.
 func TestMintAttachmentUploadTicketCapsPerKind(t *testing.T) {
+	t.Parallel()
 	app, _ := attachmentTransportApp(t)
 	imageCap := app.attachments.MaxSizeFor(store.AttachmentKindImage)
 	fileCap := app.attachments.MaxSizeFor(store.AttachmentKindFile)
@@ -490,6 +505,7 @@ func TestMintAttachmentUploadTicketCapsPerKind(t *testing.T) {
 // the route's own open both refuse it, so a document attached for the
 // agent is not servable at any origin. Deleting it takes the directory.
 func TestAttachmentFileKindUploadsOverHTTPButIsNeverServed(t *testing.T) {
+	t.Parallel()
 	app, base := attachmentTransportApp(t)
 	payload := []byte("%PDF-1.7\n")
 
@@ -552,6 +568,7 @@ func TestAttachmentFileKindUploadsOverHTTPButIsNeverServed(t *testing.T) {
 // slice, and must arrive as a prompt line on providerContent — never on
 // the persisted content.
 func TestResolveUserMessageEnvelopeMixedAttachmentTurn(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 
 	first := uploadTestAttachment(t, app, "thr-a", "one.png", "image/png", pngSignature())
@@ -612,6 +629,7 @@ func TestResolveUserMessageEnvelopeMixedAttachmentTurn(t *testing.T) {
 // The cap is on the union of both kinds: an attachment costs a slot
 // whichever way it is delivered.
 func TestResolveSendMessageAttachmentsCapsBothKindsTogether(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 
 	ids := make([]string, 0, attachment.DefaultMaxCount+1)

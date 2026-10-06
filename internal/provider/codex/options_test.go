@@ -7,6 +7,7 @@ import (
 )
 
 func TestCodexEffortFromOption(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		effort provider.ReasoningEffort
 		want   string
@@ -63,6 +64,7 @@ var wantCodexRuntime = map[provider.RuntimeMode]codexRuntime{
 // the exhaustiveness guard below turns "forgot a mode" into a failure rather
 // than a silent fall-through to the untrusted/read-only/user default.
 func TestRuntimeModeToCodex(t *testing.T) {
+	t.Parallel()
 	for mode, want := range wantCodexRuntime {
 		t.Run(string(mode), func(t *testing.T) {
 			got := runtimeModeToCodex(mode)
@@ -79,6 +81,7 @@ func TestRuntimeModeToCodex(t *testing.T) {
 // onto auto_review would start billing reviewer turns for a mode whose picker
 // copy makes no such promise.
 func TestOnlyAutoRoutesApprovalsToTheReviewer(t *testing.T) {
+	t.Parallel()
 	for _, mode := range provider.AllRuntimeModes {
 		want := approvalsReviewerUser
 		if mode == provider.RuntimeAuto {
@@ -96,6 +99,7 @@ func TestOnlyAutoRoutesApprovalsToTheReviewer(t *testing.T) {
 // Config (buildThreadParams then maps SystemPrompt to the baseInstructions
 // field; the field-name alignment test lives in session_helpers_test.go).
 func TestConfigFromOptionsSystemPromptLandsOnBaseInstructions(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:     "codex",
 		SystemPrompt: "Follow the codex playbook.",
@@ -111,6 +115,7 @@ func TestConfigFromOptionsSystemPromptLandsOnBaseInstructions(t *testing.T) {
 // RuntimeMode → codex helpers: the helpers can be individually right and the
 // Config still be wrong if one of the three is dropped on the way across.
 func TestConfigFromOptionsRuntimeModesTriple(t *testing.T) {
+	t.Parallel()
 	for _, mode := range provider.AllRuntimeModes {
 		want, ok := wantCodexRuntime[mode]
 		if !ok {
@@ -134,6 +139,7 @@ func TestConfigFromOptionsRuntimeModesTriple(t *testing.T) {
 }
 
 func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Model:    "gpt-5.5",
@@ -153,6 +159,7 @@ func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T)
 // left behind after a toggle-off, or a stale id surviving a model switch, would
 // pass a states-only test.
 func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		fastMode bool
@@ -199,6 +206,7 @@ func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
 }
 
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{ServiceTier: "priority"}, "")
 	if params["serviceTier"] != "priority" {
 		t.Errorf("serviceTier = %v, want priority", params["serviceTier"])
@@ -206,6 +214,7 @@ func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
 }
 
 func TestConfigFromOptionsFastModeOffOmitsServiceTier(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Model:    "gpt-5.4-mini",
@@ -217,6 +226,7 @@ func TestConfigFromOptionsFastModeOffOmitsServiceTier(t *testing.T) {
 }
 
 func TestConfigFromOptionsTrustsValidatedFastModeForLiveOnlyModel(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Model:    "gpt-live-only",
@@ -228,6 +238,7 @@ func TestConfigFromOptionsTrustsValidatedFastModeForLiveOnlyModel(t *testing.T) 
 }
 
 func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
 		Model:                      "gpt-5.4",
@@ -244,6 +255,7 @@ func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
 }
 
 func TestConfigFromOptionsFastModeKeepsSelectedModelContext(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
 		Model:                      "gpt-5.4",
@@ -265,6 +277,7 @@ func TestConfigFromOptionsFastModeKeepsSelectedModelContext(t *testing.T) {
 }
 
 func TestConfigFromOptionsClampsUnsupportedExtendedContext(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
 		Model:                      "gpt-5.5",
@@ -284,6 +297,7 @@ func TestConfigFromOptionsClampsUnsupportedExtendedContext(t *testing.T) {
 // TestConfigFromOptionsResumeFlow — the Codex resume target is the
 // thread-id we stored previously; it must survive the translation.
 func TestConfigFromOptionsResumeFlow(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Resume:   "codex-thread-abc",
@@ -298,6 +312,7 @@ func TestConfigFromOptionsResumeFlow(t *testing.T) {
 // that down so a future contributor reading the helper can't assume it's
 // wired.
 func TestConfigFromOptionsForkSessionIgnored(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "codex",
 		Resume:      "codex-thread-abc",
@@ -315,6 +330,7 @@ func TestConfigFromOptionsForkSessionIgnored(t *testing.T) {
 // ReasoningEffort so buildThreadParams can attach it to config.model_reasoning_effort
 // and Send can attach it to turn/start's `effort`.
 func TestConfigFromOptionsReasoningEffortLands(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:        "codex",
 		ReasoningEffort: provider.EffortHigh,
@@ -328,6 +344,7 @@ func TestConfigFromOptionsReasoningEffortLands(t *testing.T) {
 // config map passed to thread/start carries model_reasoning_effort under
 // the `config` override bag when ReasoningEffort is non-empty.
 func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{ReasoningEffort: "xhigh"}, "")
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
@@ -339,6 +356,7 @@ func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
 }
 
 func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{
 		ContextWindow:         provider.CodexExtendedContextWindow,
 		AutoCompactTokenLimit: 800000,
@@ -358,6 +376,7 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 // TestBuildThreadParamsOmitsReasoningEffortWhenEmpty — empty effort must
 // NOT leak a bogus override value into the thread/start handshake.
 func TestBuildThreadParamsOmitsReasoningEffortWhenEmpty(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{}, "")
 	if _, ok := params["config"]; ok {
 		t.Errorf("empty effort should not emit a config override bag; got %+v", params)
@@ -368,6 +387,7 @@ func TestBuildThreadParamsOmitsReasoningEffortWhenEmpty(t *testing.T) {
 // effort are present, they land in the same `config` map. Regression guard
 // to make sure we don't overwrite mcp_servers when effort arrives.
 func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
+	t.Parallel()
 	mcp := map[string]any{"my-server": map[string]any{"command": "echo"}}
 	params := buildThreadParams(Config{
 		MCPServers:      mcp,
@@ -388,6 +408,7 @@ func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
 // TestBuildThreadParamsBaseInstructions — SystemPrompt must land on the
 // baseInstructions key (camelCase). Matches ThreadStartParams.json.
 func TestBuildThreadParamsBaseInstructions(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{SystemPrompt: "hello"}, "")
 	if params["baseInstructions"] != "hello" {
 		t.Errorf("baseInstructions = %v, want hello", params["baseInstructions"])
@@ -399,6 +420,7 @@ func TestBuildThreadParamsBaseInstructions(t *testing.T) {
 // the default branch (untrusted/read-only) — which for an unattended mode
 // means every command escalates to a human who is not there.
 func TestRuntimeModeToCodexCoversEveryMode(t *testing.T) {
+	t.Parallel()
 	if len(wantCodexRuntime) != len(provider.AllRuntimeModes) {
 		t.Fatalf("wantCodexRuntime has %d entries, provider.AllRuntimeModes has %d — the table has a mode the canonical list does not",
 			len(wantCodexRuntime), len(provider.AllRuntimeModes))
@@ -419,6 +441,7 @@ func TestRuntimeModeToCodexCoversEveryMode(t *testing.T) {
 // thread/start normalizer and the per-turn override builder. A sandbox value
 // the turn builder rejects would fail every runtime-mode change mid-session.
 func TestReadOnlySandboxIsAcceptedByThreadAndTurnParams(t *testing.T) {
+	t.Parallel()
 	sandbox := runtimeModeToCodex(provider.RuntimeReadOnly).Sandbox
 	if got := normalizeThreadSandbox(sandbox); got != sandbox {
 		t.Errorf("normalizeThreadSandbox(%q) = %q — read-only must survive verbatim", sandbox, got)

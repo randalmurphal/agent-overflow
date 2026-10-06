@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,9 +40,7 @@ done
 exit 0
 `
 	path := filepath.Join(dir, "mock-claude-exit-marker.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock claude script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -80,6 +79,7 @@ func startExitMarkerClaudeSession(t *testing.T, app *App, bus *capturedEventBus,
 // is an explicit stop and proceeds anyway, which is the difference
 // between the two mechanisms.
 func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -138,6 +138,7 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 // lands with a completed_at instead of staying open and re-rendering the
 // thread as working on the next load.
 func TestArchiveThreadMidTurnSettlesTheOpenTurn(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread := e2eThread("thread-archive-midturn", string(provider.Claude), t.TempDir())
@@ -193,6 +194,7 @@ func TestArchiveThreadMidTurnSettlesTheOpenTurn(t *testing.T) {
 // turn carries a start ahead of the request instant, which is the same
 // fact the re-check reads.
 func TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-archive-reengaged")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -235,6 +237,7 @@ func TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest(t *testing.T) 
 // when the reader archived is exactly what archive exists to stop, so
 // its presence must not read as re-engagement.
 func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-archive-midflight")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -266,6 +269,7 @@ func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T)
 // archiving a thread nobody is running touches the session map and
 // nothing else, and still archives.
 func TestArchiveThreadWithoutSessionStaysARowFlip(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-archive-cold")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -293,6 +297,7 @@ func TestArchiveThreadWithoutSessionStaysARowFlip(t *testing.T) {
 // no subprocess. A thread that comes back is as cold as any thread the
 // reaper closed, and the next send is what starts a process.
 func TestUnarchiveThreadDoesNotResurrectTheSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-unarchive")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -329,6 +334,7 @@ func TestUnarchiveThreadDoesNotResurrectTheSession(t *testing.T) {
 // would on a thread that never had one. Being archived makes the thread
 // no less usable, and nothing auto-restarts it either.
 func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")

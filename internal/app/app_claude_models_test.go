@@ -1,7 +1,7 @@
 package app
 
 import (
-	"os"
+	"agent-overflow/internal/testutil/mockexec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -25,15 +25,13 @@ func writeProbeMockBinaryWithModels(t *testing.T, accountJSON, modelsJSON string
 		"read -r _ || true\n" +
 		`printf '%s\n' '` + respLine + `'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
 func appWithClaudeProbeBinary(t *testing.T, binary string) *App {
 	t.Helper()
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {

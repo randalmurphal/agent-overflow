@@ -8,6 +8,7 @@ import (
 )
 
 func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -56,6 +57,7 @@ func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 // <subagent_notification>{"agent_path":..,"status":..}</subagent_notification>
 // block whose JSON body round-trips to a subagentNotification value.
 func TestParseSubagentNotifications_SingleTag(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
@@ -75,6 +77,7 @@ func TestParseSubagentNotifications_SingleTag(t *testing.T) {
 // fleet straddling the rename doesn't silently drop notifications.
 // Production wire is `agent_path` and is the fast path.
 func TestParseSubagentNotifications_LegacyAgentIDFallback(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>{"agent_id":"legacy-child","status":"completed"}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
@@ -97,6 +100,7 @@ func TestParseSubagentNotifications_LegacyAgentIDFallback(t *testing.T) {
 // legacy key (`agent_id`) are present (a weird mixed build but cheap
 // to define), the production key wins and neither key leaks into Extra.
 func TestParseSubagentNotifications_AgentPathWinsOverAgentID(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>{"agent_path":"new","agent_id":"old","status":"completed"}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
@@ -118,6 +122,7 @@ func TestParseSubagentNotifications_AgentPathWinsOverAgentID(t *testing.T) {
 // source order. In practice this happens when several children finish
 // between two parent turns.
 func TestParseSubagentNotifications_MultipleTags(t *testing.T) {
+	t.Parallel()
 	text := `Ordinary prose.
 
 <subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>
@@ -143,6 +148,7 @@ More prose.
 // tests pin a tight shape but the refactor plan flagged "be lenient on
 // whitespace" as a correctness criterion.
 func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
+	t.Parallel()
 	text := "<subagent_notification>\n  {\"agent_path\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>"
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
@@ -159,6 +165,7 @@ func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
 // rendering without a parser update. The load-bearing `agent_path` and
 // `status` and `message` keys are stripped from Extra (they have their own fields).
 func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>{"agent_path":"child-1","status":"completed","message":"ok","duration_ms":1234}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
@@ -180,6 +187,7 @@ func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
 }
 
 func TestParseSubagentNotifications_ObjectStatus(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>{"agent_path":"child-1","status":{"completed":"done"}}</subagent_notification>
 <subagent_notification>{"agent_path":"child-2","status":{"errored":"boom"}}</subagent_notification>`
 	got := parseSubagentNotifications(text)
@@ -199,6 +207,7 @@ func TestParseSubagentNotifications_ObjectStatus(t *testing.T) {
 // partial stream) that emits malformed JSON inside one block should
 // still let the parent render the remaining user text.
 func TestParseSubagentNotifications_SkipsMalformed(t *testing.T) {
+	t.Parallel()
 	text := `<subagent_notification>not json at all</subagent_notification>
 <subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>
 <subagent_notification>{"agent_path":"","status":"completed"}</subagent_notification>
@@ -216,6 +225,7 @@ func TestParseSubagentNotifications_SkipsMalformed(t *testing.T) {
 // — the hot path that runs on every userMessage in a session. A
 // positive answer would churn a throwaway slice on every turn.
 func TestParseSubagentNotifications_NoTag(t *testing.T) {
+	t.Parallel()
 	if got := parseSubagentNotifications(""); got != nil {
 		t.Errorf("empty: got %+v, want nil", got)
 	}
@@ -230,6 +240,7 @@ func TestParseSubagentNotifications_NoTag(t *testing.T) {
 // notifications are extracted. This is the integration between the
 // JSON-shape path and the parser.
 func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"threadId":"parent-thread",
 		"item":{
@@ -256,6 +267,7 @@ func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
 // array — running it on every item would waste allocations on every
 // turn.
 func TestExtractSubagentNotificationsFromUserMessage_NotUserMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"item":{
 			"id":"asst-1",
@@ -273,6 +285,7 @@ func TestExtractSubagentNotificationsFromUserMessage_NotUserMessage(t *testing.T
 // entries must not be text-concatenated (their `text` field, if any,
 // carries different semantics).
 func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"item":{
 			"id":"user-msg-1",
@@ -296,6 +309,7 @@ func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T
 // parser and the event emission path — the triage handler and UI
 // renderer downstream assume the event actually fires.
 func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -340,6 +354,7 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -396,6 +411,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -425,6 +441,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *tes
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -453,6 +470,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *tes
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -481,6 +499,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *t
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -513,6 +532,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *
 }
 
 func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -541,6 +561,7 @@ func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T
 }
 
 func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
+	t.Parallel()
 	for _, blockType := range []string{"output_text", "text"} {
 		t.Run(blockType, func(t *testing.T) {
 			var events []provider.ProviderEvent
@@ -573,6 +594,7 @@ func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing
 }
 
 func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
+	t.Parallel()
 	for _, blockType := range []string{"input_text", "text"} {
 		t.Run(blockType, func(t *testing.T) {
 			var events []provider.ProviderEvent
@@ -605,6 +627,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *t
 }
 
 func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -623,6 +646,7 @@ func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testi
 }
 
 func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -656,6 +680,7 @@ func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t 
 }
 
 func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -690,6 +715,7 @@ func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T)
 }
 
 func TestDispatchLineSubagentNotificationUnmappedCarrierKeepsUserText(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -725,6 +751,7 @@ func TestDispatchLineSubagentNotificationUnmappedCarrierKeepsUserText(t *testing
 // surfaces each terminal child as its own notification; a single
 // combined event would collapse them.
 func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -768,6 +795,7 @@ func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 // onto the frontend-facing meta blob. The load-bearing agent_path /
 // status keys always win on collision.
 func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
+	t.Parallel()
 	n := subagentNotification{
 		AgentPath: "child-extra",
 		Status:    "completed",

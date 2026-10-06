@@ -241,6 +241,34 @@ describe('startAmbientPhase', () => {
     ).toBeLessThan(AMBIENT_SLOT_MS);
   });
 
+  it('aligns hundreds of indicators mounted in one frame in one pass', async () => {
+    stop = startAmbientPhase();
+    const reference = animationOf(mount('<svg class="stepped-spin"></svg>'), 'ambient-spin');
+    await new Promise((r) => setTimeout(r, 320));
+    const host = mount('<div></div>');
+    // Small enough that every one is on screen, as tray rows are; Chromium
+    // defers animation events for off-screen elements.
+    host.innerHTML = '<svg class="stepped-spin" width="2" height="2"></svg>'.repeat(400);
+    const animations = [...host.children].map((el) => animationOf(el, 'ambient-spin'));
+    // Phase distance from the reference, as in the test above: unaligned,
+    // the batch sits about 320ms off it.
+    const phase = (animation: Animation): number =>
+      ((((animation.currentTime as number) % 1500) + 1500) % 1500);
+    const offBeat = (animation: Animation): boolean => {
+      const apart = Math.abs(phase(animation) - phase(reference));
+      return Math.min(apart, 1500 - apart) >= AMBIENT_SLOT_MS;
+    };
+    const started = performance.now();
+    const deadline = started + 5000;
+    while (animations.some(offBeat) && performance.now() < deadline) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    const elapsed = performance.now() - started;
+    expect(animations.filter(offBeat).length, 'spinners off the reference beat').toBe(0);
+    // Aligning each indicator on its own event was quadratic: seconds at 400.
+    expect(elapsed, 'aligning 400 indicators').toBeLessThan(2500);
+  });
+
   // A long period makes the two outcomes unmistakable: an untouched
   // animation starts NOW, an aligned one is rewound by Date.now() % 60000
   // — on average half a minute earlier.

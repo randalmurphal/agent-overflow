@@ -50,6 +50,7 @@ func newPreviewTestApp(t *testing.T, scanner devServerScanner) *App {
 // that forgets to install a scanner must fail loudly rather than probe
 // the developer's own ports.
 func TestPreviewScannerRefusesToScanInsideATestBinary(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.setSettingsService(settings.NewService(t.TempDir()))
 
@@ -63,6 +64,7 @@ func TestPreviewScannerRefusesToScanInsideATestBinary(t *testing.T) {
 // own tree, which holds its providers and terminals, plus any valid pids
 // it was given.
 func TestConfigureIsolationScopesTheDevServerScan(t *testing.T) {
+	t.Parallel()
 	self := os.Getpid()
 	for _, tc := range []struct {
 		name      string
@@ -90,6 +92,7 @@ func TestConfigureIsolationScopesTheDevServerScan(t *testing.T) {
 // process that is not isolated scans the whole machine. Nothing here
 // calls Scan on a real scanner.
 func TestNewPreviewScannerRefusesInEveryTestBinary(t *testing.T) {
+	t.Parallel()
 	for _, scope := range [][]int{nil, {os.Getpid()}, {4242, os.Getpid()}} {
 		scanner := newPreviewScanner(scope, true)
 		if _, ok := scanner.(refusingScanner); !ok {
@@ -102,6 +105,7 @@ func TestNewPreviewScannerRefusesInEveryTestBinary(t *testing.T) {
 }
 
 func TestGetDevServersScansOnDemand(t *testing.T) {
+	t.Parallel()
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
 	}}
@@ -129,6 +133,7 @@ func TestGetDevServersScansOnDemand(t *testing.T) {
 // reach the caller. An empty list would read as "nothing is listening",
 // which is a different sentence.
 func TestGetDevServersSurfacesAHaltedScan(t *testing.T) {
+	t.Parallel()
 	scanner := &fakeScanner{err: devscan.ErrUnsupported}
 	app := newPreviewTestApp(t, scanner)
 
@@ -145,6 +150,7 @@ func TestGetDevServersSurfacesAHaltedScan(t *testing.T) {
 }
 
 func TestAllowAndDisallowPreviewPortsMoveTheStoredSet(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	scanner := &fakeScanner{}
 	app := newPreviewTestApp(t, scanner)
@@ -200,6 +206,7 @@ func TestAllowAndDisallowPreviewPortsMoveTheStoredSet(t *testing.T) {
 // An impossible port is refused by the one settings write path, and the
 // refusal names the value rather than losing it silently.
 func TestAllowPreviewPortRefusesAnImpossiblePort(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 
 	if _, err := app.AllowPreviewPort(context.Background(), 70000); err == nil {
@@ -213,6 +220,7 @@ func TestAllowPreviewPortRefusesAnImpossiblePort(t *testing.T) {
 // The whole reason the loop has a gate: on an install nobody is watching
 // this machine from, discovery must not run at all.
 func TestDevServerScansAreGatedOnAnOffMachineViewer(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 
 	if app.devServerScanWanted() {
@@ -240,6 +248,7 @@ func TestDevServerScansAreGatedOnAnOffMachineViewer(t *testing.T) {
 // fixture that never called Start has, and the owner walk must read them
 // as "no owners" rather than dereference them.
 func TestDevServerOwnersAreEmptyWithNothingRunning(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 	if owners := app.devServerOwners(); len(owners) != 0 {
 		t.Fatalf("owners = %+v, want none", owners)
@@ -253,6 +262,7 @@ func TestDevServerOwnersAreEmptyWithNothingRunning(t *testing.T) {
 // A backend nobody wired a transport server into serves no previews, and
 // says so rather than handing back a link to nowhere.
 func TestMintPreviewURLRefusesWithNoTransportServer(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 
 	if app.previewGateway() != nil {
@@ -272,6 +282,7 @@ func TestMintPreviewURLRefusesWithNoTransportServer(t *testing.T) {
 // second one would serve a set nobody reconciles and hand out cookies
 // nobody honours.
 func TestThePreviewGatewayIsBuiltOnceAndClosedOnce(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 	app.SetTransportServer(startTestTransportServer(t))
 
@@ -298,6 +309,7 @@ func TestThePreviewGatewayIsBuiltOnceAndClosedOnce(t *testing.T) {
 // serving it. Here nothing can be: no tailnet, loopback bind, so the row
 // comes back refused with the gateway's own sentence on it.
 func TestAllowedPortsWithNowhereToServeThemComeBackRefused(t *testing.T) {
+	t.Parallel()
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
 	}}
@@ -329,6 +341,7 @@ func TestAllowedPortsWithNowhereToServeThemComeBackRefused(t *testing.T) {
 // a loopback-only backend with no tailnet neither source can serve, so
 // the host is empty and the client renders its own sentence.
 func TestPreviewHostIsEmptyWhenNoSourceCanServe(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 	if host := app.previewHost(); host != "" {
 		t.Fatalf("previewHost = %q with no transport server", host)
@@ -348,6 +361,7 @@ func TestPreviewHostIsEmptyWhenNoSourceCanServe(t *testing.T) {
 // the scan offers them as candidates; the list must refuse them by name
 // rather than bind a preview listener that points at this app.
 func TestAPortThisBackendHoldsIsNeverShared(t *testing.T) {
+	t.Parallel()
 	self := os.Getpid()
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 4173, PID: self, Allowed: true, Source: devscan.SourceAllowed, Listening: true},
@@ -384,6 +398,7 @@ func TestAPortThisBackendHoldsIsNeverShared(t *testing.T) {
 // Naming one by hand is refused before the set is written, so the
 // setting never holds a choice that can only come back refused.
 func TestNamingAPortThisBackendHoldsIsRefused(t *testing.T) {
+	t.Parallel()
 	self := os.Getpid()
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 4173, PID: self, Source: devscan.SourceSeen, Listening: true, Scheme: "http"},
@@ -405,6 +420,7 @@ func TestNamingAPortThisBackendHoldsIsRefused(t *testing.T) {
 // Only this process's own ports. Another process holding a port is the
 // ordinary case the whole feature exists for.
 func TestOnlyThisProcessesOwnPortsAreRefused(t *testing.T) {
+	t.Parallel()
 	self := os.Getpid()
 	rows := refusePreviewOnOwnPorts([]devscan.DevServer{
 		{Port: 5173, PID: self + 1, Allowed: true},
@@ -428,6 +444,7 @@ func TestOnlyThisProcessesOwnPortsAreRefused(t *testing.T) {
 // Both stop paths are asserted through devServerScanTick, which is why
 // the tick is a method: the loop's own body has no test.
 func TestStoppingTheScanReleasesThePreviewListeners(t *testing.T) {
+	t.Parallel()
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
 	}}
@@ -489,6 +506,7 @@ func TestStoppingTheScanReleasesThePreviewListeners(t *testing.T) {
 // preview has no listeners to hand back, and constructing one to give it
 // an empty set would bind the transport server into a path it never took.
 func TestReleasingPreviewListenersNeverBuildsAGateway(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 	app.SetTransportServer(startTestTransportServer(t))
 

@@ -75,12 +75,12 @@ func maxLineageDepth(t *testing.T, s *Store) int {
 	return depth
 }
 
-// TestRepeatedRevertsReuseOneHolder: a source reverted 100 times, each
-// time into the rows its two forks show, with a new message after each,
-// gives them all to one holder. Every fork reads it and the source, two
-// levels, and reads what it read before.
+// TestRepeatedRevertsReuseOneHolder: a source reverted more times than
+// forkLineageMaxDepth, each time into the rows its two forks show, with a
+// new message after each, gives them all to one holder. Every fork reads it
+// and the source, two levels, and reads what it read before.
 func TestRepeatedRevertsReuseOneHolder(t *testing.T) {
-	const reverts = 100
+	const reverts = forkLineageMaxDepth + 8
 	s := newTestStore(t)
 	seedTurnedSource(t, s, "S", reverts+1)
 	mustPointerFork(t, s, "S", "F1", ForkCut{})

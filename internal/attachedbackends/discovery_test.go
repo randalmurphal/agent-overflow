@@ -3,7 +3,9 @@ package attachedbackends
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,8 +13,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/nearby"
 	"agent-overflow/internal/pairbootstrap"
 )
 
@@ -156,5 +160,37 @@ func TestDiscoveryExcludesSelfAndSavedProfilesBeforeAndAfterProbing(t *testing.T
 	got, err = manager.probeCandidates(context.Background(), candidates)
 	if err != nil || len(got) != 0 || calls.Load() != 2 {
 		t.Fatalf("unidentified hints discovery=%+v calls=%d error=%v", got, calls.Load(), err)
+	}
+}
+
+// TestDisabledLANDiscoverySendsNoMulticast: an isolated instance confined to
+// this machine probes only the hints it was given. It never enumerates
+// interfaces for a multicast scan, and with no hints it says why nothing
+// can be found instead of answering an empty scan.
+func TestDisabledLANDiscoverySendsNoMulticast(t *testing.T) {
+	remotetest.Require(t)
+	previous := nearby.Interfaces
+	t.Cleanup(func() { nearby.Interfaces = previous })
+	var scans atomic.Int32
+	nearby.Interfaces = func() ([]net.Interface, error) {
+		scans.Add(1)
+		return nil, nil
+	}
+	manager, _ := newManager(t)
+	manager.DisableLANDiscovery()
+	if got, err := manager.Discover(context.Background(), nil); !errors.Is(err, nearby.ErrIsolated) || len(got) != 0 {
+		t.Fatalf("discovery = %+v, %v; want nearby.ErrIsolated", got, err)
+	}
+	id := entityid.New()
+	hinted := discoveryServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(computerInfo{BackendID: id, Name: "Typed computer", Open: true})
+	})
+	got, err := manager.Discover(context.Background(), []DiscoveredComputer{{Address: hinted.URL, Network: "tailnet"}})
+	want := []DiscoveredComputer{{BackendID: id, Name: "Typed computer", Address: hinted.URL, Network: "tailnet"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("hinted discovery = %+v, %v; want %+v", got, err, want)
+	}
+	if n := scans.Load(); n != 0 {
+		t.Fatalf("disabled LAN discovery enumerated interfaces for %d multicast scans", n)
 	}
 }

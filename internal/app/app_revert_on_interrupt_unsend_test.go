@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -52,6 +51,7 @@ func insertSettledTurn(t *testing.T, st *store.Store, threadID string, turnIndex
 // the turn is content the provider conversation already holds, and a cut
 // would destroy it.
 func TestUnsendPredicateAcceptsOnlyCompanionKinds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		row      store.Item
@@ -103,6 +103,7 @@ func TestUnsendPredicateAcceptsOnlyCompanionKinds(t *testing.T) {
 // round of the turn completes (a plain Stop, a finished reply), a later
 // round on the same turn index does not make it undoable again.
 func TestUnsendPredicateRequiresAnUnsettledTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "unsend-settled", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -133,6 +134,7 @@ func TestUnsendPredicateRequiresAnUnsettledTurn(t *testing.T) {
 // notification inside turn 1 with only thinking so far. A second Stop must
 // interrupt, not un-send the message and delete the command's completion.
 func TestStopAfterBackgroundCompletionReRoundKeepsMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "unsend-reround", "claude", t.TempDir())
@@ -191,6 +193,7 @@ func TestStopAfterBackgroundCompletionReRoundKeepsMessage(t *testing.T) {
 // un-send, keeps the message, and clears the revert marker so the turn's
 // completion is not reported as a revert.
 func TestClaudeUnsendRechecksTurnAfterStoppingSession(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	var completions []triage.TurnCompletedEvent
 	app.triage = triage.NewRouter(app.store, app.emit)
@@ -256,6 +259,7 @@ func TestClaudeUnsendRechecksTurnAfterStoppingSession(t *testing.T) {
 // history with no result: the revert writes it no sibling, and a later
 // session end finds nothing to settle.
 func TestRevertAndResendLeavesALaunchWhoseCompletionWasCutSettled(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-cut-completion")
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 9)
@@ -281,9 +285,10 @@ func TestRevertAndResendLeavesALaunchWhoseCompletionWasCutSettled(t *testing.T) 
 // the rows that survive: a launch whose completion the cut deleted gets no
 // new sibling there.
 func TestRevertAndResendKeptSetNamesOnlyTheSurvivors(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, os.Getenv("HOME"), workspace, resendSourceSessionID,
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID,
 		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}

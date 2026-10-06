@@ -14,6 +14,7 @@ import (
 // TestUnregisterSessionRemovesSessionForMatchingToken covers the normal
 // disconnect path: the session stored with the same token is dropped.
 func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-unregister")
@@ -50,6 +51,7 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 // replacement. Matches the behavior asserted in
 // TestStaleSessionDisconnectDoesNotRemoveReplacement for the broader path.
 func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-unregister-stale")
@@ -87,6 +89,7 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 // unregister path even if the entry is already gone (e.g. due to an earlier
 // StopSession). It must not panic.
 func TestUnregisterSessionWithNoEntryIsSafe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	app.unregisterSession("thread-absent", "any-token")
@@ -100,6 +103,7 @@ func TestUnregisterSessionWithNoEntryIsSafe(t *testing.T) {
 // disconnect path inside sessionEventHandler: the matching-token session is
 // cleaned up when a "disconnected" session_status event arrives.
 func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-disconnect-handler")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -129,6 +133,7 @@ func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
 // a non-disconnect session_status (e.g. "ready", "error") does NOT remove
 // the session. Only the literal "disconnected" content triggers cleanup.
 func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-status-preserve")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -161,6 +166,7 @@ func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
 // auto-reconnect is the path that turns SIGTERM / clean-exit-0 / OOM-kill
 // into a silently-recovered session without user action.
 func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto-reconnect")
 	thread.SessionRef = "claude-resume-abc"
@@ -211,6 +217,7 @@ func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
 // resurrect it. Without this gate, calling StopSession on a thread would
 // instantly restart its provider.
 func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-clean-stop")
 	thread.SessionRef = "claude-resume-clean"
@@ -252,6 +259,7 @@ func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
 // resume cursor cannot be auto-recovered (--resume needs a target), so we
 // leave the banner up and let the user decide.
 func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-no-sessionref")
 	// SessionRef intentionally empty
@@ -295,6 +303,7 @@ func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
 }
 
 func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-workflow-no-reconnect")
 	thread.Mode = "workflow"
@@ -324,6 +333,7 @@ func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
 // gating on markAutoReconnectAttempted, or if EventTurnStart stopped
 // clearing the flag.
 func TestAutoReconnectSingleShotAcrossDeathsThroughHandler(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-loop-guard")
 	thread.SessionRef = "claude-resume-loopguard"
@@ -397,6 +407,7 @@ func TestAutoReconnectSingleShotAcrossDeathsThroughHandler(t *testing.T) {
 // safety check: a death arriving concurrently with a.Stop() must not
 // resurrect the provider after the app has begun teardown.
 func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-shutdown")
 	thread.SessionRef = "claude-resume-shutdown"
@@ -442,6 +453,7 @@ func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
 // stops a concurrent ReconnectSession from yanking the in-flight start.
 // The second caller returns nil without invoking stop/start.
 func TestReconnectSessionSingleFlightSecondCallNoOps(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	var calls []string
 	var callsMu sync.Mutex

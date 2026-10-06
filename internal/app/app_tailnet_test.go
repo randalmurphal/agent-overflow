@@ -38,6 +38,7 @@ func newTailnetTestApp(t *testing.T) (*App, string) {
 // from the outside: a fresh install reports the feature off, and a
 // reconcile pass over that state constructs nothing and writes nothing.
 func TestTailnetIsOffByDefaultAndBuildsNothing(t *testing.T) {
+	t.Parallel()
 	app, root := newTailnetTestApp(t)
 
 	got, err := app.GetNetworkSettings(atTheMachine())
@@ -74,6 +75,7 @@ func TestTailnetIsOffByDefaultAndBuildsNothing(t *testing.T) {
 // rides the existing step-up-gated write rather than a second RPC, and
 // comes back on the read the screen polls.
 func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := newTailnetTestApp(t)
 
@@ -117,6 +119,7 @@ func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
 // on disk records, and the owner's admin panel showing a device with no
 // way back.
 func TestForgetTailnetNodeRefusesWhileEnabled(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, root := newTailnetTestApp(t)
 	seedTailnetState(t, root)
@@ -136,6 +139,7 @@ func TestForgetTailnetNodeRefusesWhileEnabled(t *testing.T) {
 // itself, and the status field that makes it offerable only when there is
 // something to forget.
 func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
+	t.Parallel()
 	app, root := newTailnetTestApp(t)
 	seedTailnetState(t, root)
 
@@ -169,6 +173,7 @@ func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
 // feature: a bring-up that could not happen is carried on the status the
 // screen renders, verbatim, and cleared by the next settled pass.
 func TestTailnetFailuresAreUserFacingState(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 	// No config root, which is the one bring-up failure reachable without
@@ -240,6 +245,7 @@ func seedTailnetState(t *testing.T, root string) {
 // the slot exists before the serve does, the report marks it, and the attach
 // reads the mark and refuses to record a listener that has already stopped.
 func TestAnAuxiliaryFailureThatBeatsItsAttachIsNotAdopted(t *testing.T) {
+	t.Parallel()
 	app, _ := newTailnetTestApp(t)
 	slot := &tailnetSlot{}
 
@@ -264,6 +270,7 @@ func TestAnAuxiliaryFailureThatBeatsItsAttachIsNotAdopted(t *testing.T) {
 // only the failed one is dropped and the admitted host names stay while
 // anything still answers on them.
 func TestOneTailnetListenerFailingLeavesTheOtherAttached(t *testing.T) {
+	t.Parallel()
 	app, _ := newTailnetTestApp(t)
 	plain, secure := &tailnetSlot{aux: &transport.AuxListener{}}, &tailnetSlot{aux: &transport.AuxListener{}}
 	app.tailnet.plain, app.tailnet.secure = plain, secure
@@ -293,6 +300,7 @@ func TestOneTailnetListenerFailingLeavesTheOtherAttached(t *testing.T) {
 }
 
 func TestTailnetRetiresOnlyListenersWhoseConfigurationChanged(t *testing.T) {
+	t.Parallel()
 	app, _ := newTailnetTestApp(t)
 	plain, secure := &tailnetSlot{port: 34115}, &tailnetSlot{port: 443}
 	app.tailnet.plain, app.tailnet.secure = plain, secure
@@ -315,6 +323,7 @@ func TestTailnetRetiresOnlyListenersWhoseConfigurationChanged(t *testing.T) {
 // Running has to take them back, or the status keeps reporting HTTPS for a
 // node nothing can reach and the Host guard keeps admitting its names.
 func TestTailnetNodeLeavingRunningRetiresListeners(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, root := newTailnetTestApp(t)
 	srv := app.transportServer.Load()

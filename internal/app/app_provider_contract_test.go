@@ -17,6 +17,7 @@ import (
 )
 
 func TestProviderLeafBindingsPreserveShutdownSentinel(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.shuttingDown.Store(true)
 	assertSame := func(name string, err error) {
@@ -42,6 +43,7 @@ func TestProviderLeafBindingsPreserveShutdownSentinel(t *testing.T) {
 }
 
 func TestProviderLeafBindingDTOProjectionsAreFieldComplete(t *testing.T) {
+	t.Parallel()
 	contextUsage := projectThreadContextUsage(&claude.ContextUsage{
 		TotalTokens: 10, MaxTokens: 100, Percentage: 10, Model: "claude-test",
 		Categories: []claude.ContextUsageCategory{{Name: "Deferred", Tokens: 5, Deferred: true}},
@@ -83,6 +85,7 @@ func TestProviderLeafBindingDTOProjectionsAreFieldComplete(t *testing.T) {
 
 func TestProviderLeafBindingsAllocateWireSlices(t *testing.T) {
 	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
 	app := NewApp()
 	commands := app.GetClaudeSlashCommands()
 	if commands.Probed || commands.Commands == nil {
@@ -128,6 +131,7 @@ func TestProviderLeafBindingsAllocateWireSlices(t *testing.T) {
 // would validate, persist, and then be coerced away at spawn, so the user's
 // configured effort silently is not the one that runs.
 func TestTextGenerationEffortsMatchTheProviderSets(t *testing.T) {
+	t.Parallel()
 	// Text generation is gated to these two; claude-tui is never routed here.
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(providerName, func(t *testing.T) {

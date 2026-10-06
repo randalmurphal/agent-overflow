@@ -3,13 +3,13 @@ package claude
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A control request times out on the read loop's silence: the CLI writes
@@ -67,9 +67,7 @@ done
 func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.ProviderEvent)) *Session {
 	t.Helper()
 	path := t.TempDir() + "/fake-claude"
-	if err := os.WriteFile(path, []byte(interruptBurstScript(frames)), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, path, interruptBurstScript(frames))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: path})
 	if err != nil {
@@ -106,6 +104,7 @@ func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.Pr
 // A consumer that takes longer over the whole burst than the timeout, but
 // never goes quiet for that long, gets its ack.
 func TestInterrupt_ASlowButProgressingBurstIsAcked(t *testing.T) {
+	t.Parallel()
 	const frames = 8
 	var delivered atomic.Int32
 	s := newInterruptBurstSession(t, frames, func(evt provider.ProviderEvent) {
@@ -129,6 +128,7 @@ func TestInterrupt_ASlowButProgressingBurstIsAcked(t *testing.T) {
 // A CLI that never answers times out after the timeout of silence, well
 // before the ceiling.
 func TestInterrupt_ASilentCLITimesOut(t *testing.T) {
+	t.Parallel()
 	s := newInterruptBurstSession(t, burstSilent, func(provider.ProviderEvent) {})
 	start := time.Now()
 	err := s.Interrupt(context.Background())
@@ -143,6 +143,7 @@ func TestInterrupt_ASilentCLITimesOut(t *testing.T) {
 // A CLI that keeps writing but never acks fails at the ceiling, with an
 // error that names the CLI, though the read loop never goes quiet.
 func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
+	t.Parallel()
 	var delivered atomic.Int32
 	var settled atomic.Bool
 	s := newInterruptBurstSession(t, burstEndless, func(evt provider.ProviderEvent) {
@@ -155,6 +156,10 @@ func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
 			}
 		}
 	})
+	// The burst never reads stdin again, so Close would serve its whole
+	// shutdown grace before signalling. Registered after the session's own
+	// cleanup, so it runs first.
+	t.Cleanup(func() { _ = s.proc.Kill() })
 	ctx, cancel := context.WithTimeout(context.Background(), 4*progressTestCeiling)
 	defer cancel()
 	start := time.Now()
@@ -175,6 +180,7 @@ func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
 // A consumer that stops taking events stalls the read loop, and the
 // request times out even though the CLI has answered behind it.
 func TestInterrupt_AWedgedConsumerTimesOut(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	s := newInterruptBurstSession(t, 2, func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventBackgroundTaskTerminal {

@@ -63,6 +63,7 @@ var nonChannelEmitters = []string{
 // as a SelectorExpr. Closing them needs go/types resolution; revisit if
 // one ever appears.
 func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	var offenders []string
 

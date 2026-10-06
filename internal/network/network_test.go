@@ -18,13 +18,22 @@ import (
 
 // TestBindHost_BranchesOnFlag locks the bind-host mapping so a
 // future refactor doesn't accidentally widen the loopback bind to
-// 0.0.0.0 (or vice versa).
+// 0.0.0.0 (or vice versa), and so a loopback Reach never leaves
+// 127.0.0.1 whatever the toggle says.
 func TestBindHost_BranchesOnFlag(t *testing.T) {
-	if got := BindHost(false); got != "127.0.0.1" {
-		t.Fatalf("BindHost(false) = %q, want 127.0.0.1", got)
-	}
-	if got := BindHost(true); got != "0.0.0.0" {
-		t.Fatalf("BindHost(true) = %q, want 0.0.0.0", got)
+	for _, tc := range []struct {
+		reach   Reach
+		bindAll bool
+		want    string
+	}{
+		{Reach{}, false, "127.0.0.1"},
+		{Reach{}, true, "0.0.0.0"},
+		{LoopbackReach(), false, "127.0.0.1"},
+		{LoopbackReach(), true, "127.0.0.1"},
+	} {
+		if got := tc.reach.BindHost(tc.bindAll); got != tc.want {
+			t.Fatalf("Reach{loopback: %v}.BindHost(%v) = %q, want %q", tc.reach.LoopbackOnly(), tc.bindAll, got, tc.want)
+		}
 	}
 }
 
@@ -510,7 +519,7 @@ func TestPairingURLUsesReachableListenerAndMatchingTrust(t *testing.T) {
 			// on each call would evict the first link before it was scanned.
 			first := ""
 			for range 16 {
-				link, pin := PairingURL(srv, settings)
+				link, pin := PairingURL(srv, settings, Reach{})
 				if !strings.HasPrefix(link, tc.prefix) || (pin != "") != tc.pinned {
 					t.Fatalf("PairingURL = %q, pin %q; want %q, pinned %v", link, pin, tc.prefix, tc.pinned)
 				}
@@ -549,7 +558,7 @@ func TestPairingURLOnNetwork(t *testing.T) {
 		t.Run(choice, func(t *testing.T) {
 			first := ""
 			for range 16 {
-				link, pin, err := PairingURLOnNetwork(srv, s, choice)
+				link, pin, err := PairingURLOnNetwork(srv, s, Reach{}, choice)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -581,7 +590,7 @@ func TestPairingURLOnNetwork(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			address = tc.address
-			if link, pin, err := PairingURLOnNetwork(srv, tc.settings, tc.choice); err == nil || link != "" || pin != "" {
+			if link, pin, err := PairingURLOnNetwork(srv, tc.settings, Reach{}, tc.choice); err == nil || link != "" || pin != "" {
 				t.Fatalf("unavailable choice returned %q, %q, %v", link, pin, err)
 			}
 		})

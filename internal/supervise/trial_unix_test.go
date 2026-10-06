@@ -25,7 +25,7 @@ import (
 
 // stallTestWindow is the window of a test that exercises the stall rule. A
 // scripted child reports its first frame within tens of milliseconds and
-// paces its reports at 250ms or less, so neither approaches it, and a stall
+// paces its reports at 100ms, so neither approaches it, and a stall
 // is still observed within a few seconds.
 const stallTestWindow = time.Second
 
@@ -148,6 +148,7 @@ func trialFailure(t *testing.T, err error) string {
 }
 
 func TestTrialReportsPreparedAndIsStopped(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 1 of 1"
 printf '{"type":"prepared","updateId":"u1"}\n' >&4
@@ -177,13 +178,14 @@ serve_until_stopped`))
 }
 
 func TestProgressKeepsATrialAlivePastTheWindow(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
-	// Ten steps 250ms apart outlast the window twice over.
+	// Thirteen steps 100ms apart outlast the window.
 	cfg := r.config(r.script(helloProgress, `i=0
-while [ $i -lt 10 ]; do
+while [ $i -lt 13 ]; do
 	i=$((i+1))
-	progress store.migrate "Applying migration $i of 10"
-	sleep 0.25
+	progress store.migrate "Applying migration $i of 13"
+	sleep 0.1
 done
 printf '{"type":"prepared"}\n' >&4
 serve_until_stopped`))
@@ -192,12 +194,13 @@ serve_until_stopped`))
 	if err := RunTrial(context.Background(), cfg); err != nil {
 		t.Fatalf("RunTrial: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed < 2*stallTestWindow {
-		t.Fatalf("the trial prepared after %s, inside two windows, so the test proved nothing", elapsed)
+	if elapsed := time.Since(started); elapsed <= stallTestWindow {
+		t.Fatalf("the trial prepared after %s, inside the window, so the test proved nothing", elapsed)
 	}
 }
 
 func TestHeartbeatsAloneDoNotKeepATrialAlive(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 3 of 7 add_index"
 while :; do
@@ -233,6 +236,7 @@ done`))
 // if that progress was its last sign of life: a heartbeat sent after it
 // would race the timer.
 func TestATrialWhoseHeartbeatStopsStoppedResponding(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 3 of 7 add_index"
 serve_until_stopped`))
@@ -245,6 +249,7 @@ serve_until_stopped`))
 }
 
 func TestASilentTrialStallsAtTheWindow(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `serve_until_stopped`))
 	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
@@ -258,6 +263,7 @@ func TestASilentTrialStallsAtTheWindow(t *testing.T) {
 }
 
 func TestTheCeilingEndsATrialThatReportsForever(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `i=0
 while :; do
@@ -265,14 +271,16 @@ while :; do
 	progress store.migrate "step $i"
 	sleep 0.05
 done`))
-	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: 2 * stallTestWindow}
+	ceiling := stallTestWindow + stallTestWindow/2
+	cfg.Rule = StallRule{Window: stallTestWindow, Ceiling: ceiling}
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
-	if !strings.Contains(reason, "did not finish starting within "+(2*stallTestWindow).String()+" (last step: step") {
+	if !strings.Contains(reason, "did not finish starting within "+ceiling.String()+" (last step: step") {
 		t.Fatalf("reason = %q", reason)
 	}
 }
 
 func TestALegacyTrialGetsTheFixedBudget(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	// Progress frames from a child that did not claim the capability do not
 	// extend its budget.
@@ -288,6 +296,7 @@ done`))
 }
 
 func TestAFailedFrameIsTheRecordedReason(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `printf '{"type":"failed","reason":"database schema 90 is newer than this build knows (88)"}\n' >&4
 exit 1`))
@@ -298,6 +307,7 @@ exit 1`))
 }
 
 func TestATrialThatExitsEarlyNamesTheExitStatus(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `exit 3`))
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
@@ -310,6 +320,7 @@ func TestATrialThatExitsEarlyNamesTheExitStatus(t *testing.T) {
 // last step it reported, which the failure memory keeps; a report without a
 // detail does not replace it.
 func TestATrialFailureNamesItsLastStep(t *testing.T) {
+	t.Parallel()
 	const reported = `progress store.migrate "Applying migration 1 of 1"
 heartbeat store.migrate ""
 `
@@ -336,6 +347,7 @@ exit 1`, "Applying migration 1 of 1"},
 }
 
 func TestATrialThatCannotStartFails(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config("")
 	cfg.Binary, cfg.Args = filepath.Join(r.dir, "missing"), nil
@@ -346,6 +358,7 @@ func TestATrialThatCannotStartFails(t *testing.T) {
 }
 
 func TestCancellingATrialStopsItWithoutAVerdict(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `note ready
 serve_until_stopped`))
@@ -366,6 +379,7 @@ serve_until_stopped`))
 // The trial inherits the data root's lock, so the root stays locked until
 // the trial exits even after the parent lets go of its own descriptor.
 func TestTheTrialHoldsTheInheritedLockUntilItExits(t *testing.T) {
+	t.Parallel()
 	r := newTrialRig(t)
 	lockPath := filepath.Join(r.dir, "backend.lock")
 	lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)

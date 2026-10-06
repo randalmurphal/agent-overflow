@@ -140,7 +140,15 @@ describe('createTimelineQuietWork', () => {
     // storm trace. Calls inside the bound all target the same absolute
     // deadline, so the standing timer must be reused — re-arming is only
     // for a deadline pulled EARLIER than the standing fire.
-    const installs = vi.spyOn(globalThis, 'setTimeout');
+    // Counted through a wrapper rather than vi.spyOn: a spy restored over a
+    // fake-timer global is restored again by the next restoreAllMocks, which
+    // would reinstall the fake after useRealTimers.
+    const fakeSetTimeout = globalThis.setTimeout;
+    const installs = vi.fn();
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      installs(...args);
+      return fakeSetTimeout(...args);
+    }) as typeof setTimeout;
     const a = pass('a', 'always');
     const work = scheduler([a]);
 
@@ -157,7 +165,7 @@ describe('createTimelineQuietWork', () => {
     // One trailing-run timer for the whole burst (the fire itself may
     // re-arm once for a residual remainder).
     expect(installs.mock.calls.length).toBeLessThanOrEqual(2);
-    installs.mockRestore();
+    globalThis.setTimeout = fakeSetTimeout;
 
     await drainRateBound();
     expect(a.runs).toBe(2);

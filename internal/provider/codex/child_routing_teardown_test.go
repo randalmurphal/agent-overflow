@@ -25,6 +25,7 @@ func deferOneChildNotification(t *testing.T, s *Session, providerThreadID string
 // teardown tests below: with the session open, the deadline drops the queue
 // and raises the routing warning.
 func TestExpireDeferredChildWireEventsRunsWhileOpen(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) {
 		events = append(events, e)
@@ -49,6 +50,7 @@ func TestExpireDeferredChildWireEventsRunsWhileOpen(t *testing.T) {
 // take after Close latched `closing` must not consume the queue, because
 // consuming it commits to a rejection and a warning it will not deliver.
 func TestExpireDeferredChildWireEventsIsInertOnceClosing(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) {
 		events = append(events, e)

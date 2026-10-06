@@ -1,20 +1,7 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ComposerMentionPopover from './ComposerMentionPopover.svelte';
 import type { WorkspaceFile } from '../../types/workspaceFile';
-
-// happy-dom lacks ResizeObserver; Popover primitive constructs one when
-// opened. Minimal stub so construction doesn't throw.
-class StubResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-
-beforeAll(() => {
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-    StubResizeObserver as unknown as typeof ResizeObserver;
-});
 
 const results: WorkspaceFile[] = [
   { path: 'src/main.ts', kind: 'file', parentPath: 'src' },

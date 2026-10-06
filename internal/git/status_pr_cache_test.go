@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // seedForgeCacheGitHub is a test-only helper that populates the forge
@@ -35,9 +37,7 @@ func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\necho '[{\"url\":\"https://example.com/pr/7\",\"number\":7,\"title\":\"Demo PR\",\"state\":\"OPEN\"}]'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -70,9 +70,7 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 	counterFile := filepath.Join(binDir, "calls")
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\nprintf x >> " + counterFile + "\necho '[{\"url\":\"https://example.com/pr/9\",\"number\":9,\"title\":\"x\",\"state\":\"OPEN\"}]'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -129,9 +127,7 @@ func TestInvalidatePRCacheClearsCwdEntries(t *testing.T) {
 	counterFile := filepath.Join(binDir, "calls")
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\nprintf x >> " + counterFile + "\necho '[]'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -165,9 +161,7 @@ func TestLookupOpenPRCachesErrorsBriefly(t *testing.T) {
 	counterFile := filepath.Join(binDir, "calls")
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\nprintf x >> " + counterFile + "\necho 'auth required' 1>&2\nexit 1\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -238,9 +232,7 @@ func newPRFixture(t *testing.T) *prFixture {
 		t.Skip("shell script mock gh is unix-only")
 	}
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(mockGHModes), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "gh"), mockGHModes)
 	modePath := filepath.Join(binDir, "mode")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_GH_MODE", modePath)

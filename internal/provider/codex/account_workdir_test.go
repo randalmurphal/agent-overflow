@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestAccountProcessesIsolateProjectConfiguration(t *testing.T) {
@@ -52,9 +53,7 @@ while IFS= read -r line; do
  esac
 done
 `
-			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.Write(t, binary, script)
 			cfg := codex.ProbeConfig{Binary: binary, WorkDir: parent, Env: map[string]string{"CODEX_HOME": selected, "AO_TEST_ACCOUNT_CWD": logPath}}
 			switch operation {
 			case "usage":

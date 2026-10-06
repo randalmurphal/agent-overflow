@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,9 +38,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write capturing claude binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -136,6 +135,7 @@ func newClaudeThreadForProviderCommandTest(t *testing.T, app *App, id string) st
 // Command discovery is asynchronous and must not decide whether Enter sends
 // the same text as a command or model prose.
 func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -165,6 +165,7 @@ func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testin
 // command keeps the same behavior without a discovered-command classification
 // crossing the queue boundary.
 func TestRegisterQueueItem_CommandRoutingSurvivesFlushBoundary(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-queued-provider-command")
@@ -193,6 +194,7 @@ func TestRegisterQueueItem_CommandRoutingSurvivesFlushBoundary(t *testing.T) {
 }
 
 func TestInjectedQueueTextKeepsSlashGuardAcrossFlushBoundary(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-queued-injected-prose")
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")

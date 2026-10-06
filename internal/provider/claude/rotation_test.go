@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func credentialExpiring(in time.Duration) []byte {
@@ -41,9 +43,7 @@ func writeRotatingClaudeScript(t *testing.T, dir, credentialPath string, delay t
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -52,6 +52,7 @@ func writeRotatingClaudeScript(t *testing.T, dir, credentialPath string, delay t
 // the probe down on that answer loses the replacement pair permanently,
 // because the server retired the old refresh token the moment it was spent.
 func TestProbeAccountWaitsForAnExpectedRotationToLand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, ".credentials.json")
 	if err := os.WriteFile(credentialPath, credentialExpiring(-time.Hour), 0o600); err != nil {
@@ -81,6 +82,7 @@ func TestProbeAccountWaitsForAnExpectedRotationToLand(t *testing.T) {
 // is killed at stdin close, so a probe that returned promptly leaves the
 // credential untouched.
 func TestProbeAccountDoesNotWaitWhenNoRotationIsExpected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, ".credentials.json")
 	original := credentialExpiring(4 * time.Hour)
@@ -114,6 +116,7 @@ func TestProbeAccountDoesNotWaitWhenNoRotationIsExpected(t *testing.T) {
 // answered, so the settle runs on every exit path — here the CLI answers with
 // a non-success subtype and the probe returns an error.
 func TestProbeAccountWaitsForRotationEvenWhenTheProbeFails(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, ".credentials.json")
 	if err := os.WriteFile(credentialPath, credentialExpiring(-time.Hour), 0o600); err != nil {
@@ -130,9 +133,7 @@ func TestProbeAccountWaitsForRotationEvenWhenTheProbeFails(t *testing.T) {
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
 		WorkDir:        probeWorkDir,
@@ -155,6 +156,7 @@ func TestProbeAccountWaitsForRotationEvenWhenTheProbeFails(t *testing.T) {
 // flight: cancellation is exactly the case the budget exists for. The read
 // still aborts promptly — only the teardown waits.
 func TestProbeAccountLetsARotationLandAfterCallerCancellation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, ".credentials.json")
 	if err := os.WriteFile(credentialPath, credentialExpiring(-time.Hour), 0o600); err != nil {
@@ -169,9 +171,7 @@ func TestProbeAccountLetsARotationLandAfterCallerCancellation(t *testing.T) {
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -254,6 +254,7 @@ func TestArmRotationWatchArmsOnlyWhenARotationIsExpected(t *testing.T) {
 // be mid-write, so the watch must keep waiting rather than treat the failure
 // as "nothing to wait for".
 func TestRotationWatchSettleKeepsWaitingThroughReadErrors(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	current := credentialExpiring(-time.Hour)
 	// The arming read succeeds, establishing the baseline; the polls that
@@ -293,6 +294,7 @@ func TestRotationWatchSettleKeepsWaitingThroughReadErrors(t *testing.T) {
 // A blind watch cannot end early, but it must still hold the process — and it
 // must still stop at the deadline.
 func TestRotationWatchBlindSettleHoldsForTheWholeBudget(t *testing.T) {
+	t.Parallel()
 	watch := armRotationWatch(
 		func() ([]byte, error) { return nil, errors.New("keychain locked") },
 		false,
@@ -311,6 +313,7 @@ func TestRotationWatchBlindSettleHoldsForTheWholeBudget(t *testing.T) {
 }
 
 func TestRotationWatchSettleReturnsWhenTheCredentialChanges(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	current := credentialExpiring(-time.Hour)
 	watch := armRotationWatch(func() ([]byte, error) {
@@ -337,6 +340,7 @@ func TestRotationWatchSettleReturnsWhenTheCredentialChanges(t *testing.T) {
 }
 
 func TestRotationWatchSettleGivesUpAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	current := credentialExpiring(-time.Hour)
 	watch := armRotationWatch(func() ([]byte, error) { return current, nil }, false, time.Now())
 	if !watch.armed {

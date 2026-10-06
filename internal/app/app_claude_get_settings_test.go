@@ -1,8 +1,8 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -48,9 +48,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "fake-claude")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -97,6 +95,7 @@ func waitForCondition(t *testing.T, what string, cond func() bool) {
 // — and the apply must still confirm, because the CLI's own `applied.effort`
 // says the session is running the requested tier.
 func TestEffortApplyConfirmedByGetSettings(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-getsettings-ok", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -131,6 +130,7 @@ func TestEffortApplyConfirmedByGetSettings(t *testing.T) {
 // tier. launchOpts must never claim a config the process is not running, so
 // the axis reverts, degrades, and the restart watcher converges.
 func TestEffortApplyDeclinedByGetSettings(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-getsettings-mismatch", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -160,6 +160,7 @@ func TestEffortApplyDeclinedByGetSettings(t *testing.T) {
 // CLI: the subtype errors out, and the reply text is the verdict exactly as
 // it was before the structured path existed.
 func TestEffortApplyFallsBackToTextWhenGetSettingsUnsupported(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-getsettings-old", "tok-1"
 	binary := writeGetSettingsFakeCLI(t, "", "Unsupported control request subtype: get_settings")
@@ -201,6 +202,7 @@ func TestEffortApplyFallsBackToTextWhenGetSettingsUnsupported(t *testing.T) {
 // requested is recorded on the session so it can be surfaced later. It is
 // NOT acted on — the CLI's merge already decided who wins.
 func TestGetSettingsRecordsProjectOverride(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-getsettings-project", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -230,6 +232,7 @@ func TestGetSettingsRecordsProjectOverride(t *testing.T) {
 // read-back aimed at a session that has since been replaced must not run
 // against its successor, whose config is a different question entirely.
 func TestReadClaudeAppliedSettingsSkipsReplacedSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-getsettings-stale", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -250,6 +253,7 @@ func TestReadClaudeAppliedSettingsSkipsReplacedSession(t *testing.T) {
 // the answer cannot contain, and then compares the model the session was
 // already running against the empty string it never requested.
 func TestModelReadBackIsSkippedWithoutAModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-readback-gate", "tok-1"
 	reads := make(chan string, 4)

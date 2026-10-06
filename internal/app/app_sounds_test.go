@@ -40,6 +40,7 @@ func canonicalCue(sampleBytes int) []byte {
 }
 
 func TestPutGetDeleteSoundFile(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSoundTestApp(t)
 	var changes int
 	app.testEmitHook = func(name string, _ any) {
@@ -91,6 +92,7 @@ func TestPutGetDeleteSoundFile(t *testing.T) {
 }
 
 func TestPutSoundFileRefusals(t *testing.T) {
+	t.Parallel()
 	legal := base64.StdEncoding.EncodeToString(canonicalCue(4410))
 	for _, tc := range []struct {
 		name string
@@ -137,6 +139,7 @@ func TestPutSoundFileRefusals(t *testing.T) {
 }
 
 func TestDeleteSoundFileRefusesAnIDThatIsNotOne(t *testing.T) {
+	t.Parallel()
 	app, _ := newSoundTestApp(t)
 	if err := app.DeleteSoundFile("../../etc/passwd"); err == nil {
 		t.Fatal("DeleteSoundFile accepted an id that is not one")
@@ -151,6 +154,7 @@ func TestDeleteSoundFileRefusesAnIDThatIsNotOne(t *testing.T) {
 // A file dropped in by hand is the expected way this directory grows, so the
 // listing has to explain a bad one rather than silently skipping it.
 func TestGetSoundFilesWarnsAboutAFileThatIsNotACue(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSoundTestApp(t)
 	app.initSoundDirectory()
 	t.Cleanup(func() {
@@ -178,6 +182,7 @@ func TestGetSoundFilesWarnsAboutAFileThatIsNotACue(t *testing.T) {
 // initSoundDirectory is boot: it materializes the directory, seeds the
 // reference, and arms live reload. None of it may fail boot.
 func TestInitSoundDirectorySeedsTheReferenceAndArmsTheWatcher(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSoundTestApp(t)
 	app.initSoundDirectory()
 	t.Cleanup(func() {
@@ -199,6 +204,7 @@ func TestInitSoundDirectorySeedsTheReferenceAndArmsTheWatcher(t *testing.T) {
 // the read RPC still answers, the write RPC reports a real failure, and the
 // seed heals from the next read once the blocker is gone.
 func TestInitSoundDirectorySurvivesABlockedBoot(t *testing.T) {
+	t.Parallel()
 	app, configDir := newSoundTestApp(t)
 	blocker := filepath.Join(configDir, soundlib.DirName)
 	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {

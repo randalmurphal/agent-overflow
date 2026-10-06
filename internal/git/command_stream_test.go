@@ -6,12 +6,11 @@ import (
 	"io"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/testutil"
 )
 
 func TestCommandStreamsWithoutUsingTheDiagnosticBuffer(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	data := bytes.Repeat([]byte("native and workspace objects\x00"), 32_000)
 	hash, _, err := core.executeSpec(commandSpec{binary: "git", cwd: repo, args: []string{"hash-object", "-w", "--stdin"}, input: bytes.NewReader(data)})
@@ -39,6 +38,7 @@ type failingStream struct{}
 func (failingStream) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestCommandRefusesAmbiguousOrUnboundedStreams(t *testing.T) {
+	t.Parallel()
 	for _, spec := range []commandSpec{{stdin: "input", input: strings.NewReader("other")}, {output: io.Discard}} {
 		if _, err := NewCore().runSpec(spec); err == nil {
 			t.Fatal("invalid streaming command reached the child")

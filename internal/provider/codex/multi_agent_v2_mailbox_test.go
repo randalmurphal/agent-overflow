@@ -9,6 +9,7 @@ import (
 )
 
 func TestExtractSubagentCompletionFromRawAgentMessageItem(t *testing.T) {
+	t.Parallel()
 	item := map[string]json.RawMessage{
 		"type":      json.RawMessage(`"agent_message"`),
 		"author":    json.RawMessage(`"/root/review_perf"`),
@@ -29,6 +30,7 @@ func TestExtractSubagentCompletionFromRawAgentMessageItem(t *testing.T) {
 }
 
 func TestExtractSubagentCompletionRejectsMismatchedEnvelope(t *testing.T) {
+	t.Parallel()
 	item := map[string]json.RawMessage{
 		"type":      json.RawMessage(`"agent_message"`),
 		"author":    json.RawMessage(`"/root/review_perf"`),
@@ -41,6 +43,7 @@ func TestExtractSubagentCompletionRejectsMismatchedEnvelope(t *testing.T) {
 }
 
 func TestRolloutAgentMessageEmitsCompletionAtMailboxDelivery(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -69,6 +72,7 @@ func TestRolloutAgentMessageEmitsCompletionAtMailboxDelivery(t *testing.T) {
 }
 
 func TestRolloutInterAgentCommunicationEmitsCompletionAtMailboxDelivery(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -108,6 +112,7 @@ func TestRolloutInterAgentCommunicationEmitsCompletionAtMailboxDelivery(t *testi
 }
 
 func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -137,6 +142,7 @@ func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) 
 }
 
 func TestRawSpawnMetadataDoesNotPresentRequestedProfileAsEffective(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -185,6 +191,7 @@ func TestRawSpawnMetadataDoesNotPresentRequestedProfileAsEffective(t *testing.T)
 // delivery. Deriving delivery identity from it collapses both answers onto one
 // row and the second overwrites the first.
 func TestTwoMailboxDeliveriesInOneParentTurnGetDistinctDeliveryIDs(t *testing.T) {
+	t.Parallel()
 	const parentTurnID = "01a020d1-a06b-7b71-9791-749c71f19cd7"
 	item := func(payload string) map[string]json.RawMessage {
 		text, err := json.Marshal("Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/codebase_reviewer\nPayload:\n" + payload)

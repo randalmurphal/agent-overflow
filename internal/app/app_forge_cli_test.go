@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"errors"
 	"os"
 	"path/filepath"
@@ -23,9 +24,7 @@ func installForgeTraps(t *testing.T) string {
 	markers := t.TempDir()
 	for _, name := range []string{"gh", "glab"} {
 		script := "#!/bin/sh\ntouch '" + filepath.Join(markers, name) + "'\necho '{\"title\":\"real cli\"}'\n"
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.Write(t, filepath.Join(bin, name), script)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return markers
@@ -55,9 +54,7 @@ func writeFakeForge(t *testing.T) (path, record string) {
 	script := "#!/bin/sh\n" +
 		"printf '%s %s\\n' \"$AO_FORGE_CLI\" \"$AO_HARNESS_CONTROL\" >> '" + record + "'\n" +
 		"echo '{\"title\":\"from fake\",\"iid\":7}'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path, record
 }
 
@@ -123,6 +120,7 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 // Every git.Core the app package builds must come from newGitCore, or an
 // isolated boot would hold a Core that resolves gh and glab on PATH.
 func TestAppBuildsGitCoresOnlyThroughNewGitCore(t *testing.T) {
+	t.Parallel()
 	paths, err := filepath.Glob("internal/app/*.go")
 	if err != nil {
 		t.Fatal(err)

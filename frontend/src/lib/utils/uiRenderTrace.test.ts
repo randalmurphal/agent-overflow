@@ -22,6 +22,7 @@ describe('uiRenderTrace', () => {
     delete window.__agentOverflowUiTrace;
     delete window.__stickState;
     delete window.__paneGeometryRecording;
+    delete (navigator as { clipboard?: unknown }).clipboard;
     window.history.replaceState(null, '', '/');
     vi.restoreAllMocks();
     vi.useRealTimers();

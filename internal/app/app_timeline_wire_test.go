@@ -11,6 +11,7 @@ import (
 )
 
 func TestTimelinePagingPreservesLegacyWireAndSelectsScopedRows(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 	for _, row := range []store.Item{

@@ -1,8 +1,8 @@
 // Integration coverage for the replica against a real IndexedDB
-// implementation (fake-indexeddb). Imported for THIS file only: every
+// implementation (fake-indexeddb). Installed for THIS file only: every
 // other suite runs without an `indexedDB` global, which is exactly the
 // "replica unavailable" posture the rest of the app must tolerate.
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __replicaEnabledForTest,
@@ -24,6 +24,8 @@ import {
 } from './envelope';
 import { META_IDENTITY_KEY, META_STORE, THREADS_STORE, openReplicaDb, writeRecord } from './idb';
 import type { Item } from '../types/models';
+
+installFakeIndexedDB();
 
 let backendSeq = 0;
 function freshBackendId(): string {

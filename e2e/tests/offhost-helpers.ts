@@ -14,12 +14,12 @@
 // use.
 //
 // HOW A NON-LOOPBACK PEER IS PRODUCED without a second machine: bind the
-// server to 0.0.0.0 and dial one of this host's own non-loopback
-// interface addresses. Linux answers such a connection with a source
-// address equal to the destination, so the kernel reports
-// `RemoteAddr: <lan-ip>:<port>` and `loopback.PeerAddress` is false —
-// the same input a real LAN browser produces. Two details make it work
-// end to end:
+// server to 0.0.0.0 and dial the test network namespace's LAN address
+// (`nonLoopbackIPv4`), which reaches no real network. Linux answers such
+// a connection with a source address equal to the destination, so the
+// kernel reports `RemoteAddr: <lan-ip>:<port>` and `loopback.PeerAddress`
+// is false, the same input a real LAN browser produces. Two details make
+// it work end to end:
 //
 //   - The bind has to go through `SetNetworkSettings`, not `--listen
 //     0.0.0.0:0`. A bare LAN bind leaves the WS origin allow-list empty,
@@ -212,19 +212,33 @@ export async function wsTicket(
   return `ticket=${encodeURIComponent(ticket)}`;
 }
 
+// internal/netisolate LANName and LANAddress.
+const NAMESPACE_LAN_NAME = 'lan0';
+const NAMESPACE_LAN_ADDRESS = '10.203.0.2';
+
 /**
- * A non-loopback IPv4 address on this host, or null. `internal` covers the
- * loopback interface as a whole, which matters on WSL: `lo` carries
- * 10.255.255.254 alongside 127.0.0.1, and that address is neither in
- * 127/8 nor reachable as a LAN peer.
+ * The test network namespace's LAN address, or null outside it. An
+ * off-host peer needs a non-loopback address, and only the namespace
+ * (internal/netisolate) has one that reaches no real network. Elsewhere,
+ * macOS included, an isolated instance stays on loopback
+ * (`network.IsolatedReach`), so these specs skip rather than put traffic
+ * on the developer's LAN. Mirrors `netisolate.Contained`: every external
+ * interface is lan0, carrying 10.203.0.2 and at most IPv6 link-local.
  */
 export function nonLoopbackIPv4(): string | null {
-  for (const addrs of Object.values(os.networkInterfaces())) {
-    for (const addr of addrs ?? []) {
-      if (addr.family === 'IPv4' && !addr.internal) return addr.address;
-    }
-  }
-  return null;
+  const external = Object.entries(os.networkInterfaces()).filter(([, addrs]) =>
+    (addrs ?? []).some((addr) => !addr.internal),
+  );
+  if (external.length !== 1) return null;
+  const [name, addrs] = external[0];
+  const contained =
+    name === NAMESPACE_LAN_NAME &&
+    (addrs ?? []).every(
+      (addr) =>
+        addr.address === NAMESPACE_LAN_ADDRESS ||
+        (addr.family === 'IPv6' && addr.address.toLowerCase().startsWith('fe80:')),
+    );
+  return contained ? NAMESPACE_LAN_ADDRESS : null;
 }
 
 // ---------------------------------------------------------------------

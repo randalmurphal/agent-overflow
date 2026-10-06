@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SRC_ROOT } from '../../../test/sourceScan';
 import { cleanup, render } from '@testing-library/svelte';
 import {
@@ -88,30 +88,19 @@ function firstResizeObserver(): FireableResizeObserver {
 }
 
 function setResizeObserverUnavailable(): void {
-  Object.defineProperty(globalThis, 'ResizeObserver', {
-    configurable: true,
-    writable: true,
-    value: undefined,
-  });
+  vi.stubGlobal('ResizeObserver', undefined);
 }
 
 describe('messageTimelineTrace', () => {
-  let originalResizeObserver: typeof ResizeObserver | undefined;
-
   beforeEach(() => {
-    originalResizeObserver = globalThis.ResizeObserver;
     FireableResizeObserver.instances = [];
-    globalThis.ResizeObserver = FireableResizeObserver as unknown as typeof ResizeObserver;
+    vi.stubGlobal('ResizeObserver', FireableResizeObserver);
     clearUiRenderTrace();
     setUiRenderTraceEnabled(true);
   });
 
   afterEach(() => {
-    if (originalResizeObserver !== undefined) {
-      globalThis.ResizeObserver = originalResizeObserver;
-    } else {
-      setResizeObserverUnavailable();
-    }
+    vi.unstubAllGlobals();
     FireableResizeObserver.instances = [];
     clearUiRenderTrace();
     setUiRenderTraceEnabled(false);

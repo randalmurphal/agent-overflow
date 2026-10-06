@@ -9,6 +9,7 @@ import (
 )
 
 func TestEnsureCLISymlinkCreatesTheCanonicalName(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows launcher spawns no provider children and publishes no command")
 	}
@@ -45,6 +46,7 @@ func TestEnsureCLISymlinkCreatesTheCanonicalName(t *testing.T) {
 }
 
 func TestEnsureCLISymlinkRepointsAStaleLink(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows launcher spawns no provider children and publishes no command")
 	}
@@ -100,6 +102,7 @@ func TestEnsureCLISymlinkRepointsAStaleLink(t *testing.T) {
 // A path already occupied by a regular file (a stray copy, a botched install)
 // is replaced, not reported: the name has to resolve to this executable.
 func TestEnsureCLISymlinkReplacesAPlainFile(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows launcher spawns no provider children and publishes no command")
 	}
@@ -127,6 +130,7 @@ func TestEnsureCLISymlinkReplacesAPlainFile(t *testing.T) {
 }
 
 func TestEnsureCLISymlinkRejectsUnusableInputs(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows launcher spawns no provider children and publishes no command")
 	}
@@ -142,6 +146,7 @@ func TestEnsureCLISymlinkRejectsUnusableInputs(t *testing.T) {
 // empty bin dir, logs why, and the composer block reports it. Anything else
 // would trade a degraded feature for no product.
 func TestEnsureCLIBinDirToleratesAnUnwritableConfigDir(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows launcher spawns no provider children and publishes no command")
 	}
@@ -171,6 +176,7 @@ func TestEnsureCLIBinDirToleratesAnUnwritableConfigDir(t *testing.T) {
 }
 
 func TestPrependCLIBinDir(t *testing.T) {
+	t.Parallel()
 	separator := string(os.PathListSeparator)
 	tests := []struct {
 		name string

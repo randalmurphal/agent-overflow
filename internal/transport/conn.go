@@ -141,6 +141,7 @@ type connSettings struct {
 	maxConcurrentRPCs int
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
+	watermarkInterval time.Duration
 	// sessionConns is the server's live-session registry, or nil when the
 	// handler runs outside one (unit tests). A connection naming a session
 	// registers itself here so a revocation can reach it.
@@ -192,10 +193,11 @@ type connHandler struct {
 	// concurrent writes corrupt the frame stream.
 	writeMu sync.Mutex
 
-	// keepaliveInterval / pongTimeout are the resolved timing knobs
-	// (connSettings with defaults applied).
+	// keepaliveInterval / pongTimeout / watermarkInterval are the resolved
+	// timing knobs (connSettings with defaults applied).
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
+	watermarkInterval time.Duration
 
 	sessions       SessionAuthority
 	cancel         context.CancelFunc
@@ -264,6 +266,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	if settings.pongTimeout <= 0 {
 		settings.pongTimeout = defaultKeepalivePongTimeout
 	}
+	if settings.watermarkInterval <= 0 {
+		settings.watermarkInterval = WatermarkEvery
+	}
 	ws.SetReadLimit(settings.readLimit)
 
 	sub, replayBaseline := bus.SubscribeWithReplayBaseline()
@@ -287,6 +292,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
 		keepaliveInterval: settings.keepaliveInterval,
 		pongTimeout:       settings.pongTimeout,
+		watermarkInterval: settings.watermarkInterval,
 		sessions:          settings.sessions,
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
@@ -1019,7 +1025,7 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 	deltas := deltaCoalescer{window: leaseDeltaWindow, emit: buf.add}
 	defer deltas.stop()
 
-	watermarks := time.NewTicker(WatermarkEvery)
+	watermarks := time.NewTicker(h.watermarkInterval)
 	defer watermarks.Stop()
 
 	for {

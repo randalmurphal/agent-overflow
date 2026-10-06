@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testThread = "thread-test"
@@ -242,9 +243,7 @@ while IFS= read -r line; do
 done
 `, capturePath, threadResult)
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	return scriptPath
 }
 

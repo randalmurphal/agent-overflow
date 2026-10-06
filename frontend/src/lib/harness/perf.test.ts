@@ -24,7 +24,6 @@ import {
 const realRaf = globalThis.requestAnimationFrame;
 const realCancelRaf = globalThis.cancelAnimationFrame;
 const realMessageChannel = globalThis.MessageChannel;
-const realNow = performance.now.bind(performance);
 let pendingFrames: FrameRequestCallback[] = [];
 
 /**
@@ -80,7 +79,7 @@ beforeEach(() => {
   pendingMessages = [];
   openedChannels = [];
   clock = 0;
-  performance.now = () => clock;
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
   globalThis.MessageChannel = FakeMessageChannel as unknown as typeof MessageChannel;
   globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
     pendingFrames.push(cb)) as typeof requestAnimationFrame;
@@ -91,7 +90,7 @@ beforeEach(() => {
 
 afterEach(() => {
   if (perfRunActive()) stopPerfRun();
-  performance.now = realNow;
+  vi.mocked(performance.now).mockRestore();
   globalThis.MessageChannel = realMessageChannel;
   globalThis.requestAnimationFrame = realRaf;
   globalThis.cancelAnimationFrame = realCancelRaf;

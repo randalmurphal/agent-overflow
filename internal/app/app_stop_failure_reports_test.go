@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/store"
@@ -35,6 +35,7 @@ func threadErrorRows(t *testing.T, st *store.Store, threadID, prefix string) []s
 }
 
 func TestInterruptTurnReportsAStopItCouldNotRecord(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	execOnFile(t, f.dbPath, `CREATE TRIGGER fail_stop_row BEFORE INSERT ON items WHEN NEW.summary = 'Stopped by user' BEGIN SELECT RAISE(ABORT, 'injected stop write failure'); END`)
 
@@ -51,6 +52,7 @@ func TestInterruptTurnReportsAStopItCouldNotRecord(t *testing.T) {
 }
 
 func TestStopSessionReportsAFailedBackgroundSettle(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	execOnFile(t, f.dbPath, `CREATE TRIGGER fail_sibling BEFORE INSERT ON items WHEN NEW.completion_of = 'agent' BEGIN SELECT RAISE(ABORT, 'injected sibling write failure'); END`)
@@ -68,7 +70,7 @@ func TestStopSessionReportsAFailedBackgroundSettle(t *testing.T) {
 // cannot be delivered the TUI keeps the turn, so AO keeps its copy too and
 // reports the failure.
 func TestInterruptAndRevertIfCleanClaudeTUIKeepsTheMessageWhenTheEscFails(t *testing.T) {
-	kerneltest.DetachHome(t)
+	t.Parallel()
 	app := newTestApp(t)
 	var completions []triage.TurnCompletedEvent
 	app.triage = triage.NewRouter(app.store, app.emit)
@@ -89,9 +91,7 @@ func TestInterruptAndRevertIfCleanClaudeTUIKeepsTheMessageWhenTheEscFails(t *tes
 	turnEvent(provider.EventTurnStart, nil)
 
 	binary := filepath.Join(dir, "mock-claude-tui")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nwhile IFS= read -r _; do :; done\n"), 0o755); err != nil {
-		t.Fatalf("write PTY stand-in: %v", err)
-	}
+	mockexec.Write(t, binary, "#!/bin/sh\nwhile IFS= read -r _; do :; done\n")
 	sess, err := claudetui.NewSession(context.Background(), thread.ID, claudetui.Config{
 		Binary:  binary,
 		WorkDir: dir,

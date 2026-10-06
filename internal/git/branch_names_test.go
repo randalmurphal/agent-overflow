@@ -3,6 +3,7 @@ package git
 import "testing"
 
 func TestBuildTemporaryWorktreeBranchName(t *testing.T) {
+	t.Parallel()
 	branch := BuildTemporaryWorktreeBranchName()
 	if !IsTemporaryWorktreeBranch(branch) {
 		t.Fatalf("BuildTemporaryWorktreeBranchName() = %q, want ao-<8-hex>", branch)
@@ -10,6 +11,7 @@ func TestBuildTemporaryWorktreeBranchName(t *testing.T) {
 }
 
 func TestIsTemporaryWorktreeBranch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		branch string
@@ -32,6 +34,7 @@ func TestIsTemporaryWorktreeBranch(t *testing.T) {
 }
 
 func TestBuildGeneratedWorktreeBranchName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		raw  string
 		want string
@@ -50,6 +53,7 @@ func TestBuildGeneratedWorktreeBranchName(t *testing.T) {
 }
 
 func TestWorktreeBranchNameWithCustomPrefix(t *testing.T) {
+	t.Parallel()
 	branch := BuildTemporaryWorktreeBranchNameWithPrefix("custom-")
 	if !IsTemporaryWorktreeBranchWithPrefix(branch, "custom-") {
 		t.Fatalf("BuildTemporaryWorktreeBranchNameWithPrefix() = %q, want custom-<8-hex>", branch)
@@ -61,6 +65,7 @@ func TestWorktreeBranchNameWithCustomPrefix(t *testing.T) {
 }
 
 func TestBranchFragmentFromUserMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -84,6 +89,7 @@ func TestBranchFragmentFromUserMessage(t *testing.T) {
 }
 
 func TestFirstSentenceFromMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -105,6 +111,7 @@ func TestFirstSentenceFromMessage(t *testing.T) {
 }
 
 func TestSanitizeBranchNamePreservingSlashes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		raw  string
 		want string

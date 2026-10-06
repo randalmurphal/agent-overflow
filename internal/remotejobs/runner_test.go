@@ -103,6 +103,7 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 // its own exit code, its child's output captured, the child stopped, and the
 // receipt saying so.
 func TestProcessRunnerStopsLeftoverProcessesAndKeepsExitCode(t *testing.T) {
+	t.Parallel()
 	argv, env := helperArgv(t, "leave-child")
 	var output bytes.Buffer
 	started := time.Now()
@@ -138,6 +139,9 @@ func TestProcessRunnerTerminatesBeforeKilling(t *testing.T) {
 }
 
 func TestProcessRunnerKillsWhatIgnoresTerminate(t *testing.T) {
+	previous := terminateGrace
+	terminateGrace = 300 * time.Millisecond
+	t.Cleanup(func() { terminateGrace = previous })
 	argv, env := helperArgv(t, "stubborn")
 	var output syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
@@ -163,6 +167,7 @@ func TestProcessRunnerKillsWhatIgnoresTerminate(t *testing.T) {
 // The manager reports the sweep on the receipt without changing the result,
 // and the script cleanup still happens after the leftover stop.
 func TestManagerRecordsLeftoverWarningOnSuccessfulReceipt(t *testing.T) {
+	t.Parallel()
 	argv, env := helperArgv(t, "leave-child")
 	m, _ := logManager(t, logOptions(t, 1<<20), ProcessRunner(env))
 	r := request()

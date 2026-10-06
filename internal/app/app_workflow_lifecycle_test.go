@@ -94,6 +94,7 @@ cleanup: manual
 }
 
 func TestWorkflowCreateAutomationRefusesUnrunnableDefinitions(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	cases := []struct {
 		name   string
@@ -186,6 +187,7 @@ func TestWorkflowCreateAutomationRefusesUnrunnableDefinitions(t *testing.T) {
 }
 
 func TestWorkflowAutomationCRUDRoundTrip(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	created, err := h.app.WorkflowCreateAutomation(h.input())
 	if err != nil {
@@ -258,6 +260,7 @@ func TestWorkflowAutomationCRUDRoundTrip(t *testing.T) {
 // A trigger that stopped parsing — an older shape, a hand-edited row — is
 // reported on the row rather than dropped in silence.
 func TestWorkflowListAutomationsSurfacesBrokenTriggers(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	now := time.Now().UnixMilli()
 	if err := h.app.store.CreateAutomation(store.Automation{
@@ -280,6 +283,7 @@ func TestWorkflowListAutomationsSurfacesBrokenTriggers(t *testing.T) {
 }
 
 func TestWorkflowRunAutomationNowStartsThroughTheOneStartPath(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	input := h.input()
 	// Run now bypasses the condition: pressing the button is the decision. This
@@ -360,6 +364,7 @@ func TestWorkflowRunAutomationNowStartsThroughTheOneStartPath(t *testing.T) {
 }
 
 func TestWorkflowRunAutomationNowWorksWhileDisabledAndBroken(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	created, err := h.app.WorkflowCreateAutomation(h.input())
 	if err != nil {
@@ -389,6 +394,7 @@ func TestWorkflowRunAutomationNowWorksWhileDisabledAndBroken(t *testing.T) {
 }
 
 func TestWorkflowAutomationRPCsRequireIdentifiers(t *testing.T) {
+	t.Parallel()
 	h := newAutomationHarness(t)
 	for name, err := range map[string]error{
 		"update":  mustErr(h.app.WorkflowUpdateAutomation("  ", h.input())),
@@ -534,6 +540,7 @@ func (h *autoResumeHarness) transition(itemID string, from, to engine.State, rea
 // The park writes both halves, and the delay the timer holds is the moment the
 // cause states — not a duration recomputed from a second clock reading.
 func TestWorkflowAutoResumeArmsTheColumnAndTheTimerTogether(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	item := harness.parkedRun(t, "run-arm", engine.ReasonProviderRetriesExhausted)
 	resumeAt := harness.now.Add(3 * time.Hour)
@@ -558,6 +565,7 @@ func TestWorkflowAutoResumeArmsTheColumnAndTheTimerTogether(t *testing.T) {
 // — is TestWorkflowQuotaParkResumesItselfWhenTheLimitReturns. This fixture has
 // no engine, so what it pins is the bookkeeping either way.)
 func TestWorkflowAutoResumeFiresIntoAResumeAndLeavesTheColumnToTheTransition(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	item := harness.parkedRun(t, "run-fire", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(2*time.Hour))
@@ -591,6 +599,7 @@ func TestWorkflowAutoResumeFiresIntoAResumeAndLeavesTheColumnToTheTransition(t *
 // order is what the runner depends on: the schedule is written immediately
 // before the park that carries it.
 func TestWorkflowAutoResumeTransitionsClearOrPreserveTheSchedule(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		from    engine.State
@@ -632,6 +641,7 @@ func TestWorkflowAutoResumeTransitionsClearOrPreserveTheSchedule(t *testing.T) {
 // A cleared schedule cannot come back: a timer that fires after the run was
 // repaired must not resume work somebody already took over.
 func TestWorkflowAutoResumeFireAfterARepairResumesNothing(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	// A pre-v56 row retains the same timer cleanup contract.
 	item := harness.parkedRun(t, "run-repaired", engine.ReasonRetriesExhausted)
@@ -657,6 +667,7 @@ func TestWorkflowAutoResumeFireAfterARepairResumesNothing(t *testing.T) {
 // this schedule was written for. The fire clears the column rather than
 // leaving a dead schedule to be re-armed on every restart from here on.
 func TestWorkflowAutoResumeFireOnANonContinuableParkClearsTheSchedule(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	item := harness.parkedRun(t, "run-moved", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(6*time.Hour))
@@ -678,6 +689,7 @@ func TestWorkflowAutoResumeFireOnANonContinuableParkClearsTheSchedule(t *testing
 // A moment that already passed is armed a short way out rather than fired into
 // the crash rebuild that is still deciding what the run is.
 func TestWorkflowAutoResumeSweepReArmsAcrossARestart(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	future := harness.parkedRun(t, "run-future", engine.ReasonProviderRetriesExhausted)
 	elapsed := harness.parkedRun(t, "run-elapsed", engine.ReasonProviderRetriesExhausted)
@@ -709,6 +721,7 @@ func TestWorkflowAutoResumeSweepReArmsAcrossARestart(t *testing.T) {
 // `run resume --at` takes both forms, and both are resolved against the clock
 // the timer will actually run on.
 func TestParseWorkflowResumeAtAcceptsBothFormsAndRefusesTheRest(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
 	absolute := now.Add(36 * time.Hour).UTC().Format(time.RFC3339)
 	parsed, err := parseWorkflowResumeAt(absolute, now)
@@ -740,6 +753,7 @@ func TestParseWorkflowResumeAtAcceptsBothFormsAndRefusesTheRest(t *testing.T) {
 // bare resume would have nothing to continue. The refusal names the engine's
 // own membership so it cannot fall behind a reason the engine later admits.
 func TestWorkflowScheduleResumeArmsAContinuableParkAndRefusesTheRest(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	harness.startEngine(t)
 	item := harness.parkedRun(t, "run-scheduled", engine.ReasonProviderRetriesExhausted)
@@ -795,6 +809,7 @@ func TestWorkflowScheduleResumeArmsAContinuableParkAndRefusesTheRest(t *testing.
 // chance at the next boot, which on a desktop app is days: the exact stall this
 // mechanism exists to end.
 func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	item := harness.parkedRun(t, "run-retry", engine.ReasonProviderRetriesExhausted)
 	timer := harness.arm(t, item.ID, harness.now.Add(2*time.Hour))
@@ -835,6 +850,7 @@ func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
 // armed IS a WorkflowResumeItem, and an engine-less app would take the schedule,
 // persist it, and fail the resume on this boot and every boot after.
 func TestWorkflowScheduleResumeRefusesWithoutAnEngine(t *testing.T) {
+	t.Parallel()
 	harness := newAutoResumeHarness(t)
 	item := harness.parkedRun(t, "run-no-engine", engine.ReasonProviderRetriesExhausted)
 
@@ -851,6 +867,7 @@ func TestWorkflowScheduleResumeRefusesWithoutAnEngine(t *testing.T) {
 }
 
 func TestWorkflowBindThreadRefusesThreadsARunCannotReportInto(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	root := h.run(t, "bind-root", engine.StateRunning, "")
 	child := store.WorkItem{
@@ -910,6 +927,7 @@ func TestWorkflowBindThreadRefusesThreadsARunCannotReportInto(t *testing.T) {
 }
 
 func TestWorkflowBindAndUnbindThreadRoundTrip(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	first := h.chatThread(t, "bind-first")
 	second := h.chatThread(t, "bind-second")
@@ -948,6 +966,7 @@ func TestWorkflowBindAndUnbindThreadRoundTrip(t *testing.T) {
 }
 
 func TestWorkflowUnbindRefusesACalledRun(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	root := h.run(t, "unbind-root", engine.StateRunning, "")
 	child := store.WorkItem{
@@ -968,6 +987,7 @@ func TestWorkflowUnbindRefusesACalledRun(t *testing.T) {
 // a run whose origin thread is gone has to fall back to the overlay, not keep
 // trying to wake a thread that no longer exists.
 func TestDeletingABoundThreadClearsTheBinding(t *testing.T) {
+	t.Parallel()
 	h := newWakeHarness(t)
 	item := h.run(t, "orphan-run", engine.StateRunning, "")
 	thread := h.chatThread(t, "orphan-thread")
@@ -995,6 +1015,7 @@ func TestDeletingABoundThreadClearsTheBinding(t *testing.T) {
 }
 
 func TestWorkflowArtifactAdapterPreservesTheWireModel(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	source := filepath.Join(workspace, "report.txt")
 	contents := []byte("artifact contents")
@@ -1020,6 +1041,7 @@ func TestWorkflowArtifactAdapterPreservesTheWireModel(t *testing.T) {
 }
 
 func TestWorkflowJobNotesBoundedAndUnknownRejected(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	automation := store.Automation{
 		ID: "automation", ProjectID: "project", WorkflowID: "wf", WorkflowScope: "shared",
@@ -1046,10 +1068,11 @@ func TestWorkflowJobNotesBoundedAndUnknownRejected(t *testing.T) {
 }
 
 func TestWorkflowListDefinitionsIncludesValidation(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	app.configDir = configRoot
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow, err := app.store.GetProject(projectRow.ID)
 	if err != nil {
@@ -1088,6 +1111,7 @@ func TestWorkflowListDefinitionsIncludesValidation(t *testing.T) {
 }
 
 func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		Outputs: map[string]def.WorkflowOutput{
@@ -1172,6 +1196,7 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 // the overview lists only roots: before the rollup, a root's row priced its
 // own coordination rows alone and a $1,500 campaign rendered as $10.
 func TestWorkflowListItemCostsRollUpRunTrees(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	runs := []store.WorkItem{
 		{ID: "root", Goal: "campaign"},
@@ -1222,6 +1247,7 @@ func TestWorkflowListItemCostsRollUpRunTrees(t *testing.T) {
 }
 
 func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeWorkspaceWorkflow(t, configRoot, "done")
@@ -1234,7 +1260,7 @@ func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-	projectRow := testutil.EnsureProject(t, app.store, testutil.InitGitRepo(t))
+	projectRow := testutil.EnsureProject(t, app.store, initMainGitRepo(t))
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\n")
 	if _, err := app.WorkflowStartRun(projectRow.ID, "missing", "shared", "invalid", json.RawMessage(`{}`), nil, "", false); err == nil {

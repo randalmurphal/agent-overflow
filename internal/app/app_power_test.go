@@ -45,6 +45,7 @@ func newKeepAwakeApp(t *testing.T) (*App, *keepAwakeRecorder) {
 }
 
 func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
+	t.Parallel()
 	t.Run("flipping the master switch applies and emits the derived mode", func(t *testing.T) {
 		app, rec := newKeepAwakeApp(t)
 
@@ -117,6 +118,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 // The persisted state must be asserted without the user touching
 // anything; the boot path is the only thing that can do that.
 func TestApplyKeepAwakeAtBoot(t *testing.T) {
+	t.Parallel()
 	app, rec := newKeepAwakeApp(t)
 	if _, err := app.settings.Update(map[string]any{
 		"keepAwakeEnabled": true,
@@ -135,6 +137,7 @@ func TestApplyKeepAwakeAtBoot(t *testing.T) {
 // wire carries a mode string, never the booleans, so this is the only
 // place the pair is interpreted.
 func TestKeepAwakeDefaultsAndModeDerivation(t *testing.T) {
+	t.Parallel()
 	if settings.DefaultSettings.KeepAwakeEnabled {
 		t.Error("keepAwakeEnabled must default false — an upgrading user must not start pinning their machine awake unasked")
 	}

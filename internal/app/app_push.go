@@ -95,13 +95,27 @@ func (a *App) loadPushSender() {
 		log.Printf("push: the stored sender credential is unusable: %v", err)
 		return
 	}
-	sender, err := push.NewFCMSender(parsed)
+	sender, err := a.newFCMSender(parsed)
 	if err != nil {
 		log.Printf("push: build the sender: %v", err)
 		return
 	}
 	a.installPushSender(sender, parsed.ProjectID, parsed.ClientEmail)
 }
+
+// newFCMSender builds the sender for a stored or pasted credential. A
+// loopback Reach builds none: every send would reach Google's token and
+// messaging endpoints from an instance confined to this machine.
+func (a *App) newFCMSender(cred push.Credential) (*push.FCMSender, error) {
+	if a.netReach.LoopbackOnly() {
+		return nil, errPushIsolated
+	}
+	return push.NewFCMSender(cred)
+}
+
+// errPushIsolated refuses a real push sender in an instance confined to
+// this machine. The harness recorder (InstallHarnessPushSender) is not one.
+var errPushIsolated = errors.New("push: sending is off in an isolated instance")
 
 // installPushSender swaps the sender live. The queue may be mid-send with
 // the previous one, which is fine: a Sender is immutable once built, and the
@@ -420,7 +434,7 @@ func (a *App) SetPushSenderCredential(credentialJSON string) error {
 	if err != nil {
 		return err
 	}
-	sender, err := push.NewFCMSender(parsed)
+	sender, err := a.newFCMSender(parsed)
 	if err != nil {
 		return err
 	}

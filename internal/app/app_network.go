@@ -31,7 +31,7 @@ func (a *App) networkSettingsForCaller(ctx context.Context, s network.Settings) 
 	if !transport.CallerProofFromContext(ctx).HostPresent {
 		return network.FromServerRedacted(s)
 	}
-	return network.FromServer(a.transportServer.Load(), s)
+	return network.FromServer(a.transportServer.Load(), s, a.netReach)
 }
 
 // networkSettingsForCallerWithLAN is the same pick for SetNetworkSettings,
@@ -156,7 +156,7 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 	// their browser can't reach without an origin failure.
 	lanIP := ""
 	if stored.BindAll {
-		lanIP = network.DiscoverLocalLANIP()
+		lanIP = a.netReach.LANIP()
 	}
 	// Every pattern names ONE port (internal/network.OriginPatterns), so
 	// the list cannot be built until the port this listener will answer on
@@ -183,7 +183,7 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 		wantPort = currentPort
 	}
 	if prev.BindAll != stored.BindAll || wantPort != currentPort {
-		addr := fmt.Sprintf("%s:%d", network.BindHost(stored.BindAll), wantPort)
+		addr := fmt.Sprintf("%s:%d", a.netReach.BindHost(stored.BindAll), wantPort)
 		if err := srv.Rebind(addr, &transport.RebindOptions{OriginPatterns: originPatterns(wantPort)}); err != nil {
 			// Roll the file back so we don't lie about the transport
 			// state. The rollback uses the previously-persisted value,

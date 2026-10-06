@@ -16,6 +16,7 @@ import (
 // have their answer forwarded as a second response to a request the provider
 // has already resolved.
 func TestASecondAnswerToOnePromptIsReportedAsAlreadyHandled(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
@@ -59,6 +60,7 @@ func TestASecondAnswerToOnePromptIsReportedAsAlreadyHandled(t *testing.T) {
 // Same arbitration for structured-input forms, which two screens can also
 // both submit.
 func TestASecondUserInputSubmissionIsReportedAsAlreadyHandled(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
@@ -78,6 +80,7 @@ func TestASecondUserInputSubmissionIsReportedAsAlreadyHandled(t *testing.T) {
 // the same client must be able to press the button again. Without the release
 // the arbitration would wedge every prompt whose first answer failed.
 func TestAFailedAnswerCanBeRetried(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 

@@ -12,6 +12,7 @@ import (
 )
 
 func TestAccountManagerSharesTheRestartFence(t *testing.T) {
+	t.Parallel()
 	a := newTestAppWithStore(t)
 	manager := a.ensureProviderAccountManager()
 	_, _ = a.workAdmission.quiesce(func() (string, error) { return "", nil })
@@ -29,6 +30,7 @@ func TestAccountManagerSharesTheRestartFence(t *testing.T) {
 }
 
 func TestWorkAdmissionHandoffAndCancellation(t *testing.T) {
+	t.Parallel()
 	var gate workAdmission
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -81,6 +83,7 @@ func TestWorkAdmissionHandoffAndCancellation(t *testing.T) {
 }
 
 func TestUnconfirmedSupervisorUpdateKeepsAdmissionClosed(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})
 	rig.requestErr = supervise.ErrUpdateOutcomeUnknown
 	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
@@ -102,6 +105,7 @@ func TestUnconfirmedSupervisorUpdateKeepsAdmissionClosed(t *testing.T) {
 }
 
 func TestUpdateAdmissionWaitersReleaseBeforeTransportDrain(t *testing.T) {
+	t.Parallel()
 	var gate workAdmission
 	_, _ = gate.quiesce(func() (string, error) { return "", nil })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -126,6 +130,7 @@ func TestUpdateAdmissionWaitersReleaseBeforeTransportDrain(t *testing.T) {
 }
 
 func TestWorkAdmissionIdleCheckIsAtomicWithNewWork(t *testing.T) {
+	t.Parallel()
 	var gate workAdmission
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -164,6 +169,7 @@ func TestWorkAdmissionIdleCheckIsAtomicWithNewWork(t *testing.T) {
 }
 
 func TestServiceUpdateWaitsForWorkAndCanBeCanceled(t *testing.T) {
+	t.Parallel()
 	for _, cancelUpdate := range []bool{false, true} {
 		t.Run(map[bool]string{false: "finish", true: "cancel"}[cancelUpdate], func(t *testing.T) {
 			rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})

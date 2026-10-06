@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // queueFakeScript builds a fake app-server that answers initialize with the
@@ -78,9 +79,7 @@ done
 		branches.String(),
 	)
 	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -149,6 +148,7 @@ func requestParams(t *testing.T, frame map[string]any) map[string]any {
 // app-server's own userAgent, and every method refuses rather than sending a
 // request an older app-server would answer with invalid_params.
 func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		userAgent string
@@ -193,6 +193,7 @@ func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
 // TestQueueDeleteReportsTheMatchedState pins that `deleted:false` is a STATE
 // (the row was already dispatched or already gone), not an error.
 func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		reply string
@@ -235,6 +236,7 @@ func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
 // useful to a caller that only wants to recognise what it can see; what must
 // not come back is "this is the queue".
 func TestQueueListReportsAPrefixAsIncompleteNotAsTheWholeQueue(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-1","input":[{"type":"text","text":"one"}],` +
@@ -263,6 +265,7 @@ func TestQueueListReportsAPrefixAsIncompleteNotAsTheWholeQueue(t *testing.T) {
 // truncated cannot re-run on the next resume; a purge that deletes a prefix
 // and answers "done" leaves exactly that hazard armed with nothing saying so.
 func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-1","input":[{"type":"text","text":"one"}],` +
@@ -290,6 +293,7 @@ func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 // the app layer can answer. A row its store accounts for must not be announced
 // to the user as having come from outside Agent Overflow.
 func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
@@ -344,6 +348,7 @@ func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 // given no way to claim a row has no claim to make: every submission is
 // somebody else's until the app layer says otherwise.
 func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
@@ -383,6 +388,7 @@ func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T
 // never added is what the notice exists for, and it is reported exactly once
 // however many change notifications the row's lifetime produces.
 func TestQueueChangedReportsAForeignSubmissionOnce(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-foreign","input":[{"type":"text","text":"from the cli"}],` +
@@ -432,6 +438,7 @@ func TestQueueChangedReportsAForeignSubmissionOnce(t *testing.T) {
 // calls `thread/queue/start` races the drain and can run the same message
 // twice. The method is deliberately not wrapped.
 func TestQueueStartIsNeverCalled(t *testing.T) {
+	t.Parallel()
 	sources, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
@@ -461,6 +468,7 @@ func TestQueueStartIsNeverCalled(t *testing.T) {
 // rollback that only cleared AO's own flushqueue would re-run a rolled-back
 // message onto the truncated thread.
 func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[` +
@@ -500,6 +508,7 @@ func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
 // cannot cancel. The hook has to see a connection that can already answer
 // `thread/queue/list` and a thread that is not loaded yet.
 func TestBeforeResumeRunsAheadOfTheThreadLoad(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-resume", capture,
 		map[string]string{
@@ -552,6 +561,7 @@ func TestBeforeResumeRunsAheadOfTheThreadLoad(t *testing.T) {
 // the hook there would ask a queue question about a thread that does not
 // exist yet.
 func TestBeforeResumeIsNotCalledOnAFreshThread(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-fresh", capture, nil)
 	ran := false
@@ -604,9 +614,7 @@ while IFS= read -r line; do
 done
 `, threadID, capturePath, bashJSON(listReply), capturePath, refusedSubmissionID)
 	path := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -620,6 +628,7 @@ done
 // "a retryable refusal with no mutation" is only true because the caller can
 // undo the half that did happen.
 func TestPurgeQueueNamesTheRowsItDeletedWhenALaterDeleteFails(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
 	list := `{"data":[` +
 		`{"id":"sub-a","input":[{"type":"text","text":"mine"}],"clientUserMessageId":"user:4:flush:1"},` +
@@ -656,6 +665,7 @@ func TestPurgeQueueNamesTheRowsItDeletedWhenALaterDeleteFails(t *testing.T) {
 // codex still held it (a duplicate on the next send), and the purge would skip
 // the empty id and let the rollback truncate over a submission still armed.
 func TestQueueListReportsAMalformedSubmissionInsteadOfAnAbsentRow(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		// `id` typed as a number: upstream's own QueuedSubmission types all
@@ -697,6 +707,7 @@ func TestQueueListReportsAMalformedSubmissionInsteadOfAnAbsentRow(t *testing.T) 
 // is a wire fault; skipping it during a purge would report a complete job over
 // a row that is still queued and still armed to run.
 func TestQueueListRefusesASubmissionWithNoID(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"","input":[{"type":"text","text":"one"}],` +
@@ -721,6 +732,7 @@ func TestQueueListRefusesASubmissionWithNoID(t *testing.T) {
 // into a plain bool it read as `false`, which clears nothing and lets the
 // rollback truncate history over a row that may still be armed.
 func TestQueueDeleteRefusesAResponseWithoutTheDeletedField(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		reply string

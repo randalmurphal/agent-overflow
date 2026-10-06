@@ -23,6 +23,7 @@ import (
 )
 
 func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
+	t.Parallel()
 	config := browserConfigFromSettings(settings.DefaultSettings)
 	if !config.Enabled || !config.PersistSiteData || config.AllowOutsideWorkspace {
 		t.Fatalf("browser config = %+v", config)
@@ -35,6 +36,7 @@ func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
 // pin must get it, and one that lifted it (the manual real-engine gate,
 // docs/specs/embedded-browser.md §10) must not have it reinstated here.
 func TestConfigureIsolationCarriesTheBrowserEnginePin(t *testing.T) {
+	t.Parallel()
 	pinned := &App{}
 	ConfigureIsolation(pinned, IsolationConfig{MockBrowserEngine: true})
 	if !pinned.browser.mockEngine {
@@ -53,6 +55,7 @@ func TestConfigureIsolationCarriesTheBrowserEnginePin(t *testing.T) {
 // that rule — a getter installed before Start whose pointer arrives
 // later — so the presence, not the answer, is what must be recorded here.
 func TestSetBrowserNativeWindowRecordsThePresenceOfAGetter(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	if app.browser.nativeWindow != nil {
 		t.Fatal("a bare App already carries a window getter")
@@ -68,6 +71,7 @@ func TestSetBrowserNativeWindowRecordsThePresenceOfAGetter(t *testing.T) {
 }
 
 func TestBrowserMCPConfigRegistersOnlyHeadlessProviders(t *testing.T) {
+	t.Parallel()
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 	server := appbrowser.NewMCPServer(manager, true)
 	app := &App{}
@@ -90,6 +94,7 @@ func TestBrowserMCPConfigRegistersOnlyHeadlessProviders(t *testing.T) {
 }
 
 func TestPatchTouchesBrowserSettings(t *testing.T) {
+	t.Parallel()
 	if !patchTouchesBrowserSettings(map[string]any{"browserEnabled": false}) {
 		t.Fatal("browser setting not detected")
 	}
@@ -99,6 +104,7 @@ func TestPatchTouchesBrowserSettings(t *testing.T) {
 }
 
 func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-claude", claude.Config{
@@ -118,6 +124,7 @@ func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
 }
 
 func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	app.browser.mcp = appbrowser.NewMCPServer(nil, true)
 	app.browser.mcp.SetThreadEnabled("browser-claude-disabled", false)
@@ -140,6 +147,7 @@ func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
 }
 
 func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-coalesced", claude.Config{
@@ -169,6 +177,7 @@ func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 }
 
 func TestRefreshLiveBrowserMCPUsesCodexReload(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := codex.NewSession(context.Background(), "browser-codex", codex.Config{
@@ -188,6 +197,7 @@ func TestRefreshLiveBrowserMCPUsesCodexReload(t *testing.T) {
 }
 
 func TestBrowserMCPRowSeparatesPreferenceFromSettings(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	app.browser.mcp = appbrowser.NewMCPServer(nil, true)
 	t.Cleanup(func() {
@@ -225,6 +235,7 @@ func TestBrowserMCPRowSeparatesPreferenceFromSettings(t *testing.T) {
 
 // TestBrowserCompanionPaneDetachUnbindsItsConnectionTie: see checkByIDTie.
 func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 	app.browser.manager = manager
@@ -249,6 +260,7 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 }
 
 func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		delete func(*App, string) error
@@ -311,6 +323,7 @@ func (c holdingController) NewPage(ctx context.Context, access appbrowser.Access
 // A delete waits out a browser tools call already running for the thread,
 // then closes the page that call opened.
 func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 	held := holdingController{Manager: manager, entered: make(chan struct{}), release: make(chan struct{})}
@@ -359,6 +372,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 // A companion tab that finishes opening after a delete closed the thread's
 // pages, but before its row dropped, is closed once the row is gone.
 func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
+	t.Parallel()
 	deletes := map[string]func(app *App, threadID string) error{
 		"thread": func(app *App, threadID string) error { return app.DeleteThread(threadID) },
 		"draft": func(app *App, threadID string) error {
@@ -447,6 +461,7 @@ func (c *deleteOnFirstErr) Err() error {
 // deleted between the action's row read and the page's registration gets
 // that page closed.
 func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
+	t.Parallel()
 	calls := map[string]func(ctx context.Context, app *App, threadID string) error{
 		"reveal": func(ctx context.Context, app *App, threadID string) error {
 			return app.BrowserCompanionRevealPageFile(ctx, threadID, "")
@@ -498,6 +513,7 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 // A page that opens after the delete's last close finds the row gone, or
 // kept as a holder, and closes itself.
 func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
+	t.Parallel()
 	for _, held := range []bool{false, true} {
 		t.Run(fmt.Sprintf("holder=%v", held), func(t *testing.T) {
 			app := newTestAppWithStore(t)
@@ -564,6 +580,7 @@ func browserPageStates(manager *appbrowser.Manager, access appbrowser.Access) []
 // The reaper ending an idle session suspends the thread's browser pages; a
 // user stopping the session leaves them live. Only the idle end suspends.
 func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
+	t.Parallel()
 	app, manager := newBrowserTestApp(t)
 	reaped, reapedAccess := browserTestThread(t, app, "thread-browser-reaped")
 	stopped, stoppedAccess := browserTestThread(t, app, "thread-browser-stopped")
@@ -611,6 +628,7 @@ func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
 // both doors that archive; a session kept because a turn started after the
 // request keeps its pages too.
 func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
+	t.Parallel()
 	archived := true
 	for _, tc := range []struct {
 		name    string
@@ -669,6 +687,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 // At boot, saved browser pages belong to a thread that exists and is not
 // archived.
 func TestBrowserThreadKeepsPagesOnlyWhileListed(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	listed := testThread("thread-listed")
 	archivedThread := testThread("thread-archived")
@@ -694,6 +713,7 @@ func TestBrowserThreadKeepsPagesOnlyWhileListed(t *testing.T) {
 // The boot's browser manager brings back the saved pages of a listed thread
 // and drops those of a thread archived while the app was down.
 func TestBootKeepsSavedBrowserPagesOnlyForListedThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.browser.mockEngine = true
 	dir := t.TempDir()
@@ -728,6 +748,7 @@ func TestBootKeepsSavedBrowserPagesOnlyForListedThreads(t *testing.T) {
 // shutdown holds the UI thread every engine call needs, and Close saves the
 // pages still live.
 func TestShutdownStopsTheReapersBrowserSuspension(t *testing.T) {
+	t.Parallel()
 	app, manager := newBrowserTestApp(t)
 	thread, access := browserTestThread(t, app, "thread-browser-shutdown")
 	if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {

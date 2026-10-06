@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testThread = "thread-test"
@@ -102,6 +103,37 @@ func waitCapturedLines(t *testing.T, path string, want int) []string {
 	return nil
 }
 
+// testStdinSentinel is a line no production path writes.
+const testStdinSentinel = `{"type":"test_stdin_sentinel"}`
+
+// capturedLinesBeforeSentinel writes a sentinel to the fake CLI's stdin and
+// returns the lines it captured ahead of it. Session writes reach stdin in
+// order before the writing call returns, so the result holds everything the
+// code under test sent so far, without waiting for an absence.
+func capturedLinesBeforeSentinel(t *testing.T, s *Session, capturePath string) []string {
+	t.Helper()
+	if err := s.proc.WriteLine([]byte(testStdinSentinel)); err != nil {
+		t.Fatalf("write stdin sentinel: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(capturePath)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read capture file: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		for i, line := range lines {
+			if line == testStdinSentinel {
+				return lines[:i]
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stdin sentinel never captured in %s; got %q", capturePath, data)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (s *Session) maybeHandleFullAccessToolRequest(line []byte) (bool, error) {
 	var raw controlRequestEnvelope
 	if err := json.Unmarshal(line, &raw); err != nil {
@@ -155,9 +187,7 @@ func newInterruptResponderSession(t *testing.T, mode string, interruptTimeout ti
 	t.Helper()
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(interruptResponderScript(mode)), 0755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, interruptResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
@@ -262,9 +292,7 @@ func newStopTaskResponderSession(t *testing.T, mode string, stopTimeout time.Dur
 	t.Helper()
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(stopTaskResponderScript(mode)), 0755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, stopTaskResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {

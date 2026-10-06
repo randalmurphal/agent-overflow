@@ -22,6 +22,7 @@ func isolateGlobalGitConfig(t *testing.T) {
 }
 
 func TestWatchRootsReturnsCwdOnlyForNonRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	roots, err := NewCore().WatchRoots(dir)
 	if err != nil {
@@ -33,7 +34,8 @@ func TestWatchRootsReturnsCwdOnlyForNonRepo(t *testing.T) {
 }
 
 func TestWatchRootsIncludesNarrowGitMetadataForLinkedWorktree(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/watch-roots")
 	worktreePath := filepath.Join(t.TempDir(), "feature-watch-roots")
 	testutil.RunGit(t, repo, "worktree", "add", worktreePath, "feature/watch-roots")
@@ -76,7 +78,7 @@ func TestWatchRootsIncludesNarrowGitMetadataForLinkedWorktree(t *testing.T) {
 // would drag objects/ in).
 func TestWatchRootsPrunesIgnoredSubtrees(t *testing.T) {
 	isolateGlobalGitConfig(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	writeRepoFile(t, repo, ".gitignore", "node_modules/\nfrontend/dist/\n")
 	for _, dir := range []string{"node_modules/pkg", "frontend/dist", "frontend/src", "src"} {
 		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
@@ -132,7 +134,7 @@ func TestWatchRootsPrunesIgnoredSubtrees(t *testing.T) {
 // tracked file's directory so edits to it stay watched.
 func TestWatchRootsIgnoredDirWithForcedTrackedFileNotPruned(t *testing.T) {
 	isolateGlobalGitConfig(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	writeRepoFile(t, repo, ".gitignore", "node_modules/\n")
 	writeRepoFile(t, repo, filepath.Join("node_modules", "pkg", "f.js"), "x\n")
 	writeRepoFile(t, repo, filepath.Join("node_modules", "other", "g.js"), "y\n")
@@ -164,7 +166,8 @@ func TestWatchRootsIgnoredDirWithForcedTrackedFileNotPruned(t *testing.T) {
 // workspace — and only that one file's events may trigger recomputes
 // (the parent dir can be as busy as $HOME).
 func TestWatchRootsIncludesGlobalExcludesDir(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	excludesDir := t.TempDir()
 	excludesFile := filepath.Join(excludesDir, "my-ignores")
 	if err := os.WriteFile(excludesFile, []byte("node_modules/\n"), 0o644); err != nil {
@@ -189,7 +192,8 @@ func TestWatchRootsIncludesGlobalExcludesDir(t *testing.T) {
 // in — the repo — so the watch root must join it there, not against the
 // app process's own working directory.
 func TestWatchRootsRelativeExcludesFileResolvesAgainstRepo(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	confDir := filepath.Join(repo, "conf")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -217,6 +221,7 @@ func TestWatchRootsRelativeExcludesFileResolvesAgainstRepo(t *testing.T) {
 // filtering, malformed boundaries, non-directory entries, and the root
 // cap — each returning either the pruned set or the fallback signal.
 func TestPruneIgnoredSubtrees(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, sub := range []string{"a/b", "a/c", "d"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
@@ -294,6 +299,7 @@ func TestPruneIgnoredSubtrees(t *testing.T) {
 // deep scattered boundaries stay watched via their recursive top-level
 // subtree roots.
 func TestPruneIgnoredSubtreesDepthLadderDegrades(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// 40 top-level dirs x 30 subdirs, each holding a depth-3 ignored
 	// boundary: pruning all of them needs 1 + 40 + 1200 ancestor roots,

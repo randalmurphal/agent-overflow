@@ -16,6 +16,7 @@ import (
 // would flip the reconciler's strategy silently; pinning the mapping
 // keeps the wire contract load-bearing.
 func TestDecodeProbeResponseKnownStatuses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    string
@@ -70,6 +71,7 @@ func TestDecodeProbeResponseKnownStatuses(t *testing.T) {
 // a typo silently match an enum variant. Returning the literal keeps
 // diagnostics possible.
 func TestDecodeProbeResponseUnknownStatusPreservesLiteral(t *testing.T) {
+	t.Parallel()
 	payload := []byte(`{"thread":{"status":{"type":"completelyNewShape"}}}`)
 	result, err := decodeProbeResponse(payload)
 	if err != nil {
@@ -89,6 +91,7 @@ func TestDecodeProbeResponseUnknownStatusPreservesLiteral(t *testing.T) {
 // reconciler firing before the initial thread/start handshake landed —
 // surfaces loudly instead of sending a malformed request to the wire.
 func TestResumeRejectsEmptyThreadID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.Resume(context.Background())
 	if err == nil {
@@ -100,6 +103,7 @@ func TestResumeRejectsEmptyThreadID(t *testing.T) {
 }
 
 func TestEveryResumeExcludesTranscriptTurns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := codexReviewerEchoScript(
@@ -161,6 +165,7 @@ func TestEveryResumeExcludesTranscriptTurns(t *testing.T) {
 // — the reconciler would otherwise treat an empty status as "idle" by
 // default, which is the opposite of safe.
 func TestDecodeProbeResponseMissingStatusErrors(t *testing.T) {
+	t.Parallel()
 	cases := [][]byte{
 		[]byte(`{}`),
 		[]byte(`{"thread":{}}`),

@@ -30,6 +30,7 @@ func freeLoopbackPort(t *testing.T) int {
 }
 
 func TestSetNetworkSettings_MovesTheListenerToTheChosenPort(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	before := portFromAddr(srv.Addr())
 	chosen := freeLoopbackPort(t)
@@ -64,6 +65,7 @@ func TestSetNetworkSettings_MovesTheListenerToTheChosenPort(t *testing.T) {
 // The port and the bind host are one address, so changing both is one
 // rebind rather than two.
 func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
@@ -88,6 +90,7 @@ func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
 // endpoint names it, and jumping somewhere else to express "no
 // preference" would break all of them to change nothing.
 func TestSetNetworkSettings_ClearingThePortLeavesTheListenerAlone(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
 	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen}); err != nil {
@@ -112,6 +115,7 @@ func TestSetNetworkSettings_ClearingThePortLeavesTheListenerAlone(t *testing.T) 
 // otherwise still hold a number from before the operator ever set one,
 // and the next boot would silently move there).
 func TestSetNetworkSettings_RecordsTheBoundPortWhenTheOperatorTouchesIt(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	var recorded []int
 	app.boundPortRecorder = func(port int) { recorded = append(recorded, port) }
@@ -138,6 +142,7 @@ func TestSetNetworkSettings_RecordsTheBoundPortWhenTheOperatorTouchesIt(t *testi
 // A save that did not touch the port writes nothing to the cache: the
 // listener has not moved, so there is nothing new to record.
 func TestSetNetworkSettings_LeavesTheCacheAloneForAnUnrelatedSave(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 	var recorded []int
@@ -156,6 +161,7 @@ func TestSetNetworkSettings_LeavesTheCacheAloneForAnUnrelatedSave(t *testing.T) 
 // settings file is rolled back so the screen's next read describes the
 // listener that is actually there.
 func TestSetNetworkSettings_PortRebindFailureRollsBack(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	before := portFromAddr(srv.Addr())
 
@@ -187,6 +193,7 @@ func TestSetNetworkSettings_PortRebindFailureRollsBack(t *testing.T) {
 // or rebound: an out-of-range number is not a port the transport should
 // ever be asked for.
 func TestSetNetworkSettings_RefusesAnUnusablePort(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	before := portFromAddr(srv.Addr())
 
@@ -203,6 +210,7 @@ func TestSetNetworkSettings_RefusesAnUnusablePort(t *testing.T) {
 // A nil recorder is every fixture and every boot that resolved no config
 // directory. Touching the port there must not panic.
 func TestSetNetworkSettings_ToleratesNoBoundPortRecorder(t *testing.T) {
+	t.Parallel()
 	app, _ := newNetworkTestApp(t)
 	app.boundPortRecorder = nil
 

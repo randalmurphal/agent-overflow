@@ -282,6 +282,7 @@ func peerCode(t *testing.T, err error) string {
 // computer's OWN agents may start, and a paired computer's request is
 // answered either way.
 func TestThreadToolsReachFollowsTheCallersSwitchAndServesWithTheDestinationsOff(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// A turn with no result line leaves the destination's thread running,
@@ -325,6 +326,7 @@ func TestThreadToolsReachFollowsTheCallersSwitchAndServesWithTheDestinationsOff(
 // TestThreadToolsReachShapeFollowsThePairingSet proves the schemas and the
 // guide change when a computer is paired or forgotten, with no restart.
 func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	shape := pair.source.threadToolsShape(pair.caller.ID)
@@ -364,6 +366,7 @@ func threadToolsOfferComputer(tools []map[string]any) bool {
 // TestThreadToolsReceiptBelongsToTheDeviceThatMadeIt proves a second
 // device of the same computer cannot redeem another device's token.
 func TestThreadToolsReceiptBelongsToTheDeviceThatMadeIt(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -409,6 +412,7 @@ func TestThreadToolsReceiptBelongsToTheDeviceThatMadeIt(t *testing.T) {
 // is found, and two matches on two computers are an ambiguity rather than
 // a silent local win.
 func TestThreadToolsResolutionFansOutAcrossComputers(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	remote := reachThread(t, pair.dest, "aaaaaaa1-0000-4000-8000-000000000001", "Remote only")
@@ -435,6 +439,7 @@ func TestThreadToolsResolutionFansOutAcrossComputers(t *testing.T) {
 // that cannot answer makes a miss incomplete rather than a confident not
 // found, and marks a single match elsewhere partial.
 func TestThreadToolsResolutionReportsASilentComputer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	local := reachThread(t, pair.source, "bbbbbbb1-0000-4000-8000-000000000001", "Local only")
@@ -566,6 +571,7 @@ func shutdownReachDestination(t *testing.T, pair *reachPair) {
 // Disarming the notify before the call would leave that answer with nobody
 // to tell, and the caller with a request it was told it had cancelled.
 func TestThreadToolsCancelKeepsTheWakeWhenTheDestinationIsUnreachable(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// The spawned thread takes a real turn on the destination`s mock and
@@ -600,6 +606,7 @@ func TestThreadToolsCancelKeepsTheWakeWhenTheDestinationIsUnreachable(t *testing
 // real turn against its own mock provider, keeps the receipt, and the
 // source's poller collects the answer and acknowledges it.
 func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// One reply per session: each of the three requests below runs in a
@@ -662,6 +669,7 @@ func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
 // the thread and the computer it came from: without the computer the
 // destination refuses it and the hidden fork keeps running.
 func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// A spawn first, because an ask forks the thread it names and a thread
@@ -726,6 +734,7 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 // lookup the destination could only answer "not found" to the one thread
 // allowed to see it.
 func TestThreadToolsRemoteAskForkIsVisibleToTheThreadThatAsked(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	const done = "the spawn finished"
@@ -803,6 +812,7 @@ func (p *reachPair) collect(t *testing.T, token, answer string) string {
 // the origin chip. The caller has no row for that thread, so the only name
 // it has is what the destination reported while the request was open.
 func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	const answer = "the kernel build finished clean"
@@ -848,6 +858,7 @@ func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T
 // token is the idempotency key: a call repeated after a lost reply reads
 // the existing acceptance back and starts no second piece of work.
 func TestThreadToolsRemoteRequestRetriesOneTokenWithoutRunningTwice(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -902,6 +913,7 @@ func TestThreadToolsRemoteRequestRetriesOneTokenWithoutRunningTwice(t *testing.T
 // a row the destination does not hold is settled from what it reports
 // rather than polled forever, and that the two reasons read differently.
 func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	token := newThreadRequestToken()
@@ -939,6 +951,7 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 // The poller waits until nothing is in flight for that token before it
 // treats the destination's "unknown" as a refusal.
 func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// The call is cancelled before it can be answered, which is what a
@@ -997,6 +1010,7 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 // error it would answer by starting the work again, and that the retries
 // carry the one token, so the destination runs the work once.
 func TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	var faults *peerFaults
 	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
@@ -1047,6 +1061,7 @@ func TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply(t *testing.T) 
 // answers for a thread this computer never held, and its wait ends when
 // that thread is at rest there.
 func TestThreadToolsStatusWatchesAThreadOnAnotherComputer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	remote := reachThread(t, pair.dest, uuid.NewString(), "Watched from here")
@@ -1082,6 +1097,7 @@ func TestThreadToolsStatusWatchesAThreadOnAnotherComputer(t *testing.T) {
 // computer costs the poll one of its slots and not the whole pass: the
 // healthy destination's row settles while the other call is still open.
 func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 
@@ -1134,6 +1150,7 @@ func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
 // TestThreadToolsUncollectedRemoteAnswerExpires proves the destination
 // drops an answer nobody collected and the source reads that verdict.
 func TestThreadToolsUncollectedRemoteAnswerExpires(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeReplies(t, pair.dest, "nobody collects this")
@@ -1168,6 +1185,7 @@ func TestThreadToolsUncollectedRemoteAnswerExpires(t *testing.T) {
 // what it interrupted, and a source that restarts collects it with no
 // memory of the call that started it.
 func TestThreadToolsRemoteAnswerSurvivesARestartOfEitherSide(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1205,6 +1223,7 @@ func TestThreadToolsRemoteAnswerSurvivesARestartOfEitherSide(t *testing.T) {
 // pairing is terminal: the requests against it are settled rather than
 // retried against a computer that will never answer.
 func TestThreadToolsOpenRequestsSettleWhenThePairingEnds(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1248,6 +1267,7 @@ func revokeReachDevice(t *testing.T, app *App, label string) {
 // thread handed to another computer settles its open receipts where the
 // work was accepted, and that the remote source collects that verdict.
 func TestThreadToolsMovedTargetSettlesOnTheComputerThatAcceptedIt(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1276,6 +1296,7 @@ func TestThreadToolsMovedTargetSettlesOnTheComputerThatAcceptedIt(t *testing.T) 
 // destination's live blocked state travels on the poll reply, so a remote
 // request reads `blocked` with no second state model behind it.
 func TestThreadToolsRemoteBlockedStateReachesTheWaitingCaller(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{
@@ -1310,6 +1331,7 @@ func TestThreadToolsRemoteBlockedStateReachesTheWaitingCaller(t *testing.T) {
 // the window, the bytes cross in chunks under their digest, and the model
 // is given a path in its own export directory.
 func TestThreadToolsShowToFileCopiesTheExportAcrossComputers(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeReplies(t, pair.dest, "a transcript worth exporting")
@@ -1383,6 +1405,7 @@ func countReachExports(t *testing.T, dir, prefix string) int {
 // ceiling is answered with the number and what to narrow, not a bare
 // failure.
 func TestThreadToolsExportRefusesAWindowNoTransferCanCarry(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1407,6 +1430,7 @@ func TestThreadToolsExportRefusesAWindowNoTransferCanCarry(t *testing.T) {
 // confirmation: the open requests are listed and the pairing is kept, and
 // only an explicit abandon settles them and forgets it.
 func TestForgettingAComputerRefusesOnceThenAbandonsItsRequests(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1457,6 +1481,7 @@ func TestForgettingAComputerRefusesOnceThenAbandonsItsRequests(t *testing.T) {
 // forwarded request like any other, and the destination refuses one that
 // cannot name the thread and computer it came from.
 func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1493,6 +1518,7 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 // later poll finds the row already collected, so the collection itself has
 // to tell the destination the answer was stored.
 func TestThreadToolsRemoteAnswerOnACallsReplyIsAcknowledged(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	const done = "finished before anyone asked"
@@ -1521,6 +1547,7 @@ func TestThreadToolsRemoteAnswerOnACallsReplyIsAcknowledged(t *testing.T) {
 // proves the read half of the reach works too: the refusal is built from
 // what the destination answered about itself.
 func TestRemoteSpawnWithoutAProjectIsRefusedWithTheDestinationsProjects(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	_, err := pair.callRaw(t, "thread_spawn",
@@ -1537,6 +1564,7 @@ func TestRemoteSpawnWithoutAProjectIsRefusedWithTheDestinationsProjects(t *testi
 // TestThreadOperationErrorNamesTheComputerAndKeepsTheDestinationsCode
 // pins the refusal shape every peer failure reaches the model in.
 func TestThreadOperationErrorNamesTheComputerAndKeepsTheDestinationsCode(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	computer := uuid.NewString()
 	if err := app.threadOperationError("send", computer, "t-1", nil); err != nil {
@@ -1589,6 +1617,7 @@ func TestThreadOperationErrorNamesTheComputerAndKeepsTheDestinationsCode(t *test
 // must still run here; forwarding it would ask the pairing set for a peer it
 // never holds, because a computer is not paired with itself.
 func TestThreadToolsLocalWorkStaysLocalWhileAComputerIsPaired(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.source, [][]string{{mockClaudeInitLine}})
@@ -1636,6 +1665,7 @@ func TestThreadToolsLocalWorkStaysLocalWhileAComputerIsPaired(t *testing.T) {
 // cannot offer thread_show or thread_send back to the sender. A request one
 // of the destination's own threads makes always can.
 func TestThreadToolsFooterOffersTheWayBackOnlyWhenItExists(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
@@ -1696,6 +1726,7 @@ func reachRequestMessage(t *testing.T, app *App, threadID, token string) string 
 // bound turns one large answer into a closed connection that closes again
 // on every retry.
 func TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	remote := reachThread(t, pair.dest, "cccccccc-0000-4000-8000-000000000001", "Large answer")
@@ -1738,6 +1769,7 @@ func TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire(t *testing.T) {
 // never polled while it was written, and the pass that collects it is the
 // production poller.
 func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// The destination's turn stays open, so its own observer settles

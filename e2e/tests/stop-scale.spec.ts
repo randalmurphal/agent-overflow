@@ -33,6 +33,7 @@ import {
   backgroundTasksChangedLine,
   claudeTurnsScenario,
   emit,
+  emitBurst,
   listItems,
   openTextLines,
   seedAgentThread,
@@ -78,7 +79,7 @@ function fleet(prefix: string, n: number): Fleet {
     shells.map((s) => ({ task_id: shellTask(i, s), task_type: 'local_bash', description: `watch ${i}.${s}` })),
   );
   return {
-    launch: emit([
+    launch: emitBurst([
       ...textLines(`${prefix}msg-lead`, 'Launching every agent.'),
       ...agents.flatMap((i) => [
         toolUseLine(`${prefix}msg-launch-${i}`, tu(i), 'Agent', { description: `agent ${i}`, subagent_type: 'worker', prompt: `Run ${i}.` }),
@@ -88,7 +89,7 @@ function fleet(prefix: string, n: number): Fleet {
       backgroundTasksChangedLine(agentTasks),
       RESULT_LINE,
     ]),
-    work: emit([
+    work: emitBurst([
       ...agents.flatMap((i) => [
         ...shells.flatMap((s) => [
           toolUseLine(`${prefix}msg-${i}-sh${s}`, shellTu(i, s), 'Bash', { command: `watch ${i}.${s}`, run_in_background: true }, tu(i)),

@@ -17,6 +17,7 @@ import (
 // transport-facing Send RPC must still use the provider's active turn, not
 // allocate a phantom next turn merely because that frontend chose Send.
 func TestComposerSendActiveUsesQueue(t *testing.T) {
+	t.Parallel()
 	for _, p := range []string{string(provider.Codex), string(provider.Claude)} {
 		t.Run(string(p), func(t *testing.T) {
 			a := newTestAppWithStore(t)
@@ -51,6 +52,7 @@ func TestComposerSendActiveUsesQueue(t *testing.T) {
 }
 
 func TestComposerSendBeforeTurnStartedUsesQueue(t *testing.T) {
+	t.Parallel()
 	a := newTestAppWithStore(t)
 	a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
 	thread := testThread("send-before-start")
@@ -68,6 +70,7 @@ func TestComposerSendBeforeTurnStartedUsesQueue(t *testing.T) {
 }
 
 func TestComposerSendActiveCodexEchoKeepsActualTurn(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"ok", "no-active-turn"} {
 		t.Run(outcome, func(t *testing.T) {
 			a := newTestAppWithStore(t)
@@ -164,6 +167,7 @@ func acknowledgeMockClaudeSend(t *testing.T, a *App, threadID string) {
 // when authoritative admission queues the message. Refuse before accepting it
 // so its existing failure path restores the draft and removes the placeholder.
 func TestLegacyComposerBusySendIsNotAccepted(t *testing.T) {
+	t.Parallel()
 	for _, p := range []provider.ProviderKind{provider.Claude, provider.Codex} {
 		for _, state := range []string{"active", "starting"} {
 			t.Run(string(p)+"/"+state, func(t *testing.T) {

@@ -10,10 +10,12 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestCommitOnlyStagedChanges(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nupdated\n"), 0o644); err != nil {
@@ -47,7 +49,8 @@ func TestCommitOnlyStagedChanges(t *testing.T) {
 }
 
 func TestStageAllThenCommit(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nupdated\n"), 0o644); err != nil {
@@ -76,7 +79,8 @@ func TestStageAllThenCommit(t *testing.T) {
 }
 
 func TestCommitRequiresSubject(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if _, err := core.Commit(repo, "   ", "body"); err == nil {
@@ -85,7 +89,8 @@ func TestCommitRequiresSubject(t *testing.T) {
 }
 
 func TestPushSetsUpstreamWhenMissing(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
 	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
@@ -102,7 +107,8 @@ func TestPushSetsUpstreamWhenMissing(t *testing.T) {
 }
 
 func TestPushWithoutRemoteReturnsError(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.Push(repo)
@@ -115,7 +121,8 @@ func TestPushWithoutRemoteReturnsError(t *testing.T) {
 }
 
 func TestPullWithoutUpstreamReturnsError(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.Pull(repo)
@@ -128,7 +135,8 @@ func TestPullWithoutUpstreamReturnsError(t *testing.T) {
 }
 
 func TestCreateBranchAndCheckout(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "feature/demo"); err != nil {
@@ -145,7 +153,8 @@ func TestCreateBranchAndCheckout(t *testing.T) {
 }
 
 func TestCheckoutErrorIncludesGitDiagnosis(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature/checkout")
 	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("feature\n"), 0o644); err != nil {
 		t.Fatalf("write feature content: %v", err)
@@ -169,7 +178,8 @@ func TestCheckoutErrorIncludesGitDiagnosis(t *testing.T) {
 }
 
 func TestCreateBranchRejectsExistingBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.CreateBranch(repo, "main")
@@ -182,7 +192,8 @@ func TestCreateBranchRejectsExistingBranch(t *testing.T) {
 }
 
 func TestCheckoutNewBranchRejectsExistingBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.CheckoutNewBranch(repo, "main"); err == nil {
@@ -237,7 +248,8 @@ func TestBranchCreationNormalizesBranchCreatedAfterPreflight(t *testing.T) {
 }
 
 func TestRenameBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "forge/1234abcd"); err != nil {
@@ -262,7 +274,8 @@ func TestRenameBranch(t *testing.T) {
 }
 
 func TestRenameBranchAddsSuffixWhenTargetExists(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	testutil.RunGit(t, repo, "branch", "forge/reconnect-backoff")
@@ -283,7 +296,8 @@ func TestRenameBranchAddsSuffixWhenTargetExists(t *testing.T) {
 }
 
 func TestCreateBranchRequiresName(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "  "); err == nil {
@@ -292,7 +306,8 @@ func TestCreateBranchRequiresName(t *testing.T) {
 }
 
 func TestCheckoutRequiresBranchName(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.Checkout(repo, "  "); err == nil {
@@ -301,7 +316,8 @@ func TestCheckoutRequiresBranchName(t *testing.T) {
 }
 
 func TestCheckoutRejectsInvalidBranchName(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.Checkout(repo, "--flag"); err == nil {
@@ -310,7 +326,8 @@ func TestCheckoutRejectsInvalidBranchName(t *testing.T) {
 }
 
 func TestCheckoutRejectsInvalidLocalNameDerivedFromRemote(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	testutil.RunGit(t, repo, "remote", "add", "origin", repo)
@@ -323,7 +340,8 @@ func TestCheckoutRejectsInvalidLocalNameDerivedFromRemote(t *testing.T) {
 }
 
 func TestCreateBranchRejectsInvalidName(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "--malicious"); err == nil {
@@ -332,6 +350,7 @@ func TestCreateBranchRejectsInvalidName(t *testing.T) {
 }
 
 func TestValidateBranchName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		branch  string
@@ -357,6 +376,7 @@ func TestValidateBranchName(t *testing.T) {
 }
 
 func TestCommitBodyOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
 	args := commitArgs("subject only", "")
 	if len(args) != 3 {
 		t.Fatalf("len(args) = %d, want 3 (no body -m flag)", len(args))
@@ -364,6 +384,7 @@ func TestCommitBodyOmittedWhenEmpty(t *testing.T) {
 }
 
 func TestCommitBodyIncludedWhenPresent(t *testing.T) {
+	t.Parallel()
 	args := commitArgs("subject", "body text")
 	if len(args) != 5 {
 		t.Fatalf("len(args) = %d, want 5 (subject + body -m flags)", len(args))
@@ -374,7 +395,8 @@ func TestCommitBodyIncludedWhenPresent(t *testing.T) {
 }
 
 func TestPushUsesExistingUpstream(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
 	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
@@ -388,7 +410,8 @@ func TestPushUsesExistingUpstream(t *testing.T) {
 }
 
 func TestPushSelectsNonOriginRemote(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "upstream.git")
 	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
 	testutil.RunGit(t, repo, "remote", "add", "upstream", remote)
@@ -452,9 +475,7 @@ case "$1" in
     ;;
 esac
 `
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	mockexec.Write(t, gitPath, script)
 	t.Setenv("AO_BRANCH_EXISTS_MARKER", branchExistsMarker)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

@@ -294,6 +294,7 @@ func TestComputerRouteSelectionCoalescesAndDoesNotWaitForAStalledRoute(t *testin
 // the probe deadline before reusing it. A tailnet flap leaves the tailnet
 // route healthy while unroutable LAN candidates hang to the deadline.
 func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *testing.T) {
+	t.Parallel() // Parallel tests start after every serial test restores the package seams.
 	first := newBackend(t)
 	client, _ := openAgainst(t, first, nil)
 	var fail atomic.Bool
@@ -345,6 +346,7 @@ func TestComputerRouteReusesAFlappedRouteWithoutWaitingForDeadCandidates(t *test
 }
 
 func TestComputerRoutesAllowColdVPNPath(t *testing.T) {
+	t.Parallel() // Parallel tests start after every serial test restores the package seams.
 	first := newBackend(t)
 	client, _ := openAgainst(t, first, nil)
 	var sent atomic.Int32

@@ -8,6 +8,7 @@ import (
 )
 
 func TestListPruneCandidatesClassifiesGoneBranches(t *testing.T) {
+	t.Parallel()
 	repo := testutil.GonePruneRepo(t)
 	core := NewCore()
 
@@ -46,6 +47,7 @@ func TestListPruneCandidatesClassifiesGoneBranches(t *testing.T) {
 }
 
 func TestListPruneCandidatesFallsBackToLocalMainWithoutOriginHead(t *testing.T) {
+	t.Parallel()
 	repo := testutil.GonePruneRepo(t)
 	// origin/HEAD unset (manual remote add, partial clones) — the merged
 	// check must still run against the conventional local main.
@@ -72,6 +74,7 @@ func TestListPruneCandidatesFallsBackToLocalMainWithoutOriginHead(t *testing.T) 
 }
 
 func TestListPruneCandidatesExcludesWorktreeCheckouts(t *testing.T) {
+	t.Parallel()
 	repo := testutil.GonePruneRepo(t)
 	worktree := filepath.Join(t.TempDir(), "wt")
 	testutil.RunGit(t, repo, "worktree", "add", worktree, "squashed-gone")
@@ -89,6 +92,7 @@ func TestListPruneCandidatesExcludesWorktreeCheckouts(t *testing.T) {
 }
 
 func TestDeleteLocalBranch(t *testing.T) {
+	t.Parallel()
 	repo := testutil.GonePruneRepo(t)
 	core := NewCore()
 

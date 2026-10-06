@@ -14,6 +14,7 @@ import (
 )
 
 func TestModelCapabilitiesUseKnownCodexCatalog(t *testing.T) {
+	t.Parallel()
 	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{
 			Slug:     "gpt-5.5",
@@ -56,6 +57,7 @@ func TestModelCapabilitiesUseKnownCodexCatalog(t *testing.T) {
 }
 
 func TestModelCapabilitiesFallBackWhenCodexCatalogFails(t *testing.T) {
+	t.Parallel()
 	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
 		return nil, errors.New("codex unavailable")
 	})
@@ -73,6 +75,7 @@ func TestModelCapabilitiesFallBackWhenCodexCatalogFails(t *testing.T) {
 // slug and a provider with no tier concept — the Codex translator turns that
 // into the legacy `priority` id rather than dropping fast mode.
 func TestFastModeTierIDForModelReadsTheCatalogTier(t *testing.T) {
+	t.Parallel()
 	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{
 			{
@@ -107,6 +110,7 @@ func TestFastModeTierIDForModelReadsTheCatalogTier(t *testing.T) {
 // stopped stamping the tier, a reconcile would diff a resolved id against an
 // unresolved one and flap the session's serviceTier on every pass.
 func TestBuildSessionOptionsStampsTheFastModeTier(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// newTestAppWithStore installs a deliberately-failing model lister; replace
 	// that test-only cache with the catalog this test asserts against.

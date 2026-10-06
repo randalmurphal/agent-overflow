@@ -106,11 +106,14 @@ type workspaceWatcher struct {
 	// workspace never spawns gh/glab. Nil falls back to statusFn.
 	fastStatusFn StatusFn
 
-	// livenessInterval and livenessQuiet are watchLivenessInterval /
-	// livenessQuietAfterEvent in production; tests shrink them before
-	// start() to drive the probe and miss-detection deterministically.
+	// livenessInterval, livenessQuiet and pollInterval are
+	// watchLivenessInterval, livenessQuietAfterEvent and
+	// pollFallbackInterval in production; tests shrink them before
+	// start() to drive the probe, miss-detection and polling fallback
+	// deterministically.
 	livenessInterval time.Duration
 	livenessQuiet    time.Duration
+	pollInterval     time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -165,6 +168,7 @@ func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gi
 		fastStatusFn:     fastStatusFn,
 		livenessInterval: watchLivenessInterval,
 		livenessQuiet:    livenessQuietAfterEvent,
+		pollInterval:     pollFallbackInterval,
 		ctx:              ctx,
 		cancel:           cancel,
 		eventsCh:         make(chan notify.EventInfo, notifyChannelSize),
@@ -195,7 +199,7 @@ func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch cha
 	w.installFn = installFn
 	if err := installFn(w.currentWatchRoots(), w.eventsCh); err != nil {
 		log.Printf("gitwatch: fs watch unavailable for %s roots=%v (%v); falling back to %s polling",
-			w.cwd, w.watchRoots, err, pollFallbackInterval)
+			w.cwd, w.watchRoots, err, w.pollInterval)
 		w.fallbackPolling = true
 	}
 	go w.run()
@@ -288,7 +292,7 @@ func (w *workspaceWatcher) run() {
 		if pollTicker != nil {
 			return
 		}
-		pollTicker = time.NewTicker(pollFallbackInterval)
+		pollTicker = time.NewTicker(w.pollInterval)
 		pollCh = pollTicker.C
 	}
 	stopPolling := func() {
@@ -317,12 +321,42 @@ func (w *workspaceWatcher) run() {
 			stopPolling()
 		}
 	}
+	// retry re-runs a refresh whose status fetch failed. Without it a
+	// transient failure leaves subscribers on a stale status until the
+	// next fs event or the liveness probe. Failures retry on the polling
+	// cadence until a refresh succeeds.
+	retry := time.NewTimer(w.pollInterval)
+	if !retry.Stop() {
+		<-retry.C
+	}
+	retryArmed := false
+	settle := func(err error) {
+		switch {
+		case err == nil && retryArmed:
+			if !retry.Stop() {
+				select {
+				case <-retry.C:
+				default:
+				}
+			}
+			retryArmed = false
+		case err != nil && !retryArmed:
+			retry.Reset(w.pollInterval)
+			retryArmed = true
+		}
+	}
+	refresh := func() bool {
+		changed, err := w.refresh()
+		settle(err)
+		return changed
+	}
+
 	// refreshEdge is every path that runs statusFn off fs events: apply
 	// a pending watch-root rebuild first so the refresh observes the
 	// world the new roots describe.
 	refreshEdge := func() {
 		applyRebuild()
-		w.refresh()
+		refresh()
 	}
 
 	// lastEventAt is when the fs event stream last proved itself alive.
@@ -383,7 +417,10 @@ func (w *workspaceWatcher) run() {
 			debounceArmed = false
 			refreshEdge()
 		case <-pollCh:
-			w.refresh()
+			refresh()
+		case <-retry.C:
+			retryArmed = false
+			refreshEdge()
 		case <-w.refreshCh:
 			// A refresh nothing on the fs side asked for (subscriber
 			// attach, post-action refresh). If it observes real working-
@@ -392,7 +429,7 @@ func (w *workspaceWatcher) run() {
 			// excluded: the attach hook exists precisely to warm the PR
 			// cache, and a remote PR appearing says nothing about local
 			// watchpoints.
-			if w.refresh() && time.Since(lastEventAt) >= w.livenessQuiet {
+			if refresh() && time.Since(lastEventAt) >= w.livenessQuiet {
 				log.Printf("gitwatch: refresh observed changes the fs watches never reported for %s; reinstalling watches", w.cwd)
 				w.needsRebuild, w.forceReinstall = true, true
 				applyRebuild()
@@ -426,10 +463,10 @@ func (w *workspaceWatcher) requestRefresh() {
 }
 
 // refresh re-reads git status, dedups against lastStatus, and broadcasts
-// to subscribers. Status fetch errors are logged and skipped; lastStatus
-// stays as-is so we don't mistake a transient error for a real change.
-// Returns whether the observed status differed from lastStatus on any
-// non-PR field — the run loop's miss-detection signal (PR fields change
+// to subscribers. A status fetch error is logged and returned for the run
+// loop to retry; lastStatus stays as-is so we don't mistake a transient
+// error for a real change. Reports whether the observed status differed
+// from lastStatus on any non-PR field — the run loop's miss-detection signal (PR fields change
 // through cache warming, not the filesystem, so they prove nothing
 // about watchpoint health).
 //
@@ -438,21 +475,21 @@ func (w *workspaceWatcher) requestRefresh() {
 // closed channel panics even from a non-blocking select. The sends are
 // themselves non-blocking (buffer size 1, supersede-on-overflow), so
 // the lock is held for microseconds bounded by len(subscribers).
-func (w *workspaceWatcher) refresh() (nonPRChanged bool) {
+func (w *workspaceWatcher) refresh() (nonPRChanged bool, err error) {
 	if w.isSuppressed() {
-		return false
+		return false, nil
 	}
 	status, err := w.statusFn(w.cwd)
 	if err != nil {
 		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
-		return false
+		return false, err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	// Rechecked under the lock: a hold taken while statusFn ran must still
 	// keep this status off the wire.
 	if w.suppressed > 0 || status.Equal(w.lastStatus) {
-		return false
+		return false, nil
 	}
 	nonPRChanged = statusDiffersIgnoringPR(status, w.lastStatus)
 	w.lastStatus = status
@@ -470,7 +507,7 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool) {
 		default:
 		}
 	}
-	return nonPRChanged
+	return nonPRChanged, nil
 }
 
 // probeLiveness checks whether the working tree drifted from lastStatus

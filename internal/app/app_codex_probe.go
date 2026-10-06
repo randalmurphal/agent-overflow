@@ -11,12 +11,6 @@ func codexAccountProbeCache() *provider.ProbeCache {
 	return providerdiscoveryapp.DefaultCaches().Codex
 }
 
-// resetCodexProbeCacheForTest swaps the package-level cache for a fresh
-// instance. Mirrors resetClaudeProbeCacheForTest.
-func resetCodexProbeCacheForTest() {
-	providerdiscoveryapp.ResetDefaultCachesForTest()
-}
-
 // ProbeCodexAccount spawns a short-lived `codex app-server` subprocess,
 // runs the JSON-RPC initialize handshake, calls
 // `account/rateLimits/read`, and returns AccountInfo whose

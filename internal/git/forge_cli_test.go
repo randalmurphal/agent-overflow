@@ -3,12 +3,15 @@ package git
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // forgeFakeHelperEnv turns this test binary into a fake forge CLI: it
@@ -38,7 +41,12 @@ func TestMain(m *testing.M) {
 		})
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if err := removeRepoTemplate(); err != nil {
+		fmt.Fprintf(os.Stderr, "remove template repository: %v\n", err)
+		code = 1
+	}
+	os.Exit(code)
 }
 
 // installTrapCLIs puts executables named gh and glab first on PATH. Each
@@ -53,9 +61,7 @@ func installTrapCLIs(t *testing.T) string {
 	markers := t.TempDir()
 	for _, name := range forgeCLINames {
 		script := "#!/bin/sh\ntouch '" + filepath.Join(markers, name) + "'\necho trapped\n"
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.Write(t, filepath.Join(bin, name), script)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return markers
@@ -161,6 +167,7 @@ func TestIsolatedCoreRunsTheFakeAsTheForgeCLI(t *testing.T) {
 }
 
 func TestForgeCLIEnvReachesOnlyTheFake(t *testing.T) {
+	t.Parallel()
 	core := NewCore(WithIsolatedForgeCLIs("/fake/ao-mockforge", []string{"AO_GIT_TEST_ONLY_FAKE=1"}))
 	target, err := core.forgeCLIs.resolve("git")
 	if err != nil {

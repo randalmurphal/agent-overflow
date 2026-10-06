@@ -9,21 +9,29 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
-// testProviderProjectsDir is what a test passes where production passes
-// App.claudeProjectsDir(). Every App fixture detaches HOME
-// (kerneltest.DetachHome), so this resolves to the fixture's own empty temp
-// home and never to the developer's real `~/.claude/projects`.
-func testProviderProjectsDir(t *testing.T) string {
+// testProviderHome is the provider home the App resolves: the fixture's own
+// temp directory (isolateE2EProviderSpawns), never the shared process home.
+func testProviderHome(t *testing.T, app *App) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve test home: %v", err)
+	if app.credentialHomeOverride == "" {
+		t.Fatal("App has no provider home of its own; build it with an isolated fixture")
 	}
-	return sessionfork.ProjectsDirForHome(home)
+	return app.credentialHomeOverride
+}
+
+// testProviderProjectsDir is the Claude projects tree app resolves, where
+// production passes App.claudeProjectsDir(). App fixtures point
+// credentialHomeOverride at their own temp home, so this is never the
+// developer's real `~/.claude/projects`.
+func testProviderProjectsDir(t *testing.T, app *App) string {
+	t.Helper()
+	dir, err := app.claudeProjectsDir()
+	if err != nil {
+		t.Fatalf("resolve test Claude projects dir: %v", err)
+	}
+	return dir
 }
 
 // TestProviderHomeSeamPinsEveryProviderPathUnderTheOverride is the BEHAVIOR
@@ -151,6 +159,7 @@ var providerHomeSeamAllowlist = map[string]string{
 // (main_soak_test.go), which pins the isolation itself; this one pins who is
 // allowed to look past it.
 func TestAppLayerResolvesProviderHomesThroughOneSeam(t *testing.T) {
+	t.Parallel()
 	var offenders []string
 	for _, root := range providerHomeSeamScanRoots {
 		for _, path := range scanFilesUnder(t, root) {

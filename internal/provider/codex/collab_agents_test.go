@@ -14,6 +14,7 @@ import (
 )
 
 func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -37,6 +38,7 @@ func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 }
 
 func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
@@ -56,6 +58,7 @@ func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 }
 
 func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -101,6 +104,7 @@ func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
 }
 
 func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -157,6 +161,7 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing
 }
 
 func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -219,12 +224,13 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *
 }
 
 func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+		Args:   []string{"-c", "cat > /dev/null"},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -312,6 +318,7 @@ func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 }
 
 func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -387,6 +394,7 @@ func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 }
 
 func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -464,6 +472,7 @@ func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
 }
 
 func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparately(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -534,6 +543,7 @@ func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparatel
 }
 
 func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",

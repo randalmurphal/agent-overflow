@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ func observeReconcileSteps(app *App) chan string {
 // pinning it, so an edited entry lands over set_model.system_prompt — but
 // only if something fires the reconcile, and nothing else does on a save.
 func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	registerLiveClaudeSession(t, app, "thread-live-claude")
 	steps := observeReconcileSteps(app)
@@ -72,6 +74,7 @@ func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 // (control request / deferred restart / live prompt swap), so each one is
 // pinned rather than trusting one representative.
 func TestEveryLiveClaudeAxisTriggersTheSweep(t *testing.T) {
+	t.Parallel()
 	for _, key := range liveClaudeSettingsAxes {
 		if !patchTouchesLiveClaudeAxis(map[string]any{key: nil}) {
 			t.Errorf("patchTouchesLiveClaudeAxis(%q) = false, want true", key)
@@ -85,6 +88,7 @@ func TestEveryLiveClaudeAxisTriggersTheSweep(t *testing.T) {
 // PINS the prompt on every non-Claude provider, so the sweep could only be a
 // no-op.
 func TestSpawnOnlySettingsDoNotTriggerTheSweep(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{
 		"codexPromptOverrides",
 		"claudeOutputStyle",
@@ -103,6 +107,7 @@ func TestSpawnOnlySettingsDoNotTriggerTheSweep(t *testing.T) {
 // two sweeps rather than N. Two saves landing during one in-flight sweep
 // therefore buy exactly one more.
 func TestLiveClaudeReconcileCoalescesSavesDuringASweep(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	registerLiveClaudeSession(t, app, "thread-coalesce")
 
@@ -176,6 +181,7 @@ func TestLiveClaudeReconcileCoalescesSavesDuringASweep(t *testing.T) {
 // The session runs the pre-save config until it is restarted for some other
 // reason, which on a long-lived thread can be never.
 func TestLiveClaudeSweepCoversASessionStillStarting(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	registerLiveClaudeSession(t, app, "thread-registered")
 	// The thread whose start is in flight: present in startingSessions,
@@ -204,6 +210,7 @@ func TestLiveClaudeSweepCoversASessionStillStarting(t *testing.T) {
 // that overlap into "at least once" rather than a chance of neither — and it
 // must still be exactly one visit, since the reconcile does wire I/O.
 func TestLiveClaudeSweepVisitsAHandingOffThreadExactlyOnce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	registerLiveClaudeSession(t, app, "thread-handoff")
 	startState, leader := app.sessionManager().beginStart("thread-handoff")
@@ -229,6 +236,7 @@ func TestLiveClaudeSweepVisitsAHandingOffThreadExactlyOnce(t *testing.T) {
 // has to be a no-op rather than a wrong reconcile, which is what the
 // per-thread step's wait-then-diff gives.
 func TestLiveClaudeSweepIncludesStartsOfUnknownProvider(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sessionManager().put("thread-codex", session{Provider: string(provider.Codex), Token: "codex-1"})
 	startState, _ := app.sessionManager().beginStart("thread-unknown")
@@ -290,9 +298,7 @@ while IFS= read -r line; do
 done
 `
 	binary = filepath.Join(dir, "fake-claude")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake Claude: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	return binary, capture
 }
 
@@ -328,6 +334,7 @@ func waitForCaptured(t *testing.T, capture, want, whatFailed string) string {
 // reconcile, which is also what makes the interleaving deterministic: nothing
 // registers the session until the sweep has already enumerated its thread ids.
 func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID, workspace := seedPromptOverrideThread(t,
 		app, "thread-starting-wire", string(provider.Claude), "claude-opus-5")

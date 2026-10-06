@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,9 +79,7 @@ while IFS= read -r line; do
 done
 `, shellQuote(logPath))
 	path := filepath.Join(t.TempDir(), "claude-interrupt-recorder.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write interrupt recorder: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -189,6 +188,7 @@ func agentIDs(agents []BackgroundKillAgent) []string {
 // the original launch's pane; not finished agents, not shells, not a
 // foreground agent.
 func TestRunningBackgroundAgents_ListsTheAgentsAnInterruptKills(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "running", "task-running", "")
 	f.launchAgent(t, "parked", "task-parked", "")
@@ -240,6 +240,7 @@ func TestRunningBackgroundAgents_ListsTheAgentsAnInterruptKills(t *testing.T) {
 // Refused: nothing is cancelled, interrupted or written. Confirmed: the
 // same call stops the turn as it always did.
 func TestInterruptTurn_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	remoteWait, endRemote := f.app.beginRemoteWait(context.Background(), f.thread.ID, "computer", "job")
@@ -280,6 +281,7 @@ func TestInterruptTurn_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) 
 // Background work that is not an agent survives the interrupt, so it asks
 // nothing.
 func TestInterruptTurn_MainThreadShellDoesNotRefuse(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchShell(t, "main-shell", "task-main-shell", "")
 	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
@@ -293,6 +295,7 @@ func TestInterruptTurn_MainThreadShellDoesNotRefuse(t *testing.T) {
 // A parked agent dies with its shells on an interrupt and never wakes
 // (spike D, 2.1.280), so it is refused like a running one.
 func TestInterruptTurn_RefusesForAParkedAgent(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	f.launchShell(t, "shell", "task-shell", "agent")
@@ -311,6 +314,7 @@ func TestInterruptTurn_RefusesForAParkedAgent(t *testing.T) {
 // the interrupt refuses for it, and the stop count a revert confirms
 // counts it too.
 func TestInterruptTurn_RefusesForANestedAgent(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventToolStart, ItemID: "foreground", ItemType: "Agent"},
 		map[string]any{"toolName": "Agent", "input": map[string]any{"description": "Agent foreground", "prompt": "delegate"}})
@@ -331,6 +335,7 @@ func TestInterruptTurn_RefusesForANestedAgent(t *testing.T) {
 // A Codex thread's interrupt leaves its agents running, so it never asks,
 // even over rows shaped like a Claude agent.
 func TestInterruptTurn_CodexThreadNeverRefuses(t *testing.T) {
+	t.Parallel()
 	f := newAgentKillFixture(t, string(provider.Codex), "gpt-5.4")
 	f.launchAgent(t, "agent", "task-agent", "")
 
@@ -351,6 +356,7 @@ func TestInterruptTurn_CodexThreadNeverRefuses(t *testing.T) {
 // interrupt. The parked-call cancels between the two checks have already
 // run: they return backgrounded receipts and stop no work.
 func TestInterruptTurn_AgentLaunchedWhileWaitingForTheLockIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	remoteWait, endRemote := f.app.beginRemoteWait(context.Background(), f.thread.ID, "computer", "job")
 	defer endRemote()
@@ -382,6 +388,7 @@ func TestInterruptTurn_AgentLaunchedWhileWaitingForTheLockIsRefused(t *testing.T
 // and nothing is interrupted, reverted or written. Confirmed, it declines
 // the revert for that background work and stops the turn.
 func TestInterruptAndRevertIfClean_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	// The newest turn is an unanswered message, so only the background
@@ -425,6 +432,7 @@ func TestInterruptAndRevertIfClean_RefusesWhileAgentsLiveAndProceedsOnConfirm(t 
 // With only a main-thread shell the un-send takes its existing decline to
 // the plain interrupt without asking.
 func TestInterruptAndRevertIfClean_MainThreadShellKeepsTheExistingDecline(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchShell(t, "main-shell", "task-main-shell", "")
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
@@ -444,6 +452,7 @@ func TestInterruptAndRevertIfClean_MainThreadShellKeepsTheExistingDecline(t *tes
 // Agent requests, their cancels and workflow takeovers are not a person's
 // Stop: they interrupt with agents live.
 func TestUngatedInterruptsStopWithAgentsLive(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(*agentKillFixture) error{
 		// interruptTurnCtx is what the workflow runner is constructed with.
 		"workflow takeover": func(f *agentKillFixture) error {
@@ -478,6 +487,7 @@ func TestUngatedInterruptsStopWithAgentsLive(t *testing.T) {
 // agent settles killed, its stash goes, and it leaves the kill list and the
 // tray.
 func TestInterruptKillOfAParkedAgentSettlesItAndItsShell(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	f.launchShell(t, "shell", "task-shell", "agent")
@@ -532,6 +542,7 @@ func TestInterruptKillOfAParkedAgentSettlesItAndItsShell(t *testing.T) {
 // whether the caller confirmed nothing (an empty list or null) or another
 // agent.
 func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	dispatcher := transport.NewDispatcher()

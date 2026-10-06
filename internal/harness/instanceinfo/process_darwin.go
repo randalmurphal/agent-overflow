@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -33,11 +34,17 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 		return ProcessIdentity{}, fmt.Errorf("process identity: %d is not a pid", pid)
 	}
 	out, err := runProcessCommand("/bin/ps", "-o", "comm=", "-p", strconv.Itoa(pid))
-	if err != nil {
-		return ProcessIdentity{}, fmt.Errorf("query process %d: %w", pid, err)
-	}
 	fields := strings.Fields(string(bytes.TrimSpace(out)))
-	if len(fields) == 0 {
+	if err != nil || len(fields) == 0 {
+		// ps fails or prints nothing for a pid that exited before it ran.
+		// Callers skip a vanished process by fs.ErrNotExist, as procfs
+		// reports it on Linux.
+		if _, _, kernelErr := kernelStart(pid); errors.Is(kernelErr, errNoProcess) {
+			return ProcessIdentity{}, fmt.Errorf("query process %d: %w", pid, kernelErr)
+		}
+		if err != nil {
+			return ProcessIdentity{}, fmt.Errorf("query process %d: %w", pid, err)
+		}
 		return ProcessIdentity{}, fmt.Errorf("query process %d returned incomplete identity", pid)
 	}
 	start, _, err := kernelStart(pid)
@@ -55,7 +62,7 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 }
 
 // errNoProcess is a pid the kernel has no record of.
-var errNoProcess = errors.New("no such process")
+var errNoProcess = fmt.Errorf("no such process: %w", fs.ErrNotExist)
 
 // ProcessStart reads pid's birth marker, as ProcessIdentity.StartTime holds
 // it, and whether the process has not exited. A zombie has exited. A pid

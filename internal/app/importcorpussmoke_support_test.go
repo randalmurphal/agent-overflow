@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/provider/codex/rollout"
 	importwriter "agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // importcorpussmoke_support_test.go — the two provider legs of the
@@ -247,7 +248,7 @@ type corpusWriter struct {
 func newCorpusWriter(t *testing.T, providerName string) *corpusWriter {
 	t.Helper()
 	root := t.TempDir()
-	st, err := store.New(filepath.Join(root, "import-corpus.sqlite"))
+	st, err := store.New(storetest.ClonePath(t))
 	if err != nil {
 		t.Fatalf("import corpus (%s): open throwaway store: %v", providerName, err)
 	}

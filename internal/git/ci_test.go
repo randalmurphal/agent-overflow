@@ -6,9 +6,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestNormalizeCIStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		status, conclusion, want string
 	}{
@@ -40,6 +43,7 @@ func TestNormalizeCIStatus(t *testing.T) {
 }
 
 func TestAggregateCIStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		statuses []string
 		want     string
@@ -62,6 +66,7 @@ func TestAggregateCIStatus(t *testing.T) {
 }
 
 func TestValidateCIJobID(t *testing.T) {
+	t.Parallel()
 	if err := ValidateCIJobID("15208089088"); err != nil {
 		t.Fatalf("valid id rejected: %v", err)
 	}
@@ -73,6 +78,7 @@ func TestValidateCIJobID(t *testing.T) {
 }
 
 func TestGroupGitLabJobsByStage(t *testing.T) {
+	t.Parallel()
 	started := "2026-07-06T19:11:33Z"
 	duration := 42.5
 	// Newest-first order, as the API returns.
@@ -111,6 +117,7 @@ func TestGroupGitLabJobsByStage(t *testing.T) {
 }
 
 func TestSplitGitHubChecks(t *testing.T) {
+	t.Parallel()
 	checks := []CheckStatus{
 		{Kind: "CheckRun", Name: "build", Workflow: "CI", DetailsURL: "https://github.com/o/r/actions/runs/111/job/901"},
 		{Kind: "CheckRun", Name: "lint", Workflow: "CI", DetailsURL: "https://github.com/o/r/actions/runs/111/job/902"},
@@ -154,9 +161,7 @@ case "$2" in
   ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "glab"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "glab"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -182,9 +187,7 @@ func TestGitLabListPRCIJobsNoPipeline(t *testing.T) {
 
 	binDir := t.TempDir()
 	script := "#!/bin/sh\necho '{\"iid\":12,\"head_pipeline\":null}'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "glab"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "glab"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -217,9 +220,7 @@ run)
   ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
@@ -251,6 +252,7 @@ esac
 }
 
 func TestCleanGitLabTrace(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		raw  string
@@ -309,9 +311,7 @@ func TestGetCIJobLogStripsBOMAndValidatesID(t *testing.T) {
 
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nprintf '\\357\\273\\277log line one\\n'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()

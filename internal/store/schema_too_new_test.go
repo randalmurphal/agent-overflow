@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
-// stampAhead writes a database this build creates, then records a
-// migration version and deferred watermark as a newer build would. A zero
-// leaves that value as this build wrote it.
+// stampAhead writes a database this build creates, or opens the one at
+// path (a clone of the migrated template), then records a migration
+// version and deferred watermark as a newer build would. A zero leaves
+// that value as this build wrote it.
 func stampAhead(t *testing.T, path string, migration, watermark int) {
 	t.Helper()
 	s, err := New(path)
@@ -54,7 +54,7 @@ func TestNewRefusesADatabaseANewerBuildMigrated(t *testing.T) {
 		{name: "both", migration: known + 1, watermark: known + 3, want: known + 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "ahead.db")
+			path := newTestStorePath(t)
 			stampAhead(t, path, tc.migration, tc.watermark)
 			before, err := os.ReadFile(path)
 			if err != nil {
@@ -94,7 +94,7 @@ func TestNewRefusesADatabaseANewerBuildMigrated(t *testing.T) {
 // that is.
 func TestNewOpensADatabaseAtThisBuildsVersion(t *testing.T) {
 	known := latestMigrationVersionForTest()
-	path := filepath.Join(t.TempDir(), "current.db")
+	path := newTestStorePath(t)
 	stampAhead(t, path, 0, known)
 	s, err := New(path)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestRestoreRefusesASnapshotFromANewerBuild(t *testing.T) {
 	if err := live.CreateThread(makeThread("kept", "claude")); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshot := newTestStorePath(t)
 	stampAhead(t, snapshot, latestMigrationVersionForTest()+1, 0)
 
 	_, err := live.RestoreFrom(snapshot)

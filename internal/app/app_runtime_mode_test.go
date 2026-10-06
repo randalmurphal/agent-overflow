@@ -60,6 +60,7 @@ func emissionsFor(m *sync.Map, name string) []any {
 // authoritative), the mode-changed event fires, and a restart failure does
 // NOT roll the row back — the next lazy start converges on it.
 func TestUpdateThreadRuntimeModeKeepsModeOnRestartFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	emissions := captureEmissions(app)
 	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
@@ -157,6 +158,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 // deferred reconnect then restarts the stale-config session against the
 // new mode.
 func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
 
@@ -236,6 +238,7 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 // what UpdateThreadRuntimeMode persisted — the normalization path doesn't
 // clobber a valid mode on the way out.
 func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
 
@@ -254,6 +257,7 @@ func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
 }
 
 func TestCreateThreadUsesFallbackRuntimeMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, "claude", "/tmp", "claude-sonnet-4-6", "chat")
@@ -266,6 +270,7 @@ func TestCreateThreadUsesFallbackRuntimeMode(t *testing.T) {
 }
 
 func TestCreateThreadRejectsInvalidRuntimeMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	_, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:   defaultTestProjectID,
@@ -282,6 +287,7 @@ func TestCreateThreadRejectsInvalidRuntimeMode(t *testing.T) {
 }
 
 func TestUpdateThreadRuntimeModeSeedsNextNewThreadForSameModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source, err := createTestThread(t, app, "claude", "/tmp/runtime-source", "claude-sonnet-4-6", "chat")

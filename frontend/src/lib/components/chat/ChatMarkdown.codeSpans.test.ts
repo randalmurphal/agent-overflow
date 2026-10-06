@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
@@ -20,6 +20,7 @@ import {
 } from './markdown/liveCodeSpans.svelte';
 import { contentKey } from '../../utils/fnv1a';
 import { __resetAnimationFrameCoordinatorForTest } from '../../utils/animationFrameBatcher';
+import { ensureSyntaxClassNames, resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 
 // Integration coverage for the backend-span code-block host
 // (StreamdownCodeHost + codeSpanCache) mounted through a real
@@ -44,6 +45,7 @@ beforeEach(() => {
   resetLiveCodeSpansForTest();
   resetCodeWrapStateForTest();
   __resetStreamdownCodeHostForTest();
+  resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
 });
@@ -57,23 +59,24 @@ function chainOf(text: string): number[] {
 
 // A backend `highlight:live` push with spans for fence 0 of LIVE_ROW (seq 1
 // is the fence's first push, which has none), applied to the store as the
-// ingest does once the schema check passes.
+// ingest does once the schema check passes: a push naming span classes
+// lands only after the class table has loaded.
 async function pushLive(text: string, lines: object[], overrides: Partial<HighlightLiveCodeEvent> = {}) {
-  applyLiveCode(
-    {
-      threadId: 't1',
-      itemId: 'i1',
-      fence: 0,
-      lang: 'python',
-      seq: 2,
-      from: 0,
-      lineHashes: chainOf(text),
-      lines: lines as HighlightLiveCodeEvent['lines'],
-      final: false,
-      ...overrides,
-    },
-    '',
-  );
+  const event: HighlightLiveCodeEvent = {
+    threadId: 't1',
+    itemId: 'i1',
+    fence: 0,
+    lang: 'python',
+    seq: 2,
+    from: 0,
+    lineHashes: chainOf(text),
+    lines: lines as HighlightLiveCodeEvent['lines'],
+    final: false,
+    ...overrides,
+  };
+  const firstPush = event.seq === 1 && (event.lines ?? []).every((line) => !line.r?.length);
+  if (!firstPush) await ensureSyntaxClassNames();
+  applyLiveCode(event, '');
   await tick();
 }
 
@@ -82,6 +85,10 @@ function keywordText(container: HTMLElement): string[] {
 }
 
 describe('<ChatMarkdown> code-block spans', () => {
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  });
+
   it('renders backend spans as syntax classes and keeps textContent equal to the source', async () => {
     const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
     const { container } = render(ChatMarkdown, {

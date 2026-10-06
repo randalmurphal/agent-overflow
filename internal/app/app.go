@@ -27,6 +27,7 @@ import (
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpapp"
+	"agent-overflow/internal/network"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/orphanreaper"
@@ -522,11 +523,21 @@ type App struct {
 	// the real Wails dialog runs; tests install a stub that returns a
 	// canned path (or empty for "cancelled").
 	savePayloadPickerFn savePayloadPicker
-	// rateLimitProbeClientOverride is a test-only injection seam for
-	// the Claude rate-limit probe's HTTP client. Production leaves it
-	// nil and the probe uses the package-level singleton; tests assign
-	// a client pointing at a local httptest server.
+	// rateLimitProbeClientOverride replaces the Claude rate-limit probe's
+	// HTTP client. ConfigureIsolation sets one that refuses every request;
+	// tests assign a client pointing at a local httptest server. Nil uses
+	// the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// netReach is where a LAN bind listens and which address it publishes.
+	// ConfigureIsolation confines an isolated boot to loopback unless it
+	// runs inside the test network namespace (network.IsolatedReach). The
+	// zero value is the host's network.
+	netReach network.Reach
+	// threadPollOverride and transferPendingRetry shorten the agent thread
+	// request poll and the pending conversation transfer retry for an
+	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
+	threadPollOverride   time.Duration
+	transferPendingRetry time.Duration
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode

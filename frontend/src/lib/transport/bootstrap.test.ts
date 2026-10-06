@@ -457,6 +457,9 @@ describe('defaultBootstrap under a shell origin', () => {
 
   afterEach(() => {
     __resetHomeEndpointForTest();
+    // defaultBootstrap memoises whether a webview hosts the page; a later
+    // case that sets ?host=webview must not read this case's answer.
+    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -21,6 +24,7 @@ import (
 )
 
 func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
+	t.Parallel()
 	appType := reflect.TypeOf((*App)(nil))
 	for _, name := range []string{
 		"WorkflowStartRun", "WorkflowCancelItem", "WorkflowResumeItem",
@@ -42,6 +46,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 // method is a wire RPC and a generated TS binding, so re-exporting one of these
 // would silently put the removed surface back within reach of any caller.
 func TestWorkflowThreadSpawningMethodsAreNotBound(t *testing.T) {
+	t.Parallel()
 	appType := reflect.TypeOf((*App)(nil))
 	for _, name := range []string{
 		"WorkflowOpenTriageThread", "WorkflowOpenTriageAgent",
@@ -54,6 +59,7 @@ func TestWorkflowThreadSpawningMethodsAreNotBound(t *testing.T) {
 }
 
 func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	svc := settings.NewService(dir)
 	if _, err := svc.Update(map[string]any{"timestampFormat": "24-hour"}); err != nil {
@@ -71,6 +77,7 @@ func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 }
 
 func TestUpdateSettingsPersistsPatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	app := &App{settings: settings.NewService(dir)}
 
@@ -103,6 +110,7 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 // there is no longer a write to undo, because the engine and the setting move
 // together or not at all (docs/specs/remote-access.md §6).
 func TestUpdateSettingsRefusesTheWorkflowPauseKey(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	previous := app.currentSettings()
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
@@ -117,11 +125,12 @@ func TestUpdateSettingsRefusesTheWorkflowPauseKey(t *testing.T) {
 }
 
 func TestGetModelsForProvider(t *testing.T) {
+	t.Parallel()
 	svc := settings.NewService(t.TempDir())
 	if _, err := svc.Update(map[string]any{"codexBinaryPath": writeModelListCodexBinary(t)}); err != nil {
 		t.Fatalf("Update codexBinaryPath: %v", err)
 	}
-	app := &App{settings: svc}
+	app := newCatalogTestApp(t, svc)
 
 	claude, err := app.GetModelsForProvider("claude")
 	if err != nil {
@@ -165,12 +174,13 @@ func TestGetModelsForProvider(t *testing.T) {
 }
 
 func TestGetModelsForProviderCachesCodexCatalogByBinary(t *testing.T) {
+	t.Parallel()
 	svc := settings.NewService(t.TempDir())
 	counter := filepath.Join(t.TempDir(), "calls")
 	if _, err := svc.Update(map[string]any{"codexBinaryPath": writeCountingModelListCodexBinary(t, counter, "gpt-5.5")}); err != nil {
 		t.Fatalf("Update codexBinaryPath: %v", err)
 	}
-	app := &App{settings: svc}
+	app := newCatalogTestApp(t, svc)
 
 	for i := 0; i < 2; i++ {
 		models, err := app.GetModelsForProvider("codex")
@@ -188,6 +198,7 @@ func TestGetModelsForProviderCachesCodexCatalogByBinary(t *testing.T) {
 }
 
 func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
+	t.Parallel()
 	svc := settings.NewService(t.TempDir())
 	counter := filepath.Join(t.TempDir(), "calls")
 	first := writeCountingModelListCodexBinary(t, counter, "gpt-5.4")
@@ -195,7 +206,7 @@ func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
 	if _, err := svc.Update(map[string]any{"codexBinaryPath": first}); err != nil {
 		t.Fatalf("Update codexBinaryPath: %v", err)
 	}
-	app := &App{settings: svc}
+	app := newCatalogTestApp(t, svc)
 
 	if _, err := app.GetModelsForProvider("codex"); err != nil {
 		t.Fatalf("GetModelsForProvider first: %v", err)
@@ -215,6 +226,19 @@ func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
 	}
 }
 
+// newCatalogTestApp builds a bare App whose catalogs no other test shares: its
+// own discovery caches, because a parallel test that changes its Codex binary
+// resets the Codex catalog it uses, and its own Claude binary, because the
+// Claude catalog is process-wide and keyed by binary.
+func newCatalogTestApp(t *testing.T, svc *settings.Service) *App {
+	t.Helper()
+	poison, _ := kerneltest.PoisonProviderBinary(t)
+	if _, err := svc.Update(map[string]any{"claudeBinaryPath": poison}); err != nil {
+		t.Fatalf("Update claudeBinaryPath: %v", err)
+	}
+	return &App{settings: svc, providerDiscoveryCaches: providerdiscoveryapp.NewCaches()}
+}
+
 func writeModelListCodexBinary(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "codex")
@@ -229,9 +253,7 @@ while IFS= read -r line; do
   fi
 done
 `
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -254,9 +276,7 @@ while IFS= read -r line; do
   fi
 done
 `, counterPath, model)
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write counting fake codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -270,6 +290,7 @@ func readFileForTest(t *testing.T, path string) string {
 }
 
 func TestCreateThreadDefaultsMode(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/workspace", "gpt-5.4", "")
@@ -302,8 +323,9 @@ func TestCreateThreadDefaultsMode(t *testing.T) {
 // a future caller can't spawn a provider session inside an arbitrary
 // directory like ~/.ssh.
 func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreeDir := filepath.Join(t.TempDir(), "inherit-worktree")
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feat/foo", worktreeDir)
 
@@ -346,8 +368,9 @@ func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
 // path itself still has to be one the project owns; defense in depth is
 // cheap.
 func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
@@ -373,8 +396,9 @@ func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
 }
 
 func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	workspace := filepath.Join(repo, "nested", "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -408,6 +432,7 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 }
 
 func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
@@ -430,6 +455,7 @@ func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
 }
 
 func TestAutoResumeThreadIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto")
 	thread.SessionRef = "provider-session-1"
@@ -459,6 +485,7 @@ func TestAutoResumeThreadIsNoOp(t *testing.T) {
 // writer connection), and the read-state stamp lands durably right after
 // on its own goroutine.
 func TestSwitchThreadMarksThreadReadAsync(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-switch-read")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -502,6 +529,7 @@ func TestSwitchThreadMarksThreadReadAsync(t *testing.T) {
 // App makes that queue real — a SwitchThread that still writes first
 // cannot answer until busy_timeout (5s) expires.
 func TestSwitchThreadAnswersWhileTheWriterIsHeld(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	thread := testThread("thread-switch-blocked-writer")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -552,6 +580,7 @@ func TestSwitchThreadAnswersWhileTheWriterIsHeld(t *testing.T) {
 }
 
 func TestReconnectSessionStopsThenStarts(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	var calls []string
 	app.stopSessionFn = func(threadID string) error {
@@ -579,6 +608,7 @@ func TestReconnectSessionStopsThenStarts(t *testing.T) {
 }
 
 func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-inactive")
 	thread.UpdatedAt = 1_700_000_000_000
@@ -616,6 +646,7 @@ func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t 
 }
 
 func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
@@ -664,6 +695,7 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 }
 
 func TestUpdateThreadModelSanitizesStaleProfileContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
 		Provider:        "codex",
@@ -689,6 +721,7 @@ func TestUpdateThreadModelSanitizesStaleProfileContext(t *testing.T) {
 }
 
 func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
 		Provider:        "codex",
@@ -731,6 +764,7 @@ func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) 
 }
 
 func TestUpdateThreadModelSelectionClampsStaleCodexGPT55Profile(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
 		Provider:        "codex",
@@ -760,6 +794,7 @@ func TestUpdateThreadModelSelectionClampsStaleCodexGPT55Profile(t *testing.T) {
 }
 
 func TestUpdateThreadModelSelectionFallsBackToTargetModelDefaults(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-defaults", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -783,6 +818,7 @@ func TestUpdateThreadModelSelectionFallsBackToTargetModelDefaults(t *testing.T) 
 }
 
 func TestUpdateThreadModelSelectionClearsProviderResumeRefs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-refs", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -805,6 +841,7 @@ func TestUpdateThreadModelSelectionClearsProviderResumeRefs(t *testing.T) {
 }
 
 func TestUpdateThreadModelSelectionRejectsCrossProviderAfterItems(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-locked", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -842,6 +879,7 @@ func TestUpdateThreadModelSelectionRejectsCrossProviderAfterItems(t *testing.T) 
 }
 
 func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/spark-stale-thread", "gpt-5.3-codex-spark", "")
 	if err != nil {
@@ -866,6 +904,7 @@ func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 }
 
 func TestUpdateThreadProviderDoesNotRememberTransientProviderModelPair(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, "claude", "/tmp/provider-transient", "claude-sonnet-4-6", "")
@@ -883,6 +922,7 @@ func TestUpdateThreadProviderDoesNotRememberTransientProviderModelPair(t *testin
 }
 
 func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
@@ -912,6 +952,7 @@ func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 }
 
 func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
@@ -955,6 +996,7 @@ func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
 // restart it — asynchronously, once the thread is quiet — while the binding
 // returns the persisted selection immediately.
 func TestUpdateThreadModelReconnectsSessionWithoutLiveUpdateSurface(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-active")
 	thread.UpdatedAt = 1_700_000_000_000
@@ -995,6 +1037,7 @@ func TestUpdateThreadModelReconnectsSessionWithoutLiveUpdateSurface(t *testing.T
 // persisted selection stays authoritative (surfaced as thread error state)
 // and a later lazy start converges on it.
 func TestUpdateThreadModelKeepsSelectionOnRestartFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-restart-failure")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -1031,6 +1074,7 @@ func TestUpdateThreadModelKeepsSelectionOnRestartFailure(t *testing.T) {
 }
 
 func TestUnarchiveThreadRestoresThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-unarchive")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -1061,6 +1105,7 @@ func TestUnarchiveThreadRestoresThread(t *testing.T) {
 }
 
 func TestUnarchiveUnknownThreadReturnsError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	if _, err := app.UnarchiveThread("does-not-exist"); err == nil {
@@ -1069,6 +1114,7 @@ func TestUnarchiveUnknownThreadReturnsError(t *testing.T) {
 }
 
 func TestUpdateThreadModelRejectsBlankModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-blank")
 	if err := app.store.CreateThread(thread); err != nil {

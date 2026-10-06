@@ -37,6 +37,7 @@ func newReviewProjectionSession(events *[]provider.ProviderEvent) *Session {
 }
 
 func TestReviewProjectionCanCompleteBeforeStartResponseIsRead(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newReviewProjectionSession(&events)
 	s.review.responseBound = false
@@ -66,6 +67,7 @@ func TestReviewProjectionCanCompleteBeforeStartResponseIsRead(t *testing.T) {
 }
 
 func TestReviewProjectionKeepsControlTurnPrivateAndScopesActivity(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newReviewProjectionSession(&events)
 
@@ -109,6 +111,7 @@ func TestReviewProjectionKeepsControlTurnPrivateAndScopesActivity(t *testing.T) 
 }
 
 func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newReviewProjectionSession(&events)
 	s.handleReviewSpecialNotification("item/started", json.RawMessage(`{
@@ -187,6 +190,7 @@ func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t 
 }
 
 func TestReviewProjectionMarksInterruptedLaunchStopped(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newReviewProjectionSession(&events)
 	s.handleReviewSpecialNotification("item/started", json.RawMessage(`{
@@ -215,6 +219,7 @@ func TestReviewProjectionMarksInterruptedLaunchStopped(t *testing.T) {
 }
 
 func TestReviewProjectionKeepsAReportedResultSuccessfulAfterProviderFailure(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newReviewProjectionSession(&events)
 	s.handleReviewSpecialNotification("item/started", json.RawMessage(`{

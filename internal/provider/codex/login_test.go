@@ -3,11 +3,14 @@ package codex
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A fake app-server, answering only what a sign-in client asks. It omits the
@@ -48,25 +51,30 @@ type codexLoginFake struct {
 	home     string
 	argvPath string
 	logPath  string
+	// env is the script's environment, passed per process so tests can run
+	// in parallel. Tests set its entries before start.
+	env map[string]string
 }
 
 func newCodexLoginFake(t *testing.T) *codexLoginFake {
 	t.Helper()
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "mock-codex-login.sh")
-	if err := os.WriteFile(binary, []byte(mockCodexLoginScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, mockCodexLoginScript)
 	fake := &codexLoginFake{
 		binary:   binary,
 		home:     filepath.Join(dir, "home"),
 		argvPath: filepath.Join(dir, "argv"),
 		logPath:  filepath.Join(dir, "requests"),
 	}
-	t.Setenv("AO_CODEX_LOGIN_ARGV", fake.argvPath)
-	t.Setenv("AO_CODEX_LOGIN_LOG", fake.logPath)
-	t.Setenv("AO_CODEX_LOGIN_COMPLETE", "")
-	t.Setenv("AO_CODEX_CANCEL_STATUS", "")
+	fake.env = map[string]string{
+		"CODEX_HOME":          fake.home,
+		"AO_CODEX_LOGIN_ARGV": fake.argvPath,
+		"AO_CODEX_LOGIN_LOG":  fake.logPath,
+		// Pinned empty so nothing inherited steers the script.
+		"AO_CODEX_LOGIN_COMPLETE": "",
+		"AO_CODEX_CANCEL_STATUS":  "",
+	}
 	return fake
 }
 
@@ -75,7 +83,7 @@ func (f *codexLoginFake) start(t *testing.T) *LoginSession {
 	session, err := StartLogin(t.Context(), LoginConfig{
 		Binary:  f.binary,
 		WorkDir: t.TempDir(),
-		Env:     map[string]string{"CODEX_HOME": f.home},
+		Env:     maps.Clone(f.env),
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
@@ -104,6 +112,7 @@ func (f *codexLoginFake) requests(t *testing.T) []string {
 // replacement, and it is needed at PERSIST time — which is here, on a
 // headless host where Codex's `auto` mode would otherwise pick a keyring.
 func TestSignInPinsTheFileCredentialStore(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	fake.start(t)
 	data, err := os.ReadFile(fake.argvPath)
@@ -119,6 +128,7 @@ func TestSignInPinsTheFileCredentialStore(t *testing.T) {
 // The isolated home is the whole reason a sign-in is safe to abandon, so a
 // caller that forgot it is refused rather than pointed at the canonical one.
 func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	if _, err := StartLogin(t.Context(), LoginConfig{
 		Binary: fake.binary,
@@ -131,6 +141,7 @@ func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
 // The one notification a sign-in client depends on is named at the call site;
 // everything else in the catalogue is opted out, account/updated included.
 func TestSignInSubscribesOnlyToTheCompletionNotification(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	fake.start(t)
 	requests := fake.requests(t)
@@ -147,6 +158,7 @@ func TestSignInSubscribesOnlyToTheCompletionNotification(t *testing.T) {
 }
 
 func TestStartDeviceLoginReturnsTheCodeAndItsPage(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	before := time.Now()
 	start, err := fake.start(t).StartDeviceLogin(t.Context())
@@ -175,6 +187,7 @@ func TestStartDeviceLoginReturnsTheCodeAndItsPage(t *testing.T) {
 // Upstream matches the discriminant literally and answers a wrong spelling by
 // listing every variant, which reads as a protocol failure rather than a typo.
 func TestStartDeviceLoginSendsTheExactVariantSpelling(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	if _, err := fake.start(t).StartDeviceLogin(t.Context()); err != nil {
 		t.Fatalf("StartDeviceLogin: %v", err)
@@ -191,6 +204,7 @@ func TestStartDeviceLoginSendsTheExactVariantSpelling(t *testing.T) {
 }
 
 func TestStartBrowserLoginReturnsTheAuthorizeURL(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	start, err := fake.start(t).StartBrowserLogin(t.Context())
 	if err != nil {
@@ -205,8 +219,9 @@ func TestStartBrowserLoginReturnsTheAuthorizeURL(t *testing.T) {
 }
 
 func TestWaitForCompletionResolvesOnItsOwnLogin(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
-	t.Setenv("AO_CODEX_LOGIN_COMPLETE", "success")
+	fake.env["AO_CODEX_LOGIN_COMPLETE"] = "success"
 	session := fake.start(t)
 	start, err := session.StartDeviceLogin(t.Context())
 	if err != nil {
@@ -221,8 +236,9 @@ func TestWaitForCompletionResolvesOnItsOwnLogin(t *testing.T) {
 // buffered rather than dropped. Without the buffer this flow hangs until its
 // deadline on a fast provider.
 func TestWaitForCompletionAcceptsACompletionThatArrivedFirst(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
-	t.Setenv("AO_CODEX_LOGIN_COMPLETE", "success")
+	fake.env["AO_CODEX_LOGIN_COMPLETE"] = "success"
 	session := fake.start(t)
 	start, err := session.StartDeviceLogin(t.Context())
 	if err != nil {
@@ -238,8 +254,9 @@ func TestWaitForCompletionAcceptsACompletionThatArrivedFirst(t *testing.T) {
 // client that matched on the method alone would report somebody else's
 // outcome as this one's.
 func TestWaitForCompletionIgnoresAnotherLoginsCompletion(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
-	t.Setenv("AO_CODEX_LOGIN_COMPLETE", "other")
+	fake.env["AO_CODEX_LOGIN_COMPLETE"] = "other"
 	session := fake.start(t)
 	start, err := session.StartDeviceLogin(t.Context())
 	if err != nil {
@@ -254,8 +271,9 @@ func TestWaitForCompletionIgnoresAnotherLoginsCompletion(t *testing.T) {
 }
 
 func TestWaitForCompletionSurfacesAFailedCompletion(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
-	t.Setenv("AO_CODEX_LOGIN_COMPLETE", "fail")
+	fake.env["AO_CODEX_LOGIN_COMPLETE"] = "fail"
 	session := fake.start(t)
 	start, err := session.StartDeviceLogin(t.Context())
 	if err != nil {
@@ -272,10 +290,11 @@ func TestWaitForCompletionSurfacesAFailedCompletion(t *testing.T) {
 
 // notFound is the outcome we asked for, reached a different way.
 func TestCancelTreatsNotFoundAsDone(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"canceled", "notFound"} {
 		t.Run(status, func(t *testing.T) {
 			fake := newCodexLoginFake(t)
-			t.Setenv("AO_CODEX_CANCEL_STATUS", status)
+			fake.env["AO_CODEX_CANCEL_STATUS"] = status
 			session := fake.start(t)
 			start, err := session.StartDeviceLogin(t.Context())
 			if err != nil {
@@ -289,6 +308,7 @@ func TestCancelTreatsNotFoundAsDone(t *testing.T) {
 }
 
 func TestCallAfterTheAppServerExitsReportsWhy(t *testing.T) {
+	t.Parallel()
 	fake := newCodexLoginFake(t)
 	session := fake.start(t)
 	if err := session.Close(); err != nil {

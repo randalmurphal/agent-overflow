@@ -21,6 +21,7 @@ import (
 var errDiscussionStartFailed = errors.New("discussion start failed")
 
 func TestDiscussionBindingsCRUD(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	def := store.DiscussionDefinition{
@@ -66,6 +67,7 @@ func TestDiscussionBindingsCRUD(t *testing.T) {
 }
 
 func TestResolveDiscussionDefinitionFallsBackToGlobalWhenProjectDefinitionMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-discussion-fallback")
@@ -98,6 +100,7 @@ func TestResolveDiscussionDefinitionFallsBackToGlobalWhenProjectDefinitionMissin
 }
 
 func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testing.T) {
+	t.Parallel()
 	dbPath := storetest.ClonePath(t)
 
 	st, err := store.New(dbPath)
@@ -173,6 +176,7 @@ func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testin
 }
 
 func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	var started []string
@@ -268,6 +272,7 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 }
 
 func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-discussion-fail")
@@ -327,6 +332,7 @@ func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 }
 
 func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	// The synthesized early turn-complete below advances the FSM and
@@ -415,6 +421,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 }
 
 func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := store.Thread{
@@ -453,6 +460,7 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 }
 
 func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-discussion-delete")
@@ -524,6 +532,7 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 }
 
 func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	// The first participant's turn-complete below advances the FSM and
@@ -728,6 +737,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 // transition and the frontend picker also hides the entry-point; this
 // test covers the server half.
 func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-discussion-used-chat")
@@ -785,6 +795,7 @@ func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
 }
 
 func TestStartDiscussionByIDRejectsProjectDefinitionFromAnotherProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source, err := createTestThread(t, app, "claude", "/tmp/discussion-source-project", "claude-opus-4-7", "chat")
@@ -823,6 +834,7 @@ func TestStartDiscussionByIDRejectsProjectDefinitionFromAnotherProject(t *testin
 }
 
 func TestStartDiscussionRejectsEmptyName(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-discussion-empty-name")
@@ -895,6 +907,7 @@ func assertNoSendCapture(t *testing.T, ch chan sendCapture, window time.Duration
 // human post landing before that participant replies does not
 // double-prompt.
 func TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.startSessionFn = func(string) error { return nil }
 
@@ -997,6 +1010,7 @@ func containsString(haystack []string, needle string) bool {
 // contain only what was posted after its own previous post, not the
 // entire channel history again.
 func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.startSessionFn = func(string) error { return nil }
@@ -1104,6 +1118,7 @@ func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *tes
 // otherwise a tool-only turn would silently leave the deliberation
 // awaiting a reply forever.
 func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.startSessionFn = func(string) error { return nil }
@@ -1192,6 +1207,7 @@ func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing
 // like a freshly-started process). deliberationForChannel must
 // reconstruct an equivalent FSM purely from store state.
 func TestDeliberationForChannelRebuildsFromStoreAfterRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	now := time.Now().UnixMilli()
@@ -1332,6 +1348,7 @@ func TestDeliberationForChannelRebuildsFromStoreAfterRestart(t *testing.T) {
 // subsequent RecordPost increments it AGAIN, so N prior turns become
 // N+2 instead of N+1 and the discussion concludes a turn early.
 func TestSyncDiscussionTurnAfterRestartCountsTriggeringTurnOnce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// The advance arms the next speaker's prompt on a background
 	// goroutine; stub the dispatch so the test stays deterministic.
@@ -1441,6 +1458,7 @@ func seedDiscussionChannel(t *testing.T, app *App, idPrefix string, roles []stri
 // claimAndPromptNextSpeaker — not an additional pre-claim snapshot
 // that the claim's own emission would immediately supersede.
 func TestSyncDiscussionTurnEmitsExactlyOneStatePerAdvance(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	sendCh, sendFn := newSendCaptureChan()
@@ -1493,6 +1511,7 @@ func TestSyncDiscussionTurnEmitsExactlyOneStatePerAdvance(t *testing.T) {
 // trigger: maybePromptNextDiscussionSpeaker re-attempts the
 // conclusion instead of claiming.
 func TestPostChannelMessageSelfHealsWedgedConcludedDeliberation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	sendCh, sendFn := newSendCaptureChan()
@@ -1560,6 +1579,7 @@ func TestPostChannelMessageSelfHealsWedgedConcludedDeliberation(t *testing.T) {
 // parent thread, and leave the deliberation retryable — a second
 // human post re-prompts the SAME CurrentSpeaker.
 func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// Capture triage emissions so the test can await the wire-error
@@ -1667,6 +1687,7 @@ func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
 // GetChannelState's payload for a freshly-started, still-live
 // discussion (the common case — no restart involved).
 func TestGetChannelStatePayloadShapeForLiveDiscussion(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.startSessionFn = func(string) error { return nil }
 
@@ -1786,6 +1807,7 @@ func insertAssistantTurn(t *testing.T, app *App, threadID string, turnIndex int,
 // summaries, and the FSM is dropped from a.deliberations exactly like
 // the MaxTurns conclusion path.
 func TestUnanimousConclusionProposalsEndDiscussionEarly(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sendMessageFn = func(string, string, []string) error { return nil }
 
@@ -1867,6 +1889,7 @@ func TestUnanimousConclusionProposalsEndDiscussionEarly(t *testing.T) {
 // earlier stance, so a later unanimous-looking sequence (the other
 // participant now proposing) must NOT conclude the discussion.
 func TestConclusionProposalWithdrawnByLatestPlainMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sendMessageFn = func(string, string, []string) error { return nil }
 
@@ -1924,6 +1947,7 @@ func TestConclusionProposalWithdrawnByLatestPlainMessage(t *testing.T) {
 // second participant's CONCLUDE would land as a lone 1-of-2 proposal
 // instead of reaching unanimity.
 func TestDeliberationForChannelReseedsConclusionProposalsFromHistory(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sendMessageFn = func(string, string, []string) error { return nil }
 
@@ -1990,6 +2014,7 @@ func TestDeliberationForChannelReseedsConclusionProposalsFromHistory(t *testing.
 // from a.deliberations, and returns a coherent post-conclusion
 // snapshot — all independent of turn count or CONCLUDE proposals.
 func TestConcludeDiscussionEndsOpenDiscussionWithModeratorMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent, children := seedDiscussionChannel(t, app, "conclude-now", []string{"Architect", "Reviewer"}, 8)
@@ -2043,6 +2068,7 @@ func TestConcludeDiscussionEndsOpenDiscussionWithModeratorMessage(t *testing.T) 
 // that's already concluded must fail and must NOT append a second
 // conclusion message.
 func TestConcludeDiscussionOnAlreadyConcludedChannelErrors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent, children := seedDiscussionChannel(t, app, "conclude-twice", []string{"Architect", "Reviewer"}, 8)
@@ -2081,6 +2107,7 @@ func TestConcludeDiscussionOnAlreadyConcludedChannelErrors(t *testing.T) {
 // attempting any mirror — the reply stays visible only in the
 // participant's own child thread's items.
 func TestConcludeDiscussionDropsLateParticipantTurnMirrorBenignly(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent, children := seedDiscussionChannel(t, app, "conclude-race", []string{"Architect", "Reviewer"}, 8)

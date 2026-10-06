@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,13 +10,23 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/settings"
 )
 
-// writeCodexProbeMockBinary writes a script that mimics
-// `codex app-server` for the probe handshake: drain three NDJSON
-// requests from stdin, then emit an init reply (id=1) followed by a
-// `account/rateLimits/read` response (id=2) carrying the supplied
+// resetCodexProbeCacheForTest gives the test fresh process-wide probe caches
+// and resets them again when it ends. Like resetClaudeProbeCacheForTest, a test
+// that calls it must not call t.Parallel.
+func resetCodexProbeCacheForTest(t testing.TB) {
+	t.Helper()
+	providerdiscoveryapp.ResetDefaultCachesForTest()
+	t.Cleanup(providerdiscoveryapp.ResetDefaultCachesForTest)
+}
+
+// writeCodexProbeMockBinary writes a script that mimics `codex app-server`
+// for the probe handshake: drain all four NDJSON requests from stdin so no
+// probe write meets a closed pipe, then emit an init reply (id=1) followed by
+// an `account/rateLimits/read` response (id=2) carrying the supplied
 // rateLimitsJSON.
 func writeCodexProbeMockBinary(t *testing.T, rateLimitsJSON string) string {
 	t.Helper()
@@ -31,17 +42,16 @@ func writeCodexProbeMockBinary(t *testing.T, rateLimitsJSON string) string {
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
+		`read -r _ || true` + "\n" +
 		`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'` + "\n" +
 		`printf '%s\n' '` + idTwoFrame + `'` + "\n" +
 		`exit 0` + "\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
 func TestProbeCodexAccountReturnsInfo(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -81,7 +91,7 @@ func TestProbeCodexAccountReturnsInfo(t *testing.T) {
 }
 
 func TestProbeCodexAccountCachesByBinary(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -101,15 +111,13 @@ func TestProbeCodexAccountCachesByBinary(t *testing.T) {
 
 	// Overwrite the binary in-place; cached call must NOT re-execute it.
 	idTwoFrame := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"second"}}}`
-	if err := os.WriteFile(binary, []byte(
+	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
-			"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+			"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 			`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'`+"\n"+
 			`printf '%s\n' '`+idTwoFrame+`'`+"\n"+
 			"exit 0\n",
-	), 0755); err != nil {
-		t.Fatalf("rewrite mock: %v", err)
-	}
+	)
 
 	second, err := app.ProbeCodexAccount()
 	if err != nil {
@@ -122,7 +130,7 @@ func TestProbeCodexAccountCachesByBinary(t *testing.T) {
 }
 
 func TestProbeCodexAccountSurfacesSpawnErrors(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -144,7 +152,7 @@ func TestProbeCodexAccountSurfacesSpawnErrors(t *testing.T) {
 // empty until the user runs a turn — and stale if the user exhausted
 // the limit in another Codex surface (TUI, CLI) before the app boot.
 func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -232,7 +240,7 @@ func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
 // fresher value pushed by an active session via the
 // account/rateLimits/updated notification path.
 func TestProbeCodexAccountSkipsRateLimitsEmitOnCacheHit(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -276,7 +284,7 @@ func TestProbeCodexAccountSkipsRateLimitsEmitOnCacheHit(t *testing.T) {
 // today (Codex login flow lives in the user's terminal), but the
 // surface must still bypass the cache so it's ready when a UI lands.
 func TestRecheckCodexAccountBypassesCache(t *testing.T) {
-	resetCodexProbeCacheForTest()
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -296,15 +304,13 @@ func TestRecheckCodexAccountBypassesCache(t *testing.T) {
 
 	// Overwrite the mock — simulates plan upgrade between calls.
 	idTwoFrame := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}`
-	if err := os.WriteFile(binary, []byte(
+	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
-			"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+			"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 			`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'`+"\n"+
 			`printf '%s\n' '`+idTwoFrame+`'`+"\n"+
 			"exit 0\n",
-	), 0755); err != nil {
-		t.Fatalf("rewrite mock: %v", err)
-	}
+	)
 
 	second, err := app.RecheckCodexAccount()
 	if err != nil {

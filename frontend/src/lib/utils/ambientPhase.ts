@@ -15,8 +15,14 @@
 // inside the effect, and `startTime` shifts the whole thing.
 //
 // This is NOT a ticker. Nothing polls and nothing writes per frame; each
-// animation is aligned once, in the microtask before its first paint, so
-// there is no visible phase jump. Aligning does not cost the compositing
+// animation is aligned once, in the animation-frame callbacks of the frame
+// its `animationstart` is delivered in, before that frame paints. One pass
+// per frame aligns every animation that started in it, from a single
+// `document.getAnimations()`, reading all of them before writing any.
+// Per-element `getAnimations()` scans every animation in the document and
+// flushes style that the previous `startTime` write dirtied, so aligning
+// each indicator as its event arrived is quadratic in the number mounting
+// together. Aligning does not cost the compositing
 // that makes these animations free — measured 0 style recalcs and 0.0ms
 // of main-thread work with 40 aligned dots running.
 
@@ -46,32 +52,52 @@ function toMs(value: unknown): number | null {
   return null;
 }
 
-function alignOne(animation: Animation): void {
-  if (aligned.has(animation)) return;
+/** The `startTime` that puts animation on the wall-clock beat, or null when
+ * it is not ours to align. Reads only, so a batch of these flushes style
+ * once. */
+function alignedStart(animation: Animation): number | null {
+  if (aligned.has(animation)) return null;
   // Strict allowlist. Only a CSS animation running one of OUR keyframes is
   // ours to rewind. Anything else reaching this — a script-driven
   // `element.animate()` (svelte's FLIP/transitions drive sidebar rows), a
   // CSSTransition, a foreign keyframe — carries no `animationName` we
   // recognise, and rewinding it would jump a transition mid-flight.
   const name = (animation as Partial<CSSAnimation>).animationName;
-  if (typeof name !== 'string' || !AMBIENT_ANIMATIONS.has(name)) return;
+  if (typeof name !== 'string' || !AMBIENT_ANIMATIONS.has(name)) return null;
   const duration = toMs(animation.effect?.getComputedTiming().duration);
-  if (duration === null || duration <= 0) return;
+  if (duration === null || duration <= 0) return null;
   const timelineNow = toMs(animation.timeline?.currentTime);
-  if (timelineNow === null) return;
-  aligned.add(animation);
+  if (timelineNow === null) return null;
   // localTime = timelineNow - startTime, so this makes localTime equal
   // Date.now() % duration right now, and every animation of the same
   // period agrees regardless of when its element mounted.
-  animation.startTime = timelineNow - (Date.now() % duration);
+  return timelineNow - (Date.now() % duration);
+}
+
+/** Align every animation given: all reads first, then all writes. */
+function alignAll(animations: Iterable<Animation>): void {
+  const starts: [Animation, number][] = [];
+  for (const animation of animations) {
+    const start = alignedStart(animation);
+    if (start !== null) starts.push([animation, start]);
+  }
+  for (const [animation, start] of starts) {
+    aligned.add(animation);
+    animation.startTime = start;
+  }
+}
+
+let pendingFrame: number | null = null;
+
+function alignStarted(): void {
+  pendingFrame = null;
+  alignAll(document.getAnimations());
 }
 
 function onAnimationStart(event: AnimationEvent): void {
   if (!AMBIENT_ANIMATIONS.has(event.animationName)) return;
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  if (typeof target.getAnimations !== 'function') return;
-  for (const animation of target.getAnimations()) alignOne(animation);
+  if (typeof document.getAnimations !== 'function') return;
+  pendingFrame ??= requestAnimationFrame(alignStarted);
 }
 
 // --- device pixel ratio -----------------------------------------------
@@ -108,21 +134,20 @@ function rearmDpr(): void {
  * returned stop; the ambient ticker owns the single call site.
  */
 export function startAmbientPhase(): () => void {
-  // Capture phase: `animationstart` bubbles, but capture also sees
-  // targets inside shadow roots and cannot be stopped by a handler in
-  // between.
+  // Capture phase: `animationstart` bubbles, but a handler in between
+  // cannot stop it reaching a capturing listener.
   document.addEventListener('animationstart', onAnimationStart, true);
   // Anything already running when this installs (a fast first paint)
   // still needs pinning.
-  if (typeof document.getAnimations === 'function') {
-    for (const animation of document.getAnimations()) alignOne(animation);
-  }
+  if (typeof document.getAnimations === 'function') alignAll(document.getAnimations());
   rearmDpr();
   let stopped = false;
   return () => {
     if (stopped) return;
     stopped = true;
     document.removeEventListener('animationstart', onAnimationStart, true);
+    if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
+    pendingFrame = null;
     dprQuery?.removeEventListener('change', rearmDpr);
     dprQuery = null;
     lastDpr = 0;

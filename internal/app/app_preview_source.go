@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 
-	"agent-overflow/internal/network"
 	"agent-overflow/internal/transport"
 )
 
@@ -50,12 +49,13 @@ func (s tailnetPreviewSource) ListenPreview(port int) (net.Listener, error) {
 // previewLANIP is the LAN address previews are served on, or "" when
 // this backend is bound to loopback only. Read per bind rather than
 // captured, because the setting is a toggle and the address moves with
-// the network.
+// the network. A loopback Reach serves none: its LAN address is the
+// loopback address the dev servers themselves listen on.
 func (a *App) previewLANIP() string {
-	if !a.currentSettings().Network.BindAll {
+	if !a.currentSettings().Network.BindAll || a.netReach.LoopbackOnly() {
 		return ""
 	}
-	return network.DiscoverLocalLANIP()
+	return a.netReach.LANIP()
 }
 
 // previewSources builds the ordered source list for the gateway. Called

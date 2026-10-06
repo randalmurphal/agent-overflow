@@ -82,7 +82,7 @@ func advanceTransfer(t *testing.T, s *Store, id string, phases ...string) {
 }
 
 func TestTransferRetirementSurvivesRestartDeletionAndHistoryRestore(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "store.db")
+	dbPath := newTestStorePath(t)
 	s, err := New(dbPath)
 	if err != nil {
 		t.Fatal(err)

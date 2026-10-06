@@ -75,6 +75,7 @@ func wantRaised(t *testing.T, err error, context string) {
 // The default reading: a person looking at the app on this machine is not
 // interrupted by it.
 func TestAFocusedLocalScreenMutesTheNotification(t *testing.T) {
+	t.Parallel()
 	app, _, subscriber := attendedApp(t)
 	subscriber.SetPresence(true, nil)
 
@@ -89,6 +90,7 @@ func TestAFocusedLocalScreenMutesTheNotification(t *testing.T) {
 // the app is the one you are watching, and every other thread still gets to
 // interrupt you there. Neither fact alone is enough.
 func TestFocusedAndThreadVisibleNeedsBothFacts(t *testing.T) {
+	t.Parallel()
 	app, _, subscriber := attendedApp(t)
 	quietWhen(t, app, settings.NotifyQuietWhenFocusedAndThreadVisible)
 
@@ -114,6 +116,7 @@ func TestFocusedAndThreadVisibleNeedsBothFacts(t *testing.T) {
 // thread: a workflow item or an update notice has no thread for a pane to be
 // showing.
 func TestTheThreadVisibleRuleAppliesOnlyToAThreadTarget(t *testing.T) {
+	t.Parallel()
 	app, _, subscriber := attendedApp(t)
 	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 	// Unfocused — another app is in front — with the thread's pane on screen.
@@ -136,6 +139,7 @@ func TestTheThreadVisibleRuleAppliesOnlyToAThreadTarget(t *testing.T) {
 // A REMOTE screen is somebody else's. A phone the owner is staring at must
 // never silence the machine sitting in front of them.
 func TestARemoteScreenNeverMutesTheDesktop(t *testing.T) {
+	t.Parallel()
 	app, _, subscriber := attendedApp(t)
 	subscriber.SetOriginLoopback(false)
 	subscriber.SetPresence(true, []string{mappingThreadID})
@@ -148,6 +152,7 @@ func TestARemoteScreenNeverMutesTheDesktop(t *testing.T) {
 // their desk between a send and its withdrawal must not be left with the
 // notification forever.
 func TestAnAttendedScreenNeverGatesARetraction(t *testing.T) {
+	t.Parallel()
 	app, recorder, subscriber := attendedApp(t)
 	subscriber.SetPresence(true, []string{mappingThreadID})
 	quietWhen(t, app, settings.NotifyQuietWhenFocusedAndThreadVisible)
@@ -166,6 +171,7 @@ func TestAnAttendedScreenNeverGatesARetraction(t *testing.T) {
 // process before one exists — is NOT attended. "Nobody has told us anything"
 // has to raise the notification, which is the behavior before the gate.
 func TestWithNoTransportNoScreenIsAttended(t *testing.T) {
+	t.Parallel()
 	app, _ := newNotificationMappingApp(t)
 	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 
@@ -175,6 +181,7 @@ func TestWithNoTransportNoScreenIsAttended(t *testing.T) {
 // A connection that never stated a presence is not a screen either, so the
 // frame stays additive: every client predating it behaves as it always did.
 func TestAConnectionThatStatedNothingIsNotAScreen(t *testing.T) {
+	t.Parallel()
 	app, _, _ := attendedApp(t)
 	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 
@@ -184,6 +191,7 @@ func TestAConnectionThatStatedNothingIsNotAScreen(t *testing.T) {
 // Neither gate outcome is a fault. Logging one would put a line in the log
 // every time somebody watched a turn they were watching finish.
 func TestNeitherGateOutcomeIsLoggedAsAFailure(t *testing.T) {
+	t.Parallel()
 	app, _ := newNotificationMappingApp(t)
 	app.logNotificationFailure(&NotificationError{Code: NotificationScreenAttended})
 	app.logNotificationFailure(&NotificationError{Code: NotificationSuppressed})
@@ -202,6 +210,7 @@ func TestNeitherGateOutcomeIsLoggedAsAFailure(t *testing.T) {
 // being looked at says nothing about whether that phone should buzz. The
 // per-kind toggles still apply there, per phone, which the push tests cover.
 func TestTheAttendedScreenGatesDoNotReachThePhones(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	bus := transport.NewEventBus(8)
 	t.Cleanup(bus.Close)
@@ -227,6 +236,7 @@ func TestTheAttendedScreenGatesDoNotReachThePhones(t *testing.T) {
 // silently stops being raised. The list is read out of internal/notify's own
 // source, because a copy of it here is the thing that goes stale.
 func TestEveryDeclaredKindHasAToggleThatDefaultsOn(t *testing.T) {
+	t.Parallel()
 	const mappingPath = "internal/notify/mapping.go"
 	fileSet := token.NewFileSet()
 	parsed, err := parser.ParseFile(fileSet, mappingPath, nil, parser.SkipObjectResolution)
@@ -282,6 +292,7 @@ func TestEveryDeclaredKindHasAToggleThatDefaultsOn(t *testing.T) {
 // makes that safe. Two callers, and neither reports a moment: the harness
 // RPC, and the settings page's sound preview.
 func TestOnlyTheHarnessBypassesTheNotificationGate(t *testing.T) {
+	t.Parallel()
 	const packageDir = "internal/app"
 	allowed := map[string]string{
 		"app_notifications.go": "declares it, calls it as notifyOS's own presentation half, " +

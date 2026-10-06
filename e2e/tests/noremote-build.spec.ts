@@ -12,7 +12,6 @@ import { test, expect, type SeedResult } from './fixtures.js';
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const binDir = path.dirname(process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow'));
 const noremoteBinary = path.join(binDir, 'agent-overflow-noremote');
-const standardBinary = path.join(binDir, 'agent-overflow');
 const remotePages = ['Connect to a computer', 'Allow device access', 'Agent remote tools'];
 
 async function settingsRail(page: Page) {
@@ -61,21 +60,12 @@ test('the build without remote access hides and refuses remote access and keeps 
   }
 });
 
-test('the standard build serves no variant marker and offers the remote pages', async ({ page }) => {
-  let host: HarnessApp | undefined;
-  try {
-    host = await launchHarness({ binary: standardBinary });
-    await host.open(page);
-    await expect(page.locator('meta[name="ao-remote-access"]')).toHaveCount(0);
-    const overlay = await settingsRail(page);
-    for (const label of remotePages) {
-      await expect(overlay.getByRole('tab', { name: label, exact: true })).toBeVisible();
-    }
-  } finally {
-    try {
-      await page.goto('about:blank');
-    } finally {
-      await host?.close();
-    }
+// The worker backend runs the standard binary.
+test('the standard build serves no variant marker and offers the remote pages', async ({ page, harness }) => {
+  await harness.open(page);
+  await expect(page.locator('meta[name="ao-remote-access"]')).toHaveCount(0);
+  const overlay = await settingsRail(page);
+  for (const label of remotePages) {
+    await expect(overlay.getByRole('tab', { name: label, exact: true })).toBeVisible();
   }
 });

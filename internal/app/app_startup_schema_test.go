@@ -16,18 +16,10 @@ import (
 // A database a newer build migrated fails boot with the store's sentence,
 // unwrapped, so the startup failure surface shows it as written.
 func TestStartRefusesADatabaseFromANewerBuild(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "agent-overflow", databaseFileName)
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.New(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	migratedDatabaseAt(t, dbPath)
 	raw, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -64,18 +56,10 @@ func TestStartRefusesADatabaseFromANewerBuild(t *testing.T) {
 // A boot that must not migrate live refuses a database with pending
 // migrations before anything writes it, and installs no store.
 func TestStartRefusesPendingMigrationsWhenAsked(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "agent-overflow", databaseFileName)
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.New(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
+	migratedDatabaseAt(t, dbPath)
 	raw, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {
 		t.Fatal(err)

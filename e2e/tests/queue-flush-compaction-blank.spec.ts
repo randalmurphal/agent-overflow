@@ -27,6 +27,7 @@ import {
 const QUEUED = 'Queued mid-turn: also consider the unpaired case.';
 const AGENTS = 5;
 const CHILDREN_PER_AGENT = 40;
+const BLANK_LIMIT_MS = 400;
 
 interface FrameSample {
   t: number;
@@ -120,7 +121,7 @@ function scenario(name: string) {
     emit(agentFinishes()),
     { waitSignal: { name: 'compact' } },
     emit([compactingLine]),
-    { delayMs: 1500 },
+    { waitSignal: { name: 'compacted' } },
     emit([
       ...compactionDone,
       ...thinkingLines('msg-think-after', 'All five reports are in, drafting now.'),
@@ -210,6 +211,28 @@ async function collectSamples(page: import('@playwright/test').Page): Promise<Fr
   });
 }
 
+// Resolves once the timeline's mounted rows and scroll geometry have held
+// for `frames` consecutive animation frames, or after `capMs`. A settle
+// point between scripted phases, not an assertion: the sampler judges
+// every frame either way.
+async function timelineSettled(page: import('@playwright/test').Page, frames: number, capMs = 6_000): Promise<void> {
+  await page.evaluate(({ frames, capMs }) => new Promise<void>((resolve) => {
+    const start = performance.now();
+    let previous = '';
+    let stable = 0;
+    const tick = () => {
+      const scroller = document.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement | null;
+      const nodes = document.querySelectorAll('[data-testid="message-timeline-node"]').length;
+      const key = scroller ? `${nodes}:${scroller.scrollTop}:${scroller.scrollHeight}` : 'none';
+      stable = key === previous ? stable + 1 : 0;
+      previous = key;
+      if (stable >= frames || performance.now() - start > capMs) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }), { frames, capMs });
+}
+
 function longestBlankRun(samples: FrameSample[]): { ms: number; at: FrameSample | null } {
   let best = 0;
   let bestAt: FrameSample | null = null;
@@ -238,6 +261,10 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     const mockId = await startMock(harness, threadId);
 
     const input = page.getByLabel('Message Input');
+    // The mock picks a mid-turn message up at once: its echo is what moves
+    // the queued row into the timeline.
+    const queuedPickedUp = () => harness.waitForEvent('harness:mock', (ev: any) =>
+      ev.mockId === mockId && ev.report.kind === 'user_input' && (ev.report.input ?? '').includes(QUEUED));
     await input.fill('Plan the implementation.');
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     await harness.waitForEvent('provider:turn_completed');
@@ -248,20 +275,24 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     await waitForGate(harness, 'children');
     await advance(harness, mockId, 'children');
     await waitForGate(harness, 'notify');
-    // Let the child stream settle and the folds/prunes run.
-    await page.waitForTimeout(3_000);
+    // The backend has pushed every child row by the time the mock reports
+    // this gate. Let the page apply them and run its folds and prunes.
+    await timelineSettled(page, 30);
     await advance(harness, mockId, 'notify');
     await waitForGate(harness, 'compact');
     await expect(page.getByText(`${AGENTS} of ${AGENTS} reports in.`, { exact: true })).toBeVisible();
-    await page.waitForTimeout(2_000);
+    await timelineSettled(page, 12);
 
     await advance(harness, mockId, 'compact');
     await harness.waitForEvent('provider:compacting');
+    await waitForGate(harness, 'compacted');
 
     if (order === 'send-during-compaction') {
       await input.fill(QUEUED);
       await input.press('Enter');
+      await queuedPickedUp();
     }
+    await advance(harness, mockId, 'compacted');
 
     await waitForGate(harness, 'finish');
     await expect(page.getByText('All five reports are in. Checking the plan-doc precedents.', { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -270,17 +301,28 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
       await input.fill(QUEUED);
       await input.press('Enter');
     }
-    await page.waitForTimeout(1_500);
+    if (order === 'send-after-boundary') await queuedPickedUp();
+    await timelineSettled(page, 12);
     await advance(harness, mockId, 'finish');
-    await page.waitForTimeout(6_000);
+    // The queued message's own turn opens only after the running turn wrote
+    // its last frame.
+    await harness.waitForEvent('harness:mock', (ev: any) =>
+      ev.mockId === mockId && ev.report.kind === 'turn_started' && ev.report.detail === 'afterTurns:silent');
 
-    const samples = await collectSamples(page);
-    const blank = longestBlankRun(samples);
-    const last = samples[samples.length - 1];
-    console.log(`[probe ${order}] frames=${samples.length} longestBlankMs=${Math.round(blank.ms)} at=${JSON.stringify(blank.at)} last=${JSON.stringify(last)}`);
+    let samples: FrameSample[] = [];
+    try {
+      await expect(page.getByText('Confirming two facts before writing the plan.', { exact: true })).toBeVisible({ timeout: 20_000 });
+      await timelineSettled(page, 12);
+      // A blank that persists into the settled state runs past the limit.
+      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+    } finally {
+      samples = await collectSamples(page);
+      const blank = longestBlankRun(samples);
+      console.log(`[probe ${order}] frames=${samples.length} longestBlankMs=${Math.round(blank.ms)} at=${JSON.stringify(blank.at)} last=${JSON.stringify(samples[samples.length - 1])}`);
+    }
     await page.screenshot({ path: `test-results/flush-compact-${order}.png`, fullPage: false });
-    expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(400);
+    const blank = longestBlankRun(samples);
+    expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
-    await expect(page.getByText('Confirming two facts before writing the plan.', { exact: true })).toBeVisible({ timeout: 20_000 });
   });
 }

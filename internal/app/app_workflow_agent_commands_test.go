@@ -89,6 +89,7 @@ func interactiveScope(fixture *toolWorkflowFixture, threadID string) transport.C
 }
 
 func TestWorkflowAgentStartRunBindsAnInteractiveThread(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
@@ -136,6 +137,7 @@ func TestWorkflowAgentStartRunBindsAnInteractiveThread(t *testing.T) {
 }
 
 func TestWorkflowAgentStartRunReportsAnUnbindableThread(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	// A workflow-mode thread cannot legally hold a binding. The run must still
 	// start — it is already the caller's intent — and say why it is unbound.
@@ -170,6 +172,7 @@ func TestWorkflowAgentStartRunReportsAnUnbindableThread(t *testing.T) {
 }
 
 func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	scope := phaseScope(fixture, "caller-item", def.GrantStartRun)
 	ctx := transport.WithCallerScope(context.Background(), scope)
@@ -238,6 +241,7 @@ func TestWorkflowAgentStartRunSurfacesAndSkipsForAPhase(t *testing.T) {
 }
 
 func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	scope := phaseScope(fixture, "caller-item", def.GrantStartRun)
 	ctx := transport.WithCallerScope(context.Background(), scope)
@@ -306,6 +310,7 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 // look. The parent rides along for the same reason: a campaign's runs are a
 // tree, and a view that never names the caller renders it flat.
 func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	root, err := fixture.app.WorkflowStartRun(
 		fixture.project.ID, "tool-flow", "shared", "wave 1", json.RawMessage(`{}`), nil, "", false)
@@ -398,6 +403,7 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 // holds is PROJECT-scoped, so it reaches the whole tree; a phase credential
 // stays limited to what that phase itself started, descendants included.
 func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	root, err := fixture.app.WorkflowStartRun(
 		fixture.project.ID, "tool-flow", "shared", "wave 1", json.RawMessage(`{}`), nil, "", false)
@@ -471,6 +477,7 @@ func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.
 // express: a phase that HOLDS the grant may still decide only the parks of the
 // runs it started, while an interactive session and the UI reach the project.
 func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	resolving := transport.WithCallerScope(context.Background(),
 		phaseScope(fixture, "caller-item", def.GrantStartRun, def.GrantResolve))
@@ -537,6 +544,7 @@ func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
 // carry the gate trace, the thread rows carry the settings resolution landed on
 // — so `run status` projects them rather than making an agent open the app.
 func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	item := store.WorkItem{
 		ID: "provenance-run", ProjectID: fixture.project.ID, Goal: "loop twice", WorkflowID: "tool-flow",
@@ -647,6 +655,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 }
 
 func TestWorkflowAgentNotesAndScheduleRecordOneEffect(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	scope := phaseScope(fixture, "caller-item", def.GrantSchedule, def.GrantUpdateNotes)
 	ctx := transport.WithCallerScope(context.Background(), scope)
@@ -713,6 +722,7 @@ func TestWorkflowAgentNotesAndScheduleRecordOneEffect(t *testing.T) {
 }
 
 func TestEffectPayloadHashIsCanonical(t *testing.T) {
+	t.Parallel()
 	first, err := effectPayloadHash(map[string]any{"a": 1, "b": []any{"x", "y"}})
 	if err != nil {
 		t.Fatal(err)
@@ -734,6 +744,7 @@ func TestEffectPayloadHashIsCanonical(t *testing.T) {
 }
 
 func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	if _, err := fixture.app.WorkflowAgentStartRun(context.Background(), WorkflowAgentStartInput{
 		WorkflowID: "tool-flow",
@@ -750,6 +761,7 @@ func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
 }
 
 func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
+	t.Parallel()
 	fixture := newCLIFixture(t)
 	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
@@ -806,6 +818,7 @@ func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
 }
 
 func TestWorkflowAmendmentNoteNamesWhatMakesTheValueTake(t *testing.T) {
+	t.Parallel()
 	fresh := workflowAmendmentNote(engine.SeedAmendment{
 		ItemID: "run-1", PhaseID: "wave", Effect: engine.SeedEffectFreshEntry,
 	})
@@ -866,6 +879,7 @@ func newAmendFixture(t *testing.T) (*toolWorkflowFixture, store.WorkItem) {
 // verbs afterwards report — a change no surface showed would be a change an
 // operator has no way to confirm.
 func TestWorkflowAgentAmendSeedsIsVisibleToTheReadVerbs(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
@@ -915,6 +929,7 @@ func TestWorkflowAgentAmendSeedsIsVisibleToTheReadVerbs(t *testing.T) {
 // The app's refusals are the engine's, forwarded whole: an undeclared key names
 // the declared ones, and nothing is written.
 func TestWorkflowAgentAmendSeedsForwardsTheEnginesRefusal(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
@@ -939,6 +954,7 @@ func TestWorkflowAgentAmendSeedsForwardsTheEnginesRefusal(t *testing.T) {
 // control verb takes, and deliberately not the wider read rule `introspect`
 // grants: changing a run's inputs is acting on it.
 func TestWorkflowAgentAmendSeedsIsConfinedToWhatAPhaseStarted(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(),
 		phaseScope(fixture, "supervisor", def.GrantIntrospect, def.GrantStartRun))
@@ -963,6 +979,7 @@ func TestWorkflowAgentAmendSeedsIsConfinedToWhatAPhaseStarted(t *testing.T) {
 // "a human said this" would make the attribution in the delivered prompt worth
 // nothing, so the request has no field for it at all.
 func TestGuidanceAuthorComesFromTheCallerNotTheRequest(t *testing.T) {
+	t.Parallel()
 	interactive := guidanceDraftFor(transport.WithCallerScope(context.Background(),
 		transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "thread-1"}), "steer")
 	if interactive.By != engine.GuidanceByHuman || interactive.ByRun != "" {
@@ -986,6 +1003,7 @@ func TestGuidanceAuthorComesFromTheCallerNotTheRequest(t *testing.T) {
 }
 
 func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
@@ -1041,6 +1059,7 @@ func TestWorkflowAgentGuideRunIsVisibleToTheReadVerbs(t *testing.T) {
 // string whose real cause never crosses the transport. The one person who can
 // act on the discard is the one reading this result, so the fact travels on it.
 func TestWorkflowAgentGuideRunReportsAHealedSlot(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
@@ -1086,6 +1105,7 @@ func TestWorkflowAgentGuideRunReportsAHealedSlot(t *testing.T) {
 // The app's refusal reaches the caller with the engine's own words: the numbers
 // live in one place, and a run that cannot be steered has to say why.
 func TestWorkflowAgentGuideRunForwardsTheEnginesRefusal(t *testing.T) {
+	t.Parallel()
 	fixture, item := newAmendFixture(t)
 	ctx := transport.WithCallerScope(context.Background(), interactiveScope(fixture, "thread-1"))
 
@@ -1108,6 +1128,7 @@ func TestWorkflowAgentGuideRunForwardsTheEnginesRefusal(t *testing.T) {
 // is reported as continued. No column records the mode: reusing the thread is
 // what a continuation IS, and the two rows' shared thread id is the evidence.
 func TestPhaseAttemptsReportAContinuedSession(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{
 		ID: "root", WorkflowID: "flow", State: string(engine.StateRunning),
@@ -1151,6 +1172,7 @@ func TestPhaseAttemptsReportAContinuedSession(t *testing.T) {
 // never reported as continued, and never as fresh either: it has no session for
 // the field to describe.
 func TestPhaseAttemptsWithoutAThreadCarryNoSession(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{
 		ID: "root", WorkflowID: "flow", State: string(engine.StateRunning),

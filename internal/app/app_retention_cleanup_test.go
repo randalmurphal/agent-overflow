@@ -41,6 +41,7 @@ func seedThread(t *testing.T, app *App, id string, updatedAt int64) {
 }
 
 func TestRunRetentionSweepEvictsOnlyOlderThanCutoff(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 
 	// Configure 30-day retention.
@@ -76,6 +77,7 @@ func TestRunRetentionSweepEvictsOnlyOlderThanCutoff(t *testing.T) {
 }
 
 func TestRunRetentionSweepDisabledWhenDaysZero(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	// Default Settings has Days=30. Override to 0.
 	if _, err := app.settings.Update(map[string]any{
@@ -97,6 +99,7 @@ func TestRunRetentionSweepDisabledWhenDaysZero(t *testing.T) {
 }
 
 func TestRunRetentionSweepHandlesMissingConfigDir(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.configDir = "" // skip log/bookmark prune entirely
 	if _, err := app.settings.Update(map[string]any{
@@ -116,6 +119,7 @@ func TestRunRetentionSweepHandlesMissingConfigDir(t *testing.T) {
 }
 
 func TestRunRetentionSweepPrunesLogsAndBookmarks(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	if _, err := app.settings.Update(map[string]any{
 		"retention": map[string]any{"days": 7},
@@ -171,6 +175,7 @@ func TestRunRetentionSweepPrunesLogsAndBookmarks(t *testing.T) {
 }
 
 func TestRunRetentionSweepNoSettingsServiceIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.stopSessionFn = func(string) error { return nil }
 	// The fixture wires a settings service; this test pins the nil-service
@@ -186,6 +191,7 @@ func TestRunRetentionSweepNoSettingsServiceIsNoOp(t *testing.T) {
 }
 
 func TestStartStopRetentionCleanupRoundTrip(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 
 	app.startRetentionCleanup()
@@ -200,11 +206,13 @@ func TestStartStopRetentionCleanupRoundTrip(t *testing.T) {
 }
 
 func TestStopRetentionCleanupBeforeStart(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.stopRetentionCleanup() // must not panic
 }
 
 func TestStartRetentionCleanupExitsOnStop(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	if _, err := app.settings.Update(map[string]any{
 		"retention": map[string]any{"days": 30},
@@ -228,6 +236,7 @@ func TestStartRetentionCleanupExitsOnStop(t *testing.T) {
 }
 
 func TestRunRetentionThreadSweepIsRaceFreeUnderChurn(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.maintenance.chunkPause = time.Millisecond
 	if _, err := app.settings.Update(map[string]any{
@@ -290,6 +299,7 @@ func TestRunRetentionThreadSweepIsRaceFreeUnderChurn(t *testing.T) {
 }
 
 func TestRunRetentionThreadSweepCancelsOnShutdownFlag(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	cutoffMs := now.UnixMilli()
@@ -315,6 +325,7 @@ func TestRunRetentionThreadSweepCancelsOnShutdownFlag(t *testing.T) {
 // abort contract the pacing requires: every iteration costs at least one
 // pause, so the shutdown poll runs per thread rather than per batch.
 func TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	cutoffMs := now.UnixMilli()
@@ -360,6 +371,7 @@ func TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown(t *testing.T) {
 // between write chunks: the store delete calls the pause hook between
 // item chunks, and the sweep pauses between threads.
 func TestRunRetentionThreadSweepPacesItsWrites(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.maintenance.chunkPause = 20 * time.Millisecond
 
@@ -380,6 +392,7 @@ func TestRunRetentionThreadSweepPacesItsWrites(t *testing.T) {
 }
 
 func TestRetentionPauseSkippedWhileShuttingDown(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.maintenance.chunkPause = 2 * time.Second
 	app.shuttingDown.Store(true)
@@ -395,6 +408,7 @@ func TestRetentionPauseSkippedWhileShuttingDown(t *testing.T) {
 // TestRetentionSettledGate pins what defers the first sweep: uptime and
 // live turns, not a fixed timer.
 func TestRetentionSettledGate(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.maintenance.settleUptime = time.Minute
 
@@ -419,6 +433,7 @@ func TestRetentionSettledGate(t *testing.T) {
 }
 
 func TestAwaitRetentionSettledReturnsOnStop(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	app.maintenance.settleUptime = time.Hour
 	app.maintenance.settlePoll = time.Millisecond
@@ -440,6 +455,7 @@ func TestAwaitRetentionSettledReturnsOnStop(t *testing.T) {
 // TestStartRetentionCleanupWaitsForTheSettledGate drives the real
 // goroutine with a shortened gate and an advancing clock.
 func TestStartRetentionCleanupWaitsForTheSettledGate(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	if _, err := app.settings.Update(map[string]any{
 		"retention": map[string]any{"days": 30},
@@ -478,6 +494,7 @@ func TestStartRetentionCleanupWaitsForTheSettledGate(t *testing.T) {
 // deletes; the freelist left behind by deletes the user made by hand is
 // reclaimed on the same schedule whether or not the TTL is on.
 func TestRunRetentionSweepReclaimsFreeSpaceWithRetentionDisabled(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	if _, err := app.settings.Update(map[string]any{
 		"retention": map[string]any{"days": 0},
@@ -516,6 +533,7 @@ func TestRunRetentionSweepReclaimsFreeSpaceWithRetentionDisabled(t *testing.T) {
 // TestReclaimStoreFreeSpaceSkippedWhileShuttingDown keeps the quit free
 // of the reclaim loop's pacing.
 func TestReclaimStoreFreeSpaceSkippedWhileShuttingDown(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	var calls int
 	app.reclaimFreeSpaceFn = func(context.Context, time.Duration) (int64, error) {

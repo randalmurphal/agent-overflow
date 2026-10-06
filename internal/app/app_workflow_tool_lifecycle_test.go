@@ -21,6 +21,7 @@ import (
 // child would leave the grandchild running and fail here.
 
 func TestWorkflowToolPhaseWatchdogKillsTheProcessGroup(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
 	pidPath := filepath.Join(t.TempDir(), "pids")
 	// The window must outlast the command's startup: a group killed before
@@ -48,6 +49,7 @@ func TestWorkflowToolPhaseWatchdogKillsTheProcessGroup(t *testing.T) {
 }
 
 func TestWorkflowToolPhaseCancelKillsTheProcessGroup(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
 	pidPath := filepath.Join(t.TempDir(), "pids")
 	fixture.writeProfile(t, map[string][]string{

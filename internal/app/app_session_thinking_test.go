@@ -27,6 +27,7 @@ func setClaudeThinking(t *testing.T, app *App, thinking map[string]any) {
 // The spawn half: the stored preference reaches SessionOptions, and from
 // there the Claude launch config.
 func TestApplySettingsOwnedAxesStampsClaudeThinking(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-thinking-spawn", string(provider.Claude), "claude-opus-5")
 	setClaudeThinking(t, app, map[string]any{"mode": "budget", "budgetTokens": 2048, "display": "omitted"})
@@ -47,6 +48,7 @@ func TestApplySettingsOwnedAxesStampsClaudeThinking(t *testing.T) {
 // that picked the setting up on one side only would diff against itself and
 // queue a restart for a setting it can never receive.
 func TestClaudeThinkingIsHeadlessClaudeOnlyOnBothPaths(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{string(provider.Codex), string(provider.ClaudeTUI)} {
 		app := newTestAppWithStore(t)
 		model := "gpt-5.6-codex"
@@ -70,6 +72,7 @@ func TestClaudeThinkingIsHeadlessClaudeOnlyOnBothPaths(t *testing.T) {
 // The reconcile half, end to end through PlanLiveUpdate — the classification
 // the whole feature rests on.
 func TestReconcileSettingsOwnedAxesConvergesClaudeThinking(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		launch      map[string]any
@@ -149,6 +152,7 @@ func TestReconcileSettingsOwnedAxesConvergesClaudeThinking(t *testing.T) {
 // change, and an unchanged setting must plan nothing. Resolving rather than
 // pinning is only safe because "unchanged" is a struct comparison.
 func TestReconcileSettingsOwnedAxesPlansNothingForUnchangedThinking(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-thinking-stable", string(provider.Claude), "claude-opus-5")
 	setClaudeThinking(t, app, map[string]any{"mode": "budget", "budgetTokens": 2048})
@@ -167,6 +171,7 @@ func TestReconcileSettingsOwnedAxesPlansNothingForUnchangedThinking(t *testing.T
 // so a field added to one and forgotten here would be a silently dropped
 // setting rather than a compile error.
 func TestClaudeThinkingOptionCarriesEveryField(t *testing.T) {
+	t.Parallel()
 	stored := settings.ClaudeThinking{
 		Mode:         settings.ClaudeThinkingModeBudget,
 		BudgetTokens: 12345,
@@ -183,6 +188,7 @@ func TestClaudeThinkingOptionCarriesEveryField(t *testing.T) {
 // reconciles on one — so the fan-out has to survive being called with no
 // live sessions at all rather than depending on a session being registered.
 func TestReconcileLiveClaudeSessionsIsSafeWithNoSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.reconcileLiveClaudeSessions()
 }

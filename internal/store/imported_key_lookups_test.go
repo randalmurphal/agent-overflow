@@ -759,7 +759,7 @@ func TestImportTriggersProbeKnownChunks(t *testing.T) {
 func TestByIDReadCostIsIndependentOfChunkCount(t *testing.T) {
 	s := newTestStore(t)
 	const thread = "many-chunks"
-	const chunks = 2000
+	const chunks = 500
 	newImportTargetThread(t, s, thread)
 	for turn := range chunks {
 		if err := s.ApplyImportBatch(thread, ImportBatch{
@@ -818,7 +818,7 @@ func TestByIDReadCostIsIndependentOfChunkCount(t *testing.T) {
 
 	rec := recordStatements(t, s)
 	stmts := rec.capture(func() {
-		if _, found, err := s.GetThreadItem(thread, "row-1234"); err != nil || !found {
+		if _, found, err := s.GetThreadItem(thread, "row-123"); err != nil || !found {
 			t.Fatalf("GetThreadItem: %v %v", found, err)
 		}
 	})

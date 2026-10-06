@@ -11,6 +11,7 @@ import (
 )
 
 func TestAsyncQuestionIdentifiedAtStart(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"threadId":"native","turnId":"turn","item":{"id":"call","type":"agentMessage","text":"Question prose","delivery":"async","questions":[{"title":"Which?","options":["A","B"]},{"title":"Details?"}]}}`)
 	for _, method := range []string{"item/started", "item/completed"} {
 		events, handled := classifyItemNotification("ao", method, params, time.Now())
@@ -29,6 +30,7 @@ func TestAsyncQuestionIdentifiedAtStart(t *testing.T) {
 }
 
 func TestUserInputWaitsWithoutTimeoutUntilExplicitResolution(t *testing.T) {
+	t.Parallel()
 	for _, blocking := range []string{"true", "false"} {
 		t.Run(blocking, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -49,6 +51,7 @@ func TestUserInputWaitsWithoutTimeoutUntilExplicitResolution(t *testing.T) {
 }
 
 func TestProviderResolvedQuestionClosesOnlyItsOwnRequest(t *testing.T) {
+	t.Parallel()
 	s, events := externalTurnTestSession(t, "native")
 	request := func(id string) {
 		s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":` + id + `,"method":"item/tool/requestUserInput","params":{"threadId":"native","turnId":"turn","itemId":"ask-` + id + `","questions":[{"id":"q","question":"Which?","header":"Scope"}]}}`))

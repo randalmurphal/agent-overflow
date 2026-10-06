@@ -12,6 +12,7 @@ import (
 )
 
 func TestHighlightWireProjectionsPreserveEveryField(t *testing.T) {
+	t.Parallel()
 	lines := []highlight.EncodedLine{{Runs: []uint16{2, 3}}}
 	live := wireHighlightLiveCode(highlightapp.LiveCodeEvent{ThreadID: "t", ItemID: "i", ParentID: "p", Fence: 2, Lang: "go", Seq: 5, From: 3, ContentKey: "key", LineHashes: []uint32{7}, Lines: lines, Final: true, Head: "head"})
 	if live.ThreadID != "t" || live.ItemID != "i" || live.ParentID != "p" || live.Fence != 2 || live.Lang != "go" || live.Seq != 5 || live.From != 3 || live.ContentKey != "key" || len(live.LineHashes) != 1 || len(live.Lines) != 1 || !live.Final || live.Head != "head" {
@@ -35,6 +36,7 @@ const testDocstringPatch = `diff --git a/route.py b/route.py
 `
 
 func TestHighlightCode(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	res, err := app.HighlightCode(HighlightCodeRequest{Lang: "python", Source: "def f():\n    return 1\n"})
 	if err != nil {
@@ -63,6 +65,7 @@ func TestHighlightCode(t *testing.T) {
 }
 
 func TestHighlightCodeOversizedRequest(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	res, err := app.HighlightCode(HighlightCodeRequest{
 		Lang:   "python",
@@ -77,6 +80,7 @@ func TestHighlightCodeOversizedRequest(t *testing.T) {
 }
 
 func TestHighlightPatchOversizedRequest(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	res, err := app.HighlightPatch(HighlightPatchRequest{
 		Path:  "big.py",
@@ -91,6 +95,7 @@ func TestHighlightPatchOversizedRequest(t *testing.T) {
 }
 
 func TestHighlightPatch(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	res, err := app.HighlightPatch(HighlightPatchRequest{Path: "route.py", Patch: testDocstringPatch})
 	if err != nil {
@@ -118,7 +123,7 @@ func TestHighlightPatch(t *testing.T) {
 
 func TestHighlightPatchWithContextWorkspaceScope(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -176,6 +181,7 @@ func TestHighlightPatchWithContextWorkspaceScope(t *testing.T) {
 }
 
 func TestHighlightPatchWithContextFallsBackWithoutContent(t *testing.T) {
+	t.Parallel()
 	// A resolvable checkout with no such file: content resolution fails and
 	// the RPC degrades to the unprimed result instead of erroring.
 	app := newTestAppWithStore(t)
@@ -198,8 +204,9 @@ func TestHighlightPatchWithContextFallsBackWithoutContent(t *testing.T) {
 // nothing — or to a directory that is not a checkout of the project — is a
 // caller error and comes back as one, never as silently unprimed spans.
 func TestHighlightPatchWithContextRefusesUnresolvableRefs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	project := testWorkspaceRef(t, app, testutil.InitGitRepo(t))
+	project := testWorkspaceRef(t, app, initMainGitRepo(t))
 
 	for name, ref := range map[string]WorkspaceRef{
 		"zero ref":        {},
@@ -220,6 +227,7 @@ func TestHighlightPatchWithContextRefusesUnresolvableRefs(t *testing.T) {
 // subject, so a caller cannot reach a thread's history through the checkout
 // RPC or a checkout through the thread RPC.
 func TestHighlightPatchWithContextScopesAreExclusive(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	ref := testWorkspaceRef(t, app, t.TempDir())
 	thread := testThread("thread-highlight-scope-split")
@@ -241,6 +249,7 @@ func TestHighlightPatchWithContextScopesAreExclusive(t *testing.T) {
 }
 
 func TestHighlightClassNamesShape(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	names := app.HighlightClassNames()
 	if len(names) == 0 || names[0] != "none" {
@@ -249,6 +258,7 @@ func TestHighlightClassNamesShape(t *testing.T) {
 }
 
 func TestHighlightGuardsShutdown(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.shuttingDown.Store(true)
 	if _, err := app.HighlightCode(HighlightCodeRequest{Lang: "go", Source: "x"}); err == nil {
@@ -266,6 +276,7 @@ func TestHighlightGuardsShutdown(t *testing.T) {
 }
 
 func TestHighlightEditPatchWithContextEditsScope(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-highlight-edits")

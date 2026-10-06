@@ -10,6 +10,7 @@ import (
 )
 
 func TestCodexThreadIDAccessor(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 	if got := s.ThreadID(); got != testThread {
 		t.Errorf("ThreadID: got %q, want %q", got, testThread)
@@ -17,6 +18,7 @@ func TestCodexThreadIDAccessor(t *testing.T) {
 }
 
 func TestCodexCloseWaitsForDisconnectedHandler(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 )
 
 func TestServiceArtifactLaunchesThroughTheOldSupervisorEntryPoint(t *testing.T) {
+	t.Parallel()
 	file, digest := testArtifactZIP(t, testBundleEntries("#!/bin/sh\nprintf '{\"protocolVersion\":1,\"version\":\"2.0.0\"}\\n'\n"))
 	a, err := PrepareArtifact(context.Background(), file, "agent-overflow-darwin-arm64.zip", digest)
 	if err != nil {

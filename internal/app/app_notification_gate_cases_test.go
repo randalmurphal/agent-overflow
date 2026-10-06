@@ -120,6 +120,7 @@ func gateCaseSettings(t *testing.T, patch json.RawMessage) settings.Settings {
 // TestTheGateTableMatchesNotifyOS below closes that seam by running the table
 // through the real App for one case.
 func TestTheSharedGateTableDecidesTheSameWayHere(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range loadGateCases(t) {
 		t.Run(testCase.Name, func(t *testing.T) {
 			current := gateCaseSettings(t, testCase.Settings)
@@ -218,6 +219,7 @@ func wantCue(t *testing.T, testCase gateCase, got string) {
 // combinations are the table's job, and repeating them here would only prove
 // the same switch twice while costing a bus and a store per row.
 func TestTheGateTableMatchesNotifyOS(t *testing.T) {
+	t.Parallel()
 	// One representative case per distinct answer, chosen from the table so a
 	// reading removed there stops being asserted here too. The representative
 	// has to name a thread: the hidden-thread and attended-screen readings

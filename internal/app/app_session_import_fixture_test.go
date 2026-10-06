@@ -47,20 +47,12 @@ type importHome struct {
 	projectDir string
 }
 
-// newImportHome builds a fixture provider home and points HOME at it.
-//
-// HOME matters because sessionfork's live-thread flows (LocateSessionFile,
-// RelocateSession) still resolve `~/.claude/projects` through os.UserHomeDir,
-// while session import resolves its homes through credentialHomeOverride. In
-// production those are the same directory; a fixture that set only the
-// override would leave those writes aimed at the DEVELOPER's real Claude home
-// (root AGENTS.md §Permanent invariants). Setting both is what keeps the two
-// halves consistent and the real home untouched.
+// newImportHome builds a fixture provider home. attach points an App at it;
+// every app-layer provider path, session import included, resolves through
+// that one seam (providerHome), so HOME is left alone.
 func newImportHome(t *testing.T) importHome {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("HOME", root)
-	t.Setenv("USERPROFILE", root)
 
 	home := importHome{root: root, workspace: filepath.Join(root, "repo")}
 	for _, dir := range []string{home.codexHome(), home.workspace} {

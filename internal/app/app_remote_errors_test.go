@@ -12,6 +12,7 @@ import (
 )
 
 func TestRemoteErrorsPreserveSafeDetailsAndExplainUncertainAcceptance(t *testing.T) {
+	t.Parallel()
 	const id = "2018ba7a-359c-4a0b-92a2-0b7cae76a515"
 	private := errors.New("secret /private/path?ticket=private-token")
 	for _, tc := range []struct {
@@ -46,6 +47,7 @@ func TestRemoteErrorsPreserveSafeDetailsAndExplainUncertainAcceptance(t *testing
 // A person reads a computer and a job by name; the model retries by id. The
 // tool error carries both, and the text a row shows carries neither.
 func TestRemoteErrorsNameTheComputerAndTheJobForPeopleAndKeepIDsForTheModel(t *testing.T) {
+	t.Parallel()
 	const computer = "2018ba7a-359c-4a0b-92a2-0b7cae76a515"
 	const request = "98312d67-2222-4222-8222-222222222222"
 	notPaired := errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", nil)
@@ -75,6 +77,7 @@ func TestRemoteErrorsNameTheComputerAndTheJobForPeopleAndKeepIDsForTheModel(t *t
 }
 
 func TestRemoteUserErrorSpeaksForTheJobThePersonActedOn(t *testing.T) {
+	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
 	thread := remoteWatchThread(t, a, "codex")
 	watch := registeredRemoteWatch(t, a, thread)

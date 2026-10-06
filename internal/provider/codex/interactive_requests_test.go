@@ -12,6 +12,7 @@ import (
 )
 
 func TestApprovalResponseResolvesPendingCodex(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
@@ -44,6 +45,7 @@ respond:
 }
 
 func TestCodexCloseResolvesPendingApprovalAsLost(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
@@ -95,6 +97,7 @@ closeNow:
 // beyond t3-code's CodexSessionRuntime.interruptTurn, which leaves the
 // local Deferred parked.
 func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Need an active turn for Interrupt to attempt the RPC at all —
@@ -157,6 +160,7 @@ interrupt:
 // carry decision="cancel" AND answers={} so the frontend's user-input
 // panel clears with a well-formed payload.
 func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	s.mu.Lock()
@@ -220,6 +224,7 @@ interrupt:
 // `answers` map alongside the historic decision="lost". The frontend
 // type contract requires the field on every UserInputResolved meta.
 func TestCodexCloseDrainsPendingUserInputWithAnswers(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
@@ -275,6 +280,7 @@ closeNow:
 }
 
 func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
@@ -321,6 +327,7 @@ func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
 // Codex's per-handler fallback paths log "request failed with client
 // error" and (for MCP elicitation) pick the wrong action.
 func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/wire.jsonl"
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{

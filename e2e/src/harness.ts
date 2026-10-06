@@ -46,6 +46,14 @@ export type {
 
 const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 
+// Product intervals every launched backend shortens (diagenv.HarnessTiming
+// in internal/diagenv): no spec is about these cadences, and waiting them out
+// dominated suite time. The pairing probe stays inside the credential
+// routes' per-peer budget (internal/transport/ratelimit.go). A spec that
+// needs product timing, or a further interval, passes its own
+// AO_HARNESS_TIMING in `env`.
+export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms';
+
 // macOS exposes /var and /tmp as root-owned aliases under /private. Normalize
 // only those system prefixes; resolving arbitrary descendants would follow a
 // caller-controlled symlink and weaken the harness ownership checks.
@@ -86,6 +94,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,
     env: {
       ...process.env,
+      AO_HARNESS_TIMING: HARNESS_TIMING,
       ...opts.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

@@ -19,6 +19,7 @@ import (
 // The source watcher is deliberately never started: a successful direct RPC
 // must update remote_jobs and the background tray before that tool returns.
 func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, method := range []string{"status", "wait", "retry", "cancel", "tray-cancel"} {
 		t.Run(method, func(t *testing.T) {
@@ -120,6 +121,7 @@ func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
 }
 
 func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *testing.T) {
+	t.Parallel()
 	for _, lateReply := range []bool{false, true} {
 		t.Run(map[bool]string{false: "destination unavailable", true: "stale terminal reply"}[lateReply], func(t *testing.T) {
 			a, rec := newAppForFlushQueueRPC(t)
@@ -156,6 +158,7 @@ func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *te
 // never the whole watcher tick: the wait is bounded by the check context and
 // the watch stays pending for the next pass.
 func TestRemoteCompletionDeliveryWaitIsBounded(t *testing.T) {
+	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
 	thread := remoteWatchThread(t, a, string(provider.Codex))
@@ -184,6 +187,7 @@ func TestRemoteCompletionDeliveryWaitIsBounded(t *testing.T) {
 }
 
 func TestRemoteObservationRejectsWrongRequestAndConversation(t *testing.T) {
+	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := remoteWatchThread(t, a, "codex")
 	w := registeredRemoteWatch(t, a, thread)

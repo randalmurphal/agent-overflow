@@ -71,6 +71,7 @@ func redeemComputerInvitation(t *testing.T, b *pairedBackend, invite pairbootstr
 }
 
 func TestComputerPairingRealTLSRequiresOwnerSASAndKeepsConfirmedSession(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, sas := exchangeComputerPairing(t, b)
@@ -112,6 +113,7 @@ func TestComputerPairingRealTLSRequiresOwnerSASAndKeepsConfirmedSession(t *testi
 }
 
 func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, redeem := range []bool{false, true} {
 		name := "before redemption"
@@ -148,6 +150,7 @@ func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
 }
 
 func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, _ := exchangeComputerPairing(t, b)
@@ -175,6 +178,7 @@ func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *t
 }
 
 func TestComputerPairingRequiresExplicitOpenAndLeaksNoOwnerData(t *testing.T) {
+	t.Parallel()
 	b := newPairedBackend(t)
 	hc := pairbootstrap.NewHTTPClient(nil)
 	defer hc.CloseIdleConnections()
@@ -196,6 +200,7 @@ func TestComputerPairingRequiresExplicitOpenAndLeaksNoOwnerData(t *testing.T) {
 }
 
 func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	ordinary, link := b.mintLink(t, "full")
@@ -237,6 +242,7 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 }
 
 func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	a, path := newTestAppWithStorePath(t)
 	if err := a.initIdentity("backend-under-test"); err != nil {
@@ -333,6 +339,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 // the fence; closing the same window again is a no-op, never a second
 // write or an error.
 func TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	invite, _ := exchangeComputerPairing(t, b)

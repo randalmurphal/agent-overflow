@@ -18,6 +18,7 @@ import (
 // fail here instead of shipping silently.
 
 func TestListThreadProposedPlans_NilNormalization(t *testing.T) {
+	t.Parallel()
 	// Empty thread must return []Item{}, not nil. Otherwise the
 	// frontend JSON deserializer sees `null` and the type-safe
 	// wrapper errors on `.map(...)`.
@@ -39,6 +40,7 @@ func TestListThreadProposedPlans_NilNormalization(t *testing.T) {
 }
 
 func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
+	t.Parallel()
 	// The binding computes `cutoff = now - store.BackgroundTaskRetentionMillis`
 	// on each call. A completion whose created_at is within the
 	// window surfaces; one outside doesn't. This test exercises the
@@ -127,6 +129,7 @@ func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
 }
 
 func TestListLiveBackgroundTasks_ProjectsActiveCodexSubagentAsRunning(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-subagent", "gpt-5.3-codex", "")
@@ -191,6 +194,7 @@ func TestListLiveBackgroundTasks_ProjectsActiveCodexSubagentAsRunning(t *testing
 }
 
 func TestGetThreadItem_ReturnsZeroValueForMissingItem(t *testing.T) {
+	t.Parallel()
 	// Binding contract: missing item returns `Item{}` (empty id),
 	// not an error. Frontend distinguishes via `item.id !== ''`.
 	app := newTestAppWithStore(t)
@@ -236,6 +240,7 @@ func itoa(i int) string {
 // The binding is a one-liner pass-through, but the test protects against
 // accidental filtering / transformation being introduced later.
 func TestListRecentTurnsBindingDelegatesToStore(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-1")
@@ -292,6 +297,7 @@ func TestListRecentTurnsBindingDelegatesToStore(t *testing.T) {
 // TestListRecentTurnsBindingRespectsLimit exercises the happy path the
 // frontend calls on thread-switch (`ListRecentTurns(threadId, 2)`).
 func TestListRecentTurnsBindingRespectsLimit(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-1")); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -328,6 +334,7 @@ func TestListRecentTurnsBindingRespectsLimit(t *testing.T) {
 // TestListRecentTurnsBindingEmptyThread covers the zero-state path the
 // frontend hits on a freshly-created thread that's never sent a turn.
 func TestListRecentTurnsBindingEmptyThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-1")); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -347,6 +354,7 @@ func TestListRecentTurnsBindingEmptyThread(t *testing.T) {
 // hitting the DB. The frontend doesn't call this path, but the contract
 // is part of the store API the binding exposes.
 func TestListRecentTurnsBindingNonPositiveLimit(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-1")); err != nil {
 		t.Fatalf("CreateThread: %v", err)

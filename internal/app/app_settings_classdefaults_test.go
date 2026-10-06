@@ -19,6 +19,7 @@ import (
 // mirrored here has no row in the defaults table; a class mirrored here that
 // identity never declares is a row no device can ever resolve to.
 func TestSettingsDeviceClassesMirrorTheIdentityVocabulary(t *testing.T) {
+	t.Parallel()
 	mirrored := make([]string, 0, len(settings.DeviceClasses))
 	for _, class := range settings.DeviceClasses {
 		mirrored = append(mirrored, string(class))
@@ -45,6 +46,7 @@ func TestSettingsDeviceClassesMirrorTheIdentityVocabulary(t *testing.T) {
 // so only a zero-valued row can produce this, and a screen we cannot classify
 // is most likely this machine's own kind.
 func TestAnUnreadableDeviceClassResolvesToDesktop(t *testing.T) {
+	t.Parallel()
 	for _, class := range []string{"", "wristwatch", "DESKTOP"} {
 		if got := settingsDeviceClass(class); got != settings.DeviceDesktop {
 			t.Errorf("settingsDeviceClass(%q) = %q, want %q", class, got, settings.DeviceDesktop)
@@ -55,6 +57,7 @@ func TestAnUnreadableDeviceClassResolvesToDesktop(t *testing.T) {
 // End to end through the RPC the frontend actually calls: a paired PHONE
 // starts in normal power mode without any stored override.
 func TestAPairedPhoneReadsItsClassDefaultThroughGetSettings(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, identityApp(t))
 	device, session := pairDeviceOfClass(t, app, identity.DevicePhone, "A phone", "thumb-phone-defaults")
 
@@ -93,6 +96,7 @@ func TestAPairedPhoneReadsItsClassDefaultThroughGetSettings(t *testing.T) {
 
 // Opting into low power persists; clearing the override restores normal power.
 func TestAPairedPhoneCanOptIntoLowPowerMode(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, identityApp(t))
 	device, session := pairDeviceOfClass(t, app, identity.DevicePhone, "A phone", "thumb-phone-optout")
 	ctx := sessionCtx(session.ID, "")
@@ -138,6 +142,7 @@ func TestAPairedPhoneCanOptIntoLowPowerMode(t *testing.T) {
 // empty — so this wave changed nothing for the local page channel, the
 // launch-credential clients, or an in-process caller.
 func TestLocalScreensAndSessionlessCallersResolveAsDesktop(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, identityApp(t))
 
 	for name, ctx := range map[string]context.Context{
@@ -162,6 +167,7 @@ func TestLocalScreensAndSessionlessCallersResolveAsDesktop(t *testing.T) {
 // class-resolved. One phone's write must not move the browser beside it, and
 // the phone's class default must survive the write.
 func TestADeviceTierFrameLetsEachDeviceReadItsOwnClassResolvedValues(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, identityApp(t))
 	broadcasts := captureSettingsBroadcasts(t, app)
 

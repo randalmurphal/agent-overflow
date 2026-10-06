@@ -155,3 +155,15 @@ func setLinkUp(conn *rtnetlink.Conn, index int, flags uint32) error {
 	flags |= unix.IFF_UP
 	return conn.Link.Set(&rtnetlink.LinkMessage{Index: uint32(index), Flags: flags, Change: flags})
 }
+
+// Contained reports whether this process runs inside the namespace Command
+// builds, judged by its interfaces: only loopback and LANName at
+// LANAddress. Nothing such a process sends can leave the namespace, so an
+// isolated boot may use its LAN as a LAN (network.IsolatedReach).
+func Contained() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	return containedInterfaces(ifaces, func(iface net.Interface) ([]net.Addr, error) { return iface.Addrs() }, LANName, LANAddress)
+}

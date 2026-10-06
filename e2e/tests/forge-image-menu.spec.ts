@@ -209,12 +209,21 @@ async function naturalSize(image: Locator): Promise<{ width: number; height: num
   return image.evaluate((img: HTMLImageElement) => ({ width: img.naturalWidth, height: img.naturalHeight }));
 }
 
-/** The PNG the clipboard holds, as its type list and decoded size. */
-async function clipboardPng(page: Page): Promise<{ types: string[]; width: number; height: number }> {
+/** The PNG the clipboard holds, as its type list and decoded size, or null
+ * when a write landed between the read and the decode (Chromium then
+ * refuses the stale item), so a poll reads again. */
+async function clipboardPng(page: Page): Promise<{ types: string[]; width: number; height: number } | null> {
   return page.evaluate(async () => {
     const items = await navigator.clipboard.read();
     const types = items.flatMap((item) => [...item.types]);
-    const bitmap = await createImageBitmap(await items[0].getType('image/png'));
+    let blob: Blob;
+    try {
+      blob = await items[0].getType('image/png');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'InvalidStateError') return null;
+      throw error;
+    }
+    const bitmap = await createImageBitmap(blob);
     const size = { width: bitmap.width, height: bitmap.height };
     bitmap.close();
     return { types, ...size };

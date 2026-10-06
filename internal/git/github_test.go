@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // These tests target the github forge implementation directly via
@@ -22,9 +24,7 @@ func TestListOpenPRsParsesJSON(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\necho '[{\"url\":\"https://example.com/pr/7\",\"number\":7,\"title\":\"Feature branch\",\"state\":\"OPEN\"}]'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -57,9 +57,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	argLog := filepath.Join(binDir, "args.log")
 	ghPath := filepath.Join(binDir, "gh")
 	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %q\necho 'https://example.com/pr/9'\n", argLog)
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -91,6 +89,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 }
 
 func TestCreatePRRequiresTitle(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "  ", "body", "", false)
@@ -110,9 +109,7 @@ func TestCreatePRHandlesNonZeroExit(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\necho 'auth required' 1>&2\nexit 1\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -134,9 +131,7 @@ func TestCreatePRHandlesEmptyURL(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\necho ''\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -164,6 +159,7 @@ func TestCreatePRHandlesMissingGH(t *testing.T) {
 }
 
 func TestListOpenPRsRequiresHead(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	_, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "  ")
@@ -183,9 +179,7 @@ func TestListOpenPRsHandlesNonZeroExit(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\necho 'no repo' 1>&2\nexit 1\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -207,9 +201,7 @@ func TestListOpenPRsReturnsNilForEmptyOutput(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -224,6 +216,7 @@ func TestListOpenPRsReturnsNilForEmptyOutput(t *testing.T) {
 }
 
 func TestCommandOutputMessage(t *testing.T) {
+	t.Parallel()
 	if got := commandOutputMessage("", "stderr msg"); got != "stderr msg" {
 		t.Fatalf("commandOutputMessage with stderr = %q, want stderr msg", got)
 	}
@@ -249,6 +242,7 @@ func TestListOpenPRsHandlesMissingGH(t *testing.T) {
 }
 
 func TestGitHubForgeIDAndBinary(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	f := core.ForgeByID("github")
 	if f.ID() != "github" {

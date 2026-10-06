@@ -1,9 +1,11 @@
 package app
 
 import (
+	"errors"
 	"log"
 	"maps"
 	"net"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -41,6 +43,13 @@ type IsolationConfig struct {
 	// spawns, so an isolated boot never dials a listener outside the
 	// processes it was given.
 	ScanScopePIDs []int
+	// ThreadRequestPoll and TransferPendingRetry replace the agent thread
+	// request poll cadence and threadtransfer.PendingRetry, so an end-to-end
+	// test does not wait out a production interval it is not about. Zero
+	// keeps the product value; only a harness boot sets them
+	// (diagenv.HarnessTiming).
+	ThreadRequestPoll    time.Duration
+	TransferPendingRetry time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -58,6 +67,30 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
+	a.threadPollOverride = config.ThreadRequestPoll
+	a.transferPendingRetry = config.TransferPendingRetry
+	// The mock provider's credential carries a mock bearer. The Claude usage
+	// probe would send it to the real API: on hosts without network
+	// isolation (macOS, Windows) that is an outbound call from a test run.
+	a.rateLimitProbeClientOverride = isolatedHTTPClient
+	// Outside the test network namespace the LAN is the developer's: a LAN
+	// bind stays on loopback and no multicast is sent (network.Reach).
+	a.netReach = network.IsolatedReach()
+}
+
+// errIsolatedNetwork refuses a request an isolated boot would otherwise send
+// to a real service.
+var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests are disabled")
+
+var isolatedHTTPClient = &http.Client{Transport: refusingTransport{}}
+
+type refusingTransport struct{}
+
+func (refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return nil, errIsolatedNetwork
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's
@@ -147,7 +180,7 @@ func HasEnrolledDevice(a *App) (bool, error) { return a.hasEnrolledDevice() }
 // pick GetNetworkSettings applies is about a caller across a network, and
 // there is no caller here.
 func ServeEndpoints(a *App, srv *transport.Server) network.Settings {
-	return network.FromServer(srv, a.persistedNetworkSettings())
+	return network.FromServer(srv, a.persistedNetworkSettings(), a.netReach)
 }
 
 // SetBoundPortRecorder installs the sink that persists the port this
@@ -184,13 +217,12 @@ func ComputerRoutes(a *App) []computerroute.Route {
 	if srv == nil {
 		return nil
 	}
-	settings := a.persistedNetworkSettings()
-	lanIP := ""
-	if settings.BindAll {
-		lanIP = network.DiscoverLocalLANIP()
-	}
-	return network.ComputerRoutes(srv, settings, lanIP)
+	return network.ComputerRoutes(srv, a.persistedNetworkSettings(), a.netReach)
 }
+
+// NetworkReach is where this boot's LAN bind listens and which address it
+// publishes; the executable applies it to the initial bind.
+func NetworkReach(a *App) network.Reach { return a.netReach }
 
 // SetBrowserCDPRelay installs the backend end of the Windows launcher's CDP
 // tunnel, which the executable creates before the transport so the same

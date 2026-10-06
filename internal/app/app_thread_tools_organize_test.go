@@ -93,6 +93,7 @@ func boolPtr(value bool) *bool       { return &value }
 // grouped and an ungrouped thread alike, and the grouped one keeps its
 // group.
 func TestThreadToolsUpdatePinsGroupedAndUngroupedThreads(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	plain := f.thread(t, "plain-thread")
 	grouped := f.thread(t, "grouped-thread")
@@ -140,6 +141,7 @@ func TestThreadToolsUpdatePinsGroupedAndUngroupedThreads(t *testing.T) {
 // The calling thread never archives itself, and the refusal leaves the rest
 // of the call alone.
 func TestThreadToolsUpdateRefusesArchivingTheCaller(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	self := f.thread(t, "caller-thread")
 	other := f.thread(t, "other-thread")
@@ -197,6 +199,7 @@ func TestThreadToolsUpdateRefusesArchivingTheCaller(t *testing.T) {
 // A patch that cannot be valid for any thread refuses the whole call, and
 // an unknown id is one row's own refusal.
 func TestThreadToolsUpdateValidatesThePatchAndTheIds(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	thread := f.thread(t, "patch-thread")
 
@@ -231,6 +234,7 @@ func TestThreadToolsUpdateValidatesThePatchAndTheIds(t *testing.T) {
 // thread's group, so the patch creates one where the thread lives and the
 // sidebar hears about the new row before the thread that joined it.
 func TestThreadToolsUpdateCreatesTheGroupInTheThreadsOwnProject(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	other := store.Project{ID: "tt-other", Path: t.TempDir(), Name: "Other", CreatedAt: 1, UpdatedAt: 1}
 	if _, err := f.app.store.CreateProject(other); err != nil {
@@ -296,6 +300,7 @@ func TestThreadToolsUpdateCreatesTheGroupInTheThreadsOwnProject(t *testing.T) {
 // joins the first's group instead of inserting a row nobody could tell apart
 // from it.
 func TestConcurrentSpawnsNamingOneNewGroupShareIt(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "on it")
 	const group = "Release sweep"
@@ -345,6 +350,7 @@ func TestConcurrentSpawnsNamingOneNewGroupShareIt(t *testing.T) {
 // the pin of a row that changes group, and the pin then lands inside the
 // new group, even when it restates the tier the row held before the move.
 func TestThreadToolsUpdateGroupsAndPinsInOneCall(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	thread := f.thread(t, "group-pin-thread")
 	if _, _, err := f.app.store.PinThread(thread.ID); err != nil {
@@ -388,6 +394,7 @@ func TestThreadToolsUpdateGroupsAndPinsInOneCall(t *testing.T) {
 // Ungrouping and pinning in one call: leaving the group clears the pin the
 // row held inside it, and the pin in the call then lands on the top level.
 func TestThreadToolsUpdateUngroupsBeforeItPins(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	thread := f.thread(t, "regroup-thread")
 	group, err := f.app.store.CreateThreadGroup(f.project.ID, "Release")
@@ -425,6 +432,7 @@ func TestThreadToolsUpdateUngroupsBeforeItPins(t *testing.T) {
 // thread_group renames and deletes, and a delete ungroups its members
 // rather than deleting them, clearing the pins they held inside it.
 func TestThreadToolsGroupRenamesAndDeletes(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	callerThread := f.thread(t, "caller-thread")
 	member := f.thread(t, "member-thread")
@@ -487,6 +495,7 @@ func TestThreadToolsGroupRenamesAndDeletes(t *testing.T) {
 // A group call that names nothing this computer has, or asks for two
 // actions at once, is refused with a code the model can act on.
 func TestThreadToolsGroupRefusals(t *testing.T) {
+	t.Parallel()
 	f := newOrganizeFixture(t)
 	callerThread := f.thread(t, "caller-thread")
 

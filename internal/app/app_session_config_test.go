@@ -1,9 +1,9 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -64,6 +64,7 @@ func waitRestart(t *testing.T, started chan string, want string) {
 // while the thread has running backgrounded tool calls (the restart would
 // reap their processes). It fires once the background work settles.
 func TestConfigChangeDefersRestartWhileBackgroundTasksRun(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, started := seedConfigReconcileThread(t, app, "thread-config-bg", nil)
 
@@ -117,6 +118,7 @@ func TestConfigChangeDefersRestartWhileBackgroundTasksRun(t *testing.T) {
 // an in-flight turn (tracked via session liveness): no restart while a turn
 // is open, restart once it completes.
 func TestConfigChangeDefersRestartWhileTurnActive(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	liveness := newSessionLiveness(time.Now())
 	liveness.ActiveTurns.Store(1)
@@ -136,6 +138,7 @@ func TestConfigChangeDefersRestartWhileTurnActive(t *testing.T) {
 // with no live session there is nothing to reconcile — the next start reads
 // the row.
 func TestConfigChangeWithoutSessionSkipsRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-config-idle")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -156,6 +159,7 @@ func TestConfigChangeWithoutSessionSkipsRestart(t *testing.T) {
 // TestThreadConfigBusySignals covers each busy signal the deferred-restart
 // watcher consults.
 func TestThreadConfigBusySignals(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-config-busy")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -229,6 +233,7 @@ func TestThreadConfigBusySignals(t *testing.T) {
 // launch options advance so later reconciles diff against the applied
 // config.
 func TestEffortChangeLiveAppliesOnCodexSessionWithoutRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-config-live-codex")
 	thread.ReasoningEffort = string(provider.EffortHigh)
@@ -249,9 +254,7 @@ while IFS= read -r line; do
 done
 `
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	// Build launch options from the stored row (CreateThread normalizes
 	// fields like the context window), mirroring what a real spawn reads.
@@ -305,6 +308,7 @@ done
 // second config change while a restart is already pending folds into the
 // same watcher (one restart, against the latest row).
 func TestReconcileSessionConfigFoldsStackedChanges(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	liveness := newSessionLiveness(time.Now())
 	liveness.ActiveTurns.Store(1)

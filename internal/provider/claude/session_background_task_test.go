@@ -2,12 +2,12 @@ package claude
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // backgroundTasksResponderScript builds a fake CLI that answers our
@@ -49,9 +49,7 @@ done
 func newBackgroundTasksResponderSession(t *testing.T, mode string, timeout time.Duration) *Session {
 	t.Helper()
 	scriptPath := t.TempDir() + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(backgroundTasksResponderScript(mode)), 0755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, backgroundTasksResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
@@ -134,6 +132,7 @@ func TestSession_BackgroundTask_ErrorResponse(t *testing.T) {
 // CLI must fail loudly inside the configured window rather than parking
 // the caller.
 func TestSession_BackgroundTask_Timeout(t *testing.T) {
+	t.Parallel()
 	s := newBackgroundTasksResponderSession(t, "silent", 150*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

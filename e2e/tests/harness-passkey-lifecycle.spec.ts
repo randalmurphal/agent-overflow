@@ -272,13 +272,13 @@ async function openDeviceAccessSettings(page: Page): Promise<void> {
 }
 
 test.describe.serial('passkey lifecycle', () => {
-  // Not green-washed: a host with no non-loopback interface genuinely
-  // cannot produce the remote peer half of this spec, and saying so is
-  // the honest outcome. A skip is visible in the report; a vacuous pass
+  // Not green-washed: outside the test network namespace (macOS) the
+  // remote peer half of this spec cannot be produced without LAN traffic,
+  // and saying so is the honest outcome. A skip is visible in the report; a vacuous pass
   // is not.
   test.skip(
     lanIP === null,
-    'no non-loopback IPv4 interface on this host, so no off-host peer can be produced',
+    'outside the test network namespace, so no off-host peer can be produced without LAN traffic',
   );
 
   let harness: HarnessApp;

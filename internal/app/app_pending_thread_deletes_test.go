@@ -123,16 +123,24 @@ func requireBootCompletesDelete(t *testing.T, path, id string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	requirePendingDelete(t, app, id, true)
-	// The walk deletes under the thread's action lock.
+	// The walk deletes under the thread's action lock: once the first reads
+	// release it, it parks on the lock this test holds, which the lock's
+	// second reference shows.
 	unlock := app.threadLocks().Lock(id)
 	if _, err := app.ListProjects(); err != nil {
 		t.Fatal(err)
 	}
-	for until := time.Now().Add(300 * time.Millisecond); time.Now().Before(until); {
+	for deadline := time.Now().Add(10 * time.Second); app.threadLocks().Refs(id) < 2; {
 		if _, err := app.store.GetThread(id); err != nil {
 			t.Fatalf("the delete ran without the thread's action lock: %v", err)
 		}
-		time.Sleep(5 * time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Fatal("the boot's delete never waited on the thread's action lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := app.store.GetThread(id); err != nil {
+		t.Fatalf("the delete ran without the thread's action lock: %v", err)
 	}
 	unlock()
 	for deadline := time.Now().Add(10 * time.Second); ; {
@@ -178,6 +186,7 @@ func interruptDelete(t *testing.T, app *App, id string) {
 // A Claude fork reads the source's transcript before the store is asked,
 // so the app refuses a pending delete before either provider's fork work.
 func TestInterruptedThreadDeleteIsGoneAndBootCompletesIt(t *testing.T) {
+	t.Parallel()
 	for _, name := range []provider.ProviderKind{provider.Codex, provider.Claude} {
 		t.Run(string(name), func(t *testing.T) {
 			app, path := newTestAppWithStorePath(t)
@@ -197,6 +206,7 @@ func TestInterruptedThreadDeleteIsGoneAndBootCompletesIt(t *testing.T) {
 // second chunk fails returns the error and leaves the same state as one a
 // crash stopped.
 func TestFailedThreadDeleteIsGoneAndBootCompletesIt(t *testing.T) {
+	t.Parallel()
 	app, path := newTestAppWithStorePath(t)
 	id := seedPendingDeleteSource(t, app, provider.Codex)
 	raw, err := sql.Open("sqlite", path)
@@ -231,6 +241,7 @@ func TestFailedThreadDeleteIsGoneAndBootCompletesIt(t *testing.T) {
 // The join ends a walk still waiting for its first reads once the app
 // context ends, and waits for a walk that is deleting.
 func TestPendingThreadDeletesJoin(t *testing.T) {
+	t.Parallel()
 	joined := func(app *App) <-chan struct{} {
 		done := make(chan struct{})
 		go func() {

@@ -13,6 +13,7 @@ import (
 )
 
 func TestNormalizeThreadWindowSyncErrorClassifiesOnlyExpiredContexts(t *testing.T) {
+	t.Parallel()
 	storeErr := errors.New("sql: Rows are closed")
 
 	ordinary := normalizeThreadWindowSyncError(context.Background(), storeErr)
@@ -44,6 +45,7 @@ func TestNormalizeThreadWindowSyncErrorClassifiesOnlyExpiredContexts(t *testing.
 }
 
 func TestSyncThreadWindowUsesCallerContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -93,6 +95,7 @@ func seedSyncBindingThread(t *testing.T, a *App) store.Thread {
 // answer the design exists for, and that a page, when sent, arrives with
 // an allocated Items slice so the client decodes `[]` rather than `null`.
 func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 	held := appHistoryStamp(t, app, thread.ID)
@@ -176,6 +179,7 @@ func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
 // window ListThreadSliceAround would return rather than reaching SQLite
 // as a negative LIMIT.
 func TestSyncThreadWindowBindingNormalizesItemBudget(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 
@@ -203,6 +207,7 @@ func TestSyncThreadWindowBindingNormalizesItemBudget(t *testing.T) {
 }
 
 func TestClampSliceItemBudget(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in, want int
 	}{
@@ -224,6 +229,7 @@ func TestClampSliceItemBudget(t *testing.T) {
 // truncated rows in its replica forever, since no later write mentions
 // them.
 func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	bus := newCapturedEventBus()
@@ -260,6 +266,7 @@ func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
 // direction; the epoch, which is what forces the client to re-read, must
 // be exact.
 func TestRevertAndResendEventCarriesPostCutStamps(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-stamps")
 	before := appHistoryStamp(t, app, thread.ID)

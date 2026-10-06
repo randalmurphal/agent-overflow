@@ -23,6 +23,7 @@ import (
 // settle them before production project deletion applies its live-work guard.
 // Otherwise the harness cannot reset the exact long-running workload it owns.
 func TestHarnessResetSettlesBackgroundTasksAfterStoppingSessions(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "agent-overflow")
@@ -72,6 +73,7 @@ func TestHarnessResetSettlesBackgroundTasksAfterStoppingSessions(t *testing.T) {
 }
 
 func TestHarnessSeedWorkflowsUsesProductionPathsAndResetClearsState(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "agent-overflow")
@@ -254,6 +256,7 @@ cleanup: manual
 }
 
 func TestHarnessResetCancelsRunningAndHeldRuns(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "agent-overflow")

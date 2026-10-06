@@ -3,12 +3,16 @@
 // display the bootstrap comparison and the host explicitly approves or denies.
 // LAN binding persists, so this spec owns its host. Address entry deliberately
 // avoids depending on multicast availability in CI; discovery has its own tests.
+// Inside the test network namespace the address is its LAN address; outside
+// it (macOS) an isolated instance stays on loopback, pairs over 127.0.0.1 and
+// says nearby discovery is off (network.IsolatedReach).
 import { expect, test, type Page } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
 import { nonLoopbackIPv4, pairedDevices } from './offhost-helpers.js';
 
@@ -25,15 +29,22 @@ async function openPairing(hostPage: Page): Promise<string> {
   const dialog = hostPage.getByRole('dialog', { name: 'Allow a device to connect' });
   await expect(dialog.getByRole('radio', { name: 'Local network' })).toBeVisible();
   await dialog.getByRole('button', { name: /^Another computer/ }).click();
-  await dialog.getByText('Can’t find this computer?', { exact: true }).click();
+  const lanIP = nonLoopbackIPv4();
+  if (lanIP === null) {
+    await expect(dialog).toContainText('Not discoverable on this network: nearby discovery is off in an isolated instance.');
+  }
+  // A discovery error opens the details itself, and a click would close them.
   const shown = dialog.getByLabel('Computer address');
-  await expect(shown).toBeVisible();
+  await expect(async () => {
+    if (!(await shown.isVisible())) await dialog.getByText('Can’t find this computer?', { exact: true }).click();
+    await expect(shown).toBeVisible({ timeout: 1_000 });
+  }).toPass();
   const address = (await shown.textContent())!.trim();
   const url = new URL(address);
   expect(url.protocol).toBe('https:');
   expect(url.hash).toBe('');
   expect(url.search).toBe('');
-  expect(url.hostname).not.toMatch(/^(localhost|127\.|\[?::1)/);
+  expect(url.hostname).toBe(lanIP ?? '127.0.0.1');
   return address;
 }
 
@@ -57,7 +68,6 @@ async function compare(hostPage: Page, client: Page): Promise<void> {
 
 test('desktop address pairing requires matching-number approval and preserves existing connections on rejected attempts', async ({ browser, page }) => {
   test.setTimeout(120_000);
-  test.skip(nonLoopbackIPv4() === null, 'A non-loopback interface is required for production LAN pairing.');
   const root = await mkdtemp(join(tmpdir(), 'ao-address-pairing-'));
   let host: HarnessApp | undefined;
   let frontend: Awaited<ReturnType<typeof launchFrontendClient>> | undefined;
@@ -68,13 +78,15 @@ test('desktop address pairing requires matching-number approval and preserves ex
   const pageErrors: string[] = [];
   for (const screen of [owner, page]) screen.on('pageerror', error => pageErrors.push(error.message));
   try {
-    host = await launchHarness();
+    [host, frontend] = await startTogether(
+      launchHarness(),
+      launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), ''),
+    );
     await host.rpc('SetDeviceName', HOST_NAME);
     await host.rpc('SetNetworkSettings', { bindAll: true });
     await seedAgentThread(host, 'address-pairing-project', THREAD);
     await host.open(owner);
     await settings(owner, 'Allow device access');
-    frontend = await launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), '');
     await frontend.open(page);
     await settings(page, 'Connect to a computer');
 

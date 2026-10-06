@@ -137,6 +137,7 @@ exit 3`
 )
 
 func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	result := r.command("u1").Snapshot(context.Background(), nil)
@@ -161,6 +162,7 @@ func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
 // reports it whether the copy finished or was refused. A version it cannot
 // read is logged and reported as none.
 func TestSnapshotCommandReportsTheSchemaItBacksUp(t *testing.T) {
+	t.Parallel()
 	schemaUnderTheLock := func(r *commandRig, version int, err error) func() (int, error) {
 		return func() (int, error) {
 			if lockable(t, filepath.Join(r.dataDir, "backend.lock")) {
@@ -208,6 +210,7 @@ func TestSnapshotCommandReportsTheSchemaItBacksUp(t *testing.T) {
 }
 
 func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
+	t.Parallel()
 	t.Run("lock held", func(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
@@ -261,6 +264,7 @@ func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 // The space command runs while the version being replaced still holds the
 // data root, so it must answer without the lock and change nothing.
 func TestSpaceCommandAnswersWithoutTheLock(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	cmd := r.command("u1")
 	cmd.AcquireLock = func(context.Context, time.Duration) (*os.File, func(), error) {
@@ -290,6 +294,7 @@ func TestSpaceCommandAnswersWithoutTheLock(t *testing.T) {
 }
 
 func TestTrialRunCommandPreparesAndKeepsTheTrialsDatabase(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -314,6 +319,7 @@ func TestTrialRunCommandPreparesAndKeepsTheTrialsDatabase(t *testing.T) {
 }
 
 func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -345,6 +351,7 @@ func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
 }
 
 func TestTrialRunCommandStopsOnADatabaseChangedSinceTheSnapshot(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -389,6 +396,7 @@ func activations(r *commandRig) int {
 // it: a retry after an interrupted trial runs on that trial's database, and
 // anything else that wrote since is another backend's work.
 func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.T) {
+	t.Parallel()
 	snapshotted := func(t *testing.T) *commandRig {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
@@ -542,6 +550,7 @@ func failRestore(t *testing.T, r *commandRig, fn func()) {
 }
 
 func TestTrialRunCommandRequiresThisUpdatesSnapshot(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
@@ -564,6 +573,7 @@ func TestTrialRunCommandRequiresThisUpdatesSnapshot(t *testing.T) {
 // stops and nothing is restored: the update's recovery belongs to whoever
 // resumes it, and a restore racing that recovery could undo a commit.
 func TestTrialRunCommandStopsWithoutRestoringWhenItsOutputCloses(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -590,6 +600,7 @@ serve_until_stopped`, 1)
 }
 
 func TestRestoreCommandPutsTheSnapshotBackOrFinishesAMarkedOne(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -617,6 +628,7 @@ func TestRestoreCommandPutsTheSnapshotBackOrFinishesAMarkedOne(t *testing.T) {
 }
 
 func TestDiscardCommandKeepsASnapshotARestoreStillNeeds(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {

@@ -20,6 +20,7 @@ import (
 // sees on connect: the thirteen tools in their documented order, and the
 // decision guide as server instructions.
 func TestThreadMCPHandshakeListsEveryToolAndTheGuide(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 	thread, token := remoteMCPThread(t, app, string(provider.Claude))
@@ -81,6 +82,7 @@ func TestThreadMCPHandshakeListsEveryToolAndTheGuide(t *testing.T) {
 // HTTP transport, with the thread's capability token, against real store
 // rows.
 func TestThreadMCPReadToolsAnswerOverTheLoopbackTransport(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	app.configDir = t.TempDir()
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
@@ -204,6 +206,7 @@ func TestThreadMCPReadToolsAnswerOverTheLoopbackTransport(t *testing.T) {
 // thread that ran it answers through its own session's transport, and the
 // answer reaches the sender in the reply to its next call.
 func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	// The turn stays open, which is what lets the answer be a reply rather
 	// than the turn's last words.
@@ -276,6 +279,7 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 // of the background index build: it runs off the boot path and shutdown
 // joins it, so nothing is still writing FTS rows when SQLite closes.
 func TestThreadSearchIndexBuildsAtBootAndJoinsOnShutdown(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := store.Thread{
 		ID: "index-thread", ProjectID: defaultTestProjectID, Title: "Launcher work",
@@ -323,6 +327,7 @@ func TestThreadSearchIndexBuildsAtBootAndJoinsOnShutdown(t *testing.T) {
 // still returns rather than leaving a goroutine writing past the store's
 // close.
 func TestThreadSearchIndexJoinsAfterCancellation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.appCtx, app.appCancel = ctx, cancel
@@ -343,6 +348,7 @@ func TestThreadSearchIndexJoinsAfterCancellation(t *testing.T) {
 // waiting on me, and what happened in a busy turn, without paging through
 // a line per tool call.
 func TestThreadMCPReadsAnswerTheCommonQuestionsInOneCall(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	app.configDir = t.TempDir()
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })

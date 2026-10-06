@@ -16,6 +16,7 @@ import (
 // git's binary heuristic (a NUL inside the first 8000 bytes) zeroing the count.
 // The two boundary cases at exactly 8000 bytes are the load-bearing ones.
 func TestCountAddedLines(t *testing.T) {
+	t.Parallel()
 	// NUL at index 7999 sits *inside* git's 8000-byte probe window -> binary -> 0.
 	nulInProbe := append(bytes.Repeat([]byte("x"), 7999), 0)
 	// NUL at index 8000 sits *past* the probe window -> treated as text; the
@@ -52,6 +53,7 @@ func TestCountAddedLines(t *testing.T) {
 // lives at the untrackedStats level now that the caller owns the Lstat.
 // The FIFO no-hang guard lives in status_fifo_test.go (needs syscall.Mkfifo).
 func TestCountUntrackedFileLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(name, content string) string {
 		p := filepath.Join(dir, name)
@@ -105,7 +107,8 @@ func TestCountUntrackedFileLines(t *testing.T) {
 // sees. The const's generous default makes this impractical to hit with a real
 // fixture, which is why untrackedStats takes budget as a parameter.
 func TestUntrackedStatsBudgetExhaustion(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// Three identical untracked files, 3 lines / 6 bytes each. Identical content
@@ -145,7 +148,8 @@ func TestUntrackedStatsBudgetExhaustion(t *testing.T) {
 // changed file is re-read, and a deleted file's entry leaves the cache so a
 // later re-create with different content is counted fresh.
 func TestUntrackedStatsCacheAvoidsReread(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	path := filepath.Join(repo, "f.txt")
 
@@ -199,7 +203,8 @@ func TestUntrackedStatsCacheAvoidsReread(t *testing.T) {
 // never memoized: caching the partial count would replay it forever once the
 // budget recovers, permanently under-reporting the file.
 func TestUntrackedStatsPartialReadNotCached(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	writeRepoFile(t, repo, "f.txt", "1\n2\n3\n")
@@ -222,7 +227,8 @@ func TestUntrackedStatsPartialReadNotCached(t *testing.T) {
 // re-reading the exact content the memo exists to skip and undercounting
 // the badge to just the early file.
 func TestUntrackedStatsCachedTailSurvivesBudgetExhaustion(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
@@ -255,7 +261,8 @@ func TestUntrackedStatsCachedTailSurvivesBudgetExhaustion(t *testing.T) {
 // memoized (a same-size rewrite in the same mtime tick would replay a stale
 // count forever), and starts being memoized once its mtime quiesces.
 func TestUntrackedStatsFreshWriteNotCached(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	writeRepoFile(t, repo, "f.txt", "1\n2\n")
@@ -293,8 +300,9 @@ func TestUntrackedStatsFreshWriteNotCached(t *testing.T) {
 // scanned ages out of the cache instead of pinning its map for the process
 // lifetime.
 func TestUntrackedStatsCacheTTLSweep(t *testing.T) {
-	repoA := testutil.InitGitRepo(t)
-	repoB := testutil.InitGitRepo(t)
+	t.Parallel()
+	repoA := initGitRepo(t)
+	repoB := initGitRepo(t)
 	core := NewCore()
 	now := time.Now()
 	core.nowFn = func() time.Time { return now }
@@ -328,7 +336,8 @@ func TestUntrackedStatsCacheTTLSweep(t *testing.T) {
 // count it (only the '+++' header is excluded), and so is one starting "++",
 // which the patch prefixes to "+++..." inside the hunk body.
 func TestCountAddedLinesMatchesPanelParse(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	cases := []struct{ name, content string }{
 		{"plain", "a\nb\nc\n"},
 		{"no_trailing_newline", "x\ny"},
@@ -359,7 +368,8 @@ func TestCountAddedLinesMatchesPanelParse(t *testing.T) {
 // read outside the workspace, could hang on a FIFO target, and diverge from the
 // diff panel).
 func TestStatusUntrackedSymlinkNotFollowed(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// 5-line target; if the scan followed the link it would count these 5 for
@@ -391,6 +401,7 @@ func TestStatusUntrackedSymlinkNotFollowed(t *testing.T) {
 // zero - like the panel - while untracked files are still counted, and Status
 // must not error.
 func TestStatusInsertionsNoHeadRepo(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	if err := testutil.RunGitAllowError(repo, "init", "-b", "main"); err != nil {
 		testutil.RunGit(t, repo, "init")
@@ -432,7 +443,8 @@ func TestStatusInsertionsNoHeadRepo(t *testing.T) {
 // all-insertions), proven against git itself as an independent oracle on a
 // fixture that exercises binary, no-trailing-newline, and nested-dir files.
 func TestStatusInsertionsIncludeUntracked(t *testing.T) {
-	repo := testutil.InitGitRepo(t) // README.txt = "hello\n", committed
+	t.Parallel()
+	repo := initGitRepo(t) // README.txt = "hello\n", committed
 	core := NewCore()
 
 	// Tracked edit: rewrite the committed file so there is real churn (and a

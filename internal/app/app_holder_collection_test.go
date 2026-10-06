@@ -72,6 +72,7 @@ func requireHolderGone(t *testing.T, app *App, holder string) {
 // were told the source was deleted when it became the holder; the
 // holder's own delete tells them nothing.
 func TestHolderIsDeletedWhenItsLastForkGoes(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.maintenance.chunkPause = time.Millisecond
 	var mu sync.Mutex
@@ -130,6 +131,7 @@ func TestHolderIsDeletedWhenItsLastForkGoes(t *testing.T) {
 // could delete it, as a crash leaves it, is gone to every client and the
 // next boot deletes it once the first client has read its catalogs.
 func TestReleasedHolderIsDeletedAtBoot(t *testing.T) {
+	t.Parallel()
 	app, path := newTestAppWithStorePath(t)
 	holder, forks := seedHeldSource(t, app, 1)
 	if err := app.DeleteThread(forks[0]); err != nil {

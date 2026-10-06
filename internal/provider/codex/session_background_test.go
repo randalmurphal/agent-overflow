@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestSession_CleanBackgroundTerminals_SuccessRoundTrip drives the happy
@@ -22,6 +23,7 @@ import (
 // and the call would hit the 30s request timeout instead of succeeding,
 // so this also covers the wire method-name assertion.
 func TestSession_CleanBackgroundTerminals_SuccessRoundTrip(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/clean-request.json"
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -48,9 +50,7 @@ done
 
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -100,6 +100,7 @@ done
 // rather than going through a fake process — keeps the test in-process
 // and avoids any flakes from subprocess ordering.
 func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
+	t.Parallel()
 	procCtx, cancelProc := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
 		Binary: "sh",

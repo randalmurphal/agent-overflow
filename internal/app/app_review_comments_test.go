@@ -6,10 +6,10 @@ package app
 // covered through app_bindings_test.go and app_send_test.go.
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +21,7 @@ import (
 )
 
 func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-plan-revision-comments")
 	thread.Provider = string(provider.Claude)
@@ -123,6 +124,7 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 }
 
 func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-plan-revision-message-comments")
 	thread.Provider = string(provider.Claude)
@@ -201,6 +203,7 @@ func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
 }
 
 func TestCreateProposedPlanCommentRejectsOutOfRangeLines(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-plan-comment-range")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -242,6 +245,7 @@ func TestCreateProposedPlanCommentRejectsOutOfRangeLines(t *testing.T) {
 }
 
 func TestCreateProposedPlanCommentDerivesSelectedTextFromPayload(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-plan-comment-selected-text")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -300,8 +304,6 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }

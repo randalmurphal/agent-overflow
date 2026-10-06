@@ -29,6 +29,7 @@ const deleteProjectCleanupTimeout = 30 * time.Second
 // were dropped altogether, because the live run's open turn would trip the
 // thread-activity refusal.
 func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeReliabilityWorkflow(t, configRoot, `
@@ -44,7 +45,7 @@ func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	projectRow := testutil.EnsureProject(t, app.store, testutil.InitGitRepo(t))
+	projectRow := testutil.EnsureProject(t, app.store, initMainGitRepo(t))
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [5ms]\n")
 	startWorkflowEngineForTest(t, app, configRoot)

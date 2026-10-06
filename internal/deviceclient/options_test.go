@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/servercert"
 )
@@ -97,5 +98,47 @@ func TestPinnedTransportDialsThroughTheBoundedDialerByDefault(t *testing.T) {
 	response.Body.Close()
 	if dials.Load() != 1 || saved.Timeout != dialTimeout {
 		t.Fatalf("dials through the bounded dialer = %d, default timeout %v", dials.Load(), saved.Timeout)
+	}
+}
+
+// probeCounter counts the confirmation renewals a client sends.
+type probeCounter struct {
+	next  http.RoundTripper
+	count atomic.Int32
+}
+
+func (p *probeCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == authTokenPath || r.URL.Path == authTokenRecoverPath {
+		p.count.Add(1)
+	}
+	return p.next.RoundTrip(r)
+}
+
+// TestProbeIntervalOptionPacesAwaitActivation: WithProbeInterval sets the
+// pending-confirmation poll of a client built by Open, so a shortened one
+// asks several times in the span the product interval asks once.
+func TestProbeIntervalOptionPacesAwaitActivation(t *testing.T) {
+	be := newBackend(t)
+	be.failureStatus.Store(http.StatusServiceUnavailable)
+	_, dir := openAgainst(t, be, nil)
+	session, err := LoadSession(dir, "backend-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := Open(dir, session, WithProbeInterval(20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The deadline returns while a rotation may still be writing the profile.
+	t.Cleanup(client.WaitRenewal)
+	counter := &probeCounter{next: client.http.Transport}
+	client.http.Transport = counter
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.AwaitActivation(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AwaitActivation through an outage = %v, want the deadline", err)
+	}
+	if got := counter.count.Load(); got < 5 {
+		t.Fatalf("sent %d confirmation renewals in a second at a 20ms interval, want at least 5", got)
 	}
 }

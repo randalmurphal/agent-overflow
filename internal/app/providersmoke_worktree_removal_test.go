@@ -111,7 +111,7 @@ func newProviderSmokeRemovalFixture(t *testing.T, smoke providerSmokeCase, branc
 	var worktreeSlugDir string
 	if claudeCleanup != nil {
 		// The exact slug needs the path on disk; capture it while it exists.
-		dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t), worktreePath)
+		dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t, app), worktreePath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -245,11 +245,11 @@ func (f providerSmokeRemovalFixture) assertTranscriptAtRoot(t *testing.T, sessio
 	if f.smoke.providerName != string(provider.Claude) {
 		return
 	}
-	located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionRef, f.workspace)
+	located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, f.app), sessionRef, f.workspace)
 	if err != nil {
 		t.Fatalf("EXTERNAL REMOVAL FAILED: transcript for %s not locatable from %s: %v", sessionRef, f.workspace, err)
 	}
-	if rootSlug, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t), f.workspace); err != nil || !samePath(filepath.Dir(located), rootSlug) {
+	if rootSlug, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t, f.app), f.workspace); err != nil || !samePath(filepath.Dir(located), rootSlug) {
 		t.Fatalf("EXTERNAL REMOVAL FAILED: transcript sits at %s, want under the root slug %s (err=%v)", located, rootSlug, err)
 	}
 }

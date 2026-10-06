@@ -38,6 +38,7 @@ func newWorkspaceFilesApp(t *testing.T) (*App, WorkspaceRef, string) {
 }
 
 func TestSearchWorkspaceFilesReturnsMatches(t *testing.T) {
+	t.Parallel()
 	app, ref, workspace := newWorkspaceFilesApp(t)
 
 	got, err := app.SearchWorkspaceFiles(ref, "main", 10)
@@ -56,6 +57,7 @@ func TestSearchWorkspaceFilesReturnsMatches(t *testing.T) {
 }
 
 func TestSearchWorkspaceFilesEmptyQueryReturnsAll(t *testing.T) {
+	t.Parallel()
 	app, ref, _ := newWorkspaceFilesApp(t)
 	got, err := app.SearchWorkspaceFiles(ref, "", 50)
 	if err != nil {
@@ -67,6 +69,7 @@ func TestSearchWorkspaceFilesEmptyQueryReturnsAll(t *testing.T) {
 }
 
 func TestSearchWorkspaceFilesUnresolvableWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 
@@ -77,6 +80,7 @@ func TestSearchWorkspaceFilesUnresolvableWorkspace(t *testing.T) {
 }
 
 func TestSearchWorkspaceFilesUnsetSearcher(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	_, err := app.SearchWorkspaceFiles(WorkspaceRef{ProjectID: "x"}, "foo", 10)
 	if err == nil || !strings.Contains(err.Error(), "not initialized") {

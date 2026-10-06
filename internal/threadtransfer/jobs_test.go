@@ -73,10 +73,15 @@ func nextJobSignal(t *testing.T, signal <-chan string) string {
 
 func testJobs(t *testing.T, st *store.Store, source, destination Runner, publish func(store.ThreadTransfer)) *Jobs {
 	t.Helper()
+	return testJobsRetrying(t, st, source, destination, publish, 0)
+}
+
+func testJobsRetrying(t *testing.T, st *store.Store, source, destination Runner, publish func(store.ThreadTransfer), pendingRetry time.Duration) *Jobs {
+	t.Helper()
 	if publish == nil {
 		publish = func(store.ThreadTransfer) {}
 	}
-	j, err := NewJobs(context.Background(), st, source, destination, func(error) string { return "Connection interrupted." }, publish, func(err error) { t.Errorf("job infrastructure: %v", err) })
+	j, err := NewJobs(context.Background(), st, source, destination, func(error) string { return "Connection interrupted." }, publish, func(err error) { t.Errorf("job infrastructure: %v", err) }, pendingRetry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +197,40 @@ func TestTransferJobsRecoverParkedIncomingWorkAfterRestart(t *testing.T) {
 		t.Fatal("restart lost parked activation recovery")
 	}
 	restarted.Close()
+}
+
+// TestTransferJobsRetryPendingOutgoingOnTheirInterval: an outgoing job the
+// destination answers with ErrPending is asked again after the configured
+// pending retry, and the default is PendingRetry.
+func TestTransferJobsRetryPendingOutgoingOnTheirInterval(t *testing.T) {
+	st := jobStore(t)
+	row := createTransferJob(t, st, "outgoing")
+	started := make(chan time.Time, 4)
+	runner := runnerFunc(func(ctx context.Context, id string) (store.ThreadTransfer, error) {
+		select {
+		case started <- time.Now():
+		default:
+		}
+		return store.ThreadTransfer{}, ErrPending
+	})
+	j := testJobsRetrying(t, st, runner, runner, nil, 20*time.Millisecond)
+	first := <-started
+	select {
+	case second := <-started:
+		// The next attempt is stored in whole milliseconds, so it may run up
+		// to 1ms before the full interval.
+		if gap := second.Sub(first); gap < 19*time.Millisecond {
+			t.Fatalf("retried after %s, before the 20ms pending retry", gap)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("pending outgoing job %s was not retried on its 20ms interval", row.ID)
+	}
+	j.Close()
+
+	defaulted := testJobs(t, st, runner, runner, nil)
+	if defaulted.PendingRetry() != PendingRetry {
+		t.Fatalf("default pending retry = %s, want %s", defaulted.PendingRetry(), PendingRetry)
+	}
 }
 
 func TestDestinationHostJobCompletesAfterRequestContextDisappears(t *testing.T) {

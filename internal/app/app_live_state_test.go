@@ -27,6 +27,7 @@ func seedLiveStateTodoThread(t *testing.T, app *App, id string) store.Thread {
 // must not come back on refresh, while a list with work left in it is exactly
 // what a returning user came for.
 func TestGetThreadLiveStateAppliesTodoAutoHide(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		steps    string
@@ -106,6 +107,7 @@ func TestGetThreadLiveStateAppliesTodoAutoHide(t *testing.T) {
 // session is torn down and triage is replaced wholesale — a fresh router over
 // the same store is what a restart leaves behind.
 func TestGetThreadLiveStateReadsTodoWrittenByAPreviousSession(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := seedLiveStateTodoThread(t, app, "live-todo-restart")
 
@@ -142,6 +144,7 @@ func TestGetThreadLiveStateReadsTodoWrittenByAPreviousSession(t *testing.T) {
 // else: the active turn, the queue, and pending approvals are what a refresh
 // is actually for.
 func TestGetThreadLiveStateSurvivesAnUnreadableTodo(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
@@ -186,6 +189,7 @@ func TestGetThreadLiveStateSurvivesAnUnreadableTodo(t *testing.T) {
 // channels: a thread mid-turn is named with its round, a blocked thread with
 // its request ids, and an idle thread not at all.
 func TestListThreadLiveActivityMirrorsPushChannels(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	running := seedLiveStateTodoThread(t, app, "activity-running")
 	blocked := seedLiveStateTodoThread(t, app, "activity-blocked")

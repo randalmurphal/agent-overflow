@@ -6,10 +6,10 @@
 // can make.
 //
 // Split into its own file because the difference between the two is
-// environmental — whether IndexedDB exists — and the import below is
+// environmental (whether IndexedDB exists), and the install below is
 // what supplies it. happy-dom provides none, so a single file could not
 // stage both.
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearDeviceKey, enrollDeviceKey } from './deviceKey';
 import {
@@ -20,6 +20,8 @@ import {
   redeemPairing,
   type PairingPayload,
 } from './deviceSession';
+
+installFakeIndexedDB();
 
 const PAYLOAD: PairingPayload = {
   v: 1,

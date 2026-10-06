@@ -157,6 +157,7 @@ func (f *projectDeleteFixture) assertRowsAndThreadsGone(t *testing.T, threadIDs 
 // there afterwards — the commits the runs produced remain reachable in the
 // user's repository, which the app does not get to rewrite on its way out.
 func TestDeleteProjectCleansUpCheckoutsAndKeepsBranches(t *testing.T) {
+	t.Parallel()
 	f := newProjectDeleteFixture(t, "cleanup-delete")
 	before := f.branchNames(t)
 	if !slices.Contains(before, f.root.Branch) || !slices.Contains(before, f.unit.Branch) {
@@ -185,6 +186,7 @@ func TestDeleteProjectCleansUpCheckoutsAndKeepsBranches(t *testing.T) {
 // override it. The deletion still succeeds — the project is gone either way —
 // and the checkout is reported so the outcome is never a silent partial one.
 func TestDeleteProjectRetainsDirtyCheckoutsAndStillSucceeds(t *testing.T) {
+	t.Parallel()
 	f := newProjectDeleteFixture(t, "dirty-delete")
 	writeDispositionFile(t, f.root.WorktreePath, "dirty.txt", "unsaved\n")
 	before := f.branchNames(t)
@@ -225,6 +227,7 @@ func TestDeleteProjectRetainsDirtyCheckoutsAndStillSucceeds(t *testing.T) {
 // test only covers the paths its fixture reaches; this covers every line in the
 // files that own the flow, including the ones no test drives.
 func TestProjectDeletionSourceCallsNoBranchDeletion(t *testing.T) {
+	t.Parallel()
 	// D23's discard legitimately calls both, and lives in its own files. Renaming
 	// or splitting a file below fails this test loudly rather than silently
 	// dropping the coverage: the list is the flow, and it has to be maintained
@@ -269,6 +272,7 @@ func TestProjectDeletionSourceCallsNoBranchDeletion(t *testing.T) {
 // call. Neither is `host` — both have a remote form — and neither is
 // observe-tier, so a read-only session reaches neither.
 func TestProjectDeletionTransportClassification(t *testing.T) {
+	t.Parallel()
 	want := map[string]transport.Scope{
 		"ProjectDeletionPreview": transport.ScopeGitOperate,
 		"DeleteProject":          transport.ScopeThreadsOperate,
@@ -294,6 +298,7 @@ func TestProjectDeletionTransportClassification(t *testing.T) {
 // An automation on its own is workflow work: the project owns a standing
 // instruction and it goes with the project, checkouts or not.
 func TestDeleteProjectRemovesAutomations(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.CreateProject(t.TempDir())
 	if err != nil {
@@ -327,6 +332,7 @@ func TestDeleteProjectRemovesAutomations(t *testing.T) {
 // as its workspace. Removing it, or deleting the branch it holds, is the one
 // mistake here that could not be undone.
 func TestDeleteProjectNeverRemovesTheProjectCheckout(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "project-workspace-delete")
 	if err := f.app.store.UpdateWorkItemWorkspace(f.root.ID, f.project.Path, "main", "main"); err != nil {
 		t.Fatal(err)
@@ -365,6 +371,7 @@ func TestDeleteProjectNeverRemovesTheProjectCheckout(t *testing.T) {
 }
 
 func TestProjectDeletionPreviewDescribesTheCleanupAndMutatesNothing(t *testing.T) {
+	t.Parallel()
 	f := newProjectDeleteFixture(t, "preview-delete")
 	writeDispositionFile(t, f.root.WorktreePath, "dirty.txt", "unsaved\n")
 	before := f.branchNames(t)
@@ -422,6 +429,7 @@ func TestProjectDeletionPreviewDescribesTheCleanupAndMutatesNothing(t *testing.T
 }
 
 func TestProjectDeletionPreviewReportsNoWorkForAPlainProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project, err := app.CreateProject(t.TempDir())
 	if err != nil {
@@ -452,6 +460,7 @@ func TestProjectDeletionPreviewReportsNoWorkForAPlainProject(t *testing.T) {
 // silently abandoned, and refusing the deletion would strand the project and its
 // runs forever.
 func TestDeleteProjectWithAMissingCheckoutStillCleansUp(t *testing.T) {
+	t.Parallel()
 	f := newProjectDeleteFixture(t, "missing-repo-delete")
 	if err := os.RemoveAll(f.project.Path); err != nil {
 		t.Fatal(err)

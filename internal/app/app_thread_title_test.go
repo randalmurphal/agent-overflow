@@ -141,6 +141,7 @@ func waitForTitleGenerationEvent(t *testing.T, events *threadTitleEvents, thread
 // the generated value, thread:updated is emitted so the frontend sidebar
 // refreshes, and the completion frame lands after it.
 func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-happy")
@@ -198,6 +199,7 @@ func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
 // claim each send fans out its own goroutine of up to two 3-minute CLI
 // attempts.
 func TestMaybeGenerateThreadTitleGuardsAgainstConcurrentRuns(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-guard")
@@ -244,6 +246,7 @@ func TestMaybeGenerateThreadTitleGuardsAgainstConcurrentRuns(t *testing.T) {
 // claim across a failure would make the very failure the auto-heal exists
 // for (provider down on the first turn) permanent.
 func TestMaybeGenerateThreadTitleRetriesAfterAFailedRun(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-retry")
@@ -287,6 +290,7 @@ func TestMaybeGenerateThreadTitleRetriesAfterAFailedRun(t *testing.T) {
 // a second run, and the auto run's own completion frame is what answers
 // the click — one generation, exactly one completion event.
 func TestRegenerateThreadTitleJoinsAnAutoGenerationRun(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-cross-join")
@@ -345,6 +349,7 @@ func TestRegenerateThreadTitleJoinsAnAutoGenerationRun(t *testing.T) {
 // automatic thread titles use the configured text-generation provider and
 // must not be gated by the chat thread's provider.
 func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-codex")
@@ -394,6 +399,7 @@ func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
 // message that happened to be sent: the thread HAS history by then, and
 // the first-turn prompt would name the tangent instead of the thread.
 func TestMaybeGenerateThreadTitleHealsOnLaterSend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-prior")
@@ -445,6 +451,7 @@ func TestMaybeGenerateThreadTitleHealsOnLaterSend(t *testing.T) {
 // falls back to the message in hand rather than leaving the thread
 // "New Thread".
 func TestMaybeGenerateThreadTitleHealFallsBackWithoutContext(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-heal-fallback")
@@ -491,6 +498,7 @@ func TestMaybeGenerateThreadTitleHealFallsBackWithoutContext(t *testing.T) {
 // compare-and-swap matches the stored bytes exactly, so it must swap
 // against those rather than against the Default constant.
 func TestMaybeGenerateThreadTitleCASesAgainstStoredBytes(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-padded")
@@ -516,6 +524,7 @@ func TestMaybeGenerateThreadTitleCASesAgainstStoredBytes(t *testing.T) {
 // TestMaybeGenerateThreadTitleSkipsWhenTitleCustom ensures a thread that has
 // already been renamed (title is NOT the default) is left alone.
 func TestMaybeGenerateThreadTitleSkipsWhenTitleCustom(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-custom")
@@ -544,6 +553,7 @@ func TestMaybeGenerateThreadTitleSkipsWhenTitleCustom(t *testing.T) {
 // guard that prevents the configured text-generation provider from being asked
 // to title a no-op message.
 func TestMaybeGenerateThreadTitleSkipsOnBlankContent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-blank")
@@ -574,6 +584,7 @@ func TestMaybeGenerateThreadTitleSkipsOnBlankContent(t *testing.T) {
 // and moves on. An automatic run's error is still emitted; only the
 // frontend decides whether a user asked for this one.
 func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-error")
@@ -612,6 +623,7 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 // update. (Sanitization converts empty input into the default title, which
 // is also treated as "skip" by the callsite.)
 func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-empty-response")
@@ -646,6 +658,7 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 }
 
 func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-title-codex-cli")
 	thread.WorkspacePath = t.TempDir()
@@ -718,6 +731,7 @@ func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 }
 
 func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -762,6 +776,7 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 // limit, OpenAI down, etc.). The orchestrator must retry with Claude when
 // Claude is also installed, and surface Claude's title.
 func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
@@ -812,6 +827,7 @@ func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) 
 }
 
 func TestGeneratedThreadTitle_Layer2BothFailReturnsPrimaryError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude", "codex")
 
@@ -843,6 +859,7 @@ func TestGeneratedThreadTitle_Layer2BothFailReturnsPrimaryError(t *testing.T) {
 }
 
 func TestGeneratedThreadTitle_Layer2AlternateMissingNoRetry(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// Configured codex; ONLY codex on PATH. Codex CLI fails. There's no
 	// claude to fall back to, so the orchestrator must NOT call the
@@ -871,6 +888,7 @@ func TestGeneratedThreadTitle_Layer2AlternateMissingNoRetry(t *testing.T) {
 }
 
 func TestGeneratedThreadTitle_Layer2ContextCanceledNoRetry(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude", "codex")
 
@@ -905,6 +923,7 @@ func TestGeneratedThreadTitle_Layer2ContextCanceledNoRetry(t *testing.T) {
 // "alternate" search and accidentally points back at Claude (self-retry)
 // or where the alternate-missing branch loses its `ok=false` guard.
 func TestGeneratedThreadTitle_Layer1SubstitutesThenLayer2NoAlternate(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	// Default settings prefer Codex; only Claude is on PATH.

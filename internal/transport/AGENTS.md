@@ -16,9 +16,11 @@ narrow hooks in `Config`.
 
 `Server.Start` returns after binding. Asynchronous serving failures arrive on
 `Server.ServeErr()`. Every listener created by this package must go through
-`bindListener`, including startup, fallback, rebind, and rollback. Auxiliary
-listeners are already-owned transport endpoints and retain their documented
-local-only restrictions.
+`bindListener`, including startup, fallback, and rebind. A rebind never closes
+a socket bound to an address it still needs, because closing a listening
+socket resets the connections queued on it. Auxiliary listeners are
+already-owned transport endpoints and retain their documented local-only
+restrictions.
 
 TLS and cleartext HTTP share one bound address. Certificate selection is by
 SNI: the configured canonical domain receives the domain certificate and every

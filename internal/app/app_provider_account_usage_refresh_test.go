@@ -1,12 +1,12 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,9 +63,7 @@ func writeClaudeRefreshMockBinaryReporting(
 		"printf '%s' '" + rotated + "' > " + shellQuote(credentialPath) + "\n" +
 		"printf '%s\\n' '" + response + "'\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -98,6 +96,7 @@ func expiringUsageClient(t *testing.T, wantBearer string) *http.Client {
 // both the canonical store and the saved slot, or the next switch would
 // restore the retired token.
 func TestSelectedClaudeUsageRefreshRotatesInTheCanonicalHome(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -169,6 +168,7 @@ func TestSelectedClaudeUsageRefreshRotatesInTheCanonicalHome(t *testing.T) {
 // credential fingerprint was dropped each time, sending the next reconciliation
 // off to spawn an identity probe for a login that had not changed.
 func TestSelectedClaudeUsageRefreshWithoutRotationPublishesLimits(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -221,6 +221,7 @@ func TestSelectedClaudeUsageRefreshWithoutRotationPublishesLimits(t *testing.T) 
 // afterwards says nothing about that measurement, so the rings must still
 // receive it rather than going blank on a race the user cannot see.
 func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -267,6 +268,7 @@ func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.
 // an in-flight probe the refresh cannot know which account it measured, so it
 // must publish nothing.
 func TestUsageRefreshWithholdsLimitsWhenTheSelectionMoves(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installUsageTestAccounts(
@@ -354,6 +356,7 @@ func usageClientWritingCredential(
 // without sending anything: the tripwire transport fails the test on any
 // request.
 func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installUsageTestAccounts(t, app, usageTestAccount{
@@ -379,6 +382,7 @@ func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
 // refreshable — the server throttle is per-bearer (observed 2026-08-03, when
 // a provider-wide hold made throttled-but-alive accounts look dead).
 func TestManualUsageRefreshRecordsAPerAccountBackoff(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installUsageTestAccounts(
@@ -406,6 +410,7 @@ func TestManualUsageRefreshRecordsAPerAccountBackoff(t *testing.T) {
 // The selected account waiting out a 429 must not block another card's
 // refresh: that inactive account's own probe goes through and succeeds.
 func TestBackoffOnOneAccountDoesNotBlockAnotherCardsRefresh(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installUsageTestAccounts(
@@ -497,6 +502,7 @@ func rotatedThrottledUsageClient(
 // and the next reconciliation misreads Agent Overflow's own rotation as an
 // external login.
 func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -543,6 +549,7 @@ func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testin
 // somebody else — an external login during the probe. That must not stamp the
 // other account's rotated credential onto this one's slot.
 func TestSelectedClaudeUsageRefreshRejectsADifferentAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)

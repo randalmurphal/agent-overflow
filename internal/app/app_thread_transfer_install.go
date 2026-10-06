@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -405,12 +406,22 @@ func validateTransferredHistory(ctx context.Context, stage string, target store.
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(directory)
-	db, err := store.New(filepath.Join(directory, "history.db"))
+	// The scratch database only informs the result; a cleanup failure is
+	// logged rather than failing a transfer that validated.
+	defer func() {
+		if err := os.RemoveAll(directory); err != nil {
+			log.Printf("app: remove transfer validation directory %s: %v", directory, err)
+		}
+	}()
+	db, err := store.NewFromTemplate(ctx, filepath.Join(directory, "history.db"))
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("app: close transfer validation database: %v", err)
+		}
+	}()
 	if _, err := db.CreateProject(store.Project{ID: target.ProjectID, Path: target.ProjectPath, Name: "Transfer validation"}); err != nil {
 		return err
 	}

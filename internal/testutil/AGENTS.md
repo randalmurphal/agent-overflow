@@ -6,6 +6,10 @@ packages. Test-specific setup stays beside the test that owns it.
 - `app.go` writes mock Claude NDJSON and Codex JSON-RPC executables. Tests use
   them with `internal/kerneltest` isolation to exercise provider pipelines
   without real CLIs.
+- `mockexec/` installs any test's mock executable as a link to one stable
+  wrapper, so macOS assesses a single file instead of each written script. It
+  imports only the standard library, so packages that `testutil` imports can
+  use it too.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network.
 - `store.go` inserts the project row required by thread foreign keys.

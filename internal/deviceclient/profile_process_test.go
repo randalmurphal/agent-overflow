@@ -14,8 +14,10 @@ import (
 	"time"
 )
 
+const profileLockHelperDirEnv = "AO_TEST_PROFILE_LOCK_DIR"
+
 func TestProfileProcessLockHelper(t *testing.T) {
-	dir := os.Getenv("AO_TEST_PROFILE_LOCK_DIR")
+	dir := os.Getenv(profileLockHelperDirEnv)
 	if dir == "" {
 		t.Skip("subprocess helper")
 	}
@@ -29,6 +31,7 @@ func TestProfileProcessLockHelper(t *testing.T) {
 }
 
 func TestProfileLockSurvivesContentionAndReleasesAfterProcessCrash(t *testing.T) {
+	t.Parallel()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +40,7 @@ func TestProfileLockSurvivesContentionAndReleasesAfterProcessCrash(t *testing.T)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestProfileProcessLockHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "AO_TEST_PROFILE_LOCK_DIR="+dir)
+	cmd.Env = append(os.Environ(), profileLockHelperDirEnv+"="+dir)
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

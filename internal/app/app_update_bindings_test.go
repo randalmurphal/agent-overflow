@@ -6,6 +6,7 @@ import (
 )
 
 func TestUpdaterBindingsReportUnsupportedWithoutService(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 
 	availability, err := a.CheckForUpdate()

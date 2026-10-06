@@ -14,6 +14,7 @@ import (
 // --- the projection preference ---------------------------------------
 
 func TestItemWindow_ProjectionPreferenceRidesEachRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
@@ -53,6 +54,7 @@ func TestItemWindow_ProjectionPreferenceRidesEachRequest(t *testing.T) {
 }
 
 func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
@@ -121,6 +123,7 @@ func countPreviewElided(items []store.Item) int {
 // --- the byte backstop ------------------------------------------------
 
 func TestAdmittedRange_GrowsOutwardFromTheAnchor(t *testing.T) {
+	t.Parallel()
 	// Rows just over a tenth of the budget each: ten fit, the eleventh
 	// cannot. From a mid-page anchor the range takes rows from both sides.
 	rowBytes := itemWindowMaxBytes/10 + 1
@@ -153,6 +156,7 @@ func TestAdmittedRange_GrowsOutwardFromTheAnchor(t *testing.T) {
 }
 
 func TestAdmittedRange_OneSideExhaustedSpendsTheRestOnTheOther(t *testing.T) {
+	t.Parallel()
 	rowBytes := itemWindowMaxBytes/10 + 1
 	items := make([]store.Item, 30)
 	for i := range items {
@@ -170,6 +174,7 @@ func TestAdmittedRange_OneSideExhaustedSpendsTheRestOnTheOther(t *testing.T) {
 }
 
 func TestAdmittedRange_AlwaysAdmitsTheAnchorEvenOversized(t *testing.T) {
+	t.Parallel()
 	huge := store.Item{ID: "huge", Summary: strings.Repeat("x", itemWindowMaxBytes*3)}
 	if from, to := admittedRange([]store.Item{huge}, 0, itemWindowMaxBytes); to-from != 1 {
 		t.Fatal("refused the only row on the page; pagination would stall on it forever")
@@ -185,6 +190,7 @@ func TestAdmittedRange_AlwaysAdmitsTheAnchorEvenOversized(t *testing.T) {
 }
 
 func TestAdmittedRange_ClampsAnOutOfRangeAnchor(t *testing.T) {
+	t.Parallel()
 	items := []store.Item{{ID: "a"}, {ID: "b"}}
 	if from, to := admittedRange(items, 7, itemWindowMaxBytes); from != 0 || to != 2 {
 		t.Errorf("anchor past the end: range [%d,%d), want [0,2)", from, to)
@@ -203,6 +209,7 @@ func TestAdmittedRange_ClampsAnOutOfRangeAnchor(t *testing.T) {
 // trim still has to grow from where the READER is, which is the newest
 // shipped row at or before the anchor's coordinate.
 func TestPageAnchorIndex_ResolvesAnAnchorThePageDidNotShip(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-anchor-coord", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -253,6 +260,7 @@ func TestPageAnchorIndex_ResolvesAnAnchorThePageDidNotShip(t *testing.T) {
 }
 
 func TestProjectPage_ReportsWhatItDroppedOnBothSides(t *testing.T) {
+	t.Parallel()
 	rowBytes := itemWindowMaxBytes/4 + 1
 	items := make([]store.Item, 12)
 	for i := range items {
@@ -292,6 +300,7 @@ func TestProjectPage_ReportsWhatItDroppedOnBothSides(t *testing.T) {
 // anchor must survive the backstop or the jump has nothing to land on
 // (this is the failure the message-nav rail hit on a real thread).
 func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-slice-anchor", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -365,6 +374,7 @@ func spentBytes(items []store.Item) int {
 // --- the recovery route -----------------------------------------------
 
 func TestGetThreadItemProjectionSource_ReturnsWhatTheProjectionRemoved(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
@@ -433,6 +443,7 @@ func TestGetThreadItemProjectionSource_ReturnsWhatTheProjectionRemoved(t *testin
 }
 
 func TestScopedPageByteTrimPreservesContextAndEveryHistoryRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-scoped-budget", "claude-sonnet-4-6", "")
 	if err != nil {

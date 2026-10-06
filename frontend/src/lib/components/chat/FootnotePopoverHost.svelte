@@ -50,7 +50,18 @@
   // itself reference another footnote; that chained chip's nearest
   // `.markdown-body` is the popup's own, whose registered source is just
   // the body on display, so chained refs resolve against this root instead.
-  let documentRoot: HTMLElement | undefined;
+  let documentRoot: HTMLElement | undefined = $state(undefined);
+
+  // While a popup is open its body follows the document: a message still
+  // revealing when the chip was clicked holds only part of the definition.
+  // The registered reader is reactive, so this re-resolves only when the
+  // open document's source changes. A rewrite that drops the definition
+  // keeps the last body rather than emptying the popup.
+  $effect(() => {
+    if (documentRoot === undefined || label === '') return;
+    const next = resolveFootnoteBodyAt(documentRoot, label);
+    if (next) body = next;
+  });
 
   // Hover preview (the Wikipedia reference-preview contract): resting the
   // pointer on a chip opens the popup after a short delay, and leaving both

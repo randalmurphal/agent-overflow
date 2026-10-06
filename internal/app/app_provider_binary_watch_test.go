@@ -139,7 +139,7 @@ func writeClaudeProbeMockAt(t *testing.T, path, noise string) {
 // version — otherwise the picker is left describing a binary that is gone
 // and nothing ever retries.
 func TestProviderBinaryUpgradeRefreshesTheCatalogBeforeCommitting(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 
 	// The recheck runs the real zero-token probe, so the configured binary
@@ -177,7 +177,7 @@ func TestProviderBinaryUpgradeRefreshesTheCatalogBeforeCommitting(t *testing.T) 
 		t.Fatalf("probed %d times, want the failed refresh retried", probes)
 	}
 
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	writeClaudeProbeMockAt(t, binary, "2.1.200")
 	app.sweepProviderBinaries()
 	installed, ok := app.providerBinaries.lookupInstalled(string(provider.Claude))
@@ -197,8 +197,7 @@ func TestProviderBinaryUpgradeRefreshesTheCatalogBeforeCommitting(t *testing.T) 
 // carry the old binary's models forward (retained) into the new binary's
 // answer.
 func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
-	resetClaudeProbeCacheForTest()
-	t.Cleanup(resetClaudeProbeCacheForTest)
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 
 	binary := filepath.Join(t.TempDir(), "claude")
@@ -265,7 +264,7 @@ func writeCodexProbeMockAt(t *testing.T, path, noise string) {
 // dropped explicitly; and the recheck runs the app-server probe, whose
 // failure must leave the old version uncommitted so the tick retries.
 func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 
 	binary := filepath.Join(t.TempDir(), "codex")
@@ -317,7 +316,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 
 	// Upgrade whose re-probe succeeds: committed, and the path-keyed model
 	// cache no longer answers for the old build.
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	writeCodexProbeMockAt(t, binary, "0.150.0")
 	app.sweepProviderBinaries()
 	installed, ok := app.providerBinaries.lookupInstalled(string(provider.Codex))
@@ -344,6 +343,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 // thread that is still stale with the same two versions must not re-emit on
 // every tick, and a thread that leaves the set must be reported once.
 func TestReconcileStaleReportsTransitionsOnly(t *testing.T) {
+	t.Parallel()
 	state := &appProviderBinaryWatchState{}
 	stale := staleProviderBinary{provider: "claude", session: "2.1.100", installed: "2.1.200"}
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 )
 
 func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
@@ -64,6 +66,7 @@ func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
 }
 
 func TestProviderBinaryPathHarnessOverrideWinsOverSettings(t *testing.T) {
+	t.Parallel()
 	app := &App{settings: settings.NewService(t.TempDir())}
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": "/real/claude",
@@ -96,6 +99,7 @@ func TestProviderBinaryPathHarnessOverrideWinsOverSettings(t *testing.T) {
 }
 
 func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	statuses, err := app.GetProviderStatuses()
@@ -122,6 +126,7 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 }
 
 func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
+	t.Parallel()
 	app := &App{
 		settings: settings.NewService(t.TempDir()),
 	}
@@ -153,6 +158,7 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 }
 
 func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
@@ -193,6 +199,7 @@ func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
 }
 
 func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
@@ -238,9 +245,7 @@ func createMockBinary(t *testing.T, version string) string {
 
 	script := filepath.Join(t.TempDir(), "mock-binary")
 	contents := "#!/bin/sh\necho '" + version + "'\n"
-	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
-		t.Fatalf("failed to create mock binary: %v", err)
-	}
+	mockexec.Write(t, script, contents)
 	return script
 }
 
@@ -249,9 +254,7 @@ func createKeepAliveBinary(t *testing.T, markerPath string) string {
 
 	script := filepath.Join(t.TempDir(), "mock-provider")
 	contents := fmt.Sprintf("#!/bin/sh\ntouch '%s'\ncat\n", markerPath)
-	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
-		t.Fatalf("failed to create keepalive binary: %v", err)
-	}
+	mockexec.Write(t, script, contents)
 	return script
 }
 

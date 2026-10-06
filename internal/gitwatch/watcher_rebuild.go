@@ -134,7 +134,7 @@ func (w *workspaceWatcher) maybeRebuildWatches() rebuildOutcome {
 	w.stopFn(w.eventsCh)
 	if err := w.installFn(newRoots, w.eventsCh); err != nil {
 		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
-			w.cwd, err, pollFallbackInterval)
+			w.cwd, err, w.pollInterval)
 		return rebuildLostWatches
 	}
 	w.setWatchRoots(newRoots)

@@ -250,6 +250,7 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 // The calling computer's polls are the lease. A job it stops asking about is
 // stopped; a job it keeps asking about runs on past the grace.
 func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
+	t.Parallel()
 	o := logOptions(t, 1024)
 	o.OwnerGrace = 300 * time.Millisecond
 	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {

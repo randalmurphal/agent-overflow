@@ -25,6 +25,7 @@ func durableQueueRows(t *testing.T, app *App, threadID string) []store.FlushQueu
 // register and the provider write the queue row is the message's only copy.
 // It has to be on disk before it is in memory.
 func TestRegisterQueueItemWritesItsDurableRowFirst(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-register")
@@ -70,6 +71,7 @@ func TestRegisterQueueItemWritesItsDurableRowFirst(t *testing.T) {
 // to the provider, so the row's job is done and it must not survive to be
 // restored into the composer at the next boot.
 func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-dispatch")
@@ -113,6 +115,7 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 // The other durable endpoint. A session death puts the queue back in the
 // composer, which is a home the message keeps across a restart on its own.
 func TestSessionDeathRestoreDropsTheDurableRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-session-death")
@@ -142,6 +145,7 @@ func TestSessionDeathRestoreDropsTheDurableRow(t *testing.T) {
 // A REQUEUE is not an endpoint: the provider write failed, the message is
 // still undelivered, and its row stays exactly where it was.
 func TestRequeuedQueueItemKeepsItsDurableRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-requeue")
@@ -182,6 +186,7 @@ func TestRequeuedQueueItemKeepsItsDurableRow(t *testing.T) {
 // so a surviving row would resurrect at the next boot the very messages the
 // user's Stop threw away.
 func TestSessionTeardownDropsDurableQueueRows(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-teardown")
@@ -221,6 +226,7 @@ func TestSessionTeardownDropsDurableQueueRows(t *testing.T) {
 // The boot sweep: every row still present when the process starts is residue
 // from a crash, and it goes into the composer rather than to the provider.
 func TestBootSweepRestoresQueuedMessagesIntoTheComposer(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-boot-sweep")
@@ -290,6 +296,7 @@ func TestBootSweepRestoresQueuedMessagesIntoTheComposer(t *testing.T) {
 // The message text lives in its own column precisely so nothing about the
 // payload can take it away.
 func TestBootSweepRestoresTheMessageOfAnUnreadableRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-boot-sweep-broken")
@@ -321,6 +328,7 @@ func TestBootSweepRestoresTheMessageOfAnUnreadableRow(t *testing.T) {
 // The boot sweep NEVER re-dispatches: a queued message was written against a
 // turn that no longer exists, on a session that is gone.
 func TestBootSweepStartsNoSession(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-boot-no-dispatch")
@@ -352,6 +360,7 @@ func TestBootSweepStartsNoSession(t *testing.T) {
 // exactly like one that died before it, so the retried frame carries the same
 // send id and is answered from the row the first one wrote.
 func TestRegisterQueueItemAnswersARepeatedSendFromItsRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-idempotent-queue")
@@ -400,6 +409,7 @@ func TestRegisterQueueItemAnswersARepeatedSendFromItsRow(t *testing.T) {
 // Idempotency, send path: the repeat is answered from the `user_text` row the
 // first frame persisted, and starts nothing.
 func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
+	t.Parallel()
 	for _, modern := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reconcile-by-send-id=%v", modern), func(t *testing.T) {
 
@@ -487,6 +497,7 @@ func userTextRowCount(t *testing.T, app *App, threadID string) int {
 // The window is bounded, and the id lives in `meta`: a send whose id matches a
 // row is a repeat whatever else is on the thread.
 func TestFindRecordedSendMatchesEitherHome(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-find-recorded")
@@ -542,6 +553,7 @@ func TestFindRecordedSendMatchesEitherHome(t *testing.T) {
 // A reconnect can outlive many messages from another frontend. Retained
 // message identities must still prevent a second dispatch.
 func TestFindRecordedSendSurvivesNewerMessages(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-window")
@@ -573,6 +585,7 @@ func TestFindRecordedSendSurvivesNewerMessages(t *testing.T) {
 // bookkeeping when the durable row is deleted: the row deletion is composed
 // into the settlement rather than replacing it.
 func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("durable-settlement")

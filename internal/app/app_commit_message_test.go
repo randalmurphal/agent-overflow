@@ -28,6 +28,7 @@ func newCommitMsgTestApp(t *testing.T) *App {
 }
 
 func TestGenerateCommitMessage_UnresolvableWorkspaceErrors(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	_, err := app.GenerateCommitMessage(WorkspaceRef{ProjectID: "nope"})
 	if err == nil {
@@ -39,6 +40,7 @@ func TestGenerateCommitMessage_UnresolvableWorkspaceErrors(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_EmptyStagedReturnsNothingToDescribe(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
@@ -53,6 +55,7 @@ func TestGenerateCommitMessage_EmptyStagedReturnsNothingToDescribe(t *testing.T)
 }
 
 func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	// Dirty the repo so there's something to stage.
@@ -109,6 +112,7 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("bonjour\n"), 0o644); err != nil {
@@ -159,6 +163,7 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -209,6 +214,7 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -243,6 +249,7 @@ func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -264,6 +271,7 @@ func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -291,6 +299,7 @@ func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
 // sanitizeLoadedSettings layer coerces invalid values back to the
 // default "codex", so routing still lands on a valid CLI path.
 func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -340,6 +349,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 // but Claude is also installed. The orchestrator retries with Claude and
 // surfaces its structured commit message.
 func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -377,6 +387,7 @@ func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T)
 }
 
 func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -407,6 +418,7 @@ func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -432,6 +444,7 @@ func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
 }
 
 func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
+	t.Parallel()
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
@@ -457,7 +470,16 @@ func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
 }
 
 // initCommitMsgRepo creates a clean git repo with one committed file.
+var commitMsgRepoTemplate gitSnapshotTemplate
+
 func initCommitMsgRepo(t *testing.T) string {
+	t.Helper()
+	return commitMsgRepoTemplate.clone(t, func(t *testing.T) []string {
+		return []string{buildCommitMsgRepo(t)}
+	})[0]
+}
+
+func buildCommitMsgRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {

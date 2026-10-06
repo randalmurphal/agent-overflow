@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -94,7 +95,49 @@ func newTestStorePath(t *testing.T) string {
 }
 
 func copyTestStoreTemplate(destination string) error {
-	source, err := os.Open(testStoreTemplatePath)
+	return copyStoreFile(testStoreTemplatePath, destination)
+}
+
+// fixtures holds the database files fixtureCopy built, by name.
+var fixtures sync.Map
+
+type fixtureFile struct {
+	once sync.Once
+	path string
+	err  error
+}
+
+// fixtureCopy returns a copy, in a directory of the test's, of the
+// database file build writes at the path it is given. The first test that
+// asks for name builds it in the store template's directory; build must
+// leave the file closed, with no WAL.
+func fixtureCopy(t *testing.T, name string, build func(t *testing.T, path string)) string {
+	t.Helper()
+	entry, _ := fixtures.LoadOrStore(name, &fixtureFile{})
+	fixture := entry.(*fixtureFile)
+	fixture.once.Do(func() {
+		fixture.err = fmt.Errorf("the %s fixture build failed in an earlier test", name)
+		path := filepath.Join(filepath.Dir(testStoreTemplatePath), name)
+		build(t, path)
+		if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
+			t.Fatalf("the %s fixture kept a %d-byte WAL a copy would lose", name, info.Size())
+		}
+		fixture.path, fixture.err = path, nil
+	})
+	if fixture.err != nil {
+		t.Fatal(fixture.err)
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := copyStoreFile(fixture.path, path); err != nil {
+		t.Fatalf("copy the %s fixture: %v", name, err)
+	}
+	return path
+}
+
+// copyStoreFile copies a closed database file, one Close left without a
+// WAL, to destination, which must not exist.
+func copyStoreFile(sourcePath, destination string) error {
+	source, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("open template: %w", err)
 	}

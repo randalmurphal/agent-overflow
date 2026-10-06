@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const getSettingsFullPayload = `{
@@ -176,9 +176,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	cfg.Binary = scriptPath
 	if cfg.Env == nil {
 		cfg.Env = map[string]string{}
@@ -294,8 +292,7 @@ func TestGetSettingsUnsupportedIsAskedOnce(t *testing.T) {
 		t.Fatalf("second GetSettings error = %v, want ErrGetSettingsUnsupported", err)
 	}
 
-	time.Sleep(150 * time.Millisecond)
-	lines := waitCapturedLines(t, capturePath, 1)
+	lines := capturedLinesBeforeSentinel(t, s, capturePath)
 	if len(lines) != 1 {
 		t.Fatalf("captured %d control_requests, want exactly one — the second call must not reach the wire: %v", len(lines), lines)
 	}

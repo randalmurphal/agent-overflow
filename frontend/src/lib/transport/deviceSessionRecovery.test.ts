@@ -1,7 +1,9 @@
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { clearDeviceKey, enrollDeviceKey } from './deviceKey';
 import { hasPairedSession, renewPairedSession } from './deviceSession';
+
+installFakeIndexedDB();
 
 const key = 'agent-overflow:deviceSession';
 const header = 'X-AO-Refresh-Recovery';

@@ -67,6 +67,7 @@ func TestNativeRouteChangesInvalidateOnlyAfterUsableAddressChanges(t *testing.T)
 }
 
 func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	var current atomic.Value
 	current.Store([]computerroute.Route(nil))

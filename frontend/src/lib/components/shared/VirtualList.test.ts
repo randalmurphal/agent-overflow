@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import VirtualList from './VirtualList.svelte';
@@ -34,8 +34,14 @@ class StubResizeObserver {
 }
 
 beforeAll(() => {
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-    StubResizeObserver as unknown as typeof ResizeObserver;
+  vi.stubGlobal('ResizeObserver', StubResizeObserver);
+});
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+// The geometry stub shadows Element.prototype's for one test at a time.
+afterEach(() => {
+  delete (HTMLElement.prototype as Partial<HTMLElement>).getBoundingClientRect;
 });
 
 function stubDim(viewportHeight: number) {

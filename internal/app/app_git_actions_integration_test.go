@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func gitActionTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace str
 	t.Helper()
 
 	app = newTestAppWithStore(t)
-	workspace = testutil.InitGitRepo(t)
+	workspace = initMainGitRepo(t)
 
 	// Bare remote for push testing. Using a dedicated parent dir so the
 	// temp-cleanup doesn't interfere with the working repo.
@@ -58,9 +59,7 @@ echo %q
 echo %q 1>&2
 exit %d
 `, stdout, stderr, exitCode)
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -126,6 +125,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 // side-effects happen — GitCommit is self-contained, no calls to GitPush or
 // GitCreatePR are wired from that single binding.
 func TestGitActions_CommitOnly(t *testing.T) {
+	t.Parallel()
 	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	readme := filepath.Join(workspace, "README.txt")
@@ -151,6 +151,7 @@ func TestGitActions_CommitOnly(t *testing.T) {
 // TestGitActions_CommitAndPushNoPR: commit and push, but no PR. Remote
 // must have the new commit reachable.
 func TestGitActions_CommitAndPushNoPR(t *testing.T) {
+	t.Parallel()
 	app, ref, workspace, remote := gitActionTestSetup(t)
 
 	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
@@ -185,6 +186,7 @@ func TestGitActions_CommitAndPushNoPR(t *testing.T) {
 // wrapper surfaces the error -- the commit dialog must then tell the user
 // there's nothing to commit.
 func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
+	t.Parallel()
 	app, ref, _, _ := gitActionTestSetup(t)
 
 	_, err := app.GitCommit(ref, "nothing", "")
@@ -201,6 +203,7 @@ func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
 // configured cannot push. The menu must surface the missing-remote message
 // from the Core, not an obscure git crash.
 func TestGitActions_PushFailsOnNoRemote(t *testing.T) {
+	t.Parallel()
 	app, ref, _, _ := gitActionTestSetup(t)
 
 	// No remote added to the repo. Push should fail with the remote-missing
@@ -239,6 +242,7 @@ func TestGitActions_CreatePRFailsWhenNotPushed(t *testing.T) {
 // committing. Cutting the branch off the current base and committing must
 // land the commit on the new branch.
 func TestGitActions_NewBranchFromCurrent(t *testing.T) {
+	t.Parallel()
 	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	state, err := app.GitCreateBranchFrom(ref, "ship/feature", "main", true)
@@ -281,6 +285,7 @@ func TestGitActions_NewBranchFromCurrent(t *testing.T) {
 // In other words a repeated Commit cannot accidentally produce two commits,
 // which matters because a retry from the dialog wires to the same binding.
 func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
+	t.Parallel()
 	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	feature := filepath.Join(workspace, "feature.txt")
@@ -331,9 +336,7 @@ for arg in "$@"; do
 done
 echo "https://example.com/pr/draft-flag=$found_draft"
 `
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	// draft=false: gh is invoked without --draft.

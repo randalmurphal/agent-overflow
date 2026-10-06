@@ -42,6 +42,7 @@ import (
 // This test owns the cross-piece glue: a real wire-shaped event flow
 // from register through wire echo with the dispatcher in place.
 func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-e2e-codex")
@@ -213,6 +214,7 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 // `provider_item_id`, the triage merge no-op'd, and no upsert
 // emission carried the stamp downstream.
 func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("parser-triage-seam")
@@ -318,6 +320,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 // id even though that row is deferred until echo, so the implementing
 // link is stable end-to-end.
 func TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-implement-plan")

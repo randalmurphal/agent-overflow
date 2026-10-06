@@ -7,12 +7,14 @@ import (
 )
 
 func TestIsNoActiveTurnRaceSentinel(t *testing.T) {
+	t.Parallel()
 	if !IsNoActiveTurnRace(ErrNoActiveTurn) {
 		t.Fatal("IsNoActiveTurnRace(ErrNoActiveTurn) = false, want true")
 	}
 }
 
 func TestIsNoActiveTurnRaceWrappedSentinel(t *testing.T) {
+	t.Parallel()
 	wrapped := fmt.Errorf("steer: %w", ErrNoActiveTurn)
 	if !IsNoActiveTurnRace(wrapped) {
 		t.Fatalf("IsNoActiveTurnRace(wrapped sentinel) = false, want true; err=%v", wrapped)
@@ -20,6 +22,7 @@ func TestIsNoActiveTurnRaceWrappedSentinel(t *testing.T) {
 }
 
 func TestIsNoActiveTurnRaceWireSubstring(t *testing.T) {
+	t.Parallel()
 	// Mirror the upstream JSON-RPC error text; the substring is the
 	// authoritative classifier per codex-rs/core/src/session/mod.rs.
 	wireErr := errors.New("codex: turn/steer rpc: InvalidRequest: NoActiveTurn")
@@ -29,18 +32,21 @@ func TestIsNoActiveTurnRaceWireSubstring(t *testing.T) {
 }
 
 func TestIsNoActiveTurnRaceUnrelatedError(t *testing.T) {
+	t.Parallel()
 	if IsNoActiveTurnRace(errors.New("network: connection reset")) {
 		t.Fatal("IsNoActiveTurnRace(unrelated) = true, want false")
 	}
 }
 
 func TestIsNoActiveTurnRaceNil(t *testing.T) {
+	t.Parallel()
 	if IsNoActiveTurnRace(nil) {
 		t.Fatal("IsNoActiveTurnRace(nil) = true, want false")
 	}
 }
 
 func TestIsAmbiguousSteerTimeoutMatchesTurnSteer(t *testing.T) {
+	t.Parallel()
 	timeoutErr := &RequestTimeoutError{Method: "turn/steer"}
 	if !IsAmbiguousSteerTimeout(timeoutErr) {
 		t.Fatalf("IsAmbiguousSteerTimeout(turn/steer timeout) = false, want true; err=%v", timeoutErr)
@@ -48,6 +54,7 @@ func TestIsAmbiguousSteerTimeoutMatchesTurnSteer(t *testing.T) {
 }
 
 func TestIsAmbiguousSteerTimeoutIgnoresOtherMethods(t *testing.T) {
+	t.Parallel()
 	timeoutErr := &RequestTimeoutError{Method: "message/send"}
 	if IsAmbiguousSteerTimeout(timeoutErr) {
 		t.Fatalf("IsAmbiguousSteerTimeout(message/send timeout) = true, want false; err=%v", timeoutErr)
@@ -55,6 +62,7 @@ func TestIsAmbiguousSteerTimeoutIgnoresOtherMethods(t *testing.T) {
 }
 
 func TestIsAmbiguousSteerTimeoutIgnoresNonTimeout(t *testing.T) {
+	t.Parallel()
 	if IsAmbiguousSteerTimeout(errors.New("some other error")) {
 		t.Fatal("IsAmbiguousSteerTimeout(non-timeout error) = true, want false")
 	}

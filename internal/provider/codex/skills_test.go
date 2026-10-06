@@ -40,6 +40,7 @@ const skillsListWireSample = `{"data":[{
 }]}`
 
 func TestParseSkillsListProjectsEveryConsumedField(t *testing.T) {
+	t.Parallel()
 	entries, err := parseSkillsList(json.RawMessage(skillsListWireSample))
 	if err != nil {
 		t.Fatalf("parseSkillsList: %v", err)
@@ -103,6 +104,7 @@ func TestParseSkillsListProjectsEveryConsumedField(t *testing.T) {
 }
 
 func TestParseSkillsListUsesLegacyShortDescriptionWhenInterfaceHasNone(t *testing.T) {
+	t.Parallel()
 	entries, err := parseSkillsList(json.RawMessage(
 		`{"data":[{"cwd":"/repo","skills":[{"name":"s","description":"d",` +
 			`"shortDescription":"legacy","interface":{"displayName":"S"},` +
@@ -117,6 +119,7 @@ func TestParseSkillsListUsesLegacyShortDescriptionWhenInterfaceHasNone(t *testin
 }
 
 func TestParseSkillsListDropsUninvocableSkills(t *testing.T) {
+	t.Parallel()
 	// Both name and path are required to invoke a skill (the `$name` text
 	// token and the structured input's path), so an entry missing either
 	// must not reach a menu.
@@ -136,6 +139,7 @@ func TestParseSkillsListDropsUninvocableSkills(t *testing.T) {
 }
 
 func TestParseSkillsListRejectsEmptyAndMalformedBodies(t *testing.T) {
+	t.Parallel()
 	if _, err := parseSkillsList(nil); err == nil {
 		t.Fatal("empty response must be an error, not an empty skill list")
 	}
@@ -145,6 +149,7 @@ func TestParseSkillsListRejectsEmptyAndMalformedBodies(t *testing.T) {
 }
 
 func TestBuildSkillsListParamsRequiresAbsoluteCwds(t *testing.T) {
+	t.Parallel()
 	if _, _, err := buildSkillsListParams(nil, false); err == nil {
 		t.Fatal("empty cwds must be rejected: the wire's default is a property of whichever process answers")
 	}
@@ -178,6 +183,7 @@ func TestBuildSkillsListParamsRequiresAbsoluteCwds(t *testing.T) {
 }
 
 func TestSkillsListParamsRoundTripToTheWireShape(t *testing.T) {
+	t.Parallel()
 	params, _, err := buildSkillsListParams([]string{"/repo"}, true)
 	if err != nil {
 		t.Fatalf("buildSkillsListParams: %v", err)
@@ -192,6 +198,7 @@ func TestSkillsListParamsRoundTripToTheWireShape(t *testing.T) {
 }
 
 func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-skills")
 
 	type result struct {
@@ -261,6 +268,7 @@ func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
 }
 
 func TestSessionListSkillsRejectsBadCwdsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-skills-guard")
 	if _, err := s.ListSkills(context.Background(), nil, false); err == nil {
 		t.Fatal("ListSkills with no cwds must fail")
@@ -274,6 +282,7 @@ func TestSessionListSkillsRejectsBadCwdsBeforeWriting(t *testing.T) {
 }
 
 func TestSkillsFetcherRejectsMisconfigurationWithoutSpawning(t *testing.T) {
+	t.Parallel()
 	// A missing binary must be a caller error, never a spawn attempt: the
 	// repo forbids tests reaching a real provider binary, and production
 	// wants the same specific message rather than an exec failure.
@@ -290,6 +299,7 @@ func TestSkillsFetcherRejectsMisconfigurationWithoutSpawning(t *testing.T) {
 }
 
 func TestSkillsFetcherDrivesAFakeAppServer(t *testing.T) {
+	t.Parallel()
 	binary := writeSkillsListFakeCodex(t)
 	fetcher := &SkillsFetcher{Binary: binary, WorkDir: t.TempDir(), Timeout: 10 * time.Second}
 
@@ -307,6 +317,7 @@ func TestSkillsFetcherDrivesAFakeAppServer(t *testing.T) {
 }
 
 func TestSkillsChangedIsConsumedAndNeverOptedOut(t *testing.T) {
+	t.Parallel()
 	// The opt-out list is the complement of what this package consumes, so
 	// claiming skills/changed as a side channel must be what keeps it
 	// subscribed — with no second edit to remember.
@@ -321,6 +332,7 @@ func TestSkillsChangedIsConsumedAndNeverOptedOut(t *testing.T) {
 }
 
 func TestDispatchSkillsChangedFiresTheHandler(t *testing.T) {
+	t.Parallel()
 	s := &Session{threadID: testThread}
 	fired := 0
 	s.SetSkillsChangedHandler(func() { fired++ })

@@ -39,6 +39,7 @@ func captureSettingsBroadcasts(t *testing.T, app *App) *settingsBroadcasts {
 }
 
 func TestUpdateSettingsBroadcastsOneFramePerTier(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	broadcasts := captureSettingsBroadcasts(t, app)
 
@@ -57,6 +58,7 @@ func TestUpdateSettingsBroadcastsOneFramePerTier(t *testing.T) {
 }
 
 func TestUpdateSettingsWithNoChangeBroadcastsNothing(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
@@ -75,6 +77,7 @@ func TestUpdateSettingsWithNoChangeBroadcastsNothing(t *testing.T) {
 // their own service methods, which is exactly the shape a per-call-site emit
 // would have missed.
 func TestEverySettingsBindingBroadcasts(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		write func(*App) error
@@ -121,6 +124,7 @@ func TestEverySettingsBindingBroadcasts(t *testing.T) {
 // endpoint tokens and sensitive environment values and this channel must not
 // become the way around that.
 func TestSettingsBroadcastCarriesNoValues(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	broadcasts := captureSettingsBroadcasts(t, app)
 	const secret = "s3cret-value"
@@ -139,6 +143,7 @@ func TestSettingsBroadcastCarriesNoValues(t *testing.T) {
 // through the single helper that also arms the broadcast. Test fixtures are
 // exempt on purpose: a fixture that never emits is a fixture, not a defect.
 func TestSettingsServiceIsInstalledThroughOneHelper(t *testing.T) {
+	t.Parallel()
 	// This suite runs from the repository root (see TestMain), so the package
 	// is named explicitly rather than scanned as ".".
 	const packageDir = "internal/app"

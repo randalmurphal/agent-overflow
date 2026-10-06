@@ -9,15 +9,18 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseThreadForkResponseRejectsMissingThreadID(t *testing.T) {
+	t.Parallel()
 	if _, err := parseThreadForkResponse(json.RawMessage(`{"thread":{"turns":[]}}`)); err == nil {
 		t.Fatal("expected missing thread.id to fail")
 	}
 }
 
 func TestParseThreadForkResponseReadsThreadIDWithoutTurns(t *testing.T) {
+	t.Parallel()
 	result, err := parseThreadForkResponse(json.RawMessage(
 		`{"thread":{"id":"fork-1","turns":[{"id":"turn-a"},{"id":"turn-b"}]}}`,
 	))
@@ -30,6 +33,7 @@ func TestParseThreadForkResponseReadsThreadIDWithoutTurns(t *testing.T) {
 }
 
 func TestParseThreadForkResponseAcceptsExcludedTurns(t *testing.T) {
+	t.Parallel()
 	result, err := parseThreadForkResponse(json.RawMessage(`{"thread":{"id":"fork-1","turns":[]}}`))
 	if err != nil {
 		t.Fatalf("parse fork response: %v", err)
@@ -42,7 +46,7 @@ func TestParseThreadForkResponseAcceptsExcludedTurns(t *testing.T) {
 // newForkMockSession spins up a Session against a shell mock whose
 // thread/fork handler echoes the request line to stderr (so tests can
 // assert the params AO sent) and answers with the provided result JSON.
-func newForkMockSession(t *testing.T, forkResult, turnsListResult string) *Session {
+func newForkMockSession(t *testing.T, forkResult, turnsListResult string) (*Session, forkCapture) {
 	t.Helper()
 	script := `#!/bin/bash
 while IFS= read -r line; do
@@ -71,36 +75,40 @@ done
 `
 	dir := t.TempDir()
 	scriptPath := dir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
-	t.Setenv("FORK_REQUEST_FILE", dir+"/fork-request.json")
-	t.Setenv("FORK_TURNS_REQUEST_FILE", dir+"/fork-turns-request.json")
+	mockexec.Write(t, scriptPath, script)
+	capture := forkCapture{request: dir + "/fork-request.json", turns: dir + "/fork-turns-request.json"}
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
+		Env:     map[string]string{"FORK_REQUEST_FILE": capture.request, "FORK_TURNS_REQUEST_FILE": capture.turns},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s
+	return s, capture
 }
 
-func readForkRequest(t *testing.T) string {
+// forkCapture names the files the fork mock writes its requests to.
+type forkCapture struct {
+	request string
+	turns   string
+}
+
+func readForkRequest(t *testing.T, capture forkCapture) string {
 	t.Helper()
-	data, err := os.ReadFile(os.Getenv("FORK_REQUEST_FILE"))
+	data, err := os.ReadFile(capture.request)
 	if err != nil {
 		t.Fatalf("read captured fork request: %v", err)
 	}
 	return string(data)
 }
 
-func readForkTurnsRequest(t *testing.T) string {
+func readForkTurnsRequest(t *testing.T, capture forkCapture) string {
 	t.Helper()
-	data, err := os.ReadFile(os.Getenv("FORK_TURNS_REQUEST_FILE"))
+	data, err := os.ReadFile(capture.turns)
 	if err != nil {
 		t.Fatalf("read captured fork turns request: %v", err)
 	}
@@ -108,7 +116,8 @@ func readForkTurnsRequest(t *testing.T) string {
 }
 
 func TestSessionForkAtSendsLastTurnIdAndValidatesTail(t *testing.T) {
-	s := newForkMockSession(
+	t.Parallel()
+	s, capture := newForkMockSession(
 		t,
 		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
 		`{"data":[{"id":"turn-b"}],"nextCursor":null}`,
@@ -120,14 +129,14 @@ func TestSessionForkAtSendsLastTurnIdAndValidatesTail(t *testing.T) {
 	if forkedID != "mock-fork-1" {
 		t.Fatalf("ForkAt = %q, want mock-fork-1", forkedID)
 	}
-	request := readForkRequest(t)
+	request := readForkRequest(t, capture)
 	if !strings.Contains(request, `"lastTurnId":"turn-b"`) {
 		t.Fatalf("fork request missing lastTurnId param: %s", request)
 	}
 	if !strings.Contains(request, `"excludeTurns":true`) {
 		t.Fatalf("fork request must exclude transcript turns: %s", request)
 	}
-	turnsRequest := readForkTurnsRequest(t)
+	turnsRequest := readForkTurnsRequest(t, capture)
 	for _, want := range []string{
 		`"threadId":"mock-fork-1"`,
 		`"limit":1`,
@@ -141,7 +150,8 @@ func TestSessionForkAtSendsLastTurnIdAndValidatesTail(t *testing.T) {
 }
 
 func TestSessionForkAtRejectsMismatchedSurvivingTail(t *testing.T) {
-	s := newForkMockSession(
+	t.Parallel()
+	s, _ := newForkMockSession(
 		t,
 		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
 		`{"data":[{"id":"turn-c"}],"nextCursor":null}`,
@@ -153,7 +163,8 @@ func TestSessionForkAtRejectsMismatchedSurvivingTail(t *testing.T) {
 }
 
 func TestSessionFullForkOmitsLastTurnIdAndSkipsTailValidation(t *testing.T) {
-	s := newForkMockSession(t, `{"thread":{"id":"mock-fork-2","turns":[]}}`, `{}`)
+	t.Parallel()
+	s, capture := newForkMockSession(t, `{"thread":{"id":"mock-fork-2","turns":[]}}`, `{}`)
 	forkedID, err := s.Fork(context.Background())
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
@@ -161,19 +172,20 @@ func TestSessionFullForkOmitsLastTurnIdAndSkipsTailValidation(t *testing.T) {
 	if forkedID != "mock-fork-2" {
 		t.Fatalf("Fork = %q, want mock-fork-2", forkedID)
 	}
-	if request := readForkRequest(t); strings.Contains(request, "lastTurnId") {
+	if request := readForkRequest(t, capture); strings.Contains(request, "lastTurnId") {
 		t.Fatalf("full fork must not send lastTurnId: %s", request)
 	}
-	if request := readForkRequest(t); !strings.Contains(request, `"excludeTurns":true`) {
+	if request := readForkRequest(t, capture); !strings.Contains(request, `"excludeTurns":true`) {
 		t.Fatalf("full fork must exclude transcript turns: %s", request)
 	}
-	if _, err := os.Stat(os.Getenv("FORK_TURNS_REQUEST_FILE")); !os.IsNotExist(err) {
+	if _, err := os.Stat(capture.turns); !os.IsNotExist(err) {
 		t.Fatalf("full fork must not list turns for tail validation; stat err = %v", err)
 	}
 }
 
 func TestSessionForkAtRejectsEmptyTailPageWithContinuation(t *testing.T) {
-	s := newForkMockSession(
+	t.Parallel()
+	s, _ := newForkMockSession(
 		t,
 		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
 		`{"data":[],"nextCursor":"unexpected-more"}`,
@@ -185,7 +197,8 @@ func TestSessionForkAtRejectsEmptyTailPageWithContinuation(t *testing.T) {
 }
 
 func TestSessionForkAtRejectsTurnShellWithoutID(t *testing.T) {
-	s := newForkMockSession(
+	t.Parallel()
+	s, _ := newForkMockSession(
 		t,
 		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
 		`{"data":[{"id":"  "}],"nextCursor":null}`,
@@ -197,6 +210,7 @@ func TestSessionForkAtRejectsTurnShellWithoutID(t *testing.T) {
 }
 
 func TestSessionForkWithMock(t *testing.T) {
+	t.Parallel()
 	script := `#!/bin/bash
 while IFS= read -r line; do
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
@@ -218,9 +232,7 @@ done
 `
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -272,9 +284,7 @@ while IFS= read -r line; do
 done
 `
 	path := dir + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -289,6 +299,7 @@ const (
 // dies with the process and its writer lock with it. The source id travels
 // in the fork params, nothing else names it.
 func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := dir + "/requests.jsonl"
 	scriptPath := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
@@ -335,6 +346,7 @@ func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
 // A fork with no anchor keeps the whole history: no lastTurnId travels, and
 // no tail is read, because there is no cut to validate against one.
 func TestForkThreadWithoutAnAnchorSendsNoLastTurnIdAndReadsNoTail(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := dir + "/requests.jsonl"
 	binary := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
@@ -366,6 +378,7 @@ func TestForkThreadWithoutAnAnchorSendsNoLastTurnIdAndReadsNoTail(t *testing.T) 
 // A destination that refuses the cut fails the fork with its own words, and
 // the throwaway process it ran on does not outlive the call.
 func TestForkThreadSurfacesTheAppServersRefusalAndClosesTheProcess(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := dir + "/requests.jsonl"
 	binary := forkThreadMockBinary(t, dir, requestLog, forkErrorReply)
@@ -396,6 +409,7 @@ func TestForkThreadSurfacesTheAppServersRefusalAndClosesTheProcess(t *testing.T)
 }
 
 func TestForkThreadRequiresASource(t *testing.T) {
+	t.Parallel()
 	if _, err := ForkThread(context.Background(), ForkSpec{Binary: "/nonexistent/codex"}); err == nil {
 		t.Fatal("ForkThread() error = nil, want missing source failure")
 	}

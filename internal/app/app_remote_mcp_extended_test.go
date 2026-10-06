@@ -25,6 +25,7 @@ import (
 // the long-command and file/log conveniences must preserve the same ownership
 // and retry contract as a normal argv job. No provider process is started.
 func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source := identityApp(t)

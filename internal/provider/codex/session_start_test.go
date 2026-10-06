@@ -3,15 +3,16 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestCodexNewSessionWithMock(t *testing.T) {
+	t.Parallel()
 	// Create a mock Codex app-server script that responds to JSON-RPC requests.
 	script := `#!/bin/bash
 while IFS= read -r line; do
@@ -23,9 +24,7 @@ done
 `
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
@@ -80,6 +79,7 @@ done
 // the session with a human on the other end of approvals while the thread row,
 // the picker, and the user all say a reviewer is answering them.
 func TestSessionStartVerifiesApprovalsReviewerEcho(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		mode         provider.RuntimeMode

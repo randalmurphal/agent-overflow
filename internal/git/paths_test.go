@@ -7,6 +7,7 @@ import (
 )
 
 func TestCanonicalPathResolvesSymlinks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
 	if err := os.Mkdir(real, 0o755); err != nil {
@@ -25,6 +26,7 @@ func TestCanonicalPathResolvesSymlinks(t *testing.T) {
 }
 
 func TestCanonicalPathCleansRedundantSegments(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dirty := filepath.Join(dir, "a", "..", "b", ".")
 	got := CanonicalPath(dirty)
@@ -39,6 +41,7 @@ func TestCanonicalPathCleansRedundantSegments(t *testing.T) {
 }
 
 func TestCanonicalPathResolvesMissingPathThroughExistingAncestor(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	nonexistent := filepath.Join(dir, "does", "not", "..", "not", "exist")
 	got := CanonicalPath(nonexistent)
@@ -56,6 +59,7 @@ func TestCanonicalPathResolvesMissingPathThroughExistingAncestor(t *testing.T) {
 // other spelling: git records the resolved path, a thread row may hold the
 // link's.
 func TestSameFilesystemPathForDeletedDirectoryBelowSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
 	if err := os.MkdirAll(filepath.Join(real, "worktree"), 0o755); err != nil {
@@ -80,6 +84,7 @@ func TestSameFilesystemPathForDeletedDirectoryBelowSymlink(t *testing.T) {
 }
 
 func TestCanonicalPathOfEmptyAndRelativePaths(t *testing.T) {
+	t.Parallel()
 	if got := CanonicalPath(""); got != "." {
 		t.Fatalf("CanonicalPath(\"\") = %q, want \".\"", got)
 	}
@@ -90,6 +95,7 @@ func TestCanonicalPathOfEmptyAndRelativePaths(t *testing.T) {
 }
 
 func TestSameFilesystemPathThroughSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
 	if err := os.Mkdir(real, 0o755); err != nil {
@@ -106,6 +112,7 @@ func TestSameFilesystemPathThroughSymlink(t *testing.T) {
 }
 
 func TestSameFilesystemPathDifferentPaths(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a")
 	b := filepath.Join(dir, "b")
@@ -122,6 +129,7 @@ func TestSameFilesystemPathDifferentPaths(t *testing.T) {
 }
 
 func TestSameFilesystemPathIdenticalPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if !SameFilesystemPath(dir, dir) {
 		t.Fatalf("SameFilesystemPath(%q, %q) = false, want true", dir, dir)

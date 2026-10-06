@@ -153,6 +153,7 @@ func (f *requestFixture) userRow(t *testing.T, threadID, token string) store.Ite
 // and the attribution, the mock answers, and the turn that consumed the
 // message settles the request with that answer.
 func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the launcher builds clean now")
 
@@ -219,6 +220,7 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 // A request's own turn settles it and no other turn does. A plain user
 // message in the target thread runs a turn of its own, which answers nobody.
 func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "first answer", "second answer")
 
@@ -264,6 +266,7 @@ func (f *requestFixture) busyThread(t *testing.T, id string) store.Thread {
 // the queued path: a message waiting on a turn is not running, so nothing can
 // settle it, and cancelling the request takes the message back out.
 func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "busy")
 
@@ -326,6 +329,7 @@ func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 // second time. An agent retrying a cancel it lost the answer to must not be
 // able to rewrite the outcome.
 func TestThreadCancelOfASettledRequestChangesNothing(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "busy-settled")
 
@@ -368,6 +372,7 @@ func TestThreadCancelOfASettledRequestChangesNothing(t *testing.T) {
 // A thread cannot send to or ask itself, whatever the tools layer resolved a
 // moment earlier.
 func TestThreadRequestRefusesSendingToTheCallersOwnThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	_, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{ThreadID: f.caller.ID, Message: "hello me"})
 	if code := publicCode(t, err); code != threadtools.CodeSelfSend {
@@ -393,6 +398,7 @@ func TestThreadRequestRefusesSendingToTheCallersOwnThread(t *testing.T) {
 // safe: the question goes to a hidden read-only fork of the target's tail,
 // and the fork is gone once the answer is stored somewhere that outlives it.
 func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the retry budget is three attempts")
 	target := f.forkableThread(t, "ask-source")
@@ -463,6 +469,7 @@ func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
 // either side of the mapping, or a new stored state nobody translated, has
 // to break this test rather than reach an agent as an unknown word.
 func TestEveryStoredRequestValueHasAToolWord(t *testing.T) {
+	t.Parallel()
 	states := map[string]string{
 		store.ThreadRequestUnconfirmed: "unconfirmed",
 		store.ThreadRequestAccepted:    "accepted",
@@ -520,6 +527,7 @@ func TestEveryStoredRequestValueHasAToolWord(t *testing.T) {
 // mode is chosen on the way to the fork and a test that forks directly would
 // not notice the tool handing it a different one.
 func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	// The turn stays open, so the fork is still there to read: an ask that
 	// settles deletes its scratch thread.
@@ -563,6 +571,7 @@ func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
 // operate threads but not act without approval must not be able to start
 // autonomous work through thread_spawn or thread_send.
 func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "on it")
 	if err := f.app.initIdentity("backend-under-test"); err != nil {
@@ -623,6 +632,7 @@ func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
 // left for the next boot: the retry that finds it reads a refusal, the
 // receipt reads interrupted, and no second thread is created for it.
 func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	adapter := f.adapter()
 	origin, err := adapter.localOrigin(f.callerIdentity())
@@ -660,6 +670,7 @@ func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 // caller reads a refusal and makes the request again, and a retry that found
 // the first thread still there would be spawning the same work twice.
 func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	// A thread with no project has nowhere to create a group, which is the
 	// refusal that can only be reached once the new thread exists.
@@ -667,7 +678,7 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	source.ProjectID = ""
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "spawn-group-failure"
-	fixture := newMidTurnForkFixture(t, "spawn-group-failure", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, f.app), "spawn-group-failure", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	if err := f.app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -705,12 +716,8 @@ func threadIDsInStore(t *testing.T, app *App) []string {
 // disk, a session ref on the row, and a stamped user message to cut at.
 func (f *requestFixture) forkableThread(t *testing.T, sessionID string) store.Thread {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve isolated home: %v", err)
-	}
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
+	writeClaudeProjectSession(t, testProviderHome(t, f.app), workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"three attempts"}]}}
 `)
 	thread, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
@@ -754,6 +761,7 @@ func (f *requestFixture) awaitRequestState(t *testing.T, token string, want ...s
 // promise the ack makes: nobody is parked, so the answer is queued into the
 // caller's thread as a message it will read on its next turn.
 func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the migration is reversible")
 	// The caller is mid-turn, so the wake queues at the turn boundary and
@@ -823,6 +831,7 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 // A wait that runs out returns the work as still running and arms the wake,
 // so the answer is never dropped between the two delivery paths.
 func TestThreadRequestWaitTimeoutArmsTheWake(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "slow")
 
@@ -846,6 +855,7 @@ func TestThreadRequestWaitTimeoutArmsTheWake(t *testing.T) {
 // An interrupt of the caller's turn ends the calls it was blocking without
 // touching the work they were waiting for.
 func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "unhurried")
 
@@ -895,6 +905,7 @@ func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
 // agent left, the answer landed, and reading it in a status reply is what
 // delivers it. No message is owed afterwards.
 func TestThreadStatusReattachesAndCountsAsDelivery(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the index rebuild took nine minutes")
 
@@ -981,6 +992,7 @@ func (f *requestFixture) targetIdentity(t *testing.T, threadID string) threadtoo
 // answer, different text is a refusal, and a token belonging to another
 // thread is not answerable here at all.
 func TestThreadReplyAnswersOnceAndRefusesASecondAnswer(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "starting on it")
 	ack := f.runningRequest(t, "how many rows did the backfill touch?")
@@ -1031,6 +1043,7 @@ func TestThreadReplyAnswersOnceAndRefusesASecondAnswer(t *testing.T) {
 // for a late reply, so the reply is refused with a pointer at thread_send
 // instead of being stored where nothing will collect it.
 func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "looking into it")
 	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
@@ -1070,6 +1083,7 @@ func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
 // the sender was already told the turn produced no answer, so the late text
 // is stored and delivered as a second wake.
 func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "looking into it")
 	// The caller is mid-turn so both wakes stay in the queue to be read.
@@ -1122,6 +1136,7 @@ func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
 // A turn that fails settles the request as errored with what the provider
 // said, so the sender learns the work did not happen.
 func TestThreadRequestSettlesErroredWhenTheTurnFails(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{
 		`{"type":"system","subtype":"init","session_id":"sess-error","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
@@ -1152,6 +1167,7 @@ func TestThreadRequestSettlesErroredWhenTheTurnFails(t *testing.T) {
 // A target that has stopped to ask a person something ends the wait without
 // settling: the person owns the answer now.
 func TestThreadStatusReturnsBlockedWhenTheTargetNeedsAPerson(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "waiting-on-a-person")
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
@@ -1192,6 +1208,7 @@ func TestThreadStatusReturnsBlockedWhenTheTargetNeedsAPerson(t *testing.T) {
 // A request belongs to the thread that made it. Another thread can neither
 // read it nor stop it.
 func TestThreadRequestsAreScopedToTheirCaller(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "shared")
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
@@ -1235,7 +1252,8 @@ func TestThreadRequestsAreScopedToTheirCaller(t *testing.T) {
 // commits are in it. A base the project does not have is refused before a
 // request exists.
 func TestThreadSpawnCutsAWorktreeFromTheBaseItIsGiven(t *testing.T) {
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	t.Parallel()
+	repo, bare := initGitRepoWithOrigin(t)
 	// A release branch origin has and this clone does not, and a local
 	// commit on main that is not pushed.
 	sibling := t.TempDir()
@@ -1309,7 +1327,8 @@ func TestThreadSpawnCutsAWorktreeFromTheBaseItIsGiven(t *testing.T) {
 // already checked out runs where it is, the root included; and a worktree
 // made outside the app is a checkout workspace_path names.
 func TestThreadSpawnRunsOnAnExistingBranchWhereverItIsCheckedOut(t *testing.T) {
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	t.Parallel()
+	repo, bare := initGitRepoWithOrigin(t)
 	sibling := t.TempDir()
 	testutil.RunGit(t, sibling, "clone", bare, ".")
 	testutil.RunGit(t, sibling, "checkout", "-b", "feature/mr")
@@ -1407,6 +1426,7 @@ func TestThreadSpawnRunsOnAnExistingBranchWhereverItIsCheckedOut(t *testing.T) {
 // inherited settings, the refusal a bad one earns, and the worktree door: a
 // spawn that names a branch gets a fresh checkout of the caller's project.
 func TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixtureIn(t, initGitRepo(t))
 	f.mockClaude(t, "on it")
 
@@ -1488,6 +1508,7 @@ func TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree(t *testing.T) {
 // A spawn from a thread carries that thread's history: the new agent starts
 // with the conversation, not a description of it.
 func TestThreadSpawnFromThreadForksTheHistoryIntoAVisibleThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "reproduced it")
 	source := f.forkableThread(t, "spawn-source")
@@ -1549,6 +1570,7 @@ func TestThreadSpawnFromThreadForksTheHistoryIntoAVisibleThread(t *testing.T) {
 // A send to an idle thread starts it. The queue path is for a thread that is
 // busy; an idle one gets the message now.
 func TestThreadSendStartsAnIdleThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "reading it now")
 	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -1621,6 +1643,7 @@ func (f *requestFixture) holdCallerTurn(t *testing.T) {
 // row and nothing else, so a restart between setting it and its due time
 // changes nothing.
 func TestThreadReminderFiresAfterARestart(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
@@ -1676,6 +1699,7 @@ func awaitQueuedWake(t *testing.T, app *App, threadID, sendID string) store.Flus
 // A reminder stores its note the moment it is armed, and listing the
 // thread's requests must not count that as the wake the reminder still owes.
 func TestListingRequestsDoesNotDisarmAPendingReminder(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
@@ -1720,6 +1744,7 @@ func TestListingRequestsDoesNotDisarmAPendingReminder(t *testing.T) {
 // read, and firing one has to use the same door or an archived thread comes
 // back for a message nobody is owed.
 func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "noted")
 
@@ -1760,6 +1785,7 @@ func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T)
 // sidebar's: the thread's parked calls end and its wakes are disarmed, or
 // the next answer brings it back out of the archive the user put it in.
 func TestArchivingThroughTheOrganizePatchStopsTheCallersRequests(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working")
 	spawn := f.runningRequest(t, "how big is the index?")
@@ -1779,6 +1805,7 @@ func TestArchivingThroughTheOrganizePatchStopsTheCallersRequests(t *testing.T) {
 // The sweep ticker is what fires a reminder with nobody watching. The nudge
 // is what keeps one due sooner than the next tick from waiting it out.
 func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	// The reminder wakes the thread, and waking a thread starts its agent.
 	f.mockClaude(t, "noted")
@@ -1805,6 +1832,7 @@ func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
 // the asks it started are stopped and nothing is owed to it while it is out
 // of sight.
 func TestThreadRequestsStopWhenTheCallerIsArchived(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working")
 	ask := f.runningRequest(t, "how big is the index?")
@@ -1822,6 +1850,7 @@ func TestThreadRequestsStopWhenTheCallerIsArchived(t *testing.T) {
 // record, and a record with no owner is nothing to collect. The hidden work
 // it started goes too; the threads a person can see do not.
 func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working")
 	spawn := f.runningRequest(t, "how big is the index?")
@@ -1855,6 +1884,7 @@ func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
 // A target deleted mid-request cannot answer, and saying so is the only
 // honest settlement.
 func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "starting")
 	ack := f.runningRequest(t, "what does the log say?")
@@ -1871,6 +1901,7 @@ func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
 // A restart interrupts whatever was in flight. The boot sweep says so, once,
 // instead of leaving requests that can never settle.
 func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "mid-thought")
 	ack := f.runningRequest(t, "keep going")
@@ -1906,6 +1937,7 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 // A status call waits on all of its tokens at once and returns on whichever
 // settles first, not on whichever was listed first.
 func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "thinking")
 	// Three tokens, and the one that settles is neither the first nor the
@@ -1964,6 +1996,7 @@ func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
 // Two calls parked on the same token both return: a wake is a broadcast, not
 // a handoff to whoever got there first.
 func TestTwoWaitersOnOneRequestBothReturn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "thinking")
 	ack := f.runningRequest(t, "who won?")
@@ -2006,6 +2039,7 @@ func TestTwoWaitersOnOneRequestBothReturn(t *testing.T) {
 // thread_status watches threads as well as tokens: a thread coming to rest
 // is what an agent waiting on somebody else's work is actually waiting for.
 func TestThreadStatusWatchesAThreadUntilItRests(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "watched")
 	// Whether a thread is running is live state, so the watch is driven
@@ -2054,6 +2088,7 @@ func TestThreadStatusWatchesAThreadUntilItRests(t *testing.T) {
 // Cancelling a running request stops that turn and nothing else, and the
 // interrupted turn cannot then be read as the answer.
 func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working on it")
 	ack := f.runningRequest(t, "rebuild the index")
@@ -2088,6 +2123,7 @@ func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
 // The ledger is readable without a token: a thread can list what it asked
 // for, open work first, and read a whole answer out to a file.
 func TestThreadRequestsListAndExport(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the answer is 42")
 	settled, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
@@ -2137,6 +2173,7 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 // at boot, and the request says so rather than claiming the message was
 // delivered.
 func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the backup finished")
 	f.holdCallerTurn(t)
@@ -2185,6 +2222,7 @@ func (f *requestFixture) waitersOn(key string) int {
 // two messages that waited out a turn are sent as one, so one turn end is
 // the answer to both. Settling either alone, or twice, would be wrong.
 func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	workspace := initGitRepo(t)
 	target, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
@@ -2255,6 +2293,7 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 // An ask forks a thread that is mid-turn: the question is answered against a
 // snapshot, and the thread being asked is never interrupted to answer it.
 func TestThreadAskForksAThreadThatIsMidTurn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "as of right now, three")
 	target := f.forkableThread(t, "mid-turn-source")
@@ -2299,6 +2338,7 @@ func TestThreadAskForksAThreadThatIsMidTurn(t *testing.T) {
 // full-access thread must not end up with a full-access thread, which is
 // what inheriting the source's settings silently produced.
 func TestThreadSpawnFromThreadTakesTheCallersSettings(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "on it", "on it", "on it")
 	f.caller.RuntimeMode = string(provider.RuntimeReadOnly)
@@ -2381,6 +2421,7 @@ func TestThreadSpawnFromThreadTakesTheCallersSettings(t *testing.T) {
 // handed to a live session, which is where an agent calling thread_status
 // actually is.
 func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
+	t.Parallel()
 	type statusReply struct {
 		Requests []struct {
 			Token      string `json:"token"`

@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 // hour.
 
 func TestCommitQuietGateNeedsAFullWindowWithoutCommits(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	gate := newCommitQuietGate(base)
 	const window = time.Minute
@@ -43,6 +47,7 @@ func TestCommitQuietGateNeedsAFullWindowWithoutCommits(t *testing.T) {
 }
 
 func TestCommitQuietGateCapsAttemptsPerHour(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	gate := newCommitQuietGate(base)
 
@@ -62,6 +67,7 @@ func TestCommitQuietGateCapsAttemptsPerHour(t *testing.T) {
 // against the test store: an attempt is allowed only after the quiet
 // window, and the next one only after the retry interval.
 func TestStoreSwapReadyWaitsForQuietAndCapsAttempts(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	ctx := context.Background()
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -99,6 +105,7 @@ func TestStoreSwapReadyWaitsForQuietAndCapsAttempts(t *testing.T) {
 }
 
 func TestStoreSwapReadyTreatsALiveTurnAsActivity(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	app.maintenance.quietWindow = time.Minute
@@ -127,19 +134,14 @@ func TestStoreSwapReadyTreatsALiveTurnAsActivity(t *testing.T) {
 // upgraded install's is.
 func useLegacyStore(t *testing.T, app *App) {
 	t.Helper()
+	legacyStoreTemplate.once.Do(func() {
+		legacyStoreTemplate.path, legacyStoreTemplate.err = buildLegacyStoreTemplate()
+	})
+	if legacyStoreTemplate.err != nil {
+		t.Fatalf("build legacy store template: %v", legacyStoreTemplate.err)
+	}
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	raw, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var journal string
-	if err := raw.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(`CREATE TABLE legacy_seed (x INTEGER)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
+	if err := copyTemplateFile(legacyStoreTemplate.path, path, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.New(path)
@@ -152,6 +154,48 @@ func useLegacyStore(t *testing.T, app *App) {
 	}
 	app.store = st
 	setDeferredWatermark(t, path, 118)
+}
+
+// legacyStoreTemplate is the migrated legacy file, built once: the chain
+// takes about a second on a new file, and copying the result is the same
+// database. Store.Close checkpoints, so the copy is the one file.
+var legacyStoreTemplate struct {
+	once sync.Once
+	path string
+	err  error
+}
+
+func buildLegacyStoreTemplate() (string, error) {
+	dir, err := newFixtureTemplateDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "legacy.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		return "", err
+	}
+	var journal string
+	if err := raw.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
+		return "", errors.Join(err, raw.Close())
+	}
+	if _, err := raw.Exec(`CREATE TABLE legacy_seed (x INTEGER)`); err != nil {
+		return "", errors.Join(err, raw.Close())
+	}
+	if err := raw.Close(); err != nil {
+		return "", err
+	}
+	st, err := store.New(path)
+	if err != nil {
+		return "", err
+	}
+	if err := st.Close(); err != nil {
+		return "", err
+	}
+	if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
+		return "", fmt.Errorf("legacy template WAL survived Close with %d bytes", info.Size())
+	}
+	return path, nil
 }
 
 // setDeferredWatermark writes the deferred phase watermark through a second
@@ -180,6 +224,7 @@ func storeAutoVacuum(t *testing.T, app *App) store.AutoVacuumMode {
 // A supervisor trial never replaces its database file: the conversion waits
 // on the activation gate, and converts once the gate opens.
 func TestDeferredConversionWaitsForActivation(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	useLegacyStore(t, app)
 	app.maintenance.chunkPause = time.Millisecond
@@ -210,6 +255,7 @@ func TestDeferredConversionWaitsForActivation(t *testing.T) {
 // A quit while the conversion waits returns promptly and records nothing,
 // so the next launch runs the step again.
 func TestDeferredConversionWaitStopsOnQuit(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	useLegacyStore(t, app)
 	app.maintenance.chunkPause = time.Millisecond
@@ -235,6 +281,7 @@ func TestDeferredConversionWaitStopsOnQuit(t *testing.T) {
 }
 
 func TestDeferredMigrationsStartStopRoundTrip(t *testing.T) {
+	t.Parallel()
 	app := retentionTestApp(t)
 	useLegacyStore(t, app)
 	app.maintenance.convertPoll = time.Millisecond

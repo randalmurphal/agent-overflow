@@ -11,11 +11,12 @@ import (
 )
 
 func TestTrialKeepsEveryClientRouteOutsideTheRollbackBoundary(t *testing.T) {
-	commit, entered := make(chan struct{}), make(chan struct{}, 32)
+	commit, entered, left := make(chan struct{}), make(chan struct{}, 32), make(chan error, 32)
 	var reached atomic.Int32
 	fixture := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.WaitForActivation = func(ctx context.Context) error {
+		cfg.WaitForActivation = func(ctx context.Context) (err error) {
 			entered <- struct{}{}
+			defer func() { left <- err }()
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -73,6 +74,16 @@ func TestTrialKeepsEveryClientRouteOutsideTheRollbackBoundary(t *testing.T) {
 			cancel()
 			if got := <-done; !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("trial answered %s %s before commit: %+v", method, path, got)
+			}
+			// The server notices the client left on its own schedule; a
+			// handler still in the gate at commit would reach the inner one.
+			select {
+			case err := <-left:
+				if err == nil {
+					t.Fatalf("trial gate released %s %s without a commit", method, path)
+				}
+			case <-ctx.Done():
+				t.Fatalf("%s %s stayed in the trial gate after its client left", method, path)
 			}
 		}
 	}

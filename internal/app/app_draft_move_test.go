@@ -25,6 +25,7 @@ func draftMoveApp(t *testing.T) *App {
 }
 
 func TestMoveDraftCarriesAttachmentsAndSnippets(t *testing.T) {
+	t.Parallel()
 	a := draftMoveApp(t)
 	image := realPNGBytes(t)
 	file := []byte("draft file content\n")
@@ -81,6 +82,7 @@ func TestMoveDraftCarriesAttachmentsAndSnippets(t *testing.T) {
 }
 
 func TestMoveDraftLeavesEmptyWorktreeThread(t *testing.T) {
+	t.Parallel()
 	a := draftMoveApp(t)
 	source, err := a.store.GetThread("thr-a")
 	if err != nil {
@@ -107,6 +109,7 @@ func TestMoveDraftLeavesEmptyWorktreeThread(t *testing.T) {
 }
 
 func TestMoveDraftRejectsChangedSourceAndOccupiedDestination(t *testing.T) {
+	t.Parallel()
 	for _, targetContent := range []string{"", "other draft"} {
 		t.Run(targetContent, func(t *testing.T) {
 			a := draftMoveApp(t)
@@ -134,6 +137,7 @@ func TestMoveDraftRejectsChangedSourceAndOccupiedDestination(t *testing.T) {
 }
 
 func TestMoveDraftRefusesHistoryAndPartialAttachmentCopy(t *testing.T) {
+	t.Parallel()
 	for _, history := range []bool{false, true} {
 		t.Run(map[bool]string{true: "history", false: "copy failure"}[history], func(t *testing.T) {
 			a := draftMoveApp(t)
@@ -163,6 +167,7 @@ func TestMoveDraftRefusesHistoryAndPartialAttachmentCopy(t *testing.T) {
 }
 
 func TestMovedDraftAttachmentCleanupPreservesNewWorkAndRepeats(t *testing.T) {
+	t.Parallel()
 	a := draftMoveApp(t)
 	old := uploadTestAttachment(t, a, "thr-a", "old.txt", "text/plain", []byte("old"))
 	reused := uploadTestAttachment(t, a, "thr-a", "reused.txt", "text/plain", []byte("reused"))
@@ -188,6 +193,7 @@ func TestMovedDraftAttachmentCleanupPreservesNewWorkAndRepeats(t *testing.T) {
 }
 
 func TestDraftMoveCannotCrossUpdateHandoff(t *testing.T) {
+	t.Parallel()
 	a := draftMoveApp(t)
 	if err := a.SaveDraft(t.Context(), "thr-a", "retained", nil, nil, nil); err != nil {
 		t.Fatal(err)

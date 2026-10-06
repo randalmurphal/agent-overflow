@@ -59,9 +59,9 @@ func claudeMergeEchoEvent(t *testing.T, threadID, uuid string, texts []string, w
 // uuid. AO folds its two rows into that one message, and a revert to it then
 // cuts SQLite and the provider transcript at the same place.
 func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := initGitRepo(t)
 
 	const sessionID = "cli-merge-fold-session"
@@ -247,7 +247,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want a sliced fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"original prompt", "working on it"},
 		[]string{messages[0], messages[1], "answer to both"})
 	if _, found, err := app.store.GetThreadItem(thread.ID, survivor.ID); err != nil || found {

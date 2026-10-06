@@ -11,6 +11,7 @@ import (
 )
 
 func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		for _, entry := range []string{"send", "legacy", "queue", "steer", "workflow"} {
 			t.Run(providerName+"/"+entry, func(t *testing.T) {
@@ -62,6 +63,7 @@ func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 }
 
 func TestEmptyRetryReturnsAcceptedQueueReceiptAcrossSendMethods(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("empty-retry")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -88,6 +90,7 @@ func TestEmptyRetryReturnsAcceptedQueueReceiptAcrossSendMethods(t *testing.T) {
 }
 
 func TestQueueAdmitsAttachmentAndRevisionCommentOnlyInput(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		opts SendMessageOptions
@@ -114,6 +117,7 @@ func TestQueueAdmitsAttachmentAndRevisionCommentOnlyInput(t *testing.T) {
 }
 
 func TestLegacyEmptyQueueSettlesWithoutBlockingMeaningfulInput(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(providerName, func(t *testing.T) {
 			app, rec := newAppForFlushQueueRPC(t)
@@ -157,6 +161,7 @@ func TestLegacyEmptyQueueSettlesWithoutBlockingMeaningfulInput(t *testing.T) {
 }
 
 func TestAttachmentOnlySendStillReachesProvider(t *testing.T) {
+	t.Parallel()
 	app := newMixedTurnApp(t)
 	thread, capture := newMixedTurnThread(t, app, "attachment-only-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)

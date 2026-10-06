@@ -1741,6 +1741,27 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 	return db
 }
 
+// migratedDB is migrateThrough to the last migration for a test that
+// applies a synthetic migration on top of the current schema: a clone of
+// the migrated store template, opened the same way.
+func migratedDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", poolDSN(newTestStorePath(t), writerConnPragmas))
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close migrated db: %v", err)
+		}
+	})
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure database: %v", err)
+	}
+	return db
+}
+
 // migrateFrom applies the rest of the chain after a test has replayed a
 // prefix and exercised the migration it cares about. Store accessors are
 // written against the CURRENT schema, so any test that calls one has to
@@ -1779,7 +1800,7 @@ func migrateFromThrough(t *testing.T, db *sql.DB, after, through int) {
 // not silently half-apply on every user's database.
 func TestApplyRebuildMigrationRefusesAFix(t *testing.T) {
 	latest := migrations[len(migrations)-1].Version
-	db := migrateThrough(t, latest)
+	db := migratedDB(t)
 	fixRan := false
 	synthetic := Migration{
 		Version: latest + 1,

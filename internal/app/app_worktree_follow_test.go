@@ -64,7 +64,7 @@ func (r *threadRowRecorder) fullRowsFor(threadID string) []store.Thread {
 func newFollowFixture(t *testing.T, threadID string) followFixture {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -126,6 +126,7 @@ func (f followFixture) waitRow(t *testing.T, threadID string, want func(store.Th
 }
 
 func TestFollowEnterWorktreeMovesThreadRowWithoutRestart(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-enter")
 	worktree := f.cliWorktree(t, "feature-x")
 	// A live session under this token must survive the move untouched.
@@ -156,6 +157,7 @@ func TestFollowEnterWorktreeMovesThreadRowWithoutRestart(t *testing.T) {
 }
 
 func TestFollowExitWorktreeKeepReturnsThreadToProjectRoot(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-exit-keep")
 	worktree := f.cliWorktree(t, "feature-y")
 	moved := f.thread
@@ -185,6 +187,7 @@ func TestFollowExitWorktreeKeepReturnsThreadToProjectRoot(t *testing.T) {
 // itself. Any OTHER thread attached to the dead worktree is handled as an
 // outside removal: reattached, its session stopped, and told why.
 func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-exit-remove")
 	events := &emitRecorder{}
 	f.app.testEmitHook = func(name string, data any) {
@@ -264,6 +267,7 @@ func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
 // its worktrees) is refused with an error on the thread; the row is left
 // pointing where it was rather than at a path git status cannot read.
 func TestFollowRefusesDirectoryOutsideProjectWorktrees(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-refuse")
 	errors := collectErrorItemUpserts(t, f.app, 4)
 	elsewhere := t.TempDir()
@@ -294,6 +298,7 @@ func TestFollowRefusesDirectoryOutsideProjectWorktrees(t *testing.T) {
 // that no longer exists; the replacement launched from the row's workspace
 // is the authority.
 func TestFollowIgnoresResultFromReplacedSession(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-stale")
 	worktree := f.cliWorktree(t, "feature-stale")
 	f.app.sessionManager().put(f.thread.ID, session{Provider: string(provider.Claude), Token: "token-new"})
@@ -314,6 +319,7 @@ func TestFollowIgnoresResultFromReplacedSession(t *testing.T) {
 // An event whose meta cannot name the directory is a wire defect surfaced
 // on the thread, never a silent no-op.
 func TestFollowReportsUnreadableMeta(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-badmeta")
 	errors := collectErrorItemUpserts(t, f.app, 4)
 	handler := f.app.sessionEventHandler(f.thread.ID, "token-live", string(provider.Claude))
@@ -332,9 +338,9 @@ func TestFollowReportsUnreadableMeta(t *testing.T) {
 // A transcript filed under another workspace's slug is moved under the
 // row's workspace before `--resume` runs from there.
 func TestSettleClaudeTranscriptMovesFileUnderCurrentWorkspaceSlug(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	launchDir := t.TempDir()
 	worktree := t.TempDir()
 	const sessionID = "0192aaaa-settle-test"
@@ -355,7 +361,7 @@ func TestSettleClaudeTranscriptMovesFileUnderCurrentWorkspaceSlug(t *testing.T) 
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Errorf("source transcript should be purged after the move, stat err = %v", err)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, worktree); err != nil || !samePath(located, want) {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, worktree); err != nil || !samePath(located, want) {
 		t.Errorf("LocateSessionFile = %q, %v; want %q", located, err, want)
 	}
 	// Already in place: a second settle is a no-op that keeps the file.
@@ -366,9 +372,9 @@ func TestSettleClaudeTranscriptMovesFileUnderCurrentWorkspaceSlug(t *testing.T) 
 }
 
 func TestSettleClaudeTranscriptLeavesForkSourceAndOtherProvidersAlone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	launchDir := t.TempDir()
 	worktree := t.TempDir()
 	const sessionID = "0192bbbb-settle-fork"
@@ -393,8 +399,9 @@ func TestSettleClaudeTranscriptLeavesForkSourceAndOtherProvidersAlone(t *testing
 // Session start is where the settle runs: a Claude thread whose transcript
 // sits under another slug gets it moved before the process launches.
 func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	home := os.Getenv("HOME")
+	home := testProviderHome(t, app)
 	launchDir := t.TempDir()
 	workspace := t.TempDir()
 	const sessionID = "0192cccc-settle-start"
@@ -428,6 +435,7 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 // so removal has to lift the lock, then the ordinary reattach moves the row
 // back to the project root.
 func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
+	t.Parallel()
 	f := newFollowFixture(t, "thread-remove-locked")
 	worktree := f.cliWorktree(t, "feature-locked")
 	testutil.RunGit(t, f.repo, "worktree", "lock", "--", worktree)

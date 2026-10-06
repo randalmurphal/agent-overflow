@@ -78,11 +78,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  Object.defineProperty(window, 'innerWidth', {
-    configurable: true,
-    writable: true,
-    value: 1400,
-  });
+  vi.stubGlobal('innerWidth', 1400);
   resetLayoutMetricsForTest();
   resetPaneLayoutForTest();
   resetCompanionPanesForTest();
@@ -1074,7 +1070,7 @@ describe('<ChatView>', () => {
     // scroll request on the pane or invoke scrollIntoView on the
     // timeline item.
     const scrollSpy = vi.fn();
-    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    // An own property shadows Element.prototype's for the test only.
     HTMLElement.prototype.scrollIntoView = scrollSpy as typeof HTMLElement.prototype.scrollIntoView;
     try {
       const launch: Item = {
@@ -1115,7 +1111,7 @@ describe('<ChatView>', () => {
 
       expect(scrollSpy).not.toHaveBeenCalled();
     } finally {
-      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
     }
   });
 });

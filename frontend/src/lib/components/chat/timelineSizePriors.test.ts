@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { wholeRunNodeFields } from '../../../test/helpers/activityRuns';
 import { makeItem } from '../../../test/helpers/chat';
 import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
@@ -13,14 +13,12 @@ import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 /** The collapsed-run floor (header plus row spacing). Always present, so it is a term in both shapes. */
 const HEADER_PX = 30;
 
-const REAL_INNER_HEIGHT = window.innerHeight;
-
 /** happy-dom's viewport is fixed, and the clip's cap is half of it. */
 function setViewportHeight(px: number): void {
-  Object.defineProperty(window, 'innerHeight', { value: px, configurable: true });
+  vi.stubGlobal('innerHeight', px);
 }
 
-afterEach(() => setViewportHeight(REAL_INNER_HEIGHT));
+afterEach(() => vi.unstubAllGlobals());
 
 function leaf(id: string): TimelineNode {
   return { kind: 'leaf', item: makeItem({ id, kind: 'tool_call', toolName: 'Bash' }) };

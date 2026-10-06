@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestSendOutputSchemaIsPerTurn(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := fmt.Sprintf(`#!/bin/bash
 turn=0
@@ -33,9 +35,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	session, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -92,6 +92,7 @@ done
 }
 
 func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
+	t.Parallel()
 	for _, notificationFirst := range []bool{false, true} {
 		name := "response before notification"
 		if notificationFirst {
@@ -102,7 +103,7 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 			t.Cleanup(cancel)
 			proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 				Binary: "sh",
-				Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+				Args:   []string{"-c", "cat > /dev/null"},
 			})
 			if err != nil {
 				t.Fatalf("spawn: %v", err)
@@ -189,6 +190,7 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 }
 
 func TestStructuredOutputFromFinalAgentMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		schemaed    bool

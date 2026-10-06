@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
+	t.Parallel()
 	base := codexLiveUpdateBaseOptions()
 
 	cases := []struct {
@@ -93,6 +95,7 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 // TestPushThreadSettingsWireShape pins what actually goes out: one request
 // carrying only the named axes, with the fast-mode clear as an explicit null.
 func TestPushThreadSettingsWireShape(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newSettingsPushSession(t, Config{
 		Binary:         "",
 		Model:          "gpt-5.5",
@@ -153,6 +156,7 @@ func TestPushThreadSettingsWireShape(t *testing.T) {
 // echo, so sending one is a round trip that also leaves a dangling
 // expectation.
 func TestPushThreadSettingsSkipsWhenNothingToSay(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newSettingsPushSession(t, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
 	if err := s.PushThreadSettings(context.Background(), ThreadSettingsPush{}); err != nil {
 		t.Fatalf("PushThreadSettings: %v", err)
@@ -173,6 +177,7 @@ func TestPushThreadSettingsSkipsWhenNothingToSay(t *testing.T) {
 // must stop calling and must not report a failure, and a fresh session
 // against a newer binary must start calling again.
 func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
+	t.Parallel()
 	push := ThreadSettingsPush{Model: true}
 
 	t.Run("supported to unsupported latches once", func(t *testing.T) {
@@ -239,6 +244,7 @@ func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
 }
 
 func TestVerifyThreadSettingsEcho(t *testing.T) {
+	t.Parallel()
 	future := time.Now().Add(time.Minute)
 	cases := []struct {
 		name        string
@@ -309,6 +315,7 @@ func TestVerifyThreadSettingsEcho(t *testing.T) {
 // TestReconcileThreadSettingsEmitsEchoDivergence proves the check is wired to
 // the notification path and reaches the user as thread error state.
 func TestReconcileThreadSettingsEmitsEchoDivergence(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: testThread,
@@ -353,9 +360,7 @@ func newSessionWithScript(t *testing.T, script string) (*Session, string) {
 func newSessionWithScriptCfg(t *testing.T, script string, cfg Config) *Session {
 	t.Helper()
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	cfg.Binary = scriptPath
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "/tmp"

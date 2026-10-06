@@ -38,6 +38,7 @@ func seedPayloadOwner(t *testing.T, app *App, thread store.Thread, payload store
 }
 
 func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	now := time.Now().UnixMilli()
 	owner := testThread("thread-owner")
@@ -109,6 +110,7 @@ func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
 }
 
 func TestGetPayloadDataFlushesLiveThinkingBuffer(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-live-thinking")
@@ -143,6 +145,7 @@ func TestGetPayloadDataFlushesLiveThinkingBuffer(t *testing.T) {
 }
 
 func TestGetPayloadDataIncludesThinkingDeltaBeforeWireEmission(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-live-thinking-wire-order")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -188,6 +191,7 @@ func TestGetPayloadDataIncludesThinkingDeltaBeforeWireEmission(t *testing.T) {
 }
 
 func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-live-text-wire-order")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -237,6 +241,7 @@ func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T
 // the picker returns a chosen path, SavePayloadToFile writes the
 // payload body to disk, and the returned value is the chosen path.
 func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-save-payload")
 
@@ -295,6 +300,7 @@ func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
 // function returns the (empty, nil) pair and does NOT write anything
 // to disk.
 func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-save-cancel")
 
@@ -324,6 +330,7 @@ func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
 // is wrapped and surfaced to the caller rather than silently
 // swallowed.
 func TestSavePayloadToFileDialogErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-save-err")
 
@@ -346,6 +353,7 @@ func TestSavePayloadToFileDialogErrorSurfaces(t *testing.T) {
 }
 
 func TestSavePayloadToFileRejectsPayloadFromOtherThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-owner")
 	otherThread := testThread("thread-other")

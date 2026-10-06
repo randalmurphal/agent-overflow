@@ -288,6 +288,19 @@ on host loopback. The provider smoke targets also stay on the host network
 because they reach the real provider APIs. macOS and Windows run on the host
 network.
 
+An isolated boot (`ConfigureIsolation`) uses its LAN as a LAN only inside
+that namespace (`netisolate.Contained`). Everywhere else, macOS and
+`--host-network` included, it is confined to loopback
+(`network.IsolatedReach`): the LAN toggle and a saved LAN bind stay on
+127.0.0.1, a non-loopback `--listen` is refused, and pairing links,
+pairing addresses and computer routes name 127.0.0.1. It sends no
+multicast: discovery answers `nearby.ErrIsolated` and pairing windows
+report it as their discovery error. It also starts no Tailscale node, LAN
+preview listener, Windows launcher relay, ACME order or real push sender.
+Paired instances therefore reach each other over loopback, and specs that
+need an off-host peer (`nonLoopbackIPv4` in `e2e/tests/offhost-helpers.ts`)
+skip outside the namespace.
+
 ## 4. Frontend bridge: seeing without screenshots
 
 `/bootstrap.json` gains `"harness": true` in harness/soak modes. When

@@ -34,6 +34,7 @@ func headSHA(t *testing.T, repo string) string {
 }
 
 func TestListCommitsReturnsBranchCommitsNewestFirst(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "a.txt", "a\n", "first change")
@@ -66,6 +67,7 @@ func TestListCommitsReturnsBranchCommitsNewestFirst(t *testing.T) {
 }
 
 func TestListCommitsEmptyRange(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 
 	commits, err := ListCommits(context.Background(), repo, "main")
@@ -78,6 +80,7 @@ func TestListCommitsEmptyRange(t *testing.T) {
 }
 
 func TestListCommitsKeepsSeparatorCharactersInSubject(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	subject := `fix: handle "quotes" | pipes %s and unicode ✓`
@@ -93,6 +96,7 @@ func TestListCommitsKeepsSeparatorCharactersInSubject(t *testing.T) {
 }
 
 func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
+	t.Parallel()
 	// %s emits raw subject bytes, so a subject holding the parser's own
 	// field separator (or any other control byte) must not break the
 	// record framing — the NUL record lead is the only unforgeable byte.
@@ -133,6 +137,7 @@ func cloneWithRemoteOnlyBranch(t *testing.T) string {
 }
 
 func TestListCommitsResolvesRemoteOnlyBaseBranch(t *testing.T) {
+	t.Parallel()
 	clone := cloneWithRemoteOnlyBranch(t)
 
 	commits, err := ListCommits(context.Background(), clone, "release")
@@ -145,6 +150,7 @@ func TestListCommitsResolvesRemoteOnlyBaseBranch(t *testing.T) {
 }
 
 func TestListCommitsUnknownBaseBranchErrors(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	if _, err := ListCommits(context.Background(), repo, "no-such-branch"); err == nil {
 		t.Fatal("expected error for a branch that exists nowhere")
@@ -152,6 +158,7 @@ func TestListCommitsUnknownBaseBranchErrors(t *testing.T) {
 }
 
 func TestListCommitsRangeRejectsBadRefs(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	cases := []struct {
 		name, base, head string
@@ -171,6 +178,7 @@ func TestListCommitsRangeRejectsBadRefs(t *testing.T) {
 }
 
 func TestListCommitsRangeToExplicitHeadSHA(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "a.txt", "a\n", "first change")
@@ -187,6 +195,7 @@ func TestListCommitsRangeToExplicitHeadSHA(t *testing.T) {
 }
 
 func TestOpenCommitDiffRegularCommit(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "a.txt", "one\n", "add a")
 	commitFile(t, repo, "a.txt", "one\ntwo\n", "extend a")
@@ -205,6 +214,7 @@ func TestOpenCommitDiffRegularCommit(t *testing.T) {
 }
 
 func TestOpenCommitDiffRootCommit(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	root, _, _, err := runGit(context.Background(), repo, nil, false, "rev-list", "--max-parents=0", "HEAD")
 	if err != nil {
@@ -221,6 +231,7 @@ func TestOpenCommitDiffRootCommit(t *testing.T) {
 }
 
 func TestOpenCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "feature.txt", "from feature\n", "feature work")
@@ -242,6 +253,7 @@ func TestOpenCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 }
 
 func TestOpenCommitDiffRejectsNonSHA(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	for _, sha := range []string{"", "HEAD", "main", "--all", "zzzzzzzz"} {
 		if _, err := commitPatch(t, repo, sha, Options{}); err == nil {
@@ -251,6 +263,7 @@ func TestOpenCommitDiffRejectsNonSHA(t *testing.T) {
 }
 
 func TestShowFileAtCommit(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "a.txt", "old content\n", "add a")
 	older := headSHA(t, repo)
@@ -278,6 +291,7 @@ func TestShowFileAtCommit(t *testing.T) {
 // The discard loss preview measures a unit branch against its run's branch, so
 // both ends are names and neither is the checked-out HEAD.
 func TestListBranchCommitsMeasuresTwoNamedBranches(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "run")
 	commitFile(t, repo, "run.txt", "run\n", "run change")
@@ -312,6 +326,7 @@ func TestListBranchCommitsMeasuresTwoNamedBranches(t *testing.T) {
 // A ref git cannot resolve must fail loudly: reporting "no unmerged commits"
 // would tell a human nothing would be lost by deleting the branch.
 func TestListBranchCommitsRefusesUnresolvableRefs(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "known")
 	commitFile(t, repo, "a.txt", "a\n", "change")
@@ -328,6 +343,7 @@ func TestListBranchCommitsRefusesUnresolvableRefs(t *testing.T) {
 // recent history from HEAD, merges included — NOT a base..HEAD range,
 // so a checkout on the default branch still lists commits.
 func TestListRecentCommitsListsHeadHistoryIncludingMerges(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "a.txt", "a\n", "first change")
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
@@ -358,6 +374,7 @@ func TestListRecentCommitsListsHeadHistoryIncludingMerges(t *testing.T) {
 // An unborn HEAD (fresh repo, no commits) is a real empty answer — the
 // completion shows no commit rows — never an error toast.
 func TestListRecentCommitsEmptyForUnbornHead(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	testutil.RunGit(t, repo, "init")
 

@@ -14,6 +14,7 @@ import (
 // app_approval.go. The Claude branch and the "no active session" /
 // "no provider" branches are already covered in app_send_test.go.
 func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-approval-codex")
@@ -56,6 +57,7 @@ func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
 // error (e.g. a non-numeric Codex request ID) is surfaced to the caller
 // instead of being swallowed. Regression guard for the Codex code path.
 func TestRespondToApprovalPropagatesProviderError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-approval-codex-error")

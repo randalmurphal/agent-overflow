@@ -28,9 +28,9 @@ import (
 // applied INSIDE the fixture rather than left to each caller. A guard
 // that regressed would otherwise resolve `claude` from PATH against the
 // developer's real credentials; see isolateE2EProviderSpawns for what
-// that costs. Callers that need a specific HOME set it after this
-// returns (last t.Setenv wins); callers that need a live session install
-// a mock binary over the poisoned default.
+// that costs. Provider files a test seeds go under testProviderHome;
+// callers that need a live session install a mock binary over the
+// poisoned default.
 // Teardown is t.Cleanup-registered throughout (storetest.Clone closes
 // its own store), so there is nothing for callers to defer.
 func newTestApp(t *testing.T) *App {
@@ -105,9 +105,9 @@ func writeClaudeProjectSession(t *testing.T, home, workspace, sessionID, jsonl s
 	return path
 }
 
-func assertClaudeSessionText(t *testing.T, workspace, sessionID string, wantPresent []string, wantAbsent []string) {
+func assertClaudeSessionText(t *testing.T, app *App, workspace, sessionID string, wantPresent []string, wantAbsent []string) {
 	t.Helper()
-	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, workspace)
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, workspace)
 	if err != nil {
 		t.Fatalf("locate claude session %q: %v", sessionID, err)
 	}
@@ -138,9 +138,9 @@ type claudeSessionRow struct {
 // readClaudeSessionRows returns the transcript rows of a Claude session
 // file in file order. Session metadata rows (custom-title and the like)
 // are skipped.
-func readClaudeSessionRows(t *testing.T, workspace, sessionID string) []claudeSessionRow {
+func readClaudeSessionRows(t *testing.T, app *App, workspace, sessionID string) []claudeSessionRow {
 	t.Helper()
-	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, workspace)
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, workspace)
 	if err != nil {
 		t.Fatalf("locate claude session %q: %v", sessionID, err)
 	}
@@ -169,9 +169,9 @@ func readClaudeSessionRows(t *testing.T, workspace, sessionID string) []claudeSe
 // assertClaudeSliceKeepsSourceRows asserts that session sliceID holds
 // exactly want's uuids and parent uuids, in order, each row stamped with
 // sliceID as its own session id.
-func assertClaudeSliceKeepsSourceRows(t *testing.T, workspace, sliceID string, want []claudeSessionRow) {
+func assertClaudeSliceKeepsSourceRows(t *testing.T, app *App, workspace, sliceID string, want []claudeSessionRow) {
 	t.Helper()
-	got := readClaudeSessionRows(t, workspace, sliceID)
+	got := readClaudeSessionRows(t, app, workspace, sliceID)
 	if len(got) != len(want) {
 		t.Fatalf("slice %s rows = %+v, want the source's %+v", sliceID, got, want)
 	}
@@ -186,16 +186,22 @@ func assertClaudeSliceKeepsSourceRows(t *testing.T, workspace, sliceID string, w
 	}
 }
 
+var plainGitRepoTemplate gitSnapshotTemplate
+
+// initGitRepo is a repository on the default branch with an empty tracked
+// .gitkeep and one commit, copied from a template.
 func initGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	runGit(t, dir, "init")
-	runGit(t, dir, "config", "user.name", "Test")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-	writeFile(t, dir, ".gitkeep", "")
-	runGit(t, dir, "add", ".")
-	runGit(t, dir, "commit", "-m", "initial")
-	return dir
+	return plainGitRepoTemplate.clone(t, func(t *testing.T) []string {
+		dir := t.TempDir()
+		runGit(t, dir, "init")
+		runGit(t, dir, "config", "user.name", "Test")
+		runGit(t, dir, "config", "user.email", "test@example.com")
+		writeFile(t, dir, ".gitkeep", "")
+		runGit(t, dir, "add", ".")
+		runGit(t, dir, "commit", "-m", "initial")
+		return []string{dir}
+	})[0]
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

@@ -16,6 +16,7 @@ import (
 // still the user's record of that login and its usage history — but it must
 // say it cannot be selected instead of looking like a working choice.
 func TestListProviderAccountsFlagsAnAccountWhoseCredentialIsGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Codex)
 	installRemovalTestAccounts(t, app, providerName, "gone", "present")
@@ -42,6 +43,7 @@ func TestListProviderAccountsFlagsAnAccountWhoseCredentialIsGone(t *testing.T) {
 // The active account is backed by the canonical store, not a saved slot, so
 // its usability is a separate question from every other card's.
 func TestListProviderAccountsFlagsTheActiveAccountWhenTheCanonicalCredentialIsGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Codex)
 	installRemovalTestAccounts(t, app, providerName, "inactive", "active")
@@ -69,6 +71,7 @@ func TestListProviderAccountsFlagsTheActiveAccountWhenTheCanonicalCredentialIsGo
 // Selecting such an account cannot work. It must say what to do about it
 // rather than surface the missing path.
 func TestSwitchToAnAccountWhoseCredentialIsGoneAsksForALogin(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Codex)
 	installRemovalTestAccounts(t, app, providerName, "gone", "present")
@@ -105,6 +108,7 @@ func TestSwitchToAnAccountWhoseCredentialIsGoneAsksForALogin(t *testing.T) {
 // as usable is what let a card advertise a switch that could only destroy the
 // working account it replaced.
 func TestListProviderAccountsFlagsAHuskedSlotAsNeedingLogin(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Claude)
 	installRemovalTestAccounts(t, app, providerName, "husked", "present")
@@ -138,6 +142,7 @@ func TestListProviderAccountsFlagsAHuskedSlotAsNeedingLogin(t *testing.T) {
 // "continue this session" for a login that ended, while the only recovery
 // (sign in again) goes unmentioned.
 func TestListProviderAccountsFlagsTheActiveAccountWhenTheCanonicalCredentialIsHusked(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Claude)
 	installRemovalTestAccounts(t, app, providerName, "inactive", "active")
@@ -171,6 +176,7 @@ func TestListProviderAccountsFlagsTheActiveAccountWhenTheCanonicalCredentialIsHu
 // for a dead one and leave the app looking signed in until the next request
 // failed. The switch refuses and records the finding.
 func TestSwitchToAHuskedAccountIsRefusedAndAudited(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	providerName := string(provider.Claude)
 	installRemovalTestAccounts(t, app, providerName, "husked", "present")
@@ -207,6 +213,7 @@ func TestSwitchToAHuskedAccountIsRefusedAndAudited(t *testing.T) {
 }
 
 func TestRemoveActiveProviderAccountSelectsNextWithoutChangingRunningCodexSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Codex), "first", "second")
 	app.sessionManager().put("thread", session{
@@ -270,6 +277,7 @@ func hasRateLimitsSnapshot(app *App, providerName, accountID string) bool {
 }
 
 func TestRemoveFinalProviderAccountSignsOutAndClearsClaudeSessionAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Claude), "only")
 	app.sessionManager().put("thread", session{
@@ -322,6 +330,7 @@ func TestRemoveFinalProviderAccountSignsOutAndClearsClaudeSessionAccount(t *test
 }
 
 func TestRemoveInactiveProviderAccountLeavesActiveCredentialUntouched(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Claude), "first", "second")
 	fingerprint, _ := app.providerAccounts.CredentialFingerprintForTest(string(provider.Claude))
@@ -351,6 +360,7 @@ func TestRemoveInactiveProviderAccountLeavesActiveCredentialUntouched(t *testing
 // refusing was the "cannot even delete the bricked account" half of the
 // 2026-08-03 lockout.
 func TestRemoveActiveAccountSucceedsAfterProviderBlanksCanonicalCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Claude), "first", "second")
 	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
@@ -387,6 +397,7 @@ func TestRemoveActiveAccountSucceedsAfterProviderBlanksCanonicalCredential(t *te
 // Removing the final account promises a cleared canonical credential; a
 // leftover husk is still a file claiming a login exists.
 func TestRemoveFinalAccountClearsBlankedCanonicalCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Claude), "only")
 	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(

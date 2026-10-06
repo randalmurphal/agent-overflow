@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"fmt"
 	"os"
@@ -48,9 +49,7 @@ done
 `, capturePath, threadID, reviewThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-review.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex-review binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -91,9 +90,7 @@ done
 	`, capturePath, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID, threadID)
 
 	path := filepath.Join(t.TempDir(), "codex-projected-review.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write projected codex review binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -167,6 +164,7 @@ func waitForCapturedRequest(t *testing.T, capturePath, needle string) string {
 // custom review with no instructions are all refused HERE, before a request
 // that would make Codex review the wrong thing is written.
 func TestCodexReviewTargetFromWireRoutesThroughTheValidatingConstructors(t *testing.T) {
+	t.Parallel()
 	valid := []struct {
 		name string
 		in   CodexReviewTarget
@@ -211,6 +209,7 @@ func TestCodexReviewTargetFromWireRoutesThroughTheValidatingConstructors(t *test
 }
 
 func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
+	t.Parallel()
 	for _, command := range []string{
 		"/review",
 		"/review uncommitted",
@@ -233,6 +232,7 @@ func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
 }
 
 func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-active")
@@ -258,6 +258,7 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 // target reaches `review/start` with inline delivery, and the answer names the
 // AO thread the review's transcript will arrive on.
 func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -289,6 +290,7 @@ func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 }
 
 func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = app.newTriageRouter(app.store)
 
@@ -395,6 +397,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 // session does not own and is quarantined. Returning success would hand the UI
 // a billed turn it can never show.
 func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -418,6 +421,7 @@ func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
 // TestCompactCodexThreadDrivesTheRPC — the response body is empty, so the only
 // evidence the binding did anything is the request itself.
 func TestCompactCodexThreadDrivesTheRPC(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -438,6 +442,7 @@ func TestCompactCodexThreadDrivesTheRPC(t *testing.T) {
 // lazy session materialisation as an ordinary first message. Compaction still
 // requires an existing provider context.
 func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-no-session")
@@ -478,6 +483,7 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 // thread has no `review/start`, so the frontend must branch on provider and
 // the backend must say so rather than nil-dereferencing its way there.
 func TestCodexReviewBindingsRefuseANonCodexThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 

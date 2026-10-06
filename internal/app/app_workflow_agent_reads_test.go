@@ -98,6 +98,7 @@ func gateTrace(t *testing.T, kind def.DecisionKind, target string, exhausted ...
 
 // The one call the campaign agent had to run 45 SQL queries to assemble.
 func TestWorkflowAgentInspectRunAnswersTheWholePicture(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{
 		ID: "root", Goal: "port the store", WorkflowID: "campaign",
@@ -191,6 +192,7 @@ func TestWorkflowAgentInspectRunAnswersTheWholePicture(t *testing.T) {
 // it shows — and each value has to stay small enough that a whole run's worth is
 // one readable answer.
 func TestWorkflowAgentInspectRunBoundsTheDigest(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "wide", WorkflowID: "campaign", State: string(engine.StateDone)})
 	outputs := map[string]any{"aaa-long": strings.Repeat("x", maxDigestValueRunes+50)}
@@ -220,6 +222,7 @@ func TestWorkflowAgentInspectRunBoundsTheDigest(t *testing.T) {
 }
 
 func TestWorkflowAgentInspectRunDrillsIntoOneAttempt(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{
 		ID: "fanned", WorkflowID: "campaign",
@@ -292,6 +295,7 @@ func TestWorkflowAgentInspectRunDrillsIntoOneAttempt(t *testing.T) {
 // what the run actually has: an agent that mistyped a phase id must not have to
 // run a second command to find the right one.
 func TestWorkflowAgentInspectRunRefusesUnknownCoordinates(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "typo", WorkflowID: "campaign", State: string(engine.StateDone)})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
@@ -315,6 +319,7 @@ func TestWorkflowAgentInspectRunRefusesUnknownCoordinates(t *testing.T) {
 }
 
 func TestWorkflowAgentRunNarrativeResolvesPhaseAndUnitAccounts(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "narrated", WorkflowID: "campaign", State: string(engine.StateDone)})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "fan", Attempt: 1, StartedAt: 10})
@@ -366,6 +371,7 @@ func TestWorkflowAgentRunNarrativeResolvesPhaseAndUnitAccounts(t *testing.T) {
 // that does not exist is an error. Conflating them is what sends a reader
 // hand-globbing the run directory.
 func TestWorkflowAgentRunNarrativeSeparatesAbsenceFromAWrongCoordinate(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "silent", WorkflowID: "campaign", State: string(engine.StateDone)})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
@@ -406,6 +412,7 @@ func TestWorkflowAgentRunNarrativeSeparatesAbsenceFromAWrongCoordinate(t *testin
 // A narrative has no size ceiling of its own and this answer lands in a context
 // window, so the read is bounded and says so.
 func TestWorkflowAgentRunNarrativeTruncatesAnOversizedAccount(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "verbose", WorkflowID: "campaign", State: string(engine.StateDone)})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
@@ -435,6 +442,7 @@ func TestWorkflowAgentRunNarrativeTruncatesAnOversizedAccount(t *testing.T) {
 // Row confinement is the same as the rest of the read family's: a phase sees
 // the runs it started, and every run in the project only with `introspect`.
 func TestWorkflowAgentInspectAndNarrativeAreRowConfined(t *testing.T) {
+	t.Parallel()
 	h := newInspectHarness(t)
 	item := h.run(t, store.WorkItem{ID: "foreign", WorkflowID: "campaign", State: string(engine.StateDone)})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
@@ -523,6 +531,7 @@ func (h *watchHarness) move(t *testing.T, itemID, phaseID string, attempt int, f
 // replayed into a supervisor's context is the opposite of "tell me what happens
 // next".
 func TestWorkflowAgentWatchRunAnswersTheFirstCallWithoutBlocking(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -552,6 +561,7 @@ func TestWorkflowAgentWatchRunAnswersTheFirstCallWithoutBlocking(t *testing.T) {
 // the transition itself is what wakes it — not a timer, and not the caller
 // asking again.
 func TestWorkflowAgentWatchRunBlocksUntilTheRunMoves(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -612,6 +622,7 @@ func TestWorkflowAgentWatchRunBlocksUntilTheRunMoves(t *testing.T) {
 // The wake filters those out; a monitor that did would report a run as waiting
 // on something it is no longer waiting on.
 func TestWorkflowAgentWatchRunReportsARepark(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion)})
@@ -635,6 +646,7 @@ func TestWorkflowAgentWatchRunReportsARepark(t *testing.T) {
 // Without --tree a watch reports only its own run; with it, the runs the watched
 // run called — which for a campaign is where every transition happens.
 func TestWorkflowAgentWatchRunTreeFollowsCalledRuns(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	root := h.run(t, store.WorkItem{ID: "root", Goal: "campaign", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -686,6 +698,7 @@ func TestWorkflowAgentWatchRunTreeFollowsCalledRuns(t *testing.T) {
 // otherwise the fixture proves nothing and the first assertion would pass over
 // an empty column.
 func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	snapshot := json.RawMessage(`{"workflow":{"id":"campaign","phases":[{"id":"wave"}]}}`)
 	root := h.run(t, store.WorkItem{ID: "root", Goal: "campaign", WorkflowID: "campaign",
@@ -748,6 +761,7 @@ func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 // a newline on the id used to pass authorization and be answered with a bare
 // no-rows error from a lookup of a run that does not exist.
 func TestWorkflowAgentWatchRunAnswersAnUntrimmedID(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion)})
@@ -769,6 +783,7 @@ func TestWorkflowAgentWatchRunAnswersAnUntrimmedID(t *testing.T) {
 // from the exact attempt the transition recorded rather than from whatever the
 // run's latest attempt is by the time the watch answers.
 func TestWorkflowAgentWatchRunCarriesTheParkCauseOfThatAttempt(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -806,6 +821,7 @@ func TestWorkflowAgentWatchRunCarriesTheParkCauseOfThatAttempt(t *testing.T) {
 // ring is a jitter buffer, and a watcher holding a sequence from a previous
 // process would otherwise block on a number this one will never reach.
 func TestWorkflowAgentWatchRunGapsAnImpossibleCursor(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -825,6 +841,7 @@ func TestWorkflowAgentWatchRunGapsAnImpossibleCursor(t *testing.T) {
 // A wait budget is honoured exactly: `--timeout` is only exact if the last poll
 // waits the remainder and not a second more.
 func TestWorkflowAgentWatchRunHonoursTheCallersWaitBudget(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -855,6 +872,7 @@ func TestWorkflowAgentWatchRunHonoursTheCallersWaitBudget(t *testing.T) {
 // that hung up has already stopped listening, and the app must not keep a
 // blocked request alive for it.
 func TestWorkflowAgentWatchRunReturnsWhenTheCallerHangsUp(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
@@ -885,6 +903,7 @@ func TestWorkflowAgentWatchRunReturnsWhenTheCallerHangsUp(t *testing.T) {
 // grant may watch only the runs it started, and a run it did not start is
 // refused rather than watched.
 func TestWorkflowAgentWatchRunRefusesARunThePhaseMayNotSee(t *testing.T) {
+	t.Parallel()
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})

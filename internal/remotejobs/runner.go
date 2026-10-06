@@ -24,7 +24,8 @@ type Run func(context.Context, string, []string, io.Writer) (Outcome, error)
 
 // terminateGrace is how long a group gets to exit after SIGTERM before it is
 // killed, on cancellation, timeout, lease expiry and the leftover sweep alike.
-const terminateGrace = 5 * time.Second
+// A variable so a test can observe the kill without waiting out the grace.
+var terminateGrace = 5 * time.Second
 
 // drainGrace bounds waiting for output after the group is gone. A process that
 // escaped the group with setsid can still hold the pipe open; its output is

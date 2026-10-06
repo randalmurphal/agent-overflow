@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
@@ -57,9 +58,7 @@ func writeCodexIdentityProbeBinary(t *testing.T, email string) string {
 		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"v2\"}}'\n" +
 		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"" + email + "\",\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}}'\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -86,9 +85,7 @@ func writeRotatingProbeMockBinary(
 		"fi\n" +
 		"printf '%s\\n' '" + response + "'\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -97,6 +94,7 @@ func writeRotatingProbeMockBinary(
 // probe left behind: this runs on the send path, so failing here turns an
 // expired access token into a failed send.
 func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -155,6 +153,7 @@ func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
 // leave the saved slot alone — adopting it is the write that destroyed a saved
 // login on 2026-08-03.
 func TestReconciliationRefusesToAdoptABlankedClaudeCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	good := []byte(`{"claudeAiOauth":{"accessToken":"good","refreshToken":"good-refresh"}}`)
@@ -201,6 +200,7 @@ func TestReconciliationRefusesToAdoptABlankedClaudeCredential(t *testing.T) {
 }
 
 func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -268,6 +268,7 @@ func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 }
 
 func TestExternalCodexLoginLeavesRunningSessionOnCachedAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -316,6 +317,7 @@ func TestExternalCodexLoginLeavesRunningSessionOnCachedAccount(t *testing.T) {
 }
 
 func TestExternalCodexTokenRotationUpdatesSavedAccountCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -381,6 +383,7 @@ func TestExternalCodexTokenRotationUpdatesSavedAccountCredential(t *testing.T) {
 }
 
 func TestExternalCodexReconciliationUsesCanonicalCredentialAsTruth(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -439,6 +442,7 @@ func TestExternalCodexReconciliationUsesCanonicalCredentialAsTruth(t *testing.T)
 }
 
 func TestManagedClaudeSwitchUpdatesLiveSessionsImmediately(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -506,6 +510,7 @@ func TestManagedClaudeSwitchUpdatesLiveSessionsImmediately(t *testing.T) {
 // changed". Refusing bricked every switch and delete on 2026-08-03, because
 // nothing inside the app ever replaces the husk.
 func TestSwitchSucceedsAfterProviderBlanksCanonicalCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	credFirst := []byte(`{"claudeAiOauth":{"accessToken":"first","refreshToken":"first-refresh"}}`)
@@ -577,6 +582,7 @@ func TestSwitchSucceedsAfterProviderBlanksCanonicalCredential(t *testing.T) {
 }
 
 func TestUnchangedCredentialFingerprintSkipsIdentityProbe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -599,6 +605,7 @@ func TestUnchangedCredentialFingerprintSkipsIdentityProbe(t *testing.T) {
 }
 
 func TestObservedIdentityEnrichesLegacyAccountWithoutCreatingDuplicate(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installIdentityTestAccount(
 		t,
@@ -658,6 +665,7 @@ func TestObservedIdentityEnrichesLegacyAccountWithoutCreatingDuplicate(t *testin
 }
 
 func TestThreadLiveStateIncludesCurrentSessionAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-account-live-state")
 	thread.Provider = string(provider.Codex)
@@ -695,6 +703,7 @@ func TestThreadLiveStateIncludesCurrentSessionAccount(t *testing.T) {
 // slot's own bytes name its workspace (backfill), the observed credential
 // names the new one, and reconciliation creates a separate account.
 func TestExternalCodexLoginOnDifferentWorkspaceCreatesSeparateAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -743,6 +752,7 @@ func TestExternalCodexLoginOnDifferentWorkspaceCreatesSeparateAccount(t *testing
 // The same workspace re-observed lands back on its saved account (no
 // duplicate), and the observation enriches the legacy blank org.
 func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -790,6 +800,7 @@ func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
 // nothing contradicts it, the credential re-lands on the current
 // assignment.
 func TestReconcileAmbiguousIdentityKeepsTheActiveAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	installIdentityTestAccount(
@@ -845,6 +856,7 @@ func TestReconcileAmbiguousIdentityKeepsTheActiveAccount(t *testing.T) {
 }
 
 func TestAccountIDForObservedIdentityDisambiguatesByOrg(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	accounts, err := provideraccounts.NewStore(t.TempDir())
 	if err != nil {
@@ -917,6 +929,7 @@ func TestAccountIDForObservedIdentityDisambiguatesByOrg(t *testing.T) {
 }
 
 func TestAssertSelectedClaudeIdentityUsesOrgContradiction(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	selection := providerAccountSelection{
 		AccountID: "acct-a",

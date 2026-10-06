@@ -41,6 +41,14 @@ const (
 	// end-to-end test stands up a backend that is slow to start. Test
 	// isolation only: honored solely by a harness boot.
 	HarnessHoldStartup = "AO_HARNESS_HOLD_STARTUP"
+
+	// HarnessTiming shortens deliberate product intervals for a harness
+	// boot, so an end-to-end test does not wait out a cadence it is not
+	// about: comma-separated name=duration entries such as
+	// "pairing-probe=250ms,watermark=500ms". Test isolation only: honored
+	// solely by a harness boot, which refuses to start on an unknown name
+	// or a duration that is not positive.
+	HarnessTiming = "AO_HARNESS_TIMING"
 )
 
 // Passthrough lists every variable the launchers forward across the WSL

@@ -22,6 +22,7 @@ import (
 // reaching a real CLI or the developer's provider homes.
 
 func TestRevertAndResendValidatesArgs(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 
 	if err := revertAndResendForTest(app, context.Background(), "", "user:1", RevertAndResendOptions{Content: "edited"}); err == nil ||
@@ -48,6 +49,7 @@ func TestRevertAndResendValidatesArgs(t *testing.T) {
 // distinguish "the app is going away" from a rejection they could
 // retry.
 func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-shutdown", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -66,6 +68,7 @@ func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
 // owns that case and lets Codex thread/revert perform shutdown and cut
 // together.
 func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-active", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -89,6 +92,7 @@ func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
 // provider-injected envelope the user never composed) are both refused
 // rather than silently reverting to the wrong point.
 func TestRevertAndResendRejectsNonUserTargets(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-kind", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -113,6 +117,7 @@ func TestRevertAndResendRejectsNonUserTargets(t *testing.T) {
 // idle-thread path can never satisfy — accepting the call would truncate
 // AO's history cache while the live TUI keeps the full conversation.
 func TestRevertAndResendRejectsClaudeTUI(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -127,6 +132,7 @@ func TestRevertAndResendRejectsClaudeTUI(t *testing.T) {
 // this saga holds across the whole sequence. Reaching the send tail on a
 // workflow thread must fail loudly, never half-run the takeover.
 func TestRevertAndResendRejectsWorkflowThread(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-workflow", "claude", t.TempDir())
 	thread.Mode = threadmode.ModeWorkflow
@@ -153,6 +159,7 @@ func TestRevertAndResendRejectsWorkflowThread(t *testing.T) {
 // succeeding — is
 // TestRevertAndResendProceedsOncePendingSendResolves.
 func TestRevertAndResendRefusesPendingSend(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, target string }{
 		{"earlier message", "user:0"},
 		{"the in-flight message itself", "user:1"},
@@ -176,6 +183,7 @@ func TestRevertAndResendRefusesPendingSend(t *testing.T) {
 // regardless of what the frontend preflight saw (a task can start
 // between the preflight and the RPC).
 func TestRevertAndResendRefusesUnconfirmedBackgroundKill(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-bg-refuse", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -189,6 +197,7 @@ func TestRevertAndResendRefusesUnconfirmedBackgroundKill(t *testing.T) {
 // launch inside an agent outlives the agent's end, and the session stop a
 // revert makes kills it. The consent gate counts it with the agent ended.
 func TestRevertAndResendRefusesUnconfirmedKillOfANestedLaunch(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-bg-refuse-nested", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")

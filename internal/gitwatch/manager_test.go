@@ -223,6 +223,7 @@ func TestMetadataRootEventTriggersUpdate(t *testing.T) {
 }
 
 func TestLinkedWorktreeCommitEmitsCleanStatus(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/gitwatch-worktree")
 	worktreePath := filepath.Join(t.TempDir(), "feature-gitwatch-worktree")
@@ -357,6 +358,7 @@ func TestPollingFallbackEmitsUpdates(t *testing.T) {
 	mgr.installFn = func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
 		return errors.New("forced fallback")
 	}
+	mgr.pollInterval = 50 * time.Millisecond
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -373,11 +375,10 @@ func TestPollingFallbackEmitsUpdates(t *testing.T) {
 		t.Fatalf("expected fallbackPolling=true, got watcher=%v", w)
 	}
 
-	// Update the stub status; the polling tick (3s) should pick it up
-	// without any fs event being delivered. Use a generous timeout so
-	// CI variance doesn't flake.
+	// Update the stub status; the polling tick should pick it up
+	// without any fs event being delivered.
 	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true})
-	got := recvWithin(t, sub, pollFallbackInterval+2*time.Second)
+	got := recvWithin(t, sub, 3*time.Second)
 	if !got.HasChanges {
 		t.Fatalf("polling fallback did not emit; got %+v", got)
 	}

@@ -3,9 +3,9 @@
 // second — the assertions below are worthless against a fake signer,
 // since what they are checking is that a Go verifier will accept this.
 //
-// `fake-indexeddb/auto` is imported for its side effect and must come
-// before the module under test, which reads `indexedDB` at call time.
-import 'fake-indexeddb/auto';
+// The module under test reads `indexedDB` at call time, so installing the
+// fake after the imports is enough.
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearDeviceKey,
@@ -13,6 +13,8 @@ import {
   enrollDeviceKey,
   mintDeviceProof,
 } from './deviceKey';
+
+installFakeIndexedDB();
 
 const VERIFY_ALGORITHM: EcdsaParams = { name: 'ECDSA', hash: 'SHA-256' };
 

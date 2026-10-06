@@ -1,4 +1,4 @@
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { getBackendIdentity } from '../transport/backendIdentity';
@@ -18,6 +18,8 @@ import type { ReplicaBody } from './envelope';
 import type { CatalogKind, CatalogRows } from './catalog';
 import { currentCatalogStamp, observedCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
 import * as idb from './idb';
+
+installFakeIndexedDB();
 
 function putReplicaCatalog<K extends CatalogKind>(backend: string, kind: K, rows: CatalogRows[K][]) {
   return putCatalog(backend, kind, rows, replicaCatalogStamp(backend, kind));

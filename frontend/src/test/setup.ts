@@ -2,17 +2,15 @@ import { resetSettingsForTest } from '../lib/stores/settings.svelte';
 import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import '@testing-library/jest-dom/vitest';
 import './helpers/firstDivergence';
-import { afterEach, beforeEach, vi } from 'vitest';
-
-// happy-dom stores scrollTop verbatim and has no layout engine. The browser
-// suites exercise real calibration; unit controllers use a whole-CSS-pixel engine.
-vi.mock('../lib/utils/scroll/grid', () => ({
-  documentScrollGrid: () => ({ quantum: 1, writeOffset: 0, readbackError: 0 }),
-}));
+import { afterEach, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
 import { resetPanesForTest } from '../lib/stores/panes.svelte';
+import { __resetAgentPaneStateForTest } from '../lib/stores/agentPane.svelte';
+import { resetThreadsForTest } from '../lib/stores/threads.svelte';
+import { resetToastsForTest } from '../lib/stores/toast.svelte';
+import { resetEditorsForTest } from '../lib/stores/editors.svelte';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
@@ -40,6 +38,7 @@ import { __resetReplicaForTest } from '../lib/replica';
 import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity';
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 import { resetBuildVariantPage } from './helpers/buildVariant';
+import { resetStagedBackends } from './helpers/backends';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -264,9 +263,22 @@ afterEach(() => {
   // timers against their thread (the replica write-back). Clear them
   // while the binding mocks they would call are still installed.
   resetPanesForTest();
+  // Agent pane scopes are keyed by source pane id, so a reused id ('main')
+  // would reopen the previous test's agent scope.
+  __resetAgentPaneStateForTest();
+  // The thread catalog, its live-activity bumps and the toast list are
+  // app-wide module state that outlives a test the same way.
+  resetThreadsForTest();
+  resetToastsForTest();
+  // A failed editor catalog load stays failed until a reconnect, so without
+  // this only the first test of a file to mount a chat header would see it.
+  resetEditorsForTest();
   // Catalog load state is per computer and module-level, and a failed read
   // holds a retry timer that would call the next test's binding mocks.
   resetCatalogLoadForTest();
+  // Computers a test staged stay attached in the module-level registry, and
+  // a second attached computer makes every unowned entity ambiguous.
+  resetStagedBackends();
   resetWailsMocks();
   resetBindingMocks();
   resetAttachmentTransferMocks();

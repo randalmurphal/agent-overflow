@@ -33,6 +33,7 @@ func modeApprovalPolicyOnTheWire(mode provider.RuntimeMode, codexVersion string)
 }
 
 func TestApprovalPolicyForCodexVersionAcrossModes(t *testing.T) {
+	t.Parallel()
 	// Versions on both sides of the floor, plus the two "we could not tell"
 	// answers, which must behave identically to an old binary.
 	versions := []struct {
@@ -98,6 +99,7 @@ func TestApprovalPolicyForCodexVersionAcrossModes(t *testing.T) {
 // thread/start and thread/resume share buildThreadParams, so both carry the
 // remapped value.
 func TestBuildThreadParamsRemapsApprovalPolicyByVersion(t *testing.T) {
+	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		RuntimeMode: provider.RuntimeApprovalRequired,
 		WorkDir:     "/tmp/x",
@@ -126,6 +128,7 @@ func TestBuildThreadParamsRemapsApprovalPolicyByVersion(t *testing.T) {
 // "untrusted" for read-only. It has to take the same remap, or an unset Config
 // would send a different policy than an explicitly-approval-required one.
 func TestDefaultApprovalPolicyRemapsTheUnsetBranch(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		policy, sandbox, version, want string
 	}{
@@ -152,6 +155,7 @@ func TestDefaultApprovalPolicyRemapsTheUnsetBranch(t *testing.T) {
 // (live_update.go), so a remap that only lived in buildThreadParams would be
 // undone by the next turn.
 func TestSessionAppServerVersionDrivesTurnStartApprovalPolicy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ userAgent, want string }{
 		{"", "untrusted"},
 		{"codex_cli_rs/0.148.0 (Ubuntu 24.04; x86_64) codex_cli_rs", "untrusted"},

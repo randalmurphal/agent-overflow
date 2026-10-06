@@ -14,6 +14,7 @@ import (
 )
 
 func TestMapSubmitPRReviewResult(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		result  gitops.SubmitReviewResult
@@ -91,6 +92,7 @@ func TestSetPRThreadResolvedValidatesItsArguments(t *testing.T) {
 }
 
 func TestSetPRThreadResolvedRefusedDuringShutdown(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.shuttingDown.Store(true)
 	if err := app.SetPRThreadResolved(testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
@@ -153,6 +155,7 @@ func prPumpState(app *App, prKey string) (refs, active int, paused, present bool
 }
 
 func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	calls := 0
@@ -199,6 +202,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 // ONE wire event per change — not N pollers spawning N gh/glab processes and
 // N copies of the same event.
 func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var changed atomic.Bool
@@ -277,6 +281,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 // nobody else on that pump has, which is exactly the divergence the shared
 // pump exists to prevent.
 func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
@@ -323,6 +328,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 // keeping the one it fetched would put two subscribers of one pump on two
 // different observations, however narrowly they raced.
 func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -367,6 +373,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 }
 
 func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -397,6 +404,7 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 
 // TestUnsubscribePRUpdatesUnbindsItsConnectionTie: see checkByIDTie.
 func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -420,6 +428,7 @@ func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
 }
 
 func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
@@ -474,6 +483,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 // stop once every one of them has gone quiet — and a repeated report in
 // the same direction must not shift the count either way.
 func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
@@ -564,6 +574,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 // that just opened waits out a full poll interval (45s in production)
 // staring at whatever the last visible client saw.
 func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 400 * time.Millisecond
 	var changed atomic.Bool
@@ -613,6 +624,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 // visibility vote nothing reads. The fresh pump takes the map entry, and the
 // dying one's own drop releases exactly the handles that referenced IT.
 func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -691,6 +703,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 // no emit — which is what keeps successive pumps' live windows from
 // overlapping for a key.
 func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	var fetchErr error
@@ -765,6 +778,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 // is bounded rather than trusting callers to unsubscribe. The refusal is
 // typed — retrying the same call never fixes it.
 func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
@@ -818,6 +832,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 }
 
 func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 300 * time.Millisecond
 	var calls atomic.Int32
@@ -860,6 +875,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 // recovery, even when the recovered snapshot is byte-identical to the last
 // one broadcast.
 func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
@@ -913,6 +929,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 // subscribe result it would render the pump's stale snapshot with no banner
 // until the forge recovered or started failing differently.
 func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
@@ -979,6 +996,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 // the subscriber replay exactly the frames its reference does not already
 // account for.
 func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	app.prUpdates.interval = 5 * time.Millisecond
 	var head atomic.Value
@@ -1034,6 +1052,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 }
 
 func TestSetPRUpdatesActiveUnknownIDIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	if err := app.SetPRUpdatesActive("nope", true); err != nil {
 		t.Fatalf("SetPRUpdatesActive: %v", err)
@@ -1041,6 +1060,7 @@ func TestSetPRUpdatesActiveUnknownIDIsNoOp(t *testing.T) {
 }
 
 func TestPRUpdateKeyMatchesTheFrontendSourceKey(t *testing.T) {
+	t.Parallel()
 	// The frontend's PR sourceKey is "pr:" + this key; one spelling of
 	// "which PR" on both sides of the wire.
 	cases := []struct {

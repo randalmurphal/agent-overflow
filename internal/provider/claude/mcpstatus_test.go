@@ -2,7 +2,6 @@ package claude
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseClaudeMCPList_OutputShapes(t *testing.T) {
@@ -123,9 +123,7 @@ linear: https://linear.example/mcp - ! Needs authentication
 broken-stdio: ./missing.sh - ✗ Failed to connect
 EOF
 `
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock binary: %v", err)
-	}
+	mockexec.Write(t, binPath, script)
 
 	f := &MCPStatusFetcher{Binary: binPath, Timeout: 5 * time.Second}
 	results, err := f.Fetch(context.Background(), mcpstatus.ProviderClaude)
@@ -161,9 +159,7 @@ func TestMCPStatusFetcher_Fetch_NonZeroExitButHasOutput(t *testing.T) {
 echo "github: ./gh - ✓ Connected"
 exit 1
 `
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock binary: %v", err)
-	}
+	mockexec.Write(t, binPath, script)
 	f := &MCPStatusFetcher{Binary: binPath, Timeout: 5 * time.Second}
 	results, err := f.Fetch(context.Background(), mcpstatus.ProviderClaude)
 	if err != nil {
@@ -184,9 +180,7 @@ func TestMCPStatusFetcher_Fetch_NonZeroExitNoOutputBubblesError(t *testing.T) {
 echo "boom" >&2
 exit 1
 `
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock binary: %v", err)
-	}
+	mockexec.Write(t, binPath, script)
 	f := &MCPStatusFetcher{Binary: binPath, Timeout: 5 * time.Second}
 	_, err := f.Fetch(context.Background(), mcpstatus.ProviderClaude)
 	if err == nil {
@@ -213,9 +207,10 @@ func TestMCPStatusFetcher_Fetch_Timeout(t *testing.T) {
 	script := `#!/usr/bin/env bash
 sleep 5
 `
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock binary: %v", err)
-	}
+	mockexec.Write(t, binPath, script)
+	prevWaitDelay := mcpStatusWaitDelay
+	mcpStatusWaitDelay = 300 * time.Millisecond
+	t.Cleanup(func() { mcpStatusWaitDelay = prevWaitDelay })
 	f := &MCPStatusFetcher{Binary: binPath, Timeout: 200 * time.Millisecond}
 	start := time.Now()
 	_, err := f.Fetch(context.Background(), mcpstatus.ProviderClaude)
@@ -225,11 +220,11 @@ sleep 5
 	}
 	// The bound is Timeout + WaitDelay plus scheduling slack: the mock's
 	// grandchild `sleep` ignores the deadline TERM and holds the stdout pipe,
-	// so WaitDelay (2s, the credential-write grace — see Fetch) is what
-	// unblocks Wait. The property under test is that a hung fetch stays
+	// so WaitDelay (the credential-write grace, shortened here; see Fetch) is
+	// what unblocks Wait. The property under test is that a hung fetch stays
 	// bounded by that composition rather than by the grandchild's lifetime.
-	if elapsed > 4*time.Second {
-		t.Errorf("timeout took too long: %v (expected <4s)", elapsed)
+	if elapsed > 2*time.Second {
+		t.Errorf("timeout took too long: %v (expected <2s)", elapsed)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // probeWorkDir is the absolute, project-free directory the probes run in.
@@ -64,9 +65,7 @@ func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON, subtype, errMs
 		`read -r _ || true` + "\n" +
 		`printf '%s\n' '` + respLine + `'` + "\n" +
 		`exit 0` + "\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -249,9 +248,7 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	// immediately on misconfigured environments.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "silent")
-	if err := os.WriteFile(path, []byte("#!/bin/bash\nread -r _ || true\nexit 0\n"), 0755); err != nil {
-		t.Fatalf("write silent: %v", err)
-	}
+	mockexec.Write(t, path, "#!/bin/bash\nread -r _ || true\nexit 0\n")
 
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
@@ -274,6 +271,7 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 }
 
 func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
+	t.Parallel()
 	// Simulate a binary that blocks indefinitely after reading our
 	// control_request. The probe's internal Timeout is what unblocks
 	// readControlInitResponse; without it, the probe would hang the
@@ -283,9 +281,7 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
 		"sleep 5\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write slow: %v", err)
-	}
+	mockexec.Write(t, path, script)
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{

@@ -3,12 +3,12 @@ package claude
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // fixtureCategories is the verbatim `categories[]` array from
@@ -247,9 +247,7 @@ const answeringContextUsageTimeout = 10 * time.Second
 func newContextUsageResponderSession(t *testing.T, mode string, timeout time.Duration) *Session {
 	t.Helper()
 	scriptPath := t.TempDir() + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(contextUsageResponderScript(mode)), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, contextUsageResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
@@ -310,6 +308,7 @@ func TestSession_GetContextUsage_SuccessWithNoPayload(t *testing.T) {
 // A wedged CLI must surface as a timeout error and leave the session alive —
 // the same contract every other outbound control_request holds to.
 func TestSession_GetContextUsage_TimeoutDoesNotKillSession(t *testing.T) {
+	t.Parallel()
 	s := newContextUsageResponderSession(t, "silent", 200*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

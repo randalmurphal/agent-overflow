@@ -1,12 +1,16 @@
 package harnessrpc
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/harness"
+	"agent-overflow/internal/store"
 )
 
 func TestHarnessSeedRefusesTraversalProjectNames(t *testing.T) {
@@ -242,5 +246,124 @@ func TestHarnessSeedRefusesOversizedPayloadPadding(t *testing.T) {
 	}}})
 	if err == nil || !strings.Contains(err.Error(), "exceeds the") {
 		t.Fatalf("err = %v, want the padding limit refusal", err)
+	}
+}
+
+// TestHarnessSeedsTheWindowedThreadFixture seeds the 38k-item thread
+// thread-tools-paired.spec.ts windows, pages and exports, and reads it the
+// way those tools do: its bounds, the anchor's search hit and row, the
+// window of two turns around it, and every row in order.
+func TestHarnessSeedsTheWindowedThreadFixture(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	const bulkTurns, bulkItems = 1000, 18
+	bulk := HarnessSeedTurn{UserText: "keep sweeping", Repeat: bulkTurns}
+	for i := range bulkItems {
+		bulk.Items = append(bulk.Items, HarnessSeedItem{Kind: "assistant_text", Summary: fmt.Sprintf("swept region %d", i+1)})
+	}
+	single := func(user, summary string) HarnessSeedTurn {
+		return HarnessSeedTurn{UserText: user, Items: []HarnessSeedItem{{Kind: "assistant_text", Summary: summary}}}
+	}
+	start := time.Now()
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "remote-window-target",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Remote kernel sweep", Turns: []HarnessSeedTurn{
+			single("begin the sweep", "PAIRBIGHEAD sweep started"),
+			bulk,
+			single("what went wrong in the middle", "PAIRBIGANOMALY the scheduler stalled at tick 41"),
+			bulk,
+			single("wrap up", "PAIRBIGTAIL sweep complete"),
+		}}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Logf("seeded in %s", time.Since(start))
+	threadID := result.Projects[0].ThreadIDs[0]
+	database := host.store
+	const turns, items = 3 + 2*bulkTurns, 3*2 + 2*bulkTurns*(bulkItems+1)
+
+	thread, err := database.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("read thread: %v", err)
+	}
+	if thread.IsDraft {
+		t.Fatal("the seeded thread reads as a draft")
+	}
+	stamp, found, err := database.ThreadHistoryStamp(threadID)
+	if err != nil || !found {
+		t.Fatalf("read history stamp: found=%v err=%v", found, err)
+	}
+	if stamp.Rev != items {
+		t.Fatalf("history_rev %d, want one revision per item (%d)", stamp.Rev, items)
+	}
+	settled, err := database.ListRecentTurns(threadID, turns+1)
+	if err != nil {
+		t.Fatalf("list turns: %v", err)
+	}
+	if len(settled) != turns {
+		t.Fatalf("seeded %d turns, want %d", len(settled), turns)
+	}
+	for _, turn := range settled {
+		if turn.CompletedAt == nil || turn.StopReason != "end_turn" {
+			t.Fatalf("turn %d is not settled: %+v", turn.TurnIndex, turn)
+		}
+	}
+
+	first, last, ok, err := database.ThreadTimelineBounds(threadID)
+	if err != nil || !ok {
+		t.Fatalf("timeline bounds: ok=%v err=%v", ok, err)
+	}
+	if first.TurnIndex != 0 || first.ItemIndex != 0 || last.TurnIndex != turns-1 || last.ItemIndex != 1 {
+		t.Fatalf("timeline runs %+v..%+v, want turn 0 item 0 to turn %d item 1", first, last, turns-1)
+	}
+
+	hits, err := database.SearchThreads("PAIRBIGANOMALY", store.ThreadSearchFilter{ThreadIDs: []string{threadID}, Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("search hits = %+v, want the anchor row alone", hits)
+	}
+	anchor, found, err := database.GetThreadItem(threadID, hits[0].ItemID)
+	if err != nil || !found {
+		t.Fatalf("read anchor %s: found=%v err=%v", hits[0].ItemID, found, err)
+	}
+	if anchor.TurnIndex != 1+bulkTurns || anchor.ItemIndex != 1 {
+		t.Fatalf("anchor at turn %d item %d, want turn %d item 1", anchor.TurnIndex, anchor.ItemIndex, 1+bulkTurns)
+	}
+	around, err := database.ListItemsInRange(threadID,
+		store.TimelineCursor{TurnIndex: anchor.TurnIndex - 2, ItemIndex: math.MinInt32},
+		store.TimelineCursor{TurnIndex: anchor.TurnIndex + 2, ItemIndex: math.MaxInt32}, 1000, false)
+	if err != nil {
+		t.Fatalf("read around the anchor: %v", err)
+	}
+	if want := 2 + 4*(bulkItems+1); len(around) != want {
+		t.Fatalf("two turns around the anchor hold %d rows, want %d", len(around), want)
+	}
+
+	all, err := database.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(all) != items {
+		t.Fatalf("seeded %d items, want %d", len(all), items)
+	}
+	ids := make(map[string]bool, len(all))
+	for i, item := range all {
+		if i > 0 {
+			prev := all[i-1]
+			next := item.TurnIndex == prev.TurnIndex+1 && item.ItemIndex == 0
+			if !next && (item.TurnIndex != prev.TurnIndex || item.ItemIndex != prev.ItemIndex+1) {
+				t.Fatalf("row %d at turn %d item %d follows turn %d item %d", i, item.TurnIndex, item.ItemIndex, prev.TurnIndex, prev.ItemIndex)
+			}
+		}
+		if ids[item.ID] {
+			t.Fatalf("item id %s repeats", item.ID)
+		}
+		ids[item.ID] = true
+	}
+	if all[1].Summary != "PAIRBIGHEAD sweep started" || all[len(all)-1].Summary != "PAIRBIGTAIL sweep complete" {
+		t.Fatalf("thread runs %q..%q, want the head and tail rows", all[1].Summary, all[len(all)-1].Summary)
 	}
 }

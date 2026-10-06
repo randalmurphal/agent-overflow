@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // startChromium against shell scripts standing in for the ways a Chromium
@@ -24,11 +26,7 @@ const fakeDevToolsURL = "ws://127.0.0.1:9/devtools/browser/fake"
 // writeChromiumScript installs a fake Chromium that runs body.
 func writeChromiumScript(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "chromium")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
-		t.Fatalf("write the fake Chromium: %v", err)
-	}
-	return path
+	return mockexec.WriteIn(t, t.TempDir(), "chromium", "#!/bin/sh\n"+body)
 }
 
 func testLaunchContext(t *testing.T, timeout time.Duration) context.Context {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,5 +40,22 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
-	os.Exit(storetest.Run(m))
+	removeHome, err := detachTestProcessHome()
+	if err != nil {
+		panic(err)
+	}
+	code := storetest.Run(m)
+	if err := removeFixtureTemplates(); err != nil {
+		fmt.Fprintf(os.Stderr, "remove fixture templates: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if err := removeHome(); err != nil {
+		fmt.Fprintf(os.Stderr, "remove detached test home: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }

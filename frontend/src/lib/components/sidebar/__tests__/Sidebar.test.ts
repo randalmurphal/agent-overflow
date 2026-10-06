@@ -77,6 +77,7 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
 describe('<Sidebar>', () => {
   beforeEach(() => {
     resetSidebarForTest();
+    resetSidebarLayoutForTest();
     resetThreadStatuses();
     resetProjectsForTest();
     resetBindingMocks();

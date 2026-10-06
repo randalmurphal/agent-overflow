@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
 	"fmt"
@@ -45,9 +46,7 @@ while IFS= read -r line; do
 done
 `, shellQuote(logPath), shellQuote(refused))
 	path := filepath.Join(t.TempDir(), "claude-stop-recorder.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write stop recorder: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -103,6 +102,7 @@ func stoppedTasks(t *testing.T, logPath string) []string {
 // and covers the shells at its root. A refused stop fails alone, and a
 // launch that is not running has ended.
 func TestStopBackgroundTasksStopsEachAgentOnceAndItsShellsWithIt(t *testing.T) {
+	t.Parallel()
 	f, stopLog := newClaudeStopFixture(t, "task-refused")
 	f.launchAgent(t, "agent", "task-agent", "")
 	f.launchShell(t, "agent-sh1", "task-agent-sh1", "agent")
@@ -175,6 +175,7 @@ func TestStopBackgroundTasksStopsEachAgentOnceAndItsShellsWithIt(t *testing.T) {
 // A call that names nothing sends nothing, and a thread with no live
 // session fails each stop with the reason rather than failing the call.
 func TestStopBackgroundTasksReportsAMissingSessionPerTask(t *testing.T) {
+	t.Parallel()
 	f, stopLog := newClaudeStopFixture(t, "")
 	f.launchAgent(t, "agent", "task-agent", "")
 	if results, err := f.app.StopBackgroundTasks(f.thread.ID, []string{" ", ""}); err != nil || len(results) != 0 {
@@ -199,6 +200,7 @@ func TestStopBackgroundTasksReportsAMissingSessionPerTask(t *testing.T) {
 // terminals once for the named terminals; with no live session each stop
 // fails with the reason. A launch that is not live has ended.
 func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
 	if err != nil {
@@ -231,6 +233,7 @@ func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
 
 // runBounded runs every call, never more than the bound at once.
 func TestRunBoundedKeepsTheBound(t *testing.T) {
+	t.Parallel()
 	var inFlight, peak atomic.Int32
 	var mu sync.Mutex
 	ran := map[int]bool{}
@@ -299,6 +302,7 @@ func (r *trayFrameRecorder) named(id string) (named, carriedRow bool) {
 // task, a parked agent, and a task the store has no row for yet are sent
 // their stop.
 func TestStopClaudeTaskOfAnEndedTaskSendsNothingAndAnnouncesIt(t *testing.T) {
+	t.Parallel()
 	var recorder trayFrameRecorder
 	f, stopLog := newClaudeStopFixtureEmitting(t, "", recorder.emit)
 	f.launchShell(t, "done-sh", "task-done-sh", "")
@@ -347,6 +351,7 @@ func TestStopClaudeTaskOfAnEndedTaskSendsNothingAndAnnouncesIt(t *testing.T) {
 // Stop All's ended launches were listed running by the caller, so their
 // ends are announced to every tray.
 func TestStopBackgroundTasksAnnouncesEndedLaunches(t *testing.T) {
+	t.Parallel()
 	var recorder trayFrameRecorder
 	f, _ := newClaudeStopFixtureEmitting(t, "", recorder.emit)
 	f.launchAgent(t, "finished", "task-finished", "")

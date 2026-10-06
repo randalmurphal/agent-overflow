@@ -9,8 +9,10 @@ import (
 )
 
 func TestMergeBranchFastForwardAndMergeCommit(t *testing.T) {
+	t.Parallel()
 	t.Run("fast-forward", func(t *testing.T) {
-		repo := testutil.InitGitRepo(t)
+		t.Parallel()
+		repo := initGitRepo(t)
 		testutil.RunGit(t, repo, "checkout", "-b", "item")
 		writeDispositionFixture(t, repo, "item.txt", "item\n")
 		testutil.RunGit(t, repo, "add", "item.txt")
@@ -27,7 +29,8 @@ func TestMergeBranchFastForwardAndMergeCommit(t *testing.T) {
 	})
 
 	t.Run("merge commit", func(t *testing.T) {
-		repo := testutil.InitGitRepo(t)
+		t.Parallel()
+		repo := initGitRepo(t)
 		testutil.RunGit(t, repo, "checkout", "-b", "item")
 		writeDispositionFixture(t, repo, "item.txt", "item\n")
 		testutil.RunGit(t, repo, "add", "item.txt")
@@ -48,8 +51,10 @@ func TestMergeBranchFastForwardAndMergeCommit(t *testing.T) {
 }
 
 func TestMergeBranchRefusesDirtyBaseAndConflictWithoutMutation(t *testing.T) {
+	t.Parallel()
 	t.Run("dirty", func(t *testing.T) {
-		repo := testutil.InitGitRepo(t)
+		t.Parallel()
+		repo := initGitRepo(t)
 		testutil.RunGit(t, repo, "branch", "item")
 		core := NewCore()
 		before, err := core.HeadSHA(repo)
@@ -73,7 +78,8 @@ func TestMergeBranchRefusesDirtyBaseAndConflictWithoutMutation(t *testing.T) {
 	})
 
 	t.Run("conflict", func(t *testing.T) {
-		repo := testutil.InitGitRepo(t)
+		t.Parallel()
+		repo := initGitRepo(t)
 		testutil.RunGit(t, repo, "checkout", "-b", "item")
 		writeDispositionFixture(t, repo, "README.txt", "item\n")
 		testutil.RunGit(t, repo, "add", "README.txt")
@@ -104,7 +110,8 @@ func TestMergeBranchRefusesDirtyBaseAndConflictWithoutMutation(t *testing.T) {
 }
 
 func TestMergeBranchRejectsRevisionExpressionsAsBranches(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "item")
 	core := NewCore()
 	before, err := core.HeadSHA(repo)

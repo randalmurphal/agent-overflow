@@ -17,6 +17,7 @@ import (
 )
 
 func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) { testDraftProjectTransfer(t, providerName) })
@@ -99,8 +100,7 @@ func testDraftProjectTransfer(t *testing.T, providerName string) {
 		t.Fatal(err)
 	}
 	cancel()
-	awaitTransferPhase(t, source, operation, "complete")
-	awaitTransferPhase(t, destination, operation, "complete")
+	awaitTransferComplete(t, source, destination, operation, false)
 	if got := destination.draftMCPPreferences(intent.TargetThreadID); got != preferences {
 		t.Fatalf("transferred tool preferences: %+v", got)
 	}

@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/network"
 )
 
 func TestMain(m *testing.M) {
@@ -42,8 +44,13 @@ func runFrontendFixture() error {
 	if err != nil {
 		return err
 	}
+	// The confirmation poll matches the harness boots' (e2e/src/harness.ts),
+	// so a spec does not wait out the product interval after approving.
+	// Discovery follows the harness boots' Reach: no multicast on a shared
+	// host network.
 	s, err := Serve(Config{Profiles: profiles, ConfigDir: config, ComputerID: os.Getenv("AO_TEST_FRONTEND_COMPUTER"),
-		ClientID: "frontend-fixture", Assets: os.DirFS(assets), Port: port, Version: "test"})
+		ClientID: "frontend-fixture", Assets: os.DirFS(assets), Port: port, Version: "test", ActivationProbe: 500 * time.Millisecond,
+		LoopbackOnly: network.IsolatedReach().LoopbackOnly()})
 	if err != nil {
 		return err
 	}

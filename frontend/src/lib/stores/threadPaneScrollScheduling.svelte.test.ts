@@ -14,7 +14,8 @@ beforeEach(() => {
   });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
 });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+// The stubs replaced fake-timer globals, so they come off first.
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function fixture() {
   const state = { loading: false, generation: 0 };

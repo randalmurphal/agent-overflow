@@ -27,6 +27,7 @@ import (
 // thread was answering, from inside the deletion and under that thread's own
 // action lock: the settlement must not try to delete the same thread again.
 func TestDeletingAScratchThreadSettlesItsOwnRequest(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "reading the log")
 	target := f.forkableThread(t, "scratch-delete")
@@ -68,6 +69,7 @@ func TestDeletingAScratchThreadSettlesItsOwnRequest(t *testing.T) {
 // nobody to deliver to while the wait is deciding the answer will arrive as a
 // message.
 func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "parked")
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
@@ -87,13 +89,14 @@ func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return f.waitersOn(ack.Token) == 1 })
 
-	// The wait runs out after a second. Everything it does afterwards waits
-	// for this lock.
+	// The wait runs out after a second and leaves the waiter registry before
+	// it arms the request. Everything it does afterwards waits for this lock.
+	waitUntil(t, 10*time.Second, func() bool { return f.waitersOn(ack.Token) == 0 })
 	select {
 	case err := <-done:
 		unlock()
 		t.Fatalf("the wait finished while the token's settle lock was held: %v", err)
-	case <-time.After(2500 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 	}
 	unlock()
 
@@ -115,6 +118,7 @@ func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
 // anything, and every token that call was waiting on is still open: all of
 // them owe their answer as a message, not only the one that ended the wait.
 func TestABlockedWaitArmsEveryTokenItWaitedOn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	blocked := f.busyThread(t, "waiting-on-a-person")
 	quiet := f.busyThread(t, "still-working")
@@ -164,6 +168,7 @@ func TestABlockedWaitArmsEveryTokenItWaitedOn(t *testing.T) {
 // cancel has to stop. Reporting that there was nothing to stop would leave
 // the cancelled work running and unreported.
 func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working on it")
 	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -213,6 +218,7 @@ func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
 // names the turn it is entitled to stop, and a thread that has moved on to a
 // later turn is left alone.
 func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "mid-thought")
 	ack := f.runningRequest(t, "start the sweep")
@@ -253,6 +259,7 @@ func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
 // delivery between them leaves an answer nobody is ever told about, and
 // nothing else revisits a settled row.
 func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "received recovered answer")
 	f.holdCallerTurn(t)
@@ -300,6 +307,7 @@ func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
 // as running, so no turn end is coming for it. The binding itself has to
 // notice, because nothing else is watching any more.
 func TestAFinishedTurnSettlesWhenItsReceiptCatchesUp(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
 	if err != nil {
@@ -354,6 +362,7 @@ func TestAFinishedTurnSettlesWhenItsReceiptCatchesUp(t *testing.T) {
 // same race: a turn end observed while the receipt is still `accepted` must
 // leave the gate alone, because the dispatch that set it is about to need it.
 func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
 	if err != nil {
@@ -383,6 +392,7 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 // accepted: otherwise a paired computer could settle this computer's own
 // request by colliding with its token.
 func TestAPeerCannotReplayAnOutboundToken(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "victim-target")
 	token := newThreadRequestToken()
@@ -427,6 +437,7 @@ func TestAPeerCannotReplayAnOutboundToken(t *testing.T) {
 // Left open it would keep that computer polling forever and keep this thread
 // serving the tools for work nobody is doing.
 func TestAFailedForwardedRequestSettlesItsReceipt(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	// A thread with no provider session on disk cannot be forked, so the ask
 	// fails after its receipt has been accepted.
@@ -467,6 +478,7 @@ func TestAFailedForwardedRequestSettlesItsReceipt(t *testing.T) {
 // belongs to the wake body, which is rendered from this; clipping here would
 // lose the rest for good.
 func TestAFallbackAnswerIsStoredWhole(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "long-answer")
 	body := strings.Repeat("the migration log said a great deal. ", 2000)
@@ -503,6 +515,7 @@ func payloadAssistantItem(id, body string) store.Item {
 // only while a paired computer's request is open; once that request settles
 // the live session goes back to what the switch says.
 func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.appCtx, app.appCancel = ctx, cancel

@@ -71,6 +71,7 @@ func promptOverrideOptionsAndResolution(t *testing.T, app *App, threadID string)
 // tool toggles are stamped from the same provider's list. The other
 // provider's settings must be inert here — one Settings file feeds both.
 func TestBuildSessionOptionsRendersThePromptOverrideForTheThreadProvider(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-compose", string(provider.Codex), "gpt-5.4")
 
@@ -103,6 +104,7 @@ func TestBuildSessionOptionsRendersThePromptOverrideForTheThreadProvider(t *test
 // the `--system-prompt-file` temp file), and the settings tool list UNIONS
 // with the read-only mode strip rather than replacing it.
 func TestBuildSessionOptionsRendersTheClaudeOverrideIntoTheLaunchConfig(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, workDir := seedPromptOverrideThread(t, app, "thread-prompt-override-claude", string(provider.Claude), "claude-opus-5")
 	if err := app.store.UpdateRuntimeMode(id, string(provider.RuntimeReadOnly)); err != nil {
@@ -152,6 +154,7 @@ func TestBuildSessionOptionsRendersTheClaudeOverrideIntoTheLaunchConfig(t *testi
 // a regression there would leave settings applied on the options bundle and
 // absent from the launch.
 func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, workDir := seedPromptOverrideThread(t, app, "thread-prompt-override-tui", string(provider.ClaudeTUI), "claude-opus-5")
 
@@ -209,6 +212,7 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 // converges the prompt axis; see
 // TestReconcileSettingsOwnedAxesConvergesAnEditedClaudeOverride.
 func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-tui-pin", string(provider.ClaudeTUI), "claude-opus-5")
 
@@ -261,12 +265,10 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 // placeholder renders empty there rather than pointing a Codex session at a
 // Claude path.
 func TestClaudeMemoryDirForThreadCoversBothClaudeTransports(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workDir := t.TempDir()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir() error = %v", err)
-	}
+	home := testProviderHome(t, app)
 	want, err := promptoverride.ClaudeMemoryDir(home, workDir)
 	if err != nil {
 		t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
@@ -298,6 +300,7 @@ func TestClaudeMemoryDirForThreadCoversBothClaudeTransports(t *testing.T) {
 // Replacing it would break them, so the settings override stands down — but
 // the tool toggles are a separate axis and still apply.
 func TestBuildSessionOptionsKeepsAFeatureOwnedSystemPrompt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature", string(provider.Codex), "gpt-5.4")
 	app.setThreadSystemPrompt(id, "deliberation prompt")
@@ -329,8 +332,9 @@ func TestBuildSessionOptionsKeepsAFeatureOwnedSystemPrompt(t *testing.T) {
 // named — silently truncating would hand the model a prompt cut mid-sentence,
 // and silently sending it would put megabytes into every turn's context.
 func TestApplySettingsOwnedAxesRefusesAnOversizedRenderedPrompt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-huge", string(provider.Codex), "gpt-5.4")
 	if err := app.store.UpdateWorkspacePath(id, repo); err != nil {
 		t.Fatalf("UpdateWorkspacePath() error = %v", err)
@@ -372,8 +376,9 @@ func TestApplySettingsOwnedAxesRefusesAnOversizedRenderedPrompt(t *testing.T) {
 // answerable from git's on-disk layout — while {{GIT_BLOCK}} carries the real
 // branch/status/commits shape.
 func TestPromptOverrideGitFacts(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	t.Run("git block inside a repository", func(t *testing.T) {
 		id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-git-block", string(provider.Codex), "gpt-5.4")
@@ -449,6 +454,7 @@ func TestPromptOverrideGitFacts(t *testing.T) {
 // and it runs on the spawn path only. Deleting ensureClaudeMemoryDir's body
 // must fail here.
 func TestSpawnCreatesTheClaudeMemoryDirectoryOnlyWhenThePromptAsksForIt(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		provider   provider.ProviderKind
@@ -483,10 +489,7 @@ func TestSpawnCreatesTheClaudeMemoryDirectoryOnlyWhenThePromptAsksForIt(t *testi
 			app, _ := setupE2EApp(t)
 			_, workDir := startOverrideSession(t, app, "thread-memory-"+string(tc.provider), tc.provider, tc.model, tc.prompt)
 
-			home, err := os.UserHomeDir()
-			if err != nil {
-				t.Fatalf("UserHomeDir() error = %v", err)
-			}
+			home := testProviderHome(t, app)
 			dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
 			if err != nil {
 				t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
@@ -506,13 +509,11 @@ func TestSpawnCreatesTheClaudeMemoryDirectoryOnlyWhenThePromptAsksForIt(t *testi
 // broken one: the failure surfaces as thread error state the user can act on
 // and the session still starts.
 func TestSpawnSurfacesAMemoryDirectoryFailureWithoutFailingTheSpawn(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workDir := t.TempDir()
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir() error = %v", err)
-	}
+	home := testProviderHome(t, app)
 	dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
 	if err != nil {
 		t.Fatalf("ClaudeMemoryDir(%s) error = %v — want a resolvable directory", workDir, err)
@@ -566,6 +567,7 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
 		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-` + id + `"}}}`,
+		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 	})
 	if providerName == provider.Claude {
 		settingsKey = "claudePromptOverrides"
@@ -596,6 +598,7 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 // launched with, an unrelated live-appliable change must still apply without
 // a restart, and the next spawn must read the new values.
 func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-live", string(provider.Codex), "gpt-5.4")
 
@@ -668,6 +671,7 @@ func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
 // existed. A pin that swallowed that would silently freeze feature-owned
 // prompts after their first value.
 func TestFeatureOwnedPromptChangeStillConvergesThroughTheReconciler(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature-live", string(provider.Codex), "gpt-5.4")
 	app.setThreadSystemPrompt(id, "deliberation prompt v1")
@@ -711,6 +715,7 @@ func TestFeatureOwnedPromptChangeStillConvergesThroughTheReconciler(t *testing.T
 // tool config from the SUBSEQUENT `thread/resume` the next spawn runs. That
 // makes the fork's next launch config the thing worth pinning.
 func TestNextSpawnAfterACodexForkStillCarriesTheOverrideAxes(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-fork", string(provider.Codex), "gpt-5.4")
 
@@ -789,6 +794,7 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 // reach the early return from different Config types, and neither has
 // `set_model.system_prompt` to converge with.
 func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConvergingOffClaude(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ providerName, model string }{
 		{string(provider.Codex), "gpt-5.4"},
 		{string(provider.ClaudeTUI), "claude-opus-5"},
@@ -825,6 +831,7 @@ func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConvergingOffClaude(t *tes
 // non-Claude session still pins what it launched with, so a settings edit
 // cannot queue a restart on a transport that could not have applied it live.
 func TestReconcileSettingsOwnedAxesStillPinsTheSettingsOverrideOffClaude(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-pin", string(provider.Codex), "gpt-5.4")
 

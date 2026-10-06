@@ -118,6 +118,7 @@ func enqueueWithin(t *testing.T, qs *providerEventQueues, threadID string, evt p
 }
 
 func TestProviderEventQueueKeepsEachThreadInOrderUnderLoad(t *testing.T) {
+	t.Parallel()
 	const (
 		threads   = 8
 		perThread = 5000
@@ -170,6 +171,7 @@ func TestProviderEventQueueKeepsEachThreadInOrderUnderLoad(t *testing.T) {
 }
 
 func TestProviderEventQueueBlocksProducerAtItsBoundThenResumes(t *testing.T) {
+	t.Parallel()
 	ones := make([]int, providerEventQueueMaxEvents)
 	for i := range ones {
 		ones[i] = 1
@@ -247,6 +249,7 @@ func TestProviderEventQueueBlocksProducerAtItsBoundThenResumes(t *testing.T) {
 // it was waiting for are still handled, in order, behind the ones already
 // running, and events read after it keep their place.
 func TestProviderEventDrainStallLeavesTheQueueIntact(t *testing.T) {
+	t.Parallel()
 	const threadID = "thread-drain-timeout"
 	qs := providerEventQueues{drainStall: 50 * time.Millisecond}
 	rec := &seqRecorder{}
@@ -294,6 +297,7 @@ func TestProviderEventDrainStallLeavesTheQueueIntact(t *testing.T) {
 // A drain waits for the events queued when it began, not for a stream that
 // keeps arriving behind them.
 func TestProviderEventDrainWaitsOnlyForEventsQueuedBeforeIt(t *testing.T) {
+	t.Parallel()
 	const threadID = "thread-drain-target"
 	var qs providerEventQueues
 	firstStarted := make(chan struct{})
@@ -333,6 +337,7 @@ func TestProviderEventDrainWaitsOnlyForEventsQueuedBeforeIt(t *testing.T) {
 // once the session's "disconnected" is handled and nothing is pending, the
 // registry forgets the thread, and a later session starts a fresh queue.
 func TestProviderEventQueueRetiresAfterDisconnect(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-queue-retire")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -366,6 +371,7 @@ func TestProviderEventQueueRetiresAfterDisconnect(t *testing.T) {
 // holding the lock across both. A producer that queues an event in between
 // keeps the queue: retiring it would start a second worker for the thread.
 func TestProviderEventQueueRetireKeepsAQueueWithWork(t *testing.T) {
+	t.Parallel()
 	const threadID = "thread-retire-race"
 	var qs providerEventQueues
 	rec := &seqRecorder{}
@@ -433,6 +439,7 @@ func TestProviderEventHandlerErrorIsLoggedAndTheWorkerContinues(t *testing.T) {
 // the stop waits for them before CleanupThread marks the thread stopped,
 // after which triage drops whatever reaches it.
 func TestStopSessionPersistsEventsReadBeforeTheStop(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-stop-drain")
 	thread.Provider = string(provider.Claude)
@@ -541,6 +548,7 @@ func TestStopSessionLogsADrainThatStalls(t *testing.T) {
 
 // Shutdown handles every event already read before it closes the store.
 func TestShutdownHandlesProviderEventsAlreadyRead(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	const (
 		threadID = "thread-shutdown-drain"
@@ -593,6 +601,7 @@ func TestShutdownHandlesProviderEventsAlreadyRead(t *testing.T) {
 // A shutdown whose drain stalls reports it in its error, which the
 // process logs, and still closes the store.
 func TestShutdownReportsADrainThatStalls(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.providerEvents.drainStall = 50 * time.Millisecond
 	const threadID = "thread-shutdown-drain-bound"
@@ -634,6 +643,7 @@ func TestShutdownReportsADrainThatStalls(t *testing.T) {
 // them) queued; the close handles them before returning, so a stop or a
 // replacement start never races the old session's teardown.
 func TestStopSessionHandlesTheSessionsFinalEvents(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-final-events")
 	thread.Provider = string(provider.Claude)
@@ -704,6 +714,7 @@ func TestStopSessionHandlesTheSessionsFinalEvents(t *testing.T) {
 // The start handles it before returning, so a caller acting on the started
 // session (a send, a fork reading the session ref) finds it handled.
 func TestCodexStartHandlesItsInitBeforeReturning(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-start-init")
 	thread.WorkspacePath = t.TempDir()
@@ -776,6 +787,7 @@ func TestCodexStartHandlesItsInitBeforeReturning(t *testing.T) {
 // on the thread's worker, a handler blocked on one event does not hold the
 // control_response that Interrupt waits for.
 func TestClaudeInterruptAnswersWhileEventHandlingIsBlocked(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-blocked-handler-interrupt")
 	thread.Provider = string(provider.Claude)

@@ -77,6 +77,7 @@ func runImport(t *testing.T, app *App, ids ...string) []SessionImportProgressEve
 }
 
 func TestListImportableSessionsReportsBothProviders(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -128,6 +129,7 @@ func TestListImportableSessionsReportsBothProviders(t *testing.T) {
 // A broken home for one provider must not take the other's sessions away —
 // that is why the scan reports availability per provider instead of failing.
 func TestListImportableSessionsKeepsOneProviderWhenTheOtherIsUnreadable(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -172,6 +174,7 @@ func wireImportScanClock(app *App, ttl time.Duration) (*time.Time, *int) {
 }
 
 func TestListImportableSessionsCachesUntilForceRefreshOrTTL(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -207,6 +210,7 @@ func TestListImportableSessionsCachesUntilForceRefreshOrTTL(t *testing.T) {
 // Lookup honors the TTL, and a miss must not read as "this session is gone":
 // the import run rescans and re-mints the same ids.
 func TestImportScanCacheLookupExpiresWithTheEntry(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -234,6 +238,7 @@ func TestImportScanCacheLookupExpiresWithTheEntry(t *testing.T) {
 }
 
 func TestImportSessionsCreatesThreadsAndReportsProgress(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -299,6 +304,7 @@ func TestImportSessionsCreatesThreadsAndReportsProgress(t *testing.T) {
 // Pressing Import twice must be a no-op, not a duplicate: the scan subtracts
 // sessions AO already has, so the second run finds no row for the id.
 func TestImportSessionsSkipsAlreadyImportedSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -327,6 +333,7 @@ func TestImportSessionsSkipsAlreadyImportedSessions(t *testing.T) {
 }
 
 func TestImportSessionsReportsMetadataOnlyActiveHistoryAsSkipped(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -368,6 +375,7 @@ func TestImportSessionsReportsMetadataOnlyActiveHistoryAsSkipped(t *testing.T) {
 // AO already has — within a single run nothing would stop the second mention
 // from importing the same transcript a second time, as a second thread.
 func TestImportSessionsCollapsesDuplicateIDsInOneRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -403,6 +411,7 @@ func TestImportSessionsCollapsesDuplicateIDsInOneRequest(t *testing.T) {
 }
 
 func TestImportSessionsRejectsBlankSelection(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.ImportSessions(ImportSessionsRequest{IDs: []string{"  ", ""}}); err == nil {
 		t.Fatal("ImportSessions with no usable ids = nil error, want a refusal")
@@ -434,6 +443,7 @@ func blockingScanCache(t *testing.T, app *App) (release func()) {
 }
 
 func TestImportSessionsRefusesASecondRunWhileOneIsActive(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	release := blockingScanCache(t, app)
 	defer release()
@@ -463,6 +473,7 @@ func TestImportSessionsRefusesASecondRunWhileOneIsActive(t *testing.T) {
 }
 
 func TestCancelSessionImportStopsTheRunAndStillReportsDone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	release := blockingScanCache(t, app)
 	defer release()
@@ -499,6 +510,7 @@ func TestCancelSessionImportStopsTheRunAndStillReportsDone(t *testing.T) {
 // The row ids the frontend holds must outlive the scan cache: an id is
 // (provider, session id) and nothing about it depends on when the scan ran.
 func TestImportSessionsResolvesIDsAfterTheScanCacheExpires(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)

@@ -17,6 +17,7 @@ import (
 )
 
 func TestSeedChatModelProfileSkipsHiddenLastUsedModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	// Hide the catalog head; the next catalog entry is the expected seed.
@@ -58,6 +59,7 @@ func TestSeedChatModelProfileSkipsHiddenLastUsedModel(t *testing.T) {
 }
 
 func TestSeedChatModelProfileSkipsHiddenCodexModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	hiddenSlug := provider.CodexModels[0].Slug
@@ -83,6 +85,7 @@ func TestSeedChatModelProfileSkipsHiddenCodexModel(t *testing.T) {
 }
 
 func TestSeedChatModelProfileKeepsVisibleLastUsedModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -106,6 +109,7 @@ func TestSeedChatModelProfileKeepsVisibleLastUsedModel(t *testing.T) {
 }
 
 func TestFirstVisibleModelFallsBackWhenAllHidden(t *testing.T) {
+	t.Parallel()
 	hidden := make([]string, 0, len(provider.ClaudeModels))
 	for _, model := range provider.ClaudeModels {
 		hidden = append(hidden, model.Slug)
@@ -124,6 +128,7 @@ func TestFirstVisibleModelFallsBackWhenAllHidden(t *testing.T) {
 // provider's stdin and nothing but the typed text reaches SQLite.
 
 func TestExpandComposerCommandTransitions(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-expand", "")
 
@@ -184,6 +189,7 @@ func TestExpandComposerCommandTransitions(t *testing.T) {
 // words, because every one of them is live; the payload carries the context
 // once, because context repeated is only cost.
 func TestExpandComposerCommandFiresOnceForRepeats(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-expand-repeat", "")
 
@@ -204,6 +210,7 @@ func TestExpandComposerCommandFiresOnceForRepeats(t *testing.T) {
 }
 
 func TestExpandComposerCommandFailsLoudly(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 
 	// The resolver reads the thread; a thread that does not exist is a
@@ -227,6 +234,7 @@ func TestExpandComposerCommandFailsLoudly(t *testing.T) {
 // path against a Claude session whose binary captures stdin, so the assertion
 // is on the bytes the provider received — not on a proxy for them.
 func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-command-send", "")
 
@@ -315,6 +323,7 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 // set, so an internal caller — here the workflow wake's PreserveDraft shape —
 // never expands a `/…` opener inside a prompt no user typed.
 func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-command-injected", "")
 

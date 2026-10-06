@@ -14,11 +14,11 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
 )
 
 func TestSendMessageHappyPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -54,6 +54,7 @@ func TestSendMessageHappyPath(t *testing.T) {
 // longer spawns a provider process, and the UX no longer surfaces a
 // disconnected banner while the user is composing their first message.
 func TestSendMessageLazyStartsSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-lazy-start")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -89,6 +90,7 @@ func TestSendMessageLazyStartsSession(t *testing.T) {
 }
 
 func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-visible-before-start")
 	thread.Provider = string(provider.Codex)
@@ -161,6 +163,7 @@ func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
 }
 
 func TestSendMessagePersistsUserItemAndErrorWhenLazyStartFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-start-fail")
 	thread.Provider = string(provider.Codex)
@@ -195,6 +198,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenLazyStartFails(t *testing.T) {
 }
 
 func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	emissions := captureEmissions(app)
 	thread := testThread("thread-send-runtime-before-start")
@@ -250,6 +254,7 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 // persisting the user message. Splitting the two on the frontend used
 // to leave plan-mode threads stuck reading "chat" when send failed.
 func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-implement-plan-mode")
 	thread.Provider = string(provider.Claude)
@@ -337,6 +342,7 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 // clicking, and the sibling failed-send error row makes the failure
 // visible for a retry. Also confirms the mode flip stays committed.
 func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-implement-mode-revert")
 	thread.Provider = string(provider.Codex)
@@ -415,6 +421,7 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.
 // mark is gated on `WHERE implemented_at = 0` so the first click owns
 // the badge forever.
 func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttribution(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-implement-replay")
 	thread.Provider = string(provider.Claude)
@@ -507,6 +514,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 }
 
 func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-source-plan")
 	thread.Provider = string(provider.Claude)
@@ -649,6 +657,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 }
 
 func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	sourceThread := testThread("thread-source-plan")
 	sourceThread.Provider = string(provider.Claude)
@@ -717,6 +726,7 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 }
 
 func TestSendMessageReturnsLazyStartError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-lazy-start-fail")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -737,6 +747,7 @@ func TestSendMessageReturnsLazyStartError(t *testing.T) {
 }
 
 func TestSendMessageIncrementsTurnIndex(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-turn-index")
 	thread.Provider = string(provider.Claude)
@@ -808,6 +819,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 }
 
 func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -882,6 +894,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 // ordinal-walk slice. No provider echo is simulated here: the assertion
 // is precisely the pre-echo state.
 func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
@@ -949,6 +962,7 @@ func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 // echo. The no-provider Codex session makes sendToProvider fail AFTER the
 // user row is persisted, so the persisted row reflects the send-time state.
 func TestSendMessageDoesNotPreStampProviderItemIDForCodex(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-codex-no-prestamp")
 	thread.Provider = string(provider.Codex)
@@ -987,6 +1001,7 @@ func TestSendMessageDoesNotPreStampProviderItemIDForCodex(t *testing.T) {
 }
 
 func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-title")
 	thread.Title = "New Thread"
@@ -1061,6 +1076,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 }
 
 func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-title-custom")
 	thread.Title = "New Thread"
@@ -1154,8 +1170,9 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 }
 
 func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-send-rename-worktree")
 	thread.Provider = string(provider.Claude)
@@ -1232,6 +1249,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 }
 
 func TestRespondToApprovalNoActiveSessionError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	err := app.RespondToApproval(context.Background(), "nonexistent-thread", provider.ApprovalResponse{
@@ -1247,6 +1265,7 @@ func TestRespondToApprovalNoActiveSessionError(t *testing.T) {
 }
 
 func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-approval-claude")
 	thread.Provider = string(provider.Claude)
@@ -1284,6 +1303,7 @@ func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 }
 
 func TestRespondToApprovalNoProviderError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-approval-no-provider")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -1320,6 +1340,7 @@ func TestRespondToApprovalNoProviderError(t *testing.T) {
 // that should surface, route it through a distinct error rather
 // than re-introducing this one.
 func TestInterruptTurnMissingSessionIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	if err := app.InterruptTurn("nonexistent-thread", nil); err != nil {
@@ -1328,6 +1349,7 @@ func TestInterruptTurnMissingSessionIsNoOp(t *testing.T) {
 }
 
 func TestInterruptTurnHappyPathClaude(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-interrupt-claude")
 	thread.Provider = string(provider.Claude)
@@ -1383,6 +1405,7 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 // crash / truncation; these suffixes must NOT collapse into one —
 // "stopped" is user-initiated, "interrupted" is everything else.
 func TestInterruptCreatesStoppedSystemError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-interrupt-stopped")
 	thread.Provider = string(provider.Claude)
@@ -1492,6 +1515,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 // BOTH providers (Claude and Codex) so a future refactor doesn't break
 // the exemption on one path while keeping it on the other.
 func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		providerName string
@@ -1588,6 +1612,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 }
 
 func TestStopSessionRemovesFromMap(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stop")
 	thread.Provider = string(provider.Claude)
@@ -1625,6 +1650,7 @@ func TestStopSessionRemovesFromMap(t *testing.T) {
 }
 
 func TestStopSessionNoSessionIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// StopSession on a thread with no session should not error.
@@ -1640,6 +1666,7 @@ func TestStopSessionNoSessionIsNoOp(t *testing.T) {
 // collide on the UNIQUE(turn_index, item_index) constraint, or silently
 // attribute the same user message to two different turns.
 func TestInternalSendMessageSerialPerThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-serial")
 	thread.Provider = string(provider.Claude)
@@ -1717,6 +1744,7 @@ func TestInternalSendMessageSerialPerThread(t *testing.T) {
 // does NOT serialize across unrelated threads: two threads' sends make
 // progress concurrently.
 func TestSendMessageParallelDifferentThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	threadA := testThread("thread-parallel-A")
@@ -1780,6 +1808,7 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 // visible immediately, and a follow-up error row records the failed provider
 // send.
 func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-fail")
 	thread.Provider = string(provider.Claude)
@@ -1845,6 +1874,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 // error:<turn>:<seq> id would collide with a fresh provider error on
 // the same turn.
 func TestSendMessageGoesThroughRouter(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-router")
 	thread.Provider = string(provider.Claude)
@@ -1942,6 +1972,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 // in the store. Regression would be moving the InsertItem call past a
 // success branch by mistake.
 func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-success")
 	thread.Provider = string(provider.Claude)
@@ -2000,6 +2031,7 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 // init arrived, breaking the wire-driven contract this phase
 // established.
 func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-no-synthetic-turn-start")
 	thread.Provider = string(provider.Claude)
@@ -2055,6 +2087,7 @@ func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
 // when the wire system/init arrives, and turn-start would never fire
 // for Claude.
 func TestSendMessageRegistersPendingSend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-pending-send-registered")
 	thread.Provider = string(provider.Claude)
@@ -2100,6 +2133,7 @@ func TestSendMessageRegistersPendingSend(t *testing.T) {
 // would persist; a later wire init for a different (or orphaned) send
 // could mis-route through the handleTurnStart path on stale state.
 func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-pending-send-cleared-on-failure")
 	thread.Provider = string(provider.Claude)
@@ -2166,6 +2200,7 @@ func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
 // spawn, a queued dispatch) has no client applying its own result, so the
 // row must be broadcast as listed once that item exists, and only once.
 func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-first-item")
 	thread.Provider = string(provider.Claude)

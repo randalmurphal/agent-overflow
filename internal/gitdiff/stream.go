@@ -314,12 +314,10 @@ func (s *diffStream) finish() error {
 	s.waited = true
 	err := s.cmd.Wait()
 	s.cancel()
-	if err == nil {
+	// ErrWaitDelay means git exited successfully while a child it started
+	// still held stderr; the patch already reached EOF.
+	if err == nil || errors.Is(err, exec.ErrWaitDelay) {
 		return nil
-	}
-	if errors.Is(err, exec.ErrWaitDelay) {
-		return fmt.Errorf("gitdiff: git %s: output pipes did not close before wait delay: %w",
-			strings.Join(s.args, " "), err)
 	}
 	code := -1
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {

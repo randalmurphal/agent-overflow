@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func codexLiveUpdateBaseOptions() provider.SessionOptions {
@@ -26,6 +27,7 @@ func codexLiveUpdateBaseOptions() provider.SessionOptions {
 }
 
 func TestCodexPlanLiveUpdate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*provider.SessionOptions)
@@ -155,6 +157,7 @@ func TestCodexPlanLiveUpdate(t *testing.T) {
 // catalog refresh renaming the tier) has to plan live too — it is a turn/start
 // override like model and effort, not a spawn-only axis.
 func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
+	t.Parallel()
 	fastOff := codexLiveUpdateBaseOptions()
 	fastOff.FastModeTierID = "turbo"
 
@@ -216,11 +219,10 @@ func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
 // builder (turn_processor.rs `build_thread_settings_overrides`), so the two
 // cannot disagree about it.
 func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(codexTurnCaptureScript(capturePath)), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:         scriptPath,
@@ -275,11 +277,10 @@ func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 // config.toml selects a tier AO does not model keeps it), and on->off->on->off
 // must clear every time rather than only the first.
 func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(codexTurnCaptureScript(capturePath)), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:         scriptPath,
@@ -398,11 +399,10 @@ func capturedTurnStartParams(t *testing.T, path string) []map[string]any {
 // serviceTier / approvalPolicy / sandboxPolicy as turn/start overrides —
 // no restart, same thread.
 func TestApplyLiveUpdateAppliesOnNextTurnStart(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(codexTurnCaptureScript(capturePath)), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:          scriptPath,
@@ -478,6 +478,7 @@ func TestApplyLiveUpdateAppliesOnNextTurnStart(t *testing.T) {
 // user. An update that simply omitted the reviewer would pass a states-only
 // test and leave the thread auto-reviewing forever.
 func TestCodexPlanLiveUpdateRuntimeModeTransitions(t *testing.T) {
+	t.Parallel()
 	for _, from := range provider.AllRuntimeModes {
 		for _, to := range provider.AllRuntimeModes {
 			t.Run(string(from)+" to "+string(to), func(t *testing.T) {
@@ -509,6 +510,7 @@ func TestCodexPlanLiveUpdateRuntimeModeTransitions(t *testing.T) {
 // switch still be inert if ApplyLiveUpdate forgets a field — and the reviewer
 // is exactly the kind of field a struct-literal copy silently omits.
 func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		turnConfig: sessionTurnConfig{
 			approvalsReviewer: approvalsReviewerUser,

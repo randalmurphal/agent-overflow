@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
 	"os"
@@ -28,6 +29,7 @@ func waitForLiveCodeRows(t *testing.T, app *App, want int) {
 }
 
 func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stale")
 	thread.SessionRef = "provider-session-1"
@@ -68,6 +70,7 @@ func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
 }
 
 func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-shutdown")
 	thread.Provider = string(provider.Claude)
@@ -118,6 +121,7 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 // (shutdown, revert, replacement-session start) where the prior
 // session had already terminated abnormally.
 func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-shutdown-error")
 	thread.Provider = string(provider.Claude)
@@ -167,6 +171,7 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 // subprocess's non-zero exit is treated as the clean teardown it
 // actually was.
 func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	t.Cleanup(func() { _ = app.ServiceShutdown() })
@@ -271,9 +276,7 @@ func writeClaudePassthroughBinary(t *testing.T) string {
 
 	path := filepath.Join(t.TempDir(), "claude-passthrough.sh")
 	script := "#!/bin/sh\ncat >/dev/null\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -298,9 +301,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "claude-interrupt-responder.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -309,9 +310,7 @@ func writeClaudeFailOnCloseBinary(t *testing.T) string {
 
 	path := filepath.Join(t.TempDir(), "claude-fail-on-close.sh")
 	script := "#!/bin/sh\ncat >/dev/null\nexit 1\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -320,9 +319,7 @@ func writeClaudeMarkerBinary(t *testing.T, markerPath string) string {
 
 	path := filepath.Join(t.TempDir(), "claude-marker.sh")
 	script := "#!/bin/sh\nprintf started >" + shellQuote(markerPath) + "\ncat >/dev/null\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -340,6 +337,7 @@ func shellQuote(path string) string {
 // the in-triage epoch fences alone cannot cover the Codex resend or
 // the session capture itself.
 func TestInterruptTurn_SerializesWithThreadLock(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-interrupt-lock")
 	if err := app.store.CreateThread(thread); err != nil {

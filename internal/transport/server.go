@@ -330,6 +330,10 @@ type Config struct {
 	// defaults to defaultKeepalivePongTimeout (10s). Test knob, like
 	// KeepaliveInterval.
 	KeepalivePongTimeout time.Duration
+	// WatermarkInterval overrides WatermarkEvery. Zero defaults to it.
+	// Test knob, like KeepaliveInterval: only a harness boot sets it
+	// (diagenv.HarnessTiming).
+	WatermarkInterval time.Duration
 
 	// SessionRecheckInterval is how often an established connection
 	// re-asks whether the session it named is still live
@@ -453,13 +457,20 @@ type Config struct {
 type Server struct {
 	cfg Config
 
-	// mu guards listener / srv / addr / formerSrvs / originPatterns.
+	// mu guards main / loopback / addr / formerSrvs / originPatterns.
 	// Held briefly during Rebind so a concurrent Addr() reader sees a
 	// coherent value.
-	mu       sync.Mutex
-	listener net.Listener
-	srv      *http.Server
+	mu   sync.Mutex
+	main *endpoint
+	// loopback is the 127.0.0.1 listener on main's port while main is
+	// the IPv4 wildcard. Loopback clients keep connecting to it, so a
+	// move between the two hosts never closes the socket they queue on.
+	loopback *endpoint
 	addr     string
+
+	// bindTCP binds one socket for bindListener. Tests replace it to
+	// hold accepts or to stand a loopback socket in for the wildcard.
+	bindTCP func(network, addr string, sharePort bool) (net.Listener, error)
 
 	// originPatterns is the live WS origin allow-list, mirroring
 	// Config.OriginPatterns at boot and updated atomically by Rebind so
@@ -677,6 +688,8 @@ func New(cfg Config) (*Server, error) {
 		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+
+		bindTCP: listenTCPSharing,
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -709,20 +722,26 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) start() error {
-	listener, err := s.listen()
+	main, loopback, err := s.listen()
 	if err != nil {
 		return err
 	}
 	s.rootCtx, s.rootCancel = context.WithCancelCause(context.Background())
 
-	srv := s.buildHTTPServer()
+	main.srv = s.buildHTTPServer()
+	if loopback != nil {
+		loopback.srv = s.buildHTTPServer()
+	}
 	s.mu.Lock()
-	s.listener = listener
-	s.srv = srv
-	s.addr = listener.Addr().String()
+	s.main = main
+	s.loopback = loopback
+	s.addr = main.tcp.Addr().String()
 	s.mu.Unlock()
 
-	s.serve(srv, listener)
+	s.serve(main)
+	if loopback != nil {
+		s.serve(loopback)
+	}
 	return nil
 }
 
@@ -733,40 +752,72 @@ func (s *Server) start() error {
 // second bind either succeeds or the whole Start fails carrying both
 // errors. The caller learns where it actually landed from Addr() —
 // main.go uses that to re-persist the pinned port.
-func (s *Server) listen() (net.Listener, error) {
+func (s *Server) listen() (main, loopback *endpoint, err error) {
 	addr := net.JoinHostPort(s.cfg.BindAddr, strconv.Itoa(s.cfg.Port))
-	listener, err := s.bindListener(addr)
+	main, loopback, _, err = s.bindAt(addr, nil)
 	if err == nil {
-		return listener, nil
+		return main, loopback, nil
 	}
 	if !s.cfg.EphemeralPortFallback || s.cfg.Port == 0 || !portUnavailable(err) {
-		return nil, fmt.Errorf("transport: listen %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("transport: listen %s: %w", addr, err)
 	}
 
 	ephemeral := net.JoinHostPort(s.cfg.BindAddr, "0")
 	log.Printf("transport: listen %s: %v — retrying on an ephemeral port", addr, err)
-	listener, retryErr := s.bindListener(ephemeral)
+	main, loopback, _, retryErr := s.bindAt(ephemeral, nil)
 	if retryErr != nil {
-		return nil, fmt.Errorf("transport: listen %s: %w (after %s: %v)", ephemeral, retryErr, addr, err)
+		return nil, nil, fmt.Errorf("transport: listen %s: %w (after %s: %v)", ephemeral, retryErr, addr, err)
 	}
-	log.Printf("transport: bound %s instead of %s", listener.Addr(), addr)
-	return listener, nil
+	log.Printf("transport: bound %s instead of %s", main.tcp.Addr(), addr)
+	return main, loopback, nil
+}
+
+// endpoint is one bound socket and the http.Server accepting on it.
+type endpoint struct {
+	// tcp is the socket itself, the handle for its address and options.
+	tcp net.Listener
+	// ln is what srv accepts from: tcp, or its same-port TLS wrapper.
+	ln  net.Listener
+	srv *http.Server
+}
+
+// loopbackIPv4 is the host the loopback socket beside a wildcard bind
+// binds. It is the host the embedded webview and local clients dial.
+const loopbackIPv4 = "127.0.0.1"
+
+// wildcardIPv4 reports whether host is the IPv4 unspecified address, the
+// one bind host that also receives loopback connections.
+func wildcardIPv4(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr == netip.IPv4Unspecified()
+}
+
+// listenerPort returns the port ep is bound to as a string.
+func listenerPort(ep *endpoint) string {
+	_, port, err := net.SplitHostPort(ep.tcp.Addr().String())
+	if err != nil {
+		return ""
+	}
+	return port
 }
 
 // bindListener is the ONE place this server acquires a listener: the
 // bind plus the same-port TLS wrap when a certificate is configured
 // (tlssniff.go). Every path that binds goes through it — boot, the
-// ephemeral fallback, a rebind, the rebind's close-and-retry, and its
-// rollback — so a listener that terminated TLS cannot be replaced by one
-// that quietly does not. A client pinning the certificate would read
-// that as the backend disappearing, and only on the paths a user reaches
-// by toggling LAN access.
+// ephemeral fallback and a rebind — so a listener that terminated TLS
+// cannot be replaced by one that quietly does not. A client pinning the
+// certificate would read that as the backend disappearing, and only on
+// the paths a user reaches by toggling LAN access.
+//
+// beside, when set, is this server's own loopback socket on the same
+// port, which the new wildcard socket must bind next to without either
+// closing (sharePort, shareport_linux.go).
 //
 // A build without remote access binds loopback only: it refuses any other
 // requested host, and closes a listener the kernel did not report bound to
 // loopback, since WSL virtioproxy has been seen to turn a fixed 127.0.0.1
 // bind into one on every interface.
-func (s *Server) bindListener(addr string) (net.Listener, error) {
+func (s *Server) bindListener(addr string, beside *endpoint) (*endpoint, error) {
 	network := "tcp"
 	host, _, _ := net.SplitHostPort(addr)
 	if !buildvariant.RemoteAccess && !loopbackIP(host) {
@@ -777,7 +828,12 @@ func (s *Server) bindListener(addr string) (net.Listener, error) {
 		// forwards that family to Windows ::1, stranding IPv4 clients.
 		network = "tcp4"
 	}
-	inner, err := ListenTCP(network, addr)
+	if beside != nil {
+		if err := sharePort(beside.tcp); err != nil {
+			return nil, fmt.Errorf("transport: bind %s beside %s: %w", addr, beside.tcp.Addr(), err)
+		}
+	}
+	inner, err := s.bindTCP(network, addr, beside != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -786,7 +842,7 @@ func (s *Server) bindListener(addr string) (net.Listener, error) {
 			return nil, err
 		}
 	}
-	return sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout), nil
+	return &endpoint{tcp: inner, ln: sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout)}, nil
 }
 
 // requireLoopbackBound closes ln and refuses it unless the kernel reports
@@ -832,6 +888,19 @@ func ListenTCP(network, addr string) (net.Listener, error) {
 	})
 }
 
+// listenTCPSharing is ListenTCP for the server's own sockets. sharePort
+// binds a socket that may sit beside this server's own socket on the same
+// port (shareport_linux.go).
+func listenTCPSharing(network, addr string, sharePort bool) (net.Listener, error) {
+	config := net.ListenConfig{}
+	if sharePort {
+		config.Control = sharePortControl
+	}
+	return listenTCP(network, addr, platform.IsWSL(), func(network, addr string) (net.Listener, error) {
+		return config.Listen(context.Background(), network, addr)
+	})
+}
+
 func listenTCP(network, addr string, wsl bool, listen func(network, addr string) (net.Listener, error)) (net.Listener, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if !wsl || err != nil || port != "0" {
@@ -871,12 +940,8 @@ func portUnavailable(err error) bool {
 
 // addrInUse reports whether a bind error is "somebody already holds this
 // address" (EADDRINUSE / WSAEADDRINUSE) — the strictly narrower half of
-// portUnavailable. It exists for the one decision that must not confuse
-// the two: bindRebindListener cures a bind failure by CLOSING our own
-// live listener and retrying, which can only ever help when the address
-// was in use. A permission/reservation refusal (EACCES, WSAEACCES) is
-// identical after the close, so treating it as recoverable would tear
-// down a working listener for nothing.
+// portUnavailable. listenTCP re-probes only on it, because a probed
+// port someone else took is the one failure a new probe can cure.
 func addrInUse(err error) bool {
 	return matchesErrno(err, addrInUseErrnos)
 }
@@ -1272,12 +1337,11 @@ func normalizeCanonicalHost(name string) string {
 // Used both by Start and Rebind.
 //
 // http.ErrServerClosed (graceful Shutdown) and net.ErrClosed (the
-// underlying listener was closed directly — used by Rebind's Linux
-// EADDRINUSE recovery path) are both expected lifecycles, not failures,
-// so they're silently dropped.
-func (s *Server) serve(srv *http.Server, listener net.Listener) {
+// underlying listener was closed directly, as Rebind retires one) are
+// both expected lifecycles, not failures, so they're silently dropped.
+func (s *Server) serve(ep *endpoint) {
 	s.wg.Go(func() {
-		err := srv.Serve(listener)
+		err := ep.srv.Serve(ep.ln)
 		if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 			return
 		}
@@ -1310,13 +1374,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.rootCancel(errServerShutdown)
 		}
 		s.mu.Lock()
-		current := s.srv
+		var current []*http.Server
+		for _, ep := range []*endpoint{s.main, s.loopback} {
+			if ep != nil {
+				current = append(current, ep.srv)
+			}
+		}
 		former := s.formerSrvs
 		s.formerSrvs = nil
 		s.mu.Unlock()
-		if current != nil {
-			shutdownErr = current.Shutdown(ctx)
+		var errs []error
+		for _, srv := range current {
+			errs = append(errs, srv.Shutdown(ctx))
 		}
+		shutdownErr = errors.Join(errs...)
 		// Former servers are already mid-Shutdown from Rebind, but
 		// hijacked WS connections on them ignore Shutdown — Close()
 		// is what severs those underlying TCP connections so the
@@ -1562,8 +1633,8 @@ func (s *Server) hostPort() (string, string, bool) {
 		// a port 80 URL.
 		s.mu.Lock()
 		live := ""
-		if s.listener != nil {
-			live = s.listener.Addr().String()
+		if s.main != nil {
+			live = s.main.tcp.Addr().String()
 		}
 		s.mu.Unlock()
 		log.Printf("transport: page URL: split %q: %v (falling back to listener.Addr() %q)", addr, err, live)
@@ -2166,6 +2237,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
+		watermarkInterval: s.cfg.WatermarkInterval,
 		sessionConns:      s.sessionConns,
 		sessions:          s.cfg.Sessions,
 		stepUpProof:       s.cfg.StepUpProof,

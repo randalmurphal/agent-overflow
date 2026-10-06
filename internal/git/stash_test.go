@@ -17,7 +17,8 @@ import (
 // Test: push two stashes whose messages differ only in suffix vs.
 // substring positioning, then verify the suffix entry resolves.
 func TestFindStashRefByMessagePrefersSuffix(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	marker := "ao-carry-deadbeef"
 
@@ -80,7 +81,8 @@ func TestFindStashRefByMessagePrefersSuffix(t *testing.T) {
 }
 
 func TestStashPushIncludeUntrackedReportsCleanTreeAsNotCreated(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	created, err := core.StashPushIncludeUntracked(repo, "ao-carry-empty")
@@ -101,7 +103,8 @@ func TestStashPushIncludeUntrackedReportsCleanTreeAsNotCreated(t *testing.T) {
 }
 
 func TestStashPushIncludeUntrackedRequiresMessage(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if _, err := core.StashPushIncludeUntracked(repo, "   "); err == nil {
@@ -113,7 +116,8 @@ func TestStashPushIncludeUntrackedRequiresMessage(t *testing.T) {
 // apply path verifies findStashRefByMessage works for the happy
 // path; the drop path leaves the stash stack empty.
 func TestStashApplyAndDropByMessageRoundTrip(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	marker := "ao-carry-roundtrip"
 
@@ -173,7 +177,8 @@ func TestStashApplyAndDropByMessageRoundTrip(t *testing.T) {
 }
 
 func TestStashApplyByMessageReportsMissingEntry(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.StashApplyByMessage(repo, "ao-carry-nonexistent")
@@ -186,6 +191,7 @@ func TestStashApplyByMessageReportsMissingEntry(t *testing.T) {
 }
 
 func TestRandomStashSuffixUnique(t *testing.T) {
+	t.Parallel()
 	// The suffix is uniqueness, not unpredictability — but two consecutive
 	// calls must never collide on the hex token, otherwise concurrent
 	// carry-overs in the same repo lose their stash-list lookup.

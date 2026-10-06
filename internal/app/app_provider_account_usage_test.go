@@ -1,8 +1,8 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +18,7 @@ import (
 )
 
 func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	original := []byte(`{"tokens":{"access_token":"original"}}`)
 	rotated := `{"tokens":{"access_token":"rotated"}}`
@@ -45,9 +46,7 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +101,7 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 }
 
 func TestSelectedUsageRefreshCannotOverwriteExternalCredentialChange(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
@@ -157,6 +157,7 @@ func TestSelectedUsageRefreshCannotOverwriteExternalCredentialChange(t *testing.
 }
 
 func TestUsageRefreshCompletesBeforeConcurrentAccountRemoval(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	activeCredential := []byte(`{"claudeAiOauth":{"accessToken":"active"}}`)
 	inactiveCredential := []byte(`{"claudeAiOauth":{"accessToken":"inactive"}}`)
@@ -229,6 +230,7 @@ func TestUsageRefreshCompletesBeforeConcurrentAccountRemoval(t *testing.T) {
 }
 
 func TestInactiveUsageRefreshesAreSerialized(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installUsageTestAccounts(
 		t,

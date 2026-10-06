@@ -50,6 +50,7 @@ func startPausedAttachment(t *testing.T, app *App, ctx context.Context) (func(),
 }
 
 func TestStalledUploadDoesNotBlockDraftOrQueueAdmission(t *testing.T) {
+	t.Parallel()
 	app := newAttachmentTestApp(t)
 	app.ensureTriageRouter()
 	release, done := startPausedAttachment(t, app, context.Background())
@@ -72,6 +73,7 @@ func TestStalledUploadDoesNotBlockDraftOrQueueAdmission(t *testing.T) {
 }
 
 func TestUploadRevalidatesOwnerBeforePublication(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"delete", "empty-draft-delete", "transfer", "cancel"} {
 		t.Run(change, func(t *testing.T) {
 			app := newAttachmentTestApp(t)
@@ -128,6 +130,7 @@ func (r unreadAttachmentBody) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 func TestUploadRefusesMissingOrTransferringOwnerBeforeReading(t *testing.T) {
+	t.Parallel()
 	for _, missing := range []bool{false, true} {
 		app := newAttachmentTestApp(t)
 		if missing {

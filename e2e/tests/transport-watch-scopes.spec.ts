@@ -21,6 +21,7 @@ import {
   advance,
   claudeScenario,
   emit,
+  emitBurst,
   listItems,
   seedAgentThread,
   startMock,
@@ -203,13 +204,13 @@ const ROUNDS = 3;
 function fanOutTurn(tag: string): ScenarioStep[] {
   const ids = Array.from({ length: AGENTS }, (_, i) => `tu-${tag}-${i}`);
   return [
-    emit(ids.flatMap((id, i) => [
+    emitBurst(ids.flatMap((id, i) => [
       toolUseLine(`msg-${id}`, id, 'Agent', { description: `${tag} agent ${i}`, subagent_type: 'Explore' }),
       taskStartedLine(`task-${id}`, id, `${tag} agent ${i}`),
     ])),
-    emit(Array.from({ length: ROUNDS }, (_, round) => ids.flatMap((id, i) =>
+    emitBurst(Array.from({ length: ROUNDS }, (_, round) => ids.flatMap((id, i) =>
       childRows(`${id}-r${round}`, `${tag} agent ${i} round ${round}`, id))).flat()),
-    emit([
+    emitBurst([
       ...ids.flatMap((id, i) => [
         taskUpdatedLine(`task-${id}`, { status: 'completed', end_time: 1787415964725 }),
         toolResultLine(id, `${tag} agent ${i} done`),

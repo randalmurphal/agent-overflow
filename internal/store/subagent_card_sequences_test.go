@@ -15,7 +15,7 @@ import (
 
 // TestSubagentCardSequencesMatchTheRecompute is the differential test of
 // the card rules against the recompute. Each sequence, from a fixed seed,
-// writes 40 random operations into one thread as a live session writes
+// writes 80 random operations into one thread as a live session writes
 // them: each row with its parent's card, the cards kept per parent between
 // writes. The operations: launches, nested and adopting ones, and their
 // children of every kind; carriers of roots and of carriers, stored before
@@ -56,12 +56,17 @@ import (
 // The shapes stay within what providers write: no row is its own
 // ancestor through parents and transcript roots together. A failing
 // sequence logs its seed and its operations.
+//
+// A few long sequences find more per operation than many short ones: the
+// states a defect needs (a fork's copy written before the stamps, a
+// prompt stored before rows its root took) come after the operations that
+// build them.
 func TestSubagentCardSequencesMatchTheRecompute(t *testing.T) {
-	sequences := 200
+	sequences := 24
 	if testing.Short() {
-		sequences = 20
+		sequences = 6
 	}
-	const ops = 40
+	const ops = 80
 	for i := range sequences {
 		seed := int64(7_001 + i)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -189,9 +194,7 @@ func (q *cardSequence) run(ops int) {
 		q.backfill(0)
 		q.settled("the backfill")
 	}
-	for _, thread := range q.threads() {
-		q.assertRebuild(thread)
-	}
+	q.assertRebuild()
 	if rows, err := q.s.RowsStoringServedSubagentKeys(10); err != nil || len(rows) > 0 {
 		q.t.Fatalf("rows storing served keys: %v %v", rows, err)
 	}
@@ -1635,15 +1638,17 @@ func (q *cardSequence) settled(stage string) {
 	}
 }
 
-// assertRebuild compares every stamp row with what
+// assertRebuild compares every stamp row of every thread with what
 // restampSubagentAggregatesTx rebuilds from the rows on a copy of the
 // database. The rebuild stamps the anchors a read decorates and their
 // families; a stamp it has no row for, an anchor that lost its children,
 // is compared with the recompute of that anchor on the copy. An anchor it
 // stamps that holds no stamp is one every read walks: a carrier, which
 // stays unstamped until a prompt opens its round, or a childless root a
-// carrier names, whose rebuilt stamp must then be the empty card.
-func (q *cardSequence) assertRebuild(thread string) {
+// carrier names, whose rebuilt stamp must then be the empty card. Each
+// thread's rebuild rolls back, so every thread is rebuilt from the copy
+// as the sequence left it.
+func (q *cardSequence) assertRebuild() {
 	t := q.t
 	t.Helper()
 	copyPath := filepath.Join(t.TempDir(), "rebuild.sqlite")
@@ -1659,6 +1664,14 @@ func (q *cardSequence) assertRebuild(thread string) {
 			t.Errorf("close the copy: %v", err)
 		}
 	}()
+	for _, thread := range q.threads() {
+		q.assertRebuildThread(rebuiltStore, thread)
+	}
+}
+
+func (q *cardSequence) assertRebuildThread(rebuiltStore *Store, thread string) {
+	t := q.t
+	t.Helper()
 	tx, err := rebuiltStore.db.Begin()
 	if err != nil {
 		t.Fatal(err)

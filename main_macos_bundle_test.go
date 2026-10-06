@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // Exercise real macOS signature validation, not just whether the new bytes
@@ -40,19 +42,35 @@ int main(void) {
 			t.Fatalf("%v: %v\n%s", cmd.Args, err, output)
 		}
 	}
-	binary := func(label string) string {
-		t.Helper()
-		path := filepath.Join(root, label)
-		run(t, exec.Command("clang", source, `-DLABEL="`+label+`"`, "-framework", "Security", "-framework", "CoreFoundation", "-o", path))
-		return path
+	// Both probes compile at once.
+	old, newer := filepath.Join(root, "old"), filepath.Join(root, "new")
+	compiles := make([]*exec.Cmd, 0, 2)
+	outputs := make([]strings.Builder, 2)
+	for i, path := range []string{old, newer} {
+		cmd := exec.Command("clang", source, `-DLABEL="`+filepath.Base(path)+`"`, "-framework", "Security", "-framework", "CoreFoundation", "-o", path)
+		cmd.Stdout, cmd.Stderr = &outputs[i], &outputs[i]
+		if err := cmd.Start(); err != nil {
+			t.Errorf("%v: %v", cmd.Args, err)
+			break
+		}
+		compiles = append(compiles, cmd)
 	}
-	old, newer := binary("old"), binary("new")
+	for i, cmd := range compiles {
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("%v: %v\n%s", cmd.Args, err, outputs[i].String())
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
 	packageApp := func(t *testing.T, binary, destination string) {
 		t.Helper()
 		run(t, exec.Command("sh", "scripts/package-macos-app.sh", binary, "build/darwin/Info.plist", destination))
 	}
 	for _, mode := range []string{"build", "install-app", "install-zip"} {
 		t.Run(mode, func(t *testing.T) {
+			// Each mode publishes into its own home, so they run together.
+			t.Parallel()
 			home := filepath.Join(root, mode)
 			dest := filepath.Join(home, "Applications", "Agent Overflow.app")
 			packageApp(t, old, dest)
@@ -140,10 +158,7 @@ int main(void) {
 				if err := os.MkdirAll(tools, 0700); err != nil {
 					t.Fatal(err)
 				}
-				wrapper := "#!/bin/sh\ncase \"$1\" in */.ao-bundle.*/*) exit 17;; esac\nexec /bin/mv \"$@\"\n"
-				if err := os.WriteFile(filepath.Join(tools, "mv"), []byte(wrapper), 0700); err != nil {
-					t.Fatal(err)
-				}
+				mockexec.WriteIn(t, tools, "mv", "#!/bin/sh\ncase \"$1\" in */.ao-bundle.*/*) exit 17;; esac\nexec /bin/mv \"$@\"\n")
 				failed = exec.Command("sh", "scripts/package-macos-app.sh", newer, "build/darwin/Info.plist", dest)
 				failed.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"))
 				if output, err := failed.CombinedOutput(); err == nil {

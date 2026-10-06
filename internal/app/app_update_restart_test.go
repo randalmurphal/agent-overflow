@@ -140,6 +140,7 @@ func (r *restartRig) admissionOpen() bool {
 }
 
 func TestRestartToUpdateHandsOffAtOnceWhenIdle(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	if err := rig.app.RestartToUpdate(); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
@@ -162,6 +163,7 @@ func TestRestartToUpdateHandsOffAtOnceWhenIdle(t *testing.T) {
 }
 
 func TestRestartToUpdateRefusesBeforeWaiting(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	rig.handoff.readyErr = ErrUpdateNotReady
 	release := rig.holdWork()
@@ -183,6 +185,7 @@ func TestRestartToUpdateRefusesBeforeWaiting(t *testing.T) {
 }
 
 func TestRestartToUpdateWaitsForRunningWork(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	release := rig.holdWork()
 
@@ -236,6 +239,7 @@ func TestRestartToUpdateWaitsForRunningWork(t *testing.T) {
 }
 
 func TestCancelRestartToUpdateEndsTheWait(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	release := rig.holdWork()
 	defer release()
@@ -272,6 +276,7 @@ func TestCancelRestartToUpdateEndsTheWait(t *testing.T) {
 }
 
 func TestRestartToUpdateHandoffFailureReopensAdmission(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("the swap helper could not start")
 	t.Run("idle", func(t *testing.T) {
 		rig := newRestartRig(t)
@@ -312,6 +317,7 @@ func TestRestartToUpdateHandoffFailureReopensAdmission(t *testing.T) {
 }
 
 func TestRestartToUpdateAbandonedHandoffReopensAdmission(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	if err := rig.app.RestartToUpdate(); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
@@ -344,6 +350,7 @@ func TestRestartToUpdateAbandonedHandoffReopensAdmission(t *testing.T) {
 }
 
 func TestShutdownJoinsAWaitingRestart(t *testing.T) {
+	t.Parallel()
 	rig := newRestartRig(t)
 	release := rig.holdWork()
 	defer release()
@@ -379,6 +386,7 @@ func TestShutdownJoinsAWaitingRestart(t *testing.T) {
 // from the reason RestartToUpdate already published, so its first check of
 // the same running work adds no second frame.
 func TestRestartToUpdateAnnouncesEachWaitingReasonOnce(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		rig := newRestartRig(t)
 		release := rig.holdWork()

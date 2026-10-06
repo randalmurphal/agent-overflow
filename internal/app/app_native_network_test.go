@@ -246,6 +246,7 @@ func TestNativeDiscoveryKeepsResultsWithTheirScanAndRetiresOnOwnerLoss(t *testin
 }
 
 func TestForwardedLANAddressDoesNotFallBackToWSLWhenUnavailable(t *testing.T) {
+	t.Parallel()
 	if got := network.LANIP(network.Settings{}, "172.20.0.2"); got != "172.20.0.2" {
 		t.Fatal("ordinary host lost native interface")
 	}
@@ -262,13 +263,16 @@ func TestForwardedLANAddressDoesNotFallBackToWSLWhenUnavailable(t *testing.T) {
 func TestNativeDiscoveryTimeoutAllowsFreshScan(t *testing.T) {
 	remotetest.Require(t)
 	b, ctx, conn, _ := nativeNetworkBackend(t)
+	b.app.nativeNetwork.mu.Lock()
+	b.app.nativeNetwork.scanTimeout = 500 * time.Millisecond
+	b.app.nativeNetwork.mu.Unlock()
 	firstID, first := startNativeScan(t, b.app, ctx)
 	select {
 	case got := <-first:
 		if len(got) != 0 {
 			t.Fatal("unanswered scan returned computers")
 		}
-	case <-time.After(8 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("unanswered native scan did not expire")
 	}
 	nextID, next := startNativeScan(t, b.app, ctx)

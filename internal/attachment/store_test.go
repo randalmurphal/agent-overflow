@@ -13,16 +13,13 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
 func newTestStores(t *testing.T) (*Store, *store.Store) {
 	t.Helper()
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Clone(t)
 
 	tmpDir := t.TempDir()
 	attStore, err := NewStore(Config{RootDir: tmpDir}, meta)
@@ -90,12 +87,8 @@ func textData(t *testing.T, s string) []byte {
 }
 
 func TestNewStoreRejectsMissingRoot(t *testing.T) {
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
-	_, err = NewStore(Config{}, meta)
+	meta := storetest.Clone(t)
+	_, err := NewStore(Config{}, meta)
 	if err == nil || !strings.Contains(err.Error(), "root directory") {
 		t.Fatalf("expected missing-root error, got %v", err)
 	}
@@ -109,12 +102,8 @@ func TestNewStoreRejectsMissingMeta(t *testing.T) {
 }
 
 func TestNewStoreRejectsNegativeMaxSize(t *testing.T) {
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
-	_, err = NewStore(Config{RootDir: t.TempDir(), MaxSize: -1}, meta)
+	meta := storetest.Clone(t)
+	_, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: -1}, meta)
 	if err == nil {
 		t.Fatal("expected error for negative max size")
 	}
@@ -124,11 +113,7 @@ func TestNewStoreRepairsPrivatePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits are not stable on Windows")
 	}
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Clone(t)
 
 	root := filepath.Join(t.TempDir(), "attachments")
 	threadDir := filepath.Join(root, "thread-a")
@@ -313,11 +298,7 @@ func TestUploadRejectsOversizedDeclaredMIME(t *testing.T) {
 // the image cap is refused at 10 MiB instead of sliding under the 50 MiB
 // file one.
 func TestUploadEnforcesCapPerKind(t *testing.T) {
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Clone(t)
 	attStore, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: 64, MaxFileSize: 4096}, meta)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -529,11 +510,7 @@ func TestFormatSize(t *testing.T) {
 }
 
 func TestUploadRejectsOversize(t *testing.T) {
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Clone(t)
 	attStore, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: 64}, meta)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -552,11 +529,7 @@ func TestUploadRejectsOversize(t *testing.T) {
 // off and refused, so a caller that forgot its own cap still cannot make
 // this store write past MaxSize.
 func TestUploadCapsABodyThatOverruns(t *testing.T) {
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Clone(t)
 	root := t.TempDir()
 	attStore, err := NewStore(Config{RootDir: root, MaxSize: 64}, meta)
 	if err != nil {

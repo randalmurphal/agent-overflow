@@ -90,6 +90,7 @@ func isServiceMethod(fn *ast.FuncDecl) bool {
 // total. An unclassified method is one nobody decided about, which is exactly
 // how a mutation ships without a broadcast.
 func TestEveryProjectServiceMethodIsClassified(t *testing.T) {
+	t.Parallel()
 	var found []string
 	for _, file := range parsePackageFiles(t, filepath.Join(appPackageDir, projectAppPackageDir)) {
 		for _, decl := range file.Decls {
@@ -124,6 +125,7 @@ func TestEveryProjectServiceMethodIsClassified(t *testing.T) {
 // does not go through the service at all — it drives the store directly, and
 // it is covered by TestProjectMutationsBroadcastTheChangedRow instead.
 func TestEveryProjectMutationCallSiteBroadcasts(t *testing.T) {
+	t.Parallel()
 	for name, file := range parsePackageFiles(t, appPackageDir) {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)

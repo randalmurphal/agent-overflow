@@ -171,6 +171,13 @@ export function replaceAllThreads(rows: Thread[], mutation = true): void {
   liveActivityAt.reset();
 }
 
+/** Test-only: an empty catalog with no live-activity bumps, without the
+ *  catalog write a replacement records. */
+export function resetThreadsForTest(): void {
+  threads = [];
+  liveActivityAt.reset();
+}
+
 export function prependThread(thread: Thread): void {
   catalogWriter.changed(threadBackend(thread.id));
   threads = [thread, ...threads.filter((t) => t.id !== thread.id)];

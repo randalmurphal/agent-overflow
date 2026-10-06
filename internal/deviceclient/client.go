@@ -37,6 +37,9 @@ type Client struct {
 	http   *http.Client
 	routes *routeTransport
 	dial   DialContextFunc
+	// probe is AwaitActivation's interval (WithProbeInterval). Zero means
+	// probeInterval.
+	probe time.Duration
 	// now is the clock, so a test can age a credential without sleeping.
 	// Never nil: New fills it.
 	now func() time.Time
@@ -167,12 +170,13 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 		return nil, Pairing{}, err
 	}
 	client := &Client{
-		dir:  dir,
-		key:  key,
-		base: base,
-		http: credentialHTTPClient(link.CertFingerprint, opts...),
-		dial: resolveOptions(opts).dial,
-		now:  time.Now,
+		dir:   dir,
+		key:   key,
+		base:  base,
+		http:  credentialHTTPClient(link.CertFingerprint, opts...),
+		dial:  resolveOptions(opts).dial,
+		probe: resolveOptions(opts).probe,
+		now:   time.Now,
 	}
 
 	body, err := json.Marshal(struct {
@@ -245,6 +249,7 @@ func Open(dir string, session Session, opts ...Option) (*Client, error) {
 		base:    base,
 		http:    credentialHTTPClient(session.CertFingerprint, opts...),
 		dial:    resolveOptions(opts).dial,
+		probe:   resolveOptions(opts).probe,
 		now:     time.Now,
 		session: session,
 	}
@@ -393,11 +398,11 @@ func (c *Client) WebSocketURL() (string, error) {
 // are answers about the BACKEND — the confirmation window is ten minutes
 // (identity.PairingConfirmWindow) and the credential routes share one
 // per-peer budget — and two clients waiting on one window should not
-// disagree about how long it is.
-const (
-	probeInterval = 3 * time.Second
-	probeDeadline = 10 * time.Minute
-)
+// disagree about how long it is. probeInterval is a variable so a test can
+// observe repeated polls without waiting it out.
+var probeInterval = 3 * time.Second
+
+const probeDeadline = 10 * time.Minute
 
 // AwaitActivation blocks until the owner confirms the verification number,
 // the pairing is refused, or the confirmation window closes.
@@ -408,7 +413,11 @@ const (
 // waiting, so a rejected pairing ends promptly.
 func (c *Client) AwaitActivation(ctx context.Context) error {
 	deadline := c.now().Add(probeDeadline)
-	ticker := time.NewTicker(probeInterval)
+	interval := probeInterval
+	if c.probe > 0 {
+		interval = c.probe
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		err := c.renew(ctx)

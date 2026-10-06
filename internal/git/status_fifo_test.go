@@ -50,6 +50,7 @@ func countUntrackedWithTimeout(t *testing.T, path string, budget int, d time.Dur
 // list symlinks, so untrackedStats hands this path straight to the counter).
 // Both must return immediately, the symlink counted as its 1-line link text.
 func TestCountUntrackedFileLinesSkipsFifo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	fifo := filepath.Join(dir, "pipe")

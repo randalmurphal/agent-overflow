@@ -20,6 +20,7 @@ import (
 // threads against the same SQLite store. All inserts must succeed with
 // distinct IDs and the store must report 50 active threads afterwards.
 func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	const n = 50
@@ -75,6 +76,7 @@ func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
 // the same inactive thread. All writes must succeed; the final stored value
 // must be one of the requested models (no garbled state, no torn writes).
 func TestConcurrent_SameThreadUpdates(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -128,6 +130,7 @@ func TestConcurrent_SameThreadUpdates(t *testing.T) {
 // while a session is actively streaming into the store. No race, no partial
 // rows returned.
 func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -203,6 +206,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 // TestConcurrent_SettingsUpdateDuringStartup: concurrent UpdateSettings calls
 // alongside a session-start. No panic; the settings file stays consistent.
 func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -251,6 +255,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 // TestConcurrent_ThreadArchiveAndListRace: flip archive state while listers
 // poll ListThreads. No duplicates in a single list result; no lost threads.
 func TestConcurrent_ThreadArchiveAndListRace(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	const seed = 20
@@ -330,6 +335,7 @@ func TestConcurrent_ThreadArchiveAndListRace(t *testing.T) {
 // different turns of the same thread. All inserts must succeed (no panic,
 // no lost rows); the store survives.
 func TestConcurrent_ItemInsertDuringSameThread(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -387,6 +393,7 @@ func TestConcurrent_ItemInsertDuringSameThread(t *testing.T) {
 // This avoids the "who arrives first" race by ensuring the leader is
 // unambiguously in flight before any follower is created.
 func TestConcurrent_StartSessionCoalesces(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {

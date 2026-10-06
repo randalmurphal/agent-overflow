@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,12 +21,13 @@ import (
 )
 
 func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-claude-fork-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-123"
-	fixture := newMidTurnForkFixture(t, "claude-session-123", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "claude-session-123", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -68,6 +70,7 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 }
 
 func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -102,12 +105,13 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 }
 
 func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-empty-fork-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-123"
-	fixture := newMidTurnForkFixture(t, "claude-session-123", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "claude-session-123", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -129,6 +133,7 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 // on a throwaway process even when the source is live, and the live
 // session never sees a fork request.
 func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -244,9 +249,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "codex-hang.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write hanging codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -256,6 +259,7 @@ done
 // didn't land where AO asked; the fork must fail rather than create a
 // thread whose provider history disagrees with its cloned items.
 func TestForkThreadCodexRejectsForkTailMismatch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -296,11 +300,11 @@ func TestForkThreadCodexRejectsForkTailMismatch(t *testing.T) {
 //   - have a new <newID>.jsonl in the same project dir
 //   - have items truncated through *atTurnIndex
 func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
-	// Build a fake ~/.claude/projects layout under TempDir.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	// Build a fake ~/.claude/projects layout in the fixture's provider home.
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "ws")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -404,7 +408,7 @@ func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
 // this keeps the original fixture's coverage of the plain
 // no-session-file-yet shape.
 func TestForkThreadDuringActiveTurnSnapshotsInsteadOfRefusing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	source := testThread("thread-fork-active")
 	source.Provider = string(provider.Claude)
@@ -448,6 +452,7 @@ func TestForkThreadDuringActiveTurnSnapshotsInsteadOfRefusing(t *testing.T) {
 }
 
 func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	attachments, err := attachmentstore.NewStore(attachmentstore.Config{RootDir: t.TempDir()}, app.store)
 	if err != nil {
@@ -525,6 +530,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 // row) synthesizes one from the item itself — fork-from-message must
 // succeed instead of stranding the message.
 func TestForkThreadFromMessageSynthesizesMissingAnchor(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	source := testThread("thread-message-fork-no-anchor")
 	source.Provider = string(provider.Claude)
@@ -557,6 +563,7 @@ func TestForkThreadFromMessageSynthesizesMissingAnchor(t *testing.T) {
 }
 
 func TestForkThreadFromMessageDoesNotCopyMessageAnchors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	source := testThread("thread-message-fork-anchor-copy")
 	source.Provider = string(provider.Claude)
@@ -591,6 +598,7 @@ func TestForkThreadFromMessageDoesNotCopyMessageAnchors(t *testing.T) {
 }
 
 func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	source := testThread("thread-message-fork-missing-session")
 	source.Provider = string(provider.Claude)
@@ -619,9 +627,9 @@ func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing
 }
 
 func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -663,7 +671,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	if forked.SessionRef == "" || forked.SessionRef == sessionID {
 		t.Fatalf("forked session ref = %q, want sliced fork session", forked.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
 	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
@@ -679,9 +687,9 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 }
 
 func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -722,16 +730,16 @@ func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T
 	if forked.SessionRef == "" || forked.SessionRef == sessionID {
 		t.Fatalf("forked session ref = %q, want sliced session from pending fork source", forked.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
 	if forked.PendingForkRef != "" {
 		t.Fatalf("forked pending ref = %q, want empty", forked.PendingForkRef)
 	}
 }
 
 func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "source-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
@@ -767,7 +775,7 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage after rollback: %v", err)
 	}
-	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second", "third"})
+	assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second", "third"})
 	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
@@ -779,6 +787,7 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 
 // TestForkThreadAtTurnRejectsOutOfRange pins the validation guard.
 func TestForkThreadAtTurnRejectsOutOfRange(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	source := testThread("thread-fork-bounds")
 	source.Provider = string(provider.Claude)
@@ -865,9 +874,7 @@ done
 `, logRequest, resumedThreadID, resumedThreadID, forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-fork.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -885,6 +892,7 @@ func sessionStateForCodex(sess *codex.Session) session {
 // in the DB afterwards. Before A5, the fork row survived and the user
 // was left with an orphan thread they couldn't resume.
 func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-broken-source")
@@ -915,6 +923,7 @@ func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
 // A fork row that is already gone is what cleanup wanted, so rolling back
 // twice, or rolling back a fork that was never written, is not a failure.
 func TestForkThreadCleanupIsIdempotentOnMissingFork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.cleanupForkThread("does-not-exist"); err != nil {
 		t.Errorf("cleanupForkThread on missing fork should be nil, got %v", err)
@@ -927,6 +936,7 @@ func TestForkThreadCleanupIsIdempotentOnMissingFork(t *testing.T) {
 // A fork that cannot resolve its resume state fails with the reason, so the
 // caller learns what was wrong rather than that something was.
 func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-cleanup-err-source")
@@ -952,6 +962,7 @@ func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 // directory that will not go away has to reach the caller: the row is gone
 // and the disk is not, and only the error says so.
 func TestCleanupForkThreadReportsAttachmentFilesItCouldNotRemove(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permissions this test relies on")
 	}
@@ -1016,12 +1027,13 @@ func containsText(haystack, needle string) bool {
 // naturally complete, and they're valid to carry into the fork since
 // the fork's own session inherits the conversational state anyway).
 func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-fork-bg-exclusion-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-bg"
-	fixture := newMidTurnForkFixture(t, "claude-session-bg", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "claude-session-bg", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -1125,6 +1137,7 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 // source's deleting mark and is refused. A fork admitted before the delete
 // began is detached by it (TestPointerForkAdmittedAsTheDeleteBeginsIsDetached).
 func TestForkDuringASourceDeleteIsRefused(t *testing.T) {
+	t.Parallel()
 	type refusal struct {
 		op  string
 		err error

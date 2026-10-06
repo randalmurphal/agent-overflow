@@ -40,6 +40,7 @@ const claudeProbeReportingNoIdentity = `{}`
 // ran and the account's slot stayed on the refresh token the server had just
 // retired — one restart away from a login nothing can recover.
 func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
@@ -103,6 +104,7 @@ func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testi
 // goes back to the caller on the error path too, and the commit persists it
 // before the error surfaces.
 func TestSelectedClaudeUsageRefreshKeepsTheRotationWhenTheRetryStill401s(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
@@ -166,6 +168,7 @@ func TestSelectedClaudeUsageRefreshKeepsTheRotationWhenTheRetryStill401s(t *test
 // login that now owns the canonical home, and pairing them with this account's
 // identity is the split state the guard exists to prevent.
 func TestSelectedClaudeUsageRefreshStillRefusesAnotherAccountsLogin(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)

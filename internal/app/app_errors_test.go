@@ -9,6 +9,7 @@ import (
 )
 
 func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-xyz")); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -39,6 +40,7 @@ func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
 // draining read loop could persist items under the stopped thread
 // (Bug B5 / invariant 29).
 func TestEmitWireErrorToThreadRespectsStoppedGate(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-stopped")); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -72,6 +74,7 @@ func TestEmitWireErrorToThreadRespectsStoppedGate(t *testing.T) {
 // error surfaces before the triage router is wired at startup, so the
 // bar is "no crash, no dead wire emission."
 func TestEmitErrorToThreadIsSafeWithoutTriage(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	var emittedName string
@@ -93,6 +96,7 @@ func TestEmitErrorToThreadIsSafeWithoutTriage(t *testing.T) {
 // badge rides its own wildcard channel, emitted from the one persist
 // chokepoint every error route funnels through.
 func TestRouteErrorToThreadEmitsTheErrorNotice(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-notice")); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

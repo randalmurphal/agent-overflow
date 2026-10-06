@@ -176,6 +176,7 @@ func (p *pendingAnswerer) next(t *testing.T, within time.Duration) (chan json.Ra
 // "0 KB / 0% CPU" for an unmeasured process is stating a fact the server
 // never sent.
 func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-list")
 
 	type listResult struct {
@@ -239,6 +240,7 @@ func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 // walk: a non-null nextCursor must produce a second request carrying it,
 // and the caller must see both pages concatenated in order.
 func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-pages")
 
 	done := make(chan []BackgroundTerminal, 1)
@@ -281,6 +283,7 @@ func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 // progress check that is an unbounded request loop against the
 // app-server; the contract is a loud error instead.
 func TestSession_ListBackgroundTerminals_RepeatedCursorFailsLoudly(t *testing.T) {
+	t.Parallel()
 	s, _ := newCapturingSession(t, "codex-thread-stuck")
 
 	errCh := make(chan error, 1)
@@ -311,6 +314,7 @@ func TestSession_ListBackgroundTerminals_RepeatedCursorFailsLoudly(t *testing.T)
 // verbatim. The false case is the "already exited / not ours" answer and
 // must NOT surface as an error.
 func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		result     string
@@ -364,6 +368,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 // would come back as an opaque `-32600 missing field` instead of naming
 // the client-side bug.
 func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-blank")
 
 	for _, processID := range []string{"", "   "} {
@@ -389,6 +394,7 @@ func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T)
 // session whose handshake never produced a Codex thread id must fail with
 // our own message, not send `{"threadId":""}` and let the server answer.
 func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		threadID: testThread,
 		pending:  make(map[int64]chan json.RawMessage),
@@ -410,6 +416,7 @@ func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
 // rather than being flattened into `terminated: false`, which would read
 // as "the process was already gone".
 func TestSession_TerminateBackgroundTerminal_ErrorResponse(t *testing.T) {
+	t.Parallel()
 	s, _ := newCapturingSession(t, "codex-thread-term-err")
 
 	type terminateResult struct {

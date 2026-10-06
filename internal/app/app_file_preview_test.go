@@ -13,6 +13,7 @@ import (
 )
 
 func TestFilePreviewUsesAuthenticatedHostPresence(t *testing.T) {
+	t.Parallel()
 	app := newPreviewTestApp(t, &fakeScanner{})
 	app.SetTransportServer(startTestTransportServer(t))
 	t.Cleanup(func() { _ = app.closePreviewGateway() })
@@ -45,6 +46,7 @@ func TestFilePreviewUsesAuthenticatedHostPresence(t *testing.T) {
 }
 
 func TestSharingPolicyChangeRetiresExistingPreviewGateway(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app := newPreviewTestApp(t, &fakeScanner{})
 	app.SetTransportServer(startTestTransportServer(t))

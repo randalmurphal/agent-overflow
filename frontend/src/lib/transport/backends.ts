@@ -1005,9 +1005,18 @@ export function __resetBackendsForTest(): void {
   watchedScopes = [];
   screenPresence = null;
   __resetManifestBackendsForTest();
-  syncAttachedBackends();
+  // Home survives the reset, so the UUID it was identified or paired as
+  // must not: that alias would answer for a computer the next test attaches
+  // under the same UUID.
   const home = byId.get(HOME_BACKEND);
-  if (home !== undefined) home.lastFanoutError = null;
+  if (home !== undefined) {
+    for (const [key, held] of byId) {
+      if (held === home && key !== HOME_BACKEND) byId.delete(key);
+    }
+    home.pairedBackendId = '';
+    home.lastFanoutError = null;
+  }
+  syncAttachedBackends();
 }
 
 // The page's own backend attaches HERE, at module evaluation, and that is

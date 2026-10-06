@@ -20,11 +20,12 @@
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
@@ -60,8 +61,7 @@ let homeDataDir = '';
 test.beforeAll(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), 'ao-thread-tools-home-'));
   homeDataDir = join(homeRoot, 'state');
-  home = await launchHarness({ dataDir: homeDataDir });
-  remote = await launchHarness();
+  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness());
   // Own-device enrollment: the personal pairing the thread tools require,
   // and the one that introduces the reverse connection as well.
   const pairing = await headlessPairing(remote);
@@ -1581,17 +1581,13 @@ test('a reply written while the calling computer was off arrives when it comes b
 
   // Back on the same data directory: the source-side poller collects the
   // answer that was written while nobody here could hear it, and the wake
-  // reaches the thread that asked.
-  home = await launchHarness({ dataDir: homeDataDir });
-  await setScenario(
-    home,
-    caller.path,
-    plainScenario({
-      name: 'away-caller-back',
-      provider: 'claude',
-      texts: ['Read the late answer.'],
-    }),
-  );
+  // reaches the thread that asked. The boot is held until this client is
+  // connected, because the first poll runs as the boot finishes and its
+  // wake can report before an unheld boot's socket opens. The wake runs
+  // the library scenario: nothing can install one before that poll.
+  const release = join(homeRoot, 'away-release');
+  home = await launchHarness({ dataDir: homeDataDir, env: { AO_HARNESS_HOLD_STARTUP: release } });
+  await writeFile(release, '');
   const wake = await home.waitForEvent<HarnessMockEventData>(
     'harness:mock',
     (ev) =>

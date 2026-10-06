@@ -37,6 +37,7 @@ func pendingEffortApply(t *testing.T, app *App, id, token, requested, prev strin
 // as a REJECTION of the xhigh the session had in fact accepted — and the
 // decline path reverts launchOpts and restarts the session to "fix" it.
 func TestEffortReadBackAcceptsTheCLIsSpellingOfTheSameTier(t *testing.T) {
+	t.Parallel()
 	for _, spelling := range []string{"xhigh", "X-High", "x high", "  XHIGH  ", "x_high"} {
 		t.Run(spelling, func(t *testing.T) {
 			app := newTestAppWithStore(t)
@@ -67,6 +68,7 @@ func TestEffortReadBackAcceptsTheCLIsSpellingOfTheSameTier(t *testing.T) {
 // such a model, so the settle falls through to the CLI's reply text — which
 // is the only statement it made about the command.
 func TestEmptyAppliedEffortFallsBackToTheReplyText(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-effort-empty", "tok-empty"
 	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
@@ -87,6 +89,7 @@ func TestEmptyAppliedEffortFallsBackToTheReplyText(t *testing.T) {
 // The other half of the same branch: an empty tier with a REJECTING reply
 // text still declines, because the text is then the only evidence there is.
 func TestEmptyAppliedEffortStillDeclinesOnARejectingReply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-effort-empty-bad", "tok-empty-bad"
 	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
@@ -107,6 +110,7 @@ func TestEmptyAppliedEffortStillDeclinesOnARejectingReply(t *testing.T) {
 // A read-back that FAILS is not a verdict either — the fallback is the reply
 // text, and an unsupported subtype is expected rather than logged as failure.
 func TestFailedEffortReadBackFallsBackToTheReplyText(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-effort-err", "tok-err"
 	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
@@ -129,6 +133,7 @@ func TestFailedEffortReadBackFallsBackToTheReplyText(t *testing.T) {
 // control can outrank the request, and launchOpts must never claim a config
 // the process is not running.
 func TestEffortReadBackDeclinesADifferentTier(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-effort-outranked", "tok-outranked"
 	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
@@ -154,6 +159,7 @@ func TestEffortReadBackDeclinesADifferentTier(t *testing.T) {
 // otherwise compare it against #1's request, decline, restore #1's prevEffort
 // and restart the session to undo a change the user just made.
 func TestSupersededEffortReadBackDecidesNothing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-effort-interleave", "tok-interleave"
 	// The session is running what change #2 asked for.
@@ -192,6 +198,7 @@ func TestSupersededEffortReadBackDecidesNothing(t *testing.T) {
 // The generation stamp must be per (session, axis): an unrelated axis or a
 // different session advancing its own counter cannot supersede this entry.
 func TestClaudeLiveApplySupersededIsScopedToSessionAndAxis(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	pending := claudeLiveConfigApply{
 		SessionToken: "tok-a",
@@ -228,6 +235,7 @@ func TestClaudeLiveApplySupersededIsScopedToSessionAndAxis(t *testing.T) {
 // stamps one) must not read as superseded — zero is "no stamp", not
 // "generation 0".
 func TestUnstampedApplyIsNeverSuperseded(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sessionManager().runtime.RegisterClaudeLiveApplies(map[string]claudeLiveConfigApply{
 		"z": {SessionToken: "tok-z", Axis: claudeLiveApplyAxisEffort, SentAt: time.Now()},

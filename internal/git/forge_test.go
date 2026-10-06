@@ -7,6 +7,7 @@ import (
 )
 
 func TestPRReferenceProject(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		ref  PRReference
 		want string
@@ -23,6 +24,7 @@ func TestPRReferenceProject(t *testing.T) {
 }
 
 func TestSplitProjectForForge_GitHub(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input    string
 		wantNS   string
@@ -46,6 +48,7 @@ func TestSplitProjectForForge_GitHub(t *testing.T) {
 }
 
 func TestSplitProjectForForge_GitLab(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input    string
 		wantNS   string
@@ -68,6 +71,7 @@ func TestSplitProjectForForge_GitLab(t *testing.T) {
 }
 
 func TestSplitProjectForForge_Rejects(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		forge   string
@@ -101,6 +105,7 @@ func TestSplitProjectForForge_Rejects(t *testing.T) {
 }
 
 func TestValidateProjectSegment(t *testing.T) {
+	t.Parallel()
 	good := []string{"owner", "repo.name", "123-org", "_x", "a"}
 	for _, s := range good {
 		if err := ValidateProjectSegment(s); err != nil {
@@ -123,6 +128,7 @@ func TestValidateProjectSegment(t *testing.T) {
 // every `pr:updated` frame is addressed by, so one PR's poll results would
 // land on the other's panes. Neither forge allows a colon in a path segment.
 func TestValidateProjectSegmentRejectsColon(t *testing.T) {
+	t.Parallel()
 	for _, seg := range []string{"a:b", ":", "repo:1", "own:er"} {
 		if err := ValidateProjectSegment(seg); err == nil {
 			t.Errorf("ValidateProjectSegment(%q) = nil, want a colon rejection", seg)
@@ -137,6 +143,7 @@ func TestValidateProjectSegmentRejectsColon(t *testing.T) {
 }
 
 func TestNormalizePRState(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input string
 		want  string
@@ -164,6 +171,7 @@ func TestNormalizePRState(t *testing.T) {
 }
 
 func TestNullForgeReturnsErrUnsupported(t *testing.T) {
+	t.Parallel()
 	f := nullForge{}
 
 	if id := f.ID(); id != "" {
@@ -185,6 +193,7 @@ func TestNullForgeReturnsErrUnsupported(t *testing.T) {
 }
 
 func TestCoreForgeByID(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	if got := core.ForgeByID("github").ID(); got != "github" {

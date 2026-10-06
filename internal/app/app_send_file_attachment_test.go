@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"os"
@@ -150,6 +151,7 @@ const mixedTurnMessage = "look at [Image #1] and [Image #2]"
 const mixedTurnWireText = "look at  and "
 
 func TestSendMessage_MixedAttachmentTurnReachesTheWire(t *testing.T) {
+	t.Parallel()
 	app := newMixedTurnApp(t)
 	thread, capturePath := newMixedTurnThread(t, app, "thread-mixed-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
@@ -193,6 +195,7 @@ func TestSendMessage_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 // The queued-flush dispatch re-runs the envelope from the queue payload,
 // so it is its own chance to ship `content` instead of `providerContent`.
 func TestQueuedFlush_MixedAttachmentTurnReachesTheWire(t *testing.T) {
+	t.Parallel()
 	app := newMixedTurnApp(t)
 	thread, capturePath := newMixedTurnThread(t, app, "thread-mixed-flush")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
@@ -220,6 +223,7 @@ func TestQueuedFlush_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 // session file and an idle two-turn thread) with the capturing CLI
 // installed as the binary the resend spawns.
 func TestRevertAndResend_MixedAttachmentTurnReachesTheWire(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-mixed")
 
@@ -246,6 +250,7 @@ func TestRevertAndResend_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 // for that: it asserts on the resolve, which is the one place a file could
 // be let into the slice.
 func TestResolveSendMessageAttachments_NeverPutsAFileInTheProviderSlice(t *testing.T) {
+	t.Parallel()
 	app := newMixedTurnApp(t)
 	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-no-file-in-slice")
 	ids, _ := mixedTurnFixture(t, app, thread.ID)
@@ -283,6 +288,7 @@ func usermessageMetaFromItem(item store.Item) (userMessageMeta, error) {
 // stamp → claude.Config → buildArgs → argv — by recording the real argv
 // the spawned binary was given.
 func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	root := filepath.Join(t.TempDir(), "attachments")
@@ -301,9 +307,7 @@ func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
 	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
 	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write argv-recording binary: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}

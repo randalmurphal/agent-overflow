@@ -1,6 +1,9 @@
 package app
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,7 @@ import (
 // runs in the thread's workspace. A project outside the harness data root is
 // therefore a real repository a scenario's writeFile step could edit.
 func TestCreateProjectRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	root := t.TempDir()
 	ConfigureIsolation(app, IsolationConfig{WorkspaceRoot: root})
@@ -55,6 +59,7 @@ func TestCreateProjectRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
 // root and the real paths under it are spelled differently. Both sides are
 // resolved before the prefix comparison.
 func TestIsolatedWorkspaceRootIsComparedThroughSymlinks(t *testing.T) {
+	t.Parallel()
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "root-link")
 	if err := os.Symlink(real, link); err != nil {
@@ -86,6 +91,7 @@ func TestIsolatedWorkspaceRootIsComparedThroughSymlinks(t *testing.T) {
 // The start path refuses before it tears anything down, so a thread that
 // cannot legally run keeps the session it already had.
 func TestStartSessionRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.ServiceShutdown() })
 	root := t.TempDir()
@@ -119,6 +125,7 @@ func TestStartSessionRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
 // Unit tests build an App with no isolation config at all, and every path on
 // the developer's machine must stay reachable there.
 func TestRequireIsolatedWorkspaceIsInertWithoutARoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.requireIsolatedWorkspace("/definitely/not/under/any/root"); err != nil {
 		t.Fatalf("requireIsolatedWorkspace() with no root error = %v, want nil", err)
@@ -131,6 +138,7 @@ func TestRequireIsolatedWorkspaceIsInertWithoutARoot(t *testing.T) {
 // The root itself is a legal workspace, and a sibling whose name merely
 // starts with the root's spelling is not.
 func TestIsolatedWorkspaceBoundaryIsPathComponentWise(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "data")
 	sibling := root + "-other"
@@ -147,5 +155,21 @@ func TestIsolatedWorkspaceBoundaryIsPathComponentWise(t *testing.T) {
 	}
 	if err := app.requireIsolatedWorkspace(sibling); err == nil {
 		t.Fatalf("requireIsolatedWorkspace(%s) accepted a sibling of the root", sibling)
+	}
+}
+
+// The mock credential's bearer must never leave the machine: an isolated boot
+// runs on the host network on macOS and Windows.
+func TestIsolatedBootRefusesTheClaudeUsageRequest(t *testing.T) {
+	t.Parallel()
+	reached := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	t.Cleanup(server.Close)
+	app := newTestAppWithStore(t)
+	ConfigureIsolation(app, IsolationConfig{})
+
+	_, err := app.rateLimitProbeClient().Get(server.URL)
+	if !errors.Is(err, errIsolatedNetwork) || reached {
+		t.Fatalf("usage request from an isolated boot: err %v, reached %v; want it refused before it is sent", err, reached)
 	}
 }

@@ -12,6 +12,7 @@ import (
 )
 
 func TestQueuedAsyncAnswersRestoreWithoutReopeningOrResending(t *testing.T) {
+	t.Parallel()
 	a, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, a, "codex", t.TempDir(), "gpt-5", threadmode.ModeChat)
 	if err != nil {
@@ -50,6 +51,7 @@ func TestQueuedAsyncAnswersRestoreWithoutReopeningOrResending(t *testing.T) {
 }
 
 func TestAsyncAnswerSessionDeathRetainsRecoveryAfterStateWriteFailure(t *testing.T) {
+	t.Parallel()
 	a, path := newTestAppWithStorePath(t)
 	rec := &emitRecorder{}
 	a.testEmitHook = rec.capture
@@ -109,6 +111,7 @@ func TestAsyncAnswerSessionDeathRetainsRecoveryAfterStateWriteFailure(t *testing
 }
 
 func TestAsyncAnswersRejectAnUnrelatedAcceptedSendIdentity(t *testing.T) {
+	t.Parallel()
 	a, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, a, "codex", t.TempDir(), "gpt-5", threadmode.ModeChat)
 	if err != nil {
@@ -132,6 +135,7 @@ func TestAsyncAnswersRejectAnUnrelatedAcceptedSendIdentity(t *testing.T) {
 }
 
 func TestAsyncAnswerDispatchRetainsRecoveryUntilProviderEcho(t *testing.T) {
+	t.Parallel()
 	a, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, a, "codex", t.TempDir(), "gpt-5", threadmode.ModeChat)
 	if err != nil {

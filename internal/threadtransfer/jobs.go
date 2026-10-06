@@ -12,6 +12,10 @@ import (
 
 const transferWorkers = 4
 
+// PendingRetry is how soon an outgoing transfer asks the destination again
+// while it reports ErrPending.
+const PendingRetry = 2 * time.Second
+
 type Runner interface {
 	Run(context.Context, string) (store.ThreadTransfer, error)
 }
@@ -31,12 +35,15 @@ type Jobs struct {
 	mu                  sync.Mutex
 	active              map[string]bool // true means another wake arrived during this attempt
 	retryAfter          time.Time
+	pendingRetry        time.Duration
 	describe            func(error) string
 	publish             func(store.ThreadTransfer)
 	report              func(error)
 }
 
-func NewJobs(ctx context.Context, st *store.Store, source, destination Runner, describe func(error) string, publish func(store.ThreadTransfer), report func(error)) (*Jobs, error) {
+// NewJobs starts the scheduler. pendingRetry replaces PendingRetry when
+// positive; only an isolated test boot shortens it.
+func NewJobs(ctx context.Context, st *store.Store, source, destination Runner, describe func(error) string, publish func(store.ThreadTransfer), report func(error), pendingRetry time.Duration) (*Jobs, error) {
 	if ctx == nil || st == nil || source == nil || destination == nil || describe == nil || publish == nil || report == nil {
 		return nil, errors.New("transfer: job lifecycle needs its host dependencies")
 	}
@@ -46,11 +53,18 @@ func NewJobs(ctx context.Context, st *store.Store, source, destination Runner, d
 	if err := st.WakeThreadTransferJobs(); err != nil {
 		return nil, err
 	}
+	if pendingRetry <= 0 {
+		pendingRetry = PendingRetry
+	}
 	life, cancel := context.WithCancel(ctx)
-	j := &Jobs{store: st, source: source, destination: destination, ctx: life, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), active: make(map[string]bool), describe: describe, publish: publish, report: report}
+	j := &Jobs{store: st, source: source, destination: destination, ctx: life, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), active: make(map[string]bool), pendingRetry: pendingRetry, describe: describe, publish: publish, report: report}
 	go j.loop()
 	return j, nil
 }
+
+// PendingRetry reports the interval this scheduler waits before asking a
+// preparing destination again.
+func (j *Jobs) PendingRetry() time.Duration { return j.pendingRetry }
 
 // Wake never runs the installer synchronously. It is safe from a destination
 // endpoint that still holds its operation lock. Persisting the wake and tagging
@@ -169,7 +183,7 @@ func (j *Jobs) run(job store.TransferJob) {
 		retries = min(job.RetryCount+1, 6)
 		next = time.Now().Add(time.Duration(1<<retries) * time.Second).UnixMilli()
 	} else if job.Direction == "outgoing" && errors.Is(err, ErrPending) {
-		next = time.Now().Add(2 * time.Second).UnixMilli()
+		next = time.Now().Add(j.pendingRetry).UnixMilli()
 	}
 	j.mu.Lock()
 	if j.active[job.ID] {

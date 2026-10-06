@@ -3,12 +3,36 @@
 package app
 
 import (
+	"os"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/power"
 	"agent-overflow/internal/providerdiscoveryapp"
 )
+
+// detachTestProcessHome is TestMain's half of the isolation: no test in this
+// binary may see the developer's provider homes or live settings. Detaching
+// once per process, rather than per test, is what lets the fixtures below run
+// under t.Parallel.
+func detachTestProcessHome() (remove func() error, err error) {
+	return kerneltest.DetachProcessHome()
+}
+
+// TestTheTestProcessHomeIsDetached proves TestMain detached the home before
+// any test ran, so a test that never builds a fixture still cannot resolve the
+// developer's home.
+func TestTheTestProcessHomeIsDetached(t *testing.T) {
+	t.Parallel()
+	isolation := kerneltest.IsolateProcessSpawns(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	if home != isolation.Home {
+		t.Fatalf("UserHomeDir() = %q, want the detached process home %q", home, isolation.Home)
+	}
+}
 
 // isolateE2EProviderSpawns makes it structurally impossible for a test built on
 // setupE2EApp (or newTestAppWithStore) to reach a real provider binary or the
@@ -25,7 +49,12 @@ import (
 func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
 
-	isolation := kerneltest.IsolateSpawns(t)
+	isolation := kerneltest.IsolateProcessSpawns(t)
+	// The process home is shared by every test. Each fixture gets its own
+	// provider home through the seam every app-layer provider path resolves
+	// through (providerHome), so provider state one test writes is never
+	// another's.
+	app.credentialHomeOverride = t.TempDir()
 	if _, err := app.settings.Update(kerneltest.ProviderBinarySettings(isolation.PoisonedBinary)); err != nil {
 		t.Fatalf("poison provider binary settings: %v", err)
 	}

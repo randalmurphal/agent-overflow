@@ -25,6 +25,7 @@ func testSend(target notify.Target) notify.Send {
 }
 
 func TestNotifyOSUnavailableIsTypedAndVisible(t *testing.T) {
+	t.Parallel()
 	err := (&App{}).notifyOS(testSend(notify.Target{Kind: "none"}))
 	var notificationErr *NotificationError
 	if !errors.As(err, &notificationErr) {
@@ -39,6 +40,7 @@ func TestNotifyOSUnavailableIsTypedAndVisible(t *testing.T) {
 }
 
 func TestNotifyOSRejectsOversizedContentBeforeRouting(t *testing.T) {
+	t.Parallel()
 	a := &App{osNotifications: unavailableNotificationSender{reason: errors.New("should not be reached")}}
 	oversized := testSend(notify.Target{Kind: "none"})
 	oversized.Title = strings.Repeat("x", notify.MaxTitleBytes+1)
@@ -57,6 +59,7 @@ func TestNotifyOSRejectsOversizedContentBeforeRouting(t *testing.T) {
 // nobody can express. It is refused at the pipe rather than defaulted into
 // "always show".
 func TestNotifyOSRefusesAnUndeclaredKind(t *testing.T) {
+	t.Parallel()
 	a := &App{osNotifications: unavailableNotificationSender{reason: errors.New("should not be reached")}}
 	send := testSend(notify.Target{Kind: "none"})
 	send.Kind = "turn-finished-maybe"
@@ -66,6 +69,7 @@ func TestNotifyOSRefusesAnUndeclaredKind(t *testing.T) {
 }
 
 func TestActivateNotificationTargetEmitsTypedPayload(t *testing.T) {
+	t.Parallel()
 	var eventName string
 	var payload any
 	a := &App{testEmitHook: func(name string, data any) {
@@ -85,6 +89,7 @@ func TestActivateNotificationTargetEmitsTypedPayload(t *testing.T) {
 }
 
 func TestTransportNotificationSenderPublishesTypedPayload(t *testing.T) {
+	t.Parallel()
 	bus := transport.NewEventBus(8)
 	t.Cleanup(bus.Close)
 	a := &App{}
@@ -120,6 +125,7 @@ func TestTransportNotificationSenderPublishesTypedPayload(t *testing.T) {
 }
 
 func TestHarnessNotifySurfacesDegradedSendAndSynthesizesActivation(t *testing.T) {
+	t.Parallel()
 	var eventName string
 	a := &App{testEmitHook: func(name string, _ any) { eventName = name }}
 	a.osNotifications = unavailableNotificationSender{reason: errors.New("headless harness")}
@@ -141,6 +147,7 @@ func TestHarnessNotifySurfacesDegradedSendAndSynthesizesActivation(t *testing.T)
 // spec covering the notification pipe asserted the stub's error text and
 // the emission path was never executed at all.
 func TestIsolatedBootInstallsTheRealNotificationSender(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	ConfigureIsolation(app, IsolationConfig{
 		CredentialHome: t.TempDir(),
@@ -185,6 +192,7 @@ func TestIsolatedBootInstallsTheRealNotificationSender(t *testing.T) {
 // must be a log line and a success, never an error the caller has to
 // special-case.
 func TestIsolatedNotificationSendSucceedsWithNoSubscriber(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 	ConfigureIsolation(app, IsolationConfig{CredentialHome: t.TempDir()})
 	bus := transport.NewEventBus(8)

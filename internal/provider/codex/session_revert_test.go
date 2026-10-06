@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // revertFakeScript builds a fake app-server that answers initialize with the
@@ -20,12 +21,17 @@ import (
 // notification a real app-server sends on the same connection.
 func revertFakeScript(t *testing.T, userAgent, threadID, historyMode, revertReply, capturePath string, echo bool) string {
 	t.Helper()
+	return mockexec.Write(t, t.TempDir()+"/codex", revertFakeScriptBody(userAgent, threadID, historyMode, revertReply, capturePath, echo))
+}
+
+// revertFakeScriptBody is the script revertFakeScript installs.
+func revertFakeScriptBody(userAgent, threadID, historyMode, revertReply, capturePath string, echo bool) string {
 	echoLine := ""
 	if echo {
 		echoLine = fmt.Sprintf("        echo \"%s\"\n",
 			bashJSON(fmt.Sprintf(`{"jsonrpc":"2.0","method":"thread/reverted","params":{"threadId":%q}}`, threadID)))
 	}
-	script := fmt.Sprintf(`#!/bin/bash
+	return fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
     if [ -z "$id" ]; then
@@ -55,12 +61,6 @@ done
 		bashJSON(revertReply),
 		echoLine,
 	)
-
-	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
-	return path
 }
 
 // silentRevertFakeScript answers the handshake and then never answers
@@ -88,9 +88,7 @@ done
 		bashJSON(fmt.Sprintf(`{"thread":{"id":%q,"historyMode":%q}}`, threadID, historyMode)),
 	)
 	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -131,9 +129,7 @@ done
 		bashJSON(page1),
 	)
 	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -158,6 +154,7 @@ const revertOKReply = `"result":{"thread":{"id":"codex-thread-revert","historyMo
 // 0.149 app-server, a paginated thread, the exclusive anchor on the wire, and
 // the `thread/reverted` echo released before the call returned.
 func TestSessionRevertSendsBeforeTurnIdAndAwaitsEcho(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -201,6 +198,7 @@ func TestSessionRevertSendsBeforeTurnIdAndAwaitsEcho(t *testing.T) {
 // answer would be an error and the caller's fallback would then have to
 // reason about whether anything was mutated.
 func TestSessionRevertRefusesBelowTheVersionFloor(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -223,6 +221,7 @@ func TestSessionRevertRefusesBelowTheVersionFloor(t *testing.T) {
 // in practice: AO does not pass `historyMode` on thread/start, upstream
 // defaults to legacy, and upstream refuses a legacy revert.
 func TestSessionRevertRefusesLegacyHistoryThreads(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -244,23 +243,18 @@ func TestSessionRevertRefusesLegacyHistoryThreads(t *testing.T) {
 // TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported: an app-server that
 // states no history mode (the field is experimental) must fail closed.
 func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
+	raw := revertFakeScriptBody(
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		"codex-thread-revert", "", revertOKReply, capture, true)
 	// historyMode "" is emitted as an empty string rather than an absent
 	// key; drop it so the response really lacks the field.
-	raw, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatalf("read mock script: %v", err)
-	}
-	rewritten := strings.ReplaceAll(string(raw), `,\"historyMode\":\"\"`, "")
-	if rewritten == string(raw) {
+	rewritten := strings.ReplaceAll(raw, `,\"historyMode\":\"\"`, "")
+	if rewritten == raw {
 		t.Fatal("mock rewrite matched nothing — the thread/start response still carries historyMode")
 	}
-	if err := os.WriteFile(binary, []byte(rewritten), 0o755); err != nil {
-		t.Fatalf("rewrite mock script: %v", err)
-	}
+	binary := mockexec.Write(t, t.TempDir()+"/codex", rewritten)
 
 	s := newRevertSession(t, binary)
 	if got := s.ThreadHistoryMode(); got != "" {
@@ -275,6 +269,7 @@ func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
 // Esc un-send: thread/revert owns active-turn shutdown and history replacement
 // as one server-side operation.
 func TestSessionRevertAllowsMidTurn(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -298,6 +293,7 @@ func TestSessionRevertAllowsMidTurn(t *testing.T) {
 // does not promise persistence is idle, but thread/revert owns the remaining
 // shutdown barrier and must still be sent without a client-side wait.
 func TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -321,6 +317,7 @@ func TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence(t *testing
 // TestSessionRevertRequiresAnAnchor: an empty beforeTurnId is a lost anchor,
 // not "revert nothing".
 func TestSessionRevertRequiresAnAnchor(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -336,6 +333,7 @@ func TestSessionRevertRequiresAnAnchor(t *testing.T) {
 // validation this response supports (`turns` is always empty), and it is the
 // load-bearing one — the caller keeps its SessionRef pointed at this thread.
 func TestSessionRevertTreatsAForeignThreadIdentityAsAnAppliedCut(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"result":{"thread":{"id":"some-other-thread","turns":[]}}`
 	binary := revertFakeScript(t,
@@ -361,6 +359,7 @@ func TestSessionRevertTreatsAForeignThreadIdentityAsAnAppliedCut(t *testing.T) {
 // cannot read is a wire fault to log — never a reason to abandon a cut
 // that already happened and leave AO's history wider than the provider's.
 func TestSessionRevertTreatsAnUndecodableResponseAsAnAppliedCut(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -382,6 +381,7 @@ func TestSessionRevertTreatsAnUndecodableResponseAsAnAppliedCut(t *testing.T) {
 // gets the ambiguous error and the expectation stays armed so the late
 // echo of AO's own cut cannot read as a foreign writer's.
 func TestSessionRevertReportsAnUnansweredCutAsUnknown(t *testing.T) {
+	t.Parallel()
 	// A server that answers the handshake and then goes silent on the
 	// cut is exactly the lost-response shape.
 	binary := silentRevertFakeScript(t,
@@ -412,6 +412,7 @@ func TestSessionRevertReportsAnUnansweredCutAsUnknown(t *testing.T) {
 // indistinguishable on the wire. The second is refused rather than
 // allowed to replace the first's expectation.
 func TestSessionRevertRefusesAConcurrentCut(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -447,6 +448,7 @@ func TestSessionRevertRefusesAConcurrentCut(t *testing.T) {
 // refuses. The refusal is raised before upstream mutates anything, so it maps
 // to the state error the caller falls back on.
 func TestSessionRevertMapsUpstreamPaginatedRefusal(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"error":{"code":-32600,"message":"thread/revert only supports paginated threads"}`
 	binary := revertFakeScript(t,
@@ -461,6 +463,7 @@ func TestSessionRevertMapsUpstreamPaginatedRefusal(t *testing.T) {
 }
 
 func TestClassifyThreadRevertError(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		err         error
@@ -524,6 +527,7 @@ func TestClassifyThreadRevertError(t *testing.T) {
 }
 
 func TestParseThreadRevertResponse(t *testing.T) {
+	t.Parallel()
 	if _, err := parseThreadRevertResponse(json.RawMessage(`{"thread":{}}`)); err == nil {
 		t.Fatal("expected a missing thread.id to fail")
 	}
@@ -544,6 +548,7 @@ func TestParseThreadRevertResponse(t *testing.T) {
 // for carries no boundary, so it must not release a pending wait belonging to
 // another cut, and must not panic when nothing is pending.
 func TestDispatchThreadRevertedIgnoresUnsolicitedEchoes(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.setRootThreadID("codex-thread-revert")
 	// No expectation armed at all.
@@ -571,6 +576,7 @@ func TestDispatchThreadRevertedIgnoresUnsolicitedEchoes(t *testing.T) {
 // TestAwaitRevertEchoIsNonFatal pins the contract that a missing echo is a
 // warning: the wait ends, and the caller keeps the successful response.
 func TestAwaitRevertEchoIsNonFatal(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.awaitRevertEcho(canceledContext(), &revertExpectation{echo: make(chan struct{})}) {
 		t.Fatal("awaitRevertEcho reported a confirmation it never received")
@@ -582,6 +588,7 @@ func TestAwaitRevertEchoIsNonFatal(t *testing.T) {
 // is AO's own echo, not a foreign writer's — the expectation has to
 // survive the timeout or the drift alarm cries wolf on every slow one.
 func TestSessionRevertKeepsTheExpectationArmedForALateEcho(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	// echo=false: the mock answers the RPC and never sends the
 	// notification, which is exactly the timed-out shape.
@@ -615,6 +622,7 @@ func TestSessionRevertKeepsTheExpectationArmedForALateEcho(t *testing.T) {
 // happened, so a later `thread/reverted` really is somebody else's and
 // must reach the alarm.
 func TestSessionRevertForgetsTheExpectationWhenTheCutFailed(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"error":{"code":-32600,"message":"thread/revert only supports paginated threads"}`
 	binary := revertFakeScript(t,
@@ -634,6 +642,7 @@ func TestSessionRevertForgetsTheExpectationWhenTheCutFailed(t *testing.T) {
 // is still in the thread's durable turns, so no cut is in effect and the
 // caller must not converge in place.
 func TestVerifyRevertBoundaryReportsAnUncutThread(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	page := `{"data":[{"id":"turn-c"},{"id":"turn-b"},{"id":"turn-a"}],"nextCursor":null}`
 	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page, page, capture))
@@ -674,6 +683,7 @@ func TestVerifyRevertBoundaryReportsAnUncutThread(t *testing.T) {
 // place instead of paying for a fork. The answer costs a full walk, so it
 // also covers the paged one.
 func TestVerifyRevertBoundaryReportsAnAlreadyCutThread(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	page1 := `{"data":[{"id":"turn-b"}],"nextCursor":"cursor-1"}`
 	page2 := `{"data":[{"id":"turn-a"}],"nextCursor":null}`
@@ -714,6 +724,7 @@ func TestVerifyRevertBoundaryReportsAnAlreadyCutThread(t *testing.T) {
 // turn-b }`, which is anchored on the surviving turn and produces exactly
 // the requested prefix whether or not turn-x exists.
 func TestVerifyRevertBoundaryRefusesAKeptTurnThatIsNotTheTail(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	// Descending, so the FIRST id is the thread's newest durable turn.
 	page1 := `{"data":[{"id":"turn-x"},{"id":"turn-b"}],"nextCursor":null}`
@@ -736,6 +747,7 @@ func TestVerifyRevertBoundaryRefusesAKeptTurnThatIsNotTheTail(t *testing.T) {
 // verdict stays "applied". Pinned so the tail test above cannot be
 // tightened into refusing every cut whose kept turn AO never recorded.
 func TestVerifyRevertBoundaryAcceptsAnAnchorGoneCutWithNoKeptTurn(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	page := `{"data":[{"id":"turn-x"},{"id":"turn-b"}],"nextCursor":null}`
 	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page, page, capture))
@@ -750,6 +762,7 @@ func TestVerifyRevertBoundaryAcceptsAnAnchorGoneCutWithNoKeptTurn(t *testing.T) 
 // to anchor on either. Saying so beats an obscure refusal a round trip
 // later.
 func TestVerifyRevertBoundaryRefusesAHistoryNarrowerThanTheBoundary(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	page := `{"data":[{"id":"turn-a"}],"nextCursor":null}`
 	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page, page, capture))
@@ -762,6 +775,7 @@ func TestVerifyRevertBoundaryRefusesAHistoryNarrowerThanTheBoundary(t *testing.T
 // TestVerifyRevertBoundaryRequiresAnAnchor pins the same refusal Revert
 // makes: an empty anchor is not "verify nothing".
 func TestVerifyRevertBoundaryRequiresAnAnchor(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
 	page := `{"data":[],"nextCursor":null}`
 	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page, page, capture))
@@ -818,9 +832,7 @@ done
 		bashJSON(fmt.Sprintf(`{"thread":{"id":%q,"historyMode":%q}}`, threadID, historyMode)),
 	)
 	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -854,6 +866,7 @@ func readCapturedStarts(t *testing.T, capturePath string) []map[string]any {
 // life. Without this the field is absent, upstream defaults to legacy, and
 // every AO thread refuses the revert forever.
 func TestThreadStartRequestsPaginatedHistoryOnCodex0149(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/thread-start.jsonl"
 	binary := startFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -881,6 +894,7 @@ func TestThreadStartRequestsPaginatedHistoryOnCodex0149(t *testing.T) {
 // differences with none of the benefit. Say nothing and take the server's
 // default, exactly as before the opt-in existed.
 func TestThreadStartOmitsHistoryModeBelowTheFloor(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/thread-start.jsonl"
 	binary := startFakeScript(t,
 		"codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -908,6 +922,7 @@ func TestThreadStartOmitsHistoryModeBelowTheFloor(t *testing.T) {
 // half-start. A session that failed here would be a hard regression: the user
 // could not start a codex thread at all.
 func TestThreadStartFallsBackWhenPaginatedHistoryIsRefused(t *testing.T) {
+	t.Parallel()
 	capture := t.TempDir() + "/thread-start.jsonl"
 	binary := startFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -936,6 +951,7 @@ func TestThreadStartFallsBackWhenPaginatedHistoryIsRefused(t *testing.T) {
 // TestThreadStartHistoryMode pins the gate itself, including the fail-closed
 // answer for an app-server whose build could not be read.
 func TestThreadStartHistoryMode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		version string
 		want    string
@@ -958,6 +974,7 @@ func TestThreadStartHistoryMode(t *testing.T) {
 // importantly, keeps it NARROW: a start that failed for any other reason must
 // stay failed rather than silently retrying as a legacy thread.
 func TestIsHistoryPaginationUnsupported(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error

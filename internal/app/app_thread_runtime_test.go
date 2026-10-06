@@ -21,6 +21,7 @@ import (
 // leaf thread with no children and no discussion state. The session must be
 // stopped and the thread row removed.
 func TestDeleteThreadSimpleThreadRemovesRowAndSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-simple")
@@ -54,6 +55,7 @@ func TestDeleteThreadSimpleThreadRemovesRowAndSession(t *testing.T) {
 // TestDeleteThreadRecursivelyRemovesParentChildAndGrandchild exercises the
 // recursive descent: each thread in the chain is stopped and removed.
 func TestDeleteThreadRecursivelyRemovesParentChildAndGrandchild(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent := testThread("thread-delete-parent")
@@ -103,6 +105,7 @@ func TestDeleteThreadRecursivelyRemovesParentChildAndGrandchild(t *testing.T) {
 // with an active in-memory session has that session removed when delete goes
 // through the real StopSession path (no stopSessionFn injection).
 func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-active")
@@ -138,6 +141,7 @@ func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
 // NOT trigger deliberation removal themselves (so the parent still owns
 // cleanup authority).
 func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// Threads + channels have a circular FK relationship (channel.thread_id
@@ -199,6 +203,7 @@ func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
 // ParentThreadID set) must NOT remove the shared deliberation state —
 // that belongs to the parent thread.
 func TestDeleteThreadChildOnlyLeavesParentDeliberationIntact(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// Threads + channels have a circular FK relationship — create both
@@ -253,6 +258,7 @@ func TestDeleteThreadChildOnlyLeavesParentDeliberationIntact(t *testing.T) {
 // NOT deleted. This matches what deleteThreadTree actually guarantees —
 // it returns early on stopSession error, so DB cleanup doesn't proceed.
 func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-stop-fails")
@@ -284,6 +290,7 @@ func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testin
 // returns the error. The parent row (and still-living sibling children, if
 // any) remain in the store.
 func TestDeleteThreadChildStopFailureHaltsRecursionAndLeavesParent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent := testThread("thread-delete-child-fails-parent")
@@ -326,6 +333,7 @@ func TestDeleteThreadChildStopFailureHaltsRecursionAndLeavesParent(t *testing.T)
 // state still need cleanup. The delete must not error and must skip the
 // (now-absent) store delete.
 func TestDeleteThreadAlreadyRemovedIsIdempotent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// Install a deliberation for a channel that a missing parent used to
@@ -350,6 +358,7 @@ func TestDeleteThreadAlreadyRemovedIsIdempotent(t *testing.T) {
 // errors (anything other than sql.ErrNoRows on GetThread) are surfaced
 // to the caller — the delete must fail loudly, not silently succeed.
 func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-store-error")
@@ -378,6 +387,7 @@ func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
 // attachments) would still run even after a failure in one of them
 // and could race to partially clean state.
 func TestDeleteThreadKeepsRowWhenChildFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	parent := testThread("p-root")
@@ -415,6 +425,7 @@ func TestDeleteThreadKeepsRowWhenChildFails(t *testing.T) {
 // a failure at the deepest level of a 3-level tree does not allow any
 // ancestor to be deleted. Tests the recursive error-join semantics.
 func TestDeleteThreadThreeLevelsDeepChildFailureKeepsAncestors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	l0 := testThread("tree-l0")
@@ -456,6 +467,7 @@ func TestDeleteThreadThreeLevelsDeepChildFailureKeepsAncestors(t *testing.T) {
 // via the ErrNoRows branch or returns success after finding nothing
 // left to do).
 func TestDeleteThreadConcurrentCallsAreSafe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("concurrent-delete")
@@ -484,6 +496,7 @@ func TestDeleteThreadConcurrentCallsAreSafe(t *testing.T) {
 // directory. After A4 the error must surface and the parent row must
 // not be deleted.
 func TestDeleteThreadAttachmentCleanupFailureSurfacesError(t *testing.T) {
+	t.Parallel()
 	// Point attachments at a fresh root we control, then chmod the
 	// per-thread subdirectory so RemoveAll can't remove its children.
 	app := newTestAppWithStore(t)
@@ -533,6 +546,7 @@ func TestDeleteThreadAttachmentCleanupFailureSurfacesError(t *testing.T) {
 // multi-failure join: both stopSession and terminals.CloseThread fail,
 // and the returned error must mention both. The row must survive.
 func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("multi-fail")
@@ -562,6 +576,7 @@ func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
 // start wiring, since several delete tests depend on it. Acts as a canary —
 // if this breaks, the other tests are suspect.
 func TestInstallDeliberationTracksState(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.installDeliberation("channel-canary", nil, 5)
 
@@ -577,6 +592,7 @@ func TestInstallDeliberationTracksState(t *testing.T) {
 // TestDeleteThreadRemovesReplayLog covers the common path: the thread has
 // an on-disk replay log and deleting the thread must remove it.
 func TestDeleteThreadRemovesReplayLog(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	replayDir := t.TempDir()
@@ -630,6 +646,7 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 // TestDeleteThreadRemovesReplayLogWithRotations ensures rotated backups
 // (.1/.2/.3) are swept along with the current log.
 func TestDeleteThreadRemovesReplayLogWithRotations(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	replayDir := t.TempDir()
@@ -671,6 +688,7 @@ func TestDeleteThreadRemovesReplayLogWithRotations(t *testing.T) {
 // creation, or thread created before replay was toggled on). Delete
 // must not fail.
 func TestDeleteThreadReplayLogMissingIsNotError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	replayDir := t.TempDir()
@@ -702,6 +720,7 @@ func TestDeleteThreadReplayLogMissingIsNotError(t *testing.T) {
 // records the call, then confirms both that it ran and that it ran
 // before the session close.
 func TestDeleteThread_CleansCodexBackgroundTerminals(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-codex-clean")
@@ -754,6 +773,7 @@ func TestDeleteThread_CleansCodexBackgroundTerminals(t *testing.T) {
 // delete. Claude has no analogous primitive; reaching for it would be a
 // programming error.
 func TestDeleteThread_ClaudeNoCleanCodexCall(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-claude-noclean")
@@ -796,6 +816,7 @@ func TestDeleteThread_ClaudeNoCleanCodexCall(t *testing.T) {
 // previously-closed session were already killed when that subprocess
 // exited.
 func TestDeleteThread_CodexNoActiveSessionSkipsClean(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-codex-dormant")
@@ -821,6 +842,7 @@ func TestDeleteThread_CodexNoActiveSessionSkipsClean(t *testing.T) {
 // timeout, etc.) the delete still completes — user intent on delete is
 // terminal. The error is logged but not joined into the return value.
 func TestDeleteThread_CodexCleanFailureDoesNotBlockDelete(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-delete-codex-clean-fail")

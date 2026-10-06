@@ -11,6 +11,7 @@ import (
 )
 
 func TestUnrelatedThreadDoesNotWarnOrConsumeChildQuarantine(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) { events = append(events, event) })
 	s.setRootSessionID("root-session")
@@ -33,6 +34,7 @@ func TestUnrelatedThreadDoesNotWarnOrConsumeChildQuarantine(t *testing.T) {
 }
 
 func TestSameSessionStillNeedsSpawnOwnership(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) { events = append(events, event) })
 	s.setRootSessionID("root-session")
@@ -60,6 +62,7 @@ func TestSameSessionStillNeedsSpawnOwnership(t *testing.T) {
 }
 
 func TestRouteChildWireEventAfterOwnershipDoesNotRequeue(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, nil)
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/child-a", "spawn-a") {
 		t.Fatal("register child ownership")
@@ -73,6 +76,7 @@ func TestRouteChildWireEventAfterOwnershipDoesNotRequeue(t *testing.T) {
 }
 
 func TestMissingSessionIdentityKeepsExistingWarning(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) { events = append(events, event) })
 	s.setRootSessionID("root-session")
@@ -84,6 +88,7 @@ func TestMissingSessionIdentityKeepsExistingWarning(t *testing.T) {
 }
 
 func TestParentLinkPreservesChildWithConflictingSessionID(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) { events = append(events, event) })
 	s.setRootSessionID("root-session")
@@ -98,6 +103,7 @@ func TestParentLinkPreservesChildWithConflictingSessionID(t *testing.T) {
 }
 
 func TestNestedParentLinkPreservesChildWithConflictingSessionID(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	s.setRootSessionID("root-session")
 	if !s.registerChildOwnership("root-provider-thread", "parent-child", "/root/parent", "spawn-parent") {
@@ -110,6 +116,7 @@ func TestNestedParentLinkPreservesChildWithConflictingSessionID(t *testing.T) {
 }
 
 func TestLaterOwnedIdentityOverridesUnrelatedClassification(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	s.setRootSessionID("root-session")
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","sessionId":"other-session","parentThreadId":"other-root"}}}`))
@@ -123,6 +130,7 @@ func TestLaterOwnedIdentityOverridesUnrelatedClassification(t *testing.T) {
 }
 
 func TestClearingRootSessionIdentityClearsUnrelatedClassification(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	s.setRootSessionID("root-session")
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"other-child","sessionId":"other-session"}}}`))
@@ -140,6 +148,7 @@ func TestClearingRootSessionIdentityClearsUnrelatedClassification(t *testing.T) 
 }
 
 func TestTypedSpawnOverridesUnrelatedClassification(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) { events = append(events, event) })
 	s.setRootSessionID("root-session")
@@ -161,6 +170,7 @@ func TestTypedSpawnOverridesUnrelatedClassification(t *testing.T) {
 }
 
 func TestUnrelatedThreadRequestsAreRejected(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "root-provider-thread")
 	s.setRootSessionID("root-session")
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":41,"method":"item/commandExecution/requestApproval","params":{"threadId":"memory-child","turnId":"memory-turn","itemId":"command-a","command":"go test ./..."}}`))
@@ -190,6 +200,7 @@ func TestUnrelatedThreadRequestsAreRejected(t *testing.T) {
 }
 
 func TestOversizedUnrelatedThreadIDIsNotRetained(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	s.setRootSessionID("root-session")
 	id := strings.Repeat("x", maxDeferredChildThreadIDBytes+1)
@@ -204,6 +215,7 @@ func TestOversizedUnrelatedThreadIDIsNotRetained(t *testing.T) {
 }
 
 func TestForeignThreadIDsStayBounded(t *testing.T) {
+	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 	s.setRootSessionID("root-session")
 	for i := 0; i < maxRememberedUnrelatedThreads+1; i++ {

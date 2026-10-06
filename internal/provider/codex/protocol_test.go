@@ -11,6 +11,7 @@ import (
 // -- ClassifyNotification dedicated tests --
 
 func TestClassifyNotification_TurnStarted(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		params string
@@ -50,6 +51,7 @@ func TestClassifyNotification_TurnStarted(t *testing.T) {
 }
 
 func TestClassifyNotification_TurnCompleted_DoesNotEmitUsage(t *testing.T) {
+	t.Parallel()
 	params := `{"threadId":"thread-1","turn":{"id":"t1","items":[],"status":"completed","error":null,"startedAt":1777926299,"completedAt":1777926306,"durationMs":6637}}`
 	events := ClassifyNotification("thread-1", "turn/completed", json.RawMessage(params))
 
@@ -73,6 +75,7 @@ func TestClassifyNotification_TurnCompleted_DoesNotEmitUsage(t *testing.T) {
 }
 
 func TestClassifyNotification_ThreadTokenUsageUpdatedNormalizesContextWindow(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
 	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
 
@@ -96,6 +99,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedNormalizesContextWindow(t *
 }
 
 func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotSumBreakdowns(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"reasoningOutputTokens":4},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839},"modelContextWindow":258400}}`)
 	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
 
@@ -125,6 +129,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotSumBreakdowns(t *tes
 // parser surfaces it as `ContextWindow.Exceeded` so the meter renders a
 // distinct state.
 func TestClassifyNotification_ThreadTokenUsageUpdatedDetectsExceededSentinel(t *testing.T) {
+	t.Parallel()
 	// Realistic shape: previous_total=250000, window=258400 → delta=8400 in `last`,
 	// `total.totalTokens` pegged to 258400 (the sentinel).
 	params := json.RawMessage(`{"tokenUsage":{"last":{"totalTokens":8400},"total":{"totalTokens":258400},"modelContextWindow":258400}}`)
@@ -151,6 +156,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDetectsExceededSentinel(t *
 // rolling aggregate is what the wire docs describe as "total processed
 // across messages" and must NOT trigger the exceeded state on its own.
 func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded(t *testing.T) {
+	t.Parallel()
 	// Ordinary high reading: total < window, so no sentinel.
 	params := json.RawMessage(`{"tokenUsage":{"last":{"totalTokens":258399},"total":{"totalTokens":11839},"modelContextWindow":258400}}`)
 	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
@@ -174,6 +180,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded(t 
 // be dispatching on a phantom method; this test locks that in by
 // asserting zero events come out for such a method.
 func TestClassifyNotification_ItemUpdatedIsPhantom(t *testing.T) {
+	t.Parallel()
 	params := `{"item":{"id":"item-9","type":"command_execution","status":"in_progress"}}`
 	events := ClassifyNotification("t1", "item/updated", json.RawMessage(params))
 	if len(events) != 0 {
@@ -182,6 +189,7 @@ func TestClassifyNotification_ItemUpdatedIsPhantom(t *testing.T) {
 }
 
 func TestClassifyNotification_ItemCompletedPlan(t *testing.T) {
+	t.Parallel()
 	params := `{"item":{"id":"plan-1","type":"plan","text":"# Ship it\n\n- one\n- two"}}`
 	events := ClassifyNotification("t1", "item/completed", json.RawMessage(params))
 
@@ -207,6 +215,7 @@ func TestClassifyNotification_ItemCompletedPlan(t *testing.T) {
 // carries `provider_item_id` set to `item.id`. Phase E reads that
 // key to stamp the AO-owned `user:<turnIndex>` row.
 func TestClassifyItemCompleted_UserMessage_EmitsEventUserText(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-abc","type":"userMessage","content":[{"type":"text","text":"hi from user"}]}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 
@@ -237,6 +246,7 @@ func TestClassifyItemCompleted_UserMessage_EmitsEventUserText(t *testing.T) {
 }
 
 func TestClassifyItemCompleted_UserMessage_SubagentNotificationStillEmitsUserText(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-subagent-note","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"}]}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 
@@ -255,6 +265,7 @@ func TestClassifyItemCompleted_UserMessage_SubagentNotificationStillEmitsUserTex
 // shape) so we accept it rather than drop on the assumption that
 // only the array form lands.
 func TestClassifyItemCompleted_UserMessage_StringContent(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-str","type":"userMessage","content":"hi"}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 
@@ -276,6 +287,7 @@ func TestClassifyItemCompleted_UserMessage_StringContent(t *testing.T) {
 // and empty-string differently; we collapse them here so triage
 // sees one shape.
 func TestClassifyItemCompleted_UserMessage_MissingItemID(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"type":"userMessage","content":[{"type":"text","text":"no uuid"}]}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 
@@ -313,6 +325,7 @@ func TestClassifyItemCompleted_UserMessage_MissingItemID(t *testing.T) {
 // claude/parse_user.go so the receive-side promotion behaves the
 // same on both providers.
 func TestClassifyItemCompleted_UserMessage_MultiTextBlocks(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-multi","type":"userMessage","content":[{"type":"text","text":"hello "},{"type":"image","source":"data:..."},{"type":"text","text":"world"}]}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 
@@ -333,6 +346,7 @@ func TestClassifyItemCompleted_UserMessage_MultiTextBlocks(t *testing.T) {
 // envelope and has no UI signal we want — only the completed half
 // promotes to EventUserText.
 func TestClassifyItemNotification_UserMessageStarted_StillDropped(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-abc","type":"userMessage","content":[{"type":"text","text":"hi from user"}]}}`
 	events := ClassifyNotification("thread-1", "item/started", json.RawMessage(params))
 	if len(events) != 0 {
@@ -345,6 +359,7 @@ func TestClassifyItemNotification_UserMessageStarted_StillDropped(t *testing.T) 
 // item/completed closes that streaming row so a later tool or final_answer
 // message in the same turn gets its own timeline slot.
 func TestClassifyItemCompleted_AgentMessageSettlesText(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"agent-1","type":"agentMessage","text":"final answer"}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
 	if len(events) != 1 {
@@ -376,6 +391,7 @@ func TestClassifyItemCompleted_AgentMessageSettlesText(t *testing.T) {
 }
 
 func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
+	t.Parallel()
 	params := `{"error":{"message":"Reconnecting... 2/5"},"willRetry":true}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))
 
@@ -406,6 +422,7 @@ func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 }
 
 func TestParseCodexRetryCounts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		message     string
@@ -430,6 +447,7 @@ func TestParseCodexRetryCounts(t *testing.T) {
 }
 
 func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
+	t.Parallel()
 	params := `{"error":{"message":"fatal error"}}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))
 
@@ -457,6 +475,7 @@ func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
 }
 
 func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
+	t.Parallel()
 	params := `{"error":{"message":"giving up"},"willRetry":false}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))
 
@@ -483,6 +502,7 @@ func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
 }
 
 func TestClassifyNotification_ErrorNormalizesRetryableCodexInfo(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"error":{"message":"overloaded","codexErrorInfo":"serverOverloaded"},"willRetry":false}`)
 	events := ClassifyNotification("t1", "error", params)
 	if len(events) != 1 || events[0].Failure == nil ||
@@ -493,6 +513,7 @@ func TestClassifyNotification_ErrorNormalizesRetryableCodexInfo(t *testing.T) {
 }
 
 func TestClassifyNotification_ErrorNormalizesStructuredRetryableCodexInfo(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{
 		"httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected",
 	} {
@@ -509,6 +530,7 @@ func TestClassifyNotification_ErrorNormalizesStructuredRetryableCodexInfo(t *tes
 }
 
 func TestClassifyNotification_ErrorNormalizesUsageLimitReason(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"error":{"message":"usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":false}`)
 	events := ClassifyNotification("t1", "error", params)
 	if len(events) != 1 || events[0].Failure == nil ||
@@ -521,6 +543,7 @@ func TestClassifyNotification_ErrorNormalizesUsageLimitReason(t *testing.T) {
 }
 
 func TestClassifyNotification_UnknownMethod(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification("t1", "some/future/method", json.RawMessage(`{}`))
 	if len(events) != 0 {
 		t.Errorf("expected 0 events, got %d", len(events))
@@ -528,6 +551,7 @@ func TestClassifyNotification_UnknownMethod(t *testing.T) {
 }
 
 func TestClassifyNotification_MalformedParams(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification("t1", "turn/started", json.RawMessage(`not json`))
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -539,6 +563,7 @@ func TestClassifyNotification_MalformedParams(t *testing.T) {
 }
 
 func TestClassifyNotification_ItemAgentMessageDeltaEmpty(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification("t1", "item/agentMessage/delta", json.RawMessage(`{"delta":""}`))
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for empty delta, got %d", len(events))
@@ -548,6 +573,7 @@ func TestClassifyNotification_ItemAgentMessageDeltaEmpty(t *testing.T) {
 // -- readTopLevelBool tests --
 
 func TestReadTopLevelBool(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		data string
@@ -572,6 +598,7 @@ func TestReadTopLevelBool(t *testing.T) {
 }
 
 func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Refactor auth","receiverThreadIds":["child-1"],"newAgentNickname":"Galileo","newAgentRole":"explorer","status":"completed"}}`)
 	events := ClassifyNotification("t1", "item/completed", params)
 
@@ -602,6 +629,7 @@ func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
 }
 
 func TestClassifyNotification_FailedCollabSpawnCarriesFailedStatus(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Spawn beyond the limit","receiverThreadIds":[],"status":"failed"}}`)
 	events := ClassifyNotification("t1", "item/completed", params)
 
@@ -628,6 +656,7 @@ func TestClassifyNotification_FailedCollabSpawnCarriesFailedStatus(t *testing.T)
 }
 
 func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"item":{"id":"call-2","type":"collabAgentToolCall","tool":"sendInput","prompt":"continue","receiverThreadIds":["child-1"],"status":"completed"}}`)
 	events := ClassifyNotification("t1", "item/completed", params)
 
@@ -647,6 +676,7 @@ func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
 // `item/completed` (CollabAgentSpawnEnd in codex-source/.../app-server/
 // src/bespoke_event_handling.rs) — there is no `item/updated` method.
 func TestClassifyNotification_CollabSpawnSurfacesAgentsStates(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent",` +
 			`"prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"completed",` +
@@ -684,6 +714,7 @@ func TestClassifyNotification_CollabSpawnSurfacesAgentsStates(t *testing.T) {
 // that truly reports zero children, and the frontend's conditional
 // rendering relies on the distinction.
 func TestClassifyNotification_CollabSpawnWithoutAgentsStatesOmitsKey(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent",` +
 			`"prompt":"kick off","receiverThreadIds":["child-1"],"status":"completed"}}`,
@@ -710,6 +741,7 @@ func TestClassifyNotification_CollabSpawnWithoutAgentsStatesOmitsKey(t *testing.
 // The older `"waitAgent"` variant is never emitted by a live server but
 // is accepted as a defensive alias.
 func TestClassifyNotification_CollabWaitEmitsWaitAgent(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		tool string
@@ -754,6 +786,7 @@ func TestClassifyNotification_CollabWaitEmitsWaitAgent(t *testing.T) {
 // same card the agent blocked on. See codex-wire.md §Collab agent
 // lifecycle and codex-source v2.rs:4462 (`agents_states`).
 func TestClassifyNotification_CollabWaitSurfacesAgentsStates(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"item":{"id":"call-3","type":"collabAgentToolCall","tool":"wait",` +
 			`"receiverThreadIds":["child-1","child-2"],"status":"completed",` +
@@ -795,6 +828,7 @@ func TestClassifyNotification_CollabWaitSurfacesAgentsStates(t *testing.T) {
 // default-skip branch for a hypothetical Codex method we don't handle
 // yet. It must not panic and must emit no events.
 func TestClassifyNotification_UnknownMethodDoesNotCrash(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification("t1", "item/futurefeature", json.RawMessage(`{"whatever":true}`))
 	if len(events) != 0 {
 		t.Errorf("unknown method emitted %d events, want 0", len(events))
@@ -811,6 +845,7 @@ func TestClassifyNotification_UnknownMethodDoesNotCrash(t *testing.T) {
 // its tool-call "completes" on the wire); nested access into
 // meta.item.source works today but is fragile to a future schema bump.
 func TestClassifyNotification_ItemStartedCommandExecutionSource(t *testing.T) {
+	t.Parallel()
 	sources := []string{"agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction"}
 	for _, source := range sources {
 		t.Run(source, func(t *testing.T) {
@@ -846,6 +881,7 @@ func TestClassifyNotification_ItemStartedCommandExecutionSource(t *testing.T) {
 // command completions carry item_status into Meta. The failed status is the
 // load-bearing signal for rendering a red glyph / stderr-forward UI.
 func TestClassifyNotification_ItemCompletedStatusFailed(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"item":{"id":"cmd-1","type":"commandExecution","source":"agent","status":"failed","exitCode":1}}`,
 	)
@@ -873,6 +909,7 @@ func TestClassifyNotification_ItemCompletedStatusFailed(t *testing.T) {
 // CommandExecutionStatus variant so a schema rename in codex-source
 // surfaces here instead of silently dropping.
 func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
+	t.Parallel()
 	statuses := []string{"inProgress", "completed", "failed", "declined"}
 	for _, status := range statuses {
 		t.Run(status, func(t *testing.T) {
@@ -903,6 +940,7 @@ func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
 // empty Content so the Phase 6 triage handler can persist a "Waited for
 // background terminal" row. Meta carries the process id for debugging.
 func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","itemId":"cmd-1","processId":"pid-42","stdin":""}`,
 	)
@@ -939,6 +977,7 @@ func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
 }
 
 func TestClassifyNotification_RawResponseWriteStdinCallDropped(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":17313,\"chars\":\"\",\"yield_time_ms\":1000}"}}`,
 	)
@@ -949,6 +988,7 @@ func TestClassifyNotification_RawResponseWriteStdinCallDropped(t *testing.T) {
 }
 
 func TestClassifyNotification_RawResponseWriteStdinWithInputDropped(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret\\n\"}"}}`,
 	)
@@ -959,6 +999,7 @@ func TestClassifyNotification_RawResponseWriteStdinWithInputDropped(t *testing.T
 }
 
 func TestClassifyNotification_RawResponseWriteStdinOutputDropped(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"call-stdin","rawToolName":"write_stdin","processId":"17313","waitResult":"running","output":"Chunk ID: x\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}`,
 	)
@@ -969,6 +1010,7 @@ func TestClassifyNotification_RawResponseWriteStdinOutputDropped(t *testing.T) {
 }
 
 func TestClassifyNotification_RawSpawnAgentOutputDropped(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"spawn-1","rawToolName":"spawn_agent","output":"agent thread limit reached"}}`,
 	)
@@ -986,6 +1028,7 @@ func TestClassifyNotification_RawSpawnAgentOutputDropped(t *testing.T) {
 // future phases can render "Interacted with background terminal"
 // without a parser change.
 func TestClassifyNotification_TerminalInteractionNonEmptyStdin(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","itemId":"cmd-1","processId":"pid-42","stdin":"y\n"}`,
 	)
@@ -1010,6 +1053,7 @@ func TestClassifyNotification_TerminalInteractionNonEmptyStdin(t *testing.T) {
 }
 
 func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","itemId":"mcp-1","message":"Indexed 47/100 files"}`,
 	)
@@ -1020,6 +1064,7 @@ func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
 }
 
 func TestClassifyNotification_WebSearchEnrichesToolMeta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"web-1","type":"webSearch","query":"svelte 5 runes","status":"completed"}}`,
 	)
@@ -1044,6 +1089,7 @@ func TestClassifyNotification_WebSearchEnrichesToolMeta(t *testing.T) {
 }
 
 func TestClassifyNotification_McpToolCallEnrichesToolMeta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"mcp-1","type":"mcpToolCall","server":"docs","tool":"lookup","arguments":{"q":"wails"},"durationMs":42,"status":"completed"}}`,
 	)
@@ -1088,6 +1134,7 @@ func TestClassifyNotification_McpToolCallEnrichesToolMeta(t *testing.T) {
 }
 
 func TestClassifyNotification_McpToolCallCompletionCarriesResultContent(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"mcp-1","type":"mcpToolCall","server":"docs","tool":"lookup","status":"completed","result":{"content":[{"type":"text","text":"Lookup result"}],"structuredContent":{"id":"123"}}}}`,
 	)
@@ -1107,6 +1154,7 @@ func TestClassifyNotification_McpToolCallCompletionCarriesResultContent(t *testi
 }
 
 func TestClassifyNotification_DynamicToolCallCompletionCarriesContentItems(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"dyn-1","type":"dynamicToolCall","namespace":"codex_app","tool":"lookup_ticket","status":"completed","contentItems":[{"type":"inputText","text":"Ticket is open"}]}}`,
 	)
@@ -1127,6 +1175,7 @@ func TestClassifyNotification_DynamicToolCallCompletionCarriesContentItems(t *te
 }
 
 func TestClassifyNotification_CollabAgentCompletionCarriesAgentMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","status":"completed","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Final child answer"}}}}`,
 	)
@@ -1161,6 +1210,7 @@ func TestClassifyNotification_CollabAgentCompletionCarriesAgentMessage(t *testin
 }
 
 func TestClassifyNotification_SpawnAgentSurfacesPromptAndFinalMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","prompt":"Inspect the parser","model":"gpt-5.4","reasoningEffort":"high","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Parser looks fine"}}}}`,
 	)
@@ -1189,6 +1239,7 @@ func TestClassifyNotification_SpawnAgentSurfacesPromptAndFinalMessage(t *testing
 }
 
 func TestClassifyNotification_SendInputSurfacesPromptAndFinalMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","item":{"id":"send-1","type":"collabAgentToolCall","tool":"sendInput","status":"completed","prompt":"Please inspect this follow-up","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Follow-up handled"}}}}`,
 	)
@@ -1217,6 +1268,7 @@ func TestClassifyNotification_SendInputSurfacesPromptAndFinalMessage(t *testing.
 }
 
 func TestClassifyNotification_ImageToolsSurfaceUsefulMetadata(t *testing.T) {
+	t.Parallel()
 	t.Run("image view path", func(t *testing.T) {
 		params := json.RawMessage(
 			`{"threadId":"th-1","turnId":"t1","item":{"id":"view-1","type":"imageView","path":"/tmp/screenshot.png"}}`,
@@ -1272,6 +1324,7 @@ func TestClassifyNotification_ImageToolsSurfaceUsefulMetadata(t *testing.T) {
 }
 
 func TestClassifyNotification_WebSearchCompletionDoesNotInventResultContent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		action string
@@ -1338,6 +1391,7 @@ func TestClassifyNotification_WebSearchCompletionDoesNotInventResultContent(t *t
 // projector reads these top-level to decide "this command can be
 // backgrounded" without walking nested JSON.
 func TestClassifyNotification_ItemStartedUnifiedExecCarriesProcessID(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-42",` +
 			`"item":{"id":"cmd-1","type":"commandExecution",` +
@@ -1374,6 +1428,7 @@ func TestClassifyNotification_ItemStartedUnifiedExecCarriesProcessID(t *testing.
 // key must then be absent, not an empty string — a missing key is the
 // load-bearing signal for "no PTY handle to track."
 func TestClassifyNotification_ItemStartedAgentSourceOmitsProcessID(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-3",` +
 			`"item":{"id":"cmd-2","type":"commandExecution",` +
@@ -1401,6 +1456,7 @@ func TestClassifyNotification_ItemStartedAgentSourceOmitsProcessID(t *testing.T)
 // row can still land at the current timeline tail even if that turn
 // is long gone by completion time.
 func TestClassifyNotification_ItemCompletedCarriesTurnID(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-99",` +
 			`"item":{"id":"cmd-1","type":"commandExecution",` +
@@ -1419,6 +1475,7 @@ func TestClassifyNotification_ItemCompletedCarriesTurnID(t *testing.T) {
 // Codex-specific turn.status values are translated before they leave the
 // provider adapter.
 func TestClassifyNotification_TurnCompletedNormalizesStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		params       string
@@ -1499,6 +1556,7 @@ func TestClassifyNotification_TurnCompletedNormalizesStatus(t *testing.T) {
 // EventCompactBoundary source; a FAILED compaction never completes the
 // item, which is why triage also clears the window on turn completion.
 func TestClassifyItemNotification_ContextCompactionStartedOpensCompactingWindow(t *testing.T) {
+	t.Parallel()
 	params := `{"turnId":"turn-9","item":{"id":"item-cc1","type":"contextCompaction"}}`
 	events := ClassifyNotification("thread-1", "item/started", json.RawMessage(params))
 	if len(events) != 1 || events[0].Kind != provider.EventCompactionStatus {
@@ -1520,6 +1578,7 @@ func TestClassifyItemNotification_ContextCompactionStartedOpensCompactingWindow(
 // cumulative spend, every token counted once. See the function's doc for
 // why it is neither wire figure and how it relates to Claude's.
 func TestChildAgentTokenSpendIsTheChildsCumulativeSpend(t *testing.T) {
+	t.Parallel()
 	// Shape taken from a real 42-minute child (codex 0.149.0, 2026-08-23):
 	// `total.totalTokens` is 22x the agent's own spend because it
 	// re-counts the cached prompt on every round.
@@ -1548,6 +1607,7 @@ func TestChildAgentTokenSpendIsTheChildsCumulativeSpend(t *testing.T) {
 // `inputTokens`, so it is added rather than subtracted out with the
 // cached reads.
 func TestChildAgentTokenSpendCountsCacheWrites(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"tokenUsage":{` +
 		`"last":{"inputTokens":1000,"cachedInputTokens":900,"cacheWriteInputTokens":250,"outputTokens":40},` +
 		`"total":{"inputTokens":5000,"cachedInputTokens":4500,"cacheWriteInputTokens":250,"outputTokens":300}}}`)
@@ -1563,6 +1623,7 @@ func TestChildAgentTokenSpendCountsCacheWrites(t *testing.T) {
 // card must climb with them. Under the latest-input composition the
 // second frame here reports LESS than the first.
 func TestChildAgentTokenSpendClimbsThroughACompaction(t *testing.T) {
+	t.Parallel()
 	before := json.RawMessage(`{"tokenUsage":{` +
 		`"last":{"inputTokens":180000,"cachedInputTokens":176000,"cacheWriteInputTokens":0,"outputTokens":900},` +
 		`"total":{"inputTokens":900000,"cachedInputTokens":880000,"cacheWriteInputTokens":0,"outputTokens":9000}}}`)
@@ -1591,6 +1652,7 @@ func TestChildAgentTokenSpendClimbsThroughACompaction(t *testing.T) {
 // than resetting it to zero, and an INVERTED one (cached larger than the
 // input it is nested inside) must never subtract real output away.
 func TestChildAgentTokenSpendRefusesEmptyFrames(t *testing.T) {
+	t.Parallel()
 	for name, params := range map[string]string{
 		"malformed":   `{"tokenUsage":`,
 		"absent":      `{"threadId":"t"}`,
@@ -1617,6 +1679,7 @@ func TestChildAgentTokenSpendRefusesEmptyFrames(t *testing.T) {
 // -- ClassifyNotification tests --
 
 func TestTurnStarted(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-1"}}`)
 	events := ClassifyNotification(testThread, "turn/started", params)
 
@@ -1632,6 +1695,7 @@ func TestTurnStarted(t *testing.T) {
 }
 
 func TestTurnCompletedSuccess(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-1","status":"completed"}}`)
 	events := ClassifyNotification(testThread, "turn/completed", params)
 
@@ -1647,6 +1711,7 @@ func TestTurnCompletedSuccess(t *testing.T) {
 }
 
 func TestTurnCompletedFailed(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-1","status":"failed","error":{"message":"model error"}}}`)
 	events := ClassifyNotification(testThread, "turn/completed", params)
 
@@ -1665,6 +1730,7 @@ func TestTurnCompletedFailed(t *testing.T) {
 }
 
 func TestItemAgentMessageDelta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`)
 	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
 
@@ -1689,6 +1755,7 @@ func TestItemAgentMessageDelta(t *testing.T) {
 }
 
 func TestItemAgentMessageDeltaEmpty(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"delta":""}`)
 	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
 
@@ -1698,6 +1765,7 @@ func TestItemAgentMessageDeltaEmpty(t *testing.T) {
 }
 
 func TestItemStarted(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"item":{"id":"item-1","type":"command_execution"}}`)
 	events := ClassifyNotification(testThread, "item/started", params)
 
@@ -1716,6 +1784,7 @@ func TestItemStarted(t *testing.T) {
 }
 
 func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turnId":"turn-1","item":{"id":"patch-1","type":"fileChange","changes":[{"path":"src/old.go","kind":{"type":"update","move_path":"src/new.go"},"diff":"@@ -1 +1 @@\n-old\n+new"}],"status":"inProgress"}}`)
 	events := ClassifyNotification(testThread, "item/started", params)
 
@@ -1774,6 +1843,7 @@ func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
 }
 
 func TestItemCompleted(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"item":{"id":"item-1","type":"command_execution"}}`)
 	events := ClassifyNotification(testThread, "item/completed", params)
 
@@ -1794,6 +1864,7 @@ func TestItemCompleted(t *testing.T) {
 // the gap between userMessage settling and agentMessage streaming,
 // which is long enough for the "Completed" pill to render mid-turn.
 func TestItemStartedDropsNonToolTypes(t *testing.T) {
+	t.Parallel()
 	cases := []string{"userMessage", "agentMessage", "assistantMessage", "reasoning", "plan", "todoList"}
 	for _, itemType := range cases {
 		t.Run(itemType, func(t *testing.T) {
@@ -1818,6 +1889,7 @@ func TestItemStartedDropsNonToolTypes(t *testing.T) {
 //     branch and parse_user.go's `isReplay:true` mirror on the
 //     Claude side.
 func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
+	t.Parallel()
 	cases := []string{"todoList"}
 	for _, itemType := range cases {
 		t.Run(itemType, func(t *testing.T) {
@@ -1831,6 +1903,7 @@ func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
 }
 
 func TestItemCompletedSettlesStreamingContentTypes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		itemType      string
@@ -1863,6 +1936,7 @@ func TestItemCompletedSettlesStreamingContentTypes(t *testing.T) {
 }
 
 func TestCommandExecutionOutputDelta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"delta":"output line\n"}`)
 	events := ClassifyNotification(testThread, "item/commandExecution/outputDelta", params)
 
@@ -1878,6 +1952,7 @@ func TestCommandExecutionOutputDelta(t *testing.T) {
 }
 
 func TestTurnDiffUpdated(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"threadId":"thr","turnId":"turn-7","diff":"--- a/main.go\n+++ b/main.go\n"}`)
 	events := ClassifyNotification(testThread, "turn/diff/updated", params)
 
@@ -1913,6 +1988,7 @@ func TestTurnDiffUpdated(t *testing.T) {
 // A turn diff names its turn at the top level or inside a turn object, and a
 // field of the wrong type does not cost the diff.
 func TestTurnDiffUpdatedTurnID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		params string
 		turnID string
@@ -1934,6 +2010,7 @@ func TestTurnDiffUpdatedTurnID(t *testing.T) {
 }
 
 func TestFileChangeOutputDelta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"delta":"diff content"}`)
 	events := ClassifyNotification(testThread, "item/fileChange/outputDelta", params)
 
@@ -1943,6 +2020,7 @@ func TestFileChangeOutputDelta(t *testing.T) {
 }
 
 func TestFileChangePatchUpdated(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"itemId":"patch-1","changes":[]}`)
 	events := ClassifyNotification(testThread, "item/fileChange/patchUpdated", params)
 
@@ -1952,6 +2030,7 @@ func TestFileChangePatchUpdated(t *testing.T) {
 }
 
 func TestTokenUsageUpdated(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
 	events := ClassifyNotification(testThread, "thread/tokenUsage/updated", params)
 
@@ -1974,6 +2053,7 @@ func TestTokenUsageUpdated(t *testing.T) {
 }
 
 func TestErrorNotification(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"error":{"message":"rate limited"}}`)
 	events := ClassifyNotification(testThread, "error", params)
 
@@ -1989,6 +2069,7 @@ func TestErrorNotification(t *testing.T) {
 }
 
 func TestTurnPlanUpdatedEmitsTodoUpdate(t *testing.T) {
+	t.Parallel()
 	// Real Codex wire shape per app-server-protocol/v2.rs
 	// `TurnPlanUpdatedNotification.plan: Vec<TurnPlanStep>`. The previous
 	// fixture used `plan: "step 1, step 2"` (a string) which only happened
@@ -2023,6 +2104,7 @@ func TestTurnPlanUpdatedEmitsTodoUpdate(t *testing.T) {
 }
 
 func TestClassifyReasoningTextDelta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turnId":"turn-1","itemId":"reason-1","delta":"thinking about this..."}`)
 	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
 
@@ -2047,6 +2129,7 @@ func TestClassifyReasoningTextDelta(t *testing.T) {
 }
 
 func TestClassifyReasoningTextDeltaFallbackKeys(t *testing.T) {
+	t.Parallel()
 	// Falls back to "text" key when "delta" is missing.
 	params := json.RawMessage(`{"text":"via text key"}`)
 	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
@@ -2078,6 +2161,7 @@ func TestClassifyReasoningTextDeltaFallbackKeys(t *testing.T) {
 }
 
 func TestClassifyReasoningSummaryTextDelta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"delta":"summarizing..."}`)
 	events := ClassifyNotification(testThread, "item/reasoning/summaryTextDelta", params)
 
@@ -2093,6 +2177,7 @@ func TestClassifyReasoningSummaryTextDelta(t *testing.T) {
 }
 
 func TestClassifyThreadNameUpdated(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"threadName":"My New Thread"}`)
 	events := ClassifyNotification(testThread, "thread/name/updated", params)
 
@@ -2116,6 +2201,7 @@ func TestClassifyThreadNameUpdated(t *testing.T) {
 }
 
 func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
+	t.Parallel()
 	// Falls back to "name" key when "threadName" is missing.
 	params := json.RawMessage(`{"name":"Fallback Name"}`)
 	events := ClassifyNotification(testThread, "thread/name/updated", params)
@@ -2142,6 +2228,7 @@ func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
 // `rateLimitsByLimitId.codex` (100/91 — preferred path), so a
 // regression that flips the precedence shows up immediately.
 func TestClassifyRateLimitsUpdated(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"rateLimits": {
 			"limitId": "codex",
@@ -2214,6 +2301,7 @@ func TestClassifyRateLimitsUpdated(t *testing.T) {
 // here so a future refactor of extractCodexRateLimitEntries can't
 // silently drop the fallback path.
 func TestClassifyRateLimitsUsesTopLevelWhenByLimitIdAbsent(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"rateLimits": {
 			"limitId": "codex",
@@ -2238,6 +2326,7 @@ func TestClassifyRateLimitsUsesTopLevelWhenByLimitIdAbsent(t *testing.T) {
 // `rateLimits` envelope updates one quota, so marking it complete would let
 // one bucket's notification delete every other bucket from the cache.
 func TestClassifyRateLimitsMarksOnlyTheByLimitIdMapAsTheWholeAnswer(t *testing.T) {
+	t.Parallel()
 	whole := json.RawMessage(`{
 		"rateLimitsByLimitId": {
 			"codex": {
@@ -2276,6 +2365,7 @@ func TestClassifyRateLimitsMarksOnlyTheByLimitIdMapAsTheWholeAnswer(t *testing.T
 // (chatwidget.rs:2891); without the same default we silently drop the
 // entire snapshot and the 5h/7d rings stay stale forever.
 func TestClassifyRateLimitsDefaultsMissingLimitId(t *testing.T) {
+	t.Parallel()
 	cases := map[string]json.RawMessage{
 		"null": json.RawMessage(`{
 			"rateLimits": {
@@ -2320,6 +2410,7 @@ func TestClassifyRateLimitsDefaultsMissingLimitId(t *testing.T) {
 // The frontend keys by account, limit ID, and window, so it cannot overwrite
 // the provider's default allowance.
 func TestClassifyRateLimitsRetainsDynamicBucket(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"rateLimits": {
 			"limitId": "spark",
@@ -2347,6 +2438,7 @@ func TestClassifyRateLimitsRetainsDynamicBucket(t *testing.T) {
 }
 
 func TestClassifyModelRerouted(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"toModel":"gpt-4.1-mini"}`)
 	events := ClassifyNotification(testThread, "model/rerouted", params)
 
@@ -2370,6 +2462,7 @@ func TestClassifyModelRerouted(t *testing.T) {
 }
 
 func TestClassifyThreadCompacted(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"compactionId":"c1","tokensRemoved":500}`)
 	events := ClassifyNotification(testThread, "thread/compacted", params)
 
@@ -2391,6 +2484,7 @@ func TestClassifyThreadCompacted(t *testing.T) {
 }
 
 func TestClassifyServerRequestResolved(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"requestId":91,"resolution":{"scope":"turn"}}`)
 	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
 
@@ -2409,6 +2503,7 @@ func TestClassifyServerRequestResolved(t *testing.T) {
 }
 
 func TestClassifyServerRequestResolvedPrefersProviderRequestID(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"requestId":"interactive-1","providerRequestId":"91"}`)
 	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
 
@@ -2421,6 +2516,7 @@ func TestClassifyServerRequestResolvedPrefersProviderRequestID(t *testing.T) {
 }
 
 func TestSkippedMethods(t *testing.T) {
+	t.Parallel()
 	skipped := []string{
 		"thread/started",
 		"thread/status/changed",
@@ -2448,6 +2544,7 @@ func TestSkippedMethods(t *testing.T) {
 // instead of one run-on blob. Section content itself continues to
 // arrive via `summaryTextDelta` and concatenates onto the same row.
 func TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification(testThread, "item/reasoning/summaryPartAdded", json.RawMessage(`{"itemId":"i1","summaryIndex":1}`))
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
@@ -2461,6 +2558,7 @@ func TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak(t *testing.T) {
 }
 
 func TestUnknownMethod(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification(testThread, "future/feature", json.RawMessage(`{}`))
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for unknown method, got %d", len(events))
@@ -2468,6 +2566,7 @@ func TestUnknownMethod(t *testing.T) {
 }
 
 func TestHookNotificationAcceptsInterruptEventName(t *testing.T) {
+	t.Parallel()
 	events := ClassifyNotification(testThread, "hook/started", json.RawMessage(`{"run":{"eventName":"interrupt","status":"running"}}`))
 	if len(events) != 1 || events[0].Content != "interrupt hook (running)" {
 		t.Fatalf("interrupt hook events = %+v", events)
@@ -2475,6 +2574,7 @@ func TestHookNotificationAcceptsInterruptEventName(t *testing.T) {
 }
 
 func TestThreadIDPassthrough(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"t1"}}`)
 	events := ClassifyNotification("my-thread-123", "turn/started", params)
 
@@ -2504,6 +2604,7 @@ func TestThreadIDPassthrough(t *testing.T) {
 // Summary parts are separated by an `item/reasoning/summaryPartAdded`
 // break ("\n\n"); raw content parts have no break notification at all.
 func TestItemCompletedReasoningFinalText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		item    string
@@ -2588,6 +2689,7 @@ func TestItemCompletedReasoningFinalText(t *testing.T) {
 // unconditionally opened every Codex thinking row with a blank
 // paragraph. A missing / unreadable index is treated as 0.
 func TestClassifyReasoningSummaryPartAddedSkipsTheFirstPart(t *testing.T) {
+	t.Parallel()
 	silent := []string{
 		`{"itemId":"i1","summaryIndex":0}`,
 		`{"itemId":"i1"}`,

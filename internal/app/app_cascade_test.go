@@ -42,6 +42,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.terminals = terminal.NewManager(nil, nil)
 	ensureDefaultTestProject(t, app)
+	isolateE2EProviderSpawns(t, app)
 
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),
@@ -126,9 +127,10 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 // TestCascade_DeleteThreadRemovesAllDependents ensures that DeleteThread
 // cleans up every dependent row and on-disk artifact owned by the thread.
 func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
+	t.Parallel()
 	app, _, _ := setupCascadeApp(t)
 
-	workspace := testutil.InitGitRepo(t)
+	workspace := initMainGitRepo(t)
 	thread := e2eThreadCascade("thread-cascade-full", provider.Claude, workspace)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -225,6 +227,7 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 // TestCascade_ThreadDeleteIsIdempotent: deleting twice returns either a clean
 // idempotent success or a clear error. It must not panic.
 func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
+	t.Parallel()
 	app, _, _ := setupCascadeApp(t)
 
 	thread := e2eThreadCascade("thread-cascade-idemp", provider.Claude, t.TempDir())
@@ -256,6 +259,7 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 // DeleteThread; any items persisted up to that point remain (but the thread
 // row is removed, so FK CASCADE nukes them).
 func TestCascade_DeletingWithActiveSession(t *testing.T) {
+	t.Parallel()
 	app, _, _ := setupCascadeApp(t)
 
 	workspace := t.TempDir()
@@ -304,11 +308,12 @@ func TestCascade_DeletingWithActiveSession(t *testing.T) {
 // TestCascade_ForkPreservesOriginalState: ForkThread creates a new thread with
 // copied items + payloads; the source stays untouched. Drafts are NOT copied.
 func TestCascade_ForkPreservesOriginalState(t *testing.T) {
+	t.Parallel()
 	app, _, _ := setupCascadeApp(t)
 
 	source := e2eThreadCascade("thread-cascade-fork-src", provider.Claude, t.TempDir())
 	source.SessionRef = "claude-sess-fork"
-	fixture := newMidTurnForkFixture(t, "claude-sess-fork", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "claude-sess-fork", midTurnSourceJSONL)
 	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -373,6 +378,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 // TestCascade_UnarchiveRestoresToSidebar verifies the archive → list hides →
 // unarchive → list shows round-trip.
 func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
+	t.Parallel()
 	app, _, _ := setupCascadeApp(t)
 
 	thread := e2eThreadCascade("thread-cascade-unarchive", provider.Claude, t.TempDir())

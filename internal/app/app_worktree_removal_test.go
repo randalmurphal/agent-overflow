@@ -56,6 +56,7 @@ func (f removalFixture) remove(t *testing.T) WorktreeRemoval {
 // session there is stopped and not restarted, and nobody is told: the user
 // asked for the removal.
 func TestRemoveOtherWorktreeReturnsMovedRowsAndStopsSessionsQuietly(t *testing.T) {
+	t.Parallel()
 	f := newRemovalFixture(t, "feature-in-app")
 	f.app.sessionManager().put(f.occupant, session{Provider: string(provider.Claude), Token: "token-occupant"})
 	var stops, starts []string
@@ -93,6 +94,7 @@ func TestRemoveOtherWorktreeReturnsMovedRowsAndStopsSessionsQuietly(t *testing.T
 // it (here a confirmed /effort, which rewrites the whole row) cannot put the
 // row back. Both the in-app and the external removal paths.
 func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		remove func(t *testing.T, f removalFixture)
@@ -140,6 +142,7 @@ func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
 
 // GitRemoveWorktree returns its own thread's row and every sibling's.
 func TestGitRemoveWorktreeReturnsEveryMovedRow(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	owner := f.thread(t, "thread-git-remove-owner", f.repo, "main")
 	worktree, err := f.app.GitCreateWorktree(owner.ID, "feature/git-remove-rows")
@@ -169,6 +172,7 @@ func TestGitRemoveWorktreeReturnsEveryMovedRow(t *testing.T) {
 // status the confirmation reads counts them first. One opened elsewhere is
 // left alone.
 func TestWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
+	t.Parallel()
 	f := newRemovalFixture(t, "feature-terminals")
 	f.app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
@@ -206,6 +210,7 @@ func TestWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 // The external path closes them too: the removal is seen after the
 // directory is gone, and the terminal's recorded cwd still has to match.
 func TestExternalWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
+	t.Parallel()
 	f := newRemovalFixture(t, "feature-external-terminals")
 	f.app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
@@ -225,6 +230,7 @@ func TestExternalWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 // at the path (only a draft placeholder did); a registry re-read that saw
 // no removal announces nothing.
 func TestReconcileProjectWorktreesAnnouncesRemovalWithoutThreads(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-draft-only")
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
@@ -245,6 +251,7 @@ func TestReconcileProjectWorktreesAnnouncesRemovalWithoutThreads(t *testing.T) {
 // make a path gone. Were it counted, every registry change would sweep the
 // path again, taking the retired thread's lock each time.
 func TestReconcileProjectWorktreesIgnoresRetiredRows(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-retired")
 	holder := f.thread(t, "thread-retired-holder", worktree, "feature-retired")
@@ -283,6 +290,7 @@ func TestReconcileProjectWorktreesIgnoresRetiredRows(t *testing.T) {
 // itself and keeps its session; the registry sweep must leave it alone even
 // when it runs first.
 func TestReconcileProjectWorktreesLeavesAThreadExitingItsOwnWorktree(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-exiting")
 	exiting := f.thread(t, "thread-exiting-own-worktree", worktree, "feature-exiting")
@@ -334,6 +342,7 @@ func exitWorktreeStart(threadID, toolUseID, action string) provider.ProviderEven
 // registry sweep can run with only the tool_use read. The thread making
 // that call is left alone as it is once the result arrives.
 func TestReconcileProjectWorktreesLeavesAThreadWithExitWorktreeInFlight(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-exit-pending")
 	exiting := f.thread(t, "thread-exit-pending", worktree, "feature-exit-pending")
@@ -373,6 +382,7 @@ func TestReconcileProjectWorktreesLeavesAThreadWithExitWorktreeInFlight(t *testi
 // (here a refused call) sweeps the project again, so the thread the sweep
 // left alone does not stay on a vanished path.
 func TestRefusedExitWorktreeResweepsTheThreadItDeferredTo(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "feature-exit-refused")
 	exiting := f.thread(t, "thread-exit-refused", worktree, "feature-exit-refused")
@@ -417,6 +427,7 @@ func TestRefusedExitWorktreeResweepsTheThreadItDeferredTo(t *testing.T) {
 // An `ExitWorktree keep` deletes nothing, so the sweep treats its thread
 // like any other.
 func TestExitWorktreeKeepIsNotAPendingRemoval(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sessionEventHandler("thread-exit-keep", "token-keep", string(provider.Claude))(exitWorktreeStart("thread-exit-keep", "toolu_keep", "keep"))
 	app.drainProviderEvents("thread-exit-keep", "test")
@@ -438,6 +449,7 @@ func TestExitWorktreeKeepIsNotAPendingRemoval(t *testing.T) {
 // A removal that moves no thread never reads the project's branch: nothing
 // needs it.
 func TestReattachWithNothingToMoveSkipsTheBranchRead(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	atRoot := f.thread(t, "thread-branch-read-root", f.repo, "main")
 	removal := &worktreeRemoval{projectID: f.project.ID, project: f.repo, path: filepath.Join(f.repo, "..", "never-there")}
@@ -457,6 +469,7 @@ func TestReattachWithNothingToMoveSkipsTheBranchRead(t *testing.T) {
 // The status stream of a workspace being removed stays off the wire while
 // git deletes it: what git reports then describes nothing a client can use.
 func TestRemoveOtherWorktreeHoldsGitStatusOfTheRemovedPath(t *testing.T) {
+	t.Parallel()
 	f := newRemovalFixture(t, "feature-status-hold")
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "feature-status-hold"}}
 	installGitWatchForTest(t, f.app, stub)
@@ -478,6 +491,7 @@ func TestRemoveOtherWorktreeHoldsGitStatusOfTheRemovedPath(t *testing.T) {
 // A removal git refuses gives the stream back and refreshes it, so the
 // workspace that is still there shows its current state.
 func TestRemoveOtherWorktreeResumesGitStatusWhenRemovalFails(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permission this test relies on")
 	}
@@ -517,6 +531,7 @@ func TestRemoveOtherWorktreeResumesGitStatusWhenRemovalFails(t *testing.T) {
 // The list marks a worktree git still registers whose directory is gone, so
 // a client can tell a checkout deleted with `rm -rf` from a live one.
 func TestGitListWorktreesMarksARegisteredWorktreeWhoseDirectoryIsGone(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	live := f.worktree(t, "list-live")
 	deleted := f.worktree(t, "list-deleted")
@@ -560,6 +575,7 @@ func stopRecorder(app *App) func() []string {
 // A workflow's cleanup is a removal the app performs: a thread still on the
 // checkout moves to the root and its session stops, without a notice.
 func TestWorkflowDiscardReattachesThreadsWithoutANotice(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "workflow-discard-occupied")
 	occupant := f.thread(t, "thread-workflow-discard", worktree, "workflow-discard-occupied")
@@ -597,6 +613,7 @@ func TestWorkflowDiscardReattachesThreadsWithoutANotice(t *testing.T) {
 // The runner's removals (unit retirement, provisioning rollback) reach the
 // same path through its host.
 func TestWorkflowHostRemoveWorktreeReattachesThreadsWithoutANotice(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "workflow-host-occupied")
 	occupant := f.thread(t, "thread-workflow-host", worktree, "workflow-host-occupied")
@@ -615,6 +632,7 @@ func TestWorkflowHostRemoveWorktreeReattachesThreadsWithoutANotice(t *testing.T)
 // reacts as the app's removal does: the thread moves and its session stops,
 // without a notice.
 func TestReconcileProjectWorktreesTreatsARemovalInProgressAsTheApps(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "workflow-racing-sweep")
 	occupant := f.thread(t, "thread-workflow-racing", worktree, "workflow-racing-sweep")
@@ -641,6 +659,7 @@ func TestReconcileProjectWorktreesTreatsARemovalInProgressAsTheApps(t *testing.T
 // A removal git refuses releases its registration: a later removal of the
 // same path by anything else is reported as usual.
 func TestWorkflowWorktreeRemovalReleasesThePathWhenGitFails(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	worktree := f.worktree(t, "workflow-dirty-kept")
 	occupant := f.thread(t, "thread-workflow-dirty", worktree, "workflow-dirty-kept")
@@ -687,6 +706,7 @@ func symlinkedWorktree(t *testing.T, f watchFixture, branch string) (viaLink, re
 // A row spelled through a symlink still belongs to the worktree after git
 // deleted it, when the removal names git's spelling as the picker does.
 func TestRemoveOtherWorktreeReattachesRowsSpelledThroughSymlink(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	viaLink, recorded := symlinkedWorktree(t, f, "feature-in-app-link")
 	occupant := f.thread(t, "thread-in-app-link", viaLink, "feature-in-app-link")
@@ -710,6 +730,7 @@ func TestRemoveOtherWorktreeReattachesRowsSpelledThroughSymlink(t *testing.T) {
 // the same directory: one sweep, and one announcement in the reported
 // spelling naming the moved row.
 func TestReconcileProjectWorktreesMatchesReportedRemovalToRowSpelledThroughSymlink(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	viaLink, recorded := symlinkedWorktree(t, f, "feature-watch-link")
 	occupant := f.thread(t, "thread-watch-link", viaLink, "feature-watch-link")
@@ -730,6 +751,7 @@ func TestReconcileProjectWorktreesMatchesReportedRemovalToRowSpelledThroughSymli
 // holds either way is checked: the occupant moves once, and git's spelling
 // is announced. One pass's spellings are matched in the test above.
 func TestWorktreeWatchReattachesSymlinkedWorktreeAndAnnouncesGitsSpelling(t *testing.T) {
+	t.Parallel()
 	f := newWatchFixture(t)
 	viaLink, recorded := symlinkedWorktree(t, f, "feature-watched-link")
 	occupant := f.thread(t, "thread-watched-link", viaLink, "feature-watched-link")

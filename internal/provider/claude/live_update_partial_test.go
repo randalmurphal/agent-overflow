@@ -2,13 +2,13 @@ package claude
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // liveUpdatePartialSession spawns a fake CLI that succeeds on every
@@ -40,9 +40,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	cfg.Binary = scriptPath
 	if cfg.Env == nil {
 		cfg.Env = map[string]string{}

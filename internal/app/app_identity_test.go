@@ -101,6 +101,7 @@ func pairedDeviceGrant(t *testing.T, app *App, thumbprint string) transport.Toke
 // valid; what it stops doing is reaching a listener its class does not
 // cover.
 func TestALoopbackOnlySessionNamesNothingOffHost(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	credential := PageSessionCredential(app)
 	if credential == "" {
@@ -135,6 +136,7 @@ func TestALoopbackOnlySessionNamesNothingOffHost(t *testing.T) {
 // what buys a credential that reaches a listener other machines can dial,
 // so the binding-class rule must narrow the local channel and nothing else.
 func TestAPairedDeviceSessionIsAdmittedOffHost(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	grant := pairedDeviceGrant(t, app, "thumb-phone")
 
@@ -151,6 +153,7 @@ func TestAPairedDeviceSessionIsAdmittedOffHost(t *testing.T) {
 // harness CLI, the e2e rig, a `--connect` stub) presents no session
 // credential at all, and naming none is the correct answer for it.
 func TestARequestCarryingNoSessionStillProceeds(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	sessionID, ok := SessionForRequest(app, requestWith(t, "", ""))
 	if !ok {
@@ -162,6 +165,7 @@ func TestARequestCarryingNoSessionStillProceeds(t *testing.T) {
 }
 
 func TestTheLocalPageChannelNamesItsSession(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	credential := PageSessionCredential(app)
 	if credential == "" {
@@ -183,6 +187,7 @@ func TestTheLocalPageChannelNamesItsSession(t *testing.T) {
 }
 
 func TestARevokedSessionIsRefusedBeforeTheUpgrade(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	credential := PageSessionCredential(app)
 	sessionID, ok := SessionForRequest(app, requestWith(t, credential, ""))
@@ -204,6 +209,7 @@ func TestARevokedSessionIsRefusedBeforeTheUpgrade(t *testing.T) {
 // requirement lives in the request hook rather than on each route, so a
 // route added later cannot be a way around it.
 func TestADeviceBoundSessionPresentsItsKeyOnEveryRequest(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	sessions := app.identityState().sessions
 	owner := app.identityState().owner
@@ -245,6 +251,7 @@ func TestADeviceBoundSessionPresentsItsKeyOnEveryRequest(t *testing.T) {
 // TestRenewalRotatesThroughTheTransportAdapter walks the wire shape end to
 // end: the DTOs the route hands over, and the codes it hands back.
 func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	sessions := app.identityState().sessions
 	owner := app.identityState().owner
@@ -293,6 +300,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 // that never called Start, or a boot whose core failed. Proceeding would
 // name a session this process cannot revoke.
 func TestAnAppWithNoIdentityCoreRefusesACredentialItCannotJudge(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, ok := SessionForRequest(app, requestWith(t, "ao1.something", "")); ok {
 		t.Fatal("a credential was admitted with nothing able to judge it")
@@ -315,6 +323,7 @@ func TestAnAppWithNoIdentityCoreRefusesACredentialItCannotJudge(t *testing.T) {
 // id, so an empty one would make credentials from any machine's restored
 // database verify here.
 func TestInitIdentityRefusesAnEmptyBackendID(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.initIdentity(""); err == nil {
 		t.Fatal("missing backend identity did not fail startup")
@@ -328,6 +337,7 @@ func TestInitIdentityRefusesAnEmptyBackendID(t *testing.T) {
 // the local page acquires its session over the same exchange that hands it
 // the page credential.
 func TestTheSessionCookieCarriesTheLocalCredential(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	credential := PageSessionCredential(app)
 
@@ -359,6 +369,7 @@ func TestTheSessionCookieCarriesTheLocalCredential(t *testing.T) {
 // rotation that dropped the field would leave a page that had reloaded
 // unable to tell "granted nothing" from "backend does not say".
 func TestAGrantPublishesTheSessionsScopes(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	sessions := app.identityState().sessions
 	owner := app.identityState().owner
@@ -414,6 +425,7 @@ func TestAGrantPublishesTheSessionsScopes(t *testing.T) {
 // absent check (docs/specs/remote-access.md §5), which only works if the
 // row it is derived from really carries the full set.
 func TestTheLocalPageChannelPublishesEveryGrantableScope(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	state := app.identityState()
 	session, _, err := state.sessions.EnsureLocalChannelSession(state.owner.ID)
@@ -435,6 +447,7 @@ func TestTheLocalPageChannelPublishesEveryGrantableScope(t *testing.T) {
 }
 
 func TestLocalBootCredentialCannotMintTicketsAfterRestart(t *testing.T) {
+	t.Parallel()
 	backend := newPairedBackend(t)
 	first := PageSessionCredential(backend.app)
 	requestTicket := func(credential string) int {

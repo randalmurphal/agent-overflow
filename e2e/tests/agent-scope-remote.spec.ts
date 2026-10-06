@@ -3,14 +3,14 @@ import type { WebSocketRoute } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock,
   taskStartedLine, taskUpdatedLine, textLines, toolUseLine, toolResultLine, waitForGate } from './agent-visibility-helpers.js';
 
 test('a remote agent pane retains loaded run history through a disconnected completion', async ({ page }) => {
   test.setTimeout(120_000);
-  const harness = await launchHarness();
+  const [harness, remote] = await startTogether(launchHarness(), launchHarness());
   try {
-    const remote = await launchHarness();
     try {
       const tools = (start: number, count: number) => Array.from({ length: count }, (_, offset) => {
         const i = start + offset;

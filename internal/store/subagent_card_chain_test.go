@@ -208,6 +208,32 @@ func TestSubagentCardStopWritesWhatNoCardReaches(t *testing.T) {
 	assertStampsAreTheRecompute(t, f.s, f.thread, "a crash after the completion")
 }
 
+// TestSubagentCardCloseWritesWhatNoCardReaches pins the other half of
+// Close: an accumulator no open card reaches, here left by a close whose
+// flush failed, is written by the next card's close, as no card's own
+// flush would write it.
+func TestSubagentCardCloseWritesWhatNoCardReaches(t *testing.T) {
+	agents := []string{"A", "X"}
+	f := newCardChainFixture(t, agents...)
+	mustExec(t, f.s.db, `CREATE TRIGGER fail_flush BEFORE INSERT ON subagent_aggregates BEGIN SELECT RAISE(ABORT, 'injected flush failure'); END`)
+	err := f.session.cards["X"].Close()
+	mustExec(t, f.s.db, `DROP TRIGGER fail_flush`)
+	if err == nil || !strings.Contains(err.Error(), "injected flush failure") {
+		t.Fatalf("close with a failing flush: %v, want the injected failure", err)
+	}
+	delete(f.session.cards, "X")
+
+	if err := f.session.cards["A"].Close(); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.session.cards, "A")
+	if got := pendingCardsForTest(f.s, f.thread); len(got) > 0 {
+		t.Errorf("closing the card of A left %v pending: what no card reached waits for a flush", got)
+	}
+	assertSubagentStampParity(t, f.s, f.thread, "after the close", true)
+	assertStampsAreTheRecompute(t, f.s, f.thread, "after the close")
+}
+
 // TestSubagentCardChainFlushCostsTheSameAtAnyWidth pins the cost of a
 // completion against the number of agents beside it: the statements the
 // completing write and the chain flush before it run do not grow with

@@ -136,6 +136,7 @@ func retractSend() notify.Send {
 // kind's fixed phrase and the machine's name. NOT the thread title, which
 // the desktop's own toast carries and this payload may not.
 func TestAWokenPhoneIsToldTheKindAndTheMachineAndNothingElse(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 
@@ -169,6 +170,7 @@ func TestAWokenPhoneIsToldTheKindAndTheMachineAndNothingElse(t *testing.T) {
 // The preference gate is per PHONE, read out of that phone's own device-tier
 // bucket. The desktop's own toggles decide nothing here.
 func TestAPhoneIsWokenOnItsOwnPreferences(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	quiet := pairPhone(t, app, "thumb-quiet", "token-quiet")
 	loud := pairPhone(t, app, "thumb-loud", "token-loud")
@@ -203,6 +205,7 @@ func TestAPhoneIsWokenOnItsOwnPreferences(t *testing.T) {
 // woken once that phone asks for threads the sidebar does not list, and its
 // retraction reaches the phone either way.
 func TestAPhoneDecidesHiddenThreadsOnItsOwn(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	pairPhone(t, app, "thumb-quiet", "token-quiet")
 	loud := pairPhone(t, app, "thumb-loud", "token-loud")
@@ -230,6 +233,7 @@ func TestAPhoneDecidesHiddenThreadsOnItsOwn(t *testing.T) {
 // there is one switch and not a copy per screen. A phone that silenced
 // workflow attention still buzzes for an update notice.
 func TestAPhoneSilencesTheTwoLateKindsOnItsOwn(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	quiet := pairPhone(t, app, "thumb-quiet", "token-quiet")
 	pairPhone(t, app, "thumb-loud", "token-loud")
@@ -263,6 +267,7 @@ func TestAPhoneSilencesTheTwoLateKindsOnItsOwn(t *testing.T) {
 // reason: a toggle flipped between a send and its withdrawal must not strand
 // the notification it was flipped to stop.
 func TestARetractionReachesAPhoneThatTurnedTheKindOff(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	phone := pairPhone(t, app, "thumb-phone", "token-phone")
 	if _, err := app.UpdateSettings(callFrom(phone.ID, false), map[string]any{
@@ -286,6 +291,7 @@ func TestARetractionReachesAPhoneThatTurnedTheKindOff(t *testing.T) {
 // Revoking a device is what makes its phone stop being woken. The fan-out
 // reads the join, so this needs no second check anywhere.
 func TestARevokedDeviceIsNotWoken(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	revoked := pairPhone(t, app, "thumb-gone", "token-gone")
 	pairPhone(t, app, "thumb-here", "token-here")
@@ -302,6 +308,7 @@ func TestARevokedDeviceIsNotWoken(t *testing.T) {
 // A backend with no credential records registrations and sends nothing.
 // This is every friend's backend, and the owner's until they paste a key.
 func TestABackendWithNoCredentialRecordsAndSendsNothing(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 	app.installPushSender(nil, "", "")
@@ -323,6 +330,7 @@ func TestABackendWithNoCredentialRecordsAndSendsNothing(t *testing.T) {
 // The one actionable failure. A dead registration is dropped, and only that
 // device's — the others in the same fan-out still go out.
 func TestADeadRegistrationIsDroppedAndTheRestStillGo(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	dead := pairPhone(t, app, "thumb-dead", "token-dead")
 	pairPhone(t, app, "thumb-live", "token-live")
@@ -353,6 +361,7 @@ func TestADeadRegistrationIsDroppedAndTheRestStillGo(t *testing.T) {
 // clears it — otherwise a credential that was fixed would look broken
 // forever.
 func TestAFailedSendIsVisibleUntilOneSucceeds(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 	sender.answer["token-phone"] = errors.New("googleapis said no")
@@ -383,6 +392,7 @@ func TestAFailedSendIsVisibleUntilOneSucceeds(t *testing.T) {
 // The device is the CALLER's, never a parameter, so there is no shape of
 // this call that registers somebody else's phone.
 func TestRegistrationBelongsToTheCallingSession(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	phone := pairPhone(t, app, "thumb-phone", "token-phone")
 
@@ -438,6 +448,7 @@ var serviceAccountJSON = sync.OnceValue(func() string {
 // none may: whether Google accepts the key is a question only a real send
 // asks, and the answer arrives through lastError.
 func TestTheSenderCredentialIsAcceptedOnShapeAndSurvivesABoot(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := pushApp(t)
 	app.installPushSender(nil, "", "")
@@ -479,6 +490,7 @@ func TestTheSenderCredentialIsAcceptedOnShapeAndSurvivesABoot(t *testing.T) {
 // not changed their minds, and re-pasting a key should not cost each of them
 // a launch to come back.
 func TestClearingTheCredentialKeepsTheRegistrations(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 	if err := app.ClearPushSenderCredential(); err != nil {
@@ -498,6 +510,7 @@ func TestClearingTheCredentialKeepsTheRegistrations(t *testing.T) {
 // drains are in app_shutdown.go in that order; this pins that the push one
 // actually waits.
 func TestDrainPushWaitsForAnInFlightSend(t *testing.T) {
+	t.Parallel()
 	app, sender := pushApp(t)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 
@@ -541,6 +554,7 @@ func (b *blockingPushSender) Send(ctx context.Context, message push.Message) err
 // it can wake a device and every send to it fails. Before this, the register
 // call took whatever it was handed.
 func TestARegistrationThatCouldNeverWakeAPhoneIsRefused(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	phone := pairPhone(t, app, "thumb-phone", "token-phone")
 	ctx := callFrom(phone.ID, false)
@@ -572,6 +586,7 @@ func TestARegistrationThatCouldNeverWakeAPhoneIsRefused(t *testing.T) {
 // ceiling and before the row, so two calls a shell makes with and without a
 // trailing newline are one registration.
 func TestASurroundedTokenIsStoredTrimmed(t *testing.T) {
+	t.Parallel()
 	app, _ := pushApp(t)
 	phone := pairPhone(t, app, "thumb-phone", "token-phone")
 

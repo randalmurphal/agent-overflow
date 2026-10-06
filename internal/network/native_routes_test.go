@@ -46,8 +46,8 @@ func TestForwardedWindowsIngressDrivesPairingAndRouteTrust(t *testing.T) {
 				s.LAN.Addresses = []string{"https://" + windows, "https://" + second}
 				wantRoutes = append(wantRoutes, computerroute.Route{Endpoint: "https://" + windows, CertFingerprint: pin}, computerroute.Route{Endpoint: "https://" + second, CertFingerprint: pin})
 			}
-			address, addressErr := PairingAddressOnNetwork(srv, s, "lan")
-			invite, invitePin, inviteErr := PairingURLOnNetwork(srv, s, "lan")
+			address, addressErr := PairingAddressOnNetwork(srv, s, Reach{}, "lan")
+			invite, invitePin, inviteErr := PairingURLOnNetwork(srv, s, Reach{}, "lan")
 			if ready {
 				if addressErr != nil || address != "https://"+windows {
 					t.Fatal("native setup did not use Windows ingress", address, addressErr)
@@ -59,16 +59,16 @@ func TestForwardedWindowsIngressDrivesPairingAndRouteTrust(t *testing.T) {
 			} else if addressErr == nil || inviteErr == nil || address != "" || invite != "" || invitePin != "" {
 				t.Fatal("unavailable Windows ingress fell back to inaccessible WSL address")
 			}
-			if got := ComputerRoutes(srv, s, wsl); !reflect.DeepEqual(got, wantRoutes) {
+			if got := ComputerRoutes(srv, s, Reach{}); !reflect.DeepEqual(got, wantRoutes) {
 				t.Fatalf("wrong route authorities/trust: got %+v want %+v", got, wantRoutes)
 			}
 			// A native LAN failure must not hide or change the independent
 			// tailnet listener, whose certificate uses WebPKI rather than a pin.
-			address, err := PairingAddressOnNetwork(srv, s, "tailnet")
+			address, err := PairingAddressOnNetwork(srv, s, Reach{}, "tailnet")
 			if err != nil || address != tailnet.Endpoint {
 				t.Fatal("tailnet setup changed with Windows ingress", err)
 			}
-			invite, invitePin, err = PairingURLOnNetwork(srv, s, "tailnet")
+			invite, invitePin, err = PairingURLOnNetwork(srv, s, Reach{}, "tailnet")
 			u, parseErr := url.Parse(invite)
 			if err != nil || parseErr != nil || u.Scheme+"://"+u.Host != tailnet.Endpoint || invitePin != "" {
 				t.Fatal("tailnet invitation gained the LAN pin or changed authority", err)

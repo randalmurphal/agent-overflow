@@ -25,6 +25,7 @@ func countingFetch(core *Core) *atomic.Int64 {
 }
 
 func TestBackgroundFetchDedupsWorktreesOntoTheCommonDir(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	testutil.RunGit(t, repo, "branch", "feature/background-fetch")
 	worktree := filepath.Join(t.TempDir(), "feature-background-fetch")
@@ -57,6 +58,7 @@ func TestBackgroundFetchDedupsWorktreesOntoTheCommonDir(t *testing.T) {
 }
 
 func TestBackgroundFetchSingleFlightsConcurrentCallers(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -110,7 +112,8 @@ func TestBackgroundFetchSingleFlightsConcurrentCallers(t *testing.T) {
 }
 
 func TestBackgroundFetchSkipsRepoWithoutOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	core := NewCore()
 	calls := countingFetch(core)
@@ -140,6 +143,7 @@ func TestBackgroundFetchSkipsRepoWithoutOrigin(t *testing.T) {
 }
 
 func TestBackgroundFetchRespectsAndSharesTheStaleWindow(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -172,6 +176,7 @@ func TestBackgroundFetchRespectsAndSharesTheStaleWindow(t *testing.T) {
 }
 
 func TestBackgroundFetchFailureLeavesTheClockUnstamped(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -196,6 +201,7 @@ func TestBackgroundFetchFailureLeavesTheClockUnstamped(t *testing.T) {
 }
 
 func TestBackgroundFetchRejectsNonRepo(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	calls := countingFetch(core)
 
@@ -212,6 +218,7 @@ func TestBackgroundFetchRejectsNonRepo(t *testing.T) {
 // status the sidebar renders moving from stale to correct without any
 // user action.
 func TestBackgroundFetchMovesBehindCount(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 	advanceOriginMain(t, bare)
 
@@ -243,7 +250,8 @@ func TestBackgroundFetchMovesBehindCount(t *testing.T) {
 }
 
 func TestCommonDirIsSharedAcrossWorktreesAndCached(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/common-dir")
 	worktree := filepath.Join(t.TempDir(), "feature-common-dir")
 	testutil.RunGit(t, repo, "worktree", "add", worktree, "feature/common-dir")
@@ -279,6 +287,7 @@ func TestCommonDirIsSharedAcrossWorktreesAndCached(t *testing.T) {
 }
 
 func TestCommonDirDoesNotCacheFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	core := NewCore()
 
@@ -303,6 +312,7 @@ func TestCommonDirDoesNotCacheFailures(t *testing.T) {
 // it, teardown would have to wait out the subprocess timeout for a
 // repository whose remote is hanging.
 func TestBackgroundFetchAbortsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	core := NewCore()
 

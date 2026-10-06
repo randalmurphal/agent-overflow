@@ -56,6 +56,7 @@ func awaitSettingsRequest(t *testing.T, s *Session) {
 }
 
 func TestQueuedSettingsCoalesceAndPreserveLatestTurn(t *testing.T) {
+	t.Parallel()
 	s, capture, release := blockedSettingsSession(t)
 	s.ApplyLiveUpdate(LiveUpdate{Model: "first", ReasoningEffort: "high", ServiceTier: "priority"})
 	s.QueueThreadSettings(ThreadSettingsPush{Model: true, Effort: true, ServiceTier: true})
@@ -92,6 +93,7 @@ func TestQueuedSettingsCoalesceAndPreserveLatestTurn(t *testing.T) {
 }
 
 func TestTimedOutSettingsOnStillClearsOnNextTurn(t *testing.T) {
+	t.Parallel()
 	s, capture, release := blockedSettingsSession(t)
 	SetRequestTimeoutForTest(s, 50*time.Millisecond)
 	s.ApplyLiveUpdate(LiveUpdate{Model: "gpt-5.5", ServiceTier: "priority"})
@@ -113,6 +115,7 @@ func TestTimedOutSettingsOnStillClearsOnNextTurn(t *testing.T) {
 }
 
 func TestQueuedSettingsRejectionIsTimelineErrorAndCloseJoins(t *testing.T) {
+	t.Parallel()
 	s, _ := newSessionWithScript(t, codexSettingsUpdateScript(filepath.Join(t.TempDir(), "codex-stdin.log"), "invalid-request"))
 	events := make(chan provider.ProviderEvent, 8)
 	s.eventMu.Lock()
@@ -140,6 +143,7 @@ func TestQueuedSettingsRejectionIsTimelineErrorAndCloseJoins(t *testing.T) {
 }
 
 func TestSendDoesNotWaitForSettingsAckAndIgnoresItsLateTierReceipt(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := strings.Replace(codexTurnCaptureScript(capture), `    id=$(`,
 		`    if [[ "$line" == *'"method":"thread/settings/update"'* ]]; then continue; fi
@@ -185,6 +189,7 @@ func TestSendDoesNotWaitForSettingsAckAndIgnoresItsLateTierReceipt(t *testing.T)
 }
 
 func TestCloseCancelsPendingSettingsSynchronization(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := strings.Replace(codexTurnCaptureScript(capture), `    id=$(`,
 		`    if [[ "$line" == *'"method":"thread/settings/update"'* ]]; then continue; fi

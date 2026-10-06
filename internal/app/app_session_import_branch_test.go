@@ -130,6 +130,7 @@ func importClaudeSessionWithLegacyAbandonedBranch(
 // The App-level progress contract must agree with the importer: one selected
 // Claude session emits one thread id even when its transcript has two leaves.
 func TestImportedClaudeSessionCreatesOnlyTheActiveThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -154,6 +155,7 @@ func TestImportedClaudeSessionCreatesOnlyTheActiveThread(t *testing.T) {
 }
 
 func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -266,6 +268,7 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 // original cwd's slug while the resume looks under the new workspace's, and
 // the first send hard-fails with "No conversation found".
 func TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -330,6 +333,7 @@ func TestImportedClaudeBranchIsCutUnderTheThreadsCurrentWorkspace(t *testing.T) 
 // write at all. A workspace directory that is GONE is the reachable case: a
 // worktree removed before the thread was ever resumed.
 func TestImportedClaudeBranchFallsBackToTheSourceDirectory(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -359,6 +363,7 @@ func TestImportedClaudeBranchFallsBackToTheSourceDirectory(t *testing.T) {
 // — it has no import state, and a stray session file would be worse than the
 // fresh session it is entitled to.
 func TestMaterializeImportedClaudeBranchIgnoresOrdinaryThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-plain")
 	thread.Provider = string(provider.Claude)
@@ -374,6 +379,7 @@ func TestMaterializeImportedClaudeBranchIgnoresOrdinaryThreads(t *testing.T) {
 // to a fresh session — the thread's own history is in SQLite either way — and
 // must not fail the start.
 func TestMaterializeImportedClaudeBranchDegradesWhenTheSourceIsGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -409,6 +415,7 @@ func claudeSessionFiles(t *testing.T, home importHome) []string {
 // file. The materializer must degrade exactly as it does for a missing file:
 // no ref, no half-written transcript left behind in the user's Claude home.
 func TestMaterializeImportedClaudeBranchDegradesWhenTheLeafIsGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)

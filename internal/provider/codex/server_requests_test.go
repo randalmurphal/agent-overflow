@@ -14,6 +14,7 @@ import (
 )
 
 func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
@@ -45,6 +46,7 @@ func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
 }
 
 func TestCodexUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":43,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
@@ -80,6 +82,7 @@ func TestCodexUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
 }
 
 func TestCodexRejectsRequestUserInputWithoutQuestions(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":44,"method":"item/tool/requestUserInput","params":{"questions":[]}}`)
@@ -95,6 +98,7 @@ func TestCodexRejectsRequestUserInputWithoutQuestions(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Write an approval server request through cat.
@@ -121,6 +125,7 @@ func TestCodexHandleServerRequestApproval(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestFileApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":2,"method":"item/fileChange/requestApproval","params":{"filePath":"/tmp/test.go"}}`)
@@ -135,6 +140,7 @@ func TestCodexHandleServerRequestFileApproval(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestUserInput(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":3,"method":"item/tool/requestUserInput","params":{"turn":{"id":"turn-3"},"item":{"id":"item-8"},"questions":[{"id":"scope","header":"Scope","question":"Choose a scope","options":[{"label":"turn","description":"Apply only to this turn"},{"label":"session","description":"Apply for the whole session"}],"multiSelect":false}]}}`)
@@ -180,6 +186,7 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line, err := json.Marshal(map[string]any{
@@ -255,6 +262,7 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestPermission(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":4,"method":"item/permissions/requestApproval","params":{"turnId":"turn-4","itemId":"item-9","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}}`)
@@ -289,6 +297,7 @@ func TestCodexHandleServerRequestPermission(t *testing.T) {
 }
 
 func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":24,"method":"item/permissions/requestApproval","params":{"turnId":"turn-24","itemId":"item-24","reason":"Need broader write access","permissions":{"fileSystem":{"read":["/tmp/project/src"]}}}}`)
@@ -326,6 +335,7 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 }
 
 func TestCodexHandleServerRequestUnknown(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	// Unknown server request — should send error response. With cat,
@@ -346,6 +356,7 @@ func TestCodexHandleServerRequestUnknown(t *testing.T) {
 // -- SetDynamicToolHandler / handleDynamicToolCall tests --
 
 func TestSetDynamicToolHandler(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	called := false
@@ -371,6 +382,7 @@ func TestSetDynamicToolHandler(t *testing.T) {
 }
 
 func TestSetDynamicToolHandlerNil(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	s.SetDynamicToolHandler(func(string, map[string]any) (string, bool, error) {
@@ -387,6 +399,7 @@ func TestSetDynamicToolHandlerNil(t *testing.T) {
 }
 
 func TestHandleDynamicToolCall(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	resultCh := make(chan string, 1)
@@ -415,6 +428,7 @@ func TestHandleDynamicToolCall(t *testing.T) {
 }
 
 func TestHandleDynamicToolCallToolNameField(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	resultCh := make(chan string, 1)
@@ -440,6 +454,7 @@ func TestHandleDynamicToolCallToolNameField(t *testing.T) {
 }
 
 func TestHandleDynamicToolCallHandlerError(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	doneCh := make(chan struct{}, 1)
@@ -462,6 +477,7 @@ func TestHandleDynamicToolCallHandlerError(t *testing.T) {
 }
 
 func TestHandleDynamicToolCallNilArguments(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	resultCh := make(chan map[string]any, 1)
@@ -490,6 +506,7 @@ func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 }
 
 func TestHandleDynamicToolCallNoHandler(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 	// No handler set -- should send error response.
 
@@ -507,6 +524,7 @@ func TestHandleDynamicToolCallNoHandler(t *testing.T) {
 // -- handleServerRequest: elicitation branch --
 
 func TestCodexHandleServerRequestElicitation(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Please authorize","requestedSchema":{"type":"string"}}}`)
@@ -535,6 +553,7 @@ func TestCodexHandleServerRequestElicitation(t *testing.T) {
 }
 
 func TestCodexMcpElicitationWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -621,6 +640,7 @@ waitWithoutResponse:
 // -- handleServerRequest: legacy approval methods --
 
 func TestCodexHandleServerRequestApplyPatchApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":6,"method":"applyPatchApproval","params":{"filePath":"/tmp/foo.go"}}`)
@@ -643,6 +663,7 @@ func TestCodexHandleServerRequestApplyPatchApproval(t *testing.T) {
 }
 
 func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"command":"pnpm test"}}`)
@@ -670,6 +691,7 @@ func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
 // -- handleServerRequest: file read approval --
 
 func TestCodexHandleServerRequestFileReadApproval(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":8,"method":"item/fileRead/requestApproval","params":{"filePath":"/etc/passwd"}}`)

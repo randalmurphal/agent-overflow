@@ -260,8 +260,13 @@ func (a *App) reconcileTailnet() time.Duration {
 }
 
 // startTailnetNode constructs and starts the node. It returns as soon as
-// the node exists; reaching the tailnet is what the status reports.
+// the node exists; reaching the tailnet is what the status reports. A
+// loopback Reach starts none: the node would reach the coordination
+// server, STUN and DERP from an instance confined to this machine.
 func (a *App) startTailnetNode(cfg settings.NetworkSettings) (*tailnet.Node, error) {
+	if a.netReach.LoopbackOnly() {
+		return nil, errTailnetIsolated
+	}
 	root := a.tailnetDir()
 	if root == "" {
 		return nil, fmt.Errorf("no configuration directory, so there is nowhere to keep this node's identity")
@@ -543,6 +548,10 @@ func (a *App) tailnetDir() string {
 	defer a.tailnet.mu.Unlock()
 	return a.tailnet.dir
 }
+
+// errTailnetIsolated is the tailnet failure an instance confined to this
+// machine reports instead of joining.
+var errTailnetIsolated = errors.New("Tailscale is off in an isolated instance")
 
 // tailnetRetryDelay doubles from the floor to the ceiling with the
 // consecutive-failure count.

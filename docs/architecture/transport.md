@@ -29,11 +29,18 @@ bind failures and then adopt the replacement. Other bind errors remain fatal.
 The isolated harness opts out of persisted network settings.
 
 `Rebind` keeps the current port for a host-only change and does not move to an
-ephemeral port. It creates the replacement listener before closing the current
-one. Its close-and-retry path applies only to address-in-use errors; other bind
-failures leave the working listener intact. Before it returns, the retired
-server also stops HTTP keep-alive, so no request reaches the old address after
-the move. Upgraded WebSockets continue on their own connections.
+ephemeral port. Closing a listening socket resets the connections queued on it
+that the server has not accepted yet, so a move keeps every socket bound to an
+address it still needs. The IPv4 wildcard is served by two sockets on one port:
+`127.0.0.1`, which keeps receiving loopback connections, and `0.0.0.0` bound
+beside it. Turning LAN access on binds only the wildcard; turning it off
+retires only the wildcard, so the embedded webview's socket is never closed.
+Linux admits the pair only when both sockets set `SO_REUSEPORT`
+(`shareport_linux.go`); macOS admits it through the `SO_REUSEADDR` Go sets on
+every listener. Any bind failure leaves the working listeners intact. Before it
+returns, a retired server also stops HTTP keep-alive, so no request reaches the
+old address after the move. Upgraded WebSockets continue on their own
+connections.
 
 Every package-created listener passes through `bindListener`. Explicit IPv4
 addresses use `tcp4`, including `0.0.0.0`, so WSL's Windows relay receives an
@@ -469,7 +476,8 @@ pairing, and step-up behavior are specified in
 
 The highest-value transport tests cover:
 
-- stable-port precedence, fallback, rebind rollback, and IPv4 socket family;
+- stable-port precedence, fallback, rebind failure and queued connections, and
+  IPv4 socket family;
 - same-port TLS classification, SNI selection, certificate swaps, and temporary
   accept errors;
 - every credential carrier across loopback and off-host peers;

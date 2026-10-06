@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // captureLog redirects the standard logger for the duration of fn and
@@ -38,6 +39,7 @@ func captureLog(t *testing.T, fn func()) string {
 // received and silently dropped, which is the state item 3.6/9.2 exists
 // to eliminate.
 func TestNotificationCatalogPartitionsIntoConsumedAndOptedOut(t *testing.T) {
+	t.Parallel()
 	optOut := sessionOptOutNotificationMethods()
 	for _, method := range codexNotificationCatalog {
 		consumed := notificationMethodConsumed(method)
@@ -57,6 +59,7 @@ func TestNotificationCatalogPartitionsIntoConsumedAndOptedOut(t *testing.T) {
 // move from consumed to opted-out in lockstep), so the load-bearing ones
 // are pinned by name here.
 func TestSessionOptOutNeverDropsAConsumedNotification(t *testing.T) {
+	t.Parallel()
 	mustReceive := []string{
 		"error",
 		"turn/started",
@@ -95,6 +98,7 @@ func TestSessionOptOutNeverDropsAConsumedNotification(t *testing.T) {
 // double an opt-out list and hide a copy/paste error during the next
 // upstream sync.
 func TestCodexNotificationCatalogHasNoDuplicates(t *testing.T) {
+	t.Parallel()
 	if len(codexNotificationCatalog) != 81 {
 		t.Fatalf("catalog entries = %d, want rust-v0.150.1's 81", len(codexNotificationCatalog))
 	}
@@ -111,6 +115,7 @@ func TestCodexNotificationCatalogHasNoDuplicates(t *testing.T) {
 }
 
 func TestCodexNotificationCatalogIncludes0150AdditionsInDeclarationOrder(t *testing.T) {
+	t.Parallel()
 	for _, sequence := range [][]string{
 		{"mcpServer/startupStatus/updated", "mcpServer/event/stream/notification", "account/updated"},
 		{"thread/realtime/itemAdded", "thread/realtime/item/started", "thread/realtime/item/transcript/delta", "thread/realtime/item/completed", "thread/realtime/transcript/delta"},
@@ -135,6 +140,7 @@ func TestCodexNotificationCatalogIncludes0150AdditionsInDeclarationOrder(t *test
 // `(nil, false)` for some payloads, the empty-params probe would report a
 // method as unconsumed and we would opt out of a notification we handle.
 func TestClassifiedMethodsAreDecidedByMethodAlone(t *testing.T) {
+	t.Parallel()
 	realistic := map[string]string{
 		"item/started":                    `{"turnId":"t1","item":{"id":"i1","type":"commandExecution","status":"inProgress","command":"ls"}}`,
 		"item/completed":                  `{"turnId":"t1","item":{"id":"i1","type":"commandExecution","status":"completed","exitCode":0}}`,
@@ -161,6 +167,7 @@ func TestClassifiedMethodsAreDecidedByMethodAlone(t *testing.T) {
 // login client that waits on exactly one notification, and the
 // response-only probes that wait on none.
 func TestOneShotOptOutKeepsOnlyNamedMethods(t *testing.T) {
+	t.Parallel()
 	loginOptOut := oneShotOptOutNotificationMethods("account/login/completed")
 	if slices.Contains(loginOptOut, "account/login/completed") {
 		t.Error("login opted out of the completion notification it blocks on")
@@ -185,6 +192,7 @@ func TestOneShotOptOutKeepsOnlyNamedMethods(t *testing.T) {
 // TestCodexInitializeParamsShape pins the handshake every entry point in
 // the package now shares.
 func TestCodexInitializeParamsShape(t *testing.T) {
+	t.Parallel()
 	params := codexInitializeParams("agent_overflow_test", []string{"fs/changed"})
 	encoded, err := json.Marshal(params)
 	if err != nil {
@@ -325,6 +333,7 @@ func TestDispatchNotificationReportsUnknownMethod(t *testing.T) {
 // produced — not an empty array, and not something containing a method
 // the session depends on.
 func TestNewSessionSendsOptOutNotificationMethods(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/initialize.json"
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -344,9 +353,7 @@ done
 `, capturePath)
 
 	scriptPath := t.TempDir() + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -391,6 +398,7 @@ done
 // line each one landed on. The generic partition test above is satisfied by
 // ANY assignment; this one is the record of the decision.
 func TestCatalogCoversThe0149Additions(t *testing.T) {
+	t.Parallel()
 	added := []struct {
 		method   string
 		consumed bool

@@ -98,6 +98,7 @@ func runTransferTestServer() error {
 }
 
 func TestTransferSnapshotUsesThreadlessProcessForEveryNativeChild(t *testing.T) {
+	t.Parallel()
 	for _, queued := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queued child=%v", queued), func(t *testing.T) {
 			home, work := t.TempDir(), t.TempDir()
@@ -161,6 +162,7 @@ func TestTransferSnapshotUsesThreadlessProcessForEveryNativeChild(t *testing.T) 
 }
 
 func TestTransferAccountUsesOnlyAccountRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, result string
 		ready        bool

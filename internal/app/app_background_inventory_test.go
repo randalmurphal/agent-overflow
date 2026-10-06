@@ -131,6 +131,7 @@ func seedCodexUnifiedExecTracker(t *testing.T, app *App, threadID, itemID, proce
 // exists in no table at all. Each is seeded on its own thread here, so a
 // leg dropped from the union takes a whole row with it.
 func TestListRunningBackgroundWorkUnionsAllThreeSources(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	claudeThread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -222,6 +223,7 @@ func TestListRunningBackgroundWorkUnionsAllThreeSources(t *testing.T) {
 // boot sweep settles, not work in progress — reporting it would invite a
 // client to stop something that is not there.
 func TestListRunningBackgroundWorkSkipsThreadsWithoutALiveSession(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -263,6 +265,7 @@ func TestListRunningBackgroundWorkSkipsThreadsWithoutALiveSession(t *testing.T) 
 // so both halves of a settled pair — the terminal sibling row and the
 // launch it settles — are absent.
 func TestListRunningBackgroundWorkOmitsRecentlyCompletedWork(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -316,6 +319,7 @@ func TestListRunningBackgroundWorkOmitsRecentlyCompletedWork(t *testing.T) {
 // provider's own stop_task envelope on the wire and lands the killed
 // sibling row. No second termination path exists for it to use.
 func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -376,6 +380,7 @@ func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
 // interchangeable — Claude stops by task id, Codex by launch id or PTY
 // process id — so the row has to name which one it is carrying.
 func TestBackgroundWorkHandleSelectsTheProviderStopTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		provider   string
@@ -443,6 +448,7 @@ func TestBackgroundWorkHandleSelectsTheProviderStopTarget(t *testing.T) {
 // closed vocabulary. A kind nobody handles must surface as an error
 // rather than silently reporting that nothing was running.
 func TestStopBackgroundWorkItemRefusesAnUnknownKind(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stopped, err := app.stopBackgroundWorkItem(context.Background(), RunningBackgroundWork{
 		ThreadID: "t1",

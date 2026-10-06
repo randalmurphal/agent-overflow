@@ -11,13 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import { RESULT_LINE, advance, claudeScenario, emit, listItems, seedAgentThread, startMock, textLines, waitForGate } from './agent-visibility-helpers.js';
 import { confirmOnHost, instrument, type PairingInvite } from './offhost-helpers.js';
 
 async function openThread(page: Page, title: string): Promise<void> {
-  if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
-    await page.getByTestId('compact-back').click();
-  }
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
   await expect(page.getByTestId('chat-header-title')).toHaveText(title);
 }
@@ -60,8 +58,14 @@ export function multihostRecoveryFlow(): void {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     try {
-      first = await launchHarness({ ...firstOptions, dataDir: firstData });
-      second = await launchHarness();
+      // The frontend alone owns its pairings. Sharing a live host's profile
+      // files would introduce two independent session-renewal owners, which
+      // is not the standalone app's real setup flow.
+      [first, second, frontend] = await startTogether(
+        launchHarness({ ...firstOptions, dataDir: firstData }),
+        launchHarness(),
+        launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), ''),
+      );
       if (baseline) {
         expect(first.bootstrap.version).toBeTruthy();
         expect(second.bootstrap.version).toBeTruthy();
@@ -70,10 +74,6 @@ export function multihostRecoveryFlow(): void {
       }
       const firstThread = await seedAgentThread(first, 'first-project', 'First host conversation');
       const secondThread = await seedAgentThread(second, 'second-project', 'Second host conversation');
-      // The frontend alone owns its pairings. Sharing a live host's profile
-      // files would introduce two independent session-renewal owners, which
-      // is not the standalone app's real setup flow.
-      frontend = await launchFrontendClient(join(root, 'profiles'), join(root, 'frontend'), '');
       await frontend.open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();

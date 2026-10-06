@@ -21,6 +21,7 @@ func headCommit(t *testing.T, repo string) string {
 }
 
 func TestRepoIdentityReadsOriginAndTheSingleRoot(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 	root := headCommit(t, repo)
 
@@ -36,7 +37,8 @@ func TestRepoIdentityReadsOriginAndTheSingleRoot(t *testing.T) {
 // A remoteless repository still has an identity: the root commit is what lets
 // two clones of a never-published repo be recognised as one project.
 func TestRepoIdentityAnswersRootWithoutAnOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	root := headCommit(t, repo)
 
 	remoteURL, rootCommit := NewCore().RepoIdentity(repo)
@@ -52,7 +54,8 @@ func TestRepoIdentityAnswersRootWithoutAnOrigin(t *testing.T) {
 // depends on which branch is checked out. Sorting is what makes two machines
 // holding the same repository answer the same string.
 func TestRepoIdentityPicksTheSmallestOfSeveralRoots(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	first := headCommit(t, repo)
 
 	testutil.RunGit(t, repo, "checkout", "--orphan", "second-root")
@@ -79,6 +82,7 @@ func TestRepoIdentityPicksTheSmallestOfSeveralRoots(t *testing.T) {
 }
 
 func TestRepoIdentityIsEmptyOutsideARepository(t *testing.T) {
+	t.Parallel()
 	remoteURL, rootCommit := NewCore().RepoIdentity(t.TempDir())
 	if remoteURL != "" || rootCommit != "" {
 		t.Fatalf("RepoIdentity outside a repo = (%q, %q), want both empty", remoteURL, rootCommit)
@@ -88,6 +92,7 @@ func TestRepoIdentityIsEmptyOutsideARepository(t *testing.T) {
 // An unborn HEAD is a normal state (`git init`, nothing committed yet), not a
 // failure: both halves answer "not known" and the caller stores empty.
 func TestRepoIdentityIsEmptyForAnUnbornHead(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	if err := testutil.RunGitAllowError(repo, "init", "-b", "main"); err != nil {
 		testutil.RunGit(t, repo, "init")
@@ -100,6 +105,7 @@ func TestRepoIdentityIsEmptyForAnUnbornHead(t *testing.T) {
 }
 
 func TestRepoIdentityIsEmptyForAnEmptyPath(t *testing.T) {
+	t.Parallel()
 	if remoteURL, rootCommit := NewCore().RepoIdentity(""); remoteURL != "" || rootCommit != "" {
 		t.Fatalf("RepoIdentity(\"\") = (%q, %q), want both empty", remoteURL, rootCommit)
 	}

@@ -99,11 +99,11 @@ function linkState(url: string): string {
 }
 
 test.describe.serial('provider sign-in from a paired device', () => {
-  // Not green-washed: a host with no non-loopback interface genuinely
-  // cannot produce the peer this spec is about.
+  // Not green-washed: outside the test network namespace (macOS) no
+  // off-host peer can be produced without LAN traffic.
   test.skip(
     lanIP === null,
-    'no non-loopback IPv4 interface on this host, so no off-host peer can be produced',
+    'outside the test network namespace, so no off-host peer can be produced without LAN traffic',
   );
 
   let harness: HarnessApp;

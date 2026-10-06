@@ -419,7 +419,7 @@ func appendSeedTurn(batch *store.ThreadHistoryBatch, threadID string, turnIndex 
 		StartedAt: at,
 	})
 	batch.Rows = append(batch.Rows, store.HistoryRow{Item: store.Item{
-		ID:        uuid.NewString(),
+		ID:        seedID(),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		ItemIndex: 0,
@@ -453,6 +453,11 @@ func appendSeedTurn(batch *store.ThreadHistoryBatch, threadID string, turnIndex 
 	return nil
 }
 
+// seedID mints an item or payload id. Time-ordered, so a large fixture
+// appends to the id indexes instead of dirtying pages across all of them,
+// which is most of what a bulk seed writes.
+func seedID() string { return uuid.Must(uuid.NewV7()).String() }
+
 func seedItemRow(threadID string, turnIndex, itemIndex int, at int64, spec HarnessSeedItem) (store.HistoryRow, error) {
 	if spec.Kind == "" {
 		return store.HistoryRow{}, fmt.Errorf("kind must be non-empty")
@@ -462,7 +467,7 @@ func seedItemRow(threadID string, turnIndex, itemIndex int, at int64, spec Harne
 		role = "assistant"
 	}
 	item := store.Item{
-		ID:        uuid.NewString(),
+		ID:        seedID(),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		ItemIndex: itemIndex,
@@ -483,7 +488,7 @@ func seedItemRow(threadID string, turnIndex, itemIndex int, at int64, spec Harne
 		return store.HistoryRow{}, err
 	}
 	payload := store.Payload{
-		ID:        uuid.NewString(),
+		ID:        seedID(),
 		Kind:      spec.Payload.Kind,
 		Meta:      spec.Payload.Meta,
 		Data:      data,

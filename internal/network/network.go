@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -248,7 +249,7 @@ func tailnetURL(srv *transport.Server, s TailnetStatus) string {
 // listener's self-signed certificate. A canonical HTTPS domain likewise
 // uses WebPKI, so only the main listener's address carries a certificate pin.
 // Mint only the URL being returned: unused tickets evict shared links.
-func PairingURL(srv *transport.Server, s Settings) (pageURL, fingerprint string) {
+func PairingURL(srv *transport.Server, s Settings, reach Reach) (pageURL, fingerprint string) {
 	if srv == nil {
 		return "", ""
 	}
@@ -257,7 +258,7 @@ func PairingURL(srv *transport.Server, s Settings) (pageURL, fingerprint string)
 	}
 	lanIP := ""
 	if s.BindAll {
-		lanIP = DiscoverLocalLANIP()
+		lanIP = reach.LANIP()
 	}
 	pageURL = AppURLWithLAN(srv, s, lanIP)
 	if strings.HasPrefix(pageURL, "https://") {
@@ -269,7 +270,7 @@ func PairingURL(srv *transport.Server, s Settings) (pageURL, fingerprint string)
 // PairingURLOnNetwork never substitutes another network for an explicit choice.
 // LAN uses the main listener's private address and matching certificate pin,
 // independently of any canonical domain or running tailnet.
-func PairingURLOnNetwork(srv *transport.Server, s Settings, choice string) (pageURL, fingerprint string, err error) {
+func PairingURLOnNetwork(srv *transport.Server, s Settings, reach Reach, choice string) (pageURL, fingerprint string, err error) {
 	if srv == nil {
 		return "", "", fmt.Errorf("the computer's network listener is unavailable")
 	}
@@ -278,8 +279,8 @@ func PairingURLOnNetwork(srv *transport.Server, s Settings, choice string) (page
 		if !s.BindAll {
 			return "", "", fmt.Errorf("enable Allow LAN connections before pairing over the local network")
 		}
-		ip := LANIP(s, DiscoverLocalLANIP())
-		if parsed := net.ParseIP(ip); parsed == nil || (!parsed.IsPrivate() && !parsed.IsLinkLocalUnicast()) {
+		ip := LANIP(s, reach.LANIP())
+		if !reach.pairable(net.ParseIP(ip)) {
 			return "", "", fmt.Errorf("no local network address is available for pairing")
 		}
 		_, port, err := net.SplitHostPort(srv.Addr())
@@ -303,16 +304,6 @@ func PairingURLOnNetwork(srv *transport.Server, s Settings, choice string) (page
 	default:
 		return "", "", fmt.Errorf("unknown pairing network %q", choice)
 	}
-}
-
-// BindHost returns the bind interface for the given LAN toggle.
-// Loopback (127.0.0.1) keeps the server local; 0.0.0.0 listens on
-// every interface so any LAN-reachable IP routes to it.
-func BindHost(bindAll bool) string {
-	if bindAll {
-		return "0.0.0.0"
-	}
-	return "127.0.0.1"
 }
 
 // OriginPatterns returns the extra origins the WS upgrade accepts
@@ -364,7 +355,7 @@ func OriginPatterns(bindAll bool, lanIP, canonicalDomain string, port int) []str
 	var patterns []string
 	if bindAll && known {
 		hosts := []string{"127.0.0.1", "localhost"}
-		if lanIP != "" {
+		if lanIP != "" && !slices.Contains(hosts, lanIP) {
 			hosts = append(hosts, lanIP)
 		}
 		for _, host := range hosts {
@@ -465,10 +456,10 @@ func ticketedURL(srv *transport.Server, scheme, authority string) (string, bool)
 // This is the form for a caller at the machine. FromServerRedacted below
 // is the form for every other caller, and argues field by field what the
 // difference is.
-func FromServer(srv *transport.Server, s Settings) Settings {
+func FromServer(srv *transport.Server, s Settings, reach Reach) Settings {
 	lanIP := ""
 	if s.BindAll {
-		lanIP = DiscoverLocalLANIP()
+		lanIP = reach.LANIP()
 	}
 	return FromServerWithLAN(srv, s, lanIP)
 }
@@ -679,7 +670,7 @@ func LANIP(s Settings, fallback string) string {
 
 // PairingAddressOnNetwork is the credential-free address for native setup.
 // Opening a pairing window must not spend an unused browser page ticket.
-func PairingAddressOnNetwork(srv *transport.Server, s Settings, choice string) (string, error) {
+func PairingAddressOnNetwork(srv *transport.Server, s Settings, reach Reach, choice string) (string, error) {
 	if srv == nil {
 		return "", fmt.Errorf("the computer's network listener is unavailable")
 	}
@@ -692,9 +683,8 @@ func PairingAddressOnNetwork(srv *transport.Server, s Settings, choice string) (
 	if choice != "lan" || !s.BindAll {
 		return "", fmt.Errorf("enable Allow LAN connections before pairing")
 	}
-	ip := LANIP(s, DiscoverLocalLANIP())
-	parsed := net.ParseIP(ip)
-	if parsed == nil || (!parsed.IsPrivate() && !parsed.IsLinkLocalUnicast()) {
+	ip := LANIP(s, reach.LANIP())
+	if !reach.pairable(net.ParseIP(ip)) {
 		return "", fmt.Errorf("the computer's local network connection is not ready")
 	}
 	_, port, err := net.SplitHostPort(srv.Addr())

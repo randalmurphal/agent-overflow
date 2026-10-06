@@ -10,12 +10,14 @@ import (
 )
 
 func TestAuditNestedMailboxMustBeRecognized(t *testing.T) {
+	t.Parallel()
 	_, ok := parseInterAgentMailboxEnvelope("/root/worker/helper", "/root/worker", "Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker/helper\nPayload:\ndone")
 	if !ok {
 		t.Fatal("valid nested child-to-parent delivery rejected")
 	}
 }
 func TestAuditDistinctProviderDeliveryIDsMustRemainDistinct(t *testing.T) {
+	t.Parallel()
 	parse := func(id string) subagentNotification {
 		b, _ := json.Marshal(map[string]any{"id": id, "type": "agent_message", "author": "/root/worker", "recipient": "/root", "content": []map[string]string{{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDone."}}})
 		var item map[string]json.RawMessage
@@ -32,6 +34,7 @@ func TestAuditDistinctProviderDeliveryIDsMustRemainDistinct(t *testing.T) {
 }
 
 func TestChildRuntimeIgnoresStaleAndDuplicateTurnBoundaries(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	s.registerChildOwnership("root-provider-thread", "child", "/root/worker", "spawn")
@@ -52,6 +55,7 @@ func TestChildRuntimeIgnoresStaleAndDuplicateTurnBoundaries(t *testing.T) {
 }
 
 func TestNestedMailboxRoutesToRecipientAndDeduplicatesNativeID(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	s.registerChildOwnership("root-provider-thread", "worker", "/root/worker", "spawn-worker")
@@ -80,6 +84,7 @@ func TestNestedMailboxRoutesToRecipientAndDeduplicatesNativeID(t *testing.T) {
 }
 
 func TestChildThreadStatusIsScopedAndPreservesActiveFlags(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	s.registerChildOwnership("root-provider-thread", "child", "/root/worker", "spawn")
@@ -90,6 +95,7 @@ func TestChildThreadStatusIsScopedAndPreservesActiveFlags(t *testing.T) {
 }
 
 func TestRecoveredExecutionRetainsNativeStartAndBlockingFlags(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	_, err := s.reconcileCollabHistoryTerminal(collabHistoryJob{Ownership: collabHistoryOwnership{ParentItemID: "spawn", ChildThreadID: "child"}}, collabThreadSnapshot{ThreadID: "child", Status: "active", LatestTurnID: "B", LatestTurnStatus: "inProgress", StartedAt: 1234, ActiveFlags: []string{"waitingOnUserInput"}}, 0)
@@ -102,6 +108,7 @@ func TestRecoveredExecutionRetainsNativeStartAndBlockingFlags(t *testing.T) {
 }
 
 func TestUnrepresentedCollabResultRemainsVisibleWithoutInventingSuccess(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	s.recordAppServerVersion(json.RawMessage(`{"userAgent":"codex_cli_rs/0.153.4"}`))
@@ -116,6 +123,7 @@ func TestUnrepresentedCollabResultRemainsVisibleWithoutInventingSuccess(t *testi
 }
 
 func TestRootMailboxTailRetainsUnknownSenderAndRejectsForeignRecipient(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	line := []byte(`{"timestamp":"2026-09-08T10:11:12Z","type":"response_item","payload":{"id":"native-unknown","type":"agent_message","author":"/root/unknown","recipient":"/root","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/unknown\nPayload:\nhello"}]}}`)
@@ -140,6 +148,7 @@ func TestRootMailboxTailRetainsUnknownSenderAndRejectsForeignRecipient(t *testin
 // (docs/references/codex-wire.md). An output that follows its activity is
 // represented already and must not mint a result row over the spawn.
 func TestSpawnOutputBehindStartedActivityEmitsNoResultRow(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
 	s.recordAppServerVersion(json.RawMessage(`{"userAgent":"codex_cli_rs/0.153.4"}`))

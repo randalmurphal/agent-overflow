@@ -36,12 +36,10 @@ func runGit(
 	runErr := cmd.Run()
 	stdout = out.String()
 	stderr = errBuf.String()
-	if runErr == nil {
+	// ErrWaitDelay means git exited successfully while a child it started
+	// still held a pipe; git's own output is complete.
+	if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
 		return stdout, stderr, 0, nil
-	}
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		return stdout, stderr, 0, fmt.Errorf("git %s: output pipes did not close before wait delay: %w",
-			strings.Join(args, " "), runErr)
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code = exitErr.ExitCode()
@@ -72,12 +70,10 @@ func runGitWithStdin(
 	runErr := cmd.Run()
 	stdout = out.String()
 	stderr = errBuf.String()
-	if runErr == nil {
+	// ErrWaitDelay means git exited successfully while a child it started
+	// still held a pipe; git's own output is complete.
+	if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
 		return stdout, stderr, 0, nil
-	}
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		return stdout, stderr, 0, fmt.Errorf("git %s: output pipes did not close before wait delay: %w",
-			strings.Join(args, " "), runErr)
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code = exitErr.ExitCode()

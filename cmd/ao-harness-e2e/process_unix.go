@@ -34,6 +34,11 @@ func terminateProcessTree(command *exec.Cmd, _ containment.Group) error {
 	return nil
 }
 
+// teardownGrace is how long each verified attempt waits after SIGTERM
+// before SIGKILL. A variable so a test can follow an exec without waiting
+// out the grace twice.
+var teardownGrace = 2 * time.Second
+
 // terminateProcessTreeVerified stops the launched tree. Its root is a launcher
 // chain (pnpm is a `#!/usr/bin/env node` script), so the root's executable
 // changes after Start while its kernel start time and PID namespace do not.
@@ -45,7 +50,7 @@ func terminateProcessTreeVerified(command *exec.Cmd, _ containment.Group, launch
 	pid := command.Process.Pid
 	for {
 		root := launchedRootIdentity(pid, launched)
-		err := harnessclient.TerminateProcessTreeVerified(ctx, pid, root, 2*time.Second)
+		err := harnessclient.TerminateProcessTreeVerified(ctx, pid, root, teardownGrace)
 		if err == nil || ctx.Err() != nil || launchedRootIdentity(pid, launched) == root {
 			return err
 		}

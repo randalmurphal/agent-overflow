@@ -13,8 +13,9 @@ import (
 )
 
 func TestTransferPreservesCleanConversionsWithoutDestinationFilters(t *testing.T) {
+	t.Parallel()
 	ctx, core := context.Background(), NewCore()
-	source := testutil.InitGitRepo(t)
+	source := initGitRepo(t)
 	writeWorkspaceFile(t, source, ".gitattributes", "asset.txt filter=portable\ncrlf.txt text eol=crlf\nident.txt ident\nencoded.txt text working-tree-encoding=UTF-16\nintent.txt filter=portable working-tree-encoding=UTF-16\n")
 	testutil.RunGit(t, source, "config", "filter.portable.clean", "git stripspace")
 	writeWorkspaceFile(t, source, "asset.txt", "source working content\n\n\n")
@@ -67,7 +68,7 @@ func TestTransferPreservesCleanConversionsWithoutDestinationFilters(t *testing.T
 	if _, err := transferfiles.Extract(ctx, input, digest, stage); err != nil {
 		t.Fatal(err)
 	}
-	destination := testutil.InitGitRepo(t)
+	destination := initGitRepo(t)
 	for _, key := range []string{"clean", "smudge", "process"} {
 		testutil.RunGit(t, destination, "config", "filter.portable."+key, "ao-filter-must-never-run")
 	}
@@ -100,6 +101,7 @@ func TestTransferPreservesCleanConversionsWithoutDestinationFilters(t *testing.T
 }
 
 func TestTransferBlobDecoderHandlesSplitHeadersEmptyFilesAndLinks(t *testing.T) {
+	t.Parallel()
 	root, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

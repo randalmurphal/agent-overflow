@@ -13,3 +13,8 @@ import "testing"
 func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
 }
+
+// detachTestProcessHome keeps the real home for the same reason.
+func detachTestProcessHome() (remove func() error, err error) {
+	return func() error { return nil }, nil
+}

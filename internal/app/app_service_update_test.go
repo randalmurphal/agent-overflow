@@ -350,6 +350,7 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 // are the verified ones, the supervisor is asked for that same version, and
 // the temp download is gone.
 func TestRequestServiceUpdateStagesTheVerifiedBinaryAndAsksTheSupervisor(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -393,6 +394,7 @@ func TestRequestServiceUpdateStagesTheVerifiedBinaryAndAsksTheSupervisor(t *test
 
 // The phases the client renders, in order, on the path that succeeds.
 func TestRequestServiceUpdatePublishesItsPhasesInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -422,6 +424,7 @@ func TestRequestServiceUpdatePublishesItsPhasesInOrder(t *testing.T) {
 // Every synchronous refusal, and the two things they all have in common: no
 // flow starts, and the supervisor is never asked.
 func TestRequestServiceUpdateRefusalsTouchNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		opts serviceUpdateOptions
@@ -494,6 +497,7 @@ func TestRequestServiceUpdateRefusalsTouchNothing(t *testing.T) {
 // A supervised host with no release source refuses the flow AND says why in
 // the status, so the client shows a sentence rather than a dead button.
 func TestASupervisedHostWithNoReleaseSourceSaysSo(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{supervised: true})
 	rig.configureWithoutSource()
 
@@ -520,6 +524,7 @@ func TestASupervisedHostWithNoReleaseSourceSaysSo(t *testing.T) {
 
 // The desktop and unsupervised-serve answer: no error, no surface.
 func TestGetServiceUpdateStatusOffASupervisedHostIsNotAnError(t *testing.T) {
+	t.Parallel()
 	app := &App{version: serviceUpdateRunningVer}
 	status, err := app.GetServiceUpdateStatus()
 	if err != nil {
@@ -542,6 +547,7 @@ func TestGetServiceUpdateStatusOffASupervisedHostIsNotAnError(t *testing.T) {
 // One flow at a time. The second caller is refused rather than queued: two
 // downloads racing for one staging layout is a corrupted version directory.
 func TestRequestServiceUpdateRefusesASecondFlow(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -589,6 +595,7 @@ func TestRequestServiceUpdateRefusesASecondFlow(t *testing.T) {
 // phase naming the step, nothing staged, no temp file, and a supervisor that
 // was never asked.
 func TestAFailedFlowLeavesTheSupervisorAndTheLayoutUntouched(t *testing.T) {
+	t.Parallel()
 	wrongDigest := strings.Repeat("ab", 32)
 	for _, tc := range []struct {
 		name    string
@@ -678,6 +685,7 @@ func TestAFailedFlowLeavesTheSupervisorAndTheLayoutUntouched(t *testing.T) {
 // refused to SELECT it, not to have it, and the next attempt restages the same
 // bytes under the same name.
 func TestASupervisorRefusalBecomesTheError(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -701,6 +709,7 @@ func TestASupervisorRefusalBecomesTheError(t *testing.T) {
 // A new flow clears the previous one's failure. A status carrying a fresh
 // phase beside a stale error is a client rendering two updates at once.
 func TestANewFlowClearsTheLastOnesFailure(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -730,6 +739,7 @@ func TestANewFlowClearsTheLastOnesFailure(t *testing.T) {
 // The picker's read, and the boot check that fills LatestVersion. Both are the
 // only network reads on this surface and neither installs anything.
 func TestTheReleaseListAndThePassiveCheckReportWhatIsPublished(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.6.0", "v1.5.0", "v1.4.0"}, configure: true, supervised: true,
 	})
@@ -772,6 +782,7 @@ func TestTheReleaseListAndThePassiveCheckReportWhatIsPublished(t *testing.T) {
 // reported no known release for its whole life would be a worse answer for no
 // property gained.
 func TestThePassiveCheckRunsDuringATrial(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{supervised: true})
 	ParkUnattendedWork(rig.app)
 	ConfigureServiceUpdates(rig.app, ServiceUpdateDeps{
@@ -797,6 +808,7 @@ func TestThePassiveCheckRunsDuringATrial(t *testing.T) {
 // A shutting-down backend refuses rather than starting work its own teardown
 // is about to cancel halfway through a staging copy.
 func TestRequestServiceUpdateRefusesWhileShuttingDown(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -814,6 +826,7 @@ func TestRequestServiceUpdateRefusesWhileShuttingDown(t *testing.T) {
 // cross-device move that could tear. The assertion is on the path, because the
 // property is where the file is and not what it is called.
 func TestTheDownloadLandsBesideTheVersionsItBecomes(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -851,6 +864,7 @@ func TestTheDownloadLandsBesideTheVersionsItBecomes(t *testing.T) {
 // name have to be the names it reads. Pinned because renaming a Go field is a
 // silent wire break for every client that already shipped.
 func TestServiceUpdateStatusWireNames(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(ServiceUpdateStatus{
 		Supervised: true, Available: true, CurrentVersion: "1.4.0",
 		LatestVersion: "1.5.0", LatestTag: "v1.5.0", Phase: serviceUpdatePhaseDownloading,
@@ -882,6 +896,7 @@ func TestServiceUpdateStatusWireNames(t *testing.T) {
 // would leave the whole feature reachable only from the machine it exists to
 // save a trip to, and nothing else in this file would notice.
 func TestTheUpdateSurfaceIsReachableByAPairedAdmin(t *testing.T) {
+	t.Parallel()
 	admin := []string{string(transport.ScopeAccessAdmin)}
 	for _, method := range []string{"GetServiceUpdateStatus", "ListServiceReleases"} {
 		if refusal := transport.AuthorizeSessionMethod(admin, method, transport.CallerProof{}); refusal != nil {
@@ -917,6 +932,7 @@ func TestTheUpdateSurfaceIsReachableByAPairedAdmin(t *testing.T) {
 // to a goroutine: a call that got past the gate by some other route must still
 // not start one.
 func TestRequestServiceUpdateRefusesASessionWithNoProvenStepUp(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
 		tags: []string{"v1.5.0"}, configure: true, supervised: true,
 	})
@@ -947,6 +963,7 @@ func TestRequestServiceUpdateRefusesASessionWithNoProvenStepUp(t *testing.T) {
 // one the sidecar covers, so a checksum failure in any test above is the
 // flow's answer rather than the rig's arrangement.
 func TestTheReleaseFeedFixtureIsInternallyConsistent(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{tags: []string{"v1.5.0"}})
 	var got strings.Builder
 	resolved, err := rig.source.Fetch(context.Background(), "v1.5.0", &got, nil)
@@ -966,6 +983,7 @@ func TestTheReleaseFeedFixtureIsInternallyConsistent(t *testing.T) {
 }
 
 func TestServiceUpdateStagesTheCompleteMacBundleAfterPreflightingItsExecutable(t *testing.T) {
+	t.Parallel()
 	if os.PathSeparator == '\\' {
 		t.Skip("macOS bundle execution modes require Unix")
 	}
@@ -1021,6 +1039,7 @@ func TestServiceUpdateStagesTheCompleteMacBundleAfterPreflightingItsExecutable(t
 // A preflight may finish successfully after cancellation. That late success
 // must not cross the supervisor boundary or masquerade as an installation.
 func TestCancelServiceUpdateFencesLatePreparation(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -1066,6 +1085,7 @@ func TestCancelServiceUpdateFencesLatePreparation(t *testing.T) {
 }
 
 func TestCancelServiceUpdateCannotUndoSupervisorHandoff(t *testing.T) {
+	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{configure: true, supervised: true})
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once

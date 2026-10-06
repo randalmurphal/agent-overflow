@@ -8,15 +8,15 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/testutil"
 )
 
 // TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage covers the
 // happy path: a thread with a temporary ao-<8-hex> branch in a real
 // worktree is renamed to a descriptive target derived from the user message.
 func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-worktree-rename")
 	thread.Provider = string(provider.Claude)
@@ -76,6 +76,7 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 // no-op path: when the thread has no WorktreePath set, we never try to
 // rename (and never call generateBranchNameFn).
 func TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-no-worktree")
@@ -102,6 +103,7 @@ func TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread(t *testing.T) 
 // don't overwrite an already-descriptive branch name. Only the ao-<8-hex>
 // placeholder is a rename candidate.
 func TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-descriptive-branch")
@@ -138,8 +140,9 @@ func TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch(t *testing.T)
 // worktree branch is unchanged but no error surfaces (the function has no
 // return value).
 func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-generator-error")
 	thread.Provider = string(provider.Claude)
@@ -185,8 +188,9 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 // branchNameFromUserMessage fallback ("update") kicks in when the user
 // message has no usable words and gets wrapped to "ao-update".
 func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-fallback-branch")
 	thread.Provider = string(provider.Claude)
@@ -222,8 +226,9 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 // descriptive name, a second send does not attempt another rename. The
 // generator fn is never called, and the branch keeps its descriptive name.
 func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-rename-idempotent")
 	thread.Provider = string(provider.Claude)

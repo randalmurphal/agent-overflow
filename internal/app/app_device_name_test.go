@@ -7,6 +7,7 @@ import (
 )
 
 func TestDeviceNameFacadeUsesConfiguredInstallationAndEmits(t *testing.T) {
+	t.Parallel()
 	identity := appidentity.NewDeviceName(t.TempDir())
 	a := &App{configDir: t.TempDir()}
 	SetDeviceNameIdentity(a, identity)

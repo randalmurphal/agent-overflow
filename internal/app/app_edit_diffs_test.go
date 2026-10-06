@@ -97,6 +97,7 @@ func editDiffFixture(t *testing.T, app *App) string {
 }
 
 func TestListThreadEditDiffs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 
@@ -142,6 +143,7 @@ func TestListThreadEditDiffs(t *testing.T) {
 // longest label — an uncapped pasted-stack-trace prompt once stretched
 // the popup across three monitors.
 func TestListThreadEditDiffsCapsSelectorLabels(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 
@@ -183,6 +185,7 @@ func TestListThreadEditDiffsCapsSelectorLabels(t *testing.T) {
 }
 
 func TestListThreadEditDiffsEmptyThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-no-edits")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -208,6 +211,7 @@ func fixturePatch(path, oldLine, newLine string) string {
 }
 
 func TestOpenTurnEditsDiffJoinsTheTurnsPayloadsInOrder(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 	ctx, _ := reviewDiffConn(t)
@@ -240,6 +244,7 @@ func TestOpenTurnEditsDiffJoinsTheTurnsPayloadsInOrder(t *testing.T) {
 }
 
 func TestOpenEditDiffReadsOnePayloadOfTheThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 	ctx, _ := reviewDiffConn(t)
@@ -303,6 +308,7 @@ func generatedPatch(path string, lines int) string {
 }
 
 func TestEditsDiffReadsALargeTurnInChunks(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	big := generatedPatch("big.go", 60000)
 	bodies := []string{
@@ -363,6 +369,7 @@ func TestEditsDiffReadsALargeTurnInChunks(t *testing.T) {
 }
 
 func TestEditsDiffRefusesAPayloadThatChangedSinceTheOpen(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	body := generatedPatch("big.go", 60000)
 	threadID := seedEditPayloads(t, app, 1, body)
@@ -396,6 +403,7 @@ func TestEditsDiffRefusesAPayloadThatChangedSinceTheOpen(t *testing.T) {
 }
 
 func TestGetPayloadPatchSpansReturnsThePersistedSeeds(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 

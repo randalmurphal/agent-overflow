@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
@@ -11,6 +11,10 @@ const codeSource = (host: Element | null | undefined): string =>
   host?.querySelector('code')?.textContent ?? '';
 
 describe('<AssistantMessage>', () => {
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  });
+
   // Codex marks a mid-turn progress note with `delivery: "async"` on the
   // block's stop event (wire >= 0.149). Read POSITIVELY only: absence is not
   // evidence of finality — most rows never carry the key — so an unmarked

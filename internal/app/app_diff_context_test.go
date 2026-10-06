@@ -13,6 +13,7 @@ import (
 )
 
 func TestReadWorkspaceFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	regular := filepath.Join(dir, "regular.txt")
@@ -42,6 +43,7 @@ func TestReadWorkspaceFile(t *testing.T) {
 }
 
 func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	ref := testWorkspaceRef(t, app, workspace)
@@ -112,8 +114,9 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 }
 
 func TestGetDiffContextLinesCommitScope(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	workspace := testutil.InitGitRepo(t)
+	workspace := initMainGitRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
 
 	writeAndCommit := func(content, message string) {
@@ -160,6 +163,7 @@ func TestGetDiffContextLinesCommitScope(t *testing.T) {
 }
 
 func TestGetDiffContextLinesValidation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	ref := testWorkspaceRef(t, app, workspace)
@@ -190,6 +194,7 @@ func TestGetDiffContextLinesValidation(t *testing.T) {
 }
 
 func TestSplitContentLines(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		content string
 		want    int
@@ -209,6 +214,7 @@ func TestSplitContentLines(t *testing.T) {
 }
 
 func TestGetDiffContextLinesEditsScope(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-diff-context-edits")
@@ -275,6 +281,7 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 // verified and snapshot-backed files pass, drifted and out-of-workspace
 // files don't.
 func TestVerifyEditDiffs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-verify-edit-diffs")
@@ -325,6 +332,7 @@ func TestVerifyEditDiffs(t *testing.T) {
 // the edit stays expandable no matter how far the workspace drifts —
 // including the file being deleted outright.
 func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-diff-context-snapshot")
@@ -421,6 +429,7 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 // served context lines must come back tab-expanded so they indent like
 // the hunk lines they sit between.
 func TestGetDiffContextLinesEditsScopeTabMangledPatch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-diff-context-edits-tabs")

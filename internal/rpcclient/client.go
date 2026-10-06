@@ -136,6 +136,10 @@ func (c *Client) Call(ctx context.Context, method string, result any, params ...
 		body[i] = raw
 	}
 	if err := wsjson.Write(ctx, c.conn, transport.ClientFrame{Type: "rpc", ID: id, Method: method, Params: body}); err != nil {
+		if ctx.Err() != nil {
+			c.Close()
+			return ctx.Err()
+		}
 		return err
 	}
 	for {
@@ -143,6 +147,12 @@ func (c *Client) Call(ctx context.Context, method string, result any, params ...
 		select {
 		case frame = <-c.replies:
 		case <-c.done:
+			// websocket closes the connection when a write's context is
+			// cancelled, even as the write finishes, so a cancelled call
+			// can see the reader stop first.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return c.err
 		case <-ctx.Done():
 			// The reply may still arrive, and the next call must not read

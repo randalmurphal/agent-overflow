@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +13,9 @@ import (
 )
 
 func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-status")
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -45,16 +47,14 @@ func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
 
 	app := newTestAppWithStore(t)
 	app.git = gitops.NewCore()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
 
 	binDir := t.TempDir()
 	counterFile := filepath.Join(binDir, "calls")
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\ncount=0\nif [ -f " + counterFile + " ]; then count=$(wc -c < " + counterFile + "); fi\nprintf x >> " + counterFile + "\nif [ \"$count\" = \"0\" ]; then echo 'auth required' 1>&2; exit 1; fi\necho '[{\"url\":\"https://github.com/owner/repo/pull/9\",\"number\":9,\"title\":\"Demo\",\"state\":\"OPEN\"}]'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	seeded, err := app.git.Status(repo)
@@ -91,8 +91,9 @@ func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
 // Branches are a repository fact, so a ref that names a WORKTREE still lists
 // the project's branches — the workspace only decides where the read runs.
 func TestGitListBranchesUsesProjectPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreePath := filepath.Join(t.TempDir(), "branches-wt")
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/demo", worktreePath)
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true) })
@@ -115,8 +116,9 @@ func TestGitListBranchesUsesProjectPath(t *testing.T) {
 // A workspace path that is neither the project root nor one of its registered
 // worktrees is refused rather than silently resolved to the project.
 func TestGitListBranchesRefusesForeignWorkspacePath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -130,8 +132,9 @@ func TestGitListBranchesRefusesForeignWorkspacePath(t *testing.T) {
 }
 
 func TestGitCommitReturnsCommitSHA(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	thread := testThread("thread-commit")
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -165,8 +168,9 @@ func TestGitCommitReturnsCommitSHA(t *testing.T) {
 }
 
 func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "feature/checkout")
 
@@ -207,13 +211,26 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 // feature branch that's behind by one commit on the working clone.
 // Returns (workingRepo, barePath). The working clone is checked out
 // on main; its local `feature` ref is set up to track origin/feature.
+var upstreamFeatureTemplate gitSnapshotTemplate
+
+// initRepoWithUpstreamFeature returns a clone whose local feature branch is
+// one commit behind origin/feature, and its bare origin.
 func initRepoWithUpstreamFeature(t *testing.T) (string, string) {
+	t.Helper()
+	dirs := upstreamFeatureTemplate.clone(t, func(t *testing.T) []string {
+		repo, bare := buildRepoWithUpstreamFeature(t)
+		return []string{repo, bare}
+	})
+	return dirs[0], dirs[1]
+}
+
+func buildRepoWithUpstreamFeature(t *testing.T) (string, string) {
 	t.Helper()
 	bare := t.TempDir()
 	if err := testutil.RunGitAllowError(bare, "init", "--bare", "-b", "main"); err != nil {
 		testutil.RunGit(t, bare, "init", "--bare")
 	}
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", bare)
 	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
 
@@ -266,6 +283,7 @@ func pushRemoteMainUpdate(t *testing.T, app *App, repo, filename string) {
 }
 
 func TestGitSyncBranchCurrentBranchAllowedDuringActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 
@@ -314,6 +332,7 @@ func TestGitSyncBranchCurrentBranchAllowedDuringActiveTurn(t *testing.T) {
 }
 
 func TestGitSyncBranchNonCurrentBranchAllowedWithActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 
@@ -372,6 +391,7 @@ func TestGitSyncBranchNonCurrentBranchAllowedWithActiveTurn(t *testing.T) {
 }
 
 func TestGitSyncBranchWithoutThreadRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 
@@ -411,6 +431,7 @@ func TestGitSyncBranchWithoutThreadRow(t *testing.T) {
 }
 
 func TestGitSyncBranchSyncsCurrentWorktreeWithoutTouchingProjectRoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-feature-sync")
@@ -448,6 +469,7 @@ func TestGitSyncBranchSyncsCurrentWorktreeWithoutTouchingProjectRoot(t *testing.
 }
 
 func TestGitSyncBranchDoesNotSyncBranchCheckedOutInOtherWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-feature-no-root-sync")
@@ -486,6 +508,7 @@ func TestGitSyncBranchDoesNotSyncBranchCheckedOutInOtherWorktree(t *testing.T) {
 }
 
 func TestGitSyncBranchCurrentBranchAllowsActiveWorkspaceThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, _ := initRepoWithUpstreamFeature(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-active-sync")
@@ -539,8 +562,9 @@ func TestGitSyncBranchCurrentBranchAllowsActiveWorkspaceThread(t *testing.T) {
 // including a SIBLING thread the caller never named. The ref addresses the
 // directory, so the directory's occupants are what the safety check consults.
 func TestGitCheckoutAllowedWhileSiblingThreadHasActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/checkout")
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -579,8 +603,9 @@ func TestGitCheckoutAllowedWhileSiblingThreadHasActiveTurn(t *testing.T) {
 
 // The thread's OWN active turn does not gate it either.
 func TestGitCheckoutAllowedDuringActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "feature/checkout")
 
@@ -617,8 +642,9 @@ func TestGitCheckoutAllowedDuringActiveTurn(t *testing.T) {
 // from a worktree must mutate that selected workspace only; moving to the
 // project root is an explicit EnvPicker action.
 func TestGitCheckoutDefaultBranchFromWorktreeKeepsCurrentWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-feature")
 
 	testutil.RunGit(t, repo, "branch", "dev")
@@ -668,8 +694,9 @@ func TestGitCheckoutDefaultBranchFromWorktreeKeepsCurrentWorktree(t *testing.T) 
 
 // The same checkout addressed by ref alone, with no thread row in the picture.
 func TestGitCheckoutFromWorktreeWithoutThreadRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-project-feature")
 
 	testutil.RunGit(t, repo, "branch", "dev")
@@ -706,8 +733,9 @@ func TestGitCheckoutFromWorktreeWithoutThreadRow(t *testing.T) {
 }
 
 func TestGitCheckoutDefaultBranchCheckedOutElsewhereFailsInCurrentWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-checked-out-elsewhere")
 
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/checked-out-elsewhere", worktreePath, "main")
@@ -753,8 +781,9 @@ func TestGitCheckoutDefaultBranchCheckedOutElsewhereFailsInCurrentWorktree(t *te
 }
 
 func TestGitCheckoutCheckedOutElsewhereFailsWithoutThreadRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-project-checked-out-elsewhere")
 
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/project-checked-out-elsewhere", worktreePath, "main")
@@ -781,8 +810,9 @@ func TestGitCheckoutCheckedOutElsewhereFailsWithoutThreadRow(t *testing.T) {
 }
 
 func TestGitCreateBranchFromCurrentBaseKeepsDirtyTree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -824,8 +854,9 @@ func TestGitCreateBranchFromCurrentBaseKeepsDirtyTree(t *testing.T) {
 }
 
 func TestGitCreateBranchFromCurrentBaseRejectsExistingBranch(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "BLITZ-187")
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -865,8 +896,9 @@ func TestGitCreateBranchFromCurrentBaseRejectsExistingBranch(t *testing.T) {
 }
 
 func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "checkout", "-b", "release")
 	if err := os.WriteFile(filepath.Join(repo, "RELEASE.txt"), []byte("release marker\n"), 0o644); err != nil {
@@ -933,8 +965,9 @@ func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 }
 
 func TestGitCreateBranchFromOtherBaseRejectsExistingBranchBeforeWorkspaceMutation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "checkout", "-b", "release")
 	if err := os.WriteFile(filepath.Join(repo, "RELEASE.txt"), []byte("release marker\n"), 0o644); err != nil {
@@ -1019,8 +1052,9 @@ func TestGitCreateBranchFromOtherBaseRejectsExistingBranchBeforeWorkspaceMutatio
 }
 
 func TestGitCreateBranchFromOtherBaseAllowedDuringActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "release")
 
@@ -1060,8 +1094,9 @@ func TestGitCreateBranchFromOtherBaseAllowedDuringActiveTurn(t *testing.T) {
 // A SIBLING's turn does not gate the destructive create-branch path either:
 // the user owns the branch, whatever any agent in the directory is doing.
 func TestGitCreateBranchFromOtherBaseAllowedWithSiblingActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "release")
 
@@ -1100,8 +1135,9 @@ func TestGitCreateBranchFromOtherBaseAllowedWithSiblingActiveTurn(t *testing.T) 
 }
 
 func TestGitCreateBranchFromCurrentBaseAllowedDuringActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1134,8 +1170,9 @@ func TestGitCreateBranchFromCurrentBaseAllowedDuringActiveTurn(t *testing.T) {
 }
 
 func TestGitCreateBranchFromCarryWithOtherBaseRejected(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "release")
 
@@ -1165,12 +1202,21 @@ func containsBranch(branches []gitops.GitBranch, want string) bool {
 	return false
 }
 
+var gonePruneTemplate gitSnapshotTemplate
+
 // pruneTestFixture wires a thread to testutil.GonePruneRepo: one gone
 // branch merged into main, one gone branch with commits main doesn't
 // have (the squash-merge shape), and one never-pushed branch.
 func pruneTestFixture(t *testing.T, app *App) store.Thread {
 	t.Helper()
-	repo := testutil.GonePruneRepo(t)
+	repo := gonePruneTemplate.clone(t, func(t *testing.T) []string {
+		repo := testutil.GonePruneRepo(t)
+		origin, _, err := app.gitCore().Execute(repo, "config", "--get", "remote.origin.url")
+		if err != nil {
+			t.Fatalf("read origin url: %v", err)
+		}
+		return []string{repo, strings.TrimSpace(origin)}
+	})[0]
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -1186,6 +1232,7 @@ func pruneTestFixture(t *testing.T, app *App) store.Thread {
 }
 
 func TestGitListBranchPruneCandidatesClassifiesAndWarns(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := pruneTestFixture(t, app)
 
@@ -1232,6 +1279,7 @@ func prunePreviewTip(t *testing.T, app *App, ref WorkspaceRef, branch string) st
 }
 
 func TestGitPruneBranchesDeletesEligibleAndRefusesRest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := pruneTestFixture(t, app)
 	mergedTip := prunePreviewTip(t, app, workspaceRefForThread(thread), "merged-gone")
@@ -1270,6 +1318,7 @@ func TestGitPruneBranchesDeletesEligibleAndRefusesRest(t *testing.T) {
 }
 
 func TestGitPruneBranchesRefusesMovedTip(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := pruneTestFixture(t, app)
 	staleTip := prunePreviewTip(t, app, workspaceRefForThread(thread), "squashed-gone")
@@ -1309,6 +1358,7 @@ func TestGitPruneBranchesRefusesMovedTip(t *testing.T) {
 }
 
 func TestGitPruneBranchesReportsDuplicateSelectionOnce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := pruneTestFixture(t, app)
 	mergedTip := prunePreviewTip(t, app, workspaceRefForThread(thread), "merged-gone")

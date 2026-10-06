@@ -47,6 +47,7 @@ func settingsSession(codexThreadID string) *Session {
 // project out of the real 0.146.0 notification, including the
 // camelCase-to-AO sandbox translation.
 func TestReconcileThreadSettings_DecodesLiveCapture(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("019fc2ff-9050-7971-ac4e-b902cc3b9f00")
 	s.reconcileThreadSettings(json.RawMessage(liveSettingsNotification))
 
@@ -74,6 +75,7 @@ func TestReconcileThreadSettings_DecodesLiveCapture(t *testing.T) {
 // tag would report a sandbox that is not the one being enforced, so the
 // contract is to report none.
 func TestReconcileThreadSettings_SandboxTranslation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		wire string
 		want string
@@ -101,6 +103,7 @@ func TestReconcileThreadSettings_SandboxTranslation(t *testing.T) {
 // a literal value would make the observed snapshot claim a tier or effort
 // the thread does not have.
 func TestReconcileThreadSettings_NullOverridesReadAsEmpty(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("th")
 	s.reconcileThreadSettings(json.RawMessage(
 		`{"threadId":"th","threadSettings":{"model":"gpt","effort":null,"serviceTier":null}}`))
@@ -118,6 +121,7 @@ func TestReconcileThreadSettings_NullOverridesReadAsEmpty(t *testing.T) {
 // model, and letting it land here would misattribute the parent's tokens
 // to the child's model.
 func TestReconcileThreadSettings_IgnoresForeignThread(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("root-thread")
 	s.reconcileThreadSettings(json.RawMessage(
 		`{"threadId":"child-thread","threadSettings":{"model":"child-model"}}`))
@@ -129,6 +133,7 @@ func TestReconcileThreadSettings_IgnoresForeignThread(t *testing.T) {
 // TestReconcileThreadSettings_IgnoresUndecodableParams keeps a malformed
 // frame from wiping a good snapshot.
 func TestReconcileThreadSettings_IgnoresUndecodableParams(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("th")
 	s.reconcileThreadSettings(json.RawMessage(`{"threadId":"th","threadSettings":{"model":"gpt"}}`))
 	s.reconcileThreadSettings(json.RawMessage(`not json`))
@@ -148,6 +153,7 @@ func TestReconcileThreadSettings_IgnoresUndecodableParams(t *testing.T) {
 // on A must still be attributed to A. Reading the requested field here —
 // the behavior before this change — put them on B.
 func TestCurrentModelPrefersObservedOverRequested(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("th")
 	s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"})
 	if got := s.currentModel(); got != "model-a" {
@@ -173,6 +179,7 @@ func TestCurrentModelPrefersObservedOverRequested(t *testing.T) {
 // TestCurrentModelFallsBackWhenCodexReportsNoModel guards the fallback:
 // a settings frame that carries no model must not blank out attribution.
 func TestCurrentModelFallsBackWhenCodexReportsNoModel(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("th")
 	s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"})
 	s.reconcileThreadSettings(json.RawMessage(`{"threadId":"th","threadSettings":{"approvalPolicy":"never"}}`))
@@ -186,6 +193,7 @@ func TestCurrentModelFallsBackWhenCodexReportsNoModel(t *testing.T) {
 // stopped being in force, and keeping the stale value would report an
 // override that no longer exists.
 func TestReconcileThreadSettings_LaterFrameReplacesEarlier(t *testing.T) {
+	t.Parallel()
 	s := settingsSession("th")
 	s.reconcileThreadSettings(json.RawMessage(
 		`{"threadId":"th","threadSettings":{"model":"gpt","serviceTier":"priority","effort":"high"}}`))

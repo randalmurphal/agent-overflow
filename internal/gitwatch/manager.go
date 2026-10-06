@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/rjeczalik/notify"
 
@@ -52,6 +53,9 @@ type Manager struct {
 	// actually exhausting inotify limits. Production leaves it nil and
 	// the watcher uses installNotifyWatcher.
 	installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error
+	// pollInterval lets tests observe the polling fallback without
+	// waiting out pollFallbackInterval. Production leaves it zero.
+	pollInterval time.Duration
 
 	watchRootsFn WatchRootsFn
 }
@@ -162,6 +166,9 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	// subtree) yields roots in exactly the shape the initial install used.
 	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
 	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, initial, watchRoots, rootsFn)
+	if m.pollInterval > 0 {
+		w.pollInterval = m.pollInterval
+	}
 	w.start(m.installFn)
 	m.watchers[canon] = w
 	sub := w.addSubscriber(initial)

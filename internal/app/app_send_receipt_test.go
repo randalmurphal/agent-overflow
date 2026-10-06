@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,16 +25,11 @@ func installReceiptCaptureSession(t *testing.T, app *App, thread store.Thread) f
 	t.Helper()
 	capture := filepath.Join(t.TempDir(), "requests.ndjson")
 	binary := writeCodexSteerBinary(t, thread.ID+"-provider", "ok")
-	script, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
+	script := []byte(mockScript(t, binary))
 	loop := "while IFS= read -r line; do\n"
 	quotedCapture := "'" + strings.ReplaceAll(capture, "'", "'\\''") + "'"
 	script = []byte(strings.Replace(string(script), loop, loop+"    printf '%s\\n' \"$line\" >> "+quotedCapture+"\n", 1))
-	if err := os.WriteFile(binary, script, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, string(script))
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
 		Binary: binary, WorkDir: thread.WorkspacePath,
 	}, func(provider.ProviderEvent) {})
@@ -69,6 +65,7 @@ func installReceiptCaptureSession(t *testing.T, app *App, thread store.Thread) f
 }
 
 func TestSendReceiptDeduplicatesDeferredQueueBeforeProviderEcho(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := testThread("receipt-deferred")
 	thread.Provider = string(provider.Codex)
@@ -125,6 +122,7 @@ func TestSendReceiptDeduplicatesDeferredQueueBeforeProviderEcho(t *testing.T) {
 }
 
 func TestSendReceiptLegacySteerRetryAfterCompletionHasNoSideEffects(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("receipt-steer")
 	thread.Provider = string(provider.Codex)
@@ -175,6 +173,7 @@ func TestSendReceiptLegacySteerRetryAfterCompletionHasNoSideEffects(t *testing.T
 // either persisted it. Pin the shared admission lock with ref counts, without
 // sleeping and hoping to hit that interleaving.
 func TestSendReceiptSerializesConcurrentDirectAndQueueAdmission(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("receipt-concurrent")
 	thread.Provider = string(provider.Codex)
@@ -229,6 +228,7 @@ func TestSendReceiptSerializesConcurrentDirectAndQueueAdmission(t *testing.T) {
 }
 
 func TestSendReceiptWorkflowRetryDoesNotPrepareTakeover(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("receipt-workflow")
 	thread.Mode = threadmode.ModeWorkflow

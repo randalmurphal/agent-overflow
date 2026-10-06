@@ -19,6 +19,7 @@ import (
 // independently, so a device stamp would put the losing tab's error on the
 // other one.
 func TestAFailedApprovalNamesTheConnectionThatAnswered(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
@@ -51,6 +52,7 @@ func TestAFailedApprovalNamesTheConnectionThatAnswered(t *testing.T) {
 }
 
 func TestAFailedUserInputNamesTheConnectionThatSubmitted(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
@@ -85,6 +87,7 @@ func TestAFailedUserInputNamesTheConnectionThatSubmitted(t *testing.T) {
 // bundle running against an older backend would swallow the only surfacing
 // this failure has.
 func TestAFailureWithNoConnectionCarriesNoStamp(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 

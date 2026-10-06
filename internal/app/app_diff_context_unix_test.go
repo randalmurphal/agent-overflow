@@ -10,6 +10,7 @@ import (
 )
 
 func TestReadWorkspaceFileRejectsFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
 	// The checks run on the O_NONBLOCK-opened descriptor, so a path
 	// swapped to a FIFO after any pre-open validation is rejected
 	// instead of hanging the RPC goroutine on open or read.

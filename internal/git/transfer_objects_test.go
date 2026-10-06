@@ -13,11 +13,13 @@ import (
 )
 
 func TestTransferObjectsPreserveStagingAndPrivateCommits(t *testing.T) {
+	t.Parallel()
 	for _, sharedBase := range []bool{true, false} {
 		t.Run(map[bool]string{true: "existing clone", false: "missing objects"}[sharedBase], func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			core := NewCore()
-			source := testutil.InitGitRepo(t)
+			source := initGitRepo(t)
 			baseline, _, err := core.Execute(source, "rev-parse", "HEAD")
 			if err != nil {
 				t.Fatal(err)
@@ -92,6 +94,7 @@ func TestTransferObjectsPreserveStagingAndPrivateCommits(t *testing.T) {
 }
 
 func TestTransferIndexRejectsInconsistentSnapshotsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	oid := strings.Repeat("a", 40)
 	entry := func(path string) TransferIndexEntry { return TransferIndexEntry{Mode: "100644", OID: oid, Path: path} }
 	for name, entries := range map[string][]TransferIndexEntry{

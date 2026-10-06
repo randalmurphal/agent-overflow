@@ -3,12 +3,13 @@ package claude
 import (
 	"context"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestStartMCPAuthRequiresCredentialReaderAndBoundedRequest(t *testing.T) {
@@ -61,9 +62,7 @@ while IFS= read -r line; do
   esac
 done
 `
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock Claude: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	// This checks session cleanup, not response latency. Leave the scripted
 	// subprocess time to be scheduled alongside the full provider suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

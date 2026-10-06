@@ -1,7 +1,7 @@
 // Subagent history beyond the old wholesale cap: only a run window is sent,
 // additional members load on demand, and a cold pane retains the same history.
 import { test, expect } from './fixtures.js';
-import { RESULT_LINE, claudeScenario, emit, seedAgentThread, startMock,
+import { RESULT_LINE, claudeScenario, emit, emitBurst, seedAgentThread, startMock,
   taskStartedLine, taskUpdatedLine, textLines, toolUseLine, toolResultLine } from './agent-visibility-helpers.js';
 
 const COUNT = 2100;
@@ -36,7 +36,7 @@ test('a large subagent transcript pages activity members independently of its ma
     toolUseLine(`call-${index}`, `bash-${index}`, 'Bash', { command: `echo scope-command-${index}` }, 'scope-root'),
     toolResultLine(`bash-${index}`, 'done', { parentToolUseId: 'scope-root' }),
   ]).flat();
-  await harness.rpc('HarnessSetScenario', { scenario: claudeScenario('large-scope', [emit([
+  await harness.rpc('HarnessSetScenario', { scenario: claudeScenario('large-scope', [emitBurst([
     toolUseLine('scope-launch', 'scope-root', 'Agent', { description: 'Large scoped history', subagent_type: 'Explore' }),
     taskStartedLine('scope-task', 'scope-root', 'Large scoped history'),
     ...textLines('scope-intro', 'Beginning scoped history', 'scope-root'),

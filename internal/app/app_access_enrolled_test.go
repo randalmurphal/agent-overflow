@@ -12,6 +12,7 @@ import (
 // revoked row is not access.
 
 func TestHasEnrolledDevice_FalseOnAFreshBackend(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	enrolled, err := HasEnrolledDevice(app)
@@ -27,6 +28,7 @@ func TestHasEnrolledDevice_FalseOnAFreshBackend(t *testing.T) {
 // never opens. Counting it would mean a headless host was never fresh and
 // the console would never offer to enroll anything.
 func TestHasEnrolledDevice_IgnoresTheLocalPageChannel(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	local := localChannelSession(t, app)
 	if local.DeviceID == "" {
@@ -43,6 +45,7 @@ func TestHasEnrolledDevice_IgnoresTheLocalPageChannel(t *testing.T) {
 }
 
 func TestHasEnrolledDevice_TrueOnceADeviceIsPaired(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	localChannelSession(t, app)
 	pairDevice(t, app, "A browser", "thumb-browser")
@@ -60,6 +63,7 @@ func TestHasEnrolledDevice_TrueOnceADeviceIsPaired(t *testing.T) {
 // remaining way in. That is the one moment the console most needs to offer
 // enrollment, so a revoked row must not read as access.
 func TestHasEnrolledDevice_FalseAfterTheLastDeviceIsRevoked(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, _ := pairDevice(t, app, "A browser", "thumb-browser")
 
@@ -79,6 +83,7 @@ func TestHasEnrolledDevice_FalseAfterTheLastDeviceIsRevoked(t *testing.T) {
 // One surviving device is enough: the question is "can anything still reach
 // this backend", not "is every device live".
 func TestHasEnrolledDevice_TrueWhileAnyDeviceSurvives(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	revoked, _ := pairDevice(t, app, "An old phone", "thumb-phone")
 	pairDevice(t, app, "A browser", "thumb-browser")
@@ -100,6 +105,7 @@ func TestHasEnrolledDevice_TrueWhileAnyDeviceSurvives(t *testing.T) {
 // "no devices" there would have the serve console mint a link against an
 // identity that does not exist.
 func TestHasEnrolledDevice_ReportsWhenIdentityIsNotRunning(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	if _, err := HasEnrolledDevice(app); err == nil {
@@ -111,6 +117,7 @@ func TestHasEnrolledDevice_ReportsWhenIdentityIsNotRunning(t *testing.T) {
 // and the constants behind them stay unexported on purpose. Pin all five
 // spellings and the three groupings here, where the constants are visible.
 func TestPairingStatusViewPredicates(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		state     string
 		redeemed  bool
@@ -154,6 +161,7 @@ func TestPairingStatusViewPredicates(t *testing.T) {
 // does. This is the app-side half of that: a browser-class full-access mint
 // through the ordinary surface, with no session context, is admitted.
 func TestMintDevicePairing_AdmitsTheHostPresentInProcessCaller(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	invite, err := app.MintDevicePairing(string(identity.DeviceBrowser), string(identity.PairingAccessFull))

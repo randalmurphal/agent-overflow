@@ -50,6 +50,7 @@ func staleClone(t *testing.T) (repo, bare string) {
 }
 
 func TestWorktreeSeedCutsFromTheFetchedOriginTip(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	localMainBefore := revParse(t, repo, "main")
 
@@ -88,6 +89,7 @@ func TestWorktreeSeedCutsFromTheFetchedOriginTip(t *testing.T) {
 }
 
 func TestWorktreeSeedFallsBackToLocalWhenTheFetchFails(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	localMain := revParse(t, repo, "main")
 
@@ -177,6 +179,7 @@ func TestWorktreeSeedFallsBackWhenTheFetchTimesOut(t *testing.T) {
 }
 
 func TestWorktreeSeedReusesTheSharedFetchWindow(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 
 	core := NewCore()
@@ -215,7 +218,8 @@ func TestWorktreeSeedReusesTheSharedFetchWindow(t *testing.T) {
 }
 
 func TestWorktreeSeedSkipsTheFetchWithoutAnOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "elsewhere", t.TempDir())
 	core := NewCore()
 	calls := countingFetch(core)
@@ -240,6 +244,7 @@ func TestWorktreeSeedSkipsTheFetchWithoutAnOrigin(t *testing.T) {
 }
 
 func TestWorktreeSeedUsesTheLocalBaseWhenOriginHasNoSuchBranch(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	testutil.RunGit(t, repo, "branch", "local-only", "main")
 	localOnly := revParse(t, repo, "local-only")
@@ -265,6 +270,7 @@ func TestWorktreeSeedUsesTheLocalBaseWhenOriginHasNoSuchBranch(t *testing.T) {
 }
 
 func TestWorktreeSeedWithoutABaseCutsFromHeadAndNeverFetches(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	core := NewCore()
 	calls := countingFetch(core)
@@ -286,6 +292,7 @@ func TestWorktreeSeedWithoutABaseCutsFromHeadAndNeverFetches(t *testing.T) {
 }
 
 func TestWorktreeSeedRejectsAFlagShapedBaseBeforeFetching(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	core := NewCore()
 	calls := countingFetch(core)
@@ -300,6 +307,7 @@ func TestWorktreeSeedRejectsAFlagShapedBaseBeforeFetching(t *testing.T) {
 }
 
 func TestWorktreeSeedReportsCreationFailureWithTheFetchDiagnostics(t *testing.T) {
+	t.Parallel()
 	repo, _ := staleClone(t)
 	core := NewCore()
 
@@ -317,6 +325,7 @@ func TestWorktreeSeedReportsCreationFailureWithTheFetchDiagnostics(t *testing.T)
 }
 
 func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	calls := countingFetch(core)
 	if _, err := core.CreateWorktreeFromFreshBase(
@@ -333,6 +342,7 @@ func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
 // the fetch fails: BaseBranchKnown told the caller this base works, and the
 // bare name it would otherwise fall back to is not a ref in this clone.
 func TestWorktreeSeedUsesTheTrackingRefForAnOriginOnlyBaseAfterAFailedFetch(t *testing.T) {
+	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	sibling := t.TempDir()
 	testutil.RunGit(t, sibling, "clone", bare, ".")
@@ -365,6 +375,7 @@ func TestWorktreeSeedUsesTheTrackingRefForAnOriginOnlyBaseAfterAFailedFetch(t *t
 }
 
 func TestBaseBranchKnownSeesLocalAndOriginBranches(t *testing.T) {
+	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	// A branch only origin has, fetched so the tracking ref exists here.
 	sibling := t.TempDir()
@@ -414,6 +425,7 @@ func originOnlyBranch(t *testing.T, bare, branch string) {
 }
 
 func TestBranchToCheckOutFetchesToFindABranchPushedSinceTheLastFetch(t *testing.T) {
+	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	originOnlyBranch(t, bare, "feature/mr")
 	testutil.RunGit(t, repo, "branch", "scratch")
@@ -439,6 +451,7 @@ func TestBranchToCheckOutFetchesToFindABranchPushedSinceTheLastFetch(t *testing.
 }
 
 func TestAttachWorktreeChecksOutABranchOnlyOriginHasTrackingOrigin(t *testing.T) {
+	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	originOnlyBranch(t, bare, "feature/mr")
 	testutil.RunGit(t, repo, "fetch", "origin")

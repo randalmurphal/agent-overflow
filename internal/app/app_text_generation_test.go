@@ -38,6 +38,7 @@ func fakeLookPath(available ...string) func(string) error {
 // default model (claude-haiku-4-5) rather than handing the call site a
 // Codex config that will fail on every exec.LookPath retry.
 func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude") // Codex not installed.
@@ -55,6 +56,7 @@ func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
 }
 
 func TestResolveTextGenerationConfig_Layer1FallbackClaudeMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -74,6 +76,7 @@ func TestResolveTextGenerationConfig_Layer1FallbackClaudeMissing(t *testing.T) {
 }
 
 func TestResolveTextGenerationConfig_BothAvailablePrefersConfigured(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude", "codex")
 
@@ -84,6 +87,7 @@ func TestResolveTextGenerationConfig_BothAvailablePrefersConfigured(t *testing.T
 }
 
 func TestResolveTextGenerationConfig_NeitherAvailableReturnsConfigured(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath() // nothing installed.
 
@@ -100,6 +104,7 @@ func TestResolveTextGenerationConfig_NeitherAvailableReturnsConfigured(t *testin
 // NOT be passed to Claude after Layer 1 substitution — Claude would
 // reject the slug. The substituted provider always uses its own default.
 func TestResolveTextGenerationConfig_DoesNotCarryModelAcrossProviders(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -127,6 +132,7 @@ func TestResolveTextGenerationConfig_DoesNotCarryModelAcrossProviders(t *testing
 // the user's explicit model setting is honored. Substitution is what
 // triggers the reset; happy-path keeps user choice.
 func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -147,6 +153,7 @@ func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *test
 }
 
 func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -168,6 +175,7 @@ func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.
 }
 
 func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -189,6 +197,7 @@ func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
 }
 
 func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude")
@@ -209,6 +218,7 @@ func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing
 // for the other axis: only Codex installed → Codex resolves, Claude returns
 // ok=false. Catches regressions where one branch loses its lookPath check.
 func TestResolveTextGenerationConfigFor_SymmetricClaudeMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("codex")
@@ -226,6 +236,7 @@ func TestResolveTextGenerationConfigFor_SymmetricClaudeMissing(t *testing.T) {
 }
 
 func TestResolveTextGenerationConfigFor_UnknownProviderReturnsFalse(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude", "codex")
 	if _, ok := app.resolveTextGenerationConfigFor("phantom"); ok {
@@ -238,6 +249,7 @@ func TestResolveTextGenerationConfigFor_UnknownProviderReturnsFalse(t *testing.T
 // alternate, and the alternate must get its own full budget rather than
 // the primary's exhausted remainder.
 func TestRunTextGenWithFallback_PerAttemptBudgets(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex")
@@ -325,6 +337,7 @@ func TestRunTextGenWithFallback_AlternateFailureIsLoggedAndPrimarySurfaces(t *te
 // context.Canceled, and starting a second provider subprocess into a
 // shutdown is how orphans are made.
 func TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex")
@@ -346,6 +359,7 @@ func TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown(t *testing.T) {
 }
 
 func TestOtherProvider(t *testing.T) {
+	t.Parallel()
 	if got := otherProvider(string(provider.Claude)); got != string(provider.Codex) {
 		t.Fatalf("otherProvider(claude) = %q, want codex", got)
 	}
@@ -358,6 +372,7 @@ func TestOtherProvider(t *testing.T) {
 }
 
 func TestAvailableTextGenerationProviders(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 

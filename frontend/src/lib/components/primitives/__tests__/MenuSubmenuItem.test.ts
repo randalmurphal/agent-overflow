@@ -5,21 +5,10 @@
 //   - Escape inside the submenu closes it but does NOT close the parent.
 //   - Selecting a nested MenuItem closes the submenu.
 
-import { describe, expect, it, vi, beforeAll } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './MenuSubmenuItemHarness.svelte';
-
-class StubResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-
-beforeAll(() => {
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-    StubResizeObserver as unknown as typeof ResizeObserver;
-});
 
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();

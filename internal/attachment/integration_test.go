@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
@@ -20,11 +21,7 @@ import (
 // for end-to-end tests. Both are cleaned up via t.Cleanup.
 func integrationStores(t *testing.T) (*Store, *store.Store, string) {
 	t.Helper()
-	meta, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = meta.Close() })
+	meta := storetest.Clone(t)
 
 	rootDir := t.TempDir()
 	attStore, err := NewStore(Config{RootDir: rootDir}, meta)

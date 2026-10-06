@@ -20,6 +20,7 @@ import (
 // being true, this test fails and the fetch cadence has to broadcast the
 // refresh itself.
 func TestBackgroundFetchRefUpdateReachesSubscribers(t *testing.T) {
+	t.Parallel()
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 
 	core := gitops.NewCore()

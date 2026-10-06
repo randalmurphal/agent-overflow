@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestExecuteTimeout(t *testing.T) {
@@ -18,10 +19,8 @@ func TestExecuteTimeout(t *testing.T) {
 
 	binDir := t.TempDir()
 	gitPath := filepath.Join(binDir, "git")
-	script := "#!/bin/sh\nsleep 2\n"
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	script := "#!/bin/sh\nexec sleep 2\n"
+	mockexec.Write(t, gitPath, script)
 
 	originalPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
@@ -36,6 +35,45 @@ func TestExecuteTimeout(t *testing.T) {
 	}
 }
 
+// A child that inherits the CLI's output pipes must not hold the call open
+// past the timeout, nor past a CLI that already succeeded.
+func TestExecuteDoesNotWaitForAChildHoldingThePipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock git is unix-only")
+	}
+	binDir := t.TempDir()
+	mockexec.Write(t, filepath.Join(binDir, "git"), `#!/bin/sh
+sleep 30 &
+if [ "$1" = hang ]; then wait; fi
+echo done
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	original := pipeWaitDelay
+	pipeWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { pipeWaitDelay = original })
+
+	core := &Core{timeout: 200 * time.Millisecond, maxOutputBytes: defaultMaxOutputBytes}
+	for _, tc := range []struct {
+		arg     string
+		wantErr string
+	}{
+		{"hang", "timed out"},
+		{"exit", ""},
+	} {
+		started := time.Now()
+		stdout, _, err := core.Execute(t.TempDir(), tc.arg)
+		if elapsed := time.Since(started); elapsed > 5*time.Second {
+			t.Fatalf("%s: returned after %s, held by the child", tc.arg, elapsed)
+		}
+		if tc.wantErr == "" && (err != nil || stdout != "done\n") {
+			t.Fatalf("%s: stdout %q, err %v; want the CLI's output and no error", tc.arg, stdout, err)
+		}
+		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Fatalf("%s: err %v, want %q", tc.arg, err, tc.wantErr)
+		}
+	}
+}
+
 func TestExecuteReturnsStdoutAndStderrOnNonZeroExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script mock git is unix-only")
@@ -44,9 +82,7 @@ func TestExecuteReturnsStdoutAndStderrOnNonZeroExit(t *testing.T) {
 	binDir := t.TempDir()
 	gitPath := filepath.Join(binDir, "git")
 	script := "#!/bin/sh\necho 'out'\necho 'err' 1>&2\nexit 4\n"
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	mockexec.Write(t, gitPath, script)
 
 	originalPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
@@ -65,6 +101,7 @@ func TestExecuteReturnsStdoutAndStderrOnNonZeroExit(t *testing.T) {
 }
 
 func TestParseWorktreeList(t *testing.T) {
+	t.Parallel()
 	worktrees := parseWorktreeList(
 		"worktree /tmp/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/repo-feature\nHEAD def456\nbranch refs/heads/feature/demo\n",
 	)
@@ -87,7 +124,8 @@ func TestParseWorktreeList(t *testing.T) {
 }
 
 func TestCreateListAndRemoveWorktree(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	worktreePath := filepath.Join(t.TempDir(), "feature-demo")
 
@@ -141,7 +179,8 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 }
 
 func TestCreateWorktreeRequiresPath(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.CreateWorktree(repo, "  ", "feature/x")
@@ -154,7 +193,8 @@ func TestCreateWorktreeRequiresPath(t *testing.T) {
 }
 
 func TestCreateWorktreeRequiresBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "  ")
@@ -167,7 +207,8 @@ func TestCreateWorktreeRequiresBranch(t *testing.T) {
 }
 
 func TestCreateWorktreeRejectsInvalidBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "--bad")
@@ -180,7 +221,8 @@ func TestCreateWorktreeRejectsInvalidBranch(t *testing.T) {
 }
 
 func TestCreateWorktreeFailsOnConflictingBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// "main" already exists, so creating a worktree with branch "main" fails.
@@ -211,7 +253,8 @@ func TestCreateWorktreeNormalizesBranchCreatedAfterPreflight(t *testing.T) {
 }
 
 func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// Create a second branch on top of HEAD so we have something existing to
@@ -246,6 +289,7 @@ func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
 }
 
 func TestAttachWorktreeRequiresPath(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	if err := core.AttachWorktree(t.TempDir(), "  ", "main"); err == nil ||
 		!strings.Contains(err.Error(), "path is required") {
@@ -254,6 +298,7 @@ func TestAttachWorktreeRequiresPath(t *testing.T) {
 }
 
 func TestAttachWorktreeRequiresBranch(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	if err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "  "); err == nil ||
 		!strings.Contains(err.Error(), "branch is required") {
@@ -262,6 +307,7 @@ func TestAttachWorktreeRequiresBranch(t *testing.T) {
 }
 
 func TestAttachWorktreeRejectsFlagShapedBranch(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "--orphan")
 	if err == nil || !strings.Contains(err.Error(), "must not start with -") {
@@ -270,7 +316,8 @@ func TestAttachWorktreeRejectsFlagShapedBranch(t *testing.T) {
 }
 
 func TestAttachWorktreeRefusesBranchAlreadyCheckedOut(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// Default branch ("main") is already checked out in `repo`. Attaching a
@@ -285,7 +332,8 @@ func TestAttachWorktreeRefusesBranchAlreadyCheckedOut(t *testing.T) {
 }
 
 func TestRemoveWorktreeRequiresPath(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.RemoveWorktree(repo, "  ")
@@ -298,7 +346,8 @@ func TestRemoveWorktreeRequiresPath(t *testing.T) {
 }
 
 func TestRemoveWorktreeFailsOnNonExistent(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.RemoveWorktree(repo, filepath.Join(t.TempDir(), "no-such-wt"))
@@ -311,6 +360,7 @@ func TestRemoveWorktreeFailsOnNonExistent(t *testing.T) {
 }
 
 func TestListWorktreesOnNonRepo(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	_, err := core.ListWorktrees(t.TempDir())
@@ -320,6 +370,7 @@ func TestListWorktreesOnNonRepo(t *testing.T) {
 }
 
 func TestFormatCommandQuotesSpecialChars(t *testing.T) {
+	t.Parallel()
 	got := formatCommand("git", "commit", "-m", "hello world")
 	if !strings.Contains(got, `"hello world"`) {
 		t.Fatalf("expected quoted arg, got %q", got)
@@ -327,6 +378,7 @@ func TestFormatCommandQuotesSpecialChars(t *testing.T) {
 }
 
 func TestLimitedBufferMultipleWritesBeyondLimit(t *testing.T) {
+	t.Parallel()
 	buf := newLimitedBuffer(6)
 
 	if _, err := buf.Write([]byte("abc")); err != nil {
@@ -347,6 +399,7 @@ func TestLimitedBufferMultipleWritesBeyondLimit(t *testing.T) {
 }
 
 func TestLimitedBufferZeroMaxDropsEverything(t *testing.T) {
+	t.Parallel()
 	buf := newLimitedBuffer(0)
 
 	n, err := buf.Write([]byte("data"))
@@ -362,6 +415,7 @@ func TestLimitedBufferZeroMaxDropsEverything(t *testing.T) {
 }
 
 func TestLimitedBufferTruncates(t *testing.T) {
+	t.Parallel()
 	buf := newLimitedBuffer(4)
 
 	if _, err := buf.Write([]byte("hello")); err != nil {
@@ -379,9 +433,11 @@ func TestLimitedBufferTruncates(t *testing.T) {
 // locked worktree with one --force. Removal lifts the lock first, on both
 // the guarded and the forced path.
 func TestRemoveWorktreeLiftsLock(t *testing.T) {
+	t.Parallel()
 	for _, force := range []bool{false, true} {
 		t.Run(map[bool]string{false: "guarded", true: "forced"}[force], func(t *testing.T) {
-			repo := testutil.InitGitRepo(t)
+			t.Parallel()
+			repo := initGitRepo(t)
 			core := NewCore()
 			worktreePath := filepath.Join(repo, ".claude", "worktrees", "locked-demo")
 			if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
@@ -418,7 +474,8 @@ func TestRemoveWorktreeLiftsLock(t *testing.T) {
 // A dirty locked worktree still needs the caller's force: lifting the lock
 // must not silently bypass git's dirty-tree guard.
 func TestRemoveWorktreeLiftsLockButKeepsDirtyGuard(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	worktreePath := filepath.Join(t.TempDir(), "locked-dirty")
 	if err := core.CreateWorktree(repo, worktreePath, "feature/locked-dirty"); err != nil {
@@ -441,6 +498,7 @@ func TestRemoveWorktreeLiftsLockButKeepsDirtyGuard(t *testing.T) {
 }
 
 func TestParseWorktreeEntriesReadsBareAndReasonedLocks(t *testing.T) {
+	t.Parallel()
 	entries := parseWorktreeEntries("worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
 		"worktree /repo/.claude/worktrees/x\nHEAD abc\nbranch refs/heads/worktree-x\nlocked\n\n" +
 		"worktree /repo/.claude/worktrees/y\nHEAD abc\nbranch refs/heads/worktree-y\nlocked keep me\n\n")

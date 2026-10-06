@@ -4,6 +4,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
@@ -117,9 +118,7 @@ func TestWorkflowPRReviewCommentErrorsAreReturned(t *testing.T) {
 		app, item := newWorkflowPRTestApp(t)
 		binDir := t.TempDir()
 		binary := filepath.Join(binDir, "gh")
-		if err := os.WriteFile(binary, []byte("#!/bin/sh\necho 'review service unavailable' 1>&2\nexit 1\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.Write(t, binary, "#!/bin/sh\necho 'review service unavailable' 1>&2\nexit 1\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "review service unavailable") {
 			t.Fatalf("fetch-failure error = %v", err)
@@ -202,9 +201,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" 1>&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	t.Setenv("AO_GH_REVIEW_FIXTURE", reviewFixture)
 	t.Setenv("AO_GH_COMMENTS_FIXTURE", commentsFixture)
 	t.Setenv("AO_GH_DETAIL_FIXTURE", detailFixture)
@@ -212,6 +209,7 @@ esac
 }
 
 func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	dataRoot := t.TempDir()
 	if err := app.initWorkflowEngine(dataRoot); err != nil {
@@ -219,7 +217,7 @@ func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
 
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project := store.Project{ID: "triage-project", Path: repo, Name: "Triage", CreatedAt: 1, UpdatedAt: 1}
 	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatal(err)
@@ -345,6 +343,7 @@ func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 }
 
 func TestWorkflowTriageSeedUsesNewestBoundedNarrativesInWorkflowOrder(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	dataRoot := t.TempDir()
 	if err := app.initWorkflowEngine(dataRoot); err != nil {
@@ -426,6 +425,7 @@ func TestWorkflowTriageSeedUsesNewestBoundedNarrativesInWorkflowOrder(t *testing
 }
 
 func TestWorkflowTakeoverRejectsHistoricalPhaseThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	for _, id := range []string{"old-phase-thread", "current-phase-thread"} {
 		thread := testThread(id)
@@ -473,6 +473,7 @@ func TestWorkflowTakeoverRejectsHistoricalPhaseThread(t *testing.T) {
 }
 
 func TestWorkflowTakeoverSteersSchemaLessThenCompletesThroughGate(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeTakeoverWorkflowFixture(t, configRoot)
@@ -562,6 +563,7 @@ func TestWorkflowTakeoverSteersSchemaLessThenCompletesThroughGate(t *testing.T) 
 }
 
 func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeLiveTakeoverWorkflowFixture(t, configRoot)
@@ -792,9 +794,7 @@ done
 	script = strings.ReplaceAll(script, "__TURN_FILE__", turnFile)
 	script = strings.ReplaceAll(script, "__ARGS_FILE__", argsFile)
 	path := filepath.Join(t.TempDir(), "workflow-live-takeover-claude.sh")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path, argsFile
 }
 
@@ -859,8 +859,6 @@ while IFS= read -r line; do
 done
 `, capturePath, counterPath, counterPath, counterPath)
 	path := filepath.Join(t.TempDir(), "workflow-takeover-codex.sh")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }

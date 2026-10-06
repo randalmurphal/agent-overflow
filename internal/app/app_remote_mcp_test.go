@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"io"
@@ -100,6 +101,7 @@ func remoteMCPCall(t *testing.T, endpoint, name string, args any, wantError bool
 }
 
 func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source := identityApp(t)
@@ -266,6 +268,7 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 // model only as a reference, argument errors carry a public code, and a call
 // that already named its operation is never prefixed twice.
 func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
+	t.Parallel()
 	a := identityApp(t)
 	t.Cleanup(func() {
 		if err := a.remoteMCPServer().Close(); err != nil {
@@ -317,6 +320,7 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 }
 
 func TestRemoteMCPRegistrationAndRowsKeepProvidersAndBrowserSeparate(t *testing.T) {
+	t.Parallel()
 	a := identityApp(t)
 	a.backends, _ = attachedbackends.New(t.TempDir(), "source", "test")
 	t.Cleanup(func() { _ = a.remoteMCPServer().Close() })
@@ -347,6 +351,7 @@ func TestRemoteMCPRegistrationAndRowsKeepProvidersAndBrowserSeparate(t *testing.
 }
 
 func TestRemoteMCPResultBudgetIsExplicitAndUTF8Safe(t *testing.T) {
+	t.Parallel()
 	for _, budget := range []int{0, 1, 2, 3, 100} {
 		got := remoteResult("target", RemoteCommand{Output: "aé界z", Truncated: true}, remoteResultOptions{MaxOutputBytes: &budget})
 		if len(got.Output) > budget || !utf8.ValidString(got.Output) || got.RetainedOutputBytes != 7 || got.OmittedOutputBytes+int64(len(got.Output)) != 7 || !got.Truncated {
@@ -356,6 +361,7 @@ func TestRemoteMCPResultBudgetIsExplicitAndUTF8Safe(t *testing.T) {
 }
 
 func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {
 			a, _, _ := newMCPTestApp(t)
@@ -370,14 +376,9 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 			capture := t.TempDir()
 			if name == string(provider.Claude) {
 				binary := writeClaudeMcpToggleCaptureBinary(t, capture)
-				script, err := os.ReadFile(binary)
-				if err != nil {
-					t.Fatal(err)
-				}
+				script := []byte(mockScript(t, binary))
 				script = []byte(strings.ReplaceAll(string(script), `"subtype":"mcp_toggle"`, `"subtype":"mcp_reconnect"`))
-				if err := os.WriteFile(binary, script, 0700); err != nil {
-					t.Fatal(err)
-				}
+				mockexec.Write(t, binary, string(script))
 				ps, err := claude.NewSession(ctx, thread.ID, claude.Config{Binary: binary, WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)
@@ -416,6 +417,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 }
 
 func TestRemoteMCPRequiresEnabledPairedComputer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {

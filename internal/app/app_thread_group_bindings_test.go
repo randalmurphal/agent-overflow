@@ -54,6 +54,7 @@ func emittedGroupFrames(rec *emitRecorder) []ThreadGroupUpdateEvent {
 }
 
 func TestPinBindingsEmitTheWholeRow(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForThreadGroups(t)
 	if err := app.store.CreateThread(testThread("t-pin")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -91,6 +92,7 @@ func TestPinBindingsEmitTheWholeRow(t *testing.T) {
 }
 
 func TestSetThreadGroupEmitsEveryTouchedRowAndDeleteEmitsTheGroup(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForThreadGroups(t)
 	if err := app.store.CreateThread(testThread("t-root")); err != nil {
 		t.Fatalf("create root: %v", err)

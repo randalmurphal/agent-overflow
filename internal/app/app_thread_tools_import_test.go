@@ -23,6 +23,7 @@ import (
 // The phrase lives only in the rollout, so a hit can come from nowhere but
 // the imported-history tables behind `timeline_items`.
 func TestThreadSearchFindsAnImportedCodexSessionThroughTheTool(t *testing.T) {
+	t.Parallel()
 	const phrase = "quokka telemetry"
 	app := newTestAppWithStore(t)
 	app.configDir = t.TempDir()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // mcpStatusResponderScript writes a fake Claude CLI that:
@@ -69,9 +70,7 @@ func newMCPStatusResponderSession(t *testing.T, mode string, timeout time.Durati
 	t.Helper()
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(mcpStatusResponderScript(mode)), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, mcpStatusResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
@@ -198,6 +197,7 @@ func TestSession_QueryMCPStatus_SuccessNoPayload(t *testing.T) {
 }
 
 func TestSession_QueryMCPStatus_Timeout(t *testing.T) {
+	t.Parallel()
 	s := newMCPStatusResponderSession(t, "silent", 200*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -241,9 +241,7 @@ func newMCPControlResponderSession(t *testing.T, subtype string) (*Session, stri
 	dir := t.TempDir()
 	capturePath := dir + "/capture.ndjson"
 	scriptPath := dir + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(mcpControlResponderScript(subtype, capturePath)), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, mcpControlResponderScript(subtype, capturePath))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {

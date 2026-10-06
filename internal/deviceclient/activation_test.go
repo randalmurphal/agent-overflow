@@ -13,7 +13,16 @@ import (
 	"time"
 )
 
+// shortenProbeInterval polls confirmation quickly so a test observes
+// repeated polls without waiting out the production interval.
+func shortenProbeInterval(t *testing.T) {
+	previous := probeInterval
+	probeInterval = 20 * time.Millisecond
+	t.Cleanup(func() { probeInterval = previous })
+}
+
 func TestAwaitActivationWaitsWithoutTicketsOrSuccessfulRotations(t *testing.T) {
+	shortenProbeInterval(t)
 	for _, recoverable := range []bool{false, true} {
 		name := "legacy"
 		if recoverable {
@@ -91,6 +100,7 @@ func TestAwaitActivationEndsOnRevocationAndForgetsOnlySession(t *testing.T) {
 }
 
 func TestAwaitActivationRetriesOutageUntilCancellationWithoutLosingPairing(t *testing.T) {
+	shortenProbeInterval(t)
 	be := newBackend(t)
 	be.failureStatus.Store(http.StatusServiceUnavailable)
 	client, dir := openAgainst(t, be, nil)

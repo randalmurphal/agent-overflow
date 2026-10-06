@@ -24,6 +24,7 @@ const accountUsageFixture = `{
 }`
 
 func TestParseAccountUsage(t *testing.T) {
+	t.Parallel()
 	usage, err := parseAccountUsage(json.RawMessage(accountUsageFixture))
 	if err != nil {
 		t.Fatalf("parseAccountUsage: %v", err)
@@ -49,6 +50,7 @@ func TestParseAccountUsage(t *testing.T) {
 // rests on: a field the backend omitted stays nil so the UI can render
 // nothing, instead of claiming the account has used zero tokens.
 func TestParseAccountUsageAbsenceIsNotZero(t *testing.T) {
+	t.Parallel()
 	usage, err := parseAccountUsage(json.RawMessage(`{"summary":{"lifetimeTokens":0},"dailyUsageBuckets":null}`))
 	if err != nil {
 		t.Fatalf("parseAccountUsage: %v", err)
@@ -76,6 +78,7 @@ func TestParseAccountUsageAbsenceIsNotZero(t *testing.T) {
 }
 
 func TestParseAccountUsageDropsUndatedBuckets(t *testing.T) {
+	t.Parallel()
 	usage, err := parseAccountUsage(json.RawMessage(
 		`{"summary":{},"dailyUsageBuckets":[{"startDate":"  ","tokens":5},{"startDate":"2026-08-02","tokens":6}]}`))
 	if err != nil {
@@ -87,6 +90,7 @@ func TestParseAccountUsageDropsUndatedBuckets(t *testing.T) {
 }
 
 func TestParseAccountUsageRejectsGarbage(t *testing.T) {
+	t.Parallel()
 	if _, err := parseAccountUsage(json.RawMessage(`not json`)); err == nil {
 		t.Fatal("a malformed response must be an error, not an empty report")
 	}
@@ -95,6 +99,7 @@ func TestParseAccountUsageRejectsGarbage(t *testing.T) {
 // TestClassifyAccountUsageError covers the split between "there is nothing to
 // report" (render no section) and a real failure (surface it).
 func TestClassifyAccountUsageError(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name            string
 		err             error
@@ -154,6 +159,7 @@ func TestClassifyAccountUsageError(t *testing.T) {
 }
 
 func TestMatchAccountUsageFrame(t *testing.T) {
+	t.Parallel()
 	if _, matched, _ := matchAccountUsageFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)); matched {
 		t.Error("the initialize reply must not be claimed by the usage read")
 	}

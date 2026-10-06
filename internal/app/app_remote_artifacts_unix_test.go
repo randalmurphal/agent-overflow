@@ -11,6 +11,7 @@ import (
 )
 
 func TestRemoteArtifactRefusesFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	if err := syscall.Mkfifo(filepath.Join(workspace, "pipe"), 0o600); err != nil {
 		t.Fatal(err)

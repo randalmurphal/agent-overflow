@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
@@ -28,10 +29,10 @@ type midTurnForkFixture struct {
 	jsonlPath  string
 }
 
-func newMidTurnForkFixture(t *testing.T, sessionID, jsonl string) midTurnForkFixture {
+// newMidTurnForkFixture lays the transcript out under home, which is
+// testProviderHome when an App resolves it.
+func newMidTurnForkFixture(t *testing.T, home, sessionID, jsonl string) midTurnForkFixture {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "ws")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -185,8 +186,9 @@ func seedMidTurnSourceRows(t *testing.T, st *store.Store, threadID string) {
 // fork cuts at the pin even after the source keeps streaming. Nothing
 // is sliced at fork time and the SOURCE is left completely alone.
 func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-midturn")
 	source.Provider = string(provider.Claude)
@@ -317,8 +319,9 @@ func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
 // back to the deepest on-disk cursor) in resolveClaudeForkResumeAt,
 // against the file as it stands at spawn time.
 func TestForkThreadClaudeMidTurnPinsLeafNotYetOnDisk(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-midturn-race")
 	source.Provider = string(provider.Claude)
@@ -355,8 +358,9 @@ func TestForkThreadClaudeMidTurnPinsLeafNotYetOnDisk(t *testing.T) {
 // has written any transcript at all. The fork holds just the prompt and
 // starts a fresh provider thread on its first send.
 func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "never-written-session", "")
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "never-written-session", "")
 
 	source := testThread("thread-claude-midturn-degenerate")
 	source.Provider = string(provider.Claude)
@@ -412,8 +416,9 @@ func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
 // lazy path, never the unpinned shortcut an at-or-past-tail anchor
 // takes on an idle thread.
 func TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-midturn-anchored")
 	source.Provider = string(provider.Claude)
@@ -452,6 +457,7 @@ func TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail(t *testing.T) {
 // turn-aborted marker a real interrupt writes — onto the fork's copy
 // only. A lastTurnId naming the in-progress turn would be rejected.
 func TestForkThreadCodexMidTurnTailForksWithNoBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	requestLog := filepath.Join(t.TempDir(), "fork-requests.ndjson")
 	app.settings = settings.NewService(t.TempDir())
@@ -522,6 +528,7 @@ func TestForkThreadCodexMidTurnTailForksWithNoBoundary(t *testing.T) {
 // rejects such a lastTurnId and the fork would end up with provider
 // history that disagrees with its cloned items.
 func TestForkThreadCodexAnchoredForkRefusesTheInFlightTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -558,8 +565,9 @@ func TestForkThreadCodexAnchoredForkRefusesTheInFlightTurn(t *testing.T) {
 // in-flight turn on the provider side, but the cloned prefix can still
 // hold running rows, so the fork settles the same way.
 func TestForkThreadFromMessageDuringActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-message-fork-midturn")
 	source.Provider = string(provider.Claude)
@@ -626,8 +634,9 @@ func mustListItems(t *testing.T, st *store.Store, threadID string) []store.Item 
 // refused exactly as it is on an idle thread, rather than silently
 // becoming a tail fork because a turn happened to be running.
 func TestForkThreadMidTurnAnchorOnAnItemlessActiveTurnIsATailFork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-midturn-itemless")
 	source.Provider = string(provider.Claude)
@@ -677,8 +686,9 @@ func TestForkThreadMidTurnAnchorOnAnItemlessActiveTurnIsATailFork(t *testing.T) 
 // the user a thread that silently lost its history. The fork must fail
 // and leave no rows behind.
 func TestForkThreadClaudeMidTurnColdScanIOFailureFailsTheFork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	// No live session is attached, so the cut resolves through the cold
 	// scan — which opens the file.
@@ -739,8 +749,9 @@ func closeTurn(t *testing.T, st *store.Store, turnID string) {
 // the fork's first send, handing the fork tool calls its timeline never
 // got.
 func TestForkThreadClaudeBackgroundContinuationPinsLazyCut(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-bg-continuation")
 	source.Provider = string(provider.Claude)
@@ -800,8 +811,9 @@ func TestForkThreadClaudeBackgroundContinuationPinsLazyCut(t *testing.T) {
 // and take the UNPINNED lazy path — skipping the capture entirely. The
 // hoisted normalization in ForkThread routes it through the pinned cut.
 func TestForkThreadClaudeBackgroundContinuationAnchoredAtLastTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-bg-cont-anchored")
 	source.Provider = string(provider.Claude)
@@ -833,8 +845,9 @@ func TestForkThreadClaudeBackgroundContinuationAnchoredAtLastTurn(t *testing.T) 
 // registered means a caller skipped the mid-turn capture, and the fork
 // must fail loudly rather than defer the cut to first send.
 func TestForkClaudeThreadLazyPathRefusedWithLiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-lazy-tripwire")
 	source.Provider = string(provider.Claude)
@@ -859,12 +872,13 @@ func TestForkClaudeThreadLazyPathRefusedWithLiveSession(t *testing.T) {
 // the row a mid-turn capture tends to land on) is repaired to the
 // deepest surviving row at or before it.
 func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	t.Parallel()
+	fixture := newMidTurnForkFixture(t, t.TempDir(), "mid-turn-session", midTurnSourceJSONL)
 
 	// a1 is a plain text assistant row — survives every filter.
-	cursor, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a1")
+	cursor, err := resolveClaudeForkResumeAt(sessionfork.ProjectsDirForHome(fixture.home), fixture.sessionID, fixture.workspace, "a1")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), surviving pin): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(surviving pin): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want the pin a1 verbatim", cursor)
@@ -876,9 +890,9 @@ func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
 	if err := os.WriteFile(fixture.jsonlPath, []byte(midTurnSourceJSONL+dangling), 0o600); err != nil {
 		t.Fatalf("append dangling tool_use: %v", err)
 	}
-	cursor, err = resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a2")
+	cursor, err = resolveClaudeForkResumeAt(sessionfork.ProjectsDirForHome(fixture.home), fixture.sessionID, fixture.workspace, "a2")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), filter-dropped pin): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(filter-dropped pin): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want a1 (the pin's deepest surviving ancestor)", cursor)
@@ -891,12 +905,13 @@ func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
 // and falls back to the deepest ON-DISK cursor. Backward skew is the
 // honest interrupt shape; failing the start would strand the fork.
 func TestResolveClaudeForkResumeAtWaitsOutAppendGapThenFallsBack(t *testing.T) {
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	t.Parallel()
+	fixture := newMidTurnForkFixture(t, t.TempDir(), "mid-turn-session", midTurnSourceJSONL)
 
 	start := time.Now()
-	cursor, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a2-never-flushed")
+	cursor, err := resolveClaudeForkResumeAt(sessionfork.ProjectsDirForHome(fixture.home), fixture.sessionID, fixture.workspace, "a2-never-flushed")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), pin never lands): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(pin never lands): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want the deepest on-disk survivor a1", cursor)
@@ -910,12 +925,13 @@ func TestResolveClaudeForkResumeAtWaitsOutAppendGapThenFallsBack(t *testing.T) {
 // whose active branch holds NO row the CLI would accept as a cursor is
 // a loud failure, not a silent unpinned fork.
 func TestResolveClaudeForkResumeAtFailsWithNoResumableRow(t *testing.T) {
+	t.Parallel()
 	// The whole file is one dangling tool_use — filtered, no survivor.
 	jsonl := `{"type":"assistant","uuid":"a-dangling","parentUuid":null,"sessionId":"mid-turn-session","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"tool-x","name":"Bash","input":{}}]}}` + "\n"
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", jsonl)
+	fixture := newMidTurnForkFixture(t, t.TempDir(), "mid-turn-session", jsonl)
 
-	if _, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a-dangling"); err == nil {
-		t.Fatal("resolveClaudeForkResumeAt(testProviderProjectsDir(t), no resumable row) = nil error, want a loud failure")
+	if _, err := resolveClaudeForkResumeAt(sessionfork.ProjectsDirForHome(fixture.home), fixture.sessionID, fixture.workspace, "a-dangling"); err == nil {
+		t.Fatal("resolveClaudeForkResumeAt(no resumable row) = nil error, want a loud failure")
 	}
 }
 
@@ -932,9 +948,10 @@ func TestResolveClaudeForkResumeAtFailsWithNoResumableRow(t *testing.T) {
 // still drops. The 2026-08-22 incident fork silently lost 1631 such
 // rows to a status-only liveness test.
 func TestForkThreadClaudeMidTurnKeepsTriageWrittenSettledBackgroundWork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 
 	source := testThread("thread-claude-midturn-bgdone")
 	source.Provider = string(provider.Claude)

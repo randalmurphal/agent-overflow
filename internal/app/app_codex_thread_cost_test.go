@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,9 +70,7 @@ done
 		threadCostProviderThread,
 	)
 	path := filepath.Join(t.TempDir(), "codex-thread-cost.sh")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatalf("write mock codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -163,6 +162,7 @@ func threadLifetimeBucket(t *testing.T, app *App, threadID string) store.UsageBu
 // row appears, and the usage chip still reads the rate-table figure with no
 // source label.
 func TestCodexTurnPersistsWhenTheThreadCostReadFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	capturePath := filepath.Join(t.TempDir(), "usage-read.jsonl")
 	threadID := startThreadCostSession(t, app, "codex-cost-fails",
@@ -195,6 +195,7 @@ func TestCodexTurnPersistsWhenTheThreadCostReadFails(t *testing.T) {
 // row per thread), the token counts are untouched, and only the ONE query
 // shape a cumulative total can answer is re-priced and labelled.
 func TestCodexThreadCostReplacesTheThreadLifetimeCost(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	capturePath := filepath.Join(t.TempDir(), "usage-read.jsonl")
 	threadID := startThreadCostSession(t, app, "codex-cost-lands",
@@ -273,6 +274,7 @@ func TestCodexThreadCostReplacesTheThreadLifetimeCost(t *testing.T) {
 // mixes it into a total that also contains rate-table figures, so the whole
 // answer stays rate-table priced rather than partly re-based.
 func TestProviderThreadCostOverlayIsScopedToTheLifetimeThreadQuery(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-overlay-scope")
 	thread.SessionRef = "codex-overlay-provider-thread"

@@ -11,6 +11,7 @@ import (
 )
 
 func TestMCPAuthFlowUsesThreadlessAppServerThroughCompletion(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
@@ -71,6 +72,7 @@ done
 }
 
 func TestMCPAuthFlowRequiresAbsoluteWorkspace(t *testing.T) {
+	t.Parallel()
 	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{WorkDir: "relative"}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("error = %v, want absolute-workspace refusal", err)
@@ -78,6 +80,7 @@ func TestMCPAuthFlowRequiresAbsoluteWorkspace(t *testing.T) {
 }
 
 func TestMCPAuthFlowRequiresBoundedRequest(t *testing.T) {
+	t.Parallel()
 	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{WorkDir: t.TempDir()}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "timeout must be positive") {
 		t.Fatalf("error = %v, want positive-timeout refusal", err)

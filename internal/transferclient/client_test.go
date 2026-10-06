@@ -17,6 +17,7 @@ import (
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/loopback/loopbacktest"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/transferwire"
 )
@@ -127,9 +128,9 @@ func TestTransferClientPinsTLSAndBindsEachReply(t *testing.T) {
 
 func TestTransferClientNeverFollowsRedirectWithAuthority(t *testing.T) {
 	var reached atomic.Int32
-	destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Add(1) }))
+	destination := loopbacktest.NewServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Add(1) }))
 	defer destination.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirect := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
 	}))
 	defer redirect.Close()

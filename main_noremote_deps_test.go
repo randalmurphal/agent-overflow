@@ -61,17 +61,24 @@ func forbiddenIn(deps []string) []string {
 // payload is checked to link them, so a list that matches nothing cannot
 // pass this test.
 func TestNoremoteBuildsLinkNoRemoteAccessDependencies(t *testing.T) {
-	if found := forbiddenIn(goListDeps(t, "linux", "production,nogui", ".")); len(found) == 0 {
-		t.Fatal("the standard payload links none of the remote-access packages; the forbidden list no longer names them")
-	}
+	// Each go list is its own subprocess, so the four graphs load at once.
+	t.Run("standard payload", func(t *testing.T) {
+		t.Parallel()
+		if found := forbiddenIn(goListDeps(t, "linux", "production,nogui", ".")); len(found) == 0 {
+			t.Fatal("the standard payload links none of the remote-access packages; the forbidden list no longer names them")
+		}
+	})
 	builds := []struct{ name, goos, tags, pkg string }{
 		{"WSL payload", "linux", "production,nogui,noremote", "."},
 		{"Windows launcher", "windows", "noremote", "./cmd/agent-overflow-windows"},
 		{"noremote harness binary", "linux", "noremote", "."},
 	}
 	for _, build := range builds {
-		if found := forbiddenIn(goListDeps(t, build.goos, build.tags, build.pkg)); len(found) > 0 {
-			t.Errorf("%s links remote-access packages: %v", build.name, found)
-		}
+		t.Run(build.name, func(t *testing.T) {
+			t.Parallel()
+			if found := forbiddenIn(goListDeps(t, build.goos, build.tags, build.pkg)); len(found) > 0 {
+				t.Errorf("%s links remote-access packages: %v", build.name, found)
+			}
+		})
 	}
 }

@@ -24,9 +24,10 @@ import (
 // on their own threads in their own sub-worktrees, the join runs on the item's
 // primary workspace, and the join's envelope is what drives the phase's gate.
 func TestWorkflowStaticFanOutRunsUnitsAndJoin(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeFanOutWorkflow(t, configRoot)
@@ -198,6 +199,7 @@ reliability:
 // nothing that provisions a DIFFERENT lane can derive the name it already
 // holds.
 func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
+	t.Parallel()
 	const itemBranch = "ao-workflow-port-1234abcd-5f3a"
 	base := workflowhost.UnitWorkspaceRef{
 		ItemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", PhaseID: "implement",
@@ -269,9 +271,10 @@ func withUnitRef(base workflowhost.UnitWorkspaceRef, edit func(*workflowhost.Uni
 // (`merge-unit-branches`): it receives `{{units}}` as one argv element, so this
 // also pins that the enrichment reaches argv interpolation and not only prompts.
 func TestWorkflowJoinReceivesUnitGitStateAndKeepsDirtyWorktrees(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeCommitFanOutWorkflow(t, configRoot)
 	unitsJSON := filepath.Join(t.TempDir(), "units.json")
@@ -689,9 +692,10 @@ done
 // RETRIED — the ordinary envelope-validation feedback path (D44), never a park
 // and never a silent pass. The run then completes on the corrected accounting.
 func TestJoinAccountingRefusalRetriesWithFeedbackInsteadOfParking(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	projectRow := testutil.EnsureProject(t, app.store, testutil.InitGitRepo(t))
+	projectRow := testutil.EnsureProject(t, app.store, initMainGitRepo(t))
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeAccountingFanOutWorkflow(t, configRoot)
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, `
@@ -771,9 +775,10 @@ func workflowWorktreeBranch(prefix, workflowID, itemID string) string {
 }
 
 func TestWorkflowWritingItemProvisionsHooksAndCapturesArtifact(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("TOKEN=test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -844,6 +849,7 @@ reliability:
 }
 
 func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		command []string
@@ -856,7 +862,7 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			app, bus := setupE2EApp(t)
 			app.testEmitHook = bus.emit
 			configRoot := t.TempDir()
-			repo := testutil.InitGitRepo(t)
+			repo := initMainGitRepo(t)
 			projectRow := testutil.EnsureProject(t, app.store, repo)
 			projectRow = mustReloadProject(t, app.store, projectRow.ID)
 			writeWorkspaceWorkflow(t, configRoot, "done")
@@ -939,9 +945,10 @@ func assertWorkflowSetupFailureEvents(t *testing.T, bus *capturedEventBus, itemI
 }
 
 func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "stuck")
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
@@ -967,9 +974,10 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 }
 
 func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "done")
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
@@ -1015,6 +1023,7 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 }
 
 func TestWorkflowStepModeBindingParksThenApprovesToDone(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeReliabilityWorkflow(t, configRoot, `
@@ -1052,10 +1061,11 @@ func TestWorkflowStepModeBindingParksThenApprovesToDone(t *testing.T) {
 }
 
 func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "done")
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
@@ -1092,6 +1102,7 @@ func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
 }
 
 func TestWorkflowWorktreeBranchUsesWorkflowIdentity(t *testing.T) {
+	t.Parallel()
 	if branch := workflowWorktreeBranch("task", "flow", "12345678-abcd"); !strings.HasPrefix(branch, "task-workflow-flow-12345678-abcd-") {
 		t.Fatalf("workflow branch = %q", branch)
 	}
@@ -1137,10 +1148,11 @@ cleanup: auto
 // LOUDLY with the message naming where the recipe moved to, rather than loading
 // and silently running no setup on every worktree the project cuts.
 func TestUnmigratedProfileWorktreeSetupBlockFailsLoudly(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	app.configDir = configRoot
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "done")
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML+"worktree_setup:\n  copy: [.env]\n")

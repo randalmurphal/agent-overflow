@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"bytes"
 	"context"
 	"fmt"
@@ -33,9 +34,7 @@ func stubGlab(t *testing.T, body string) string {
 	binDir := t.TempDir()
 	counter := filepath.Join(binDir, "runs")
 	script := fmt.Sprintf("#!/bin/sh\necho run >> %q\n%s", counter, body)
-	if err := os.WriteFile(filepath.Join(binDir, "glab"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "glab"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return counter
 }
@@ -266,6 +265,7 @@ func TestSaveForgeAttachmentFallsBackToTheAppDirectory(t *testing.T) {
 // TestOpenForgeAttachmentMissesAfterEviction: the route's 404 for an id
 // the cache no longer holds comes from here.
 func TestOpenForgeAttachmentMissesAfterEviction(t *testing.T) {
+	t.Parallel()
 	app := &App{configDir: t.TempDir()}
 	if _, err := (attachmentTransfer{app: app}).OpenForgeAttachment("never-stored"); err == nil {
 		t.Fatal("OpenForgeAttachment answered for an id nothing stored")

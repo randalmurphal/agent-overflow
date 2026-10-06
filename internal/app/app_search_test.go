@@ -11,6 +11,7 @@ import (
 // must always return a non-nil slice so the JSON payload shape is
 // stable for the frontend.
 func TestSearchThreadMessagesBindingReturnsEmptyOnBlankQuery(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	hits, err := app.SearchThreadMessages("", 10)
 	if err != nil {
@@ -28,6 +29,7 @@ func TestSearchThreadMessagesBindingReturnsEmptyOnBlankQuery(t *testing.T) {
 // underlying store returns nil for a no-match search, the binding
 // elevates it to an empty slice so the frontend contract is uniform.
 func TestSearchThreadMessagesBindingNormalizesNilToEmpty(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	hits, err := app.SearchThreadMessages("nothing-matches", 5)
 	if err != nil {
@@ -41,6 +43,7 @@ func TestSearchThreadMessagesBindingNormalizesNilToEmpty(t *testing.T) {
 // TestSearchThreadMessagesBindingSurfacesResults — happy-path round trip
 // verifying the binding delegates correctly and the caller sees typed hits.
 func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	now := time.Now().UnixMilli()
 	if err := app.store.CreateThread(store.Thread{
@@ -79,6 +82,7 @@ func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
 // TestSearchThreadItemsBindingReturnsEmptyOnBlankQuery — the in-thread find
 // binding shares the stable-shape contract: never nil.
 func TestSearchThreadItemsBindingReturnsEmptyOnBlankQuery(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	hits, err := app.SearchThreadItems("t1", "  ", 10)
 	if err != nil {
@@ -92,6 +96,7 @@ func TestSearchThreadItemsBindingReturnsEmptyOnBlankQuery(t *testing.T) {
 // TestSearchThreadItemsBindingIsThreadScoped — the binding searches only the
 // requested thread's message text, not other threads or the title.
 func TestSearchThreadItemsBindingIsThreadScoped(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	now := time.Now().UnixMilli()
 	for _, tid := range []string{"t1", "t2"} {

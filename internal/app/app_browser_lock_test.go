@@ -6,6 +6,7 @@ import (
 )
 
 func TestVerifyBrowserUnlockRequiresSessionAndFreshProof(t *testing.T) {
+	t.Parallel()
 	a := newTestAppWithStore(t)
 	if err := a.initIdentity("browser-lock-test"); err != nil {
 		t.Fatal(err)

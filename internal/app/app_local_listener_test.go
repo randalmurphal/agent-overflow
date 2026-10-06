@@ -42,6 +42,7 @@ func aoEndpointFor(t *testing.T, app *App) string {
 // reaches. The ::1 door serves the same routes and credentials, and the page
 // it mints still names the main bind, so a desktop window's origin is stable.
 func TestLocalClientsUseTheIPv6LoopbackListener(t *testing.T) {
+	t.Parallel()
 	app, mainAddr := newLocalListenerTestApp(t)
 	app.startLocalListener()
 	local := app.localListenerAddr()
@@ -79,6 +80,7 @@ func TestLocalClientsUseTheIPv6LoopbackListener(t *testing.T) {
 }
 
 func TestLocalClientsReturnToTheMainBindWhenTheListenerFails(t *testing.T) {
+	t.Parallel()
 	app, mainAddr := newLocalListenerTestApp(t)
 	app.startLocalListener()
 	app.publishLocalControl()

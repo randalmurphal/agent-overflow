@@ -8,6 +8,7 @@ import (
 )
 
 func TestSessionBuffersPlanDeltaUntilCompletion(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	lines := []string{
@@ -39,6 +40,7 @@ func TestSessionBuffersPlanDeltaUntilCompletion(t *testing.T) {
 }
 
 func TestSessionPrefersCompletedPlanContentOverBufferedDelta(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	lines := []string{

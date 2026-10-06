@@ -50,8 +50,9 @@ func behindCount(t *testing.T, app *App, repo string) int {
 // test: a project's repository falls behind its remote with no local
 // activity at all, and one pass of the cadence makes the count true.
 func TestBackgroundFetchPassRefreshesBehindCount(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	repo, bare := initGitRepoWithOrigin(t)
 	addProject(t, app, "p-behind", repo)
 
 	testutil.AdvanceOriginMain(t, bare)
@@ -70,8 +71,9 @@ func TestBackgroundFetchPassRefreshesBehindCount(t *testing.T) {
 }
 
 func TestBackgroundFetchPassSkippedWhenSettingDisabled(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	repo, bare := initGitRepoWithOrigin(t)
 	addProject(t, app, "p-disabled", repo)
 	testutil.AdvanceOriginMain(t, bare)
 
@@ -101,8 +103,9 @@ func TestBackgroundFetchPassSkippedWhenSettingDisabled(t *testing.T) {
 // unreachable so every attempt fails loudly: one memo entry means one
 // attempt, two would mean the worktree got its own fetch.
 func TestBackgroundFetchPassFetchesEachRepositoryOnce(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
-	repo, _ := testutil.InitGitRepoWithOrigin(t)
+	repo, _ := initGitRepoWithOrigin(t)
 	testutil.RunGit(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
 
 	worktree := filepath.Join(t.TempDir(), "wt")
@@ -127,8 +130,9 @@ func TestBackgroundFetchPassFetchesEachRepositoryOnce(t *testing.T) {
 // TestBackgroundFetchPassMemoRecoversAndReports walks the pass-level
 // transition the memo exists for: fail, recover, fail again.
 func TestBackgroundFetchPassMemoRecoversAndReports(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	repo, bare := initGitRepoWithOrigin(t)
 	addProject(t, app, "p-flaky", repo)
 
 	broken := filepath.Join(t.TempDir(), "gone.git")
@@ -160,6 +164,7 @@ func TestBackgroundFetchPassMemoRecoversAndReports(t *testing.T) {
 // repository never reaches a fetch, and its complaint is remembered
 // against the path (there is no repo identity to remember it against).
 func TestBackgroundFetchPassRemembersUnresolvableProjectPaths(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
 	notARepo := t.TempDir()
 	addProject(t, app, "p-not-a-repo", notARepo)
@@ -182,6 +187,7 @@ func TestBackgroundFetchPassRemembersUnresolvableProjectPaths(t *testing.T) {
 // TestBackgroundFetchPassForgetsRemovedProjects keeps the memo bounded
 // by the CURRENT project list rather than by everything ever seen.
 func TestBackgroundFetchPassForgetsRemovedProjects(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
 	notARepo := t.TempDir()
 	addProject(t, app, "p-gone", notARepo)
@@ -201,8 +207,9 @@ func TestBackgroundFetchPassForgetsRemovedProjects(t *testing.T) {
 }
 
 func TestBackgroundFetchPassStopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	repo, bare := initGitRepoWithOrigin(t)
 	addProject(t, app, "p-stop", repo)
 	testutil.AdvanceOriginMain(t, bare)
 
@@ -219,6 +226,7 @@ func TestBackgroundFetchPassStopsOnCancelledContext(t *testing.T) {
 // offline guarantee: with the flag set there is no goroutine at all, so
 // no timer can reach a repository.
 func TestBackgroundGitFetchDisabledNeverStartsALoop(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
 	app.backgroundFetchDisabled = true
 
@@ -232,6 +240,7 @@ func TestBackgroundGitFetchDisabledNeverStartsALoop(t *testing.T) {
 }
 
 func TestBackgroundGitFetchStartIsIdempotentAndStops(t *testing.T) {
+	t.Parallel()
 	app := newBackgroundFetchTestApp(t)
 
 	app.startBackgroundGitFetch()

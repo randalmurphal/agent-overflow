@@ -44,3 +44,11 @@ export function removeToast(id: string): void {
   }
   toasts = toasts.filter((t) => t.id !== id);
 }
+
+/** Test-only: no toasts, no dismiss timers, ids from the start. */
+export function resetToastsForTest(): void {
+  for (const timer of timers.values()) clearTimeout(timer);
+  timers.clear();
+  toasts = [];
+  nextId = 0;
+}

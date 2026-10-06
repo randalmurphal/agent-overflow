@@ -198,8 +198,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 			t.Fatal(err)
 		}
 	}
-	awaitTransferPhase(t, source, operation, "complete", initiallyUnavailable)
-	awaitTransferPhase(t, destination, operation, "complete", initiallyUnavailable)
+	awaitTransferComplete(t, source, destination, operation, initiallyUnavailable)
 	copied, err := destination.store.GetThread(intent.TargetThreadID)
 	if err != nil {
 		t.Fatal(err)
@@ -286,8 +285,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if _, err := destination.BindThreadTransferDestination(ctx, copied.ID, returnOffer); err != nil {
 			t.Fatal(err)
 		}
-		awaitTransferPhase(t, destination, returnOp, "complete")
-		awaitTransferPhase(t, source, returnOp, "complete")
+		awaitTransferComplete(t, destination, source, returnOp, false)
 		returned, err := source.store.GetThread(thread.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -317,6 +315,44 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if strings.Contains(string(encoded), offer.Grant) || strings.Contains(string(encoded), intent.ActivationHash) {
 		t.Fatal("public status leaked authorization material")
 	}
+}
+
+// awaitTransferComplete waits for both sides of one transfer to complete.
+// The outgoing side learns of destination progress only by asking again,
+// which threadtransfer.Jobs schedules on a fixed two-second pending interval.
+// The wait wakes the outgoing job on each poll instead, so the next status
+// call runs within a poll. Each wake sends requests to the destination, so
+// the poll stays well under its per-peer transfer rate limit, which would
+// otherwise answer 429 (busy). TestPointerForkTransferReadsThroughItsDeletedSource
+// keeps the unassisted interval covered.
+func awaitTransferComplete(t *testing.T, outgoing, incoming *App, id string, recovering bool) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := outgoing.store.GetThreadTransfer(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := incoming.store.GetThreadTransfer(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Phase == "complete" && in.Phase == "complete" {
+			return
+		}
+		for _, row := range []store.ThreadTransfer{out, in} {
+			if row.Error != "" && !recovering {
+				t.Fatalf("transfer %s (%s): %s", row.Direction, row.Phase, row.Error)
+			}
+		}
+		if out.Phase != "complete" {
+			outgoing.transfers.wake(id)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	out, _ := outgoing.store.GetThreadTransfer(id)
+	in, _ := incoming.store.GetThreadTransfer(id)
+	t.Fatalf("timed out awaiting completion: outgoing %+v incoming %+v", out, in)
 }
 
 func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bool) store.ThreadTransfer {

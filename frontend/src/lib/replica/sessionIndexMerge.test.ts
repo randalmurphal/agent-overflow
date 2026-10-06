@@ -3,7 +3,7 @@
 // This suite drives the two ways that mirror and record come apart —
 // a second writer on the same database, and a commit that rejected
 // without saying whether it landed — against a real IndexedDB.
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __replicaIndexForTest,
@@ -25,6 +25,8 @@ import {
   type ReplicaIndexEntry,
 } from './idb';
 import type { Item } from '../types/models';
+
+installFakeIndexedDB();
 
 /**
  * Let the next transaction really commit while its caller is told it

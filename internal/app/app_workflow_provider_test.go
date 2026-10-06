@@ -19,6 +19,7 @@ import (
 // profile to scripts on disk and run them through the production start path.
 
 func TestWorkflowToolPhaseGreenCheckAdvancesWithSynthesizedEnvelope(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: check
     driver: tool
@@ -59,6 +60,7 @@ func TestWorkflowToolPhaseGreenCheckAdvancesWithSynthesizedEnvelope(t *testing.T
 }
 
 func TestWorkflowToolPhaseRedCheckRoutesThroughItsGate(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: check
     driver: tool
@@ -93,6 +95,7 @@ func TestWorkflowToolPhaseRedCheckRoutesThroughItsGate(t *testing.T) {
 }
 
 func TestWorkflowToolPhaseWrittenEnvelopeFeedsTheNextPhaseCommand(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: probe
     driver: tool
@@ -150,6 +153,7 @@ func TestWorkflowToolPhaseWrittenEnvelopeFeedsTheNextPhaseCommand(t *testing.T) 
 // one, and it is folded into the same narrative file the process output goes to
 // rather than being refused by a second rule set. The engine still sees no prose.
 func TestWorkflowToolPhaseFoldsAWrittenNarrativeIntoTheAttemptFile(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: probe
     driver: tool
@@ -190,6 +194,7 @@ func TestWorkflowToolPhaseFoldsAWrittenNarrativeIntoTheAttemptFile(t *testing.T)
 }
 
 func TestWorkflowToolPhaseInvalidWrittenEnvelopeParksWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name            string
 		body            string
@@ -240,6 +245,7 @@ func TestWorkflowToolPhaseInvalidWrittenEnvelopeParksWithoutRetrying(t *testing.
 }
 
 func TestWorkflowToolPhaseWithoutWrittenEnvelopeParksWhenOutputsAreDeclared(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: check
     driver: tool
@@ -267,6 +273,7 @@ func TestWorkflowToolPhaseWithoutWrittenEnvelopeParksWhenOutputsAreDeclared(t *t
 }
 
 func TestWorkflowToolPhaseMissingBinaryFailsAsSetup(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: check
     driver: tool
@@ -290,6 +297,7 @@ func TestWorkflowToolPhaseMissingBinaryFailsAsSetup(t *testing.T) {
 // binding removed while the run is held parks with the wiring reason rather
 // than reporting an agent failure.
 func TestWorkflowToolPhaseUnboundCheckParksAsWiringError(t *testing.T) {
+	t.Parallel()
 	fixture := newToolWorkflowFixture(t, `
   - id: check
     driver: tool
@@ -442,6 +450,7 @@ func decodeEnvelopeOutputs(t *testing.T, payload json.RawMessage) map[string]any
 // intact, WorkflowRetryUnit re-runs only the failed unit on a fresh try, and the
 // join then produces the phase's envelope.
 func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
+	t.Parallel()
 	app, item, repo := startFailingFanOutRun(t, "BETA-UNIT")
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
@@ -516,6 +525,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 // recovery: the human accepts the unit's absence and the attempt finishes
 // without it.
 func TestWorkflowDropUnitLetsTheJoinProceedOverSurvivors(t *testing.T) {
+	t.Parallel()
 	app, item, repo := startFailingFanOutRun(t, "BETA-UNIT")
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
@@ -554,6 +564,7 @@ func TestWorkflowDropUnitLetsTheJoinProceedOverSurvivors(t *testing.T) {
 // try on a fresh branch cut from the item's, on the attempt row that already
 // exists.
 func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
+	t.Parallel()
 	app, item, repo := startFailingFanOutRun(t, "ALPHA-UNIT", "BETA-UNIT")
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
@@ -609,6 +620,7 @@ func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
 // caller that mistimed a usage-reset poll has to see that its repair did not
 // happen.
 func TestWorkflowRetryFailedUnitsRefusesARunWithNothingFailed(t *testing.T) {
+	t.Parallel()
 	app, item, repo := startFailingFanOutRun(t)
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
@@ -627,7 +639,7 @@ func startFailingFanOutRun(t *testing.T, failFirstTurn ...string) (*App, store.W
 	t.Helper()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeFanOutWorkflow(t, configRoot)
@@ -658,9 +670,10 @@ reliability:
 // unit's own thread, and the run completes once the unit is handed back through
 // a retry.
 func TestWorkflowTakeOverLiveUnitSteersThenRetriesUnderEngineControl(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeFanOutWorkflow(t, configRoot)

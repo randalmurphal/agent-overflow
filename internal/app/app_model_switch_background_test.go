@@ -1,9 +1,9 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +22,7 @@ import (
 // session-map presence check alone passes even when a picker kills and replaces
 // the process; identity, the wire write, and the live tray must all survive.
 func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{"claude", "codex"} {
 		for _, activeTurn := range []bool{false, true} {
 			t.Run(providerName+"/active="+strconv.FormatBool(activeTurn), func(t *testing.T) {
@@ -177,13 +178,12 @@ while IFS= read -r line; do
 done
 `
 	binary := filepath.Join(t.TempDir(), "mock-provider")
-	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	return binary, capture
 }
 
 func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("config-became-busy")
 	thread.Provider, thread.Model = "claude", "claude-fable-5"
@@ -202,19 +202,14 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	}
 	opts.Model = "claude-sonnet-5"
 	binary, _ := modelSwitchMockBinary(t)
-	script, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
+	script := []byte(mockScript(t, binary))
 	// The read loop delivers init synchronously before the control failure,
 	// making the session busy inside the live apply without sleeps or polling.
 	script = []byte(strings.Replace(string(script),
 		`   printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"`,
 		`   printf '%s\n' '{"type":"system","subtype":"init","session_id":"became-busy","model":"claude-sonnet-5"}'
    printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"refused"}}\n' "$reqid"`, 1))
-	if err := os.WriteFile(binary, script, 0700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, string(script))
 	live := newSessionLiveness(time.Now().Add(-time.Minute))
 	cfg := claude.ConfigFromOptions(opts)
 	cfg.Binary = binary

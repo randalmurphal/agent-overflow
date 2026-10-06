@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"os"
@@ -22,6 +23,7 @@ import (
 // and AO must NOT double-write the config file (the CLI's write is
 // debounced; a concurrent AO write could clobber it).
 func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 
 	workspace := t.TempDir()
@@ -90,6 +92,7 @@ func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.
 // `enabled` flag and hot-reloads via `config/mcpServer/reload` — no
 // session respawn.
 func TestSetThreadMcpServerEnabled_Codex_LiveSession_FiresRefreshRPC(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 
 	workspace := t.TempDir()
@@ -155,6 +158,7 @@ command = "gh-mcp"
 // Disabled=true, claude.ai connectors are filtered, tool names flow
 // through, and rows are labeled Source "session".
 func TestListThreadMcpServers_Claude_LiveSession_UsesSessionTruth(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	workspace := t.TempDir()
 	// Deliberately different from the session's answer — the listing
@@ -255,9 +259,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "claude-mcp-toggle-capture.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write claude mcp capture binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -285,9 +287,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "claude-mcp-status-responder.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write claude mcp status responder: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -330,9 +330,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(t.TempDir(), "codex-mcp-refresh-capture.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex refresh capture binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 

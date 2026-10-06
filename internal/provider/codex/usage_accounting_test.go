@@ -39,6 +39,7 @@ func tokenUsageParams(total wireTotals, window int) json.RawMessage {
 // cachedInputTokens; the normalized delta separates non-cached input from
 // cache reads.
 func TestUsageAccounting_FreshThreadTurnDeltas(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000, reasoning: 200}, 258400))
@@ -71,6 +72,7 @@ func TestUsageAccounting_FreshThreadTurnDeltas(t *testing.T) {
 // its own growth, and the class stays on its own axis (it is neither
 // folded into non-cached input nor into cache reads).
 func TestUsageAccounting_CacheWriteDeltasAcrossTurns(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, cacheWrite: 1200, output: 1000}, 258400))
@@ -97,6 +99,7 @@ func TestUsageAccounting_CacheWriteDeltasAcrossTurns(t *testing.T) {
 // baselines cache writes with the rest of the breakdown, so the first
 // post-resume turn accounts its own writes rather than the thread's.
 func TestUsageAccounting_CacheWriteResumeSeedIsHistory(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(true)
 	a.observe(tokenUsageParams(wireTotals{total: 90000, input: 70000, cached: 60000, cacheWrite: 5000, output: 20000}, 258400))
 	a.onTurnStart()
@@ -111,6 +114,7 @@ func TestUsageAccounting_CacheWriteResumeSeedIsHistory(t *testing.T) {
 // the field's introduction omit the key entirely; that reads as zero
 // writes, not as a decode failure or a shifted component.
 func TestUsageAccounting_CacheWriteAbsentKeyIsZero(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(json.RawMessage(`{"threadId":"t","tokenUsage":{"total":` +
@@ -129,6 +133,7 @@ func TestUsageAccounting_CacheWriteAbsentKeyIsZero(t *testing.T) {
 // tokenUsage notifications (send failure, instant interrupt) accounts
 // nothing.
 func TestUsageAccounting_NoObservationsSettlesZero(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	if got := a.settleTurn(); !got.IsZero() {
@@ -140,6 +145,7 @@ func TestUsageAccounting_NoObservationsSettlesZero(t *testing.T) {
 // cumulative arriving BEFORE the first turn is history, not this
 // process's spend; the first turn accounts only its own growth.
 func TestUsageAccounting_ResumeSeedBeforeFirstTurn(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(true)
 	a.observe(tokenUsageParams(wireTotals{total: 90000, input: 70000, cached: 60000, output: 20000, reasoning: 3000}, 258400)) // historical seed
 	a.onTurnStart()
@@ -154,6 +160,7 @@ func TestUsageAccounting_ResumeSeedBeforeFirstTurn(t *testing.T) {
 // observation the first turn's delta would swallow the thread's whole
 // history; it must be skipped, and the second turn must be exact.
 func TestUsageAccounting_ResumeWithoutSeedSkipsFirstTurn(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(true)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 95000, input: 74000, cached: 64000, output: 21000, reasoning: 3100}, 258400)) // history + turn mixed
@@ -173,6 +180,7 @@ func TestUsageAccounting_ResumeWithoutSeedSkipsFirstTurn(t *testing.T) {
 // the cumulative. The stretch across the sentinel is dropped instead of
 // producing a garbage delta.
 func TestUsageAccounting_ExceededSentinelRebaselines(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000}, 258400))
@@ -192,6 +200,7 @@ func TestUsageAccounting_ExceededSentinelRebaselines(t *testing.T) {
 
 // Stale totals cannot produce a new delta or lower the accounted baseline.
 func TestUsageAccounting_BackwardsCumulativeIgnored(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000}, 258400))
@@ -208,6 +217,7 @@ func TestUsageAccounting_BackwardsCumulativeIgnored(t *testing.T) {
 // TestAttachTurnUsage_StampsAggregateAndModel — the session hook writes
 // both the aggregate and the single-model attribution onto the wire meta.
 func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		usageAcct: newUsageAccounting(false),
 		turnConfig: sessionTurnConfig{
@@ -235,6 +245,7 @@ func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
 }
 
 func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	for i, n := range []int{100, 80, 100, 120} {
 		a.onTurnStart()
@@ -248,6 +259,7 @@ func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
 }
 
 func TestUsageAccountingMidTurnRegressionSettlesReportedProgress(t *testing.T) {
+	t.Parallel()
 	a := newUsageAccounting(false)
 	a.onTurnStart()
 	a.observe(tokenUsageParams(wireTotals{total: 100, input: 100}, 1000))

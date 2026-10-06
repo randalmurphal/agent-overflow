@@ -57,6 +57,7 @@ var connStateExemptMethods = map[string]string{
 }
 
 func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir("internal/app")
 	if err != nil {
 		t.Fatalf("read internal/app: %v", err)

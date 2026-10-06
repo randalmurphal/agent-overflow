@@ -25,6 +25,7 @@ import (
 // This package imports both, which is what makes the check possible
 // here and nowhere else. It fails in both directions on purpose.
 func TestScopeVocabularyMatchesIdentity(t *testing.T) {
+	t.Parallel()
 	granted := make(map[string]bool, len(identity.Scopes))
 	for _, scope := range identity.Scopes {
 		granted[string(scope)] = true
@@ -88,6 +89,7 @@ func TestScopeVocabularyMatchesIdentity(t *testing.T) {
 // a view-only device is silently denied; one promoted out of observe and
 // left in it is authority a view-only device silently keeps.
 func TestObserveScopesAreTheObserveTier(t *testing.T) {
+	t.Parallel()
 	inMint := make(map[string]bool, len(identity.ObserveScopes))
 	for _, scope := range identity.ObserveScopes {
 		inMint[string(scope)] = true

@@ -11,6 +11,7 @@ import (
 )
 
 func TestGetLocalImageDataReadsSupportedWorkspaceImage(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "diagram.png")
 	payload := realPNGBytes(t)
@@ -31,6 +32,7 @@ func TestGetLocalImageDataReadsSupportedWorkspaceImage(t *testing.T) {
 }
 
 func TestGetLocalImageDataReadsExistingImageOutsideWorkspace(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	path := filepath.Join(t.TempDir(), "diagram.png")
 	payload := realPNGBytes(t)
@@ -44,6 +46,7 @@ func TestGetLocalImageDataReadsExistingImageOutsideWorkspace(t *testing.T) {
 }
 
 func TestGetLocalImageDataRejectsUnsupportedAndOversizedFiles(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	textPath := filepath.Join(workspace, "notes.txt")
 	if err := os.WriteFile(textPath, []byte("not an image"), 0o600); err != nil {
@@ -67,6 +70,7 @@ func TestGetLocalImageDataRejectsUnsupportedAndOversizedFiles(t *testing.T) {
 }
 
 func TestGetLocalImageDataRejectsMissingAndDirectoryTargets(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	for _, path := range []string{filepath.Join(workspace, "missing.png"), workspace} {
 		if _, err := (&App{}).GetLocalImageData(path, workspace); err == nil {

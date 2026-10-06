@@ -23,6 +23,7 @@ import (
 )
 
 func TestRemoteArtifactCopyIntegrityAndPartialCleanup(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"success", "empty", "canceled", "changed", "same-metadata-change", "wrong-conversation"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, destination := t.TempDir(), t.TempDir()
@@ -95,6 +96,7 @@ func TestRemoteArtifactCopyIntegrityAndPartialCleanup(t *testing.T) {
 }
 
 func TestRemoteArtifactReadConfinesFilesAndBoundsRequests(t *testing.T) {
+	t.Parallel()
 	workspace, outside := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("private"), 0o600); err != nil {
 		t.Fatal(err)
@@ -140,6 +142,7 @@ func (r artifactCancelingReader) Read(p []byte) (int, error) {
 }
 
 func TestRemoteArtifactHashStopsOnCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// An otherwise unending input proves the streaming hash loop observes
@@ -152,6 +155,7 @@ func TestRemoteArtifactHashStopsOnCancellation(t *testing.T) {
 }
 
 func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)

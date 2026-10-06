@@ -5,6 +5,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -18,9 +19,10 @@ import (
 )
 
 func TestWorkflowMergeItemPersistsReceiptAndEmitsRefresh(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "merge-item")
 
@@ -55,6 +57,7 @@ func TestWorkflowMergeItemPersistsReceiptAndEmitsRefresh(t *testing.T) {
 }
 
 func TestWorkflowMergeRefusalParksDispositionWithoutReceipt(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 	configRoot := t.TempDir()
@@ -62,7 +65,7 @@ func TestWorkflowMergeRefusalParksDispositionWithoutReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "conflict-item")
 	writeDispositionFile(t, repo, "README.txt", "base conflict\n")
@@ -99,13 +102,14 @@ func TestWorkflowMergeRefusalParksDispositionWithoutReceipt(t *testing.T) {
 }
 
 func TestWorkflowMergeResolvesDispositionPark(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "parked-merge-item")
 	parkedAt := time.Now().UnixMilli()
@@ -130,12 +134,13 @@ func TestWorkflowMergeResolvesDispositionPark(t *testing.T) {
 }
 
 func TestWorkflowMergeRefusesDirtyItemWorktree(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-item")
 	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "must not be lost\n")
@@ -155,9 +160,10 @@ func TestWorkflowMergeRefusesDirtyItemWorktree(t *testing.T) {
 }
 
 func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow, err := app.store.GetProject(projectRow.ID)
 	if err != nil {
@@ -201,10 +207,11 @@ func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
 }
 
 func TestWorkflowDispositionCleanupFailureReturnsMarkedReceiptAndEmits(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow, err := app.store.GetProject(projectRow.ID)
 	if err != nil {
@@ -262,8 +269,9 @@ func TestWorkflowDispositionCleanupFailureReturnsMarkedReceiptAndEmits(t *testin
 }
 
 func TestWorkflowDiscardUsesGuardedRemovalAndKeepsRecord(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "discard-item")
 	receipt, err := app.WorkflowDiscardItem(item.ID)
@@ -283,6 +291,7 @@ func TestWorkflowDiscardUsesGuardedRemovalAndKeepsRecord(t *testing.T) {
 }
 
 func TestWorkflowDiscardWithoutWorktreeRecordsReceiptAndResolvesPark(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
 		t.Fatal(err)
@@ -313,8 +322,9 @@ func TestWorkflowDiscardWithoutWorktreeRecordsReceiptAndResolvesPark(t *testing.
 }
 
 func TestWorkflowDiscardRemovesDirtyWorktree(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-discard")
 	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "authorized loss\n")
@@ -327,6 +337,7 @@ func TestWorkflowDiscardRemovesDirtyWorktree(t *testing.T) {
 }
 
 func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T) {
+	t.Parallel()
 	for _, state := range []engine.State{engine.StateFailed, engine.StateCancelled, engine.StateNeedsHuman} {
 		t.Run(string(state), func(t *testing.T) {
 			app, _ := setupE2EApp(t)
@@ -336,7 +347,7 @@ func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-			repo := testutil.InitGitRepo(t)
+			repo := initMainGitRepo(t)
 			projectRow := testutil.EnsureProject(t, app.store, repo)
 			item := createDoneWorkflowWorktree(t, app, projectRow, "discard-"+string(state))
 			reason := ""
@@ -376,12 +387,13 @@ func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T
 // branch deleted has no move left that can succeed — every repair verb it
 // carries reads a checkout that is gone.
 func TestWorkflowDiscardSettlesParkedTreeMembers(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	root := createDoneWorkflowWorktree(t, app, projectRow, "discard-tree-root")
 	child := store.WorkItem{
@@ -417,7 +429,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "pr-item")
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -432,9 +444,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 	testutil.RunGit(t, repo, "config", "url."+remote+".insteadOf", remoteURL)
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nprintf '%s\\n' 'https://github.com/example/agent-overflow/pull/42'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, ghPath, "#!/bin/sh\nprintf '%s\\n' 'https://github.com/example/agent-overflow/pull/42'\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	receipt, err := app.WorkflowCreateItemPR(item.ID)
@@ -545,7 +555,7 @@ func newDiscardFixture(t *testing.T, itemID string) *discardFixture {
 	// startWorkflowEngineForTest, not a bare initWorkflowEngine: engine startup
 	// also arms the §11 scheduler, and only this helper stops it again.
 	startWorkflowEngineForTest(t, app, t.TempDir())
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	return &discardFixture{
 		app: app, bus: bus, repo: repo, project: projectRow,
@@ -640,6 +650,7 @@ func findDiscardWorktree(t *testing.T, preview WorkflowDiscardPreview, path stri
 }
 
 func TestWorkflowDiscardPreviewReportsWhatWouldBeLost(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "preview-item")
 	// One committed change (unmerged against main) plus uncommitted work that
 	// exists nowhere but this checkout.
@@ -685,6 +696,7 @@ func TestWorkflowDiscardPreviewReportsWhatWouldBeLost(t *testing.T) {
 }
 
 func TestWorkflowDiscardPreviewDedupesSharedCheckoutsAndScopesUnitCommits(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "tree-item")
 	child := f.addChild(t, f.root, "tree-child", engine.StateDone)
 	f.addChild(t, child, "tree-grandchild", engine.StateDone)
@@ -714,6 +726,7 @@ func TestWorkflowDiscardPreviewDedupesSharedCheckoutsAndScopesUnitCommits(t *tes
 }
 
 func TestWorkflowDiscardRefusesACalledRun(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "refuse-item")
 	child := f.addChild(t, f.root, "refuse-child", engine.StateDone)
 
@@ -730,6 +743,7 @@ func TestWorkflowDiscardRefusesACalledRun(t *testing.T) {
 }
 
 func TestWorkflowDiscardRemovesEveryCheckoutAndBranchInTheTree(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "discard-item")
 	child := f.addChild(t, f.root, "discard-child", engine.StateDone)
 	unit := f.addUnitWorktree(t, f.root, "unit-a")
@@ -798,6 +812,7 @@ func TestWorkflowDiscardRemovesEveryCheckoutAndBranchInTheTree(t *testing.T) {
 // payload with no Reason field reads as "the reason was cleared", wiping the
 // live one off the row until an unrelated refetch happened by.
 func TestWorkflowDiscardEmitsTheRowsActualStateAndReason(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "discard-parked-item")
 	if err := f.app.store.UpdateWorkItemState(
 		f.root.ID, string(engine.StateNeedsHuman), string(engine.ReasonGate), time.Now().UnixMilli(),
@@ -830,6 +845,7 @@ func TestWorkflowDiscardEmitsTheRowsActualStateAndReason(t *testing.T) {
 // The project root is never a discard target: a run that worked directly in the
 // user's checkout has nothing of its own to destroy.
 func TestWorkflowDiscardNeverTouchesTheProjectCheckout(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "root-workspace-item")
 	if err := f.app.store.UpdateWorkItemWorkspace(f.root.ID, f.project.Path, "main", "main"); err != nil {
 		t.Fatal(err)
@@ -863,6 +879,7 @@ func TestWorkflowDiscardNeverTouchesTheProjectCheckout(t *testing.T) {
 // removing a checkout out from under a live provider process is exactly the
 // failure discard's preview-then-commit shape exists to prevent.
 func TestWorkflowDiscardRefusesWhenALiveMemberCannotBeStopped(t *testing.T) {
+	t.Parallel()
 	f := newDiscardFixture(t, "inflight-item")
 	child := f.addChild(t, f.root, "inflight-child", engine.StateRunning)
 

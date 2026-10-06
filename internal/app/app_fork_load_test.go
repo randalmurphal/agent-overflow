@@ -70,8 +70,9 @@ func startForkStreamLoad(t *testing.T, app *App, ids ...string) (func(), *atomic
 }
 
 func TestLargeLiveForkWithStreamLoad(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, app), "mid-turn-session", midTurnSourceJSONL)
 	source := createAppTestThread(t, app, "loaded-source", "claude", fixture.workspace)
 	source.SessionRef = fixture.sessionID
 	if err := app.store.UpdateThread(source); err != nil {
@@ -161,6 +162,7 @@ func TestLargeLiveForkWithStreamLoad(t *testing.T) {
 }
 
 func TestForkCancelledWhileWaitingForSourceAction(t *testing.T) {
+	t.Parallel()
 	for _, message := range []bool{false, true} {
 		t.Run(fmt.Sprintf("message=%v", message), func(t *testing.T) {
 			app := newTestApp(t)

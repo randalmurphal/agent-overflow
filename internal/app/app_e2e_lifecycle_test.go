@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -321,6 +322,7 @@ func e2eThread(id, providerName, workspace string) store.Thread {
 // → mock emits init + text + result → verify events arrive in order and
 // assistant text is persisted.
 func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -393,6 +395,7 @@ func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
 // TestE2E_FullCodexSessionHappyPath: same flow for Codex, verifying the
 // provider-agnostic triage handles Codex notifications end-to-end.
 func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -404,6 +407,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
 		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-thread-happy"}}}`,
+		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 		`"method":"turn/start"`:   `{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-1"}}}`,
 	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
@@ -457,6 +461,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 // result/turn_complete. Verify turn indices are 1 and 2 and items route to the
 // correct turn.
 func TestE2E_MultiTurnClaude(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -541,6 +546,7 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 // with a slow partial text, then call InterruptTurn. Next SendMessage should
 // still work.
 func TestE2E_InterruptMidTurn(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	// The mock acknowledges interrupt without a terminal result. A subsequent
 	// public send therefore uses the production queue until provider consumption.
@@ -619,6 +625,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 // TestE2E_ProviderExitsMidTurn: the mock exits after emitting one line,
 // which should surface as a session disconnect; state is still recoverable.
 func TestE2E_ProviderExitsMidTurn(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -693,6 +700,7 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 // via SessionRef). Verify the stored SessionRef gets passed to the new Claude
 // session as --resume.
 func TestE2E_ReconnectToExistingSession(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -719,9 +727,7 @@ exit 0
 `, shellQuoteForTest(sentinel))
 
 	binary := filepath.Join(t.TempDir(), "claude-reconnect.sh")
-	if err := writeExec(t, binary, resumeScript); err != nil {
-		t.Fatalf("write binary: %v", err)
-	}
+	mockexec.Write(t, binary, resumeScript)
 
 	// First session: write a SessionRef manually since the mock's session id
 	// flows through triage's UpdateSessionRef.
@@ -761,6 +767,7 @@ exit 0
 // TestE2E_ParseErrorRecovery: mock emits a garbage line, then a valid event.
 // Verify the parse failure logs but the valid event still reaches the router.
 func TestE2E_ParseErrorRecovery(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -807,6 +814,7 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 // subprocess on first send so the "New Thread → type → send" path works
 // without a disconnected banner or an explicit Start step.
 func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -856,6 +864,7 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 // background task. The mock echoes each user line as
 // --replay-user-messages does, so AO sees every send start.
 func TestE2E_ClaudeSendsAfterOrphanedAdvisorStayOnLiveProcess(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -896,9 +905,7 @@ while IFS= read -r line; do
 done
 `
 	binary := filepath.Join(scriptDir, "mock-claude-orphan.sh")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock claude: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -948,6 +955,7 @@ done
 // TestE2E_ToolCallFullCycle: mock emits a tool_use event (via assistant) and
 // a subsequent tool_result. Verify item ordering + payloads.
 func TestE2E_ToolCallFullCycle(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1010,6 +1018,7 @@ func TestE2E_ToolCallFullCycle(t *testing.T) {
 // TestE2E_DiffItemPersistsWithPayload verifies that a diff event persists both
 // the item and the payload round-trip.
 func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1070,6 +1079,7 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 // TestE2E_ThreadModelSwitchMidSession: updating a thread's model while the
 // session is active applies the selection without replacing its process.
 func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1126,6 +1136,7 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 // approval → RespondToApproval writes a control_response. We verify the
 // approval reached triage and that RespondToApproval doesn't error.
 func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1186,6 +1197,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 // stays open after the turn ended pins the sidebar on pending approval and
 // leaves a dead card in the composer.
 func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1249,6 +1261,7 @@ func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
 // that never had a session must not error; it also must clean up any
 // lingering triage state. Covers the no-op path explicitly.
 func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1270,6 +1283,7 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 // router as a context-window snapshot. Output tokens are turn spend, not
 // current context occupancy, so they are excluded from the meter value.
 func TestE2E_TokenUsagePersists(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1304,6 +1318,7 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 // TestE2E_ThinkingBlockPersistsAsItem: a thinking block should end up in the
 // store with a thinking item + payload.
 func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1382,6 +1397,7 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 // TestE2E_CommandOutputPersistsToPayload: a command_output heavy event is
 // persisted as a tool_call item with payload.
 func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1440,6 +1456,7 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 
 // TestE2E_RenameThreadUpdatesTitle: verifies the basic rename binding.
 func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
@@ -1465,6 +1482,7 @@ func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
 // TestE2E_GetPayloadDataReturnsEmptyForMissing: unknown payloadID should
 // return an error, not silent empty string.
 func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	_, err := app.GetPayloadData("thread-missing", "no-such-id")
 	if err == nil {
@@ -1475,6 +1493,7 @@ func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
 // TestE2E_GetPayloadDataReturnsRawCommandOutput verifies command_output
 // payloads round-trip as raw bytes; rendering is a frontend projection.
 func TestE2E_GetPayloadDataReturnsRawCommandOutput(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
@@ -1527,6 +1546,7 @@ func TestE2E_GetPayloadDataReturnsRawCommandOutput(t *testing.T) {
 // TestE2E_SendMessageTouchesThreadUpdatedAt: sending a message must bump the
 // thread's updated_at so the sidebar reshuffles.
 func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1565,6 +1585,7 @@ func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
 // TestE2E_StartSessionUnknownThread: StartSession against a non-existent
 // thread ID must fail cleanly without registering anything in app.sessions.
 func TestE2E_StartSessionUnknownThread(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	err := app.StartSession("missing-thread-id")
@@ -1585,6 +1606,7 @@ func TestE2E_StartSessionUnknownThread(t *testing.T) {
 // lazy-start trying to load the thread row — either way the caller
 // receives a user-visible error and the app stays healthy.
 func TestE2E_SendMessageUnknownThread(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	err := app.SendMessage("ghost-thread-id", "hello", nil)
@@ -1606,6 +1628,7 @@ func TestE2E_SendMessageUnknownThread(t *testing.T) {
 // banner during recovery is worse than dropping the call — the session is
 // already gone and there is nothing to interrupt.
 func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1636,6 +1659,7 @@ func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 // the same thread should tear down the first session and register the second.
 // The session token in the map must change.
 func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
@@ -1674,11 +1698,6 @@ func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
 
 func shellQuoteForTest(path string) string {
 	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
-}
-
-func writeExec(t *testing.T, path, contents string) error {
-	t.Helper()
-	return os.WriteFile(path, []byte(contents), 0o755)
 }
 
 // waitUntil polls until the predicate returns true or the deadline passes.
@@ -1733,6 +1752,7 @@ func waitForFileText(t *testing.T, path string, predicate func(string) bool) str
 //     lingering subprocess is closed and the next send starts fresh.
 //  4. No session_died banner row — the error item is the single surface.
 func TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()

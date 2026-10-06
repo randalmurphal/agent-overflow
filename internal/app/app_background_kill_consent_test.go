@@ -18,6 +18,7 @@ import (
 // the confirmed Stop is refused again naming every live agent, and only a
 // confirmation naming both stops the turn.
 func TestInterruptTurn_ConfirmationCoversOnlyTheAgentsItNames(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "first", "task-first", "")
 	asked := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil))
@@ -45,6 +46,7 @@ func TestInterruptTurn_ConfirmationCoversOnlyTheAgentsItNames(t *testing.T) {
 // A confirmed agent that ended before the Stop landed is no reason to ask
 // again: the live set is inside the confirmation.
 func TestInterruptTurn_AConfirmedAgentThatEndedDoesNotRefuse(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "stays", "task-stays", "")
 	f.launchAgent(t, "ends", "task-ends", "")
@@ -62,6 +64,7 @@ func TestInterruptTurn_AConfirmedAgentThatEndedDoesNotRefuse(t *testing.T) {
 // A confirmation names an agent by its transcript root, which a resumed
 // round keeps: the round's carrier is the same agent.
 func TestInterruptTurn_ConfirmationNamesAResumedAgentByItsRoot(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "root", "task-root", "")
 	f.stopAgent(t, "root", "task-root")
@@ -85,6 +88,7 @@ func TestInterruptTurn_ConfirmationNamesAResumedAgentByItsRoot(t *testing.T) {
 // The un-send takes the same confirmation: one naming only some of the
 // live agents is refused before anything is interrupted or reverted.
 func TestInterruptAndRevertIfClean_ConfirmationCoversOnlyTheAgentsItNames(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "first", "task-first", "")
 	f.launchAgent(t, "later", "task-later", "")
@@ -119,6 +123,7 @@ func TestInterruptAndRevertIfClean_ConfirmationCoversOnlyTheAgentsItNames(t *tes
 
 // The confirmation crosses the real dispatcher as the list the client sent.
 func TestInterruptTurn_ConfirmationArrivesOverTheWire(t *testing.T) {
+	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
 	dispatcher := transport.NewDispatcher()

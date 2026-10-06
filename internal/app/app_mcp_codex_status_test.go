@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ import (
 // probe, because the list describes settled attempts and is by
 // construction the newer observation.
 func TestListThreadMcpServers_Codex_LiveSession_SettledProbeAndStartupTruth(t *testing.T) {
+	t.Parallel()
 	const invalidGrant = "invalid_grant: Invalid refresh token"
 	// The two probe shapes the cases combine with retained states:
 	// settled-and-failed (credential present, no initialize evidence) and
@@ -210,6 +212,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 // the row would keep reading "Failed · invalid_grant / Sign in again"
 // over a sign-in that succeeded, until the user happened to send a turn.
 func TestHandleCodexMCPOAuthCompleted_ForgetsRetainedFailure(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeCodexConfig(t, codexPath, `
@@ -256,6 +259,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 // startup on an expired grant stays failed for the rest of the session
 // no matter how the browser hop went. One completion, one reload.
 func TestHandleCodexMCPOAuthCompleted_SuccessReloadsLiveSession(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeCodexConfig(t, codexPath, `
@@ -289,6 +293,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 // app-server must clear retained startup failures in every live Codex process,
 // or sibling panes stay on "Sign in again" until their sessions restart.
 func TestHandleCodexMCPOAuthCompleted_ReloadsSiblingSessions(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.atlassian]
@@ -337,6 +342,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 // follow-up run, not N stacked round-trips. The mock's reload arm
 // blocks on a gate file, which is what makes "in flight" deterministic.
 func TestCodexMCPReloadRequestsCoalesce(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeCodexConfig(t, codexPath, `
@@ -376,6 +382,7 @@ url = "https://mcp.atlassian.com/v1/sse"
 // sign-in changes nothing on disk, so reloading the thread's config
 // would only re-run a startup round that is already known to fail.
 func TestHandleCodexMCPOAuthCompleted_FailureDoesNotReload(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeCodexConfig(t, codexPath, `
@@ -475,9 +482,7 @@ while IFS= read -r line; do
 done
 `
 	path := filepath.Join(scriptDir, "codex-mcp-status-responder.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex mcp status responder: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -512,6 +517,7 @@ func waitForCaptureLineCount(t *testing.T, captureDir string, want int, deadline
 }
 
 func TestCodexMCPMenuPreferencesAndGuards(t *testing.T) {
+	t.Parallel()
 	app, _, configPath := newMCPTestApp(t)
 	const config = `[mcp_servers.off]
 command = "fake"
@@ -576,6 +582,7 @@ enabled = false
 }
 
 func TestCodexMCPMenuToggleRoundTrip(t *testing.T) {
+	t.Parallel()
 	app, _, configPath := newMCPTestApp(t)
 	writeCodexConfig(t, configPath, "[mcp_servers.srv]\ncommand = \"fake\"\nenabled = false\n")
 	workspace := t.TempDir()
@@ -587,11 +594,7 @@ func TestCodexMCPMenuToggleRoundTrip(t *testing.T) {
 	const on = `{"data":[{"name":"srv","runtimeStatus":"connected","tools":{"read":{}}}]}`
 	capture := t.TempDir()
 	binary := writeCodexMcpStatusResponderBinary(t, capture, off, nil)
-	raw, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := strings.Replace(string(raw), "set -u", "set -u\nruntimeResult='"+off+"'", 1)
+	script := strings.Replace(mockScript(t, binary), "set -u", "set -u\nruntimeResult='"+off+"'", 1)
 	script = strings.Replace(script, "\"$id\" '"+off+"'", `"$id" "$runtimeResult"`, 1)
 	script = strings.Replace(script, `*'"method":"config/mcpServer/reload"'*)`, `*'"method":"config/mcpServer/reload"'*)
         if /usr/bin/grep -q 'enabled = true' `+shellQuote(configPath)+`; then
@@ -599,9 +602,7 @@ func TestCodexMCPMenuToggleRoundTrip(t *testing.T) {
         else
             runtimeResult='`+off+`'
         fi`, 1)
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	newCodexMcpStatusSession(t, app, thread.ID, binary, workspace, "mcp-round-trip")
 	events := make(chan struct{}, 16)
 	app.testEmitHook = func(name string, data any) {
@@ -652,6 +653,7 @@ func TestCodexMCPMenuToggleRoundTrip(t *testing.T) {
 }
 
 func TestCodexMCPMenuReloadFailureReportsAndRetainsPreference(t *testing.T) {
+	t.Parallel()
 	app, _, configPath := newMCPTestApp(t)
 	writeCodexConfig(t, configPath, "[mcp_servers.srv]\ncommand = \"fake\"\nenabled = false\n")
 	workspace := t.TempDir()
@@ -669,19 +671,13 @@ func TestCodexMCPMenuReloadFailureReportsAndRetainsPreference(t *testing.T) {
 	}
 	app.mcpApp = mcpapp.New(deps)
 	binary := writeCodexMcpStatusResponderBinary(t, "", `{"data":[{"name":"srv","runtimeStatus":"disabled"}]}`, nil)
-	raw, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := string(raw)
+	script := mockScript(t, binary)
 	start := strings.Index(script, `*'"method":"config/mcpServer/reload"'*)`)
 	if start < 0 {
 		t.Fatal("missing reload response")
 	}
 	script = script[:start] + strings.Replace(script[start:], `"result":{}`, `"error":{"code":-32603,"message":"reload refused"}`, 1)
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	newCodexMcpStatusSession(t, app, thread.ID, binary, workspace, "mcp-failed-reload")
 	if err := app.SetThreadMcpServerEnabled(thread.ID, "srv", true); err != nil {
 		t.Fatal(err)

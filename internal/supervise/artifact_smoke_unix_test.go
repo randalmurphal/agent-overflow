@@ -336,6 +336,7 @@ func productionGet(client *http.Client, url, token string, into any) error {
 // /bootstrap.json meanwhile refuses the previous launch's token, then
 // answers 503 with the startup progress, then 200.
 func TestAwaitProductionBackendWaitsForReadiness(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	const version, identity = "0.0.900", "backend-1"
 	const (

@@ -77,6 +77,7 @@ func globalArchitectsDef() store.DiscussionDefinition {
 
 // TestDisc_CreateDiscussionPersists (28)
 func TestDisc_CreateDiscussionPersists(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	def := globalArchitectsDef()
@@ -102,6 +103,7 @@ func TestDisc_CreateDiscussionPersists(t *testing.T) {
 // actually scopes by project (not workspace), with "global" fallback. This
 // test codifies the real contract.
 func TestDisc_ListDiscussionsScopedToWorkspace(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	// Global discussion.
@@ -142,6 +144,7 @@ func TestDisc_ListDiscussionsScopedToWorkspace(t *testing.T) {
 
 // TestDisc_StartDiscussionCreatesThreadWithDiscussionMode (30)
 func TestDisc_StartDiscussionCreatesThreadWithDiscussionMode(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -183,6 +186,7 @@ func TestDisc_StartDiscussionCreatesThreadWithDiscussionMode(t *testing.T) {
 
 // TestDisc_PostChannelMessageAppearsInGetChannelMessages (31)
 func TestDisc_PostChannelMessageAppearsInGetChannelMessages(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -217,6 +221,7 @@ func TestDisc_PostChannelMessageAppearsInGetChannelMessages(t *testing.T) {
 
 // TestDisc_GetChannelMessagesOrdersBySeq (32)
 func TestDisc_GetChannelMessagesOrdersBySeq(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -256,6 +261,7 @@ func TestDisc_GetChannelMessagesOrdersBySeq(t *testing.T) {
 
 // TestDisc_UpdateDiscussionPersists (33)
 func TestDisc_UpdateDiscussionPersists(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -293,6 +299,7 @@ func TestDisc_UpdateDiscussionPersists(t *testing.T) {
 // channel_messages belonging to threads that previously used that
 // template.
 func TestDisc_DeleteDiscussionCascadesChannelMessages(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -336,6 +343,7 @@ func TestDisc_DeleteDiscussionCascadesChannelMessages(t *testing.T) {
 // ON DELETE CASCADE), but the *template* (DiscussionDefinition) is
 // untouched.
 func TestDisc_DeleteThreadPairedWithDiscussionPreservesDiscussion(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -369,6 +377,7 @@ func TestDisc_DeleteThreadPairedWithDiscussionPreservesDiscussion(t *testing.T) 
 // produces assistant text, the syncDiscussionTurn mirrors it into the
 // channel with the expected FromRole.
 func TestDisc_ParticipantRoutingRespected(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -431,6 +440,7 @@ func TestDisc_ParticipantRoutingRespected(t *testing.T) {
 // produces a new message with a new sequence. Two "identical" posts both
 // land. This test asserts that contract.
 func TestDisc_ChannelMessageSeqDedup(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {
@@ -471,6 +481,7 @@ func TestDisc_ChannelMessageSeqDedup(t *testing.T) {
 // TestDisc_DiscussionSurvivesAppRestart (38) — persist a definition, close
 // and reopen the store, and verify the definition is still there.
 func TestDisc_DiscussionSurvivesAppRestart(t *testing.T) {
+	t.Parallel()
 	dbPath := storetest.ClonePath(t)
 
 	// -- First "run" --
@@ -520,6 +531,7 @@ func TestDisc_DiscussionSurvivesAppRestart(t *testing.T) {
 // participant metadata" code path is only reachable via a missing template
 // lookup. This test codifies that as the practical failure mode.
 func TestDisc_StartDiscussionFailsOnMissingParticipants(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	parent := integTestThread("thread-disc-39")
@@ -549,6 +561,7 @@ func TestDisc_StartDiscussionFailsOnMissingParticipants(t *testing.T) {
 // TestDisc_LargeChannelMessageList (40) — post 500 messages and verify
 // GetChannelMessages returns all of them in order without corruption.
 func TestDisc_LargeChannelMessageList(t *testing.T) {
+	t.Parallel()
 	app, _ := newDiscussionApp(t)
 
 	if err := app.CreateDiscussion(globalArchitectsDef()); err != nil {

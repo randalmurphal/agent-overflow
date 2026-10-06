@@ -37,6 +37,11 @@ type MCPStatusFetcher struct {
 // dragging the UI for long if something hangs.
 const DefaultMCPStatusTimeout = 15 * time.Second
 
+// mcpStatusWaitDelay is how long Fetch waits after the deadline's SIGTERM
+// before killing the CLI and abandoning its output pipes. A variable only so
+// tests can shorten it.
+var mcpStatusWaitDelay = 2 * time.Second
+
 // Fetch satisfies mcpstatus.Fetcher. The provider arg is ignored
 // (always ProviderClaude); it's present so the Cache.Fetcher contract
 // stays uniform across both providers.
@@ -74,7 +79,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	// goroutines, which block on the pipe staying open. Two seconds matches
 	// the probes' kill grace: long enough for a credential write, short
 	// enough that a hung fetch still returns promptly.
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = mcpStatusWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

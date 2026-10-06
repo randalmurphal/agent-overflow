@@ -185,7 +185,9 @@ async function digestShells(card: Locator): Promise<string[]> {
   const ids = await body.locator('[data-item-id^="tu-shell-"]').evaluateAll((rows) =>
     rows.map((row) => row.getAttribute('data-item-id') ?? ''),
   );
-  await card.getByTestId('subagent-group-toggle').click();
+  // The timeline follows the expanded body for about a second, which a
+  // click waits out as an unstable target; the keyboard toggles in place.
+  await card.getByTestId('subagent-group-toggle').press('Enter');
   await expect(body).toHaveCount(0);
   return ids;
 }
@@ -304,7 +306,7 @@ test('every stop of a background agent is a card at its own position, and a resu
       'The log is keyed by transaction; waiting for the run to confirm it.',
     );
     await expect(parked1.getByTestId('subagent-group-parked-report-error')).toHaveCount(0);
-    await parked1.getByTestId('subagent-group-toggle').click();
+    await parked1.getByTestId('subagent-group-toggle').press('Enter');
     await expect(parked1.getByTestId('subagent-group-parked-report')).toHaveCount(0);
 
     // Each card is the agent as of its stop: its digest holds every row of

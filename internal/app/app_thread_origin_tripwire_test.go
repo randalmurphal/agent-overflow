@@ -40,6 +40,7 @@ var packagesThatCreateThreads = []string{
 }
 
 func TestEveryNewThreadRecordsWhereItCameFrom(t *testing.T) {
+	t.Parallel()
 	found := 0
 	for _, dir := range packagesThatCreateThreads {
 		for name, file := range parsePackageFiles(t, dir) {
@@ -83,6 +84,7 @@ func TestEveryNewThreadRecordsWhereItCameFrom(t *testing.T) {
 // the code it describes. A stale entry is worse than no entry: it reads as a
 // considered decision about a function that has since been rewritten.
 func TestEveryOriginExemptionStillExists(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for _, dir := range packagesThatCreateThreads {
 		for name, file := range parsePackageFiles(t, dir) {

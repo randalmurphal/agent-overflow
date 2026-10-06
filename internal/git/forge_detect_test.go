@@ -9,6 +9,7 @@ import (
 )
 
 func TestClassifyOriginURL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		url  string
@@ -63,6 +64,7 @@ func TestClassifyOriginURL(t *testing.T) {
 }
 
 func TestClassifyOriginURLWithSelfHostedGitLab(t *testing.T) {
+	t.Parallel()
 	hosts := []string{"gitlab.mycompany.com", "gl.example.test"}
 	cases := []struct {
 		name string
@@ -96,7 +98,8 @@ func TestClassifyOriginURLWithSelfHostedGitLab(t *testing.T) {
 }
 
 func TestSetGitLabHostsClassificationRoundTrip(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://gitlab.mycompany.com/group/repo.git")
 
 	core := NewCore()
@@ -126,6 +129,7 @@ func TestSetGitLabHostsClassificationRoundTrip(t *testing.T) {
 }
 
 func TestInvalidateAllForgeCacheClearsEveryEntry(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	now := core.nowFn()
 	core.recordOrigin("/repo/a", originIdentity{url: "https://github.com/owner/a.git", known: true}, now)
@@ -141,6 +145,7 @@ func TestInvalidateAllForgeCacheClearsEveryEntry(t *testing.T) {
 }
 
 func TestExtractRemoteHost(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input string
 		want  string
@@ -164,6 +169,7 @@ func TestExtractRemoteHost(t *testing.T) {
 }
 
 func TestDetectForgeReadsOriginURL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		originURL string
@@ -175,7 +181,8 @@ func TestDetectForgeReadsOriginURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := testutil.InitGitRepo(t)
+			t.Parallel()
+			repo := initGitRepo(t)
 			testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
 
 			core := NewCore()
@@ -187,7 +194,8 @@ func TestDetectForgeReadsOriginURL(t *testing.T) {
 }
 
 func TestDetectForgeReturnsEmptyForNoOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	if got := core.DetectForge(repo); got != "" {
 		t.Errorf("DetectForge() with no origin = %q, want empty", got)
@@ -195,6 +203,7 @@ func TestDetectForgeReturnsEmptyForNoOrigin(t *testing.T) {
 }
 
 func TestDetectForgeReturnsEmptyForNonRepo(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	if got := core.DetectForge(t.TempDir()); got != "" {
 		t.Errorf("DetectForge() on non-repo = %q, want empty", got)
@@ -202,6 +211,7 @@ func TestDetectForgeReturnsEmptyForNonRepo(t *testing.T) {
 }
 
 func TestDetectForgeReturnsEmptyForEmptyCwd(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	if got := core.DetectForge(""); got != "" {
 		t.Errorf("DetectForge(\"\") = %q, want empty", got)
@@ -213,7 +223,8 @@ func TestDetectForgeReturnsEmptyForEmptyCwd(t *testing.T) {
 // `git remote get-url origin` again. The cache mirrors prCache's
 // discipline — same TTL pattern, same nowFn override for tests.
 func TestDetectForgeCachesResults(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
 
 	core := NewCore()
@@ -242,6 +253,7 @@ func TestDetectForgeCachesResults(t *testing.T) {
 }
 
 func TestRecordOriginReplacesExisting(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	cwd := t.TempDir()
 	now := core.nowFn()
@@ -261,7 +273,8 @@ func TestRecordOriginReplacesExisting(t *testing.T) {
 // invalidation API drops the cached entry for cwd, so the next
 // DetectForge call re-runs origin URL classification.
 func TestInvalidateForgeCache(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
 
 	core := NewCore()
@@ -284,6 +297,7 @@ func TestInvalidateForgeCache(t *testing.T) {
 // TestInvalidateForgeCacheIsScopedToCwd confirms invalidation only
 // drops the targeted cwd's entry.
 func TestInvalidateForgeCacheIsScopedToCwd(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	now := core.nowFn()
 	core.recordOrigin("/repo/a", originIdentity{url: "https://github.com/owner/a.git", known: true}, now)
@@ -308,7 +322,8 @@ func TestInvalidateForgeCacheIsScopedToCwd(t *testing.T) {
 // that drives the "self-hosted GitLab" UX: Core.forgeFor returns a
 // nullForge whose every operation surfaces ErrUnsupportedForge.
 func TestForgeForReturnsNullForUnsupported(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://git.example.com/owner/repo.git")
 
 	core := NewCore()
@@ -319,7 +334,8 @@ func TestForgeForReturnsNullForUnsupported(t *testing.T) {
 }
 
 func TestForgeForReturnsGitHubForGitHubOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
 
 	core := NewCore()

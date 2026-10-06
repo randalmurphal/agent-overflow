@@ -9,6 +9,7 @@ import (
 )
 
 func TestRemoteJobLabel(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, label string
 		request     RemoteCommandRequest
@@ -48,6 +49,7 @@ func TestRemoteJobLabel(t *testing.T) {
 // The stored command text outlives the label: a labeled job still shows what
 // it ran, bounded separately from the shorter label.
 func TestRemoteJobCommandIsDisplayTextBoundedApartFromTheLabel(t *testing.T) {
+	t.Parallel()
 	long := RemoteCommandRequest{Argv: []string{"runner", strings.Repeat("界", 300)}}
 	command := remoteJobCommand(long)
 	if !strings.HasPrefix(command, "runner ") || !strings.HasSuffix(command, "…") || utf8.RuneCountInString(command) != remoteJobCommandMaxRunes {

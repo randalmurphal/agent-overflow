@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/forgeattach"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testUploadSecret = "0123456789abcdef0123456789abcdef"
@@ -24,9 +25,7 @@ func stubForgeCLI(t *testing.T, binary, body string) string {
 	binDir := t.TempDir()
 	argLog := filepath.Join(binDir, "args.log")
 	script := fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do printf '%%s\\n' \"$a\" >> %q; done\n%s", argLog, body)
-	if err := os.WriteFile(filepath.Join(binDir, binary), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock %s: %v", binary, err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, binary), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argLog
 }
@@ -209,9 +208,7 @@ func TestFetchAttachmentRefusesAMalformedHrefBeforeSpawning(t *testing.T) {
 	marker := filepath.Join(binDir, "spawned")
 	for _, binary := range []string{"gh", "glab"} {
 		script := fmt.Sprintf("#!/bin/sh\ntouch %q\n", marker)
-		if err := os.WriteFile(filepath.Join(binDir, binary), []byte(script), 0o755); err != nil {
-			t.Fatalf("write mock %s: %v", binary, err)
-		}
+		mockexec.Write(t, filepath.Join(binDir, binary), script)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -237,6 +234,7 @@ func TestFetchAttachmentRefusesAMalformedHrefBeforeSpawning(t *testing.T) {
 // honest: a remote we do not integrate with answers ErrUnsupportedForge
 // rather than reaching for a binary.
 func TestFetchAttachmentIsUnsupportedForAnUnknownForge(t *testing.T) {
+	t.Parallel()
 	_, err := nullForge{}.FetchAttachment("", forgeattach.Target{}, 1<<20)
 	if err != ErrUnsupportedForge {
 		t.Fatalf("nullForge.FetchAttachment = %v, want ErrUnsupportedForge", err)
@@ -260,6 +258,7 @@ func equalArgs(got, want []string) bool {
 // runner, whose message names the command it ran — and that name is the
 // GitLab upload secret or a signed GitHub URL.
 func TestRedactForgeRequest(t *testing.T) {
+	t.Parallel()
 	args := []string{"api", "projects/g%2Fr/uploads/" + testUploadSecret + "/a.png"}
 	message := formatCommand("glab", args...) + " timed out after 10m0s"
 	redacted := redactForgeRequest(message, args)

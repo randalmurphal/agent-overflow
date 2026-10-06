@@ -11,6 +11,7 @@ import (
 )
 
 func TestSessionRateLimitsStayAttributedToOriginalAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.sessionManager().put("thread", session{
 		Token:               "old-process",
@@ -40,6 +41,7 @@ func TestSessionRateLimitsStayAttributedToOriginalAccount(t *testing.T) {
 }
 
 func TestClaudeAccountSwitchAdoptsGenerationWithoutRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("claude-account-generation")
 	thread.Provider = string(provider.Claude)
@@ -70,6 +72,7 @@ func TestClaudeAccountSwitchAdoptsGenerationWithoutRestart(t *testing.T) {
 }
 
 func TestCodexAccountSwitchWaitsForActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-account-active-turn")
 	thread.Provider = string(provider.Codex)
@@ -96,6 +99,7 @@ func TestCodexAccountSwitchWaitsForActiveTurn(t *testing.T) {
 }
 
 func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-account-background")
 	thread.Provider = string(provider.Codex)
@@ -121,6 +125,7 @@ func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
 }
 
 func TestCodexIdleAccountSwitchReconnectsToSelectedAccount(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-account-idle")
 	thread.Provider = string(provider.Codex)
@@ -161,6 +166,7 @@ func TestCodexIdleAccountSwitchReconnectsToSelectedAccount(t *testing.T) {
 }
 
 func TestCodexAccountSwitchRejectsSendWhenReconnectGateIsOwned(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-account-reconnect-gate")
 	thread.Provider = string(provider.Codex)
@@ -184,6 +190,7 @@ func TestCodexAccountSwitchRejectsSendWhenReconnectGateIsOwned(t *testing.T) {
 }
 
 func TestCodexAccountSelectionTracksSelectedIdentityOnly(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installTestProviderAccounts(t, app, string(provider.Codex))
 	selection := app.captureProviderAccountSelection(string(provider.Codex))

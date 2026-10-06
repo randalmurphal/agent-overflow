@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -338,5 +339,39 @@ func TestReplayWatermarksWithheldFrames(t *testing.T) {
 				t.Fatalf("watermarks %+v, want one on %s at %d", replay.watermarks, item, tc.mark)
 			}
 		})
+	}
+}
+
+// TestConfigWatermarkIntervalDrivesThePump: Config.WatermarkInterval is the
+// ticker a served connection sends watermarks on, so a harness boot that
+// shortens it gets a watermark well inside the WatermarkEvery default.
+func TestConfigWatermarkIntervalDrivesThePump(t *testing.T) {
+	const item = "provider:item_event"
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.WatermarkInterval = 20 * time.Millisecond })
+	conn := f.dial(t)
+	sendFrame(t, conn, ClientFrame{Type: frameTypeWatch, Threads: []string{"thread-A"}})
+	barrier(t, conn, "after-watch")
+	withheld, err := f.bus.EmitEntity(item, "thread-B", "withheld")
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("no watermark within 3s of a withheld frame (WatermarkEvery is %s): %v", WatermarkEvery, err)
+		}
+		var frame ServerFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		if frame.Type == frameTypeEvent && frame.Watermark {
+			if frame.Channel != item || frame.Seq != withheld.Seq {
+				t.Fatalf("watermark = %s@%d, want %s@%d", frame.Channel, frame.Seq, item, withheld.Seq)
+			}
+			return
+		}
 	}
 }

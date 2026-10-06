@@ -17,6 +17,7 @@ import (
 // returns false before any teardown step runs — no store, triage, or
 // design wiring is reachable on this path, so a bare App suffices.
 func TestPreInitTeardownTokenGuard(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.sessionManager().put("t-guard", session{Provider: "claude", Token: "fresh-token"})
 
@@ -29,6 +30,7 @@ func TestPreInitTeardownTokenGuard(t *testing.T) {
 }
 
 func TestDirectSessionRemovalEmitsAccountDisconnect(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		remove func(*App) error
@@ -78,6 +80,7 @@ func newStartStateApp() *App {
 // on a channel that would never close AND left beginStart handing that dead
 // entry to every later start of the thread — a permanently wedged thread.
 func TestRunSessionStartPanicReleasesJoinersAndEntry(t *testing.T) {
+	t.Parallel()
 	app := newStartStateApp()
 
 	joinerParked := make(chan struct{})
@@ -143,6 +146,7 @@ func TestRunSessionStartPanicReleasesJoinersAndEntry(t *testing.T) {
 // A joiner has performed no side effects, so its wait is the caller's to
 // abandon. The leader must not notice.
 func TestRunSessionStartJoinerHonorsContextCancel(t *testing.T) {
+	t.Parallel()
 	app := newStartStateApp()
 
 	releaseLeader := make(chan struct{})
@@ -198,6 +202,7 @@ func TestRunSessionStartJoinerHonorsContextCancel(t *testing.T) {
 
 // An already-cancelled joiner never blocks, and never disturbs the leader.
 func TestRunSessionStartJoinerRefusesDeadContext(t *testing.T) {
+	t.Parallel()
 	app := newStartStateApp()
 
 	releaseLeader := make(chan struct{})
@@ -268,6 +273,7 @@ func waitForStartJoiners(t *testing.T, app *App, threadID string) {
 // exists for is exactly the one after that, while the child's FINAL_ANSWER is
 // still undelivered in the parent's mailbox.
 func TestCodexResumeCollabLaunchesReturnsOnlyUnresolvedOwnership(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-resume-tail", "gpt-5.3-codex", "")
 	if err != nil {

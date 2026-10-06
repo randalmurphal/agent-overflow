@@ -20,6 +20,7 @@ var canonicalPatchFlags = []string{"--patch", "--minimal", "--no-color", "--no-e
 	"--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"}
 
 func TestOptionsGitArgs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		opts Options
@@ -129,8 +130,8 @@ func hasDashW(argv string) bool {
 }
 
 func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
-	// Each producer gets its own repo: the traced run and the fixture must
-	// not share state across subtests.
+	// Each producer gets its own repo so one producer's runs cannot leave
+	// state another producer reads.
 	producers := []struct {
 		name string
 		run  func(t *testing.T, repo string, opts Options)
@@ -171,15 +172,17 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 	}
 	for _, producer := range producers {
 		t.Run(producer.name, func(t *testing.T) {
+			// Both runs read the same fixture; a diff never writes to the
+			// repository it reads.
+			repo := testutil.InitGitRepo(t)
+			commitFile(t, repo, "code.txt", "alpha\nbeta\n", "add code")
+			writeFile(t, repo, "code.txt", "alpha\n  beta\ngamma\n")
 			for _, ignore := range []bool{false, true} {
 				name := "canonical"
 				if ignore {
 					name = "ignore-whitespace"
 				}
 				t.Run(name, func(t *testing.T) {
-					repo := testutil.InitGitRepo(t)
-					commitFile(t, repo, "code.txt", "alpha\nbeta\n", "add code")
-					writeFile(t, repo, "code.txt", "alpha\n  beta\ngamma\n")
 					argv := traceGitArgv(t, func() {
 						producer.run(t, repo, Options{IgnoreWhitespace: ignore})
 					})
@@ -195,6 +198,7 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceHidesIndentationOnlyChange(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "func main() {\nsetup()\nrun()\n}\n", "add code")
 	// The shape this feature exists for: a block wrapped in an `if`, so
@@ -219,6 +223,7 @@ func TestIgnoreWhitespaceHidesIndentationOnlyChange(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceKeepsRealEditsFromReindentedBlock(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n", "add code")
 	// Re-indent three lines and make one real edit.
@@ -243,6 +248,7 @@ func TestIgnoreWhitespaceKeepsRealEditsFromReindentedBlock(t *testing.T) {
 }
 
 func TestIgnoreWhitespaceAppliesToBranchBaseAndCommitDiffs(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "code.txt", "alpha\nbeta\n", "add code")
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
@@ -270,6 +276,7 @@ func TestIgnoreWhitespaceAppliesToBranchBaseAndCommitDiffs(t *testing.T) {
 // git subcommand. Nothing is whitespace-only in a file's creation, so
 // this asserts the invocation succeeds and still carries the content.
 func TestIgnoreWhitespaceOnRootCommit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repo := testutil.InitGitRepo(t)
 	rootSHA, _, _, err := runGit(ctx, repo, nil, false, "rev-list", "--max-parents=0", "HEAD")
@@ -352,6 +359,7 @@ func anchorsByContent(t *testing.T, patch string) map[string]anchoredLine {
 // If a future git ever changed that, this test fails and the frontend's
 // "comments work under -w" assumption has to be revisited.
 func TestIgnoreWhitespaceKeepsCanonicalLineNumbers(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo,
 		"code.txt",

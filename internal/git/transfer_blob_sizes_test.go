@@ -4,13 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/testutil"
 )
 
 func TestTransferBlobPreflightCountsRepeatedExpansionAndRejectsNonBlobs(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	ctx := context.Background()
 	oid, _, err := core.executeSpec(commandSpec{binary: "git", cwd: repo, stdin: "small", args: []string{"hash-object", "-w", "--stdin"}})
 	if err != nil {

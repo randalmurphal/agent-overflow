@@ -253,6 +253,7 @@ func TestBootNamesTheRunningPartOfARebuild(t *testing.T) {
 // is a rebuild, its index builds and foreign key check are details of its
 // step and do not begin the phase again.
 func TestReportMigrationBeginsThePhaseOnce(t *testing.T) {
+	t.Parallel()
 	a := NewApp()
 	progress := newRecordingBootProgress("")
 	SetBootProgress(a, progress)
@@ -313,6 +314,7 @@ func TestAsyncStartReportsFailureToStartDone(t *testing.T) {
 // TestStopAsyncStartWithoutStartIsANoop: ServiceShutdown runs even when
 // ServiceStartup never did.
 func TestStopAsyncStartWithoutStartIsANoop(t *testing.T) {
+	t.Parallel()
 	a := NewApp()
 	a.stopAsyncStart()
 }

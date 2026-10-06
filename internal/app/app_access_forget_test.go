@@ -18,6 +18,7 @@ import (
 // sessions went with it, and the credential log that explains how it got
 // there did not.
 func TestForgetAccessDevice_RemovesTheRowAndItsSessions(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, session := pairDevice(t, app, "A revoked browser", "thumb-forget")
 	if _, err := app.RevokeAccessDevice(device.ID); err != nil {
@@ -64,6 +65,7 @@ func TestForgetAccessDevice_RemovesTheRowAndItsSessions(t *testing.T) {
 // device's UI state. Deleting the row first would take away the only
 // handle on a device that still holds credentials.
 func TestForgetAccessDevice_RefusesADeviceThatStillHasAccess(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, session := pairDevice(t, app, "A live browser", "thumb-forget-live")
 
@@ -85,6 +87,7 @@ func TestForgetAccessDevice_RefusesADeviceThatStillHasAccess(t *testing.T) {
 // webview, the WSL relay and `--connect` all present. It is never revoked,
 // so the ordering refusal would name a step this surface will not allow.
 func TestForgetAccessDevice_RefusesTheLocalPageChannel(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	session := localChannelSession(t, app)
 
@@ -103,6 +106,7 @@ func TestForgetAccessDevice_RefusesTheLocalPageChannel(t *testing.T) {
 // again — through an owner-minted link and the verification number, so
 // nothing re-enrolls unwatched.
 func TestForgetAccessDevice_FreesTheKeyToEnrollAgain(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	const thumbprint = "thumb-forget-reenroll"
 	device, _ := pairDevice(t, app, "A browser", thumbprint)
@@ -138,6 +142,7 @@ func TestForgetAccessDevice_FreesTheKeyToEnrollAgain(t *testing.T) {
 // is a snapshot, so a second click (or one from another screen) must
 // answer what it asked for rather than a lookup failure.
 func TestForgetAccessDevice_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, _ := pairDevice(t, app, "A browser", "thumb-forget-twice")
 	if _, err := app.RevokeAccessDevice(device.ID); err != nil {
@@ -157,6 +162,7 @@ func TestForgetAccessDevice_IsIdempotent(t *testing.T) {
 // the label MEANS is one definition, and it lives on the page that also
 // applies it to itself.
 func TestAccessOverview_CarriesTheGrantSetPerSession(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	state := app.identityState()
 	observe, err := identity.PairingAccessViewOnly.Grants()
@@ -212,6 +218,7 @@ func TestAccessOverview_CarriesTheGrantSetPerSession(t *testing.T) {
 // of the rule. The rule is that the overview carries such a row marked,
 // rather than filtering it away with the ordinary revoked history.
 func TestPresentableSession_SurfacesASessionThatOutlivedItsDeviceRevocation(t *testing.T) {
+	t.Parallel()
 	const now = 1_000_000
 	live := store.Session{ActivatedAt: now - 10, ExpiresAt: now + 10}
 	cases := []struct {

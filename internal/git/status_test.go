@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/unidiff"
 )
 
 func TestParseStatusOutput(t *testing.T) {
+	t.Parallel()
 	// headNumstat is the combined `git diff HEAD --numstat` output (worktree
 	// vs HEAD), so staged and unstaged churn arrive as one stream.
 	status := parseStatusOutput(
@@ -56,6 +58,7 @@ func TestParseStatusOutput(t *testing.T) {
 }
 
 func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	status, err := core.Status(t.TempDir())
@@ -76,6 +79,7 @@ func repoWithOrigin(t *testing.T) (string, string) {
 }
 
 func TestMaybeFetchRemotesRespectsStaleWindow(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -115,6 +119,7 @@ func TestMaybeFetchRemotesRespectsStaleWindow(t *testing.T) {
 }
 
 func TestPruneRemotesUpdatesFetchCache(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -137,6 +142,7 @@ func TestPruneRemotesUpdatesFetchCache(t *testing.T) {
 }
 
 func TestPruneRemotesErrorLeavesCacheUntouched(t *testing.T) {
+	t.Parallel()
 	// A non-git directory fails at CommonDir — the early error path must
 	// NOT stamp the fetch cache, otherwise a subsequent open against a
 	// real repo would inherit the stale entry.
@@ -158,6 +164,7 @@ func TestPruneRemotesErrorLeavesCacheUntouched(t *testing.T) {
 }
 
 func TestInvalidateFetchCacheForcesRefetch(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -187,6 +194,7 @@ func advanceOriginMain(t *testing.T, bare string) {
 }
 
 func TestSyncBranchPullsCurrentBranch(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 	advanceOriginMain(t, bare)
 
@@ -232,6 +240,7 @@ func TestSyncBranchPullsCurrentBranch(t *testing.T) {
 }
 
 func TestSyncBranchUpdatesNonCurrentBranchViaFetchRefspec(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 
 	core := NewCore()
@@ -319,6 +328,7 @@ func TestSyncBranchUpdatesNonCurrentBranchViaFetchRefspec(t *testing.T) {
 }
 
 func TestSyncBranchRefusesDiverged(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 	advanceOriginMain(t, bare)
 
@@ -342,7 +352,8 @@ func TestSyncBranchRefusesDiverged(t *testing.T) {
 }
 
 func TestSyncBranchRequiresUpstream(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if _, _, err := core.Execute(repo, "checkout", "-b", "no-upstream"); err != nil {
@@ -359,7 +370,8 @@ func TestSyncBranchRequiresUpstream(t *testing.T) {
 }
 
 func TestSyncBranchValidatesName(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	err := core.SyncBranch(repo, "")
@@ -373,6 +385,7 @@ func TestSyncBranchValidatesName(t *testing.T) {
 }
 
 func TestSplitUpstreamRef(t *testing.T) {
+	t.Parallel()
 	remotes := []string{"origin"}
 
 	remote, branch, ok := splitUpstreamRef("origin/main", remotes)
@@ -407,7 +420,8 @@ func TestSplitUpstreamRef(t *testing.T) {
 }
 
 func TestCurrentBranchReturnsMain(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	if got := NewCore().CurrentBranch(repo); got != "main" {
 		t.Fatalf("CurrentBranch() = %q, want main", got)
@@ -415,6 +429,7 @@ func TestCurrentBranchReturnsMain(t *testing.T) {
 }
 
 func TestCurrentBranchReturnsUnbornBranch(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	testutil.RunGit(t, repo, "init", "-q", "-b", "new-repo")
 
@@ -424,7 +439,8 @@ func TestCurrentBranchReturnsUnbornBranch(t *testing.T) {
 }
 
 func TestCurrentBranchReturnsEmptyForDetachedHEAD(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "--detach", "HEAD")
 
 	if got := NewCore().CurrentBranch(repo); got != "" {
@@ -433,6 +449,7 @@ func TestCurrentBranchReturnsEmptyForDetachedHEAD(t *testing.T) {
 }
 
 func TestCurrentBranchReturnsEmptyOutsideRepository(t *testing.T) {
+	t.Parallel()
 	if got := NewCore().CurrentBranch(t.TempDir()); got != "" {
 		t.Fatalf("CurrentBranch() outside repository = %q, want empty", got)
 	}
@@ -443,16 +460,14 @@ func TestCurrentBranchDoesNotRunForgeLookup(t *testing.T) {
 		t.Skip("shell script mock gh is unix-only")
 	}
 
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/example/project.git")
 
 	binDir := t.TempDir()
 	markerPath := filepath.Join(binDir, "gh-called")
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\nprintf called > \"$AO_CURRENT_BRANCH_GH_MARKER\"\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("AO_CURRENT_BRANCH_GH_MARKER", markerPath)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -465,7 +480,8 @@ func TestCurrentBranchDoesNotRunForgeLookup(t *testing.T) {
 }
 
 func TestStatusOnRepositoryWithOrigin(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
 	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
@@ -515,6 +531,7 @@ func TestStatusOnRepositoryWithOrigin(t *testing.T) {
 // from the origin URL classification. Covers the three v1 cases:
 // github (recognised), gitlab (recognised), self-hosted (unsupported).
 func TestStatusReportsForge(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		originURL string
@@ -530,12 +547,15 @@ func TestStatusReportsForge(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := testutil.InitGitRepo(t)
+			t.Parallel()
+			repo := initGitRepo(t)
 			if tc.originURL != "" {
 				testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
 			}
 
-			core := NewCore()
+			// Isolated so the open-PR lookup a detected forge triggers
+			// never reaches the developer's gh or glab.
+			core := NewCore(WithIsolatedForgeCLIs("", nil))
 			status, err := core.Status(repo)
 			if err != nil {
 				t.Fatalf("Status returned error: %v", err)
@@ -551,6 +571,7 @@ func TestStatusReportsForge(t *testing.T) {
 }
 
 func TestStatusSkipsPRLookupWithoutSupportedForge(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		originURL string
@@ -560,7 +581,8 @@ func TestStatusSkipsPRLookupWithoutSupportedForge(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := testutil.InitGitRepo(t)
+			t.Parallel()
+			repo := initGitRepo(t)
 			if tc.originURL != "" {
 				testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
 			}
@@ -583,7 +605,8 @@ func TestStatusSkipsPRLookupWithoutSupportedForge(t *testing.T) {
 }
 
 func TestWorkingTreeDiff(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	readmePath := filepath.Join(repo, "README.txt")
 
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged\n"), 0o644); err != nil {
@@ -605,7 +628,8 @@ func TestWorkingTreeDiff(t *testing.T) {
 }
 
 func TestWorkingTreeDiffReturnsEmptyForCleanRepo(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	diff, err := core.WorkingTreeDiff(repo)
@@ -618,7 +642,8 @@ func TestWorkingTreeDiffReturnsEmptyForCleanRepo(t *testing.T) {
 }
 
 func TestWorkingTreeDiffCachedOnly(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	readmePath := filepath.Join(repo, "README.txt")
 
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged change\n"), 0o644); err != nil {
@@ -637,6 +662,7 @@ func TestWorkingTreeDiffCachedOnly(t *testing.T) {
 }
 
 func TestWorkingTreeDiffOnNonRepo(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	_, err := core.WorkingTreeDiff(t.TempDir())
@@ -646,6 +672,7 @@ func TestWorkingTreeDiffOnNonRepo(t *testing.T) {
 }
 
 func TestCombineDiffsEdgeCases(t *testing.T) {
+	t.Parallel()
 	if got := combineDiffs("", "cached"); got != "cached" {
 		t.Fatalf("combineDiffs empty+cached = %q, want cached", got)
 	}
@@ -658,6 +685,7 @@ func TestCombineDiffsEdgeCases(t *testing.T) {
 }
 
 func TestParseAheadBehindMalformed(t *testing.T) {
+	t.Parallel()
 	ahead, behind := parseAheadBehind("invalid")
 	if ahead != 0 || behind != 0 {
 		t.Fatalf("parseAheadBehind(invalid) = %d/%d, want 0/0", ahead, behind)
@@ -665,24 +693,28 @@ func TestParseAheadBehindMalformed(t *testing.T) {
 }
 
 func TestParseNumstatCountMalformed(t *testing.T) {
+	t.Parallel()
 	if got := parseNumstatCount("abc"); got != 0 {
 		t.Fatalf("parseNumstatCount(abc) = %d, want 0", got)
 	}
 }
 
 func TestParsePorcelainPathIgnoredPrefix(t *testing.T) {
+	t.Parallel()
 	if got := parsePorcelainPath("! ignored.txt"); got != "ignored.txt" {
 		t.Fatalf("parsePorcelainPath for ignored = %q, want ignored.txt", got)
 	}
 }
 
 func TestParsePorcelainPathEmptyFields(t *testing.T) {
+	t.Parallel()
 	if got := parsePorcelainPath(""); got != "" {
 		t.Fatalf("parsePorcelainPath for empty = %q, want empty", got)
 	}
 }
 
 func TestParseStatusOutputDetachedHead(t *testing.T) {
+	t.Parallel()
 	status := parseStatusOutput(
 		"# branch.oid abcdef\n# branch.head (HEAD detached)\n",
 		"",
@@ -693,6 +725,7 @@ func TestParseStatusOutputDetachedHead(t *testing.T) {
 }
 
 func TestParseNumstatSkipsShortLines(t *testing.T) {
+	t.Parallel()
 	entries := parseNumstat("incomplete\ttwo\n")
 	if len(entries) != 0 {
 		t.Fatalf("expected no entries for incomplete numstat line, got %d", len(entries))
@@ -700,7 +733,8 @@ func TestParseNumstatSkipsShortLines(t *testing.T) {
 }
 
 func TestStatusOnCleanRepository(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	status, err := core.Status(repo)
@@ -727,6 +761,7 @@ func TestStatusOnCleanRepository(t *testing.T) {
 // results must agree with each other and with a subsequent serial call made
 // against warm caches.
 func TestStatusIsRaceFreeAndOrderIndependent(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	core := NewCore()
 
@@ -781,6 +816,7 @@ func TestStatusIsRaceFreeAndOrderIndependent(t *testing.T) {
 // otherwise a `git init` inside the window would keep classifying as "no
 // forge" for forgeDetectionTTL.
 func TestStatusNonRepoLeavesNoForgeCacheEntry(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	dir := t.TempDir()
 
@@ -800,6 +836,7 @@ func TestStatusNonRepoLeavesNoForgeCacheEntry(t *testing.T) {
 }
 
 func TestHelperFunctions(t *testing.T) {
+	t.Parallel()
 	if got := normalizeNumstatPath("old/name.txt => new/name.txt"); got != "new/name.txt" {
 		t.Fatalf("normalizeNumstatPath returned %q", got)
 	}
@@ -821,7 +858,8 @@ func TestHelperFunctions(t *testing.T) {
 }
 
 func TestCountWorkingTreeChangesCountsStagedUnstagedAndUntracked(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if count, err := core.CountWorkingTreeChanges(repo); err != nil {
@@ -852,7 +890,8 @@ func TestCountWorkingTreeChangesCountsStagedUnstagedAndUntracked(t *testing.T) {
 }
 
 func TestCountUnpushedCommitsReportsNoUpstreamWhenUnconfigured(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	count, hasUpstream, err := core.CountUnpushedCommits(repo, "main")
@@ -868,6 +907,7 @@ func TestCountUnpushedCommitsReportsNoUpstreamWhenUnconfigured(t *testing.T) {
 }
 
 func TestCountUnpushedCommitsRejectsFlagShapedBranch(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	_, _, err := core.CountUnpushedCommits(t.TempDir(), "--objects")
@@ -880,7 +920,8 @@ func TestCountUnpushedCommitsRejectsFlagShapedBranch(t *testing.T) {
 }
 
 func TestCountUnpushedCommitsCountsCommitsAhead(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	// Build a bare remote so the test doesn't need network. Configure
@@ -925,6 +966,7 @@ func TestCountUnpushedCommitsCountsCommitsAhead(t *testing.T) {
 }
 
 func TestCountUnpushedCommitsSeparatesBranchNameFromPath(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	core := NewCore()
 
@@ -966,7 +1008,8 @@ func TestCountUnpushedCommitsSeparatesBranchNameFromPath(t *testing.T) {
 // workflow fan-out has: unit branches are cut from the item branch and never
 // acquire an upstream, so the unpushed-commit question cannot answer for them.
 func TestCountCommitsAheadCountsLocalBranchDivergence(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	const unit = "ao-workflow-port-unit-1"
@@ -1016,7 +1059,8 @@ func TestCountCommitsAheadCountsLocalBranchDivergence(t *testing.T) {
 // checkout is gone — which is exactly when a join reads it, and why cwd is the
 // project rather than the unit worktree.
 func TestCountCommitsAheadAnswersAfterTheWorktreeIsRemoved(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	const unit = "ao-workflow-port-unit-1"
@@ -1043,6 +1087,7 @@ func TestCountCommitsAheadAnswersAfterTheWorktreeIsRemoved(t *testing.T) {
 }
 
 func TestCountCommitsAheadValidatesBothRefs(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 
 	for _, tc := range []struct{ branch, base string }{
@@ -1058,7 +1103,8 @@ func TestCountCommitsAheadValidatesBothRefs(t *testing.T) {
 }
 
 func TestUpstreamForReturnsFalseWhenNoUpstream(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if _, ok := core.upstreamFor(repo, "main"); ok {
@@ -1175,7 +1221,8 @@ func panelWorkspaceTotal(t *testing.T, repo string) (insertions, deletions int) 
 // The discard loss preview names files, so the parser has to survive the paths
 // git would otherwise quote and escape, and must not count a rename twice.
 func TestWorkingTreeChangesNamesAwkwardPathsAndCountsRenamesOnce(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	if paths, total, err := core.WorkingTreeChanges(repo, 5); err != nil {
@@ -1233,7 +1280,8 @@ func TestWorkingTreeChangesNamesAwkwardPathsAndCountsRenamesOnce(t *testing.T) {
 }
 
 func TestDeleteBranchForcesUnmergedAndIsIdempotent(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 	testutil.RunGit(t, repo, "checkout", "-b", "unlanded")
 	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("unlanded\n"), 0o644); err != nil {

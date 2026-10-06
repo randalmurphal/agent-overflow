@@ -10,9 +10,11 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestDispatchMCPOAuthCompletion_FiresHandler(t *testing.T) {
+	t.Parallel()
 	type call struct {
 		name    string
 		success bool
@@ -36,6 +38,7 @@ func TestDispatchMCPOAuthCompletion_FiresHandler(t *testing.T) {
 }
 
 func TestDispatchMCPOAuthCompletion_PropagatesFailure(t *testing.T) {
+	t.Parallel()
 	var (
 		gotName, gotErr string
 		gotSuccess      bool
@@ -54,6 +57,7 @@ func TestDispatchMCPOAuthCompletion_PropagatesFailure(t *testing.T) {
 }
 
 func TestDispatchMCPOAuthCompletion_NoHandlerIsNoop(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"linear","success":true}}`)
@@ -67,6 +71,7 @@ func TestDispatchMCPOAuthCompletion_NoHandlerIsNoop(t *testing.T) {
 // thread-scoped plugin/project servers) and the tools map must decode
 // into names.
 func TestSession_ListMCPServerStatuses_ThreadScopedRoundTrip(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/list-request.json"
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -91,9 +96,7 @@ done
 
 	scriptDir := t.TempDir()
 	scriptPath := scriptDir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -139,6 +142,7 @@ done
 }
 
 func TestDispatchMCPStartupUpdate_FiresHandler(t *testing.T) {
+	t.Parallel()
 	var got []MCPStartupUpdate
 	s := newMCPTestSession(t, nil)
 	s.SetMCPStartupUpdateHandler(func(u MCPStartupUpdate) {
@@ -165,12 +169,14 @@ func TestDispatchMCPStartupUpdate_FiresHandler(t *testing.T) {
 }
 
 func TestDispatchMCPStartupUpdate_NoHandlerIsNoop(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready"}}`)
 	s.dispatchLine(line)
 }
 
 func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
+	t.Parallel()
 	called := false
 	s := newMCPTestSession(t, func(provider.ProviderEvent) {})
 	s.SetMCPStartupUpdateHandler(func(MCPStartupUpdate) { called = true })
@@ -186,6 +192,7 @@ func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
 // a lifecycle from a probe, so a later update must be able to talk the
 // session out of an earlier one in BOTH directions.
 func TestDispatchMCPStartupUpdate_RetainsStatePerServer(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	s.SetMCPStartupUpdateHandler(func(MCPStartupUpdate) {})
 
@@ -217,6 +224,7 @@ func TestDispatchMCPStartupUpdate_RetainsStatePerServer(t *testing.T) {
 // history in that window would answer a later MCP listing with an
 // inference instead of what it saw.
 func TestDispatchMCPStartupUpdate_RetainsWithoutHandler(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
 
@@ -227,6 +235,7 @@ func TestDispatchMCPStartupUpdate_RetainsWithoutHandler(t *testing.T) {
 }
 
 func TestDispatchMCPStartupUpdate_MissingNameIsNotRetained(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}`))
 	if states := s.MCPStartupStates(); len(states) != 0 {
@@ -237,6 +246,7 @@ func TestDispatchMCPStartupUpdate_MissingNameIsNotRetained(t *testing.T) {
 // TestMCPStartupStates_ReturnsACopy: the caller merges these against a
 // list response and is free to mutate what it got back.
 func TestMCPStartupStates_ReturnsACopy(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
 
@@ -257,6 +267,7 @@ func TestMCPStartupStates_ReturnsACopy(t *testing.T) {
 // states: retain → forget → nothing; forget of an unknown name is a
 // no-op; a later update re-retains after a forget.
 func TestForgetMCPStartupState(t *testing.T) {
+	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	failedLine := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`)
 
@@ -283,6 +294,7 @@ func TestForgetMCPStartupState(t *testing.T) {
 // a rune boundary before it reaches the heap, and a full map keeps
 // admitting updates for names it already knows while refusing new ones.
 func TestDispatchMCPStartupUpdate_RetentionBounds(t *testing.T) {
+	t.Parallel()
 	var handled []string
 	s := newMCPTestSession(t, nil)
 	s.SetMCPStartupUpdateHandler(func(u MCPStartupUpdate) { handled = append(handled, u.Name) })
@@ -323,6 +335,7 @@ func TestDispatchMCPStartupUpdate_RetentionBounds(t *testing.T) {
 }
 
 func TestDispatchMCPOAuthCompletion_MissingNameIsDropped(t *testing.T) {
+	t.Parallel()
 	called := false
 	s := newMCPTestSession(t, func(provider.ProviderEvent) {})
 	s.SetMCPOAuthCompletedHandler(func(name string, success bool, errMsg string) {

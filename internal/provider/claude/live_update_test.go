@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func liveUpdateBaseOptions() provider.SessionOptions {
@@ -228,9 +229,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	cfg.Binary = scriptPath
 	if cfg.Env == nil {
@@ -322,9 +321,8 @@ func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
 
 	// No control_request may have hit stdin — the model half of the update
 	// must not half-apply when the permission half needs a restart.
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 
@@ -581,9 +579,8 @@ func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 
@@ -617,9 +614,8 @@ func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 
@@ -671,9 +667,8 @@ func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
 	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 
@@ -690,9 +685,8 @@ func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
 	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 

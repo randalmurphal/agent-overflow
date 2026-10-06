@@ -28,8 +28,7 @@ const sliceIDsTestSessionJSONL = `{"type":"user","uuid":"u0","parentUuid":null,"
 // 2: the shape triage produces during normal operation.
 func setupSliceIDsThread(t *testing.T, app *App) (store.Thread, string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "slice-ids-source"
 	writeClaudeProjectSession(t, home, workspace, sessionID, sliceIDsTestSessionJSONL)
@@ -70,9 +69,10 @@ func userItemBySummary(t *testing.T, app *App, threadID, summary string) store.I
 // slices by the stored id. Were the slice to remint uuids, that second
 // rollback would find neither u1 nor its parent a0 and refuse.
 func TestConversationRollbackKeepsSurvivingProviderIDs(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread, workspace := setupSliceIDsThread(t, app)
-	sourceRows := readClaudeSessionRows(t, workspace, thread.SessionRef)
+	sourceRows := readClaudeSessionRows(t, app, workspace, thread.SessionRef)
 
 	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
 		t.Fatalf("first rollback: %v", err)
@@ -84,7 +84,7 @@ func TestConversationRollbackKeepsSurvivingProviderIDs(t *testing.T) {
 	if afterFirst.SessionRef == thread.SessionRef {
 		t.Fatalf("rollback kept session ref %q, want a new slice", afterFirst.SessionRef)
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, afterFirst.SessionRef, sourceRows[:4])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, afterFirst.SessionRef, sourceRows[:4])
 
 	surviving, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1")
 	if err != nil || !ok {
@@ -110,7 +110,7 @@ func TestConversationRollbackKeepsSurvivingProviderIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread after second rollback: %v", err)
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, afterSecond.SessionRef, sourceRows[:2])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, afterSecond.SessionRef, sourceRows[:2])
 }
 
 // TestConversationRollbackInClaudeForkResolvesStoredID pins revert after
@@ -118,9 +118,10 @@ func TestConversationRollbackKeepsSurvivingProviderIDs(t *testing.T) {
 // slice keeps those uuids, so reverting inside the fork cuts at the stored
 // id.
 func TestConversationRollbackInClaudeForkResolvesStoredID(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	source, workspace := setupSliceIDsThread(t, app)
-	sourceRows := readClaudeSessionRows(t, workspace, source.SessionRef)
+	sourceRows := readClaudeSessionRows(t, app, workspace, source.SessionRef)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
@@ -141,7 +142,7 @@ func TestConversationRollbackInClaudeForkResolvesStoredID(t *testing.T) {
 	if after.SessionRef == fork.SessionRef {
 		t.Fatalf("rollback in fork kept session ref %q, want a new slice", after.SessionRef)
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, after.SessionRef, sourceRows[:2])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, after.SessionRef, sourceRows[:2])
 }
 
 // TestForkAfterClaudeRollbackResolvesStoredID pins fork after revert: the
@@ -149,9 +150,10 @@ func TestConversationRollbackInClaudeForkResolvesStoredID(t *testing.T) {
 // slice keeps those uuids, so a fork from a surviving message cuts the
 // rolled-back session at the stored id.
 func TestForkAfterClaudeRollbackResolvesStoredID(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	source, workspace := setupSliceIDsThread(t, app)
-	sourceRows := readClaudeSessionRows(t, workspace, source.SessionRef)
+	sourceRows := readClaudeSessionRows(t, app, workspace, source.SessionRef)
 
 	if err := rollbackToMessage(app, source.ID, "user:2"); err != nil {
 		t.Fatalf("rollback: %v", err)
@@ -160,7 +162,7 @@ func TestForkAfterClaudeRollbackResolvesStoredID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fork after rollback: %v", err)
 	}
-	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:2])
+	assertClaudeSliceKeepsSourceRows(t, app, workspace, fork.SessionRef, sourceRows[:2])
 	first := userItemBySummary(t, app, fork.ID, "first")
 	if got := usermessage.ReadProviderItemID(first.Meta); got != "u0" {
 		t.Fatalf("fork \"first\" provider_item_id = %q, want the source's u0", got)
@@ -174,6 +176,7 @@ func TestForkAfterClaudeRollbackResolvesStoredID(t *testing.T) {
 // ordinal walk would miscount a CLI-merged queue batch, so the rollback
 // fails and leaves the session and the timeline as they were.
 func TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread, workspace := setupSliceIDsThread(t, app)
 	before, err := app.store.GetThread(thread.ID)
@@ -202,7 +205,7 @@ func TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk(t *testing.T) {
 	if after.SessionRef != before.SessionRef {
 		t.Fatalf("session ref changed on a refused rollback: %q -> %q", before.SessionRef, after.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, after.SessionRef, []string{"first", "second", "third"}, nil)
+	assertClaudeSessionText(t, app, workspace, after.SessionRef, []string{"first", "second", "third"}, nil)
 	if _, found, err := app.store.GetThreadItem(thread.ID, "user:2"); err != nil || !found {
 		t.Fatalf("refused rollback removed user:2 (found=%v err=%v)", found, err)
 	}
@@ -214,9 +217,9 @@ func TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk(t *testing.T) {
 // leaf scan lands on the active branch (the rechain repaired the
 // topology), so the next resume targets a uuid claude will accept.
 func TestConversationRollbackSlicesPoisonedAPIErrorTail(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "poisoned-source"
 	// Turn 0 (u0/a0), then turn 1 (u1/a1-mid/a1-final) whose trailing
@@ -252,13 +255,13 @@ func TestConversationRollbackSlicesPoisonedAPIErrorTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	assertClaudeSessionText(t, workspace, after.SessionRef, []string{"first", "second", "reply 1"}, []string{"third"})
+	assertClaudeSessionText(t, app, workspace, after.SessionRef, []string{"first", "second", "reply 1"}, []string{"third"})
 
 	// The resume-at the app would pass must be reply 1's row. Without the
 	// rechain the sliced file ends with off-branch api_error rows, the
 	// branch walk skips reply 1, and the branch-aware scan falls back to
 	// the shallower a1-mid.
-	state, err := claude.ScanSessionLeaf(testProviderProjectsDir(t), after.SessionRef, workspace)
+	state, err := claude.ScanSessionLeaf(testProviderProjectsDir(t, app), after.SessionRef, workspace)
 	if err != nil {
 		t.Fatalf("scan sliced session leaf: %v", err)
 	}

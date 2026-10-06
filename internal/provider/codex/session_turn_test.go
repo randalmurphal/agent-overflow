@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestSendTurnStartFormat(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Call the actual Send method, which issues a turn/start JSON-RPC request.
@@ -52,12 +54,13 @@ func TestSendTurnStartFormat(t *testing.T) {
 // the RPC response via the pending channel without racing cat's echo
 // of the request.
 func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+		Args:   []string{"-c", "cat > /dev/null"},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -122,20 +125,11 @@ pollPending:
 	// pick up a stdin-written line.
 	notifLine := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-42"}}}`)
 	s.dispatchLine(notifLine)
+	// The completion is emitted after any turn start either path produced,
+	// so it bounds the drain without waiting out a quiet period.
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-42","status":"completed"}}}`))
 
-	turnStarts := 0
-	drainDeadline := time.After(500 * time.Millisecond)
-drain:
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventTurnStart && evt.TurnID == "turn-42" {
-				turnStarts++
-			}
-		case <-drainDeadline:
-			break drain
-		}
-	}
+	turnStarts := countTurnStartsUntilComplete(t, eventCh, "turn-42")
 	if turnStarts != 1 {
 		t.Fatalf("turnStart emissions for turn-42 = %d, want exactly 1 (Bug B6 regression)", turnStarts)
 	}
@@ -146,6 +140,7 @@ drain:
 // EventTurnStart. Codex always sends turn/started after turn/start, so
 // the notification path is load-bearing.
 func TestTurnStartOnlyNotificationStillEmits(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	// Only the notification — no RPC response at all.
@@ -172,6 +167,7 @@ func TestTurnStartOnlyNotificationStillEmits(t *testing.T) {
 // where the provider re-sends turn/started (e.g. recovery). The second
 // emission must be suppressed so the router still sees one turn.
 func TestTurnStartIdempotentOnDuplicateNotification(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
 	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-dup"}}}`
@@ -181,25 +177,45 @@ func TestTurnStartIdempotentOnDuplicateNotification(t *testing.T) {
 		}
 	}
 
-	count := 0
-	deadline := time.After(1 * time.Second)
-drain:
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventTurnStart && evt.TurnID == "turn-dup" {
-				count++
-			}
-		case <-deadline:
-			break drain
-		}
+	// The read loop handles lines in order, so the completion bounds the drain.
+	completed := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-dup","status":"completed"}}}`
+	if err := s.proc.WriteLine([]byte(completed)); err != nil {
+		t.Fatalf("write completion: %v", err)
 	}
+
+	count := countTurnStartsUntilComplete(t, eventCh, "turn-dup")
 	if count != 1 {
 		t.Fatalf("turnStart emissions = %d, want exactly 1 (dedup regression)", count)
 	}
 }
 
+// countTurnStartsUntilComplete counts EventTurnStart for turnID until that
+// turn's EventTurnComplete arrives.
+func countTurnStartsUntilComplete(t *testing.T, eventCh <-chan provider.ProviderEvent, turnID string) int {
+	t.Helper()
+	count := 0
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.TurnID != turnID {
+				continue
+			}
+			switch evt.Kind {
+			case provider.EventTurnStart:
+				count++
+			case provider.EventTurnComplete:
+				return count
+			}
+		case <-deadline:
+			t.Fatalf("no turn completion for %s", turnID)
+			return count
+		}
+	}
+}
+
 func TestCodexSend(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	// Send calls sendRequest("turn/start"). With cat, this goes through the
@@ -215,6 +231,7 @@ func TestCodexSend(t *testing.T) {
 }
 
 func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
+	t.Parallel()
 	// Codex's wire protocol treats an empty turn_id as a "startup
 	// interrupt" — the app-server submits Op::Interrupt to the core
 	// and responds immediately with `{}`. We must NOT gate on a
@@ -283,6 +300,7 @@ func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
 }
 
 func TestCodexInterruptWithActiveTurn(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestCodexSession(t)
 
 	// Simulate turn/started by setting activeTurnID.
@@ -300,6 +318,7 @@ func TestCodexInterruptWithActiveTurn(t *testing.T) {
 }
 
 func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -368,6 +387,7 @@ func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 }
 
 func TestSendImageOnlyTurnStartFormat(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -384,9 +404,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:         scriptPath,
@@ -454,6 +472,7 @@ done
 }
 
 func TestSessionSendIncludesRuntimeAccessPolicyForEveryMode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name            string
 		approvalPolicy  string
@@ -498,9 +517,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 			scriptPath := filepath.Join(t.TempDir(), "codex")
-			if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-				t.Fatalf("write mock script: %v", err)
-			}
+			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
 				Binary:         scriptPath,
@@ -549,6 +566,7 @@ done
 }
 
 func TestSessionSendIncludesCollaborationMode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		mode     provider.InteractionMode
@@ -576,9 +594,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 			scriptPath := filepath.Join(t.TempDir(), "codex")
-			if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-				t.Fatalf("write mock script: %v", err)
-			}
+			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
 				Binary:          scriptPath,
@@ -638,6 +654,7 @@ done
 // the previous runtime mode's choice — which is how a thread switched OUT of
 // auto keeps auto-approving its own escalations.
 func TestSessionSendIncludesApprovalsReviewerForEveryMode(t *testing.T) {
+	t.Parallel()
 	for _, mode := range provider.AllRuntimeModes {
 		t.Run(string(mode), func(t *testing.T) {
 			capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")

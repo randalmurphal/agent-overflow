@@ -3,7 +3,7 @@
 // with the pure policy in purge.test.ts: that the boot sweep reaps the
 // databases a moved backend id left behind, and that a deletion is
 // sequenced against the session that may have one of them open.
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   __replicaEnabledForTest,
@@ -17,6 +17,8 @@ import {
 } from './session';
 import { replicaDatabaseName } from './purge';
 import type { ReplicaBody } from './envelope';
+
+installFakeIndexedDB();
 
 function body(): ReplicaBody {
   return {

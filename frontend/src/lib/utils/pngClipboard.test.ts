@@ -58,7 +58,6 @@ function stubCodec(options: { decodeFails?: boolean; encoded?: Blob | null } = {
 }
 
 describe('pngClipboard', () => {
-  const originalClipboard = navigator.clipboard;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -67,7 +66,8 @@ describe('pngClipboard', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    setClipboard(originalClipboard);
+    // The stub shadows happy-dom's prototype getter; drop it.
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   describe('asPng', () => {

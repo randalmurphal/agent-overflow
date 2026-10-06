@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -224,5 +227,135 @@ func TestChannelMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	}
 	if err := s.DeleteChannel("missing-channel"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("DeleteChannel() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestChannelMessageSequenceAssignment pins how InsertChannelMessageAtomic
+// numbers messages and how the readers scope them: per channel, from 0, one
+// past the channel's highest sequence even across a gap, and returned as
+// stored.
+func TestChannelMessageSequenceAssignment(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-channel-seq", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ch-a", "ch-b"} {
+		if err := s.CreateChannel(Channel{ID: id, ThreadID: thread.ID, Type: "deliberation", Status: "open", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var posted []ChannelMessage
+	post := func(msg ChannelMessage, want int) {
+		t.Helper()
+		msg.CreatedAt = int64(100 + len(posted))
+		got, err := s.InsertChannelMessageAtomic(msg)
+		if err != nil {
+			t.Fatalf("post %s: %v", msg.ID, err)
+		}
+		if got != want {
+			t.Fatalf("post %s returned sequence %d, want %d", msg.ID, got, want)
+		}
+		msg.Sequence = want
+		posted = append(posted, msg)
+	}
+	post(ChannelMessage{ID: "a0", ChannelID: "ch-a", FromType: "human", FromID: "user", Content: "kickoff"}, 0)
+	post(ChannelMessage{ID: "a1", ChannelID: "ch-a", FromType: "agent", FromID: "p1", FromRole: "Architect", Content: "one", Meta: `{"k":1}`}, 1)
+	post(ChannelMessage{ID: "a2", ChannelID: "ch-a", FromType: "agent", FromID: "p2", FromRole: "Critic", Content: "two"}, 2)
+	post(ChannelMessage{ID: "a3", ChannelID: "ch-a", FromType: "agent", FromID: "p1", FromRole: "Architect", Content: "three"}, 3)
+	// Another channel numbers from 0.
+	post(ChannelMessage{ID: "b0", ChannelID: "ch-b", FromType: "agent", FromID: "p2", FromRole: "Critic", Content: "b zero"}, 0)
+	gap := ChannelMessage{ID: "b7", ChannelID: "ch-b", Sequence: 7, FromType: "human", FromID: "user", Content: "b seven", CreatedAt: 200}
+	if err := s.InsertChannelMessage(gap); err != nil {
+		t.Fatal(err)
+	}
+	posted = append(posted, gap)
+	// The next sequence follows the highest, not the message count.
+	post(ChannelMessage{ID: "b8", ChannelID: "ch-b", FromType: "agent", FromID: "p2", FromRole: "Critic", Content: "b eight"}, 8)
+
+	for channel, want := range map[string][]ChannelMessage{"ch-a": posted[:4], "ch-b": posted[4:]} {
+		got, err := s.ListChannelMessages(channel, -1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s lists\n%+v\nwant\n%+v", channel, got, want)
+		}
+	}
+
+	for _, tc := range []struct {
+		channel, from string
+		want          int
+	}{
+		{"ch-a", "p1", 3},
+		{"ch-a", "p2", 2},
+		{"ch-a", "user", 0},
+		{"ch-b", "p1", -1},
+		{"ch-b", "p2", 8},
+	} {
+		if got, err := s.LastChannelMessageSeqFrom(tc.channel, tc.from); err != nil || got != tc.want {
+			t.Fatalf("LastChannelMessageSeqFrom(%s, %s) = %d, %v; want %d", tc.channel, tc.from, got, err, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		channel, fromType string
+		want              int
+	}{
+		{"ch-a", "agent", 3},
+		{"ch-a", "human", 1},
+		{"ch-b", "agent", 2},
+		{"ch-b", "system", 0},
+	} {
+		if got, err := s.CountChannelMessagesByType(tc.channel, tc.fromType); err != nil || got != tc.want {
+			t.Fatalf("CountChannelMessagesByType(%s, %s) = %d, %v; want %d", tc.channel, tc.fromType, got, err, tc.want)
+		}
+	}
+}
+
+// TestInsertChannelMessageAtomicNumbersConcurrentPosts pins the reason the
+// insert computes its own sequence: concurrent posts each get a distinct
+// one instead of colliding on UNIQUE(channel_id, sequence).
+func TestInsertChannelMessageAtomicNumbersConcurrentPosts(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-channel-concurrent", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateChannel(Channel{ID: "ch", ThreadID: thread.ID, Type: "deliberation", Status: "open", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	const posts = 32
+	sequences := make([]int, posts)
+	errs := make([]error, posts)
+	var wg sync.WaitGroup
+	for i := range posts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sequences[i], errs[i] = s.InsertChannelMessageAtomic(ChannelMessage{
+				ID: fmt.Sprintf("m%d", i), ChannelID: "ch", FromType: "agent", FromID: "p", Content: "x", CreatedAt: 1,
+			})
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := s.ListChannelMessages("ch", -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != posts {
+		t.Fatalf("listed %d messages, want %d", len(listed), posts)
+	}
+	for seq, msg := range listed {
+		if msg.Sequence != seq {
+			t.Fatalf("sequences are not 0..%d: %+v", posts-1, listed)
+		}
+		var i int
+		if _, err := fmt.Sscanf(msg.ID, "m%d", &i); err != nil || sequences[i] != seq {
+			t.Fatalf("message %s stored at %d, returned %v (%v)", msg.ID, seq, sequences, err)
+		}
 	}
 }

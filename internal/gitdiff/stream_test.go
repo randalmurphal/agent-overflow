@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // readDiff reads a whole diff in chunks of chunkBytes, checking that every
@@ -106,6 +107,7 @@ func numberedLines(prefix string, count int) string {
 }
 
 func TestDiffChunksReassembleTheWholePatchAtAnyChunkSize(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "big.txt", numberedLines("old ", 40000), "add big")
 	commitFile(t, repo, "big.txt", numberedLines("new ", 40000), "rewrite big")
@@ -140,6 +142,7 @@ func TestDiffChunksReassembleTheWholePatchAtAnyChunkSize(t *testing.T) {
 }
 
 func TestDiffSplitsALongLineBetweenCharacters(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	// One line several chunks long, of two- and three-byte characters, so
 	// a byte-count cut lands inside a character unless the reader backs off.
@@ -168,6 +171,7 @@ func TestDiffSplitsALongLineBetweenCharacters(t *testing.T) {
 }
 
 func TestChunkCut(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		window string
@@ -190,6 +194,7 @@ func TestChunkCut(t *testing.T) {
 }
 
 func TestDiffRereadsReturnTheSnapshotAfterTheWorktreeAndHeadMove(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "big.txt", numberedLines("old ", 20000), "add big")
 	writeFile(t, repo, "big.txt", numberedLines("new ", 20000))
@@ -224,6 +229,7 @@ func TestDiffRereadsReturnTheSnapshotAfterTheWorktreeAndHeadMove(t *testing.T) {
 }
 
 func TestDiffRereadRefusesBytesThatNoLongerMatch(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "big.txt", numberedLines("old ", 20000), "add big")
 	// Every 20th line changes: many hunks, several chunks.
@@ -254,6 +260,7 @@ func TestDiffRereadRefusesBytesThatNoLongerMatch(t *testing.T) {
 }
 
 func TestDiffReadRefusesAnOffsetNoReadEndedAt(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "README.txt", "hello\nedited\n")
 	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
@@ -339,9 +346,7 @@ func fakeGit(t *testing.T, script string) {
 		t.Skip("fake git is a shell script")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
+	mockexec.WriteIn(t, dir, "git", "#!/bin/sh\n"+script+"\n")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -397,6 +402,7 @@ func TestDiffReportsAGitFailureInsteadOfAShortPatch(t *testing.T) {
 }
 
 func TestWorktreeDiffCloseRemovesItsSnapshot(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "new.txt", "brand new\n")
 	root := t.TempDir()
@@ -419,7 +425,8 @@ func TestWorktreeDiffCloseRemovesItsSnapshot(t *testing.T) {
 // A patch far larger than anything stored for it: a small compressed blob
 // that expands into tens of megabytes of added lines. Reading it holds no
 // more than a few chunks in memory, and its snapshot on disk stays the
-// size of the compressed object.
+// size of the compressed object. It does not run in parallel because the
+// heap bound reads process-wide MemStats.
 func TestDiffStreamsACompressiblePatchWithoutHoldingIt(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	const lines = 3_000_000
@@ -448,8 +455,11 @@ func TestDiffStreamsACompressiblePatchWithoutHoldingIt(t *testing.T) {
 	var peak uint64
 	var total int64
 	var offset int64
+	// Small reads keep the reader's own garbage well under the patch size,
+	// so a reader that holds the patch cannot hide inside the bound.
+	const readBytes = 1 << 20
 	for {
-		chunk, err := diff.Read(context.Background(), offset, MaxChunkBytes)
+		chunk, err := diff.Read(context.Background(), offset, readBytes)
 		if err != nil {
 			t.Fatalf("read at %d: %v", offset, err)
 		}
@@ -464,7 +474,7 @@ func TestDiffStreamsACompressiblePatchWithoutHoldingIt(t *testing.T) {
 	if total < lines*12 {
 		t.Fatalf("read %d bytes, want the whole %d-line patch", total, lines)
 	}
-	if grew := peak - min(peak, baseline); grew > 6*MaxChunkBytes {
+	if grew := peak - min(peak, baseline); grew > 16<<20 || grew > uint64(total)/2 {
 		t.Fatalf("heap grew by %d bytes reading a %d-byte patch; want a few chunks at most", grew, total)
 	}
 	if snapshotBytes > total/100 {
@@ -473,6 +483,7 @@ func TestDiffStreamsACompressiblePatchWithoutHoldingIt(t *testing.T) {
 }
 
 func TestPatchShapeIgnoresDiffConfiguration(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
@@ -503,6 +514,7 @@ func TestPatchShapeIgnoresDiffConfiguration(t *testing.T) {
 }
 
 func TestOpenMergeBaseDiffShowsOnlyTheHeadSideOfTheMergeBase(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-q", "-b", "feature")
 	commitFile(t, repo, "feature.txt", "feature work\n", "feature")

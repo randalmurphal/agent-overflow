@@ -20,6 +20,7 @@ import (
 // silently overridable, and a name deny-listed here that no spawn path pins
 // would refuse a configuration for no reason.
 func TestReservedEnvNamesMatchTheProviderPins(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{
 		string(provider.Claude),
 		string(provider.ClaudeTUI),
@@ -53,6 +54,7 @@ func TestReservedEnvNamesMatchTheProviderPins(t *testing.T) {
 // name would break the feature's primary use case; the app routes it to the
 // gateway upstream instead. Pin that the exception stays an exception.
 func TestClaudeBaseURLIsConfigurableOnEveryClaudeSurface(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
 		if err := settings.ValidateProviderEnvVarName(providerName, claudetui.BaseURLEnv); err != nil {
 			t.Fatalf("%s rejected %s: %v", providerName, claudetui.BaseURLEnv, err)
@@ -63,6 +65,7 @@ func TestClaudeBaseURLIsConfigurableOnEveryClaudeSurface(t *testing.T) {
 // Transition coverage: a variable that is set, then removed, must stop reaching
 // the process. A spawn path that read a cached snapshot would keep injecting it.
 func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	// Off: nothing injected.
@@ -115,6 +118,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 // contracts. The reserved names make a real collision impossible, so this pins
 // the layering itself rather than a reachable conflict.
 func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.SetProviderCustomEnvVar("claude", "SHARED", "user", false); err != nil {
 		t.Fatal(err)
@@ -144,6 +148,7 @@ func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
 // PROBE asks — otherwise the account banner reports one identity while every
 // turn runs against another.
 func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
 		t.Fatal(err)
@@ -184,6 +189,7 @@ func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 }
 
 func TestProbeCacheKeyIncludesCustomEnv(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	before := app.providerProbeCacheKey(string(provider.Claude), "claude")
 	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
@@ -203,7 +209,7 @@ func TestProbeCacheKeyIncludesCustomEnv(t *testing.T) {
 // one has to go too, or flipping a variable back would serve a pre-change
 // identity for the rest of the TTL.
 func TestCustomEnvChangeEvictsBothProbeAnswers(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 
 	beforeKey := app.providerProbeCacheKey(string(provider.Claude), app.providerBinaryPath(string(provider.Claude)))
@@ -241,7 +247,7 @@ func TestCustomEnvChangeEvictsBothProbeAnswers(t *testing.T) {
 // map lookup, so resolving the account under "claude-tui" would come back
 // empty and both evictions would miss the entries the probes actually use.
 func TestClaudeTUINamedEnvChangeEvictsClaudeProbeAnswers(t *testing.T) {
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 	accounts, err := provideraccounts.NewStore(t.TempDir())
 	if err != nil {
@@ -270,6 +276,7 @@ func TestClaudeTUINamedEnvChangeEvictsClaudeProbeAnswers(t *testing.T) {
 // claude-tui owns the child's ANTHROPIC_BASE_URL (it must point at the
 // per-session gateway), so a user endpoint reaches the gateway's upstream.
 func TestClaudeTUIRoutesCustomBaseURLToTheGatewayUpstream(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if got := app.claudetuiUpstream(); got != "" {
 		t.Fatalf("claudetuiUpstream() = %q, want the real API by default", got)
@@ -292,6 +299,7 @@ func TestClaudeTUIRoutesCustomBaseURLToTheGatewayUpstream(t *testing.T) {
 // same environment — including after the availability fallback substitutes the
 // other provider, where it must take the OTHER provider's list.
 func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://claude.test", false); err != nil {
@@ -346,6 +354,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 // must not ride out on it — the same rule the remote-endpoint tokens follow.
 // Non-sensitive values stay readable; the UI needs them to render.
 func TestGetSettingsRedactsSensitiveCustomEnvValues(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.SetProviderCustomEnvVar("claude", "OPEN_VALUE", "visible", false); err != nil {
 		t.Fatal(err)
@@ -391,6 +400,7 @@ func TestGetSettingsRedactsSensitiveCustomEnvValues(t *testing.T) {
 // The settings file is the persistence boundary; a sensitive value has to
 // survive a restart or "re-enter to change" becomes "re-enter every launch".
 func TestSensitiveCustomEnvSurvivesAReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(dir)

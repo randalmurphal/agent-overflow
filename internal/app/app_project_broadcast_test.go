@@ -68,6 +68,7 @@ func (r *projectBroadcasts) expectSilence(what string) {
 // for both halves of the contract — the changed row goes out, and repeating
 // the same write says nothing.
 func TestProjectMutationsBroadcastTheChangedRow(t *testing.T) {
+	t.Parallel()
 	t.Run("create is listed and carries the generated slug", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		broadcasts := captureProjectBroadcasts(t, app)
@@ -240,6 +241,7 @@ func TestProjectMutationsBroadcastTheChangedRow(t *testing.T) {
 // sidebar entry every attached client needs — including the one that started
 // the thread, which never called CreateProject and so has nothing to apply.
 func TestImplicitProjectCreationBroadcastsListed(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	broadcasts := captureProjectBroadcasts(t, app)
 

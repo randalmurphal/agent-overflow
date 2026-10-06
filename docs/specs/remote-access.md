@@ -1098,8 +1098,8 @@ transport terminates TLS on the SAME port it serves cleartext on
 (`tlssniff.go`: first byte 0x16 → `tls.Server`, else plain; one
 goroutine per conn off the accept loop, bounded by
 `HTTPReadHeaderTimeout`), with `bindListener` as the one listener
-constructor so boot / ephemeral fallback / rebind / retry / rollback
-all keep the wrap. `deriveWSURL` follows the request (`r.TLS` or a
+constructor so boot / ephemeral fallback / rebind all keep the
+wrap. `deriveWSURL` follows the request (`r.TLS` or a
 validated `X-Forwarded-Proto: https` → `wss://`) — the
 forwarded header is honored there and nowhere else; `OriginAllowed`
 and the Secure cookie flag stay on `r.TLS`. The pairing payload's

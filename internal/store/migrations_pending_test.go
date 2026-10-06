@@ -22,8 +22,7 @@ func fileDigest(t *testing.T, path string) [32]byte {
 // not migrate refuses an older database and changes none of its bytes; the
 // same open migrates it once the option is off.
 func TestRefusePendingMigrationsLeavesTheDatabaseAsItWas(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-overflow.db")
-	writeHistoryRepairFixture(t, path)
+	path := fixtureCopy(t, "history-repair.db", writeHistoryRepairFixture)
 	before := fileDigest(t, path)
 
 	_, err := NewWithOptions(path, Options{RefusePendingMigrations: true})
@@ -102,7 +101,7 @@ func TestRefusePendingMigrationsCreatesANewDatabase(t *testing.T) {
 // a newer build migrated has nothing pending here; the open refuses it as
 // too new, so the launcher shows that failure instead of running a trial.
 func TestRefusePendingMigrationsLeavesANewerSchemaToItsOwnRefusal(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-overflow.db")
+	path := newTestStorePath(t)
 	stampAhead(t, path, latestMigrationVersionForTest()+2, 0)
 	_, err := NewWithOptions(path, Options{RefusePendingMigrations: true})
 	var tooNew *SchemaTooNewError
@@ -125,8 +124,7 @@ func TestPendingMigrationsIsTheRefusalsRule(t *testing.T) {
 		t.Fatalf("PendingMigrations(a newer schema) = %v; that is SchemaTooNewError's", err)
 	}
 
-	path := filepath.Join(t.TempDir(), "agent-overflow.db")
-	writeHistoryRepairFixture(t, path)
+	path := fixtureCopy(t, "history-repair.db", writeHistoryRepairFixture)
 	applied, err := ReadSchemaVersion(path)
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +158,7 @@ func databaseFileSet(t *testing.T, path string) map[string][32]byte {
 // which is what lets the update's restore put back the database as the
 // backend left it. Reading a missing database creates nothing.
 func TestReadSchemaVersionReadsWithoutChangingTheDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-overflow.db")
-	writeHistoryRepairFixture(t, path)
+	path := fixtureCopy(t, "history-repair.db", writeHistoryRepairFixture)
 	before := databaseFileSet(t, path)
 	if got, err := ReadSchemaVersion(path); err != nil || got != 118 {
 		t.Fatalf("ReadSchemaVersion(the v118 fixture) = %d, %v", got, err)

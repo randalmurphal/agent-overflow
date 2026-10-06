@@ -26,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  delete (navigator as { clipboard?: unknown }).clipboard;
 });
 
 describe('<CopyButton>', () => {

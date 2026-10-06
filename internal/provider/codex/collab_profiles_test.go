@@ -13,6 +13,7 @@ import (
 )
 
 func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
+	t.Parallel()
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -70,10 +71,11 @@ func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 }
 
 func TestScheduledChildProfileReplacesUnknownSpawnProfile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+		Args:   []string{"-c", "cat > /dev/null"},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -138,6 +140,7 @@ func TestScheduledChildProfileReplacesUnknownSpawnProfile(t *testing.T) {
 }
 
 func TestRememberCollabReceiverMetaClearsOptionalEffortFromAuthoritativeProfile(t *testing.T) {
+	t.Parallel()
 	s := &Session{collab: sessionCollabState{agentMetaByThread: map[string]collabReceiverMeta{
 		"child-1": {
 			ThreadID:        "child-1",
@@ -160,6 +163,7 @@ func TestRememberCollabReceiverMetaClearsOptionalEffortFromAuthoritativeProfile(
 }
 
 func TestCollabProfileReadCoalescesAndStopsAfterProfileIsKnown(t *testing.T) {
+	t.Parallel()
 	s := &Session{collab: sessionCollabState{
 		agentMetaByThread: make(map[string]collabReceiverMeta),
 	}}

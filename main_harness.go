@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -91,6 +92,10 @@ func runHarness(flags cliFlags) {
 		// error message for the same mistake.
 		requireWindowedBuild()
 	}
+	timing, err := parseHarnessTiming(os.Getenv(diagenv.HarnessTiming))
+	if err != nil {
+		fatalf("harness: %v", err)
+	}
 	paths, err := prepareHarness(flags)
 	if err != nil {
 		fatalf("harness: %v", err)
@@ -106,7 +111,9 @@ func runHarness(flags cliFlags) {
 		}
 	}
 
-	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptionsFor(flags))
+	isolation := isolationOptionsFor(flags)
+	isolation.Timing = timing
+	appService, nativeWindow := newIsolatedProviderApp(paths, isolation)
 	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
@@ -126,6 +133,7 @@ func runHarness(flags cliFlags) {
 		HarnessPageMarker:      harnessrpc.PageMarker(h),
 		HarnessMethodsSink:     func(names []string) { harnessrpc.SetWireMethods(h, names) },
 		AllowDevServerAssets:   true,
+		HarnessTiming:          timing,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
 
@@ -225,6 +233,57 @@ func holdHarnessStartup(ctx context.Context, begin func(phase, detail string) (e
 	}
 }
 
+// harnessTiming is a harness boot's diagenv.HarnessTiming: product
+// intervals shortened so a test does not wait out a cadence it is not
+// about. A zero field keeps the product interval.
+type harnessTiming struct {
+	// PairingProbe is how often a pending pairing asks whether the owner
+	// confirmed it (deviceclient.WithProbeInterval).
+	PairingProbe time.Duration
+	// Watermark is the transport's watermark tick
+	// (transport.Config.WatermarkInterval).
+	Watermark time.Duration
+	// ThreadPoll is the agent thread request poll cadence
+	// (app.IsolationConfig.ThreadRequestPoll).
+	ThreadPoll time.Duration
+	// TransferRetry is how soon a pending outgoing conversation transfer
+	// asks again (app.IsolationConfig.TransferPendingRetry).
+	TransferRetry time.Duration
+}
+
+// parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
+// product timing. A malformed value is an error rather than ignored, so a
+// test cannot pass while running at the cadence it meant to replace.
+func parseHarnessTiming(value string) (harnessTiming, error) {
+	var timing harnessTiming
+	fields := map[string]*time.Duration{
+		"pairing-probe":  &timing.PairingProbe,
+		"watermark":      &timing.Watermark,
+		"thread-poll":    &timing.ThreadPoll,
+		"transfer-retry": &timing.TransferRetry,
+	}
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, raw, ok := strings.Cut(entry, "=")
+		field := fields[strings.TrimSpace(name)]
+		if !ok || field == nil {
+			return harnessTiming{}, fmt.Errorf("%s: unknown entry %q", diagenv.HarnessTiming, entry)
+		}
+		if *field != 0 {
+			return harnessTiming{}, fmt.Errorf("%s: %s is given twice", diagenv.HarnessTiming, strings.TrimSpace(name))
+		}
+		interval, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil || interval <= 0 {
+			return harnessTiming{}, fmt.Errorf("%s: %s needs a positive duration, got %q", diagenv.HarnessTiming, strings.TrimSpace(name), strings.TrimSpace(raw))
+		}
+		*field = interval
+	}
+	return timing, nil
+}
+
 // isolationOptions carries the isolation decisions a mocked boot mode is
 // allowed to make for itself. The provider-safety pins are deliberately
 // absent: they are unconditional in every mode, which is what
@@ -241,6 +300,10 @@ type isolationOptions struct {
 	// backend's own tree, which is what every launcher-hosted --soak
 	// instance gets.
 	ScanScopePIDs []int
+	// Timing shortens product intervals for a test. Only a harness boot
+	// sets it (diagenv.HarnessTiming); the zero value keeps every product
+	// interval.
+	Timing harnessTiming
 }
 
 // isolationOptionsFor is the one mapping from boot flags to isolation
@@ -287,7 +350,9 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		// gh and glab; see internal/git/forge_cli.go.
 		ForgeCLI: paths.MockForge,
 		// Dev-server discovery; see internal/app/app_preview.go.
-		ScanScopePIDs: opts.ScanScopePIDs,
+		ScanScopePIDs:        opts.ScanScopePIDs,
+		ThreadRequestPoll:    opts.Timing.ThreadPoll,
+		TransferPendingRetry: opts.Timing.TransferRetry,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

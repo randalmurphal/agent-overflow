@@ -53,6 +53,7 @@ func createBudgetTestRun(t *testing.T, app *App, itemID string, budget json.RawM
 // enforced against includes the rows the wire priced at nothing. This is the
 // number `checkBudget` compares, so a zero here is a ceiling that never fires.
 func TestWorkflowTreeSpendPricesCodexTokenOnlyRows(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "codex-run", nil)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
@@ -86,6 +87,7 @@ func TestWorkflowTreeSpendPricesCodexTokenOnlyRows(t *testing.T) {
 // spend read, which parked every budgeted run in the project on the first turn
 // of a model the rate table had not learned yet.
 func TestWorkflowTreeSpendReportsUnpricedRowsRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "future-model", nil)
 	row := codexUsageRow(item.ID, "phase-1", 2, 1_000, 500, 0)
@@ -107,6 +109,7 @@ func TestWorkflowTreeSpendReportsUnpricedRowsRatherThanFailing(t *testing.T) {
 // a $-ceilinged run whose spend is entirely Codex is judged against the priced
 // total, through the same ResolveBudget the engine enforces with.
 func TestWorkflowUSDBudgetIsCrossedByEstimatedCodexSpend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "budgeted", json.RawMessage(`{"usd":10}`))
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
@@ -138,6 +141,7 @@ func TestWorkflowUSDBudgetIsCrossedByEstimatedCodexSpend(t *testing.T) {
 // answers, and it names the reason. Failing this read instead would take the
 // operator's view of the run away over exactly the fact they need to see.
 func TestWorkflowRunBudgetSurvivesAnUnpriceableModel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "unjudgeable", json.RawMessage(`{"usd":25}`))
 	known := codexUsageRow(item.ID, "phase-1", 2, 200_000, 0, 0)
@@ -167,6 +171,7 @@ func TestWorkflowRunBudgetSurvivesAnUnpriceableModel(t *testing.T) {
 // TestWorkflowRunBudgetIsAbsentWithoutACeiling — the ordinary case. Nothing to
 // render, and nothing is rendered.
 func TestWorkflowRunBudgetIsAbsentWithoutACeiling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "unbounded", nil)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
@@ -188,6 +193,7 @@ func TestWorkflowRunBudgetIsAbsentWithoutACeiling(t *testing.T) {
 // ROOT's ceiling across the tree, so a called run's status has to say whose
 // budget it is spending and count the whole tree's spend against it.
 func TestWorkflowRunBudgetNamesTheAncestorWhoseCeilingItSpends(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	root := createBudgetTestRun(t, app, "campaign", json.RawMessage(`{"tokens":1000}`))
 	child := store.WorkItem{
@@ -224,6 +230,7 @@ func TestWorkflowRunBudgetNamesTheAncestorWhoseCeilingItSpends(t *testing.T) {
 // TestWorkflowRunStatusCarriesTheBudget — `run status` / `run inspect` carry
 // the line, and a run with no ceiling carries no field at all.
 func TestWorkflowRunStatusCarriesTheBudget(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	budgeted := createBudgetTestRun(t, app, "with-budget", json.RawMessage(`{"tokens":1000}`))
 	unbudgeted := createBudgetTestRun(t, app, "no-budget", nil)
@@ -270,6 +277,7 @@ func TestWorkflowRunStatusCarriesTheBudget(t *testing.T) {
 // reads. Both summed `cost_usd` alone before, which is zero for every Codex row
 // ever written: a codex-heavy campaign rendered as costing nothing.
 func TestWorkflowItemDetailAndCostsPriceCodexSpend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	item := createBudgetTestRun(t, app, "priced-detail", nil)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
@@ -324,6 +332,7 @@ const effortTestModel = "claude-opus-4-7"
 // added to def but not to the provider would be accepted by validation and then
 // coerced away at thread creation, both silently.
 func TestWorkflowEffortTiersMatchTheProviderReasoningEfforts(t *testing.T) {
+	t.Parallel()
 	authored := def.EffortTiers()
 	runtime := provider.AllReasoningEfforts
 
@@ -364,8 +373,9 @@ func TestWorkflowEffortTiersMatchTheProviderReasoningEfforts(t *testing.T) {
 // `chat_model_profiles`, which records how the user happened to configure their
 // last interactive chat on the same model.
 func TestWorkflowThreadIgnoresRememberedChatProfile(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 
 	catalogDefault := chatmodel.FallbackProfile(string(provider.Claude), effortTestModel)
@@ -404,8 +414,9 @@ func TestWorkflowThreadIgnoresRememberedChatProfile(t *testing.T) {
 // `threads.reasoning_effort` is CHECKed, so an uncoerced value is a write error,
 // not a cosmetic one.
 func TestWorkflowThreadTakesAuthoredEffort(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 
 	catalogDefault := chatmodel.FallbackProfile(string(provider.Claude), effortTestModel).ReasoningEffort
@@ -460,6 +471,7 @@ func createWorkflowThreadForTest(t *testing.T, app *App, projectRow store.Projec
 // issues is bookkeeping, not a person pressing stop, so it must not leave a
 // "Stopped by user" row on the thread.
 func TestUsageLimitCleanupDoesNotRecordAUserInterrupt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()

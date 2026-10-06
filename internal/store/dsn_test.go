@@ -216,7 +216,7 @@ func walSize(t *testing.T, dbPath string) int64 {
 }
 
 func TestTruncateCheckpointShrinksTheWALFile(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "wal.sqlite")
+	dbPath := newTestStorePath(t)
 	s, err := New(dbPath)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -254,7 +254,7 @@ func TestTruncateCheckpointShrinksTheWALFile(t *testing.T) {
 }
 
 func TestCloseTruncatesTheWAL(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "close.sqlite")
+	dbPath := newTestStorePath(t)
 	s, err := New(dbPath)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -294,7 +294,7 @@ func TestCloseTruncatesTheWAL(t *testing.T) {
 // has to be what reclaims it, which is the whole reason the Windows Job
 // Object teardown does not have to be graceful for WAL size to recover.
 func TestNewTruncatesAWALLeftByAnUngracefulExit(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "crash.sqlite")
+	dbPath := newTestStorePath(t)
 	s, err := New(dbPath)
 	if err != nil {
 		t.Fatalf("new store: %v", err)

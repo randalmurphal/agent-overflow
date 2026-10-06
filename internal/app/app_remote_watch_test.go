@@ -1,10 +1,10 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -62,6 +62,7 @@ func completedRemoteWatch(t *testing.T, a *App, thread store.Thread) store.Remot
 }
 
 func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
+	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
 	thread := remoteWatchThread(t, a, string(provider.Claude))
@@ -116,6 +117,7 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 }
 
 func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {
 			a, rec := newAppForFlushQueueRPC(t)
@@ -169,6 +171,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 }
 
 func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source, rec := newAppForFlushQueueRPC(t)
@@ -224,14 +227,9 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 			codexCapture := filepath.Join(t.TempDir(), "codex-idle.ndjson")
 			if mode == "idle-codex" {
 				binary := writeCodexSteerBinary(t, thread.ID+"-provider", "no-active-turn")
-				script, err := os.ReadFile(binary)
-				if err != nil {
-					t.Fatal(err)
-				}
+				script := []byte(mockScript(t, binary))
 				script = []byte(strings.Replace(string(script), "while IFS= read -r line; do", "while IFS= read -r line; do\n    printf '%s\\n' \"$line\" >> "+shellQuote(codexCapture), 1))
-				if err := os.WriteFile(binary, script, 0700); err != nil {
-					t.Fatal(err)
-				}
+				mockexec.Write(t, binary, string(script))
 				if _, err := source.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 					t.Fatal(err)
 				}
@@ -361,6 +359,7 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 }
 
 func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
+	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
 	thread := remoteWatchThread(t, a, string(provider.Codex))
@@ -449,6 +448,7 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 // jobs and computers by carries the label, the command and the computer's
 // name, never only ids.
 func TestRemoteTrayRowIsBackgroundedOnlyOnceTheWaitEnds(t *testing.T) {
+	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := remoteWatchThread(t, a, string(provider.Codex))
 	watch := registeredRemoteWatch(t, a, thread)

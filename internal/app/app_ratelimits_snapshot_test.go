@@ -9,6 +9,7 @@ import (
 )
 
 func TestGetRateLimitsSnapshotsHydratesMissedUsageEvents(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	snapshot := provider.RateLimitsSnapshot{
 		Provider: "codex",
@@ -38,6 +39,7 @@ func TestGetRateLimitsSnapshotsHydratesMissedUsageEvents(t *testing.T) {
 }
 
 func TestGetRateLimitsSnapshotsIgnoresNonQuotaUsage(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.emit("provider:usage", provider.UsageEvent{Action: "usage", UsedTokens: 10})
 	app.emit("other", provider.UsageEvent{
@@ -53,6 +55,7 @@ func TestGetRateLimitsSnapshotsIgnoresNonQuotaUsage(t *testing.T) {
 }
 
 func TestGetRateLimitsSnapshotsMergesProviderWindows(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	for _, snapshot := range []provider.RateLimitsSnapshot{
 		{
@@ -79,6 +82,7 @@ func TestGetRateLimitsSnapshotsMergesProviderWindows(t *testing.T) {
 }
 
 func TestGetRateLimitsSnapshotsRejectsStaleWindowUpdates(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	fresh := provider.RateLimitsSnapshot{
 		Provider: "codex",
@@ -108,6 +112,7 @@ func TestGetRateLimitsSnapshotsRejectsStaleWindowUpdates(t *testing.T) {
 }
 
 func TestHydratePersistedAccountRateLimitsRepairsClaudeAliases(t *testing.T) {
+	t.Parallel()
 	configDir := t.TempDir()
 	accounts, err := provideraccounts.NewStore(configDir)
 	if err != nil {

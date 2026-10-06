@@ -17,7 +17,7 @@ import (
 func prepareTestTransferWorktree(t *testing.T, branch string) (*Core, TransferWorktree) {
 	t.Helper()
 	ctx, core := context.Background(), NewCore()
-	source := testutil.InitGitRepo(t)
+	source := initGitRepo(t)
 	writeWorkspaceFile(t, source, "staged", "staged only bytes")
 	testutil.RunGit(t, source, "add", "staged")
 	capture, err := core.CaptureTransferWorkspace(ctx, source)
@@ -42,7 +42,7 @@ func prepareTestTransferWorktree(t *testing.T, branch string) (*Core, TransferWo
 	if _, err := transferfiles.Extract(ctx, input, digest, stage); err != nil {
 		t.Fatal(err)
 	}
-	request := TransferWorktreeRequest{OperationID: uuid.NewString(), Repository: testutil.InitGitRepo(t), Path: filepath.Join(t.TempDir(), "published"), Branch: branch, Workspace: capture.Workspace, ArchiveRoot: stage}
+	request := TransferWorktreeRequest{OperationID: uuid.NewString(), Repository: initGitRepo(t), Path: filepath.Join(t.TempDir(), "published"), Branch: branch, Workspace: capture.Workspace, ArchiveRoot: stage}
 	plan, err := core.PrepareTransferWorktree(ctx, request, &pack)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +51,7 @@ func prepareTestTransferWorktree(t *testing.T, branch string) (*Core, TransferWo
 }
 
 func TestTransferWorktreeRetainsObjectsAndRecoversRenameBeforeRepair(t *testing.T) {
+	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "copied-work")
 	worktrees, err := core.ListWorktrees(plan.Repository)
 	if err != nil || len(worktrees) != 1 {
@@ -93,6 +94,7 @@ func TestTransferWorktreeRetainsObjectsAndRecoversRenameBeforeRepair(t *testing.
 }
 
 func TestTransferPreparationCleanupRecoversAfterWorktreeRemoval(t *testing.T) {
+	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "cancel-copy")
 	marker := plan.Stage + ".cleanup.json"
 	if err := atomicfile.WriteJSON(marker, plan); err != nil {
@@ -117,6 +119,7 @@ func TestTransferPreparationCleanupRecoversAfterWorktreeRemoval(t *testing.T) {
 }
 
 func TestTransferPreparationCleanupPreservesPublishedWorkspace(t *testing.T) {
+	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "published-copy")
 	if err := core.PublishTransferWorktree(context.Background(), plan); err != nil {
 		t.Fatal(err)
@@ -133,6 +136,7 @@ func TestTransferPreparationCleanupPreservesPublishedWorkspace(t *testing.T) {
 }
 
 func TestTransferWorktreePublicationRefusesAnotherDirectory(t *testing.T) {
+	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "")
 	if err := os.Mkdir(plan.Path, 0o700); err != nil {
 		t.Fatal(err)
@@ -158,8 +162,10 @@ func TestTransferWorktreePublicationRefusesAnotherDirectory(t *testing.T) {
 }
 
 func TestTransferWorktreePublicationChecksPreparedContent(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"working bytes", "new file", "deleted file", "index content", "index flags", "branch", "missing fingerprint"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			core, plan := prepareTestTransferWorktree(t, "")
 			switch change {
 			case "working bytes":
@@ -196,6 +202,7 @@ func TestTransferWorktreePublicationChecksPreparedContent(t *testing.T) {
 }
 
 func TestTransferWorktreePublicationAllowsIndexStatRefresh(t *testing.T) {
+	t.Parallel()
 	core, plan := prepareTestTransferWorktree(t, "")
 	// This updates expendable index stat data; the staged and working bytes
 	// remain the prepared snapshot. Publication must not compare opaque indexes.

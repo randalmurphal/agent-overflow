@@ -4,6 +4,7 @@
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import { instrument } from './offhost-helpers.js';
 import { runSessionCLI } from './session-cli-helpers.js';
 import { randomUUID } from 'node:crypto';
@@ -39,8 +40,7 @@ export function connectedComputersFlow(): void {
     });
     page.on('pageerror', (error) => errors.push(error.message));
     try {
-      home = await launchHarness();
-      remote = await launchHarness();
+      [home, remote] = await startTogether(launchHarness(), launchHarness());
       await home.rpc('UpdateSettings', { keepAwakeScreen: true });
       await remote.rpc('UpdateSettings', { keepAwakeScreen: true });
       const homeSeed = await home.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Mac checkout', repo: { commits: [{ files: { 'README.md': 'Mac project' } }] }, threads: [{ title: 'Mac conversation', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Done' }] }] }] }] });

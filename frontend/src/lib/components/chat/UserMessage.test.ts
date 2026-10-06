@@ -36,6 +36,7 @@ describe('<UserMessage>', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     resetThreadStatuses();
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   function makeActionsPane(): ThreadPane {

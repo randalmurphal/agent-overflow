@@ -61,7 +61,11 @@ func discoveryKey(extra []DiscoveredComputer) string {
 func (m *Manager) discover(ctx context.Context, extra []DiscoveredComputer) ([]DiscoveredComputer, error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	lan, err := nearby.Discover(ctx)
+	var lan []nearby.Host
+	err := nearby.ErrIsolated
+	if !m.lanDiscoveryOff {
+		lan, err = nearby.Discover(ctx)
+	}
 	candidates := make([]DiscoveredComputer, 0, len(lan)+len(extra))
 	for _, h := range lan {
 		candidates = append(candidates, DiscoveredComputer{BackendID: h.BackendID, Name: h.Name, Address: h.Address, Network: "lan"})
@@ -185,3 +189,9 @@ func probeComputer(ctx context.Context, client *http.Client, hint DiscoveredComp
 func (m *Manager) SetNetwork(selfID func() string, dial deviceclient.DialContextFunc) {
 	m.selfID, m.dial = selfID, dial
 }
+
+// DisableLANDiscovery makes Discover probe only the hints it is given and
+// send no multicast. With no hints it answers nearby.ErrIsolated. Boot
+// wiring for an isolated instance confined to this machine, before any
+// client exists.
+func (m *Manager) DisableLANDiscovery() { m.lanDiscoveryOff = true }

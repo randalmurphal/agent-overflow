@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // writeDeveloperInstructionsAppServer is a mock app-server that answers
@@ -32,9 +33,7 @@ func writeDeveloperInstructionsAppServer(t *testing.T, dir, requestLog, configur
 		"  fi\n" +
 		"done\n"
 	binary := filepath.Join(dir, "codex")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock app-server: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	return binary
 }
 
@@ -45,6 +44,7 @@ func writeDeveloperInstructionsAppServer(t *testing.T, dir, requestLog, configur
 // user's own value: the session reads the cwd's configured text first and
 // appends.
 func TestThreadStartCarriesTheComposedDeveloperInstructions(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
@@ -78,6 +78,7 @@ func TestThreadStartCarriesTheComposedDeveloperInstructions(t *testing.T) {
 
 // A cwd with no configured developer instructions carries the guide alone.
 func TestThreadStartCarriesTheGuideAloneWhenNothingIsConfigured(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "")
@@ -102,6 +103,7 @@ func TestThreadStartCarriesTheGuideAloneWhenNothingIsConfigured(t *testing.T) {
 // omitted rather than sent empty, which would replace the user's
 // configured instructions with nothing.
 func TestThreadStartOmitsDeveloperInstructionsWithoutAGuide(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
@@ -129,6 +131,7 @@ func TestThreadStartOmitsDeveloperInstructionsWithoutAGuide(t *testing.T) {
 // buildThreadParams is what thread/start and thread/resume share, so the
 // field's presence rule is pinned on the shared builder too.
 func TestBuildThreadParamsCarriesDeveloperInstructionsOnlyWhenSet(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{WorkDir: "/tmp/x", DeveloperInstructions: "guide"}, "0.153.4")
 	if params["developerInstructions"] != "guide" {
 		t.Errorf("developerInstructions = %v, want the composed text", params["developerInstructions"])
@@ -143,6 +146,7 @@ func TestBuildThreadParamsCarriesDeveloperInstructionsOnlyWhenSet(t *testing.T) 
 // like any cold start, so the parent's composed value has to ride along or
 // the child loses the guide.
 func TestThreadForkCarriesTheParentsDeveloperInstructions(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeDeveloperInstructionsAppServer(t, dir, requestLog, "configured cwd instructions")
@@ -176,6 +180,7 @@ func TestThreadForkCarriesTheParentsDeveloperInstructions(t *testing.T) {
 // build that started sending one there would clobber the guide, so the
 // shape is pinned here.
 func TestCollaborationModeSettingsCarryNoThreadLevelDeveloperInstructions(t *testing.T) {
+	t.Parallel()
 	mode := codexCollaborationMode(provider.ModeChat, "gpt-5", "high")
 	raw, err := json.Marshal(mode["settings"])
 	if err != nil {

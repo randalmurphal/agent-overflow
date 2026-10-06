@@ -53,9 +53,9 @@ func rollbackToMessage(app *App, threadID, userItemID string) error {
 }
 
 func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "source-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
@@ -96,6 +96,7 @@ func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T)
 // revert keeps the session live, so no teardown clears the router's
 // cached tool-call links; the cut must drop them itself.
 func TestConversationRollbackClaudeTUIForgetsToolCallLinks(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "tui", string(provider.ClaudeTUI), t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -116,6 +117,7 @@ func TestConversationRollbackClaudeTUIForgetsToolCallLinks(t *testing.T) {
 }
 
 func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-attachments", "claude", t.TempDir())
 	meta, err := json.Marshal(userMessageMeta{
@@ -150,6 +152,7 @@ func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
 }
 
 func TestConversationRollbackRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-missing-session", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -166,6 +169,7 @@ func TestConversationRollbackRejectsMissingClaudeSessionForLaterTurn(t *testing.
 }
 
 func TestConversationRollbackRejectsMissingClaudeSessionFileForLaterTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-missing-session-file", "claude", t.TempDir())
 	thread.SessionRef = "missing-session"
@@ -200,9 +204,9 @@ func TestConversationRollbackRejectsMissingClaudeSessionFileForLaterTurn(t *test
 }
 
 func TestConversationRollbackSlicesClaudeSessionByTurnBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -241,7 +245,7 @@ func TestConversationRollbackSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	if updated.PendingForkRef != "" {
 		t.Fatalf("thread pending fork ref = %q, want empty", updated.PendingForkRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
 }
 
 // TestConversationRollbackKeepsSharedTurnPrefix — rolling back to a
@@ -251,9 +255,9 @@ func TestConversationRollbackSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 // work before the queued send survive in SQLite, and the session slice
 // cuts the JSONL at the queued message's uuid — the two stay aligned.
 func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -318,7 +322,7 @@ func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want recovered fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0"},
 		[]string{"queued follow-up", "reply 1", "second", "reply 2"})
 }
@@ -335,8 +339,7 @@ func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
 // committed before a later step failed.
 func midTurnAnchorFixture(t *testing.T, app *App, threadID, sessionID, flushProviderID, flushParentID string) store.Thread {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -371,6 +374,7 @@ func midTurnAnchorFixture(t *testing.T, app *App, threadID, sessionID, flushProv
 // slice at end-of-turn-N-1 and drop the shared turn's kept prefix from the
 // provider session while SQLite retains it.
 func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	const sessionID = "midturn-nouuid-session"
 	thread := midTurnAnchorFixture(t, app, "t-midturn-nouuid", sessionID, "", "")
@@ -407,7 +411,7 @@ func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *tes
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want recovered fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+	assertClaudeSessionText(t, app, updated.WorkspacePath, updated.SessionRef,
 		[]string{"first", "reply 0", "interrupted tail"},
 		nil)
 }
@@ -422,6 +426,7 @@ func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *tes
 // loudly and mutate nothing: SessionRef, timeline rows, anchors, and
 // the draft all stay as they were.
 func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	const sessionID = "midturn-staleuuid-session"
 	thread := midTurnAnchorFixture(t, app, "t-midturn-staleuuid", sessionID, "uq-stale", "uq-parent-stale")
@@ -470,6 +475,7 @@ func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
 // parent, not a whole clone: rows appended after the failed rollback
 // must not be resurrected into the retried cut.
 func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	// The fixture transcript ends at "interrupted tail" (a1) and does NOT
 	// contain the anchor: exactly what a committed prior slice leaves
@@ -481,7 +487,7 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 	// A row appended AFTER the partial failure (the session resumed and
 	// streamed before the user retried). The through-parent re-slice
 	// must cut it (R5-6).
-	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, thread.WorkspacePath)
+	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, thread.WorkspacePath)
 	if err != nil {
 		t.Fatalf("locate session: %v", err)
 	}
@@ -525,7 +531,7 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want a fresh re-slice of the already-cut transcript", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+	assertClaudeSessionText(t, app, updated.WorkspacePath, updated.SessionRef,
 		[]string{"first", "reply 0", "interrupted tail"},
 		[]string{"post-failure noise"})
 }
@@ -539,6 +545,7 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 // empty must still recognize the already-cut transcript and finish the
 // rollback through the item-meta parent instead of refusing forever.
 func TestConversationRollbackMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	const sessionID = "midturn-metaparent-session"
 	// Anchor: stale wire uuid, NO parent copy (the follow-up
@@ -580,7 +587,7 @@ func TestConversationRollbackMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) 
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want a fresh re-slice", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+	assertClaudeSessionText(t, app, updated.WorkspacePath, updated.SessionRef,
 		[]string{"first", "reply 0", "interrupted tail"},
 		nil)
 }
@@ -593,6 +600,7 @@ func TestConversationRollbackMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) 
 // so it is never newer than the item's; an empty copy on either side must
 // not misclassify a consumed message into the unconsumed full-clone path.
 func TestClaudeSliceAnchorUUIDs(t *testing.T) {
+	t.Parallel()
 	stamped := store.Item{ThreadID: "t1", ID: "flush:0", Meta: `{"provider_item_id":"uq-item","provider_parent_uuid":"up-item"}`}
 	bare := store.Item{ThreadID: "t1", ID: "flush:0", Meta: "{}"}
 	cases := []struct {
@@ -634,9 +642,9 @@ func TestClaudeSliceAnchorUUIDs(t *testing.T) {
 // fix at the integration level. The companion fallback test below
 // proves the tightened ordinal walk reaches the same answer.
 func TestConversationRollbackSurvivesCompactBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -673,7 +681,7 @@ func TestConversationRollbackSurvivesCompactBoundary(t *testing.T) {
 	// "second" / "reply 1" MUST survive — the bug was rolling back one
 	// turn too far and losing them. "third" / "reply 2" MUST be gone —
 	// that's the turn the user rolled back away from.
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0", "second", "reply 1"},
 		[]string{"third", "reply 2"})
 }
@@ -688,9 +696,9 @@ func TestConversationRollbackSurvivesCompactBoundary(t *testing.T) {
 // so the bug-trigger condition (compact summary before the rollback
 // target) is present in both paths.
 func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -726,7 +734,7 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0", "second", "reply 1"},
 		[]string{"third", "reply 2"})
 }
@@ -751,9 +759,9 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 //     transcript ENDS before the anchor's turn, which cannot be a merge,
 //     so that one clones instead of refusing.
 func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -797,7 +805,7 @@ func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 	if updated.SessionRef != sessionID {
 		t.Fatalf("thread session ref = %q, want the untouched %q", updated.SessionRef, sessionID)
 	}
-	assertClaudeSessionText(t, workspace, sessionID,
+	assertClaudeSessionText(t, app, workspace, sessionID,
 		[]string{"first", "reply 0", "second", "reply 1", "third", "reply 2"}, nil)
 	for _, id := range []string{"user:0", "user:1", "user:2"} {
 		if _, found, itemErr := app.store.GetThreadItem(thread.ID, id); itemErr != nil || !found {
@@ -820,9 +828,9 @@ func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 // missing message from AO's DB, the new SessionRef is durable, and
 // the user can edit/resend.
 func TestConversationRollbackTolerantOfMissingJSONLAnchor(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -860,7 +868,7 @@ func TestConversationRollbackTolerantOfMissingJSONLAnchor(t *testing.T) {
 	}
 	// The cloned JSONL must preserve every original entry — that's the
 	// whole point of slice-at-EOF.
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0"},
 		nil)
 }
@@ -876,9 +884,9 @@ func TestConversationRollbackTolerantOfMissingJSONLAnchor(t *testing.T) {
 // ever widens ErrUserTurnAtTranscriptEnd to cover gap >= 1, this test
 // will fail and force a deliberate scope decision.
 func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -928,9 +936,9 @@ func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
 }
 
 func TestConversationRollbackSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -961,13 +969,13 @@ func TestConversationRollbackSlicesClaudeSessionFromPendingForkRef(t *testing.T)
 	if updated.PendingForkRef != "" {
 		t.Fatalf("thread pending fork ref = %q, want empty", updated.PendingForkRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
 }
 
 func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "source-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
@@ -998,7 +1006,7 @@ func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T
 	if afterFirst.SessionRef == "" || afterFirst.SessionRef == sessionID {
 		t.Fatalf("session after first rollback = %q, want forked session", afterFirst.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, afterFirst.SessionRef, []string{"first", "second"}, []string{"third"})
+	assertClaudeSessionText(t, app, workspace, afterFirst.SessionRef, []string{"first", "second"}, []string{"third"})
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("second rollback: %v", err)
@@ -1021,7 +1029,7 @@ func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T
 	if err != nil {
 		t.Fatalf("get thread after second rollback: %v", err)
 	}
-	assertClaudeSessionText(t, workspace, afterSecond.SessionRef, []string{"first"}, []string{"second", "third"})
+	assertClaudeSessionText(t, app, workspace, afterSecond.SessionRef, []string{"first"}, []string{"second", "third"})
 }
 
 // TestConversationRollbackHeadHealedFirstPromptDropsSession pins
@@ -1031,9 +1039,9 @@ func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T
 // the drop-the-session branch — the previous exact-zero turn-initial
 // check sent it down the slice path, which fails on the empty prefix.
 func TestConversationRollbackHeadHealedFirstPromptDropsSession(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "head-healed-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"head-healed-session","message":{"role":"user","content":"first"}}
@@ -1090,6 +1098,7 @@ func TestConversationRollbackHeadHealedFirstPromptDropsSession(t *testing.T) {
 // check would classify it turn-initial and cut that retained prefix
 // from the session slice.
 func TestClaudeMidTurnAnchor(t *testing.T) {
+	t.Parallel()
 	promotedMeta, err := itemmeta.MarkPromotedAtInterrupt("")
 	if err != nil {
 		t.Fatalf("mark promoted meta: %v", err)
@@ -1130,10 +1139,10 @@ func TestClaudeMidTurnAnchor(t *testing.T) {
 // thread (CLAUDE_CODE_TASK_LIST_ID), so the rolled-back session still holds
 // the same tasks and threads.live_todo must keep describing them.
 func TestConversationRollbackKeepsPersistedTodo(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.ensureTriageRouter()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := t.TempDir()
 	const sessionID = "todo-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"todo-session","message":{"role":"user","content":"first"}}

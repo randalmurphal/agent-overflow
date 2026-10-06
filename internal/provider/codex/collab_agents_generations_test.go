@@ -19,6 +19,7 @@ import "testing"
 // other collab map is cleaned to avoid, and a doc comment that promised a
 // boundedness the code did not provide.
 func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if !s.registerChildOwnership("root-thread", "child-1", "/root/reviewer", "spawn-1") {
 		t.Fatal("registerChildOwnership refused the fixture")
@@ -53,6 +54,7 @@ func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
 // permanent, and invisible to any later lookup, which is the worst version of
 // the leak because nothing can ever name it again.
 func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if !s.registerChildOwnership("root-thread", "child-1", "/root/reviewer", "spawn-1") {
 		t.Fatal("registerChildOwnership refused the fixture")
@@ -77,6 +79,7 @@ func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T
 // A child with no canonical agent path (older unnamed-agent builds name the
 // thread id in both places) has to be torn down too.
 func TestClosingAnUnnamedChildDropsItsTurnGenerationCounter(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if !s.registerChildOwnership("root-thread", "child-1", "", "spawn-1") {
 		t.Fatal("registerChildOwnership refused the fixture")

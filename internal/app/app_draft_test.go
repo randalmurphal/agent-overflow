@@ -31,6 +31,7 @@ func newDraftTestApp(t *testing.T) *App {
 }
 
 func TestSaveAndGetDraftRoundTrip(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	chips := []TerminalChip{{
@@ -61,6 +62,7 @@ func TestSaveAndGetDraftRoundTrip(t *testing.T) {
 }
 
 func TestSaveAndGetDraftRoundTripsSourceProposedPlan(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	src := &SourceProposedPlan{
@@ -99,6 +101,7 @@ func TestSaveAndGetDraftRoundTripsSourceProposedPlan(t *testing.T) {
 }
 
 func TestGetDraftMissingReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	got, err := app.GetDraft("thr-draft")
@@ -117,6 +120,7 @@ func TestGetDraftMissingReturnsEmpty(t *testing.T) {
 }
 
 func TestSaveDraftOverwrites(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	if err := app.SaveDraft(t.Context(), "thr-draft", "v1", nil, nil, nil); err != nil {
@@ -139,6 +143,7 @@ func TestSaveDraftOverwrites(t *testing.T) {
 }
 
 func TestClearDraftRemovesRow(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	if err := app.SaveDraft(t.Context(), "thr-draft", "to clear", nil, nil, nil); err != nil {
@@ -161,6 +166,7 @@ func TestClearDraftRemovesRow(t *testing.T) {
 }
 
 func TestSaveDraftRequiresInitialisedStore(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	err := app.SaveDraft(t.Context(), "thr", "", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "not initialized") {
@@ -169,6 +175,7 @@ func TestSaveDraftRequiresInitialisedStore(t *testing.T) {
 }
 
 func TestGetDraftHandlesBadStoredJSON(t *testing.T) {
+	t.Parallel()
 	app := newDraftTestApp(t)
 
 	// Directly poison the row with invalid JSON; the binding should surface

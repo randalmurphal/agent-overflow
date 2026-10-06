@@ -48,6 +48,7 @@ var setChangeTypeSpellings = map[string]bool{
 // Go action the frontend does not know is a frame it drops on the floor,
 // and a TS action Go never emits is a branch nothing reaches.
 func TestBackendSetChangeVocabularyMatchesTheFrontend(t *testing.T) {
+	t.Parallel()
 	for _, pair := range []struct{ goType, tsField string }{
 		{"SetAction", "action"},
 		{"RemovalReason", "reason"},
@@ -80,6 +81,7 @@ func TestBackendSetChangeVocabularyMatchesTheFrontend(t *testing.T) {
 // string. Inside internal/attachedbackends the same rule holds for every
 // SetChange literal, since that is where the frames are built.
 func TestBackendSetChangeEmitsCarryTheTypedFrame(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	for _, dir := range append([]string{setChangePackageDir}, setChangeEmitters...) {
 		sites := 0

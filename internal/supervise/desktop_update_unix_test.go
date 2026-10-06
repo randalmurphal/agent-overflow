@@ -188,6 +188,7 @@ func exists(path string) bool {
 }
 
 func TestDesktopApplyPublishesTheCommittedTargetOnce(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	record := r.stage(t, filepath.Join(r.apps, "agent-overflow"))
@@ -230,6 +231,7 @@ func TestDesktopApplyPublishesTheCommittedTargetOnce(t *testing.T) {
 }
 
 func TestDesktopApplyRollsBackAndTheNextLaunchReportsIt(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	record := r.stage(t, filepath.Join(r.apps, "agent-overflow"))
@@ -284,6 +286,7 @@ func bundleSwap(from, to string) error {
 }
 
 func TestDesktopBundlePublishKeepsThePreviousBundleWhileItRuns(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	r.swap = bundleSwap
 	writeFile(t, r.db, "live")
@@ -328,6 +331,7 @@ func TestDesktopBundlePublishKeepsThePreviousBundleWhileItRuns(t *testing.T) {
 }
 
 func TestDesktopBundlePublishTakesTwoRenamesWhereItCannotSwap(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	r.swap = func(string, string) error { return &os.LinkError{Op: "renamex_np", Err: unix.ENOTSUP} }
 	writeFile(t, r.db, "live")
@@ -357,6 +361,7 @@ func TestDesktopBundlePublishTakesTwoRenamesWhereItCannotSwap(t *testing.T) {
 }
 
 func TestReplaceBundleFinishesAnInterruptedPairOfRenames(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	staged, install, previous := filepath.Join(dir, "s.app"), filepath.Join(dir, "i.app"), filepath.Join(dir, "p.app")
 	writeExecutable(t, DesktopExecutable(staged), "new")
@@ -382,6 +387,7 @@ func TestReplaceBundleFinishesAnInterruptedPairOfRenames(t *testing.T) {
 }
 
 func TestDesktopMigrationFailureIsRememberedUntilRetriedOrRebuilt(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	install := filepath.Join(r.apps, "agent-overflow")
@@ -444,6 +450,7 @@ func TestDesktopMigrationFailureIsRememberedUntilRetriedOrRebuilt(t *testing.T) 
 }
 
 func TestDesktopMigrationRefusesWhileAnUpdateIsPending(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	record := r.stage(t, filepath.Join(r.apps, "agent-overflow"))
@@ -461,6 +468,7 @@ func TestDesktopMigrationRefusesWhileAnUpdateIsPending(t *testing.T) {
 }
 
 func TestDesktopReconcileResumesAMigrationInThisBinary(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	install := filepath.Join(r.apps, "agent-overflow")
@@ -496,6 +504,7 @@ func TestDesktopReconcileResumesAMigrationInThisBinary(t *testing.T) {
 }
 
 func TestDesktopReconcileHandsACommittedUpdateBackToItsHelper(t *testing.T) {
+	t.Parallel()
 	r := newDesktopRig(t)
 	writeFile(t, r.db, "live")
 	record := r.stage(t, filepath.Join(r.apps, "agent-overflow"))
@@ -532,6 +541,7 @@ func TestDesktopReconcileHandsACommittedUpdateBackToItsHelper(t *testing.T) {
 }
 
 func TestDesktopReconcileRecoversAPendingUpdate(t *testing.T) {
+	t.Parallel()
 	t.Run("interrupted before its trial", func(t *testing.T) {
 		r := newDesktopRig(t)
 		writeFile(t, r.db, "live")
@@ -698,6 +708,7 @@ func (h *handoffRig) handoff() DesktopHandoff {
 }
 
 func TestDesktopCheckGivesTheTrialOnlyToATargetThatRunsIt(t *testing.T) {
+	t.Parallel()
 	h := newHandoffRig(t)
 	for _, tc := range []struct {
 		name, version string
@@ -725,6 +736,7 @@ func TestDesktopCheckGivesTheTrialOnlyToATargetThatRunsIt(t *testing.T) {
 }
 
 func TestDesktopHandOffStagesRecordsAndStartsTheTargetsHelper(t *testing.T) {
+	t.Parallel()
 	h := newHandoffRig(t)
 	handoff := h.handoff()
 	if err := handoff.HandOff(context.Background(), h.downloaded, "2.0.0"); err != nil {
@@ -773,6 +785,7 @@ func TestDesktopHandOffStagesRecordsAndStartsTheTargetsHelper(t *testing.T) {
 // into. The handoff removes that folder once the record names the staged
 // copy, and leaves any other folder, saying so.
 func TestDesktopHandOffRemovesOnlyTheFrameworksDownloadFolder(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// rel is the download under the temp directory; outside places it
@@ -839,6 +852,7 @@ func TestDesktopHandOffRemovesOnlyTheFrameworksDownloadFolder(t *testing.T) {
 }
 
 func TestDesktopHandOffThatCannotStartItsHelperSettlesTheUpdate(t *testing.T) {
+	t.Parallel()
 	h := newHandoffRig(t)
 	h.startErr = errors.New("exec format error")
 	handoff := h.handoff()
@@ -865,6 +879,7 @@ func TestDesktopHandOffThatCannotStartItsHelperSettlesTheUpdate(t *testing.T) {
 }
 
 func TestDesktopHandOffRecordsNothingForATargetThatCannotApply(t *testing.T) {
+	t.Parallel()
 	h := newHandoffRig(t)
 	h.answer.AppUpdateTrial = false
 	if err := h.handoff().HandOff(context.Background(), h.downloaded, "2.0.0"); err == nil {
@@ -916,6 +931,7 @@ func TestMovePathCopiesAcrossFilesystems(t *testing.T) {
 }
 
 func TestPrepareDataRootLetsTheDesktopUpdateOwnItsRecord(t *testing.T) {
+	t.Parallel()
 	dataDir := t.TempDir()
 	if err := SaveState(appLayout(t, dataDir), pendingState(t, "app-u")); err != nil {
 		t.Fatal(err)
@@ -929,6 +945,7 @@ func TestPrepareDataRootLetsTheDesktopUpdateOwnItsRecord(t *testing.T) {
 }
 
 func TestUpdateCommandProgressGoesToItsSinkInsteadOfItsOutput(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	var mu sync.Mutex
@@ -953,6 +970,7 @@ func TestUpdateCommandProgressGoesToItsSinkInsteadOfItsOutput(t *testing.T) {
 }
 
 func TestPreflightAnswersWhetherTheBuildRunsTheDesktopHelper(t *testing.T) {
+	t.Parallel()
 	for _, trial := range []bool{true, false} {
 		var out bytes.Buffer
 		if err := WritePreflight(&out, "2.0.0", trial); err != nil {

@@ -146,6 +146,49 @@ describe('footnote popup geometry', () => {
     });
     expect(chip.getAttribute('aria-expanded')).toBe('true');
   });
+
+  it('follows a definition that is still arriving when the popup opens', async () => {
+    render(FootnotePopoverHost);
+    const scope = containmentScope();
+    const head = 'A claim[^a] worth checking.\n\n[^a]: See also[^b] for details.\n';
+    const { container, rerender } = render(ChatMarkdown, {
+      props: { source: head + '[^b]: The chained ' },
+      target: scope,
+    });
+    const chip = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        '[data-streamdown-footnote-ref]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    chip.click();
+    const popup = await waitFor(() => {
+      const found = document.body.querySelector<HTMLElement>(
+        '[data-footnote-popover]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    const chained = await waitFor(() => {
+      const found = popup.querySelector<HTMLElement>(
+        '[data-streamdown-footnote-ref]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    chained.click();
+    await waitFor(() => {
+      expect(popup.textContent).toContain('The chained');
+    });
+    expect(popup.textContent).not.toContain('The chained body text.');
+
+    // The rest of the definition arrives while the popup is open.
+    await rerender({ source: head + '[^b]: The chained body text.' });
+    await waitFor(() => {
+      expect(popup.textContent).toContain('The chained body text.');
+    });
+  });
 });
 
 // The hover contract: resting the pointer on a chip opens the popup after

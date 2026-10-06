@@ -7,13 +7,20 @@ import (
 	"time"
 )
 
+// snapshotTestStore is a migrated store with an identity of its own: a
+// clone carries the template's, so it is minted again as a new database
+// mints one.
 func snapshotTestStore(t *testing.T) *Store {
 	t.Helper()
-	st, err := New(filepath.Join(t.TempDir(), "test.db"))
+	st, err := New(newTestStorePath(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	mustExec(t, st.db, `DELETE FROM store_meta`)
+	if err := ensureStoreIdentity(st.db); err != nil {
+		t.Fatal(err)
+	}
 	return st
 }
 

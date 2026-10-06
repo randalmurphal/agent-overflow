@@ -81,6 +81,11 @@ func TestVerifiedTeardownStopsARootThatExecdAfterLaunch(t *testing.T) {
 // A root that execs while the teardown is in progress, here from its TERM
 // trap, is still stopped under its new executable.
 func TestVerifiedTeardownFollowsARootThatExecsDuringTeardown(t *testing.T) {
+	// The trap execs within milliseconds of SIGTERM; the grace only has to
+	// outlast that so the kill meets the new executable.
+	previous := teardownGrace
+	teardownGrace = 500 * time.Millisecond
+	t.Cleanup(func() { teardownGrace = previous })
 	cmd, launched, done := startRoot(t, `trap 'exec sleep 30' TERM; while :; do sleep 0.05; done`)
 	if err := terminateProcessTreeVerified(cmd, nil, launched); err != nil {
 		t.Fatalf("terminate: %v", err)

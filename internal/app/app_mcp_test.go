@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,6 +125,7 @@ func mergeJSONFixture(t *testing.T, path string, mutate func(map[string]any)) {
 // The disable is workspace-scoped: another workspace sees the same
 // membership fully enabled.
 func TestListWorkspaceMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudePluginFixture(t, claudePath, "foo", "bar")
 	writeClaudeConfig(t, claudePath, `{
@@ -174,6 +176,7 @@ func TestListWorkspaceMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag(t
 // Codex `enabled = false` global flag flows through to Disabled, and
 // workspacePath is ignored (Codex's flag is not workspace-scoped).
 func TestListWorkspaceMcpServers_Codex_ReadsGlobalEnabledFlag(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -200,6 +203,7 @@ url = "https://mcp.linear.app/api"
 }
 
 func TestCodexSessionMCPRowsPrefersExplicitRuntimeOverRetainedStartupFailure(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, "[mcp_servers.github]\ncommand = \"gh-mcp\"\n")
 
@@ -224,9 +228,7 @@ while IFS= read -r line; do
 done
 `
 	binary := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock codex: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	sess, err := codex.NewSession(context.Background(), "ao-thread", codex.Config{
 		Binary: binary, Model: "test-model", WorkDir: t.TempDir(),
 	}, func(provider.ProviderEvent) {})
@@ -255,6 +257,7 @@ done
 
 // TestListWorkspaceMcpServers_UnsupportedProvider returns ErrMCPProviderUnsupported.
 func TestListWorkspaceMcpServers_UnsupportedProvider(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	_, err := app.ListWorkspaceMcpServers("gemini", "")
 	if !errors.Is(err, ErrMCPProviderUnsupported) {
@@ -267,6 +270,7 @@ func TestListWorkspaceMcpServers_UnsupportedProvider(t *testing.T) {
 // tool names, while a disabled server reports "disabled" even when a
 // stale cache entry claims it was connected.
 func TestListWorkspaceMcpServers_CacheStatusOverlay(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -313,6 +317,7 @@ enabled = false
 // config, and a config-disabled plugin keeps its disabled row no
 // matter what the cache claims.
 func TestListWorkspaceMcpServers_Claude_PluginRowsFromManifests(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudePluginFixture(t, claudePath, "playwright", "playwright")
 	writeClaudePluginFixture(t, claudePath, "other", "x")
@@ -373,6 +378,7 @@ func TestListWorkspaceMcpServers_Claude_PluginRowsFromManifests(t *testing.T) {
 // names from another workspace's .mcp.json, plugin-qualified names
 // from an uninstalled plugin, cloud connectors — must not appear.
 func TestListWorkspaceMcpServers_Claude_CacheOnlyNamesNeverCreateRows(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{"mcpServers": {}, "projects": {}}`)
 	for _, name := range []string{"context7", "plugin:playwright:playwright", "claude.ai Gmail"} {
@@ -398,6 +404,7 @@ func TestListWorkspaceMcpServers_Claude_CacheOnlyNamesNeverCreateRows(t *testing
 // and a cache entry for the name (another workspace's project-scope
 // server) must not resurrect it either.
 func TestListWorkspaceMcpServers_Claude_HidesOrphanDisabledOnlyNames(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
   "projects": {
@@ -424,6 +431,7 @@ func TestListWorkspaceMcpServers_Claude_HidesOrphanDisabledOnlyNames(t *testing.
 // local` live under projects.<workspace>.mcpServers and belong only to
 // that workspace's listing.
 func TestListWorkspaceMcpServers_Claude_ListsLocalScopeServers(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
   "mcpServers": {},
@@ -460,6 +468,7 @@ func TestListWorkspaceMcpServers_Claude_ListsLocalScopeServers(t *testing.T) {
 // config-derived and never lapses), so the frontend chains a
 // background refresh instead of trusting or dropping it.
 func TestListWorkspaceMcpServers_StaleStatusOverlayFlagged(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudePluginFixture(t, claudePath, "pw", "pw")
 	writeClaudeConfig(t, claudePath, `{"mcpServers": {}, "projects": {}}`)
@@ -512,6 +521,7 @@ func TestListWorkspaceMcpServers_StaleStatusOverlayFlagged(t *testing.T) {
 // enabled project rows — unless the workspace's disabledMcpServers
 // names them.
 func TestListWorkspaceMcpServers_Claude_ProjectScopeFromMcpJSON(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, ".mcp.json"), []byte(`{"mcpServers": {"context7": {"command": "npx"}, "gone": {"command": "x"}}}`), 0o644); err != nil {
@@ -541,6 +551,7 @@ func TestListWorkspaceMcpServers_Claude_ProjectScopeFromMcpJSON(t *testing.T) {
 // server from whatever cwd fed the cache — it must not appear in a
 // workspace config listing.
 func TestListWorkspaceMcpServers_Codex_IgnoresCacheOnlyNames(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -567,6 +578,7 @@ command = "gh-mcp"
 // exactly the workspace config view for the thread's provider and
 // workspace path.
 func TestListThreadMcpServers_NoSession_FallsBackToWorkspaceConfig(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
@@ -600,6 +612,7 @@ func TestListThreadMcpServers_NoSession_FallsBackToWorkspaceConfig(t *testing.T)
 // Claude, so the toggle writes to that workspace's projects entry — the
 // same `disabledMcpServers` list the CLI's own mcp_toggle persists to.
 func TestSetWorkspaceMcpServerEnabled_Claude_TogglesWorkspaceDisabledList(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
   "mcpServers": {
@@ -639,6 +652,7 @@ func TestSetWorkspaceMcpServerEnabled_Claude_TogglesWorkspaceDisabledList(t *tes
 // disabledMcpServers list is keyed by workspace path — a blank key
 // would write toggle state nowhere any session reads from.
 func TestSetWorkspaceMcpServerEnabled_Claude_RequiresWorkspacePath(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	if err := app.SetWorkspaceMcpServerEnabled("claude", "  ", "fs", false); err == nil {
 		t.Fatal("expected error for blank workspace path")
@@ -649,6 +663,7 @@ func TestSetWorkspaceMcpServerEnabled_Claude_RequiresWorkspacePath(t *testing.T)
 // confirms the no-live-session Claude path writes the thread's
 // workspace-scoped disabled list directly.
 func TestSetThreadMcpServerEnabled_Claude_NoSession_WritesWorkspaceConfig(t *testing.T) {
+	t.Parallel()
 	app, claudePath, _ := newMCPTestApp(t)
 	workspace := t.TempDir()
 	writeClaudeConfig(t, claudePath, `{
@@ -677,6 +692,7 @@ func TestSetThreadMcpServerEnabled_Claude_NoSession_WritesWorkspaceConfig(t *tes
 // binding writes the global `enabled` field (Codex has no per-workspace
 // MCP scoping) and completes cleanly with no live session.
 func TestSetThreadMcpServerEnabled_Codex_TogglesGlobalFlag(t *testing.T) {
+	t.Parallel()
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -712,6 +728,7 @@ command = "gh-mcp"
 // slot — otherwise a Claude failure would shadow a Codex connected
 // status and vice versa.
 func TestStatusCache_CrossProviderNamesDoNotCollide(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	cache := app.mcpStatus()
 	claudeKey := mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "common"}
@@ -740,6 +757,7 @@ func TestStatusCache_CrossProviderNamesDoNotCollide(t *testing.T) {
 // error-toast event. The failure-path test below pins the opposite
 // behavior for errMsg != "".
 func TestHandleCodexMCPOAuthCompleted_SuccessInvalidatesAndEmits(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	thread, err := createTestThread(t, app, string(provider.Codex), "/workspace/a", "gpt-5.2", "chat")
 	if err != nil {
@@ -813,6 +831,7 @@ func TestHandleCodexMCPOAuthCompleted_SuccessInvalidatesAndEmits(t *testing.T) {
 // that branch logs instead of emitting, which is verified by
 // triage-wired integration coverage elsewhere.
 func TestHandleCodexMCPOAuthCompleted_FailurePayloadCarriesError(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	thread, err := createTestThread(t, app, string(provider.Codex), "/workspace/a", "gpt-5.2", "chat")
 	if err != nil {
@@ -952,6 +971,7 @@ type capturedEmission struct {
 // mcp:oauth-completed{success:true}, and exits before the remaining
 // intervals fire.
 func TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:status", "mcp:oauth-completed")
 
@@ -1014,6 +1034,7 @@ func TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits(t *testing.T) {
 // asserted separately by triage-wired coverage; here we pin the wire
 // payload only.
 func TestPollClaudeMCPAfterOAuth_FailedFlipEmitsFailure(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1063,6 +1084,7 @@ func TestPollClaudeMCPAfterOAuth_FailedFlipEmitsFailure(t *testing.T) {
 // condition (anything except needs-auth) would miss the actual
 // connected flip.
 func TestPollClaudeMCPAfterOAuth_PendingThenConnected(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1098,6 +1120,7 @@ func TestPollClaudeMCPAfterOAuth_PendingThenConnected(t *testing.T) {
 // in-memory client pools; a server configured but not yet attempted
 // can be missing.
 func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1139,6 +1162,7 @@ func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
 // silence and a slow success left "Needs sign-in" rendering over a
 // connected server.
 func TestPollClaudeMCPAfterOAuth_TimeoutEmitsNotConfirmed(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
 
@@ -1195,6 +1219,7 @@ func TestPollClaudeMCPAfterOAuth_TimeoutEmitsNotConfirmed(t *testing.T) {
 // timeout verdict, because cancellation means a superseding Sign In
 // click or shutdown owns the flow now.
 func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTimeout(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
 
@@ -1234,6 +1259,7 @@ func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTimeout(t *testing.T) {
 // confirmed. A regression back to the original ~32s budget recreated
 // exactly the stale-"Needs sign-in" gap the exhaustion tail closed.
 func TestDefaultClaudeMCPOAuthIntervals_Shape(t *testing.T) {
+	t.Parallel()
 	ramp := []time.Duration{
 		1 * time.Second,
 		2 * time.Second,
@@ -1264,6 +1290,7 @@ func TestDefaultClaudeMCPOAuthIntervals_Shape(t *testing.T) {
 // mid-poll) is non-fatal: the loop continues to the next tick and
 // can still observe the flip if it succeeds.
 func TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1297,6 +1324,7 @@ func TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling(t *testing.T) {
 // TriggerMcpAuth and the first poll tick) terminates the loop without
 // emissions or cache writes.
 func TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
 
@@ -1324,6 +1352,7 @@ func TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly(t *testing.T) {
 // silently break OAuth detection any time the CLI added a new
 // raw status value.
 func TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1358,6 +1387,7 @@ func TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling(t *testing.T) {
 // ticks can each be observed. A regression that captured the
 // querier once at entry would not survive a mid-poll session swap.
 func TestPollClaudeMCPAfterOAuth_QuerierRebindsBetweenTicks(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1413,6 +1443,7 @@ func TestPollClaudeMCPAfterOAuth_QuerierRebindsBetweenTicks(t *testing.T) {
 // branch wouldn't slip past. Failed additionally exercises
 // emitErrorToThread, the most dangerous triage-touching path.
 func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status string
@@ -1464,6 +1495,7 @@ func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal(t *testing.T) {
 // gated only on settings:write — the grant an MCP panel already
 // holds (internal/transport/event_channels.go).
 func TestPollClaudeMCPAfterOAuth_ErrorIsSanitized(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
@@ -1513,6 +1545,7 @@ func TestPollClaudeMCPAfterOAuth_ErrorIsSanitized(t *testing.T) {
 // for app shutdown where the goroutine should not block on the last
 // 13s interval.
 func TestPollClaudeMCPAfterOAuth_ContextCancelExitsImmediately(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 

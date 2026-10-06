@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The supervisor is a process that runs processes, so testing it any way other
@@ -173,19 +175,29 @@ func (r *rig) stageHello(version string, protocol int, hello, behavior string) {
 	if err != nil {
 		r.t.Fatalf("VersionBinary: %v", err)
 	}
-	r.writeScript(binary, version, protocol, hello, behavior)
+	// A staged version is executed in place, so it can be a mockexec link
+	// rather than a fresh executable macOS assesses on its first exec.
+	mockexec.Write(r.t, binary, r.renderScript(version, protocol, hello, behavior))
 }
 
-// writeScript renders one scripted version to an arbitrary path. Separate from
-// stage so a test can put a script somewhere the supervisor has to COPY it
-// from, which is the fresh-install case. hello is appended to the hello
-// frame's fields.
+// writeScript writes one scripted version to an arbitrary path as a real
+// file. Separate from stage so a test can put a script somewhere the
+// supervisor has to COPY it from, which is the fresh-install case: a copy of
+// a mockexec link would lose its payload.
 func (r *rig) writeScript(path, version string, protocol int, hello, behavior string) {
 	r.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		r.t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	script := strings.NewReplacer(
+	if err := os.WriteFile(path, []byte(r.renderScript(version, protocol, hello, behavior)), 0o700); err != nil {
+		r.t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// renderScript is one scripted version's program. hello is appended to the
+// hello frame's fields.
+func (r *rig) renderScript(version string, protocol int, hello, behavior string) string {
+	return strings.NewReplacer(
 		"__VERSION__", version,
 		"__PROTO__", strconv.Itoa(protocol),
 		"__OBS__", r.obs,
@@ -194,9 +206,6 @@ func (r *rig) writeScript(path, version string, protocol int, hello, behavior st
 		"__HELLO__", hello,
 		"__BEHAVIOR__", behavior,
 	).Replace(fakeChildScript)
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		r.t.Fatalf("write %s: %v", path, err)
-	}
 }
 
 // adopt records a version as the active one, the way a fresh install would.
@@ -335,6 +344,7 @@ func (r *rig) database() string {
 // records that as active, and runs it — so "previous" names an immutable
 // directory from the very first boot.
 func TestAFreshInstallAdoptsTheSupervisorsOwnBinary(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	config := rig.config()
 	// The supervisor's own executable, sitting where a service manager would
@@ -361,6 +371,7 @@ func TestAFreshInstallAdoptsTheSupervisorsOwnBinary(t *testing.T) {
 // The happy path, end to end: a running backend asks, the supervisor accepts,
 // snapshots, trials, and commits, and the trial's database work survives.
 func TestAnUpdateCommitsAndKeepsTheTrialsWork(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stage("2.0.0", behaviorPrepare)
@@ -431,6 +442,7 @@ func TestAnUpdateCommitsAndKeepsTheTrialsWork(t *testing.T) {
 // A trial that dies before reporting prepared: the snapshot goes back over its
 // work and the previous version restarts.
 func TestATrialThatCrashesIsRolledBack(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stage("2.0.0", behaviorCrash)
@@ -480,6 +492,7 @@ func TestATrialThatCrashesIsRolledBack(t *testing.T) {
 
 // A trial that boots and never reports prepared is rolled back at the budget.
 func TestATrialThatNeverPreparesIsRolledBackAtTheBudget(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stage("2.0.0", behaviorHang)
@@ -520,6 +533,7 @@ func TestATrialThatNeverPreparesIsRolledBackAtTheBudget(t *testing.T) {
 // trial is in flight; the third finds the attempt limit reached and rolls back
 // without starting a fourth.
 func TestASupervisorKilledMidTrialResumesAndEventuallyRollsBack(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stage("2.0.0", behaviorHang)
@@ -584,6 +598,7 @@ func TestASupervisorKilledMidTrialResumesAndEventuallyRollsBack(t *testing.T) {
 // which is why the trial that then runs reads the snapshot's database and not
 // the half-restored one.
 func TestAMarkedRestoreIsFinishedBeforeAnythingIsSpawned(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorServe)
 	rig.stage("2.0.0", behaviorPrepare)
@@ -624,6 +639,7 @@ func TestAMarkedRestoreIsFinishedBeforeAnythingIsSpawned(t *testing.T) {
 // Fail closed: a state file the supervisor cannot read is an error and an
 // exit, never a guess about which version to run.
 func TestAnInvalidStateFileStartsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorServe)
 	writeFile(t, rig.layout.StatePath(), `{"schema":99,"activeVersion":"1.0.0"}`)
@@ -650,6 +666,7 @@ func TestAnInvalidStateFileStartsNothing(t *testing.T) {
 // moves: a pending record naming a version that cannot run is a rollback the
 // operator did not need to pay for.
 func TestAnUnstagedTargetIsRefusedAndTheStateIsUntouched(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("9.9.9"))
 	rig.adopt("1.0.0")
@@ -677,6 +694,7 @@ func TestAnUnstagedTargetIsRefusedAndTheStateIsUntouched(t *testing.T) {
 // A target speaking a newer protocol than this supervisor is refused at the
 // preflight, before anything is written down, and the refusal names the remedy.
 func TestATargetSpeakingANewerProtocolIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stageProtocol("2.0.0", ProtocolVersion+1, behaviorPrepare)
@@ -702,6 +720,7 @@ func TestATargetSpeakingANewerProtocolIsRefused(t *testing.T) {
 // An update whose snapshot cannot be taken never reached a trial, so it
 // settles FAILED rather than rolled-back, and the previous version restarts.
 func TestAnUpdateThatCannotBeSnapshottedFailsAndRestartsThePrevious(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorRequestUpdate("2.0.0"))
 	rig.stage("2.0.0", behaviorPrepare)
@@ -733,6 +752,7 @@ func TestAnUpdateThatCannotBeSnapshottedFailsAndRestartsThePrevious(t *testing.T
 // supervisor with the child's own status so `Restart=on-failure` keeps meaning
 // what it meant.
 func TestTheSupervisorMirrorsItsChildsExit(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", `note "exiting 1.0.0"
 exit 7`)
@@ -754,6 +774,7 @@ exit 7`)
 }
 
 func TestSupervisorRestartsAnUnconfirmedUpdateWithoutAServiceManager(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", fmt.Sprintf(`if [ ! -f "$OBS/recovered" ]; then
 touch "$OBS/recovered"
@@ -771,6 +792,7 @@ serve_until_stopped`, RestartForUpdateExitCode))
 }
 
 func TestSupervisorContinuesAcceptedUpdateWhenChildExitsBeforeGrace(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", fmt.Sprintf(`printf '{"type":"request-update","targetVersion":"2.0.0"}\n' >&4
 IFS= read -r ANSWER <&3

@@ -103,13 +103,13 @@ const lanIP = nonLoopbackIPv4();
 const PHONE_LABEL = 'Couch browser';
 
 test.describe.serial('remote device lifecycle', () => {
-  // Not green-washed: a host with no non-loopback interface (a locked-down
-  // CI container) genuinely cannot produce the peer this spec is about, and
-  // saying so is the honest outcome. A skip is visible in the report; a
+  // Not green-washed: outside the test network namespace (macOS) no
+  // off-host peer can be produced without LAN traffic, and saying so is
+  // the honest outcome. A skip is visible in the report; a
   // vacuous pass is not.
   test.skip(
     lanIP === null,
-    'no non-loopback IPv4 interface on this host, so no off-host peer can be produced',
+    'outside the test network namespace, so no off-host peer can be produced without LAN traffic',
   );
 
   let harness: HarnessApp;

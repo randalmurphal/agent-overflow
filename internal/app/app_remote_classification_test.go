@@ -97,6 +97,7 @@ var remoteOwnerLocalMethods = map[string]string{
 }
 
 func TestRemoteOwnerMethodsAreClassified(t *testing.T) {
+	t.Parallel()
 	generated := make(map[string]transport.MethodMeta, len(transport.GeneratedMethods))
 	for _, m := range transport.GeneratedMethods {
 		generated[m.Name] = m
@@ -140,6 +141,7 @@ func TestRemoteOwnerMethodsAreClassified(t *testing.T) {
 // it. The same fixture registers them in the standard build, so the
 // refusal is the gate's and not the fixture's.
 func TestRemoteToolsAreNeverOfferedWithoutRemoteAccess(t *testing.T) {
+	t.Parallel()
 	a := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = a.ServiceShutdown() })
 	backends := t.TempDir()

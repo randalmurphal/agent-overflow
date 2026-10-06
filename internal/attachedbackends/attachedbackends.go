@@ -58,6 +58,9 @@ type Manager struct {
 	dial      deviceclient.DialContextFunc
 	selfID    func() string
 	discovery singleflight.Group
+	// lanDiscoveryOff answers every LAN scan with nearby.ErrIsolated instead
+	// of sending multicast (DisableLANDiscovery).
+	lanDiscoveryOff bool
 
 	// changed is the one observer of set mutations (SetChanged).
 	changed func(SetChange)
@@ -66,6 +69,9 @@ type Manager struct {
 	labelGetter func() (string, error)
 	label       string
 	platform    string
+	// activationProbe is how often a pending pairing asks whether it was
+	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
+	activationProbe time.Duration
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
@@ -146,7 +152,7 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := deviceclient.Open(m.dir, session, deviceclient.WithDialContext(m.dial))
+	client, err := deviceclient.Open(m.dir, session, m.clientOptions()...)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +399,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 	if err != nil {
 		return Attachment{}, err
 	}
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, deviceclient.WithDialContext(m.dial))
+	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, m.clientOptions()...)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -688,6 +694,15 @@ func displayName(session deviceclient.Session) string {
 
 // SetLabelGetter wires the installation identity before serving requests.
 func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = get }
+
+// SetActivationProbe sets the pending-pairing confirmation poll before
+// serving requests. Only an isolated test boot calls it
+// (deviceclient.WithProbeInterval).
+func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
+
+func (m *Manager) clientOptions() []deviceclient.Option {
+	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe)}
+}
 func (m *Manager) localLabel() (string, error) {
 	if m.labelGetter != nil {
 		return m.labelGetter()

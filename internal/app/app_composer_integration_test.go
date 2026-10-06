@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"os"
@@ -106,9 +107,7 @@ func writeClaudeStdinCapture(t *testing.T, capturePath string) string {
 	// sends within a single test survive. The redirect order matters: stdin
 	// → capture file, stdout → /dev/null.
 	script := "#!/bin/sh\ncat >> " + shellQuoteComposer(capturePath) + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -119,6 +118,7 @@ func shellQuoteComposer(p string) string {
 // TestComposer_DraftSaveLoadRoundTrip confirms SaveDraft + GetDraft are a
 // true round-trip for content, attachment IDs, and terminal chips.
 func TestComposer_DraftSaveLoadRoundTrip(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-rt", "")
 
@@ -156,6 +156,7 @@ func TestComposer_DraftSaveLoadRoundTrip(t *testing.T) {
 // TestComposer_DraftOverwritePreservesMostRecent writes v1, then v2, and
 // asserts GetDraft returns v2. SaveDraft is an upsert.
 func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-over", "")
 
@@ -180,6 +181,7 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 // TestComposer_DraftClearRemovesRow confirms ClearDraft deletes the row and
 // GetDraft returns a zero-value Draft (empty content, non-nil empty slices).
 func TestComposer_DraftClearRemovesRow(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-clear", "")
 
@@ -214,6 +216,7 @@ func TestComposer_DraftClearRemovesRow(t *testing.T) {
 // reflects the last call, proving the contract: it is the caller's job to
 // serialize writes.
 func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-gen", "")
 
@@ -237,6 +240,7 @@ func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
 // TestComposer_DraftPerThreadIsolation confirms two threads' drafts do not
 // leak into each other.
 func TestComposer_DraftPerThreadIsolation(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-iso-a", "")
 	composerSeedThread(t, app, "thr-iso-b", "")
@@ -267,6 +271,7 @@ func TestComposer_DraftPerThreadIsolation(t *testing.T) {
 // TestComposer_DraftCascadeOnThreadDelete deletes a thread and asserts the
 // draft row goes with it (FK ON DELETE CASCADE).
 func TestComposer_DraftCascadeOnThreadDelete(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-cascade", "")
 
@@ -291,6 +296,7 @@ func TestComposer_DraftCascadeOnThreadDelete(t *testing.T) {
 // their IDs in a draft, and asserts the attachments are still retrievable
 // afterwards.
 func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-att-draft", "")
 
@@ -322,6 +328,7 @@ func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
 // full markdown in Summary and the attachment is still retrievable after
 // send (SendMessage does NOT delete attachments).
 func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-att-send", "")
 
@@ -392,6 +399,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 }
 
 func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	sourceThread := composerSeedThread(t, app, "thr-attachment-source", "")
 	targetThread := composerSeedThread(t, app, "thr-attachment-target", "")
@@ -420,6 +428,7 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 // ```terminal ...``` fenced blocks, while image attachments travel as
 // structured provider content blocks.
 func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-outgoing", "")
 
@@ -508,6 +517,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 // reads the file), while a bytes-based provider (claude) receives the Data and no
 // path. Mis-wiring either branch would silently break image sends for one provider.
 func TestResolveSendMessageAttachmentsByProvider(t *testing.T) {
+	t.Parallel()
 	app, rootDir := newComposerTestApp(t)
 
 	claudeThread := composerSeedThread(t, app, "by-provider-claude", "")
@@ -573,6 +583,7 @@ func jsonEscapeContent(s string) string {
 // from a draft must NOT delete the underlying attachment — otherwise the
 // user loses their upload as soon as they clear the input.
 func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
+	t.Parallel()
 	app, rootDir := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-att-save", "")
 
@@ -599,6 +610,7 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 // row after persisting the user message. The frontend only clears its visible
 // composer; durable draft consumption belongs to this accepting operation.
 func TestComposer_SendMessageClearsDraft(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-send-draft", "")
 
@@ -643,6 +655,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 // confirms SearchWorkspaceFiles returns files from the caller's thread
 // workspace — not the other thread's.
 func TestComposer_MentionPopoverSearchRespectsWorkspaceRef(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	wsA := t.TempDir()
 	wsB := t.TempDir()
@@ -699,6 +712,7 @@ func TestComposer_MentionPopoverSearchRespectsWorkspaceRef(t *testing.T) {
 // TestComposer_LargeDraftHandled writes a 50KB content blob and confirms the
 // round-trip preserves length exactly.
 func TestComposer_LargeDraftHandled(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-big", "")
 
@@ -726,6 +740,7 @@ func TestComposer_LargeDraftHandled(t *testing.T) {
 // upserts a row with empty content — it is NOT a no-op at the store level,
 // but GetDraft returns an empty Draft either way.
 func TestComposer_EmptyDraftSaveIsNoOp(t *testing.T) {
+	t.Parallel()
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-empty-save", "")
 
@@ -752,6 +767,7 @@ func TestComposer_EmptyDraftSaveIsNoOp(t *testing.T) {
 // Uses a file-backed store (not :memory:) since only file-backed stores
 // survive a Close.
 func TestComposer_DraftSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	dbPath := storetest.ClonePath(t)
 	threadID := "thr-restart"
 

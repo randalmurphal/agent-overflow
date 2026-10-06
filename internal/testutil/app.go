@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // WriteMockClaudeInit writes a shell script that mimics `claude --max-turns 0`
@@ -244,31 +245,7 @@ func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) strin
 
 func writeMockShellScript(t *testing.T, dir, name, script string) string {
 	t.Helper()
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("create mock script dir: %v", err)
-	}
-	path := filepath.Join(dir, name)
-	payloadPath := path + ".payload.sh"
-	if err := os.WriteFile(payloadPath, []byte(script), 0o644); err != nil {
-		t.Fatalf("write mock script payload: %v", err)
-	}
-
-	wrapperPath := mockShellWrapperPath(t)
-	if err := os.Symlink(wrapperPath, path); err != nil {
-		t.Fatalf("link mock script wrapper: %v", err)
-	}
-	return path
-}
-
-func mockShellWrapperPath(t *testing.T) string {
-	t.Helper()
-
-	_, sourcePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve mock shell wrapper: runtime.Caller failed")
-	}
-	return filepath.Join(filepath.Dir(sourcePath), "testdata", "mock-shell-wrapper.sh")
+	return mockexec.WriteIn(t, dir, name, script)
 }
 
 // CommitSpec describes a single commit in InitGitRepoWithCommits.

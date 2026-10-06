@@ -55,6 +55,7 @@ func codexE2EExecResultMeta(t *testing.T, result, processID, command string) jso
 // transient tray state + ListLiveBackgroundTasks) rather than the
 // notification parser, which has its own unit tests.
 func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -250,6 +251,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 // the live tray. Verifies exactly one RPC fired: the primitive is
 // thread-wide, not per row.
 func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -418,6 +420,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 // It also pins the "per-row" half: two live terminals, one stop, and the
 // untouched one must still be running afterwards.
 func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -574,6 +577,7 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 // state: ghost row → errored/lost, emitted via provider:item_event so
 // the tray reconciles.
 func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	// The ghost flip uses app.emit (not the triage emit function), so
@@ -661,6 +665,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 // (real triage + store) so a regression in triage.flipTurnItemsErrored's
 // IsBackground guard surfaces here, not just in the unit test.
 func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
+	t.Parallel()
 	providers := []struct {
 		name         string
 		providerName string
@@ -749,6 +754,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 // this ordering; the test pins it end-to-end against a live thread +
 // fake session.
 func TestE2E_ThreadDelete_CleansCodexBackground(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 
 	workspace := t.TempDir()

@@ -18,6 +18,7 @@ import (
 // nothing could put back. This is that boot: a pending record on disk, no
 // snapshot, and a trial that has never run.
 func TestAPendingUpdateWithNoSnapshotTakesOneBeforeItsFirstTrial(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorServe)
 	rig.stage("2.0.0", behaviorCrash)
@@ -60,6 +61,7 @@ func TestAPendingUpdateWithNoSnapshotTakesOneBeforeItsFirstTrial(t *testing.T) {
 // work a rollback exists to undo. The supervisor starts nothing and says which
 // command chooses a version by hand.
 func TestAMidTrialPendingUpdateWithNoSnapshotStartsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorServe)
 	rig.stage("2.0.0", behaviorPrepare)
@@ -101,6 +103,7 @@ func TestAMidTrialPendingUpdateWithNoSnapshotStartsNothing(t *testing.T) {
 // version answering is 1.0.0 and the version that failed is 2.0.0, and only
 // the record knows both.
 func TestASettledOutcomeReachesTheBackendExactlyOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stage("1.0.0", behaviorServe)
 	rig.stage("2.0.0", behaviorServe)

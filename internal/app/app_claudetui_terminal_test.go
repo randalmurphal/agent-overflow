@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/base64"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/transport"
@@ -17,20 +17,17 @@ import (
 // newTakeControlFixture stands up one claude-tui session whose PTY runs a
 // stand-in that only holds the terminal open, and registers it on a bare App so
 // the ProviderTerminal* methods resolve it. The real `claude` is never spawned
-// and HOME is detached, per the provider-spawn isolation rule
-// (internal/kerneltest/AGENTS.md).
+// and the session's HOME is its own temp dir, per the provider-spawn isolation
+// rule (internal/kerneltest/AGENTS.md).
 func newTakeControlFixture(t *testing.T) (*App, string) {
 	t.Helper()
-	kerneltest.DetachHome(t)
 
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "mock-claude-tui")
 	// Reads until the PTY closes, so the session has a live terminal to attach
 	// to and Close has a process to kill. It speaks no protocol: every
 	// assertion here is about the attach bookkeeping, not the wire.
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nwhile IFS= read -r _; do :; done\n"), 0o755); err != nil {
-		t.Fatalf("write PTY stand-in: %v", err)
-	}
+	mockexec.Write(t, binary, "#!/bin/sh\nwhile IFS= read -r _; do :; done\n")
 
 	const threadID = "thread-take-control"
 	sess, err := claudetui.NewSession(context.Background(), threadID, claudetui.Config{
@@ -60,6 +57,7 @@ func connContext() (context.Context, *transport.ConnState) {
 // the session restarted. The connection's cleanup now releases exactly that
 // client's claim.
 func TestSocketDeathReleasesTakeControl(t *testing.T) {
+	t.Parallel()
 	app, threadID := newTakeControlFixture(t)
 	ctx, state := connContext()
 
@@ -103,6 +101,7 @@ func TestSocketDeathReleasesTakeControl(t *testing.T) {
 // replace the first client's output tee, and either client's detach used to
 // strip the other's lease.
 func TestASecondConnectionDoesNotDisplaceTheFirstsAttach(t *testing.T) {
+	t.Parallel()
 	app, threadID := newTakeControlFixture(t)
 
 	firstCtx, firstState := connContext()
@@ -158,6 +157,7 @@ func TestASecondConnectionDoesNotDisplaceTheFirstsAttach(t *testing.T) {
 // release a claim — the client's own unmount and its socket's teardown — never
 // turn the second one into an error the UI has to explain.
 func TestDetachAndReleaseControlAreIdempotent(t *testing.T) {
+	t.Parallel()
 	app, threadID := newTakeControlFixture(t)
 	ctx, state := connContext()
 
@@ -190,6 +190,7 @@ func TestDetachAndReleaseControlAreIdempotent(t *testing.T) {
 // one live socket does not stack claims: the displaced attachment is released,
 // so the session's fan-out refcount tracks clients rather than attach calls.
 func TestReattachOnOneConnectionReplacesItsOwnClaim(t *testing.T) {
+	t.Parallel()
 	app, threadID := newTakeControlFixture(t)
 	ctx, state := connContext()
 
@@ -218,6 +219,7 @@ func TestReattachOnOneConnectionReplacesItsOwnClaim(t *testing.T) {
 // holding claims on several threads, leaves exactly one closure behind, and
 // that one closure releases every claim the connection still holds.
 func TestOneConnectionArmsOneCleanup(t *testing.T) {
+	t.Parallel()
 	app, threadID := newTakeControlFixture(t)
 	ctx, state := connContext()
 

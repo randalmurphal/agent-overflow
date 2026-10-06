@@ -16,6 +16,7 @@ import (
 )
 
 func TestMergeRateLimitsSnapshotKeepsAccountAndDynamicBuckets(t *testing.T) {
+	t.Parallel()
 	incoming := provider.RateLimitsSnapshot{
 		Provider:  string(provider.Codex),
 		AccountID: "account-one",
@@ -38,6 +39,7 @@ func TestMergeRateLimitsSnapshotKeepsAccountAndDynamicBuckets(t *testing.T) {
 }
 
 func TestMergeRateLimitsSnapshotCollapsesClaudeLegacyAliases(t *testing.T) {
+	t.Parallel()
 	current := provider.RateLimitsSnapshot{
 		Provider:  string(provider.Claude),
 		AccountID: "account-one",
@@ -74,6 +76,7 @@ func TestMergeRateLimitsSnapshotCollapsesClaudeLegacyAliases(t *testing.T) {
 }
 
 func TestMergeRateLimitsSnapshotAcceptsHigherUsageAcrossResetTimestampJitter(t *testing.T) {
+	t.Parallel()
 	current := provider.RateLimitsSnapshot{
 		Provider:  string(provider.Claude),
 		AccountID: "account-one",
@@ -110,6 +113,7 @@ func TestMergeRateLimitsSnapshotAcceptsHigherUsageAcrossResetTimestampJitter(t *
 // legitimately drop when the limit grows mid-window — see MergeSnapshot)
 // but still keeps the established boundary.
 func TestMergeRateLimitsSnapshotKeepsBoundaryUnderJitter(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name            string
 		incomingPercent float64
@@ -152,6 +156,7 @@ func TestMergeRateLimitsSnapshotKeepsBoundaryUnderJitter(t *testing.T) {
 }
 
 func TestMergeRateLimitsSnapshotAcceptsLowerUsageInNewQuotaWindow(t *testing.T) {
+	t.Parallel()
 	current := provider.RateLimitsSnapshot{
 		Provider: string(provider.Claude),
 		Limits: []provider.RateLimitEntry{{
@@ -177,6 +182,7 @@ func TestMergeRateLimitsSnapshotAcceptsLowerUsageInNewQuotaWindow(t *testing.T) 
 }
 
 func TestMergeRateLimitsSnapshotStillRejectsOlderQuotaWindow(t *testing.T) {
+	t.Parallel()
 	current := provider.RateLimitsSnapshot{
 		Provider: string(provider.Claude),
 		Limits: []provider.RateLimitEntry{{
@@ -205,6 +211,7 @@ func TestMergeRateLimitsSnapshotStillRejectsOlderQuotaWindow(t *testing.T) {
 // with a probe stub that signals on each call, cancel appCtx after the
 // startup probe lands, and confirm no further probe fires.
 func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	probeFired := make(chan struct{}, 4)
@@ -251,6 +258,7 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 // usage endpoint; a regression that probes from the event chokepoint again
 // would reintroduce it.
 func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing.T) {
+	t.Parallel()
 	hits := atomic.Int32{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -261,12 +269,10 @@ func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing
 	srvURL, _ := url.Parse(srv.URL)
 
 	app := newTestAppWithStore(t)
-	// Seed the canonical credential AFTER the fixture's HOME detach so a
+	// Seed the canonical credential in the fixture's provider home so a
 	// probe, if one incorrectly fired, would reach the fake server rather
 	// than dying on a missing credential.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
+	tmpHome := testProviderHome(t, app)
 	credsDir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(credsDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -307,6 +313,7 @@ func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing
 // one activity mark earns exactly one poll, and the next poll requires fresh
 // activity.
 func TestStartRateLimitProbeLoop_PollsOnlyAfterTurnActivity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	const testProvider = "test-provider"
 

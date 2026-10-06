@@ -3,10 +3,10 @@
 // attested page replaces, which stamp goes out on the next request, and
 // what may be persisted.
 //
-// fake-indexeddb is imported HERE only. The rest of the suite runs with
+// fake-indexeddb is installed HERE only. The rest of the suite runs with
 // no `indexedDB` global, which is the "replica unavailable" posture the
 // app must degrade to.
-import 'fake-indexeddb/auto';
+import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
 import {
@@ -36,6 +36,8 @@ import {
 import type { HeldWindow, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { windowDigest } from './threadWindowDigest';
 import { TransportError } from '../transport/wsClient';
+
+installFakeIndexedDB();
 
 type SyncRequest = {
   anchorItemId: string;

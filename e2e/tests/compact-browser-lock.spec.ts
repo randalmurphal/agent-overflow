@@ -37,12 +37,20 @@ async function pairLockedViewer(harness: HarnessApp, page: Page): Promise<void> 
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
 }
 
+type MobileHost = {
+  harness: HarnessApp;
+  credential: Awaited<ReturnType<BrowserContext['credentials']['get']>>[number];
+  proxy: { server: string };
+  setOffline: (value: boolean) => void;
+};
+
+// One backend, proxy pair and registered owner passkey per worker. Each test
+// still pairs its own fresh browser context, so no device, session or lock
+// state carries between tests.
 const test = base.extend<{
-  mobileHost: { harness: HarnessApp; owner: BrowserContext; proxy: { server: string }; setOffline: (value: boolean) => void };
   lockedBrowser: { harness: HarnessApp; page: Page };
-}>({
-  mobileHost: async ({ browser }, use) => {
-    test.skip(lanIP === null, 'A non-loopback interface is required for a real remote browser session');
+}, { mobileHost: MobileHost }>({
+  mobileHost: [async ({ browser }, use) => {
     const harness = await launchHarness();
     const cleanup: Array<() => Promise<void>> = [() => harness.close()];
     try {
@@ -53,7 +61,23 @@ const test = base.extend<{
       const owner = await browser.newContext({ ignoreHTTPSErrors: true, proxy: { server: localProxy.server } });
       cleanup.unshift(() => owner.close());
       await harness.rpc('SetNetworkSettings', { bindAll: true, canonicalDomain: DOMAIN });
-      await use({ harness, owner, proxy: { server: remoteProxy.server }, setOffline: remoteProxy.setOffline });
+      await installSoftwarePasskeys(owner);
+      const host = await owner.newPage();
+      const url = new URL(await harness.pageURL());
+      url.protocol = 'https:';
+      url.hostname = DOMAIN;
+      await host.goto(url.toString());
+      await host.getByTestId('sidebar-settings-button').click();
+      await host.getByRole('tab', { name: 'Allow device access', exact: true }).click();
+      await host.getByText('Security & passkeys', { exact: true }).click();
+      await host.getByRole('button', { name: 'Add a passkey', exact: true }).click();
+      await expect.poll(async () => (await harness.rpc<unknown[]>('ListPasskeys')).length, {
+        message: 'the software authenticator registration must verify on the real backend',
+      }).toBe(1);
+      const credentials = await owner.credentials.get();
+      expect(credentials).toHaveLength(1);
+      await host.close();
+      await use({ harness, credential: credentials[0], proxy: { server: remoteProxy.server }, setOffline: remoteProxy.setOffline });
     } finally {
       const errors: unknown[] = [];
       for (const close of cleanup) {
@@ -61,32 +85,18 @@ const test = base.extend<{
       }
       if (errors.length) throw new AggregateError(errors, 'Mobile browser fixture cleanup failed');
     }
-  },
+  }, { scope: 'worker' }],
   proxy: async ({ mobileHost }, use) => { await use(mobileHost.proxy); },
   lockedBrowser: async ({ mobileHost, context, page }, use) => {
-    const { harness, owner } = mobileHost;
-    await installSoftwarePasskeys(owner);
-    const host = await owner.newPage();
-    const url = new URL(await harness.pageURL());
-    url.protocol = 'https:';
-    url.hostname = DOMAIN;
-    await host.goto(url.toString());
-    await host.getByTestId('sidebar-settings-button').click();
-    await host.getByRole('tab', { name: 'Allow device access', exact: true }).click();
-    await host.getByText('Security & passkeys', { exact: true }).click();
-    await host.getByRole('button', { name: 'Add a passkey', exact: true }).click();
-    await expect.poll(async () => (await harness.rpc<unknown[]>('ListPasskeys')).length, {
-      message: 'the software authenticator registration must verify on the real backend',
-    }).toBe(1);
-    const credentials = await owner.credentials.get();
-    expect(credentials).toHaveLength(1);
-    await context.credentials.create(DOMAIN, credentials[0]);
+    const { harness, credential } = mobileHost;
+    await context.credentials.create(DOMAIN, credential);
     await installSoftwarePasskeys(context);
-
     await pairLockedViewer(harness, page);
     await use({ harness, page });
   },
 });
+
+test.skip(lanIP === null, 'A non-loopback interface is required for a real remote browser session');
 
 test.use({ ignoreHTTPSErrors: true });
 
@@ -241,10 +251,14 @@ test('losing connectivity while locked preserves the cover and recovers the same
   } finally { mobileHost.setOffline(false); }
   // An issued request may resume after reconnect or be refused promptly. Both
   // paths must keep the cover until a fresh assertion reaches this backend.
-  await expect.poll(async () => {
-    if (await page.getByTestId('app-lock').count() === 0) return 'verified';
-    return await page.getByRole('button', { name: 'Unlock', exact: true }).isEnabled() ? 'retry' : 'pending';
-  }).not.toBe('pending');
+  // One DOM read: a verification that lands between two locator calls removes
+  // the button the second one would wait for.
+  await expect.poll(() => page.evaluate(() => {
+    const cover = document.querySelector('[data-testid="app-lock"]');
+    if (!cover) return 'verified';
+    const button = [...cover.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Unlock');
+    return button && !button.disabled ? 'retry' : 'pending';
+  })).not.toBe('pending');
   if (await page.getByTestId('app-lock').count()) await unlock(page);
   await expect(page.getByTestId('view-only-indicator')).toBeVisible();
   expect((await session(page)).sessionId).toBe(before.sessionId);

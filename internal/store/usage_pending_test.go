@@ -57,7 +57,7 @@ func TestUsagePendingInterruptionAndReconciliation(t *testing.T) {
 }
 
 func TestUsagePendingSurvivesReopenUntilItsTurnSettles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "usage.db")
+	path := newTestStorePath(t)
 	s, err := New(path)
 	if err != nil {
 		t.Fatal(err)

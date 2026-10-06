@@ -69,6 +69,7 @@ func startTestTransportServer(t *testing.T) *transport.Server {
 }
 
 func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 
 	got, err := app.GetNetworkSettings(atTheMachine())
@@ -101,6 +102,7 @@ func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
 // preserved so any URL the user already shared keeps working at the
 // host-only differing address.
 func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
@@ -158,6 +160,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 // untrusted network. Loopback URLs are also http:// but never
 // traverse a network — they stay safe and are not flagged.
 func TestNetworkSettings_InsecureFlag(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 
@@ -200,6 +203,7 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 // in a row doesn't churn the transport (which would interrupt
 // in-flight connections for no reason).
 func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 	originalAddr := srv.Addr()
 
@@ -217,6 +221,7 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 // and neither is a rebind — an open connection must survive a user
 // typing their domain into the settings screen.
 func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	addr := srv.Addr()
@@ -261,6 +266,7 @@ func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
 // A refused domain never reaches the listener, and never reaches the
 // file either: one write path, one set of rules.
 func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 
 	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{CanonicalDomain: "https://backend.example/"}); err == nil {
@@ -278,6 +284,7 @@ func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
 // with the current status and refuses only what it can answer for
 // immediately.
 func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, _ := newNetworkTestApp(t)
 
@@ -307,9 +314,10 @@ func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
 // page ticket, so two reads of the panel hand out two independently
 // openable URLs rather than one that a second reader finds spent.
 func TestNetworkFromServer_LoopbackUsesAppURL(t *testing.T) {
+	t.Parallel()
 	_, srv := newNetworkTestApp(t)
-	first := network.FromServer(srv, network.Settings{}).URL
-	second := network.FromServer(srv, network.Settings{}).URL
+	first := network.FromServer(srv, network.Settings{}, network.Reach{}).URL
+	second := network.FromServer(srv, network.Settings{}, network.Reach{}).URL
 	if originOf(t, first) != originOf(t, srv.AppURL()) {
 		t.Fatalf("loopback URL = %q, want the server's own origin", first)
 	}
@@ -342,6 +350,7 @@ func intToPortString(p int) string {
 // case; otherwise the next boot would honor a flag the transport
 // never actually applied.
 func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
+	t.Parallel()
 	app := &App{settings: settings.NewService(t.TempDir())}
 	prev := app.settings.Get().Network.BindAll
 
@@ -359,6 +368,7 @@ func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
 // from previous rebinds (origin patterns reverting, listener leak,
 // addr churn). Each toggle must land on the right bind host.
 func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
@@ -409,6 +419,7 @@ func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 // refuses the duplicate bind, Rebind fails before mutating
 // anything, and SetNetworkSettings rolls the persisted flag back.
 func TestSetNetworkSettings_RebindFailureRollsBack(t *testing.T) {
+	t.Parallel()
 	app, srv := newNetworkTestApp(t)
 
 	preAddr := srv.Addr()
@@ -487,6 +498,7 @@ func withheldFrom(full network.Settings) network.Settings {
 }
 
 func TestGetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 
@@ -543,6 +555,7 @@ func TestGetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) 
 // would leave a remote owner able to enable the feature and unable to
 // finish it.
 func TestRedactionKeepsTheTailnetSignInLink(t *testing.T) {
+	t.Parallel()
 	app, session := offHostAdminApp(t)
 
 	staged := network.Settings{
@@ -572,6 +585,7 @@ func TestRedactionKeepsTheTailnetSignInLink(t *testing.T) {
 // token to that device — so the write a phone made handed it the one
 // credential the read is careful never to.
 func TestSetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 
@@ -619,6 +633,7 @@ func TestSetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) 
 // reason the rule is applied wherever the shape leaves the process rather
 // than per method.
 func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, session := offHostAdminApp(t)
 	remote := callFrom(session.ID, false)
@@ -662,6 +677,7 @@ func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
 // hold the other back, or the worker's read-modify-write lands on top of
 // the save and the port the operator chose is gone.
 func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
@@ -703,7 +719,7 @@ func TestNetworkSettingsApplyIsSerializedWithOwnDeviceHosting(t *testing.T) {
 	if !got.BindAll || got.ListenPort != chosen {
 		t.Fatalf("settings after both applies = %+v, want BindAll on the port the screen chose (%d)", got, chosen)
 	}
-	if addr := srv.Addr(); addr != net.JoinHostPort(network.BindHost(true), strconv.Itoa(chosen)) {
+	if addr := srv.Addr(); addr != net.JoinHostPort(network.Reach{}.BindHost(true), strconv.Itoa(chosen)) {
 		t.Fatalf("listener at %q, want every interface on port %d", addr, chosen)
 	}
 }

@@ -12,6 +12,7 @@ import (
 )
 
 func TestResumedIdleChildMailboxObservesAppendAndStopsWithSession(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	deliveries := make(chan provider.ProviderEvent, 4)
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) {

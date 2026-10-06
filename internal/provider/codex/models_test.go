@@ -2,15 +2,16 @@ package codex
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
+	t.Parallel()
 	binary := writeModelListFakeCodex(t, `[{"model":"gpt-5.5","displayName":"gpt-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast responses with lighter reasoning"},{"reasoningEffort":"high","description":"Greater reasoning depth for complex problems"},{"reasoningEffort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]},{"model":"legacy-hidden","displayName":"Legacy Hidden","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],"defaultReasoningEffort":"low","serviceTiers":[]}]`)
 
 	models, err := ListModels(context.Background(), ModelListConfig{
@@ -87,6 +88,7 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 // is the model's full tier menu — upstream ships flex/batch on it — so the fast
 // entry is identified by an anchor, never assumed from position or presence.
 func TestCodexFastModeTierIsWireDriven(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		model codexModel
@@ -194,6 +196,7 @@ func TestCodexFastModeTierIsWireDriven(t *testing.T) {
 }
 
 func TestNormalizeCodexDisplayNameUsesFriendlyGPTAliases(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"gpt-5.5":             "GPT 5.5",
 		"GPT-5.6-Sol":         "GPT 5.6 Sol",
@@ -210,6 +213,7 @@ func TestNormalizeCodexDisplayNameUsesFriendlyGPTAliases(t *testing.T) {
 }
 
 func TestListModelsFollowsPagination(t *testing.T) {
+	t.Parallel()
 	binary := writeModelListPagingFakeCodex(t)
 
 	models, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
@@ -230,6 +234,7 @@ func TestListModelsFollowsPagination(t *testing.T) {
 }
 
 func TestListModelsRejectsRepeatedCursor(t *testing.T) {
+	t.Parallel()
 	binary := writeModelListRepeatedCursorFakeCodex(t)
 
 	_, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
@@ -239,6 +244,7 @@ func TestListModelsRejectsRepeatedCursor(t *testing.T) {
 }
 
 func TestListModelsRejectsExcessivePages(t *testing.T) {
+	t.Parallel()
 	binary := writeModelListEndlessPagingFakeCodex(t)
 
 	_, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
@@ -316,9 +322,7 @@ done
 func writeExecutable(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(path, []byte(contents), 0755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
+	mockexec.Write(t, path, contents)
 	return path
 }
 

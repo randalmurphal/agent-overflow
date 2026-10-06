@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/loopback/loopbacktest"
 )
 
 // Every server here is httptest's own: loopback, an ephemeral port, and
@@ -64,7 +66,7 @@ func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(tc.handler)
+			srv := loopbacktest.NewServer(t, tc.handler)
 			defer srv.Close()
 			probe := newProber(time.Now)
 			got := pageOf(probe, context.Background(), loopbackPort(t, srv), 0)
@@ -79,7 +81,7 @@ func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
 // The certificate is httptest's own and nothing can verify it, which is
 // exactly the shape a real one has.
 func TestProbeFallsBackToHTTPS(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := loopbacktest.NewTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))
@@ -93,7 +95,7 @@ func TestProbeFallsBackToHTTPS(t *testing.T) {
 // A port nothing is on is a false verdict, never a hang: both dials fail
 // immediately on loopback.
 func TestProbeRefusesADeadPort(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv := loopbacktest.NewServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	port := loopbackPort(t, srv)
 	srv.Close()
 
@@ -108,7 +110,7 @@ func TestProbeRefusesADeadPort(t *testing.T) {
 // that changed hands must not inherit the previous occupant's verdict.
 func TestProbeVerdictCacheIsKeyedAndExpires(t *testing.T) {
 	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
@@ -141,7 +143,7 @@ func TestProbeVerdictCacheIsKeyedAndExpires(t *testing.T) {
 // asked about.
 func TestACancelledProbeIsNotAVerdict(t *testing.T) {
 	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))

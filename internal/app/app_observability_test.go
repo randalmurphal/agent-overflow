@@ -12,6 +12,7 @@ import (
 )
 
 func TestAppendUIRenderTraceBatchRoundtrip(t *testing.T) {
+	t.Parallel()
 	app := &App{configDir: t.TempDir()}
 
 	path, err := app.AppendUIRenderTraceBatch([]string{`{"label":"chat.state"}`})
@@ -33,6 +34,7 @@ func TestAppendUIRenderTraceBatchRoundtrip(t *testing.T) {
 }
 
 func TestGetUIRenderTracePathRequiresConfigDir(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	_, err := app.GetUIRenderTracePath()
@@ -42,6 +44,7 @@ func TestGetUIRenderTracePathRequiresConfigDir(t *testing.T) {
 }
 
 func TestReportFrontendErrorBatchRoundtrip(t *testing.T) {
+	t.Parallel()
 	app := &App{configDir: t.TempDir()}
 
 	line := `{"kind":"error","message":"render boom","seen":1}`
@@ -70,6 +73,7 @@ func TestReportFrontendErrorBatchRoundtrip(t *testing.T) {
 }
 
 func TestReportFrontendErrorBatchRequiresConfigDir(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	if _, err := app.ReportFrontendErrorBatch([]string{`{}`}); err == nil {
@@ -78,6 +82,7 @@ func TestReportFrontendErrorBatchRequiresConfigDir(t *testing.T) {
 }
 
 func TestTraceChannelsAreIndependentOnOneApp(t *testing.T) {
+	t.Parallel()
 	app := &App{configDir: t.TempDir()}
 
 	tracePath, err := app.AppendUIRenderTraceBatch([]string{`{"label":"chat.state"}`})
@@ -130,6 +135,7 @@ func TestTraceChannelsAreIndependentOnOneApp(t *testing.T) {
 }
 
 func TestUITraceLazyInitMemoizes(t *testing.T) {
+	t.Parallel()
 	app := &App{configDir: t.TempDir()}
 
 	t1, err := app.uiTrace()

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // seedRepo creates a git repo with one committed file so tests have a
@@ -37,6 +38,7 @@ func seedRepo(t *testing.T) string {
 }
 
 func TestStagedSummaryReportsStagedChanges(t *testing.T) {
+	t.Parallel()
 	dir := seedRepo(t)
 	core := NewCore()
 
@@ -62,6 +64,7 @@ func TestStagedSummaryReportsStagedChanges(t *testing.T) {
 }
 
 func TestStagedPatchIncludesDiffLines(t *testing.T) {
+	t.Parallel()
 	dir := seedRepo(t)
 	core := NewCore()
 
@@ -85,6 +88,7 @@ func TestStagedPatchIncludesDiffLines(t *testing.T) {
 }
 
 func TestStagedSummaryEmptyOnCleanRepo(t *testing.T) {
+	t.Parallel()
 	dir := seedRepo(t)
 	core := NewCore()
 
@@ -140,15 +144,14 @@ func TestStagedContextNeutralizesUserDiffConfig(t *testing.T) {
 // must still yield git's own uncoloured patch, because that patch is what
 // the commit-message model reads.
 func TestStagedPatchIgnoresExternalDifferAndColor(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script external differ is unix-only")
 	}
 	dir := seedRepo(t)
 
 	differ := filepath.Join(t.TempDir(), "differ.sh")
-	if err := os.WriteFile(differ, []byte("#!/bin/sh\necho EXTERNAL-DIFF-RAN\n"), 0o755); err != nil {
-		t.Fatalf("write external differ: %v", err)
-	}
+	mockexec.Write(t, differ, "#!/bin/sh\necho EXTERNAL-DIFF-RAN\n")
 	core := NewCore()
 	if _, _, err := core.Execute(dir, "config", "diff.external", differ); err != nil {
 		t.Fatalf("set diff.external: %v", err)
@@ -180,6 +183,7 @@ func TestStagedPatchIgnoresExternalDifferAndColor(t *testing.T) {
 }
 
 func TestLimitSectionTruncationMarker(t *testing.T) {
+	t.Parallel()
 	in := strings.Repeat("x", 100)
 	out := limitSection(in, 50)
 	if !strings.HasSuffix(out, "[truncated]") {
@@ -191,6 +195,7 @@ func TestLimitSectionTruncationMarker(t *testing.T) {
 }
 
 func TestLimitSectionNoopBelowBudget(t *testing.T) {
+	t.Parallel()
 	in := "short"
 	if got := limitSection(in, 100); got != in {
 		t.Errorf("expected no-op; got %q", got)
@@ -198,7 +203,8 @@ func TestLimitSectionNoopBelowBudget(t *testing.T) {
 }
 
 func TestRecentCommitSubjectsNewestFirstSkippingMerges(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	commit := func(name, subject string) {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(name+"\n"), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -227,6 +233,7 @@ func TestRecentCommitSubjectsNewestFirstSkippingMerges(t *testing.T) {
 }
 
 func TestRecentCommitSubjectsBestEffortOnEmptyOrInvalid(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	if got := core.RecentCommitSubjects(t.TempDir(), 20); got != nil {
 		t.Fatalf("non-repo: got %q, want nil", got)

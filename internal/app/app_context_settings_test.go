@@ -133,6 +133,7 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 }
 
 func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	profile, err := app.GetContextSettings("codex", "gpt-5.4")
@@ -152,6 +153,7 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 }
 
 func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	profile, err := app.GetContextSettings("codex", "gpt-5.5")
@@ -167,6 +169,7 @@ func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
 }
 
 func TestGetContextSettingsReturnsGPT56Window(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
@@ -186,6 +189,7 @@ func TestGetContextSettingsReturnsGPT56Window(t *testing.T) {
 }
 
 func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
 		Provider:      "codex",
@@ -209,6 +213,7 @@ func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
 }
 
 func TestGetContextSettingsReturnsSingleWindowCodexDefaults(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	profile, err := app.GetContextSettings("codex", "gpt-5.2")
@@ -224,6 +229,7 @@ func TestGetContextSettingsReturnsSingleWindowCodexDefaults(t *testing.T) {
 }
 
 func TestUpdateContextSettingsProfileValidatesPercentAndWindow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	_, err := app.UpdateContextSettingsProfile(ContextSettingsUpdate{
@@ -248,6 +254,7 @@ func TestUpdateContextSettingsProfileValidatesPercentAndWindow(t *testing.T) {
 }
 
 func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings", "gpt-5.4", "")
 	if err != nil {
@@ -288,6 +295,7 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 // render stale `usedTokens` against the new max during the brief
 // restart gap.
 func TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-reset", "gpt-5.5", "")
 	if err != nil {
@@ -337,6 +345,7 @@ func TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset(t *testing
 }
 
 func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-active", "gpt-5.4", "")
 	if err != nil {

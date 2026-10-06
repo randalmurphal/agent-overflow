@@ -29,6 +29,7 @@ import (
 )
 
 func TestThreadToolsCannotReadOrDiscoverPreparingFork(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	pending := f.thread(t, "pending-fork", func(row *store.Thread) { row.ForkPreparing = true })
 	f.turn(t, pending.ID, 0, 1000, textItem("shared", "assistant_text", "quokka"))
@@ -209,6 +210,7 @@ func publicCode(t *testing.T, err error) string {
 // columns the state derivation reads, the two names resolved beside their
 // ids, and the pin tier the sidebar shows.
 func TestThreadToolsAdapterReadsAThreadRow(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	group, err := f.app.store.CreateThreadGroup(f.project.ID, "Release")
 	if err != nil {
@@ -279,6 +281,7 @@ func TestThreadToolsAdapterReadsAThreadRow(t *testing.T) {
 // can give: one match, an ambiguous prefix, and a scratch thread nobody
 // may see.
 func TestThreadToolsAdapterResolvesRefs(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	first := f.thread(t, "abcd1111-one")
 	second := f.thread(t, "abcd2222-two")
@@ -374,6 +377,7 @@ func (f *threadToolsFixture) askedScratchThread(t *testing.T, id, token, callerT
 // TestThreadToolsAdapterResolvesWindows pins each window kind against a
 // four-turn thread.
 func TestThreadToolsAdapterResolvesWindows(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "window-thread")
 	for turn := range 4 {
@@ -458,6 +462,7 @@ func TestThreadToolsAdapterResolvesWindows(t *testing.T) {
 // page must honour: never more than Limit rows, and a clipped body that
 // still reports its whole size.
 func TestThreadToolsAdapterPagesTheTranscript(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "transcript-thread")
 	body := strings.Repeat("x", 5_000)
@@ -535,6 +540,7 @@ func TestThreadToolsAdapterPagesTheTranscript(t *testing.T) {
 // package streams a large item through, and the zero-byte metadata read
 // it uses to learn the size first.
 func TestThreadToolsAdapterReadsItemPayloadRanges(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "payload-thread")
 	body := "0123456789abcdef"
@@ -586,6 +592,7 @@ func TestThreadToolsAdapterReadsItemPayloadRanges(t *testing.T) {
 // ranked query against the real FTS index, and the listing the adapter
 // filters itself.
 func TestThreadToolsAdapterSearches(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	claudeThread := f.thread(t, "search-claude", func(th *store.Thread) { th.Title = "Launcher work" })
 	codexThread := f.thread(t, "search-codex", func(th *store.Thread) {
@@ -680,6 +687,7 @@ func TestThreadToolsAdapterSearches(t *testing.T) {
 // TestThreadToolsAdapterReportsIndexingWhileTheBuildIsOutstanding pins the
 // partial-result flag every search carries.
 func TestThreadToolsAdapterReportsIndexingWhileTheBuildIsOutstanding(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "indexing-thread")
 	f.turn(t, thread.ID, 0, 1_000, textItem("x0", "user_text", "hello"))
@@ -708,6 +716,7 @@ func TestThreadToolsAdapterReportsIndexingWhileTheBuildIsOutstanding(t *testing.
 // tools hand back: it exists, it holds the window, and its digest is the
 // digest of its bytes.
 func TestThreadToolsAdapterExportsAWindowToAFile(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "export-thread")
 	f.turn(t, thread.ID, 0, 1_000, textItem("e0", "user_text", "question"), textItem("e1", "assistant_text", "answer"))
@@ -752,6 +761,7 @@ func TestThreadToolsAdapterExportsAWindowToAFile(t *testing.T) {
 // TestThreadToolsAdapterAnswersTheCatalog pins thread_options against the
 // app's real provider catalogs and project rows.
 func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	handMade := f.gitProject(t, "topic")
 	// A thread row naming a directory git does not list is not a checkout.
@@ -837,6 +847,7 @@ func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 // and a computer id that arrives anyway is refused in prose the model can
 // read rather than run here as if it had named this computer.
 func TestThreadToolsAdapterHasNoPeersWithoutPairings(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	computers, err := f.adapter.PairedComputers(t.Context())
 	if err != nil || len(computers) != 0 {
@@ -854,6 +865,7 @@ func TestThreadToolsAdapterHasNoPeersWithoutPairings(t *testing.T) {
 // TestThreadToolsPositionsRoundTrip pins the packed timeline coordinate,
 // including the negative item index a head-healed prompt persists at.
 func TestThreadToolsPositionsRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ turn, item int }{{0, 0}, {3, 7}, {12, -1}, {0, -4}} {
 		position := encodePosition(tc.turn, tc.item)
 		if position <= 0 {
@@ -877,6 +889,7 @@ func TestThreadToolsPositionsRoundTrip(t *testing.T) {
 // derivation reads, taken from the live router rather than the row: an
 // idle thread, a thread mid-turn, and a thread parked on an approval.
 func TestThreadToolsAdapterProjectsLiveState(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
 	idle := f.thread(t, "live-idle")
@@ -993,6 +1006,7 @@ func (f *threadToolsFixture) longThread(t *testing.T, id string, turns, perTurn 
 // four, because the store answers both with ranged queries instead of a
 // walk the adapter drives.
 func TestThreadToolsAdapterReadsALongThreadInABoundedNumberOfQueries(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	long := f.longThread(t, "long-thread", 600, 6)
 	short := f.thread(t, "short-thread")
@@ -1058,6 +1072,7 @@ func TestThreadToolsAdapterReadsALongThreadInABoundedNumberOfQueries(t *testing.
 // the first turn that started at or after the timestamp, wherever it sits
 // in the thread's history.
 func TestThreadToolsAdapterResolvesSinceBeyondTheTurnListingCap(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	long := f.longThread(t, "since-thread", 600, 2)
 	ctx := t.Context()
@@ -1114,6 +1129,7 @@ func TestThreadToolsAdapterResolvesSinceBeyondTheTurnListingCap(t *testing.T) {
 // moved into SQL on the query-less listing: provider, since, archived and
 // spawned-by, plus the paging that counts the rows the caller received.
 func TestThreadToolsAdapterListingFiltersInTheStore(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	claude := f.thread(t, "list-claude")
 	f.turn(t, claude.ID, 0, 5_000, textItem("l0", "user_text", "ask"))
@@ -1199,6 +1215,7 @@ func TestThreadToolsAdapterListingFiltersInTheStore(t *testing.T) {
 // thread's ask minted answers to that thread alone, and a /side-chat fork
 // answers to nobody.
 func TestThreadToolsSearchReachesOnlyTheCallersOwnScratchForks(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	owner := f.thread(t, "scratch-owner", func(th *store.Thread) { th.Title = "owner quokka" })
 	stranger := f.thread(t, "scratch-stranger", func(th *store.Thread) { th.Title = "stranger quokka" })
@@ -1273,6 +1290,7 @@ func TestThreadToolsSearchReachesOnlyTheCallersOwnScratchForks(t *testing.T) {
 // filter, so the offset the caller pages by still counts the rows it
 // received and the next page neither repeats nor skips one.
 func TestThreadToolsListingPagesOverAThreadItCannotRead(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	var want []string
 	for index := range 4 {
@@ -1322,6 +1340,7 @@ func TestThreadToolsListingPagesOverAThreadItCannotRead(t *testing.T) {
 // per-row reads out of the listing: the project and group names a page
 // resolves are read once per id, and no row costs a query of its own.
 func TestThreadToolsListingCostsTheSameQueriesWhateverThePageHolds(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	group, err := f.app.store.CreateThreadGroup(f.project.ID, "Sweep")
 	if err != nil {
@@ -1356,6 +1375,7 @@ func TestThreadToolsListingCostsTheSameQueriesWhateverThePageHolds(t *testing.T)
 // two promises a to_file export makes: an included item is written whole
 // however large it is, and the path handed back names this render alone.
 func TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "export-whole-thread")
 	// One item larger than the transcript's per-item clip, which is where
@@ -1427,6 +1447,7 @@ func TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath(t *testing
 // a row's text at most threadExportChunkBytes, with the rest streamed
 // behind it. A thread of any size is written through the same bound.
 func TestThreadToolsExportWalksTheWindowInBoundedBatches(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	ctx := t.Context()
 
@@ -1494,6 +1515,7 @@ func TestThreadToolsExportWalksTheWindowInBoundedBatches(t *testing.T) {
 // probe the model catalogs or ask git for worktrees, and a model lookup
 // does not read the projects.
 func TestThreadToolsCatalogReadsOnlyTheSectionAsked(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	f.gitProject(t, "feature")
 	ctx := t.Context()
@@ -1530,6 +1552,7 @@ func TestThreadToolsCatalogReadsOnlyTheSectionAsked(t *testing.T) {
 // row's summary is its label and its body is only the output it stored,
 // and a newest-first page is the rows nearest the end, in timeline order.
 func TestThreadToolsTranscriptLabelsToolRowsAndReadsFromEitherEnd(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "labels")
 	running := store.Item{ID: "l-running", Kind: "tool_call", Role: "assistant", ToolName: "Bash", Summary: "make go-test", Status: "running", CreatedAt: 1, UpdatedAt: 1}

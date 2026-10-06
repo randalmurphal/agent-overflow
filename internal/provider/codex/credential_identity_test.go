@@ -17,6 +17,7 @@ func encodeIDToken(t *testing.T, claims map[string]any) string {
 }
 
 func TestCredentialOrgIDPrefersIDTokenClaim(t *testing.T) {
+	t.Parallel()
 	token := encodeIDToken(t, map[string]any{
 		"email": "user@example.com",
 		"https://api.openai.com/auth": map[string]any{
@@ -42,6 +43,7 @@ func TestCredentialOrgIDPrefersIDTokenClaim(t *testing.T) {
 }
 
 func TestCredentialOrgIDFallsBackToTopLevelAccountID(t *testing.T) {
+	t.Parallel()
 	// An id_token whose auth namespace lacks the claim.
 	token := encodeIDToken(t, map[string]any{"email": "user@example.com"})
 	data, _ := json.Marshal(map[string]any{
@@ -57,6 +59,7 @@ func TestCredentialOrgIDFallsBackToTopLevelAccountID(t *testing.T) {
 }
 
 func TestCredentialOrgIDMalformedJWTStillUsesFallback(t *testing.T) {
+	t.Parallel()
 	data, _ := json.Marshal(map[string]any{
 		"tokens": map[string]any{
 			"id_token":   "not-a-jwt",
@@ -70,6 +73,7 @@ func TestCredentialOrgIDMalformedJWTStillUsesFallback(t *testing.T) {
 }
 
 func TestCredentialOrgIDAbsentForNonChatGPTModes(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"api key":     `{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}`,
 		"empty":       `{}`,

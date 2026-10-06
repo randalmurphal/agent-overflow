@@ -427,8 +427,18 @@ export function claudeTurnsScenario(
   };
 }
 
+/** Writes lines 5 ms apart, the rate the CLI writes a streaming turn. */
 export function emit(lines: string[]): ScenarioStep {
   return { emit: { lines, delayBetweenMs: 5 } };
+}
+
+/**
+ * Writes lines back to back. For fixtures of hundreds or thousands of lines
+ * whose arrival rate is not under test, where `emit`'s 5 ms cadence would
+ * cost seconds per thousand lines.
+ */
+export function emitBurst(lines: string[]): ScenarioStep {
+  return { emit: { lines } };
 }
 
 /**

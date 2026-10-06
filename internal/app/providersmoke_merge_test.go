@@ -141,7 +141,7 @@ func TestProviderSmokeClaudeCrossDrainMergeFold(t *testing.T) {
 		t.Fatalf("survivor row %s carries no provider uuid: %s", survivor.ID, survivor.Meta)
 	}
 	firstUUID := usermessage.ReadProviderItemID(mustProviderSmokeItem(t, app, thread.ID, first.ID).Meta)
-	prompts := readProviderSmokePromptEntries(t, sessionRef(), workspace)
+	prompts := readProviderSmokePromptEntries(t, app, sessionRef(), workspace)
 	if len(prompts) != 2 || prompts[0].uuid != firstUUID || prompts[1].uuid != survivorUUID {
 		t.Fatalf("transcript prompt entries = %+v, want exactly [%s %s]", prompts, firstUUID, survivorUUID)
 	}
@@ -163,7 +163,7 @@ func TestProviderSmokeClaudeCrossDrainMergeFold(t *testing.T) {
 	// The cut writes a new session file that keeps every entry's uuid, so
 	// the first prompt is matched by the uuid its row still carries.
 	firstUUID = usermessage.ReadProviderItemID(mustProviderSmokeItem(t, app, thread.ID, first.ID).Meta)
-	prompts = readProviderSmokePromptEntries(t, sessionRef(), workspace)
+	prompts = readProviderSmokePromptEntries(t, app, sessionRef(), workspace)
 	if len(prompts) != 2 || prompts[0].uuid != firstUUID || len(prompts[1].texts) != 1 || prompts[1].texts[0] != recall {
 		t.Fatalf("transcript after cut = %+v, want exactly [first %s, recall]", prompts, firstUUID)
 	}
@@ -367,12 +367,12 @@ type providerSmokePromptEntry struct {
 	texts []string
 }
 
-func readProviderSmokePromptEntries(t *testing.T, sessionID, workspace string) []providerSmokePromptEntry {
+func readProviderSmokePromptEntries(t *testing.T, app *App, sessionID, workspace string) []providerSmokePromptEntry {
 	t.Helper()
 	if sessionID == "" {
 		t.Fatal("thread has no session ref")
 	}
-	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, workspace)
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, workspace)
 	if err != nil {
 		t.Fatalf("locate transcript %s: %v", sessionID, err)
 	}

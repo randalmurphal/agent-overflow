@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -142,9 +143,7 @@ while IFS= read -r line; do
 done
 exit 0
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude bg stop script: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -290,8 +289,6 @@ while IFS= read -r line; do
 done
 exit 0
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write silent claude: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // PreflightBinary is the question two processes ask: the supervisor before it
@@ -21,14 +23,11 @@ import (
 // that refuses, prints nonsense, or prints nothing at all.
 func writePreflightScript(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "staged-binary")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-	return path
+	return mockexec.WriteIn(t, t.TempDir(), "staged-binary", "#!/bin/sh\n"+body+"\n")
 }
 
 func TestPreflightBinaryReadsAStagedBinarysAnswer(t *testing.T) {
+	t.Parallel()
 	binary := writePreflightScript(t, `printf '{"protocolVersion":1,"version":"1.4.0"}\n'`)
 
 	answer, err := PreflightBinary(context.Background(), binary)
@@ -51,6 +50,7 @@ func TestPreflightBinaryReadsAStagedBinarysAnswer(t *testing.T) {
 // Leading output is tolerated, because a binary may print before it gets to
 // its answer. The LAST non-empty line is the answer.
 func TestPreflightBinaryTakesTheLastLineAsTheAnswer(t *testing.T) {
+	t.Parallel()
 	binary := writePreflightScript(t, `printf 'warning: locale not set\n'
 printf '{"protocolVersion":1,"version":"2.0.0"}\n'`)
 
@@ -67,6 +67,7 @@ printf '{"protocolVersion":1,"version":"2.0.0"}\n'`)
 // something to stage, and each one has to fail rather than resolve to a zero
 // Preflight the caller would then treat as protocol 0.
 func TestPreflightBinaryRefusesWhatItCannotRead(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "not-installed")
 	for _, tc := range []struct {
 		name   string
@@ -90,6 +91,7 @@ func TestPreflightBinaryRefusesWhatItCannotRead(t *testing.T) {
 // the split the remote path depends on: the answer is readable, and the
 // refusal names the one local command that fixes it.
 func TestPreflightBinaryReportsAProtocolThisSupervisorCannotSpeak(t *testing.T) {
+	t.Parallel()
 	binary := writePreflightScript(t, `printf '{"protocolVersion":99,"version":"9.0.0"}\n'`)
 
 	answer, err := PreflightBinary(context.Background(), binary)
@@ -109,6 +111,7 @@ func TestPreflightBinaryReportsAProtocolThisSupervisorCannotSpeak(t *testing.T) 
 // became two, this is the assertion that notices: same binary, same answer,
 // from both entry points.
 func TestTheSupervisorAsksThroughTheSameImplementation(t *testing.T) {
+	t.Parallel()
 	binary := writePreflightScript(t, `printf '{"protocolVersion":1,"version":"3.1.4"}\n'`)
 	supervisor, err := New(Config{
 		DataDir:        t.TempDir(),

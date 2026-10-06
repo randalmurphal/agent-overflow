@@ -72,7 +72,7 @@ type rebuildHarness struct {
 // subscribe-vs-install race): it fires a throwaway event and waits for
 // the resulting refresh edge's rootsFn call, so tests measure deltas
 // from a settled baseline.
-func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot) *rebuildHarness {
+func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure ...func(*workspaceWatcher)) *rebuildHarness {
 	t.Helper()
 	h := &rebuildHarness{
 		ws:          makeRepoDir(t),
@@ -119,6 +119,9 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot) *rebuildHa
 		return inner(cwd)
 	}
 	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
+	for _, fn := range configure {
+		fn(h.w)
+	}
 	h.w.stopFn = func(ch chan<- notify.EventInfo) {
 		notify.Stop(ch)
 		h.mu.Lock()
@@ -219,6 +222,7 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {
 // under a KindAncestor root is covered by no existing root, so the
 // watcher must recompute roots and reinstall with the new set.
 func TestRebuildOnNewDirUnderAncestorRoot(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
 	if err := os.Mkdir(subA, 0o755); err != nil {
@@ -248,6 +252,7 @@ func TestRebuildOnNewDirUnderAncestorRoot(t *testing.T) {
 // but the root set must not be recomputed (the Lstat dir check filters
 // non-directory creates).
 func TestNoRebuildForFileUnderAncestorRoot(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
@@ -274,6 +279,7 @@ func TestNoRebuildForFileUnderAncestorRoot(t *testing.T) {
 // not trigger the dead-watchpoint recovery — only Create/Rename can
 // mean the root dir was recreated.
 func TestWriteEventOnRootPathDoesNotRebuild(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
 	if err := os.Mkdir(subA, 0o755); err != nil {
@@ -299,6 +305,7 @@ func TestWriteEventOnRootPathDoesNotRebuild(t *testing.T) {
 // the roots-unchanged short-circuit would otherwise leave the subtree
 // permanently unwatched.
 func TestRootRecreateForcesReinstall(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
 	if err := os.Mkdir(subA, 0o755); err != nil {
@@ -317,6 +324,7 @@ func TestRootRecreateForcesReinstall(t *testing.T) {
 // rule edit always recomputes the roots; when they come back unchanged
 // the watches must be left alone (no Stop/reinstall gap).
 func TestGitignoreEventRecomputesButSkipsIdenticalReinstall(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
@@ -336,6 +344,7 @@ func TestGitignoreEventRecomputesButSkipsIdenticalReinstall(t *testing.T) {
 // event under a KindGitMeta root must recompute the roots. Lock churn
 // (index.lock) and unrelated metadata files must not.
 func TestIndexWriteTriggersRebuild(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	gitDir := filepath.Join(h.ws, ".git")
 	initial := []gitops.WatchRoot{
@@ -366,6 +375,7 @@ func TestIndexWriteTriggersRebuild(t *testing.T) {
 // core.excludesFile commonly lives in $HOME, where unrelated writes
 // (shell history, dotfiles) are routine.
 func TestGlobalIgnoreFileEventTriggersRebuild(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	ignoreDir := filepath.Join(t.TempDir(), "git")
 	if err := os.MkdirAll(ignoreDir, 0o755); err != nil {
@@ -396,6 +406,7 @@ func TestGlobalIgnoreFileEventTriggersRebuild(t *testing.T) {
 // set — the tree that needs watching may never produce another event,
 // so ANY later refresh edge (here: plain file churn) must retry.
 func TestRebuildRecomputeFailureRetriesAtNextEdge(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
 	h.set(func(h *rebuildHarness) {
@@ -436,6 +447,7 @@ func TestRebuildRecomputeFailureRetriesAtNextEdge(t *testing.T) {
 // individual events and would be lost for good. Draining a full queue
 // must pessimistically recompute AND reinstall.
 func TestOverflowBurstForcesReinstall(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	initial := []gitops.WatchRoot{subtreeRoot(h.ws)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
@@ -472,6 +484,7 @@ func TestOverflowBurstForcesReinstall(t *testing.T) {
 // via sequence numbers. Also asserts stop() blocks until the gated
 // install completes and then returns promptly. Run with -race.
 func TestStopDuringRebuildDoesNotLeakWatches(t *testing.T) {
+	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
 	if err := os.Mkdir(subA, 0o755); err != nil {
@@ -717,7 +730,8 @@ func TestRecreatedSubtreeRegainsWatch(t *testing.T) {
 // fails leaves the watcher with no fs watches — it must escalate to
 // interval polling so the status stream stays alive.
 func TestReinstallFailureFallsBackToPolling(t *testing.T) {
-	h := newRebuildHarness(t, nil)
+	t.Parallel()
+	h := newRebuildHarness(t, nil, func(w *workspaceWatcher) { w.pollInterval = 50 * time.Millisecond })
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
 	h.w.setWatchRoots(initial)
@@ -737,5 +751,5 @@ func TestReinstallFailureFallsBackToPolling(t *testing.T) {
 	// The refresh at the rebuild edge still runs (+1); after that, with
 	// zero further events, only the polling ticker can drive more
 	// refreshes — observing one proves the fallback engaged.
-	waitForCompletedCallCount(t, h.stub, before+2, pollFallbackInterval+2*time.Second)
+	waitForCompletedCallCount(t, h.stub, before+2, 3*time.Second)
 }

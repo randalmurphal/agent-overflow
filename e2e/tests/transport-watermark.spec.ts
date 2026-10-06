@@ -3,28 +3,40 @@
 // streams, so the replay it asks for after a reconnect starts at the head.
 //
 // WHY THIS LEVEL. internal/transport/watermark_test.go covers the marks, the
-// pump's ordering, the visibility gate and the wire shape, and
-// wsClient.test.ts covers the client cursor. Only this level proves that the
-// shipped backend's pump sends watermarks on its `WatermarkEvery` ticker and
-// that the SPA's next replay frame carries the cursor they moved.
+// pump's ordering, the visibility gate, the wire shape and the configured
+// tick, and wsClient.test.ts covers the client cursor. Only this level proves
+// that the shipped backend's pump sends watermarks on its ticker and that the
+// SPA's next replay frame carries the cursor they moved. The backend runs the
+// tick at WATERMARK_EVERY_MS rather than the 30s `WatermarkEvery`
+// (diagenv.HarnessTiming), which changes when a mark is sent and not what.
 //
 // Without watermarks the page's cursor stays at the last frame it was sent,
 // below every frame withheld from it. Once those frames leave the ring (by
 // age, `RingRetainFor`, or by eviction) the reconnect answers `gap:true` and
 // the page reloads everything.
 import { test, expect } from './fixtures.js';
+import type { Page } from '@playwright/test';
+import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import { RESULT_LINE, claudeScenario, emit, seedAgentThread, startMock, textLines } from './agent-visibility-helpers.js';
 import { readWire, recordWire, watchedNow } from './transport-watch-helpers.js';
 
 const ITEMS = 'provider:item_event';
-// internal/transport WatermarkEvery.
-const WATERMARK_EVERY_MS = 30_000;
+const WATERMARK_EVERY_MS = 500;
 
 test('a page watching an idle thread reconnects from the head of a channel another thread streamed on', async ({
-  harness,
   page,
 }) => {
   test.setTimeout(120_000);
+  const harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},watermark=${WATERMARK_EVERY_MS}ms` } });
+  try {
+    await watermarkCase(harness, page);
+  } finally {
+    await page.close();
+    await harness.close();
+  }
+});
+
+async function watermarkCase(harness: HarnessApp, page: Page): Promise<void> {
   await harness.rpc('HarnessSetScenario', {
     scenario: claudeScenario('watermark-stream', [
       emit([...textLines('msg-stream', 'Streamed while no pane showed it.'), RESULT_LINE]),
@@ -76,4 +88,4 @@ test('a page watching an idle thread reconnects from the head of a channel anoth
   const cursors = (JSON.parse(replay.text) as { lastSeqByChannel: Record<string, number> }).lastSeqByChannel;
   expect(cursors[ITEMS], 'the reconnect asked for replay from below the head').toBe(head);
   expect(after.hellos.at(-1)?.[ITEMS], 'the channel moved after the watermark').toBe(head);
-});
+}

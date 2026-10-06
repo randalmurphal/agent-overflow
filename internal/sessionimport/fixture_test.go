@@ -1,18 +1,22 @@
 package sessionimport
 
 import (
-	"path/filepath"
+	"os"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
+
+func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
 
 // fixture_test.go — the shared harness for this package's tests.
 //
-// Every store here is a fresh file under t.TempDir(); nothing in this
+// Every store here is a fresh clone of the package's migrated template
+// (storetest) under t.TempDir(); nothing in this
 // package reads a provider home or spawns a provider binary, and nothing
 // may start doing so (root AGENTS.md §Permanent invariants).
 
@@ -32,12 +36,7 @@ func at(offset int64) time.Time {
 
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.New(filepath.Join(t.TempDir(), "history.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	return st
+	return storetest.Clone(t)
 }
 
 // seedThread creates the project + thread rows an import writes into and

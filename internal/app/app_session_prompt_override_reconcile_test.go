@@ -13,7 +13,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/testutil"
 )
 
 // The reconcile half of the settings-owned prompt axis on a HEADLESS Claude
@@ -69,6 +68,7 @@ func setClaudePromptOverride(t *testing.T, app *App, model, prompt string) {
 // prompt here is a sentinel no render could produce, which is what proves the
 // pin rather than a coincidentally equal re-render.
 func TestReconcileSettingsOwnedAxesPinsAnUnchangedClaudeOverride(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-pin", string(provider.Claude), "claude-opus-5")
 	setClaudePromptOverride(t, app, "claude-opus-5", "stored prompt")
@@ -94,6 +94,7 @@ func TestReconcileSettingsOwnedAxesPinsAnUnchangedClaudeOverride(t *testing.T) {
 // An EDITED override converges live: the reconcile path re-renders (the only
 // place it pays for that) and the plan carries the new prompt on set_model.
 func TestReconcileSettingsOwnedAxesConvergesAnEditedClaudeOverride(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, workDir := seedPromptOverrideThread(t, app, "thread-reconcile-edit", string(provider.Claude), "claude-opus-5")
 	setClaudePromptOverride(t, app, "claude-opus-5", "launched prompt for {{WORKDIR}}")
@@ -121,6 +122,7 @@ func TestReconcileSettingsOwnedAxesConvergesAnEditedClaudeOverride(t *testing.T)
 // revert-to-built-in form, so only a respawn without --system-prompt-file
 // restores the CLI's own prompt.
 func TestReconcileSettingsOwnedAxesDisabledOverrideNeedsRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-off", string(provider.Claude), "claude-opus-5")
 	setClaudePromptOverride(t, app, "claude-opus-5", "launched prompt for {{WORKDIR}}")
@@ -143,6 +145,7 @@ func TestReconcileSettingsOwnedAxesDisabledOverrideNeedsRestart(t *testing.T) {
 // fills at spawn, so an empty prior value is not a special case: the render
 // happens here and the swap goes live.
 func TestReconcileSettingsOwnedAxesConvergesAnEnabledOverride(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-on", string(provider.Claude), "claude-opus-5")
 	launch := promptOverrideOptions(t, app, id) // no override was in play
@@ -166,6 +169,7 @@ func TestReconcileSettingsOwnedAxesConvergesAnEnabledOverride(t *testing.T) {
 // this: buildSessionOptions has already written it, and the settings override
 // stands down exactly as it does on the spawn path.
 func TestReconcileSettingsOwnedAxesLeavesFeatureOwnedPromptsAlone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-feature", string(provider.Claude), "claude-opus-5")
 	app.setThreadSystemPrompt(id, "deliberation prompt")
@@ -192,6 +196,7 @@ func TestReconcileSettingsOwnedAxesLeavesFeatureOwnedPromptsAlone(t *testing.T) 
 // memo, which this pins by moving the settings underneath a cached entry and
 // asserting the CACHED value comes back.
 func TestReconcilePromptOverrideRenderIsMemoized(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, workDir := seedPromptOverrideThread(t, app, "thread-reconcile-memo", string(provider.Claude), "claude-opus-5")
 	setClaudePromptOverride(t, app, "claude-opus-5", "memo prompt for {{WORKDIR}}")
@@ -247,9 +252,10 @@ func claudePromptOverrideEntryForTest(t *testing.T, app *App, thread store.Threa
 // and, because the oversize verdict was the one render result that was never
 // memoized, it re-paid the git subprocesses on every reconcile.
 func TestOversizeReconcileRenderIsSurfacedOnceAndPinsThePrompt(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	errors := collectErrorItemUpserts(t, app, 4)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-huge", string(provider.Claude), "claude-opus-5")
 	if err := app.store.UpdateWorkspacePath(id, repo); err != nil {
 		t.Fatalf("UpdateWorkspacePath() error = %v", err)

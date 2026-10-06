@@ -17,6 +17,7 @@ func setOriginHead(t *testing.T, repo, branch string) {
 }
 
 func TestDefaultBranchNameCachesPositiveAnswerUntilTTL(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	setOriginHead(t, repo, "trunk")
 
@@ -54,6 +55,7 @@ func TestDefaultBranchNameCachesPositiveAnswerUntilTTL(t *testing.T) {
 }
 
 func TestDefaultBranchNameDoesNotCacheMissingSymref(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 
 	core := NewCore()
@@ -78,6 +80,7 @@ func TestDefaultBranchNameDoesNotCacheMissingSymref(t *testing.T) {
 }
 
 func TestOriginRemoteCachesKnownIdentityUntilTTL(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 
 	core := NewCore()
@@ -101,6 +104,7 @@ func TestOriginRemoteCachesKnownIdentityUntilTTL(t *testing.T) {
 }
 
 func TestInvalidateForgeCacheDropsCachedOriginAndDefaultBranch(t *testing.T) {
+	t.Parallel()
 	repo, bare := repoWithOrigin(t)
 	setOriginHead(t, repo, "trunk")
 
@@ -125,7 +129,8 @@ func TestInvalidateForgeCacheDropsCachedOriginAndDefaultBranch(t *testing.T) {
 }
 
 func TestOriginRemoteDoesNotCacheUnknown(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	core := NewCore()
 	if origin := core.originRemote(repo); origin.known {
@@ -142,6 +147,7 @@ func TestOriginRemoteDoesNotCacheUnknown(t *testing.T) {
 }
 
 func TestRepoMetaCacheIsSharedAcrossWorktrees(t *testing.T) {
+	t.Parallel()
 	repo, _ := repoWithOrigin(t)
 	setOriginHead(t, repo, "trunk")
 	testutil.RunGit(t, repo, "branch", "feature/meta-cache")

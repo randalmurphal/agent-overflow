@@ -83,6 +83,7 @@ func wantNoCue(t *testing.T, recorder *cueRecorder, context string) {
 
 // The shipped defaults: master on, all three events on, each on its own cue.
 func TestNotificationSoundDefaultsPlayEveryEvent(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		kind  notify.Kind
 		event notify.SoundEvent
@@ -107,6 +108,7 @@ func TestNotificationSoundDefaultsPlayEveryEvent(t *testing.T) {
 }
 
 func TestNotificationSoundMasterSwitchSilencesEveryEvent(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	updateSoundSettings(t, app, map[string]any{"notificationSoundsEnabled": false})
 
@@ -119,6 +121,7 @@ func TestNotificationSoundMasterSwitchSilencesEveryEvent(t *testing.T) {
 }
 
 func TestNotificationSoundPerEventToggleIsIndependent(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	updateSoundSettings(t, app, map[string]any{"notifySoundTurnComplete": false})
 
@@ -134,6 +137,7 @@ func TestNotificationSoundPerEventToggleIsIndependent(t *testing.T) {
 }
 
 func TestNotificationSoundPlaysTheChosenCue(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueChime})
 
@@ -146,6 +150,7 @@ func TestNotificationSoundPlaysTheChosenCue(t *testing.T) {
 // The per-kind half of the banner gate. A kind the user silenced raises no
 // banner, so it must raise no sound either: one decision, two presentations.
 func TestASilencedKindIsAlsoSilentOnTheSpeaker(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	updateSoundSettings(t, app, map[string]any{"notifyTurnComplete": false})
 
@@ -158,6 +163,7 @@ func TestASilencedKindIsAlsoSilentOnTheSpeaker(t *testing.T) {
 // The hidden-thread half. A thread off the sidebar is opt-in for banners; the
 // cue inherits that without restating it.
 func TestAHiddenThreadIsSilentOnTheSpeakerUntilOptedIn(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	send := kindSend(notify.KindTurnComplete)
 	send.HiddenThread = true
@@ -177,6 +183,7 @@ func TestAHiddenThreadIsSilentOnTheSpeakerUntilOptedIn(t *testing.T) {
 // A retraction removes a banner; there is nothing to hear about a moment
 // being taken back.
 func TestARetractionPlaysNoCue(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	send := kindSend(notify.KindTurnComplete)
 	send.Retract = true
@@ -186,6 +193,7 @@ func TestARetractionPlaysNoCue(t *testing.T) {
 }
 
 func TestNotificationSoundCueInIsTotal(t *testing.T) {
+	t.Parallel()
 	current := settings.DefaultSettings
 	if cue, ok := notificationSoundCueIn(current, notify.SoundEvent("not-an-event")); ok || cue != "" {
 		t.Fatalf("unknown event = %q, %v; want \"\", false", cue, ok)
@@ -201,6 +209,7 @@ func TestNotificationSoundCueInIsTotal(t *testing.T) {
 // The system sound is carried by the banner, so choosing it publishes no
 // frame: a "system" cue on the wire would be a value no player has a file for.
 func TestTheSystemCuePublishesNoFrame(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueSystem})
 
@@ -229,6 +238,7 @@ func wantSilent(t *testing.T, sends []notify.Send, silent bool, context string) 
 // The shipped default is a built-in cue, so the app plays the sound and the
 // banner must not add the platform's on top of it.
 func TestABuiltInCueSilencesTheBanner(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 
@@ -246,6 +256,7 @@ func TestABuiltInCueSilencesTheBanner(t *testing.T) {
 // put a filesystem read on the notification path and would still be wrong,
 // because the screen that plays the cue may not be the one that has the file.
 func TestACustomCueTravelsLikeABuiltIn(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": "custom:desk-bell"})
@@ -261,6 +272,7 @@ func TestACustomCueTravelsLikeABuiltIn(t *testing.T) {
 // no file backs. Neither may treat an unresolvable custom cue as the system
 // sound, which would hand the banner a second noise on top of the frame.
 func TestCustomCueHelpersAgreeWithTheBuiltInPath(t *testing.T) {
+	t.Parallel()
 	current := settings.DefaultSettings
 	current.NotifySoundCueTurnComplete = "custom:desk-bell"
 	current.NotifySoundCueInputNeeded = "custom:never-added"
@@ -287,6 +299,7 @@ func TestCustomCueHelpersAgreeWithTheBuiltInPath(t *testing.T) {
 // so a custom cue previews as a frame with a silent banner rather than as an
 // OS notification with the platform sound.
 func TestPreviewNotificationSoundPlaysACustomCue(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueAttention": "custom:desk-bell"})
@@ -301,6 +314,7 @@ func TestPreviewNotificationSoundPlaysACustomCue(t *testing.T) {
 // The system cue is the one choice that means "let the banner make the
 // noise": no frame, and the banner keeps the platform sound.
 func TestTheSystemCueLeavesTheBannerAudible(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueSystem})
@@ -315,6 +329,7 @@ func TestTheSystemCueLeavesTheBannerAudible(t *testing.T) {
 // Muted means muted on both channels. The banner still appears — the sound
 // preferences are not the notification toggles — but it makes no noise.
 func TestTheSoundMasterSwitchSilencesTheBannerToo(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{
@@ -333,6 +348,7 @@ func TestTheSoundMasterSwitchSilencesTheBannerToo(t *testing.T) {
 // when that event's cue is the system sound — otherwise turning an event's
 // sound off would leave the loudest one of all still playing.
 func TestAnEventWithItsSoundOffSilencesTheBanner(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{
@@ -350,6 +366,7 @@ func TestAnEventWithItsSoundOffSilencesTheBanner(t *testing.T) {
 // A retraction carries no sound answer at all: there is no banner to attach
 // one to, and ValidateSend refuses a retraction that claims otherwise.
 func TestARetractionCarriesNoSoundAnswer(t *testing.T) {
+	t.Parallel()
 	app, _ := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	send := kindSend(notify.KindTurnComplete)
@@ -374,6 +391,7 @@ func TestARetractionCarriesNoSoundAnswer(t *testing.T) {
 // does not know has no preference behind it, and the safe arm is the quiet
 // one — matching publishNotificationSound, which publishes no frame either.
 func TestHostBannerSilentInIsTotal(t *testing.T) {
+	t.Parallel()
 	current := settings.DefaultSettings
 	current.NotifySoundCueTurnComplete = settings.NotifyCueSystem
 	current.NotifySoundCueInputNeeded = settings.NotifyCueSystem
@@ -395,6 +413,7 @@ func TestHostBannerSilentInIsTotal(t *testing.T) {
 // banner past the attended-screen gate — the user is looking at the settings
 // page by definition — and resolves Silent exactly as notifyOS does.
 func TestPreviewNotificationSoundRaisesTheSystemSound(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		event notify.SoundEvent
 		kind  notify.Kind
@@ -441,6 +460,7 @@ func TestPreviewNotificationSoundRaisesTheSystemSound(t *testing.T) {
 // the same "exactly one sound" answer a real notification gets, so what the
 // user auditions is what they will hear.
 func TestPreviewNotificationSoundPlaysTheCueForABuiltIn(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueChime})
@@ -455,6 +475,7 @@ func TestPreviewNotificationSoundPlaysTheCueForABuiltIn(t *testing.T) {
 // The event is wire input from a settings page, so an unrecognised one is
 // refused rather than raising a banner nobody asked for.
 func TestPreviewNotificationSoundRefusesAnUnknownEvent(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 
@@ -471,6 +492,7 @@ func TestPreviewNotificationSoundRefusesAnUnknownEvent(t *testing.T) {
 // either: the master switch is the one gate the audition honours, so the
 // settings page never contradicts itself by raising what it says it will not.
 func TestPreviewNotificationSoundHonoursTheMasterSwitch(t *testing.T) {
+	t.Parallel()
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	updateSoundSettings(t, app, map[string]any{"notificationsEnabled": false})

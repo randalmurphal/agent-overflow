@@ -40,8 +40,9 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 		}
 	}
 	dbPath := filepath.Join(dbDir, "agent-overflow.db")
-	if err := os.WriteFile(dbPath, []byte{}, 0o644); err != nil {
-		t.Fatalf("seed db file: %v", err)
+	migratedDatabaseAt(t, dbPath)
+	if err := os.Chmod(dbPath, 0o644); err != nil {
+		t.Fatalf("loosen db file: %v", err)
 	}
 	for _, file := range []string{
 		filepath.Join(dbDir, "logs", "old.ndjson"),
@@ -132,6 +133,7 @@ func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
 
 	app := NewApp()
 	app.dataDirOverride = t.TempDir()
+	migratedDatabaseAt(t, filepath.Join(app.dataDirOverride, "agent-overflow", databaseFileName))
 	_, st, err := app.initStores(context.Background())
 	if err != nil {
 		t.Fatalf("initStores: %v", err)
@@ -149,6 +151,7 @@ func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
 }
 
 func TestPrepareAppSensitiveFileRejectsSymlink(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on some Windows hosts")
 	}
@@ -220,6 +223,7 @@ func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	migratedDatabaseAt(t, filepath.Join(dbDir, databaseFileName))
 	app := NewApp()
 	app.dataDirOverride = dataRoot
 	_, st, err := app.initStores(context.Background())

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -217,9 +218,7 @@ done
 		capturePath, threadID, threadID, capturePath, steerBranch)
 
 	path := filepath.Join(t.TempDir(), "codex-provider-queue.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex provider-queue binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path, queueState
 }
 
@@ -431,6 +430,7 @@ func codexUserEcho(t *testing.T, app *App, threadID, providerItemID, clientID, t
 // by feeding one — which is what stops a foreign producer's message from
 // consuming this user's row.
 func TestFlushDispatch_CodexSteersTheMessageIntoTheRunningTurn(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := providerQueueReconcileThread(t, app, "flush-codex-steer")
 
@@ -536,6 +536,7 @@ func TestFlushDispatch_CodexSteersTheMessageIntoTheRunningTurn(t *testing.T) {
 // The refusal is deliberately NOT an error row. "The queue is waiting for the
 // review to finish" is the queue working.
 func TestFlushDispatch_ANonSteerableTurnKeepsTheMessageQueued(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := providerQueueReconcileThread(t, app, "flush-codex-not-steerable")
 
@@ -632,6 +633,7 @@ func TestFlushDispatch_ANonSteerableTurnKeepsTheMessageQueued(t *testing.T) {
 // re-send of something the transcript already answers), and a foreign
 // producer's submission, which AO neither deletes nor claims here.
 func TestCodexSessionStartSunsetsTheLegacyProviderQueueRows(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-legacy-sunset")
 	thread.SessionRef = thread.ID + "-codex"
@@ -723,6 +725,7 @@ func TestCodexSessionStartSunsetsTheLegacyProviderQueueRows(t *testing.T) {
 // a later session to retire. Restoring them here would hand the user a draft of
 // a message a newer Codex still holds and will run.
 func TestSunsetLeavesTheRowsAPreQueueAppServerCannotSee(t *testing.T) {
+	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-legacy-downgrade")
 	thread.SessionRef = thread.ID + "-codex"
@@ -780,6 +783,7 @@ func TestSunsetLeavesTheRowsAPreQueueAppServerCannotSee(t *testing.T) {
 // row is the token instead — and only a row this app marked provider-queued
 // counts, because that is the only thing the retired add path ever wrote.
 func TestOwnsLegacyProviderQueuedClientIDRequiresThisAppsRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-ownership")
 
@@ -832,6 +836,7 @@ func TestOwnsLegacyProviderQueuedClientIDRequiresThisAppsRow(t *testing.T) {
 // caller into a failing harness run, and the fake app-server in this package,
 // which mirrors it.
 func TestNoProductionCodePathReachesTheProviderQueueWrites(t *testing.T) {
+	t.Parallel()
 	forbidden := []string{"thread/queue/add", "thread/queue/start"}
 	skipDirs := map[string]bool{
 		".git": true, "node_modules": true, "frontend": true, "e2e": true,
@@ -901,6 +906,7 @@ func TestNoProductionCodePathReachesTheProviderQueueWrites(t *testing.T) {
 // construction rather than by a second fixture: it keeps the thread id, so the
 // forget is gated on SessionRef actually changing.
 func TestConversationRollbackForgetsTheProviderThreadCostWhenTheThreadMoves(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-cost-forget", "codex", workspace)
@@ -955,6 +961,7 @@ func TestConversationRollbackForgetsTheProviderThreadCostWhenTheThreadMoves(t *t
 // it queued that avoids it. The purge has to run while the connection is still
 // live, so it happens BEFORE the stop.
 func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-queue-purge", "codex", workspace)
@@ -1038,6 +1045,7 @@ func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
 // message on the user's next send. The purge rides the connection the cut
 // already opened; nothing extra is spawned.
 func TestConversationRollbackPurgesTheProviderQueueWithNoLiveSession(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-queue-purge-cold", "codex", workspace)
@@ -1116,6 +1124,7 @@ func TestConversationRollbackPurgesTheProviderQueueWithNoLiveSession(t *testing.
 // shortened thread, silently and possibly days later. Refusing is visible and
 // the user can retry; the replay is neither.
 func TestRollbackRefusesWhenTheProviderQueueCannotBePurged(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-purge-refusal")
 	thread.SessionRef = thread.ID + "-codex"
@@ -1166,6 +1175,7 @@ func TestRollbackRefusesWhenTheProviderQueueCannotBePurged(t *testing.T) {
 // and every recovery path steps around a row marked provider-queued. Without
 // this, abandoning a rollback silently eats a message the user queued.
 func TestRollbackRefusalRestoresTheMessagesThePartialPurgeAlreadyDeleted(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-partial-purge")
 	thread.SessionRef = thread.ID + "-codex"
@@ -1254,6 +1264,7 @@ func TestRollbackRefusalRestoresTheMessagesThePartialPurgeAlreadyDeleted(t *test
 // render that author's text as this user's own message. So it is reported and
 // counted, never restored.
 func TestPurgeRefusalDoesNotRestoreAForeignSubmissionItDeleted(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := providerQueueReconcileThread(t, app, "flush-queue-foreign-purge")
 	thread.SessionRef = thread.ID + "-codex"

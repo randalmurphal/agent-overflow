@@ -16,6 +16,7 @@ import (
 // against the deltas it received by stream offset, so a delta the read
 // did not hold must be one emitted after it.
 func TestHistoryReadsCoverEmittedDeltas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	reads := map[string]func(a *App, threadID, itemID string) error{
 		"SyncThreadWindow": func(a *App, threadID, _ string) error {
@@ -104,6 +105,7 @@ func TestHistoryReadsCoverEmittedDeltas(t *testing.T) {
 // opens mid-stream holds the stream's text up to its stream end, and the
 // next delta it receives starts there.
 func TestSyncThreadWindowRowEndsWhereTheNextDeltaStarts(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	var deltas []triage.ItemStreamEvent
 	app.triage = triage.NewRouter(app.store, func(channel eventchan.Channel, data any) {

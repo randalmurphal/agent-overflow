@@ -15,6 +15,7 @@ import (
 // visible hitch mid-stream, so "skipped-active-turn" not emitting is as
 // load-bearing as "requested" emitting.
 func TestRequestWebviewMemoryTrim(t *testing.T) {
+	t.Parallel()
 	// The hook is called from whichever goroutine emitted, and a turn
 	// completing queues a notification that emits from the notification
 	// serial queue while the test emits from its own goroutine. The
@@ -232,6 +233,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 }
 
 func TestWebviewTrimWithoutLauncherDoesNotConsumeActivity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	var trims int
 	app.testEmitHook = func(name string, _ any) {

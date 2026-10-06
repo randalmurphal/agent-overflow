@@ -61,6 +61,7 @@ func seedGetUsageStatsRows(t *testing.T, app *App) (day1, day2 int64) {
 // model has no rate-table entry contributes 0 dollars and is counted
 // in UnpricedRows instead.
 func TestGetUsageStats_LifetimeMergesWireAndEstimatedCost(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedGetUsageStatsRows(t, app)
 
@@ -90,6 +91,7 @@ func TestGetUsageStats_LifetimeMergesWireAndEstimatedCost(t *testing.T) {
 // keeps its wire cost, the priceable Codex row gets its table estimate,
 // and the unknown-model row gets $0 plus an UnpricedRows count.
 func TestGetUsageStats_GroupByModelPricesEachRowIndependently(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedGetUsageStatsRows(t, app)
 
@@ -127,6 +129,7 @@ func TestGetUsageStats_GroupByModelPricesEachRowIndependently(t *testing.T) {
 // rows into one CostUSD/UnpricedRows pair, while claude (all wire) has
 // no unpriced rows at all.
 func TestGetUsageStats_GroupByProviderMergesModelsWithinBucket(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedGetUsageStatsRows(t, app)
 
@@ -159,6 +162,7 @@ func TestGetUsageStats_GroupByProviderMergesModelsWithinBucket(t *testing.T) {
 // day1 holds the wire row plus the priceable Codex row (both priced),
 // day2 holds only the unpriced unknown-model row.
 func TestGetUsageStats_GroupByDaySplitsPricingAcrossCalendarBuckets(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedGetUsageStatsRows(t, app)
 
@@ -193,6 +197,7 @@ func TestGetUsageStats_GroupByDaySplitsPricingAcrossCalendarBuckets(t *testing.T
 // (2026-07-01T12:00:00Z) shifted by +14h lands on 2026-07-02, matching
 // what an explicit TZOffsetMinutes: 840 query produces.
 func TestGetUsageStats_ClampsAbsurdTZOffset(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedGetUsageStatsRows(t, app)
 
@@ -235,6 +240,7 @@ func TestGetUsageStats_ClampsAbsurdTZOffset(t *testing.T) {
 // guard across the rewrite — a nil store must fail loudly, not panic on
 // the QueryUsageDetail call added by the pricing merge.
 func TestGetUsageStats_NilStoreReturnsError(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	if _, err := app.GetUsageStats(store.UsageQuery{}); err == nil {
 		t.Fatal("GetUsageStats with nil store: want error, got nil")
@@ -244,6 +250,7 @@ func TestGetUsageStats_NilStoreReturnsError(t *testing.T) {
 // Reported tokens are estimated from the rate table while the turn runs;
 // the provider's final accounting replaces them at settlement.
 func TestGetUsageStatsReportedTokensAreEstimatedUntilFinalCost(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	row := store.UsageLedgerRow{ThreadID: "live-usage", TurnID: "turn", Provider: "claude", Model: "claude-haiku-4-5", CreatedAt: 100, OutputTokens: 50}
 	if _, err := app.store.PutUsageProgress("scope", "0", []store.UsageLedgerRow{row}); err != nil {

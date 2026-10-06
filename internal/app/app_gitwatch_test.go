@@ -12,7 +12,6 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
 
@@ -60,7 +59,7 @@ func installGitWatchForTest(t *testing.T, app *App, stub *stubGitWatch) {
 
 func makeWorkspaceThread(t *testing.T, app *App, threadID string) store.Thread {
 	t.Helper()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	thread := testThread(threadID)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -137,6 +136,7 @@ func gitWatchPumpRefs(app *App, cwd string) (int, bool) {
 }
 
 func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -177,6 +177,7 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 }
 
 func TestGitStatusUnsubscribeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -198,6 +199,7 @@ func TestGitStatusUnsubscribeIsIdempotent(t *testing.T) {
 }
 
 func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -232,6 +234,7 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 
 // TestGitStatusUnsubscribeUnbindsItsConnectionTie: see checkByIDTie.
 func TestGitStatusUnsubscribeUnbindsItsConnectionTie(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -253,6 +256,7 @@ func TestGitStatusUnsubscribeUnbindsItsConnectionTie(t *testing.T) {
 }
 
 func TestGitStatusSubscribeFailsOnUnknownProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -269,6 +273,7 @@ func TestGitStatusSubscribeFailsOnUnknownProject(t *testing.T) {
 // subscription and ONE wire event per change — not N copies that can drift
 // apart. Releasing one caller must leave the stream running for the rest.
 func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -358,6 +363,7 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 // answer. Every other client watching the workspace observes the same
 // refresh through the shared stream.
 func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
@@ -403,6 +409,7 @@ func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
 // is bounded rather than trusting callers to unsubscribe. The refusal is
 // typed — retrying the same call never fixes it.
 func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)

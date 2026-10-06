@@ -93,6 +93,7 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 }
 
 func TestRemoteAdmissionRepeatedRefusalDoesNotRetainPendingWatch(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	receiver.refusal = errorsx.Public("remote_capacity", "Destination capacity is full.", nil)
@@ -134,6 +135,7 @@ func TestRemoteAdmissionRepeatedRefusalDoesNotRetainPendingWatch(t *testing.T) {
 // watch, so a never-accepted request cannot block deletion, transfer or
 // forgetting the computer forever. The same ID then admits an identical retry.
 func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	scope, _ := transport.CallerScopeFrom(ctx)
@@ -166,6 +168,7 @@ func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
 // lock the poll defers instead, so it can never refuse a request that is
 // about to be accepted.
 func TestRemoteWatchProbeReleasesUnacceptedRequestUnlessStartIsInFlight(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	scope, _ := transport.CallerScopeFrom(ctx)
@@ -215,6 +218,7 @@ func TestRemoteWatchProbeReleasesUnacceptedRequestUnlessStartIsInFlight(t *testi
 // conversation reserved for transfer neither registers a watch nor reaches
 // the destination.
 func TestRemoteAdmissionRefusesConversationReservedForTransfer(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	scope, _ := transport.CallerScopeFrom(ctx)
@@ -238,6 +242,7 @@ func TestRemoteAdmissionRefusesConversationReservedForTransfer(t *testing.T) {
 // completion then reads the saved log tail, so the notification carries the
 // last lines instead of claiming nothing was retrieved.
 func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
 	receiver.remoteJobs.Close()
@@ -287,6 +292,7 @@ func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
 // owns on the other computer and drops their pending notifications; the
 // destination receipt records the cancellation.
 func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, action := range []string{"delete", "archive", "move"} {
 		t.Run(action, func(t *testing.T) {
@@ -351,6 +357,7 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 }
 
 func TestRemoteAdmissionLateRefusalCannotHideAcceptedReceipt(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	source, _, ctx, input := remoteAdmissionFixture(t)
 	receipt, err := source.AgentRemoteStart(ctx, input)
@@ -384,6 +391,7 @@ func TestRemoteAdmissionLateRefusalCannotHideAcceptedReceipt(t *testing.T) {
 }
 
 func TestRemoteAdmissionMissingSourceNeverDispatches(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, deleted := range []bool{false, true} {
 		name := "missing"

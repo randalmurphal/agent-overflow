@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 
-	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
@@ -19,19 +18,6 @@ var rateLimitProbeHTTPClient = &http.Client{}
 
 func claudeAccountProbeCache() *provider.ProbeCache {
 	return providerdiscoveryapp.DefaultCaches().Claude
-}
-
-// resetClaudeProbeCacheForTest swaps the package-level cache for a
-// fresh instance. Call from test setup to guarantee a clean cache
-// without racing against concurrent probes via claudeAccountProbeCache.
-//
-// It resets the probe-enriched model catalog and command list with it, because
-// one probe fills all three: a test that cleared only the identity cache would
-// re-probe and then compare against another test's model list. One reset, no
-// drift.
-func resetClaudeProbeCacheForTest() {
-	providerdiscoveryapp.ResetDefaultCachesForTest()
-	claudecatalog.Reset()
 }
 
 // ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via

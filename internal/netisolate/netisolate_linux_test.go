@@ -48,6 +48,7 @@ type isolationProbe struct {
 	LoopbackV4Dial string
 	LoopbackV6Dial string
 	LANDial        string
+	Contained      bool
 }
 
 // runIsolationProbe reports what an isolated command would see. It dials off the LAN
@@ -84,6 +85,7 @@ func runIsolationProbe(out io.Writer) int {
 	probe.LoopbackV4Dial = selfDial("tcp4", "127.0.0.1:0")
 	probe.LoopbackV6Dial = selfDial("tcp6", "[::1]:0")
 	probe.LANDial = selfDial("tcp4", net.JoinHostPort(LANAddress.String(), "0"))
+	probe.Contained = Contained()
 	if err := json.NewEncoder(out).Encode(probe); err != nil {
 		return 1
 	}
@@ -209,6 +211,9 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 	}
 	if probe.OffLANDial != "ENETUNREACH" || probe.OffLANDialMs > 1000 {
 		t.Fatalf("off-LAN dial = %q after %dms, want an immediate ENETUNREACH", probe.OffLANDial, probe.OffLANDialMs)
+	}
+	if !probe.Contained {
+		t.Fatal("Contained() is false inside the namespace")
 	}
 	for name, outcome := range map[string]string{"127.0.0.1": probe.LoopbackV4Dial, "::1": probe.LoopbackV6Dial, "lan0": probe.LANDial} {
 		if outcome != "connected" {

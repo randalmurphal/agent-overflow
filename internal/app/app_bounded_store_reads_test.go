@@ -16,6 +16,7 @@ import (
 // `temporarily_unavailable`; a cancellation (the caller went away) and an
 // ordinary store failure are not, and keep their own cause.
 func TestBoundedStoreReadErrorClassifiesOnlyExpiredDeadlines(t *testing.T) {
+	t.Parallel()
 	storeErr := errors.New("sql: Rows are closed")
 
 	ordinary := boundedStoreReadError(context.Background(), "thread defaults", threadDefaultsTimeout, storeErr)
@@ -60,6 +61,7 @@ func (m *contextRecordingModels) Seed(ctx context.Context, providerName, model s
 // RPC open forever. internal/store proves a blocked pool honors one, and
 // internal/threadapp proves Defaults carries it into every read it makes.
 func TestGetThreadDefaultsBoundsItsStoreReads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	models := &contextRecordingModels{ModelPolicy: threadModelPolicy{app: app}}

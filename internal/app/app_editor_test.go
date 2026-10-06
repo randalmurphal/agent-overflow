@@ -21,6 +21,7 @@ import (
 // available when preference is empty), while still exercising the
 // settings/editor resolution branch where the nil-deref would land.
 func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	defer func() {
@@ -47,6 +48,7 @@ func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 // this exercises the ResolveExact error path deterministically without
 // spawning anything.
 func TestOpenInEditor_UnavailableEditorIDErrors(t *testing.T) {
+	t.Parallel()
 	app := &App{settings: settings.NewService(t.TempDir())}
 	// An openable path, so the request fails on the editor ID alone.
 	file := filepath.Join(t.TempDir(), "file.txt")
@@ -69,6 +71,7 @@ func TestOpenInEditor_UnavailableEditorIDErrors(t *testing.T) {
 // get a less specific downstream error when the spawn step failed on
 // "".
 func TestOpenInEditor_RejectsEmptyPath(t *testing.T) {
+	t.Parallel()
 	app := &App{settings: settings.NewService(t.TempDir())}
 
 	err := app.OpenInEditor("", 1, 1, "", "")
@@ -92,6 +95,7 @@ func TestOpenInEditor_RejectsEmptyPath(t *testing.T) {
 // the bytes as a belt-and-braces guard against a future struct
 // embedding or json:",inline" tag that would smuggle the field in.
 func TestListAvailableEditors_OmitsResolvedPath(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	got, err := app.ListAvailableEditors()
@@ -121,6 +125,7 @@ func TestListAvailableEditors_OmitsResolvedPath(t *testing.T) {
 // branching on "shutting_down"-shaped errors would otherwise misread
 // a nil-service test rig.
 func TestSetEditorSettings_NilSettingsReturnsError(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 
 	_, err := app.SetEditorSettings(settings.EditorSettings{Preference: "code"})
@@ -137,6 +142,7 @@ func TestSetEditorSettings_NilSettingsReturnsError(t *testing.T) {
 // and invalidates the editor detection cache so the next picker
 // render surfaces fresh state.
 func TestSetEditorSettings_PersistsAndRefreshesCache(t *testing.T) {
+	t.Parallel()
 	app := &App{settings: settings.NewService(t.TempDir())}
 
 	out, err := app.SetEditorSettings(settings.EditorSettings{Preference: "code"})

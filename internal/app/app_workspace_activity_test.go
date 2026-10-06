@@ -57,6 +57,7 @@ func seedOpenTurn(t *testing.T, a *App, threadID string) {
 // destructive "remove worktree" affordance live over a directory the sibling's
 // agent was writing into.
 func TestGetWorkspaceActivity_AggregatesAcrossThreadsSharingAWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	elsewhere := t.TempDir()
@@ -102,6 +103,7 @@ func TestGetWorkspaceActivity_AggregatesAcrossThreadsSharingAWorkspace(t *testin
 }
 
 func TestGetWorkspaceActivity_SumsTasksFromEveryThreadInTheWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 
@@ -152,6 +154,7 @@ func TestGetWorkspaceActivity_SumsTasksFromEveryThreadInTheWorkspace(t *testing.
 // sibling thread mid-response is writing into the checkout, and
 // removeProjectWorktree refuses on exactly this condition.
 func TestGetWorkspaceActivity_CountsOpenTurnsOfSiblingThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 
@@ -194,6 +197,7 @@ func TestGetWorkspaceActivity_CountsOpenTurnsOfSiblingThreads(t *testing.T) {
 }
 
 func TestGetWorkspaceActivity_IdleWorkspaceReportsNothing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	if _, err := createTestThread(t, app, "claude", workspace, "claude-sonnet-4-6", ""); err != nil {
@@ -224,6 +228,7 @@ func TestGetWorkspaceActivity_IdleWorkspaceReportsNothing(t *testing.T) {
 // directory any thread references by either column. The affordance has to
 // agree, or the button stays live and the backend rejects the click.
 func TestGetWorkspaceActivity_MatchesThreadsByWorktreePathToo(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	root := t.TempDir()
 	worktree := t.TempDir()
@@ -248,6 +253,7 @@ func TestGetWorkspaceActivity_MatchesThreadsByWorktreePathToo(t *testing.T) {
 }
 
 func TestGetWorkspaceActivity_RefusesAnEmptyPath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.GetWorkspaceActivity("   "); err == nil {
 		t.Fatal("GetWorkspaceActivity(\"\") = nil error, want a refusal")

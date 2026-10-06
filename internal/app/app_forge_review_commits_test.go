@@ -16,7 +16,7 @@ import (
 func prCloneFixture(t *testing.T, app *App) (ref WorkspaceRef, clone string, prSHAs []string) {
 	t.Helper()
 
-	origin := testutil.InitGitRepo(t)
+	origin := initMainGitRepo(t)
 	testutil.RunGit(t, origin, "checkout", "-b", "feature")
 	for _, name := range []string{"first.txt", "second.txt"} {
 		path := filepath.Join(origin, name)
@@ -45,6 +45,7 @@ func prRef() gitops.PRReference {
 }
 
 func TestListPRCommitsFromLocalClone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	ref, _, prSHAs := prCloneFixture(t, app)
 
@@ -64,6 +65,7 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 }
 
 func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir()) // not a git repo
 
@@ -74,6 +76,7 @@ func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
 }
 
 func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
 	// Break the remote: any fetch now fails, so a passing listing proves
@@ -100,6 +103,7 @@ func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 }
 
 func TestListPRCommitsRequiresBaseRef(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	ref, _, _ := prCloneFixture(t, app)
 
@@ -109,6 +113,7 @@ func TestListPRCommitsRequiresBaseRef(t *testing.T) {
 }
 
 func TestOpenPRCommitDiffFromLocalClone(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, _, prSHAs := prCloneFixture(t, app)
 
@@ -125,6 +130,7 @@ func TestOpenPRCommitDiffFromLocalClone(t *testing.T) {
 }
 
 func TestOpenPRCommitDiffWithoutCloneErrors(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir())
 

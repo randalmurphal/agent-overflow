@@ -19,6 +19,7 @@ import (
 // exit` does, ends its terminal thread at once, the way closing a terminal
 // window does. The job runs on.
 func TestTerminalThreadEndsWhenItsShellExitsLeavingABackgroundJob(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	handle := openTestTerminal(t, app, "thread-term")

@@ -26,6 +26,7 @@ const rootThreadHandshakeTimeout = 15 * time.Second
 // real dispatch entry point, through the unrelated-thread predicate, and
 // through a reader that is already holding s.mu.
 func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
+	t.Parallel()
 	const rootThread = "019fc2ff-9050-7971-ac4e-b902cc3b9f00"
 	const settingsFrame = `{"threadId":"` + rootThread + `","threadSettings":{"model":"gpt-5.6-sol"}}`
 

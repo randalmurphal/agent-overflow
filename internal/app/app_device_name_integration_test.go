@@ -13,6 +13,7 @@ import (
 )
 
 func TestGoCarrierPublishesDeviceNameThroughAuthenticatedAppRPC(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))

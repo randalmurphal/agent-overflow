@@ -351,3 +351,44 @@ func TestHarnessUIQueryTargetsOneRegisteredPage(t *testing.T) {
 		t.Fatal("right page did not resolve query")
 	}
 }
+
+// TestHarnessUIQueryNamingALoadingPageWaitsForItsRegistration: a caller
+// can read a page id from the URL before that page's socket registers it.
+// The named query waits the same grace an unnamed one does, then fails
+// naming the page.
+func TestHarnessUIQueryNamingALoadingPageWaitsForItsRegistration(t *testing.T) {
+	h, host, emitted := newUIQueryHarness(t)
+	bus := transport.NewEventBus(16)
+	t.Cleanup(bus.Close)
+	host.eventBus = bus
+	h.pageMarker = "instance-marker"
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.HarnessUIQuery(json.RawMessage(`{"v":1,"kind":"viewport","pageId":"page-1"}`))
+		done <- err
+	}()
+	time.Sleep(harnessUIQueryNoClientGrace / 5)
+	if _, err := h.HarnessRegisterPage(context.Background(), "page-1", h.pageMarker, "http://127.0.0.1:4321"); err != nil {
+		t.Fatalf("register page-1: %v", err)
+	}
+	event := mustEmittedQuery(t, emitted)
+	if event.PageID != "page-1" {
+		t.Fatalf("query targeted page %q, want page-1", event.PageID)
+	}
+	if err := h.HarnessUIQueryReply("page-1", event.ID, json.RawMessage(`{"v":1}`)); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("query naming a page that registered inside the grace: %v", err)
+	}
+
+	start := time.Now()
+	_, err := h.HarnessUIQuery(json.RawMessage(`{"v":1,"kind":"viewport","pageId":"page-2"}`))
+	if err == nil || !strings.Contains(err.Error(), `frontend page "page-2" is not registered`) {
+		t.Fatalf("query naming an absent page: err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < harnessUIQueryNoClientGrace || elapsed > 5*harnessUIQueryNoClientGrace {
+		t.Fatalf("absent page failed after %s, want the ~%s grace", elapsed, harnessUIQueryNoClientGrace)
+	}
+}

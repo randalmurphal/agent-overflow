@@ -72,6 +72,7 @@ func (f *fakeNotificationPlatform) OnNotificationResponse(callback func(notifica
 }
 
 func TestDesktopNotificationsAuthorizationIsAsynchronous(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	platform := newFakeNotificationPlatform()
 	service := newDesktopNotificationServiceWithPlatform(app, platform)
@@ -105,6 +106,7 @@ func TestDesktopNotificationsAuthorizationIsAsynchronous(t *testing.T) {
 }
 
 func TestDesktopNotificationsStartupFailureDoesNotFailAppStartup(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	platform := newFakeNotificationPlatform()
 	platform.startupErr = errors.New("no notification daemon")
@@ -123,6 +125,7 @@ func TestDesktopNotificationsStartupFailureDoesNotFailAppStartup(t *testing.T) {
 }
 
 func TestDesktopNotificationsAuthorizationFailureStates(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		result notificationAuthorizationResult
@@ -164,6 +167,7 @@ func TestDesktopNotificationsAuthorizationFailureStates(t *testing.T) {
 }
 
 func TestDesktopNotificationResponseIgnoresDismissal(t *testing.T) {
+	t.Parallel()
 	var emitted int
 	app := &App{testEmitHook: func(name string, _ any) {
 		if name == notify.ActivatedChannel {
@@ -227,6 +231,7 @@ func newAuthorizedDesktopNotifications(t *testing.T) (*App, *fakeNotificationPla
 // tripwire: a test that forgets its fake must stop here rather than raise a
 // real notification on whoever is running the suite.
 func TestADesktopServiceWithNoPlatformFailsAtConstruction(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("a nil platform was accepted")
@@ -239,6 +244,7 @@ func TestADesktopServiceWithNoPlatformFailsAtConstruction(t *testing.T) {
 // replace-in-place work at all: the platform recognises a second send about
 // the same moment only if it carries the same identifier.
 func TestTheStableIDReachesThePlatformVerbatim(t *testing.T) {
+	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
 	send := testSend(notify.Target{Kind: "thread", ThreadID: "thread-1", BackendID: "backend-1"})
 	send.ID = "thread:thread-1"
@@ -271,6 +277,7 @@ func TestTheStableIDReachesThePlatformVerbatim(t *testing.T) {
 
 // TestARetractionWithdrawsByIDAndPresentsNothing.
 func TestARetractionWithdrawsByIDAndPresentsNothing(t *testing.T) {
+	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
 	err := app.notifyOS(notify.Send{
 		ID: "thread:thread-1", Kind: notify.KindTurnComplete, Retract: true,
@@ -292,6 +299,7 @@ func TestARetractionWithdrawsByIDAndPresentsNothing(t *testing.T) {
 // availability state is checked before the branch, so a shut-down service
 // does not call into the platform for a withdrawal.
 func TestAnUnavailablePlatformIsNotReachedByARetraction(t *testing.T) {
+	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
 	service, ok := app.osNotifications.(*desktopNotificationService)
 	if !ok {
@@ -320,6 +328,7 @@ func TestAnUnavailablePlatformIsNotReachedByARetraction(t *testing.T) {
 // what this presenter did before — added the OS sound on top of the app's own
 // cue on macOS and Windows. These pin the mapping in both directions.
 func TestTheHostsSilentAnswerReachesThePlatform(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		silent bool
@@ -369,6 +378,7 @@ func TestTheHostsSilentAnswerReachesThePlatform(t *testing.T) {
 // A retraction is a withdrawal by id. It never reaches the options shape at
 // all, so there is nothing for a sound to be attached to.
 func TestARetractionCarriesNoPlatformSound(t *testing.T) {
+	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
 	err := app.notifyOS(notify.Send{
 		ID: "thread:thread-1", Kind: notify.KindTurnComplete, Retract: true,
@@ -390,6 +400,7 @@ func TestARetractionCarriesNoPlatformSound(t *testing.T) {
 // default is a built-in cue, so a real notifyOS send arrives at the platform
 // asking for silence rather than a second sound.
 func TestTheDefaultCueReachesThePlatformSilent(t *testing.T) {
+	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
 	if err := app.notifyOS(testSend(notify.Target{Kind: "none"})); err != nil {
 		t.Fatalf("notifyOS: %v", err)

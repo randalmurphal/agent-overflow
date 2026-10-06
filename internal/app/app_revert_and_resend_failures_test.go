@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,7 @@ import (
 // before it can merge anything, so the failure lands inside the staging
 // call with the row untouched.
 func TestRevertAndResendStagingFailureLeavesEverythingUntouched(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendThread(t, app, "t-resend-stage-fail")
 
@@ -80,7 +82,7 @@ func TestRevertAndResendStagingFailureLeavesEverythingUntouched(t *testing.T) {
 	if ref := mustGetThread(t, app, thread.ID).SessionRef; ref != resendSourceSessionID {
 		t.Fatalf("session ref = %q, want the untouched source session", ref)
 	}
-	assertClaudeSessionText(t, workspace, resendSourceSessionID, []string{"first", "second"}, nil)
+	assertClaudeSessionText(t, app, workspace, resendSourceSessionID, []string{"first", "second"}, nil)
 
 	draft, ok, err := app.store.GetThreadDraft(thread.ID)
 	if err != nil || !ok {
@@ -108,6 +110,7 @@ func TestRevertAndResendStagingFailureLeavesEverythingUntouched(t *testing.T) {
 // thread row, so the conversation stays whole while the staged draft
 // stands.
 func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendThread(t, app, "t-resend-rollback-fail")
 
@@ -120,7 +123,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 		t.Fatalf("seed WIP draft: %v", err)
 	}
 
-	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), resendSourceSessionID, workspace)
+	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), resendSourceSessionID, workspace)
 	if err != nil {
 		t.Fatalf("resolve claude session path: %v", err)
 	}
@@ -187,6 +190,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 // parent-uuid detector (a turn-initial anchor falls back to the ordinal
 // walk, which converges for a different reason).
 func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendMidTurnThread(t, app, "t-resend-converge")
 
@@ -208,7 +212,7 @@ func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) 
 	if cutRef == resendSourceSessionID {
 		t.Fatal("precondition: the provider cut did not repoint SessionRef")
 	}
-	assertClaudeSessionText(t, workspace, cutRef, []string{"first"}, []string{"steer"})
+	assertClaudeSessionText(t, app, workspace, cutRef, []string{"first"}, []string{"steer"})
 	if items, err := app.store.ListItems(thread.ID); err != nil || len(items) != 4 {
 		t.Fatalf("precondition: items = %+v (%v), want the un-truncated timeline", items, err)
 	}
@@ -236,7 +240,7 @@ func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) 
 	if convergedRef == cutRef {
 		t.Fatal("retry reused the already-cut session file instead of re-slicing through the anchor parent")
 	}
-	assertClaudeSessionText(t, workspace, convergedRef, []string{"first"}, []string{"steer"})
+	assertClaudeSessionText(t, app, workspace, convergedRef, []string{"first"}, []string{"steer"})
 	if _, ev := findRevertedEvent(t, bus); !ev.DraftPendingResend {
 		t.Fatal("retried reverted event draftPendingResend = false, want true")
 	}
@@ -250,6 +254,7 @@ func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) 
 // regression there is silent — the send succeeds and the user simply
 // loses the plan linkage that marks the original plan Accepted.
 func TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-plan-link")
 
@@ -284,6 +289,7 @@ func TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical(t *testing.T) {
 // WIP text AND keep the chips and plan link, because that row is the
 // only copy of the composer's context until the saga settles it.
 func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-stage-rich")
 
@@ -342,6 +348,7 @@ func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
 // fires on the saga's goroutine after the truncation commits — the most
 // dangerous point in the sequence.
 func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	app.configureTriageQueueCallbacks()
 	t.Cleanup(func() { app.flushDispatch.wg.Wait() })
@@ -452,6 +459,7 @@ func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 // inside the saga a test can reach deterministically — the lock is held,
 // the crash copy is staged, the settle has not run.
 func TestRevertAndResendSettlesDraftAgainstMidSagaComposerSaves(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		priorWIP    bool
@@ -542,6 +550,7 @@ func TestRevertAndResendSettlesDraftAgainstMidSagaComposerSaves(t *testing.T) {
 // only injection that does not require a seam the production code has no
 // other use for.
 func TestRevertAndResendReportsSuccessWhenTheSettleFails(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-settle-fail")
 
@@ -577,6 +586,7 @@ func TestRevertAndResendReportsSuccessWhenTheSettleFails(t *testing.T) {
 // that leaked its marker would wedge the edit affordance for the rest of
 // the thread's life.
 func TestRevertAndResendProceedsOncePendingSendResolves(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-pending-release")
 
@@ -615,6 +625,7 @@ func TestRevertAndResendProceedsOncePendingSendResolves(t *testing.T) {
 // rather than at the message — so the saga's contract has to be
 // re-proved on it rather than inherited.
 func TestRevertAndResendCodexForksAndResends(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 
@@ -700,6 +711,7 @@ func TestRevertAndResendCodexForksAndResends(t *testing.T) {
 // so the rollback refuses — and the crash copy must stand exactly as it
 // does on the Claude path, with the conversation untouched.
 func TestRevertAndResendCodexRollbackFailureKeepsCrashCopy(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 
@@ -772,7 +784,7 @@ func TestRevertAndResendCodexRollbackFailureKeepsCrashCopy(t *testing.T) {
 func seedResendMidTurnThread(t *testing.T, app *App, id string) (store.Thread, string) {
 	t.Helper()
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, os.Getenv("HOME"), workspace, resendSourceSessionID,
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID,
 		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}
@@ -871,8 +883,6 @@ done
 `, logForkRequest, tailExpr, mock.forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-resend.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }

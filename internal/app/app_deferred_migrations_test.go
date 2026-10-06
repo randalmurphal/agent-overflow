@@ -71,6 +71,7 @@ func sealedRowFolded(t *testing.T, app *App, threadID string) bool {
 }
 
 func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	app.maintenance.chunkPause = time.Millisecond
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
@@ -97,6 +98,7 @@ func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
 // A stop in the middle of the run returns within the pause, leaves the
 // phase pending, and a later start finishes it.
 func TestDeferredMigrationsStopWithoutRecording(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	app.maintenance.chunkPause = time.Hour
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
@@ -125,6 +127,7 @@ func TestDeferredMigrationsStopWithoutRecording(t *testing.T) {
 }
 
 func TestDeferredMigrationsStartNothingWhenNoneArePending(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if deferredMigrationsPending(t, app) {
 		t.Fatal("a new database has a pending deferred migration")
@@ -161,6 +164,7 @@ func waitForSends(t *testing.T, recorder *recordingNotificationSender, n int) []
 // retries it, advances the watermark, clears the record and takes the
 // notice back.
 func TestDeferredMigrationFailureNoticesAndTheNextStartRetries(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	recorder := &recordingNotificationSender{}
 	app.osNotifications = recorder
@@ -216,6 +220,7 @@ func TestDeferredMigrationFailureNoticesAndTheNextStartRetries(t *testing.T) {
 
 // A clean run with no earlier failure raises nothing.
 func TestDeferredMigrationsCleanRunIsSilent(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	recorder := &recordingNotificationSender{}
 	app.osNotifications = recorder
@@ -233,6 +238,7 @@ func TestDeferredMigrationsCleanRunIsSilent(t *testing.T) {
 // A run that could not read or record its progress raises the notice with
 // that error, and the preference toggle silences it.
 func TestDeferredMigrationRunErrorNotices(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	recorder := &recordingNotificationSender{}
 	app.osNotifications = recorder

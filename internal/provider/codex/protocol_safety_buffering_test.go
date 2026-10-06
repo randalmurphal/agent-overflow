@@ -17,6 +17,7 @@ import (
 // `title` for notification rows — anything left in meta never reaches the
 // transcript.
 func TestClassifySafetyBuffering_ShowEmitsUserFacingRow(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"threadId":"th","turnId":"turn-1","model":"gpt-5.6-sol",
 		"useCases":["cyber"],"reasons":["policy_review","high_risk"],
@@ -68,6 +69,7 @@ func TestClassifySafetyBuffering_ShowEmitsUserFacingRow(t *testing.T) {
 // the opt-out derivation would unsubscribe from the method and the
 // show=true edge would stop arriving too.
 func TestClassifySafetyBuffering_ClearIsHandledButSilent(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"threadId":"th","turnId":"turn-1","model":"gpt","reasons":[],"showBufferingUi":false}`)
 	events, handled := classifyNotification("th", "model/safetyBuffering/updated", params)
 	if !handled {
@@ -81,6 +83,7 @@ func TestClassifySafetyBuffering_ClearIsHandledButSilent(t *testing.T) {
 // TestClassifySafetyBuffering_NoReasonsKeepsSummaryClean guards the copy
 // when the server sends the hold with no explanation.
 func TestClassifySafetyBuffering_NoReasonsKeepsSummaryClean(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"threadId":"th","turnId":"turn-1","showBufferingUi":true}`)
 	events, _ := classifyNotification("th", "model/safetyBuffering/updated", params)
 	if len(events) != 1 {

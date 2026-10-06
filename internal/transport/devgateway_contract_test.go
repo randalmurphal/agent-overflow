@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"agent-overflow/internal/loopback/loopbacktest"
 )
 
 // The preview gateway's contract, against a REAL upstream on loopback.
@@ -89,7 +91,7 @@ func newPreviewRigOn(t *testing.T, scheme string, handler http.HandlerFunc) *pre
 		seen.record(r)
 		handler(w, r)
 	})
-	upstream := httptest.NewUnstartedServer(record)
+	upstream := loopbacktest.NewUnstartedServer(t, record)
 	if scheme == "https" {
 		upstream.StartTLS()
 	} else {

@@ -84,6 +84,7 @@ func domainCertApp(t *testing.T) (*App, string) {
 // The escape hatch, end to end: the user's own certificate is loaded,
 // published for the canonical domain, and reported as external.
 func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
@@ -119,6 +120,7 @@ func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
 // mistake the user has to be told about, not a certificate to serve
 // under a name it is not valid for.
 func TestAnExternalPairForAnotherNameIsRefusedAndReported(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "somewhere.else", 90*24*time.Hour)
@@ -147,6 +149,7 @@ func TestAnExternalPairForAnotherNameIsRefusedAndReported(t *testing.T) {
 // The second look at unchanged files does not re-read them, and a file
 // the user's renewal tool rewrote does.
 func TestAnExternalPairIsRereadOnlyWhenItChanges(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
@@ -206,6 +209,7 @@ func copyFile(t *testing.T, from, to string) {
 // With no domain configured there is nothing to serve for one, and the
 // status says what the listener actually presents.
 func TestNoCanonicalDomainClearsTheDomainCertificate(t *testing.T) {
+	t.Parallel()
 	app, _ := domainCertApp(t)
 	source := &recordingSource{name: "stale.example", cert: &tls.Certificate{}}
 
@@ -228,6 +232,7 @@ func TestNoCanonicalDomainClearsTheDomainCertificate(t *testing.T) {
 // Failures back off, so a broken hook does not order once a minute
 // against the authority's rate limit, and the delay is bounded.
 func TestIssuanceFailuresBackOffAndAreBounded(t *testing.T) {
+	t.Parallel()
 	app, _ := domainCertApp(t)
 	var previous time.Duration
 	for i := 0; i < 12; i++ {
@@ -259,6 +264,7 @@ func TestIssuanceFailuresBackOffAndAreBounded(t *testing.T) {
 // already holds one for: the external pair wins, and issuance is not
 // reached at all.
 func TestTheExternalPairWinsOverIssuance(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	app, dir := domainCertApp(t)
 	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
@@ -290,6 +296,7 @@ func TestTheExternalPairWinsOverIssuance(t *testing.T) {
 // reacted to the error by clearing the field kept reading it under a screen
 // that was no longer trying to serve anything.
 func TestClearingTheCertificateSourceEndsTheFailureItWasAbout(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, tc := range []struct {
 		name  string

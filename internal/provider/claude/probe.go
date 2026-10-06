@@ -38,6 +38,10 @@ type ProbeConfig struct {
 	// nil disables that protection. It is not an error — a probe against a
 	// home whose credential this package cannot locate is still a useful
 	// probe — but it should be nil only where no rotation is possible.
+	//
+	// An absent credential must be reported as fs.ErrNotExist. Any other
+	// error means "could not read", and the probe holds the CLI open for a
+	// rotation it cannot observe.
 	ReadCredential func() ([]byte, error)
 
 	// RotationExpected declares that the caller already knows this

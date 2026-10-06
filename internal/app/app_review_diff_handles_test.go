@@ -112,7 +112,7 @@ func openReviewDiffCount(app *App) int {
 // first chunks long.
 func largeWorkspace(t *testing.T, app *App) (WorkspaceRef, string) {
 	t.Helper()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	var b strings.Builder
 	for b.Len() < 3*reviewDiffFirstChunkBytes {
 		b.WriteString("a line of generated content that goes on for a while\n")
@@ -124,8 +124,9 @@ func largeWorkspace(t *testing.T, app *App) (WorkspaceRef, string) {
 }
 
 func TestOpenReviewDiffHoldsNothingForAPatchThatFitsTheFirstChunk(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nedited\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -146,6 +147,7 @@ func TestOpenReviewDiffHoldsNothingForAPatchThatFitsTheFirstChunk(t *testing.T) 
 }
 
 func TestReviewDiffHandleReadsTheRestOnlyOnItsConnection(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, content := largeWorkspace(t, app)
 	ctx, _ := reviewDiffConn(t)
@@ -187,6 +189,7 @@ func TestReviewDiffHandleReadsTheRestOnlyOnItsConnection(t *testing.T) {
 }
 
 func TestReviewDiffIsReleasedWithItsConnection(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, _ := largeWorkspace(t, app)
 	ctx, state := reviewDiffConn(t)
@@ -205,6 +208,7 @@ func TestReviewDiffIsReleasedWithItsConnection(t *testing.T) {
 }
 
 func TestOpenReviewDiffRefusesPastTheHandleLimit(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, _ := largeWorkspace(t, app)
 	app.reviewDiffs.diffs = make(map[string]*openReviewDiff, maxReviewDiffHandles)
@@ -222,6 +226,7 @@ func TestOpenReviewDiffRefusesPastTheHandleLimit(t *testing.T) {
 }
 
 func TestReviewDiffBootSweepRemovesSnapshotsFromTheLastRun(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	left := filepath.Join(app.configDir, reviewDiffSnapshotDir, "snapshot-123", "objects")
 	if err := os.MkdirAll(left, 0o700); err != nil {
@@ -239,6 +244,7 @@ func TestReviewDiffBootSweepRemovesSnapshotsFromTheLastRun(t *testing.T) {
 }
 
 func TestOpenPRDiffIsTheThreeDotDiffAtTheFetchedHead(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
 	// The base moves on after the PR branched; a three-dot diff leaves it out.
@@ -277,6 +283,7 @@ func TestOpenPRDiffIsTheThreeDotDiffAtTheFetchedHead(t *testing.T) {
 // A handle is read under the scope its Open required, checked on every
 // read, whatever the reading method's own floor admits.
 func TestReadReviewDiffRequiresTheScopeItsOpenRequired(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	threadID := seedEditPayloads(t, app, 1, generatedPatch("big.go", 60000))
 	session := pairSessionWithScopes(t, app, "thumb-threads", []identity.Scope{identity.ScopeThreadsRead})
@@ -312,6 +319,7 @@ func TestReadReviewDiffRequiresTheScopeItsOpenRequired(t *testing.T) {
 // A read that finds its diff closed under it answers "not open", the one
 // error the client retries from a fresh Open.
 func TestReadReviewDiffOfAClosedDiffIsNotOpen(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, _ := largeWorkspace(t, app)
 	ctx, _ := reviewDiffConn(t)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -225,12 +226,18 @@ func (a *App) reconcileExternalCertificate(cfg settings.NetworkSettings, source 
 // reconcileIssuedCertificate serves what was already obtained, and
 // orders a new one when there is none or it is inside the renewal
 // window. The certificate already loaded keeps serving while an order
-// runs and if that order fails.
+// runs and if that order fails. A loopback Reach orders nothing: the
+// order would reach the certificate authority from an instance confined
+// to this machine.
 func (a *App) reconcileIssuedCertificate(
 	ctx context.Context,
 	cfg settings.NetworkSettings,
 	source certificatePublisher,
 ) time.Duration {
+	if a.netReach.LoopbackOnly() {
+		a.recordDomainCertFailure(errDomainCertIsolated.Error())
+		return domainCertCheckInterval
+	}
 	dir := a.domainCertDir()
 	if dir == "" {
 		a.recordDomainCertFailure("no configuration directory, so there is nowhere to keep a certificate")
@@ -275,6 +282,10 @@ func (a *App) reconcileIssuedCertificate(
 	a.publishDomainCertificate(source, cfg.CanonicalDomain, network.TLSServingACME, issued.Certificate, issued.NotAfter)
 	return domainCertCheckInterval
 }
+
+// errDomainCertIsolated is the certificate failure an instance confined to
+// this machine reports instead of ordering one.
+var errDomainCertIsolated = errors.New("certificate issuance is off in an isolated instance")
 
 // certificatePublisher is the half of transport.CertificateSource this
 // file uses. Declared here so a test can observe what was published

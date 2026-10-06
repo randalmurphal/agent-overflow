@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestTailCapLog(t *testing.T) {
+	t.Parallel()
 	full, truncated := tailCapLog("a\nb\nc\n", 100)
 	if truncated || full != "a\nb\nc\n" {
 		t.Fatalf("short log must pass through, got (%q, %v)", full, truncated)
@@ -28,6 +30,7 @@ func TestTailCapLog(t *testing.T) {
 }
 
 func TestCILogFileName(t *testing.T) {
+	t.Parallel()
 	pr := gitops.PRReference{Forge: "gitlab", Namespace: "group/sub", Repo: "repo", Number: 42}
 	name := ciLogFileName(pr, "1234", "unit tests (linux/amd64)")
 	if name != "gitlab-group-sub-repo-pr42-1234-unit-tests--linux-amd64.log" {
@@ -52,9 +55,7 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nprintf 'full log content\\nsecond line\\n'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	pr := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}

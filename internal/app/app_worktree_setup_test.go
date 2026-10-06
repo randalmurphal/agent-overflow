@@ -163,6 +163,7 @@ func joinSetupRun(t *testing.T, app *App, threadID string) {
 // is a transient acknowledgement — retaining it would replay it at every pane
 // mount for the rest of the session.
 func TestWorktreeSetupSuccessClearsEverything(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "echo first"},
@@ -205,6 +206,7 @@ func TestWorktreeSetupSuccessClearsEverything(t *testing.T) {
 // lets a client fold a snapshot and the live stream together without
 // double-appending, so a regression here is silently corrupted output.
 func TestWorktreeSetupOutputSequenceIsMonotonic(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "printf 'a\\nb\\nc\\n'"}},
 	})
@@ -235,6 +237,7 @@ func TestWorktreeSetupOutputSequenceIsMonotonic(t *testing.T) {
 // A failed recipe leaves the worktree in place, persists `failed`, retains the
 // run so the panel can offer Retry, and keeps the failing command's output.
 func TestWorktreeSetupFailureIsVisibleAndRetained(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "echo ok"},
@@ -287,6 +290,7 @@ func TestWorktreeSetupFailureIsVisibleAndRetained(t *testing.T) {
 // read back, so the pre-flight seam is exercised directly — it is the one path
 // that reports a failure with no step ever having started.
 func TestWorktreeSetupUnstartableRecipeFailsVisibly(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, nil)
 
 	app.worktreeSetupService().RecordUnstartableThread(
@@ -338,6 +342,7 @@ func TestWorktreeSetupUnstartableRecipeFailsVisibly(t *testing.T) {
 // in flight is refused LOUDLY rather than silently starting a second process
 // group in the same directory.
 func TestWorktreeSetupRefusesASecondConcurrentRun(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 5"}},
 		Timeout: "30s",
@@ -359,6 +364,7 @@ func TestWorktreeSetupRefusesASecondConcurrentRun(t *testing.T) {
 // The full retry sequence: fail, retry, succeed. A retry after a settled run
 // is allowed and clears the failure it replaced.
 func TestWorktreeSetupRetryAfterFailureSucceeds(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "exit 1"}},
 	})
@@ -385,6 +391,7 @@ func TestWorktreeSetupRetryAfterFailureSucceeds(t *testing.T) {
 // Three different mistakes, three different refusals. A retry that cannot run
 // must say why rather than appearing to start.
 func TestWorktreeSetupRetryRefusalsAreSpecific(t *testing.T) {
+	t.Parallel()
 	t.Run("no worktree", func(t *testing.T) {
 		app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 			Run: [][]string{{"/bin/sh", "-c", "true"}},
@@ -420,6 +427,7 @@ func TestWorktreeSetupRetryRefusalsAreSpecific(t *testing.T) {
 // nothing. Most projects have no recipe; a panel on every worktree creation
 // would be noise.
 func TestWorktreeSetupOnUnconfiguredProjectIsSilent(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, nil)
 	if err := app.launchThreadWorktreeSetup(thread, false); err != nil {
 		t.Fatalf("launchThreadWorktreeSetup: %v", err)
@@ -440,6 +448,7 @@ func TestWorktreeSetupOnUnconfiguredProjectIsSilent(t *testing.T) {
 // it configured; the resolved step list is what actually decides, because a
 // panel listing no steps has nothing to say.
 func TestWorktreeSetupWithNoResolvedStepsIsSilent(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{Timeout: "45s"})
 	if err := app.launchThreadWorktreeSetup(thread, false); err != nil {
 		t.Fatalf("launchThreadWorktreeSetup: %v", err)
@@ -455,6 +464,7 @@ func TestWorktreeSetupWithNoResolvedStepsIsSilent(t *testing.T) {
 // the record is dropped, and no failure is ever advertised for work the user
 // abandoned.
 func TestWorktreeSetupCancellationIsNeitherSuccessNorFailure(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 30"}},
 		Timeout: "60s",
@@ -493,6 +503,7 @@ func TestWorktreeSetupCancellationIsNeitherSuccessNorFailure(t *testing.T) {
 // the same worktree must NOT cancel — a switch that lands where it started is
 // the no-op the path comparison exists for.
 func TestWorktreeSetupReleaseKeepsARunInItsOwnWorktree(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 30"}},
 		Timeout: "60s",
@@ -527,6 +538,7 @@ func TestWorktreeSetupReleaseKeepsARunInItsOwnWorktree(t *testing.T) {
 // longer occupies is treated as cancelled, so no pill points at a checkout the
 // thread has left.
 func TestWorktreeSetupFailureForAVacatedWorktreeIsCancelled(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 0.2; exit 1"}},
 		Timeout: "30s",
@@ -562,6 +574,7 @@ func TestWorktreeSetupFailureForAVacatedWorktreeIsCancelled(t *testing.T) {
 // 'running': the worktree's state is genuinely unknown, and the next boot's
 // sweep is what turns that into a visible failure. One decision, one place.
 func TestWorktreeSetupShutdownLeavesTheSweepToDecide(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 30"}},
 		Timeout: "60s",
@@ -609,6 +622,7 @@ func TestWorktreeSetupShutdownLeavesTheSweepToDecide(t *testing.T) {
 // answer the snapshot RPC — the panel's Retry is the whole point of persisting
 // the state across a restart.
 func TestWorktreeSetupSnapshotReportsADurableFailureWithoutARecord(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "true"}},
 	})
@@ -636,6 +650,7 @@ func TestWorktreeSetupSnapshotReportsADurableFailureWithoutARecord(t *testing.T)
 // Dismissal through the bound method: the card's frame and the sidebar pill's
 // row update both reach clients, and nothing durable can bring the failure back.
 func TestWorktreeSetupDismissRetiresTheFailureEverywhere(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "exit 3"}},
 	})
@@ -680,6 +695,7 @@ func TestWorktreeSetupDismissRetiresTheFailureEverywhere(t *testing.T) {
 }
 
 func TestGetThreadWorktreeSetupRefusesABlankThreadID(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newWorktreeSetupTestApp(t, nil)
 	if _, err := app.GetThreadWorktreeSetup("  "); err == nil {
 		t.Fatal("blank thread id reported success")
@@ -697,6 +713,7 @@ func TestGetThreadWorktreeSetupRefusesABlankThreadID(t *testing.T) {
 // The recipe runs with cwd at the worktree root and both AO_ variables set.
 // Every recipe that copies or patches anything depends on this pair.
 func TestWorktreeSetupRunsInTheWorktreeWithTheEnvContract(t *testing.T) {
+	t.Parallel()
 	app, thread, _ := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", `printf '%s\n%s\n%s\n' "$PWD" "$AO_PROJECT_ROOT" "$AO_WORKTREE_PATH" > probe.txt`}},
 	})
@@ -736,6 +753,7 @@ func TestWorktreeSetupRunsInTheWorktreeWithTheEnvContract(t *testing.T) {
 // The copy phase is step 0 and reports through the observer like any other
 // step, so the panel's indices line up with what actually ran.
 func TestWorktreeSetupReportsTheCopyStepFirst(t *testing.T) {
+	t.Parallel()
 	app, thread, recorder := newWorktreeSetupTestApp(t, &worktreesetup.Config{
 		Copy: []string{".env"},
 		Run:  [][]string{{"/bin/sh", "-c", "true"}},

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The ledger is what tells a turn this app asked for from a turn another
@@ -250,9 +251,7 @@ while IFS= read -r line; do
     printf '%s\n' "$line" >> "$capture"
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:              scriptPath,
@@ -480,9 +479,7 @@ func TestCrossSessionEnabledReportsTheSpawnDecision(t *testing.T) {
 func TestSendReleasesTheIssuedUUIDWhenTheWriteFails(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "mock-claude")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\nexec cat\n"), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, "#!/bin/bash\nexec cat\n")
 	s, err := NewSession(context.Background(), testThread, Config{Binary: scriptPath}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -535,13 +532,12 @@ func TestSendReleasesTheIssuedUUIDWhenTheWriteFails(t *testing.T) {
 // so the fix is to make stage-and-write one critical section: whichever
 // rename stages last is then also the last one on the wire.
 func TestConcurrentRenamePeerSessionEndsOnTheSameNameTheWireDoes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	wireLog := filepath.Join(dir, "wire.log")
 	scriptPath := filepath.Join(dir, "mock-claude")
 	script := "#!/bin/bash\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> " + wireLog + "; done\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	for attempt := range 25 {
 		s, err := NewSession(context.Background(), testThread, Config{
@@ -818,9 +814,7 @@ func TestPeerRenameReadBackIsSanitized(t *testing.T) {
 func TestRenamePeerSessionMarksItsOutputRowSuppressed(t *testing.T) {
 	scriptPath := filepath.Join(t.TempDir(), "fake-claude")
 	script := "#!/bin/sh\nwhile IFS= read -r line; do :; done\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:              scriptPath,
 		CrossSessionEnabled: true,

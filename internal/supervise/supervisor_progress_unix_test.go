@@ -97,17 +97,19 @@ func (r *rig) stageUpdateTo(behavior string) {
 // the window, however long it takes in total, and the judge ends at prepared:
 // the committed backend runs on past the window with no progress at all.
 func TestATrialThatKeepsProgressingCommitsPastTheLegacyBudget(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
-	rig.stageUpdateTo(behaviorMigrate(20))
+	// Twelve steps 100ms apart outlast the budget twice over and the window.
+	rig.stageUpdateTo(behaviorMigrate(12))
 	config := rig.config()
-	config.TrialRule = StallRule{Window: time.Second, Ceiling: time.Minute}
-	config.LegacyTrialBudget = 500 * time.Millisecond
+	config.TrialRule = StallRule{Window: stallTestWindow, Ceiling: time.Minute}
+	config.LegacyTrialBudget = stallTestWindow / 2
 
 	err := rig.runUntilCondition(config, func() {
 		rig.waitForLog("committed 2.0.0", 1)
 		// Longer than the window, with the committed backend reporting
 		// nothing: a judge still armed would roll the commit back here.
-		time.Sleep(1500 * time.Millisecond)
+		time.Sleep(stallTestWindow + stallTestWindow/5)
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -128,6 +130,7 @@ func TestATrialThatKeepsProgressingCommitsPastTheLegacyBudget(t *testing.T) {
 // last progress fails it, worded as every judge of a starting backend words
 // a stall.
 func TestATrialWithOnlyAHeartbeatIsRolledBackAsStalled(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorHeartbeat)
 	config := rig.config()
@@ -145,6 +148,7 @@ func TestATrialWithOnlyAHeartbeatIsRolledBackAsStalled(t *testing.T) {
 // A trial that says it reports progress and reports none fails at the
 // window, not at the legacy budget.
 func TestATrialThatReportsNoProgressIsRolledBackAtTheWindow(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorHang)
 	config := rig.config()
@@ -160,6 +164,7 @@ func TestATrialThatReportsNoProgressIsRolledBackAtTheWindow(t *testing.T) {
 // A trial that reports its failure is rolled back at once with its own
 // reason, well inside a window it would otherwise have had.
 func TestATrialThatReportsAFailureIsRolledBackAtOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorFailedStart)
 	config := rig.config()
@@ -175,6 +180,7 @@ func TestATrialThatReportsAFailureIsRolledBackAtOnce(t *testing.T) {
 // Progress that never ends still ends at the ceiling, which names the last
 // step.
 func TestATrialThatNeverStopsProgressingIsRolledBackAtTheCeiling(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stageUpdateTo(behaviorEndless)
 	config := rig.config()
@@ -191,6 +197,7 @@ func TestATrialThatNeverStopsProgressingIsRolledBackAtTheCeiling(t *testing.T) {
 // A failed frame means something only from a trial. From a backend already
 // serving it is logged and nothing moves.
 func TestAFailedFrameOutsideATrialChangesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t)
 	rig.stageReporting("1.0.0", behaviorFailedStart)
 	rig.adopt("1.0.0")

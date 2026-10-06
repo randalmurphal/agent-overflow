@@ -64,6 +64,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  delete (navigator as { clipboard?: unknown }).clipboard;
 });
 
 describe('copyMarkdownToClipboard — rich path', () => {

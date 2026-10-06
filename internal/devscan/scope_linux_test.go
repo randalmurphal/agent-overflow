@@ -6,10 +6,11 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/loopback/loopbacktest"
 )
 
 // countingPageServer is a loopback page that counts every connection
@@ -18,7 +19,7 @@ import (
 func countingPageServer(t *testing.T) (*atomic.Int32, int) {
 	t.Helper()
 	var dials atomic.Int32
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := loopbacktest.NewUnstartedServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))

@@ -18,6 +18,9 @@ describe('createRunningElapsed', () => {
 
   afterEach(() => {
     __resetRunningElapsedTickerForTest();
+    // A restored spy is restored again by every restoreAllMocks, so clear
+    // the spies while their fake-timer originals are still installed.
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 

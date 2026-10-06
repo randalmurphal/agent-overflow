@@ -14,6 +14,7 @@ import (
 )
 
 func TestAgentThreadCreationPreservesUserProfiles(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) {
 			f := newThreadToolsFixture(t)
@@ -108,6 +109,7 @@ func assertSavedProfile(t *testing.T, app *App, want store.ChatModelProfile) {
 }
 
 func TestUserProfileControlRemembersOnlySelectedFields(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{"claude", "codex"} {
 		for _, control := range []string{"effort", "fast", "fast-off", "runtime", "context", "model"} {
 			t.Run(providerName+"/"+control, func(t *testing.T) {
@@ -171,6 +173,7 @@ func TestUserProfileControlRemembersOnlySelectedFields(t *testing.T) {
 }
 
 func TestUserControlOnUnrememberedAgentModelUsesCleanDefaults(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "unremembered-agent", func(row *store.Thread) {
 		row.RuntimeMode, row.ReasoningEffort, row.FastMode = "read-only", "low", true
@@ -188,6 +191,7 @@ func TestUserControlOnUnrememberedAgentModelUsesCleanDefaults(t *testing.T) {
 }
 
 func TestUserControlReportsProfilePersistenceFailure(t *testing.T) {
+	t.Parallel()
 	app, path := newTestAppWithStorePath(t)
 	thread := createAppTestThread(t, app, "profile-write-failure", "claude", t.TempDir())
 	thread.Model = "claude-opus-4-7"
@@ -212,6 +216,7 @@ func TestUserControlReportsProfilePersistenceFailure(t *testing.T) {
 }
 
 func TestConcurrentUserControlsPreserveIndependentPreferences(t *testing.T) {
+	t.Parallel()
 	f := newThreadToolsFixture(t)
 	threads := make([]store.Thread, 4)
 	for i := range threads {
@@ -258,6 +263,7 @@ func TestConcurrentUserControlsPreserveIndependentPreferences(t *testing.T) {
 }
 
 func TestUserCreationPublishesRememberedDefaults(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	published := false
 	app.emitEventFn = func(name string, data any) {
@@ -287,6 +293,7 @@ func TestUserCreationPublishesRememberedDefaults(t *testing.T) {
 }
 
 func TestAgentCreationDoesNotIntroduceAnUnrememberedProfile(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) {
 			f := newThreadToolsFixture(t)
@@ -311,6 +318,7 @@ func TestAgentCreationDoesNotIntroduceAnUnrememberedProfile(t *testing.T) {
 }
 
 func TestAgentOverridesDoNotSurviveAsDefaultsAfterRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	path := storetest.ClonePath(t)
 	initial, err := store.New(path)

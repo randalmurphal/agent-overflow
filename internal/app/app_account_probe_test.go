@@ -56,8 +56,8 @@ func waitForAccountEmissions(t *testing.T, events *[]ProviderAccountEvent, mu *s
 }
 
 func TestProbeStartupAccountInfoEmitsPerProvider(t *testing.T) {
-	resetClaudeProbeCacheForTest()
-	resetCodexProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -95,8 +95,8 @@ func TestProbeStartupAccountInfoSwallowsFailure(t *testing.T) {
 	// hook must NOT emit for the failed provider — duplicating the
 	// provider:status banner channel would produce noise. Verifying
 	// "no emit" is what locks the behavior down.
-	resetClaudeProbeCacheForTest()
-	resetCodexProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
+	resetCodexProbeCacheForTest(t)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -123,6 +123,7 @@ func TestProbeStartupAccountInfoSwallowsFailure(t *testing.T) {
 }
 
 func TestProbeStartupAccountInfoNoSettingsShortCircuits(t *testing.T) {
+	t.Parallel()
 	// Tests / pre-init paths can construct an App without settings.
 	// The startup hook must not panic in that case — same defensive
 	// guard the sibling probeStartupProviderStatuses uses.

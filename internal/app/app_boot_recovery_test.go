@@ -32,6 +32,7 @@ func newPriorInstanceTestApp(t *testing.T) (*App, string, *recordingBootProgress
 // is reported on its own boot phase with its error, and the sweeps after
 // it still run. A clean pass reports nothing.
 func TestSettlePriorInstanceReportsAFailedSweepOnItsPhase(t *testing.T) {
+	t.Parallel()
 	a, dbPath, progress := newPriorInstanceTestApp(t)
 	thread := testThread("thread-crashed-turn")
 	if err := a.store.CreateThread(thread); err != nil {
@@ -76,6 +77,7 @@ func TestSettlePriorInstanceReportsAFailedSweepOnItsPhase(t *testing.T) {
 // TestSettlePriorInstanceReportsEverySweepThatFails: with the store gone
 // every sweep fails, and each failure reaches the report on its own phase.
 func TestSettlePriorInstanceReportsEverySweepThatFails(t *testing.T) {
+	t.Parallel()
 	a, _, progress := newPriorInstanceTestApp(t)
 	if err := a.store.Close(); err != nil {
 		t.Fatal(err)

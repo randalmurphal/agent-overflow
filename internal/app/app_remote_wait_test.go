@@ -139,6 +139,7 @@ func (f *remoteWaitFixture) watch(t *testing.T, id string) store.RemoteWatch {
 // of the output; the completion then arrives once, as a message, carrying the
 // same excerpt shape.
 func TestRemoteRunBackgroundsAfterWaitAndCompletionArrivesAsMessage(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
@@ -203,6 +204,7 @@ func TestRemoteRunBackgroundsAfterWaitAndCompletionArrivesAsMessage(t *testing.T
 // leaves a job alone while a call is parked on it, and the watch is dismissed
 // once that call has answered, so no completion message follows.
 func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
@@ -242,6 +244,7 @@ func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
 // The wait is bounded by the tool schema, and an interrupt ends a parked call
 // at once with a backgrounded receipt while the command keeps running.
 func TestRemoteWaitIsCappedAndInterruptEndsIt(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	f := newRemoteWaitFixture(t)
 	id := uuid.NewString()
@@ -274,6 +277,7 @@ func TestRemoteWaitIsCappedAndInterruptEndsIt(t *testing.T) {
 // Provider ceilings sit above the longest wait, so a parked remote_run is
 // AO's to answer rather than the provider's to abort or background.
 func TestRemoteMCPProviderCeilingsExceedTheLongestWait(t *testing.T) {
+	t.Parallel()
 	if remoteMCPCallCeiling <= maxRemoteWaitSeconds*time.Second || defaultRemoteRunWaitSeconds > maxRemoteWaitSeconds {
 		t.Fatalf("ceiling %s, wait cap %ds, default %ds", remoteMCPCallCeiling, maxRemoteWaitSeconds, defaultRemoteRunWaitSeconds)
 	}

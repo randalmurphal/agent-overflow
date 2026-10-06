@@ -8,6 +8,7 @@ import (
 )
 
 func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -34,6 +35,7 @@ func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
 }
 
 func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -75,6 +77,7 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 // now re-emitted as a scoped EventSubagentProgress naming the spawn
 // tool_use (docs/specs/agent-visibility.md).
 func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:  "parent-thread",
@@ -139,6 +142,7 @@ func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 // tick — the consumer merges ticks, so a zero would be indistinguishable
 // from "this agent has spent nothing" if it were ever applied.
 func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:  "parent-thread",
@@ -167,6 +171,7 @@ func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
 // it, resolved from the canonical agent path, so a consumer can nest the
 // card without a store lookup.
 func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:  "parent-thread",
@@ -205,6 +210,7 @@ func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T
 // unsuppressing the CHILD channel must not change what a parent-thread
 // notification does.
 func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:  "parent-thread",
@@ -232,6 +238,7 @@ func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 // TestDispatchLineSuppressesChildCompacted ensures child-thread compaction
 // notifications do not pollute parent state.
 func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -256,6 +263,7 @@ func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
 // onto the parent thread. Older Codex builds emitted `thread/compacted`;
 // current builds emit `item/completed` with item.type = contextCompaction.
 func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -276,6 +284,7 @@ func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
 }
 
 func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -308,6 +317,7 @@ func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 // TestDispatchLineSuppressesChildNameUpdated ensures child-thread name updates
 // don't rename the parent thread.
 func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -330,6 +340,7 @@ func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
 // TestDispatchLineParentTokenUsageStillEmits is the positive control for
 // the suppression filter: parent-thread token usage must continue to flow.
 func TestDispatchLineParentTokenUsageStillEmits(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",

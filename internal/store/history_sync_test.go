@@ -488,7 +488,7 @@ func TestSyncThreadWindowZeroStampMatchesOnlyAnUntouchedThread(t *testing.T) {
 // database, so a restart that re-minted it would orphan every cached
 // window on disk.
 func TestIdentityIsStableAcrossReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.db")
+	path := newTestStorePath(t)
 	first, err := New(path)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -580,8 +580,7 @@ func TestSyncThreadWindowAttestsUnderConcurrentWrites(t *testing.T) {
 // replica, not the store its ability to identify itself. Open-time
 // INSERT OR IGNORE re-mints a full identity; a present row is untouched.
 func TestEnsureStoreIdentityHealsAMissingRow(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "store.sqlite")
+	path := newTestStorePath(t)
 	s1, err := New(path)
 	if err != nil {
 		t.Fatalf("new store: %v", err)

@@ -96,6 +96,7 @@ func TestExternalTurnIsAdoptedAndMarked(t *testing.T) {
 // response, which is the only reason the claim is a counter instead of a
 // turn id.
 func TestLocallyStartedTurnIsNotMarked(t *testing.T) {
+	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	s.beginLocalTurnStart() // Send, just before writing turn/start.
@@ -120,6 +121,7 @@ func TestLocallyStartedTurnIsNotMarked(t *testing.T) {
 // failed outright releases its claim, so the NEXT turn (which may well be an
 // injected one) is still classified honestly.
 func TestAbandonedLocalTurnStartDoesNotAbsorbALaterTurn(t *testing.T) {
+	t.Parallel()
 	s, _ := externalTurnTestSession(t, "codex-thread-1")
 
 	s.beginLocalTurnStart()
@@ -142,6 +144,7 @@ func TestAbandonedLocalTurnStartDoesNotAbsorbALaterTurn(t *testing.T) {
 // TestTurnOriginIsForgottenOnCompletion keeps the map at one live entry for a
 // healthy session, and the cap keeps a sick one bounded.
 func TestTurnOriginIsForgottenOnCompletion(t *testing.T) {
+	t.Parallel()
 	s, _ := externalTurnTestSession(t, "codex-thread-1")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1"}}}`))
@@ -187,6 +190,7 @@ func TestTurnOriginIsForgottenOnCompletion(t *testing.T) {
 // The wire payload is `{threadId}` and nothing else at rust-v0.149.0, so the
 // notice deliberately reports no count.
 func TestThreadQueueChangedRaisesANotice(t *testing.T) {
+	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-1"}}`))
@@ -217,6 +221,7 @@ func TestThreadQueueChangedRaisesANotice(t *testing.T) {
 // notification: the `auto` tier's reviewer switching to the slow path is why
 // a session that looks stalled is actually working.
 func TestStrictReviewRequiredRaisesAWarning(t *testing.T) {
+	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"autoApprovalReview/strictReviewRequired","params":{"threadId":"codex-thread-1","turnId":"turn-1","startedAtMs":1700000000000}}`))
@@ -247,6 +252,7 @@ func TestStrictReviewRequiredRaisesAWarning(t *testing.T) {
 // EXTERNAL turn, and a surplus claim tells the user the injected prompt was
 // their own.
 func TestTimedOutTurnStartClaimDoesNotAbsorbALaterExternalTurn(t *testing.T) {
+	t.Parallel()
 	t.Run("a later response naming a classified turn releases it", func(t *testing.T) {
 		s := &Session{threadID: "ao-thread-1"}
 
@@ -316,6 +322,7 @@ func TestTimedOutTurnStartClaimDoesNotAbsorbALaterExternalTurn(t *testing.T) {
 // verdict. Deciding once is what keeps the turn-start marker and every later
 // row of the same turn from disagreeing.
 func TestTurnAdoptionIsDecidedAtTurnStarted(t *testing.T) {
+	t.Parallel()
 	t.Run("an unclaimed turn/started is external immediately", func(t *testing.T) {
 		s, events := externalTurnTestSession(t, "codex-thread-1")
 

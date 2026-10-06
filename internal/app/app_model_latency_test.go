@@ -11,6 +11,7 @@ import (
 )
 
 func TestModelControlsTrustExpiredCatalogAndRememberedSelection(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	now := time.Now()
 	calls := 0

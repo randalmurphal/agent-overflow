@@ -125,8 +125,11 @@ describe('scroll interleavings — ops × states frame invariants', () => {
       }),
     );
   }
-  function waitMs(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  // The controller's timers run on fake setTimeout/setInterval (installed
+  // in beforeEach), so a wait advances them instead of sleeping. rAF stays
+  // real (happy-dom's setImmediate) and `mockNow` drives performance.now.
+  async function waitMs(ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
   }
   async function advanceUntil(predicate: () => boolean, maxFrames = 200): Promise<void> {
     for (let i = 0; i < maxFrames; i++) {
@@ -150,6 +153,7 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   }
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
@@ -191,6 +195,7 @@ describe('scroll interleavings — ops × states frame invariants', () => {
     }
     vi.restoreAllMocks();
     resetSettingsForTest();
+    vi.useRealTimers();
   });
 
   function bottomTarget(): number {

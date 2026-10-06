@@ -142,7 +142,7 @@ func TestProviderSmokeClaudeWorktreeFollow(t *testing.T) {
 	if entered.Branch != "worktree-"+worktreeName {
 		t.Errorf("WORKTREE FOLLOW FAILED: branch = %q, want worktree-%s", entered.Branch, worktreeName)
 	}
-	if dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t), worktreePath); err != nil {
+	if dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t, app), worktreePath); err != nil {
 		t.Errorf("WORKTREE FOLLOW FAILED: no project slug for the worktree the CLI entered: %v", err)
 	} else {
 		worktreeSlugDir = dir
@@ -255,9 +255,9 @@ func TestProviderSmokeClaudeWorktreeFollow(t *testing.T) {
 	if resumed.SessionRef != before.SessionRef {
 		t.Errorf("WORKTREE FOLLOW FAILED: resume from the root minted session %q instead of continuing %q", resumed.SessionRef, before.SessionRef)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), resumed.SessionRef, workspace); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), resumed.SessionRef, workspace); err != nil {
 		t.Errorf("WORKTREE FOLLOW FAILED: transcript for %s not locatable from %s: %v", resumed.SessionRef, workspace, err)
-	} else if dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t), workspace); err != nil || !samePath(filepath.Dir(located), dir) {
+	} else if dir, err := sessionfork.WorkspaceProjectDir(testProviderProjectsDir(t, app), workspace); err != nil || !samePath(filepath.Dir(located), dir) {
 		t.Errorf("WORKTREE FOLLOW FAILED: transcript sits at %s, want under the root slug %s (err=%v)", located, dir, err)
 	}
 }

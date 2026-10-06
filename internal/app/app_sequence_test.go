@@ -14,6 +14,7 @@ import (
 // a test hook drops emissions without panicking. The pre-Startup boot
 // path relies on this so callers don't have to nil-check the bus.
 func TestAppEmitNoOpWhenNeitherBusNorHook(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	// Should not panic and should not record anything anywhere — there's
 	// no observer to crash on, so the only failure mode is a panic.
@@ -25,6 +26,7 @@ func TestAppEmitNoOpWhenNeitherBusNorHook(t *testing.T) {
 // payload directly. The transport bus assigns its own per-channel seq
 // when given a real bus; tests that don't need wire seq use the hook.
 func TestAppEmitDeliversRawDataToTestHook(t *testing.T) {
+	t.Parallel()
 	type record struct {
 		name string
 		data any
@@ -58,6 +60,7 @@ func TestAppEmitDeliversRawDataToTestHook(t *testing.T) {
 // and the data round-trips as the original payload. This is the
 // invariant frontend subscribers depend on for gap detection.
 func TestAppEmitDeliversThroughTransportBus(t *testing.T) {
+	t.Parallel()
 	bus := transport.NewEventBus(0)
 	defer bus.Close()
 	sub := bus.Subscribe()
@@ -106,6 +109,7 @@ func TestAppEmitDeliversThroughTransportBus(t *testing.T) {
 // emit closure also reach the transport bus with raw payload (no
 // envelope) and the per-channel seq advances.
 func TestEmitWithReplayDeliversThroughTransportBus(t *testing.T) {
+	t.Parallel()
 	bus := transport.NewEventBus(0)
 	defer bus.Close()
 	sub := bus.Subscribe()
@@ -140,6 +144,7 @@ func TestEmitWithReplayDeliversThroughTransportBus(t *testing.T) {
 // This is the transport bus's contract; the App side doesn't track a
 // global counter anymore.
 func TestAppEmitTransportBusPerChannelSeq(t *testing.T) {
+	t.Parallel()
 	bus := transport.NewEventBus(0)
 	defer bus.Close()
 	sub := bus.Subscribe()

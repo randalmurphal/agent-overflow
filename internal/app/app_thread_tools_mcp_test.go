@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -49,6 +50,7 @@ func threadMCPEndpoint(t *testing.T, a *App, thread store.Thread, token string) 
 // a workflow phase runs a scripted step and has no business driving other
 // threads, and a provider that cannot host MCP gets nothing.
 func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 
@@ -119,6 +121,7 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 // approves the server's tools in its own entry, which is what makes these
 // tools work under `never` and under the prompting policies alike.
 func TestThreadMCPProviderEntriesAdmitTheToolsWithoutPrompting(t *testing.T) {
+	t.Parallel()
 	base := map[string]any{"type": "http", "url": "https://127.0.0.1:1/x", "headers": map[string]any{"a": "b"}}
 
 	claudeEntry, ok := threadMCPServerConfig(string(provider.Claude), base).(map[string]any)
@@ -162,6 +165,7 @@ func TestThreadMCPProviderEntriesAdmitTheToolsWithoutPrompting(t *testing.T) {
 // whole chain (registration, Config.AllowedTools, buildArgs, argv) by
 // recording the real argv the spawned binary was given.
 func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 	workspace := t.TempDir()
@@ -173,9 +177,7 @@ func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
 	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
 	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write argv-recording binary: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -220,9 +222,7 @@ func writeCodexRequestLogBinary(t *testing.T, logPath string) string {
 		"  fi\n" +
 		"done\n"
 	binary := filepath.Join(t.TempDir(), "codex-log.sh")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write codex request-log binary: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	return binary
 }
 
@@ -255,6 +255,7 @@ func waitForCodexRequest(t *testing.T, logPath, method string) map[string]any {
 // the approval key and the timeout, and the decision guide rides
 // developerInstructions because Codex has no server-instructions channel.
 func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 	workspace := t.TempDir()
@@ -303,6 +304,7 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 // flip walks the live sessions and applies the change through the
 // provider's own live-apply mechanism, on both providers.
 func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {
 			app, _, _ := newMCPTestApp(t)
@@ -368,6 +370,7 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 // back, and the call is refused with its own documented code rather than
 // looking like a broken tool.
 func TestThreadMCPCallRefusedWhileTheSwitchIsOff(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 	thread, token := remoteMCPThread(t, app, string(provider.Claude))
@@ -401,6 +404,7 @@ func TestThreadMCPCallRefusedWhileTheSwitchIsOff(t *testing.T) {
 // half: a conversation the user opted out of stays off when the switch is
 // on, and turning the switch on does not re-enable it.
 func TestThreadMCPPerConversationToggleIsANDedWithTheSwitch(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 	thread, token := remoteMCPThread(t, app, string(provider.Claude))
@@ -494,6 +498,7 @@ func postThreadToolsStreamed(t *testing.T, endpoint, name string, args any) stri
 // agent that wrote it. Holding the thread's action lock, which DeleteThread
 // takes, stops the deletion where the response must already be out.
 func TestThreadReplyAnswersBeforeItsScratchThreadIsDeleted(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newMCPTestApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
 
@@ -570,6 +575,7 @@ func (s pairedComputersStub) PairedComputers(context.Context) ([]threadtools.Com
 // with the single-computer form would drop computer_id from every schema
 // while the refusals still demand one.
 func TestThreadToolsShapeKeepsTheKnownComputersWhenThePairingReadFails(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	paired := []threadtools.Computer{{ID: "c1", Name: "laptop"}, {ID: "c2", Name: "desk"}}
 

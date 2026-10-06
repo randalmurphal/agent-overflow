@@ -21,6 +21,7 @@ import (
 // A side chat keeps the source's runtime mode: a person is present in the
 // pane, unlike the read-only fork an agent's ask runs in.
 func TestForkSideChatKeepsTheSourcesRuntimeMode(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-source")
 	if err := f.app.store.UpdateRuntimeMode(source.ID, string(provider.RuntimeFullAccess)); err != nil {
@@ -72,6 +73,7 @@ func TestForkSideChatKeepsTheSourcesRuntimeMode(t *testing.T) {
 
 // A side chat forked out of a plan thread returns to plan when it is kept.
 func TestForkSideChatRecordsThePlanReturnMode(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-plan")
 	if _, err := f.app.threadApplication().UpdateMode(source.ID, threadmode.ModePlan); err != nil {
@@ -94,6 +96,7 @@ func TestForkSideChatRecordsThePlanReturnMode(t *testing.T) {
 // The pane is offered mid-turn, so the fork has to be the tail fork that
 // includes the running turn rather than a refusal.
 func TestForkSideChatForksThroughARunningTurn(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-midturn")
 	if err := f.app.store.InsertTurn(store.Turn{
@@ -124,6 +127,7 @@ func TestForkSideChatForksThroughARunningTurn(t *testing.T) {
 // Keep restores the recorded mode, drops the scratch record, and tells every
 // attached client the thread belongs in the sidebar now.
 func TestPromoteScratchThreadListsTheKeptThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-keep")
 	fork, err := f.app.ForkSideChat(t.Context(), source.ID)
@@ -174,6 +178,7 @@ func TestPromoteScratchThreadListsTheKeptThread(t *testing.T) {
 // A thread nobody forked into a side chat has nothing to keep, and the
 // refusal is client-safe prose rather than a store error.
 func TestPromoteScratchThreadRefusesAnOrdinaryThread(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-refuse")
 
@@ -200,6 +205,7 @@ func TestPromoteScratchThreadRefusesAnOrdinaryThread(t *testing.T) {
 // Keeping twice is refused the second time: the first promotion took the
 // record with it, so there is no return mode left to restore.
 func TestPromoteScratchThreadRefusesASecondKeep(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-twice")
 	fork, err := f.app.ForkSideChat(t.Context(), source.ID)
@@ -217,6 +223,7 @@ func TestPromoteScratchThreadRefusesASecondKeep(t *testing.T) {
 // Closing the pane is DeleteThread, and the scratch record goes with the
 // row. Nothing else has to remember to clean it up.
 func TestDeleteThreadDropsTheScratchRecord(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	source := f.forkableThread(t, "side-chat-delete")
 	fork, err := f.app.ForkSideChat(t.Context(), source.ID)

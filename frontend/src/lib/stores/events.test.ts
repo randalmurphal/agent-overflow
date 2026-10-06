@@ -1234,8 +1234,6 @@ describe('setupEventListeners', () => {
   });
 
   it('flushes item_event batches on a bounded timeout when animation frames are delayed', async () => {
-    const originalRAF = globalThis.requestAnimationFrame;
-    const originalCancelRAF = globalThis.cancelAnimationFrame;
     vi.useFakeTimers();
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
@@ -1254,9 +1252,9 @@ describe('setupEventListeners', () => {
 
       expect(pane.items.map((item) => item.id)).toEqual(['timeout-flush']);
     } finally {
+      // The stubs replaced fake-timer globals, so they come off first.
+      vi.unstubAllGlobals();
       vi.useRealTimers();
-      vi.stubGlobal('requestAnimationFrame', originalRAF);
-      vi.stubGlobal('cancelAnimationFrame', originalCancelRAF);
     }
   });
 
@@ -1340,8 +1338,6 @@ describe('setupEventListeners', () => {
   });
 
   it('flushes a queued item_event batch on listener cleanup', async () => {
-    const originalRAF = globalThis.requestAnimationFrame;
-    const originalCancelRAF = globalThis.cancelAnimationFrame;
     vi.useFakeTimers();
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
@@ -1361,9 +1357,9 @@ describe('setupEventListeners', () => {
 
       expect(pane.items.map((entry) => entry.id)).toEqual(['cancelled-flush']);
     } finally {
+      // The stubs replaced fake-timer globals, so they come off first.
+      vi.unstubAllGlobals();
       vi.useRealTimers();
-      vi.stubGlobal('requestAnimationFrame', originalRAF);
-      vi.stubGlobal('cancelAnimationFrame', originalCancelRAF);
     }
   });
 

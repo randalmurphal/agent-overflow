@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/loopback/loopbacktest"
 )
 
 // Scan end to end: a fixture proc tree names the ports, and the ports are
@@ -17,7 +19,7 @@ import (
 
 func htmlServer(t *testing.T) (*httptest.Server, int) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))
@@ -52,7 +54,7 @@ func TestScanSeparatesOwnedFromSeenFromNotAPage(t *testing.T) {
 	_, ownedPort := htmlServer(t)
 	_, strangerPort := htmlServer(t)
 
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	api := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -103,7 +105,7 @@ func TestScanSeparatesOwnedFromSeenFromNotAPage(t *testing.T) {
 // even though the same answer would drop a candidate nobody chose.
 func TestScanPublishesHandNamedPortsWhateverTheyAnswer(t *testing.T) {
 	var hits atomic.Int32
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	api := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
@@ -308,7 +310,7 @@ func TestScanProbesCandidatesInParallel(t *testing.T) {
 
 	f := newProcFixture(t)
 	for i := range candidates {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		srv := loopbacktest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(serve)
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte("<!doctype html>"))
@@ -349,7 +351,7 @@ func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
 	plain, plainPort := htmlServer(t)
 	_ = plain
 
-	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	secure := loopbacktest.NewTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))
@@ -383,7 +385,7 @@ func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
 // keeps the scheme it was serving on. It comes back on the same one, and
 // the listener held through the grace has to keep speaking it.
 func TestTheGraceRowKeepsTheScheme(t *testing.T) {
-	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	secure := loopbacktest.NewTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<!doctype html>"))
 	}))

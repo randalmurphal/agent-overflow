@@ -6,6 +6,7 @@ import (
 )
 
 func TestUsageProgressUsesResumeBaselineAndSettlesOnce(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{threadID: "t", usageAcct: newUsageAccounting(true), turnConfig: sessionTurnConfig{model: "gpt-5.2-codex"},
 		onEvent: func(e provider.ProviderEvent) { events = append(events, e) }}
@@ -40,6 +41,7 @@ func TestUsageProgressUsesResumeBaselineAndSettlesOnce(t *testing.T) {
 }
 
 func TestUsageProgressUnseededResumeAndDestroyedCounters(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{threadID: "t", usageAcct: newUsageAccounting(true), turnConfig: sessionTurnConfig{model: "gpt-5.2-codex"},
 		onEvent: func(e provider.ProviderEvent) { events = append(events, e) }}

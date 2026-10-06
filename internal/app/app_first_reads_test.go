@@ -20,6 +20,7 @@ func answerRead(g *firstReadsGate, kind uint8, result error) {
 }
 
 func TestFirstReadsGateSettlesWhenBothCatalogsHaveAnswered(t *testing.T) {
+	t.Parallel()
 	var g firstReadsGate
 	answerRead(&g, firstReadThreads, nil)
 	answerRead(&g, firstReadThreads, nil)
@@ -44,6 +45,7 @@ func TestFirstReadsGateSettlesWhenBothCatalogsHaveAnswered(t *testing.T) {
 }
 
 func TestFirstReadsGateFallbackLetsAReadInFlightFinish(t *testing.T) {
+	t.Parallel()
 	var g firstReadsGate
 	end := g.read(firstReadThreads)
 	g.expire()
@@ -58,6 +60,7 @@ func TestFirstReadsGateFallbackLetsAReadInFlightFinish(t *testing.T) {
 }
 
 func TestFirstReadsGateFallbackSettlesWithNoClient(t *testing.T) {
+	t.Parallel()
 	var g firstReadsGate
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -76,6 +79,7 @@ func TestFirstReadsGateFallbackSettlesWithNoClient(t *testing.T) {
 // A settle by the reads releases a waiter at once rather than at its
 // fallback, and ending the context releases one that is still waiting.
 func TestFirstReadsGateWaitEndsWithTheReadsOrTheContext(t *testing.T) {
+	t.Parallel()
 	var g firstReadsGate
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -128,6 +132,7 @@ func awaitSearchIndexBuilt(t *testing.T, app *App, within time.Duration) time.Ti
 // The boot build waits for the first client's catalog reads, and begins
 // once both have answered.
 func TestThreadSearchIndexWaitsForTheFirstCatalogReads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.maintenance.firstReadsFallback = time.Hour
 	if !searchIndexBuilding(t, app) {
@@ -157,6 +162,7 @@ func TestThreadSearchIndexWaitsForTheFirstCatalogReads(t *testing.T) {
 
 // With no client, the boot build begins at the fallback and not before.
 func TestThreadSearchIndexBeginsAtTheFallbackWithNoClient(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	const fallback = 300 * time.Millisecond
 	app.maintenance.firstReadsFallback = fallback
@@ -175,6 +181,7 @@ func TestThreadSearchIndexBeginsAtTheFallbackWithNoClient(t *testing.T) {
 
 // Shutdown releases a build still waiting for its first reads.
 func TestThreadSearchIndexWaitEndsAtShutdown(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.maintenance.firstReadsFallback = time.Hour
 	app.startThreadSearchIndex()
@@ -197,6 +204,7 @@ func TestThreadSearchIndexWaitEndsAtShutdown(t *testing.T) {
 // Only a client's bound catalog reads release the gate: the harness lists
 // threads for itself without counting as one.
 func TestHarnessThreadListIsNotAClientCatalogRead(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := (&harnessHost{app: app}).ListVisibleThreads(); err != nil {
 		t.Fatalf("ListVisibleThreads: %v", err)

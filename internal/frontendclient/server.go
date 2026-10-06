@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"runtime"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
@@ -26,6 +27,13 @@ type Config struct {
 	EphemeralPortFallback                                     bool
 	SetWindowBackground                                       func(uint8, uint8, uint8)
 	ConfigureUpdater                                          func(*appupdate.Service)
+	// ActivationProbe is the pending-pairing confirmation poll. Zero keeps
+	// the product interval; only the end-to-end fixture shortens it.
+	ActivationProbe time.Duration
+	// LoopbackOnly turns off multicast discovery of nearby computers
+	// (attachedbackends.DisableLANDiscovery). Only the end-to-end fixture
+	// sets it, from network.IsolatedReach.
+	LoopbackOnly bool
 }
 
 type Server struct {
@@ -47,6 +55,10 @@ func Serve(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	computers.SetLabelGetter(cfg.DeviceName.Get)
+	computers.SetActivationProbe(cfg.ActivationProbe)
+	if cfg.LoopbackOnly {
+		computers.DisableLANDiscovery()
+	}
 	bus := transport.NewEventBus(64)
 	ctx, cancel := context.WithCancel(context.Background())
 	services, err := newService(ctx, cancel, cfg, computers, bus)

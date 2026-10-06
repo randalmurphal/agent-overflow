@@ -35,6 +35,7 @@ var sessionScopedStateGroups = []string{
 // how the guard-mutation review found five session-scoped maps sitting outside
 // both the groups and the then-prose exclusions list (2026-08-25, finding 10).
 func TestCloseReleasesSessionScopedState(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	// `cat` is a stand-in process, never a provider CLI: Close needs a real
 	// *provider.Process to close and this test must not spawn codex.
@@ -171,6 +172,7 @@ var sessionCloseFieldDispositions = map[string]string{
 // disposition names a live field. Without this, a new top-level map on
 // Session is invisible to TestCloseReleasesSessionScopedState.
 func TestSessionFieldsHaveACloseDisposition(t *testing.T) {
+	t.Parallel()
 	grouped := make(map[string]bool, len(sessionScopedStateGroups))
 	for _, name := range sessionScopedStateGroups {
 		grouped[name] = true

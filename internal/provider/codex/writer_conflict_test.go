@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // conflictWireMessage is upstream's own text, verbatim from
@@ -20,6 +20,7 @@ const conflictWireMessage = "thread 019a1c1f-0000-7000-8000-000000000000 already
 // -32600 code is shared by every invalid request, so the message match is
 // what separates "another process owns this thread" from the rest.
 func TestClassifyThreadWriterConflict(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		err      error
@@ -126,9 +127,7 @@ done
 `
 	dir := t.TempDir()
 	scriptPath := dir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
 		Model:   "test-model",
@@ -145,6 +144,7 @@ done
 // the thread, not of one method, so probe, resume and fork must all report it
 // as user-facing state instead of a raw wire string.
 func TestWriterConflictSurfacesOnEveryLockTakingCall(t *testing.T) {
+	t.Parallel()
 	s := newWriterConflictSession(t)
 	ctx := context.Background()
 

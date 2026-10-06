@@ -12,6 +12,7 @@ import (
 // appended at the end as a base64 `image` data URL. With the old build this fails on
 // the item ordering, the item type, and the surviving marker text.
 func TestBuildTurnInputInlinePlacement(t *testing.T) {
+	t.Parallel()
 	att := func(id, path string) provider.ImageAttachment {
 		return provider.ImageAttachment{ID: id, MimeType: "image/png", Path: path}
 	}
@@ -58,6 +59,7 @@ func TestBuildTurnInputInlinePlacement(t *testing.T) {
 // wiring bug (resolveSendMessageAttachments must route Codex through the path-only
 // branch), and an empty turn carries nothing to send.
 func TestBuildTurnInputErrors(t *testing.T) {
+	t.Parallel()
 	if _, err := buildTurnInput("[Image #1]", []provider.ImageAttachment{{ID: "a", MimeType: "image/png"}}); err == nil {
 		t.Fatal("expected error for an attachment with no on-disk path")
 	}
@@ -75,6 +77,7 @@ func TestBuildTurnInputErrors(t *testing.T) {
 // fires when there are no attachments — and the whitespace run is kept as its own
 // text item alongside the image.
 func TestBuildTurnInputWhitespaceWithImage(t *testing.T) {
+	t.Parallel()
 	input, err := buildTurnInput("  ", []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Path: "/p/a.png"}})
 	if err != nil {
 		t.Fatalf("whitespace + image: %v", err)

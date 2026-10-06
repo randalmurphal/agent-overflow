@@ -21,8 +21,7 @@ func seedTestApp(
 	record *provideraccounts.ClaudeCatalogRecord,
 ) *App {
 	t.Helper()
-	resetClaudeProbeCacheForTest()
-	t.Cleanup(resetClaudeProbeCacheForTest)
+	resetClaudeProbeCacheForTest(t)
 	app := newTestAppWithStore(t)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
@@ -257,15 +256,14 @@ func TestPersistedClaudeCatalogSurvivesARestart(t *testing.T) {
 		return app
 	}
 
-	resetClaudeProbeCacheForTest()
-	t.Cleanup(resetClaudeProbeCacheForTest)
+	resetClaudeProbeCacheForTest(t)
 	first := newAppOn(t)
 	if _, err := first.ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 
 	// A restart: new App, new in-process catalog, same metadata on disk.
-	resetClaudeProbeCacheForTest()
+	resetClaudeProbeCacheForTest(t)
 	second := newAppOn(t)
 	cold, err := second.GetModelsForProvider(string(provider.Claude))
 	if err != nil {

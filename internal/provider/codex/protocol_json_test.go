@@ -8,6 +8,7 @@ import (
 // -- JSON helper tests --
 
 func TestReadNestedString(t *testing.T) {
+	t.Parallel()
 	data := json.RawMessage(`{"turn":{"id":"t1","status":"completed"}}`)
 
 	if got := readNestedString(data, "turn", "id"); got != "t1" {
@@ -25,6 +26,7 @@ func TestReadNestedString(t *testing.T) {
 }
 
 func TestReadNestedStringDeep(t *testing.T) {
+	t.Parallel()
 	data := json.RawMessage(`{"turn":{"error":{"message":"something broke"}}}`)
 	if got := readNestedString(data, "turn", "error", "message"); got != "something broke" {
 		t.Errorf("got %q, want %q", got, "something broke")
@@ -32,6 +34,7 @@ func TestReadNestedStringDeep(t *testing.T) {
 }
 
 func TestReadTopLevelString(t *testing.T) {
+	t.Parallel()
 	data := json.RawMessage(`{"delta":"hello","other":42}`)
 
 	if got := readTopLevelString(data, "delta"); got != "hello" {
@@ -47,12 +50,14 @@ func TestReadTopLevelString(t *testing.T) {
 }
 
 func TestReadTopLevelStringInvalidJSON(t *testing.T) {
+	t.Parallel()
 	if got := readTopLevelString(json.RawMessage(`not json`), "key"); got != "" {
 		t.Errorf("got %q, want empty string", got)
 	}
 }
 
 func TestReadTopLevelIDString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		data json.RawMessage
@@ -85,6 +90,7 @@ func TestReadTopLevelIDString(t *testing.T) {
 }
 
 func TestReadNestedStringInvalidJSON(t *testing.T) {
+	t.Parallel()
 	if got := readNestedString(json.RawMessage(`not json`), "key"); got != "" {
 		t.Errorf("got %q, want empty string", got)
 	}

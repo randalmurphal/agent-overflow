@@ -16,6 +16,7 @@ import (
 // payload keys. `Commit.title` is `Option<String>` with NO
 // skip_serializing_if, so the key is always present and null when absent.
 func TestReviewTargetMarshalsExactlyTheWireShape(t *testing.T) {
+	t.Parallel()
 	baseBranch, err := ReviewBaseBranch("main")
 	if err != nil {
 		t.Fatalf("ReviewBaseBranch: %v", err)
@@ -65,6 +66,7 @@ func TestReviewTargetMarshalsExactlyTheWireShape(t *testing.T) {
 }
 
 func TestReviewTargetRejectsIllegalStates(t *testing.T) {
+	t.Parallel()
 	// The zero value is not a variant. Serialising it as anything at all
 	// would silently review something the caller never asked for.
 	if _, err := json.Marshal(ReviewTarget{}); err == nil {
@@ -82,6 +84,7 @@ func TestReviewTargetRejectsIllegalStates(t *testing.T) {
 }
 
 func TestReviewTargetUnmarshalValidatesPayloads(t *testing.T) {
+	t.Parallel()
 	// Decoding is the other door into the type; it has to enforce the same
 	// invariants the constructors do or the unexported fields buy nothing.
 	for _, body := range []string{
@@ -99,6 +102,7 @@ func TestReviewTargetUnmarshalValidatesPayloads(t *testing.T) {
 }
 
 func TestReviewDeliveryWireValues(t *testing.T) {
+	t.Parallel()
 	// `v2_enum_from_core!` applies `#[serde(rename_all = "camelCase")]`;
 	// both variants are single words, so the wire values are lowercase.
 	if string(ReviewDeliveryInline) != "inline" || string(ReviewDeliveryDetached) != "detached" {
@@ -113,6 +117,7 @@ func TestReviewDeliveryWireValues(t *testing.T) {
 }
 
 func TestStartReviewSendsTheWireFrameAndRoutesOnTheReturnedID(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-review")
 
 	type result struct {
@@ -176,6 +181,7 @@ func TestStartReviewSendsTheWireFrameAndRoutesOnTheReturnedID(t *testing.T) {
 }
 
 func TestStartReviewInlineReportsNotDetachedAndOmitsTheDefaultDelivery(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-inline")
 
 	done := make(chan ReviewStarted, 1)
@@ -217,6 +223,7 @@ func TestStartReviewInlineReportsNotDetachedAndOmitsTheDefaultDelivery(t *testin
 }
 
 func TestStartReviewRefusesMissingReviewThreadID(t *testing.T) {
+	t.Parallel()
 	s, _ := newCapturingSession(t, "codex-thread-noid")
 
 	errCh := make(chan error, 1)
@@ -235,6 +242,7 @@ func TestStartReviewRefusesMissingReviewThreadID(t *testing.T) {
 }
 
 func TestStartReviewValidatesBeforeWriting(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-guard")
 
 	if _, err := s.StartReview(context.Background(), ReviewTarget{}, ReviewDeliveryInline); err == nil {
@@ -259,6 +267,7 @@ func TestStartReviewValidatesBeforeWriting(t *testing.T) {
 }
 
 func TestCompactThreadSendsTheWireFrame(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-thread-compact")
 
 	errCh := make(chan error, 1)

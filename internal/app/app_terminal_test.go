@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -43,6 +42,7 @@ func createModeThread(t *testing.T, app *App, id, mode string) {
 }
 
 func TestOpenTerminalRequiresCwd(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-a")
 	_, err := app.OpenTerminal("thread-a", TerminalOpenOptions{})
 	if err == nil {
@@ -51,6 +51,7 @@ func TestOpenTerminalRequiresCwd(t *testing.T) {
 }
 
 func TestOpenTerminalReturnsHandle(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-a")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -73,6 +74,7 @@ func TestOpenTerminalReturnsHandle(t *testing.T) {
 }
 
 func TestWriteTerminalDecodesBase64(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-w")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -91,6 +93,7 @@ func TestWriteTerminalDecodesBase64(t *testing.T) {
 }
 
 func TestWriteTerminalRejectsBadBase64(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-b")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -111,6 +114,7 @@ func TestWriteTerminalRejectsBadBase64(t *testing.T) {
 }
 
 func TestResizeAndCloseTerminal(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-r")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -148,6 +152,7 @@ func TestResizeAndCloseTerminal(t *testing.T) {
 }
 
 func TestMoveThreadTerminalsRekeysSessions(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
@@ -194,6 +199,7 @@ func TestMoveThreadTerminalsRekeysSessions(t *testing.T) {
 }
 
 func TestMoveThreadTerminalsRequiresDraftSourceAndRealTarget(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
@@ -213,6 +219,7 @@ func TestMoveThreadTerminalsRequiresDraftSourceAndRealTarget(t *testing.T) {
 }
 
 func TestRestartTerminalReturnsNewHandle(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-rs")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -233,6 +240,7 @@ func TestRestartTerminalReturnsNewHandle(t *testing.T) {
 }
 
 func TestGetTerminalReplayReturnsBase64(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t, "thread-g")
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -271,6 +279,7 @@ func TestGetTerminalReplayReturnsBase64(t *testing.T) {
 }
 
 func TestWriteTerminalMissingBindingFails(t *testing.T) {
+	t.Parallel()
 	// When terminal manager isn't initialized, every binding should report that.
 	app := &App{}
 	_, err := app.OpenTerminal("t", TerminalOpenOptions{Cwd: t.TempDir()})
@@ -283,6 +292,7 @@ func TestWriteTerminalMissingBindingFails(t *testing.T) {
 }
 
 func TestResizeTerminalOnMissingIsErrorFromManager(t *testing.T) {
+	t.Parallel()
 	app := newAppWithTerminals(t)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
 
@@ -295,6 +305,7 @@ func TestResizeTerminalOnMissingIsErrorFromManager(t *testing.T) {
 // A terminal exit reaches every client as `terminal:exit` with its status
 // copied across. Clients remove the terminal's tab on it.
 func TestTerminalExitCallbackEmitsTheExit(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 
 	got := make(chan TerminalExitEvent, 1)
@@ -413,6 +424,7 @@ func requireThreadRow(t *testing.T, app *App, threadID string, want bool) {
 // through the ordinary deletion: every client sees the exit, then the
 // deletion that closes its panes.
 func TestLastTerminalExitDeletesTheTerminalThread(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	snapshot := captureOrderedEmissions(app, string(eventchan.TerminalExit), string(eventchan.ThreadUpdated))
@@ -440,6 +452,7 @@ func TestLastTerminalExitDeletesTheTerminalThread(t *testing.T) {
 // A terminal thread lives while any of its shells does, and ends with the
 // last one, however it ends: here the user closes each tab.
 func TestTerminalThreadOutlivesAllButItsLastShell(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	first := openTestTerminal(t, app, "thread-term")
@@ -461,6 +474,7 @@ func TestTerminalThreadOutlivesAllButItsLastShell(t *testing.T) {
 // A chat thread's drawer terminals are tabs: the last one ending leaves the
 // thread, and the drawer can open another.
 func TestDrawerTerminalExitKeepsTheChatThread(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-chat", threadmode.ModeChat)
 	handle := openTestTerminal(t, app, "thread-chat")
@@ -477,6 +491,7 @@ func TestDrawerTerminalExitKeepsTheChatThread(t *testing.T) {
 // A restart is a close plus an open under the thread's mutation lock, so
 // the old shell's exit finds the new one and the terminal thread stays.
 func TestRestartTerminalKeepsTheTerminalThread(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	handle := openTestTerminal(t, app, "thread-term")
@@ -500,6 +515,7 @@ func TestRestartTerminalKeepsTheTerminalThread(t *testing.T) {
 // Shells moved into a terminal thread are its shells: once the last exits,
 // the thread has ended and takes no more.
 func TestMoveThreadTerminalsIntoATerminalThreadFollowsItsLifetime(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	handle := openTestTerminal(t, app, "draft:terminal")
@@ -525,6 +541,7 @@ func TestMoveThreadTerminalsIntoATerminalThreadFollowsItsLifetime(t *testing.T) 
 // read stays listed and ended. No caller waits on that delete, so every
 // client is told it could not be removed, and it takes no new shell.
 func TestFailedTerminalThreadEndIsReportedAndTheThreadStaysEnded(t *testing.T) {
+	t.Parallel()
 	app, exits, path := newAppWithReportedTerminalExitsAt(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	failDeleteMark(t, path, "thread-term")
@@ -557,6 +574,7 @@ func TestFailedTerminalThreadEndIsReportedAndTheThreadStaysEnded(t *testing.T) {
 // client all the same, and the next boot finishes it. Every client is told
 // its cleanup failed.
 func TestTerminalThreadEndFailingPastItsMarkStillDropsTheThread(t *testing.T) {
+	t.Parallel()
 	app, exits, path := newAppWithReportedTerminalExitsAt(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	execOnStore(t, path, `CREATE TRIGGER fail_drop BEFORE DELETE ON threads
@@ -589,6 +607,7 @@ func TestTerminalThreadEndFailingPastItsMarkStillDropsTheThread(t *testing.T) {
 // the thread must not give it a new shell. A thread's first shell, a chat
 // thread's drawer and a draft's drawer open; an id with no thread does not.
 func TestOpenTerminalRefusesAnEndedTerminalThread(t *testing.T) {
+	t.Parallel()
 	app, exits := newAppWithReportedTerminalExits(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	handle := openTestTerminal(t, app, "thread-term")
@@ -615,6 +634,7 @@ func TestOpenTerminalRefusesAnEndedTerminalThread(t *testing.T) {
 // Every terminal thread the last run left ends at boot, archived or not,
 // through the ordinary deletion. Chat threads stay.
 func TestBootEndsTheTerminalThreadsTheLastRunLeft(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
 	archived := testThread("thread-term-archived")
@@ -649,6 +669,7 @@ func TestBootEndsTheTerminalThreadsTheLastRunLeft(t *testing.T) {
 // ended with the last run, so a pane mounting it is refused a shell rather
 // than given a fresh one in the thread's folder.
 func TestBootLeavesATerminalThreadItCouldNotDeleteEnded(t *testing.T) {
+	t.Parallel()
 	app, path := newTestAppWithStorePath(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	t.Cleanup(app.stopTerminalThreadEnds)
@@ -673,9 +694,7 @@ func TestBootLeavesATerminalThreadItCouldNotDeleteEnded(t *testing.T) {
 func TestStartEndsTheTerminalThreadsTheLastRunLeft(t *testing.T) {
 	a := newBootTestApp(t)
 	dbPath := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	migratedDatabaseAt(t, dbPath)
 	st, err := store.New(dbPath)
 	if err != nil {
 		t.Fatal(err)

@@ -24,8 +24,9 @@ func writeWorkspaceFile(t *testing.T, root, path, content string) {
 }
 
 func TestTransferWorkspacePreservesIndexWorkingFilesAndHiddenFlags(t *testing.T) {
+	t.Parallel()
 	ctx, core := context.Background(), NewCore()
-	source := testutil.InitGitRepo(t)
+	source := initGitRepo(t)
 	for _, path := range []string{"both", "skipped", "assumed", "delete", "staged-delete", "becomes-directory", "becomes-file/nested/old"} {
 		writeWorkspaceFile(t, source, path, "base\n")
 	}
@@ -106,7 +107,7 @@ func TestTransferWorkspacePreservesIndexWorkingFilesAndHiddenFlags(t *testing.T)
 	for _, shared := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete pack", true: "destination clone"}[shared], func(t *testing.T) {
 			destination := filepath.Join(t.TempDir(), "checkout")
-			base := testutil.InitGitRepo(t)
+			base := initGitRepo(t)
 			if shared {
 				base = source
 			}
@@ -154,8 +155,9 @@ func TestTransferWorkspacePreservesIndexWorkingFilesAndHiddenFlags(t *testing.T)
 }
 
 func TestTransferWorkspaceRefusesSourceChangesAndExistingDestination(t *testing.T) {
+	t.Parallel()
 	ctx, core := context.Background(), NewCore()
-	source := testutil.InitGitRepo(t)
+	source := initGitRepo(t)
 	writeWorkspaceFile(t, source, "untracked", "initial")
 	capture, err := core.CaptureTransferWorkspace(ctx, source)
 	if err != nil {
@@ -176,8 +178,9 @@ func TestTransferWorkspaceRefusesSourceChangesAndExistingDestination(t *testing.
 }
 
 func TestTransferWorkspaceRejectsUnsafeMetadataBeforeCreatingDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, core := context.Background(), NewCore()
-	source := testutil.InitGitRepo(t)
+	source := initGitRepo(t)
 	capture, err := core.CaptureTransferWorkspace(ctx, source)
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The fake speaks the sign-in control channel and nothing else, exactly as
@@ -65,9 +67,7 @@ func newLoginFake(t *testing.T) *loginFake {
 	t.Helper()
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "mock-claude-login.sh")
-	if err := os.WriteFile(binary, []byte(mockLoginScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, mockLoginScript)
 	fake := &loginFake{
 		binary:    binary,
 		configDir: filepath.Join(dir, "home"),

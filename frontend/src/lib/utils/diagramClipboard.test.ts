@@ -114,7 +114,6 @@ function stubRasterPipeline(
 
 describe('diagramClipboard', () => {
   let raster: ReturnType<typeof stubRasterPipeline> | null = null;
-  const originalClipboard = navigator.clipboard;
 
   function useRaster(options: Parameters<typeof stubRasterPipeline>[0] = {}) {
     raster?.restore();
@@ -130,7 +129,8 @@ describe('diagramClipboard', () => {
     raster?.restore();
     raster = null;
     document.body.innerHTML = '';
-    setClipboard(originalClipboard);
+    // The stub shadows happy-dom's prototype getter; drop it.
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   describe('copyAsPNG', () => {

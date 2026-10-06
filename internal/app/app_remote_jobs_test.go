@@ -18,6 +18,7 @@ import (
 )
 
 func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
@@ -119,6 +120,7 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 }
 
 func TestAgentRemoteEnableChecksPairingAndDestinationScope(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	for _, access := range []string{"full", "view-only"} {
 		t.Run(access, func(t *testing.T) {

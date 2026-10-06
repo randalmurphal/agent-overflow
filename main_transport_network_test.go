@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/netisolate"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
@@ -24,13 +26,21 @@ func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing
 		lan      bool
 		explicit bool
 		isolated bool
+		// confined boots an isolated App outside the test network namespace,
+		// whose Reach is loopback, while still reading saved settings as a
+		// soak boot does.
+		confined bool
 	}{
 		{name: "ordinary LAN restart", lan: true},
 		{name: "ordinary private restart"},
 		{name: "explicit loopback beats saved LAN", lan: true, explicit: true},
 		{name: "isolated harness ignores saved host settings", lan: true, isolated: true},
+		{name: "isolated soak keeps saved LAN on loopback", lan: true, confined: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.confined && netisolate.Contained() {
+				t.Skip("inside the test network namespace an isolated boot uses its LAN")
+			}
 			previous := dataDirRoot
 			dataDirRoot = t.TempDir()
 			t.Cleanup(func() { dataDirRoot = previous })
@@ -54,7 +64,11 @@ func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing
 				}
 				// An ordinary headless/desktop boot uses the zero option value.
 				opts := bootTransportOptions{IgnorePersistedNetwork: tc.isolated}
-				settingsPort, domain, err := configureTransportNetwork(&cfg, listen, opts.IgnorePersistedNetwork)
+				app := NewApp()
+				if tc.confined {
+					appservice.ConfigureIsolation(app.App, appservice.IsolationConfig{})
+				}
+				settingsPort, domain, err := configureTransportNetwork(&cfg, app, listen, opts.IgnorePersistedNetwork)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -88,7 +102,7 @@ func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing
 					t.Fatal(err)
 				}
 				ip := net.ParseIP(host)
-				wantLAN := tc.lan && !tc.explicit && !tc.isolated
+				wantLAN := tc.lan && !tc.explicit && !tc.isolated && !tc.confined
 				if ip == nil || ip.To4() == nil || (wantLAN && !ip.IsUnspecified()) || (!wantLAN && !ip.IsLoopback()) {
 					t.Fatalf("listener %s does not match saved/explicit bind policy (LAN=%v)", srv.Addr(), wantLAN)
 				}
@@ -126,5 +140,33 @@ func TestTransportBootRestoresLANAndPreservesExplicitAndIsolatedBinds(t *testing
 				stop()
 			}
 		})
+	}
+}
+
+// TestIsolatedBootRefusesANonLoopbackListen: outside the test network
+// namespace an explicit --listen cannot put an isolated instance on the LAN.
+func TestIsolatedBootRefusesANonLoopbackListen(t *testing.T) {
+	t.Parallel()
+	if netisolate.Contained() {
+		t.Skip("inside the test network namespace an isolated boot uses its LAN")
+	}
+	isolated, ordinary := NewApp(), NewApp()
+	appservice.ConfigureIsolation(isolated.App, appservice.IsolationConfig{})
+	for _, tc := range []struct {
+		listen string
+		ok     bool
+	}{
+		{"127.0.0.1:0", true},
+		{":0", true},
+		{"0.0.0.0:0", false},
+		{"192.168.1.20:0", false},
+		{"localhost:0", false},
+	} {
+		if _, _, err := configureTransportNetwork(&transport.Config{}, isolated, tc.listen, true); (err == nil) != tc.ok {
+			t.Errorf("isolated --listen %s: err = %v, want accepted %v", tc.listen, err, tc.ok)
+		}
+		if _, _, err := configureTransportNetwork(&transport.Config{}, ordinary, tc.listen, true); err != nil {
+			t.Errorf("ordinary boot refused --listen %s: %v", tc.listen, err)
+		}
 	}
 }

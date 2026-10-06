@@ -68,21 +68,27 @@ for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
           revalidating = true;
           const before = responses;
           await page.evaluate(() => {
-            const w = window as typeof window & { tailSamples?: Promise<number[]> };
+            const w = window as typeof window & { tailSamples?: Promise<number[]>; tailFramesLeft?: number };
+            w.tailFramesLeft = Infinity;
             w.tailSamples = new Promise(resolve => {
               const samples: number[] = [];
-              let frames = 0;
-              function record() {
+              function record(): boolean {
                 const rows = document.querySelectorAll('[data-testid="activity-run"]');
                 const tail = rows[rows.length - 1];
-                if (tail && getComputedStyle(tail).visibility === 'visible') samples.push(tail.getBoundingClientRect().bottom);
+                if (!tail || getComputedStyle(tail).visibility !== 'visible') return false;
+                samples.push(tail.getBoundingClientRect().bottom);
+                return true;
               }
+              let framesAfterAnswer = 0;
               function sample() {
                 record();
                 // Also observe after this frame's layout/ResizeObserver work.
                 setTimeout(() => {
-                  record();
-                  if (++frames < 120) requestAnimationFrame(sample);
+                  // Count only frames that showed the tail, so a slow reveal
+                  // under load still gets its full observation window.
+                  if (record() && Number.isFinite(w.tailFramesLeft)) w.tailFramesLeft!--;
+                  if (Number.isFinite(w.tailFramesLeft)) framesAfterAnswer++;
+                  if (w.tailFramesLeft! > 0 && framesAfterAnswer < 600) requestAnimationFrame(sample);
                   else resolve(samples);
                 }, 0);
               }
@@ -91,7 +97,14 @@ for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
           });
           await open();
           await expect.poll(() => responses).toBeGreaterThan(before);
-          const samples = await page.evaluate(() => (window as typeof window & { tailSamples: Promise<number[]> }).tailSamples);
+          // The refresh answer has reached the page. Keep sampling for 60
+          // frames that show the tail past it, which covers its application
+          // and layout. A tail that never shows ends the sampler after 600.
+          const samples = await page.evaluate(() => {
+            const w = window as typeof window & { tailSamples: Promise<number[]>; tailFramesLeft: number };
+            w.tailFramesLeft = 60;
+            return w.tailSamples;
+          });
           expect(samples.length).toBeGreaterThan(30);
           expect(Math.max(...samples.map(bottom => Math.abs(bottom - baseline))), JSON.stringify({ baseline, samples })).toBe(0);
         }

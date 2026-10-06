@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,7 +9,6 @@ import (
 	"testing"
 
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/testutil"
 )
 
 func TestGetPRMergeConflictsHappyPath(t *testing.T) {
@@ -16,7 +16,7 @@ func TestGetPRMergeConflictsHappyPath(t *testing.T) {
 		t.Skip("shell script mock git is unix-only")
 	}
 	app := newTestAppWithStore(t)
-	workspace := testutil.InitGitRepo(t)
+	workspace := initMainGitRepo(t)
 	ref := testWorkspaceRef(t, app, workspace)
 
 	binDir := t.TempDir()
@@ -67,9 +67,7 @@ EOF
     ;;
 esac
 `
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	mockexec.Write(t, gitPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_GIT_LOG", logPath)
 	t.Setenv("AO_HEAD_OID", headOID)
@@ -125,6 +123,7 @@ func readAppTestFile(t *testing.T, path string) string {
 }
 
 func TestGetPRMergeConflictsRequiresAGitWorkspace(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
 	// A zero ref names no project, so resolution refuses it outright.

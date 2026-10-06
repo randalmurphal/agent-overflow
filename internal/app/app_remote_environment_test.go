@@ -16,6 +16,7 @@ import (
 )
 
 func TestRemoteEnvironmentDistinguishesWSLAndOnlyLooksUpExecutables(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		os, host, environment string
 		wsl                   bool
@@ -49,6 +50,7 @@ func TestRemoteEnvironmentDistinguishesWSLAndOnlyLooksUpExecutables(t *testing.T
 }
 
 func TestRemoteProjectDiscoveryReturnsLiveRegisteredWorktreesAndSurvivesScanFailure(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	repo := initGitRepo(t)
 	worktree := filepath.Join(t.TempDir(), "feature checkout")
@@ -110,6 +112,7 @@ func (*legacyRemoteDiscovery) RemoteCommandProjects() []RemoteCommandProject {
 }
 
 func TestRemoteDiscoveryKeepsProjectsFromPeerWithoutEnvironmentRPC(t *testing.T) {
+	t.Parallel()
 	remotetest.Require(t)
 	backend := newPairedBackend(t, func(cfg *transport.Config) {
 		dispatcher := transport.NewDispatcher()

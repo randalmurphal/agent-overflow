@@ -10,6 +10,7 @@ import (
 )
 
 func TestInterruptSubagentTargetsOwnedChildTurnAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	events := make(chan provider.ProviderEvent, 4)
 	s, capturePath := newCapturingSession(t, "root-provider-thread")
 	s.onEvent = func(event provider.ProviderEvent) { events <- event }
@@ -80,6 +81,7 @@ statusObserved:
 }
 
 func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
+	t.Parallel()
 	s, capturePath := newCapturingSession(t, "root-provider-thread")
 	s.registerChildOwnership("root-provider-thread", "child-pending", "", "spawn-pending")
 	answerer := newPendingAnswerer(s)
@@ -110,6 +112,7 @@ func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
 }
 
 func TestInterruptSubagentDropsIntentAcrossRootRevert(t *testing.T) {
+	t.Parallel()
 	called := false
 	s := &Session{
 		collab: sessionCollabState{
@@ -138,6 +141,7 @@ func TestInterruptSubagentDropsIntentAcrossRootRevert(t *testing.T) {
 }
 
 func TestInterruptSubagentTargetsNestedLaunchWithoutStoppingAncestor(t *testing.T) {
+	t.Parallel()
 	var targets []string
 	s := &Session{
 		threadID: "ao-thread",
@@ -173,6 +177,7 @@ func TestInterruptSubagentTargetsNestedLaunchWithoutStoppingAncestor(t *testing.
 }
 
 func TestInterruptSubagentDrainsOnlyTargetChildApprovals(t *testing.T) {
+	t.Parallel()
 	s := NewInterruptSubagentTestSession("spawn-1", func(context.Context, string, string) error { return nil })
 	s.approvals.TrackScoped("root-approval", provider.EventApprovalResolved, nil, "test-root-thread")
 	s.approvals.TrackScoped("child-approval", provider.EventApprovalResolved, nil, "test-child-thread")

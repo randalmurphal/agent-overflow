@@ -15,6 +15,7 @@ import (
 )
 
 func TestUserMessagePlacement(t *testing.T) {
+	t.Parallel()
 	for _, p := range []provider.ProviderKind{provider.Claude, provider.Codex} {
 		for _, state := range []string{"empty", "rowless-completed", "active", "starting", "completed-late-echo"} {
 			t.Run(string(p)+"/"+state, func(t *testing.T) {
@@ -92,6 +93,7 @@ func TestUserMessagePlacement(t *testing.T) {
 }
 
 func TestUserMessageIdentityIndependentOfPlacement(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	for _, sendID := range []string{"composer-identity", "user:999:flush:../:steer:", "☃"} {
 		for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageSteer, messageFlush} {
@@ -120,6 +122,7 @@ func TestUserMessageIdentityIndependentOfPlacement(t *testing.T) {
 }
 
 func TestLegacyComposerIdentityRetainsPredictedID(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	for _, sendID := range []string{"", "already-supported-idempotency-id"} {
 		id, err := a.userMessageItemID("thread", sendID, 7, messageLegacyComposer)

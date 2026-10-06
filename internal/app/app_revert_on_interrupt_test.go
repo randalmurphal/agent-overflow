@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 // TestEvaluateInterruptRevertPredicateNoItems covers the empty-thread
 // branch — no items at all means there's nothing to revert.
 func TestEvaluateInterruptRevertPredicateNoItems(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-empty", "claude", t.TempDir())
 
@@ -39,6 +41,7 @@ func TestEvaluateInterruptRevertPredicateNoItems(t *testing.T) {
 // the only item on the latest turn is a single user_text row, so the
 // predicate matches and the user_item is returned.
 func TestEvaluateInterruptRevertPredicateSingleUserItem(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-single", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -63,6 +66,7 @@ func TestEvaluateInterruptRevertPredicateSingleUserItem(t *testing.T) {
 // means the agent has produced visible output and the revert would
 // discard real work.
 func TestEvaluateInterruptRevertPredicateRejectsAssistantText(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-asst", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -97,6 +101,7 @@ func TestEvaluateInterruptRevertPredicateRejectsAssistantText(t *testing.T) {
 // "agent has acted" gate for tool calls — even a started-but-incomplete
 // tool call blocks the revert because the model already decided to act.
 func TestEvaluateInterruptRevertPredicateRejectsToolCall(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-tool", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -132,6 +137,7 @@ func TestEvaluateInterruptRevertPredicateRejectsToolCall(t *testing.T) {
 // is not in provider history (TestUnsendPredicateAcceptsOnlyCompanionKinds
 // covers the full kind set).
 func TestEvaluateInterruptRevertPredicateAllowsThinking(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-think", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -166,6 +172,7 @@ func TestEvaluateInterruptRevertPredicateAllowsThinking(t *testing.T) {
 // steered-turn case: multiple user_text rows on a single turn mean the
 // user steered mid-round, and reverting one would break ordering.
 func TestEvaluateInterruptRevertPredicateRejectsMultiUser(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-multi", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
@@ -188,6 +195,7 @@ func TestEvaluateInterruptRevertPredicateRejectsMultiUser(t *testing.T) {
 // Stop should let the queued follow-up reach the provider rather than
 // discard everything via revert.
 func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-queue", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -210,6 +218,7 @@ func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
 }
 
 func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -259,6 +268,7 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 // Without the fix, the Stop returns immediately during the window (reverting
 // P0); with it, the Stop blocks on the lock and then refuses.
 func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "register-serialize", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "original prompt P0")
@@ -355,6 +365,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 }
 
 func TestEvaluateInterruptRevertPredicateRejectsRunningBackgroundTasks(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-background", "claude", t.TempDir())
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
@@ -373,6 +384,7 @@ func TestEvaluateInterruptRevertPredicateRejectsRunningBackgroundTasks(t *testin
 }
 
 func TestEvaluateInterruptRevertPredicateRejectsStashedBackgroundTasks(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-stashed-background", "claude", t.TempDir())
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
@@ -404,6 +416,7 @@ func TestEvaluateInterruptRevertPredicateRejectsStashedBackgroundTasks(t *testin
 // when the at-send record wrote an anchor keyed by the user item id
 // and matching turn index.
 func TestResolveMessageAnchorReturnsPersisted(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "rc-found", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -433,6 +446,7 @@ func TestResolveMessageAnchorReturnsPersisted(t *testing.T) {
 // need TurnIndex plus whatever ids the item meta carries, so a minimal
 // record is synthesized from the row.
 func TestResolveMessageAnchorSynthesizesWhenMissing(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "rc-missing", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -461,6 +475,7 @@ func TestResolveMessageAnchorSynthesizesWhenMissing(t *testing.T) {
 // no error returned. This is the fallback the InterruptAndRevertIfClean
 // method takes when the predicate fails.
 func TestRunPlainInterruptLockedNoSessionIsNoOp(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "no-session", "claude", t.TempDir())
 
@@ -473,6 +488,7 @@ func TestRunPlainInterruptLockedNoSessionIsNoOp(t *testing.T) {
 // gate. The frontend always passes a non-empty thread id, but the
 // binding still must refuse empty values rather than silently no-op.
 func TestInterruptAndRevertIfCleanRejectsEmptyThreadID(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 
 	_, err := app.InterruptAndRevertIfClean("", InterruptRevertOptions{}, nil)
@@ -488,6 +504,7 @@ func TestInterruptAndRevertIfCleanRejectsEmptyThreadID(t *testing.T) {
 // The method should NOT revert; it should fall through to the plain
 // interrupt path and return Reverted=false with a populated reason.
 func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "fallback", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
@@ -533,6 +550,7 @@ func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
 // row — no JSONL fork file needed. The conversation is truncated and
 // the composer draft is repopulated from the reverted user item.
 func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-first", "claude", t.TempDir())
@@ -595,6 +613,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 // only provider-resume state, never restore unrelated fields from its stale
 // snapshot.
 func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
+	t.Parallel()
 	for _, providerName := range []string{"claude", "codex"} {
 		t.Run(providerName, func(t *testing.T) {
 			app := newTestApp(t)
@@ -652,6 +671,7 @@ func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
 // generic else and failed with "unsupported provider claude-tui" from
 // revertProviderConversationToMessage, killing the live session on the way.
 func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
@@ -691,6 +711,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 // still succeed because the Claude TurnIndex==0 path doesn't need any
 // anchor metadata.
 func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-synth", "claude", t.TempDir())
@@ -725,6 +746,7 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
 // message needs no fork; SessionRef clears for a fresh thread on the
 // next send.
 func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	workspace := t.TempDir()
@@ -805,6 +827,7 @@ func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) 
 // history replacement, and runtime reload, so AO must neither send a separate
 // turn/interrupt nor replace the app-server connection around it.
 func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, app.emit)
 	workspace := t.TempDir()
@@ -941,6 +964,7 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 // thread lock names the old history generation and must not wake afterward to
 // send a startup interrupt against the reloaded thread.
 func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-stale-interrupt", "codex", workspace)
@@ -1004,6 +1028,7 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 // it enters. If that process is replaced while the call waits on the thread
 // lock, the interrupt must not hit the replacement's unrelated work.
 func TestInterruptTurnDoesNotRetargetAReplacementSession(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "interrupt-replacement", "codex", t.TempDir())
 	app.sessionManager().put(thread.ID, session{
@@ -1032,6 +1057,7 @@ func TestInterruptTurnDoesNotRetargetAReplacementSession(t *testing.T) {
 }
 
 func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, app.emit)
 	workspace := t.TempDir()
@@ -1104,10 +1130,10 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 // (no at-send row exists). The revert must keep turn 1's
 // full assistant response.
 func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -1146,7 +1172,7 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 	if updated.SessionRef == "" || updated.SessionRef == sessionID {
 		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0", "second", "reply 1"},
 		[]string{"third"})
 }
@@ -1175,10 +1201,10 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 // The revert must keep turns 0 AND 1 in full and drop only "third".
 // Before the fix it dropped "second"/"reply 1" too.
 func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	workspace := filepath.Join(home, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -1221,7 +1247,7 @@ func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 	// turn 1's "second"/"reply 1" MUST survive; only "third" is dropped.
 	// Before the fix, the interrupt marker shifted the ordinal count and
 	// "second"/"reply 1" were sliced away too.
-	assertClaudeSessionText(t, workspace, updated.SessionRef,
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef,
 		[]string{"first", "reply 0", "second", "reply 1"},
 		[]string{"third"})
 }
@@ -1233,6 +1259,7 @@ func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 // Regression guard for the bug where an anchor-less row fell back to
 // the legacy ordinal walk even after the fix.
 func TestResolveMessageAnchorSynthesizesProviderUserMessageID(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "synth-uuid", "claude", t.TempDir())
 	const meta = `{"provider_item_id":"wire-u1"}`
@@ -1280,8 +1307,6 @@ done
 `, threadID, threadID, turnID)
 
 	path := filepath.Join(t.TempDir(), "codex-interrupt-complete.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock codex binary: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }

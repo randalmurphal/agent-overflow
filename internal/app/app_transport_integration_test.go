@@ -29,6 +29,7 @@ import (
 // the WS handshake completes regardless and the event delivery is what
 // matters.
 func TestIntegration_AppEmitReachesWSClient(t *testing.T) {
+	t.Parallel()
 	app := NewApp()
 
 	dispatcher := transport.NewDispatcher()

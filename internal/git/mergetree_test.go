@@ -7,9 +7,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseMergeTreeNameOnly(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		stdout     string
@@ -77,6 +80,7 @@ func TestParseMergeTreeNameOnly(t *testing.T) {
 }
 
 func TestAttributeMergeMessagesLongestPathWins(t *testing.T) {
+	t.Parallel()
 	// "a/b.go" is a substring-adjacent trap: the message mentions the
 	// nested path, so the longer match must win over "b.go".
 	notes, rest := attributeMergeMessages(
@@ -92,6 +96,7 @@ func TestAttributeMergeMessagesLongestPathWins(t *testing.T) {
 }
 
 func TestShowTreeFileValidation(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	validOID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, tc := range []struct {
@@ -115,6 +120,7 @@ func TestShowTreeFileValidation(t *testing.T) {
 }
 
 func TestPRHeadRef(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		forge string
 		n     int
@@ -177,9 +183,7 @@ EOF
     ;;
 esac
 `
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	mockexec.Write(t, gitPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_GIT_LOG", logPath)
 	t.Setenv("AO_HEAD_OID", headOID)

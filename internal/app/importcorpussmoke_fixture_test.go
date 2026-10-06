@@ -164,6 +164,7 @@ func TestImportCorpusRootsComeOnlyFromTheEnvVars(t *testing.T) {
 // TestImportCorpusRefusesTheLiveProviderHomes pins the refusal in both the
 // pure predicate and the wiring that supplies the real homes to it.
 func TestImportCorpusRefusesTheLiveProviderHomes(t *testing.T) {
+	t.Parallel()
 	live := []string{"/home/dev/.claude", "/home/dev/.codex"}
 	cases := []struct {
 		name   string
@@ -221,6 +222,7 @@ func TestImportCorpusRefusalReadsTheRealHomes(t *testing.T) {
 // convenience the gate offers: whichever half of the Claude home a developer
 // copied, the runner finds the transcripts.
 func TestClaudeCorpusProjectsDirAcceptsBothCopyShapes(t *testing.T) {
+	t.Parallel()
 	home := newImportHome(t)
 	home.claudeLinearSession(t, importFixtureClaudeSession)
 

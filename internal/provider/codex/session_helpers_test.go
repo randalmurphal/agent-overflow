@@ -13,6 +13,7 @@ import (
 // -- buildElicitationMeta tests --
 
 func TestBuildElicitationMeta_WithServerName(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"serverName":"my-mcp-server","message":"","requestedSchema":{"type":"object"}}`)
 	meta := buildElicitationMeta("t1", "turn-1", 55, params)
 
@@ -46,6 +47,7 @@ func TestBuildElicitationMeta_WithServerName(t *testing.T) {
 }
 
 func TestBuildElicitationMeta_WithMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"serverName":"srv","message":"Please confirm access to the database"}`)
 	meta := buildElicitationMeta("t1", "turn-2", 10, params)
 
@@ -60,6 +62,7 @@ func TestBuildElicitationMeta_WithMessage(t *testing.T) {
 }
 
 func TestBuildElicitationMeta_NoServerNameNoMessage(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 
@@ -73,6 +76,7 @@ func TestBuildElicitationMeta_NoServerNameNoMessage(t *testing.T) {
 }
 
 func TestBuildElicitationMeta_InputPreserved(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"serverName":"x","message":"confirm","requestedSchema":{"type":"string"}}`)
 	meta := buildElicitationMeta("t1", "turn-1", 99, params)
 
@@ -90,6 +94,7 @@ func TestBuildElicitationMeta_InputPreserved(t *testing.T) {
 // Form mode with an explicit `mode: "form"` on the wire. The RequestedSchema
 // passes through as raw JSON and mode is preserved verbatim.
 func TestBuildElicitationMeta_FormMode_Explicit(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"mode":"form",
 		"message":"Provide connection details",
@@ -134,6 +139,7 @@ func TestBuildElicitationMeta_FormMode_Explicit(t *testing.T) {
 
 // URL mode with explicit discriminator and both URL-mode fields populated.
 func TestBuildElicitationMeta_URLMode_Explicit(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{
 		"mode":"url",
 		"message":"Authorize this app",
@@ -168,6 +174,7 @@ func TestBuildElicitationMeta_URLMode_Explicit(t *testing.T) {
 
 // Adversarial: `mode` omitted but URL present. Parser must infer URL mode.
 func TestBuildElicitationMeta_InferURLFromPayload(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"message":"Open link","url":"https://x.test","elicitationId":"e1"}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 
@@ -185,6 +192,7 @@ func TestBuildElicitationMeta_InferURLFromPayload(t *testing.T) {
 
 // Adversarial: `mode` omitted but schema present. Parser must infer form mode.
 func TestBuildElicitationMeta_InferFormFromPayload(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"message":"m","requestedSchema":{"type":"object"}}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 
@@ -200,6 +208,7 @@ func TestBuildElicitationMeta_InferFormFromPayload(t *testing.T) {
 // Adversarial: `mode` is present but not one of the known values. Falls back
 // to shape-based inference, then to "form" as last resort.
 func TestBuildElicitationMeta_UnknownModeFallsBack(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		params   string
@@ -228,6 +237,7 @@ func TestBuildElicitationMeta_UnknownModeFallsBack(t *testing.T) {
 // Adversarial: entirely invalid JSON. Must not panic; must still produce a
 // renderable approval with form mode + empty schema.
 func TestBuildElicitationMeta_MalformedJSONIsSafe(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`not even close to json`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 
@@ -251,6 +261,7 @@ func TestBuildElicitationMeta_MalformedJSONIsSafe(t *testing.T) {
 
 // Adversarial: null JSON literal as the whole payload.
 func TestBuildElicitationMeta_NullParams(t *testing.T) {
+	t.Parallel()
 	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(`null`))
 	var approval provider.ApprovalRequest
 	if err := json.Unmarshal(meta, &approval); err != nil {
@@ -267,6 +278,7 @@ func TestBuildElicitationMeta_NullParams(t *testing.T) {
 // Adversarial: `requestedSchema` is explicitly the JSON null. The parser must
 // treat null-valued-schema the same as absent-schema; not pass "null" through.
 func TestBuildElicitationMeta_NullSchemaIsTreatedAsAbsent(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{
 		`{"mode":"form","requestedSchema":null}`,
 		`{"mode":"form","requestedSchema":  null }`,
@@ -288,6 +300,7 @@ func TestBuildElicitationMeta_NullSchemaIsTreatedAsAbsent(t *testing.T) {
 // parser still produces a usable Elicitation — the UI can show the URL even
 // without an elicitationId (response just omits the id).
 func TestBuildElicitationMeta_URLModeMissingElicitationID(t *testing.T) {
+	t.Parallel()
 	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(`{"mode":"url","url":"https://x.test"}`))
 	var approval provider.ApprovalRequest
 	if err := json.Unmarshal(meta, &approval); err != nil {
@@ -304,6 +317,7 @@ func TestBuildElicitationMeta_URLModeMissingElicitationID(t *testing.T) {
 // Adversarial: unicode + control characters in message and serverName survive
 // the round-trip without corruption.
 func TestBuildElicitationMeta_UnicodePreserved(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"mode":"form","message":"日本語 \u00e9 \\n embedded","serverName":"服务器","requestedSchema":{"type":"object"}}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 	var approval provider.ApprovalRequest
@@ -321,6 +335,7 @@ func TestBuildElicitationMeta_UnicodePreserved(t *testing.T) {
 // Adversarial: large schema payload (>1 MB equivalent). Parser should not
 // choke; RequestedSchema preserves the full payload byte-for-byte by content.
 func TestBuildElicitationMeta_LargeSchemaRoundTrip(t *testing.T) {
+	t.Parallel()
 	// Build a schema with many properties to simulate a chatty server.
 	var b []byte
 	b = append(b, `{"mode":"form","message":"big","requestedSchema":{"type":"object","properties":{`...)
@@ -353,6 +368,7 @@ func TestBuildElicitationMeta_LargeSchemaRoundTrip(t *testing.T) {
 // dropped. Defensive choice so a confused server can't slip a phishing URL
 // past a form-mode UI.
 func TestBuildElicitationMeta_FormModeIgnoresURLField(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"mode":"form","url":"https://evil.test","requestedSchema":{"type":"object"}}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 	var approval provider.ApprovalRequest
@@ -370,6 +386,7 @@ func TestBuildElicitationMeta_FormModeIgnoresURLField(t *testing.T) {
 // URL mode with a schema field present → URL wins, schema is dropped. Parallel
 // of the form-mode-ignores-url test.
 func TestBuildElicitationMeta_URLModeIgnoresSchemaField(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"mode":"url","url":"https://x.test","elicitationId":"e1","requestedSchema":{"type":"object"}}`)
 	meta := buildElicitationMeta("t1", "", 1, params)
 	var approval provider.ApprovalRequest
@@ -388,6 +405,7 @@ func TestBuildElicitationMeta_URLModeIgnoresSchemaField(t *testing.T) {
 // "nul" must report false. Pinned down because the check drives the
 // null-schema-equals-absent behavior.
 func TestIsJSONNull(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want bool
@@ -427,6 +445,7 @@ func jsonEqual(a, b any) bool {
 // -- approvalKindForMethod tests --
 
 func TestApprovalKindForMethod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		method string
 		want   string
@@ -453,6 +472,7 @@ func TestApprovalKindForMethod(t *testing.T) {
 // -- buildApprovalMeta file-read path --
 
 func TestBuildApprovalMetaFileRead(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"filePath":"/etc/hosts"}`)
 	meta := buildApprovalMeta("t1", "turn-1", "item/fileRead/requestApproval", 50, params)
 
@@ -477,6 +497,7 @@ func TestBuildApprovalMetaFileRead(t *testing.T) {
 // -- buildApprovalMeta with neither command nor filePath (default kind) --
 
 func TestBuildApprovalMetaUnknownMethod(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"someField":"value"}`)
 	meta := buildApprovalMeta("t1", "", "custom/approval", 77, params)
 
@@ -499,6 +520,7 @@ func TestBuildApprovalMetaUnknownMethod(t *testing.T) {
 // -- parseUserInputQuestions tests --
 
 func TestParseUserInputQuestions_Valid(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"questions":[{"id":"q1","header":"H","question":"Q","options":[{"label":"A"}],"multiSelect":false}]}`)
 	questions := parseUserInputQuestions(params)
 	if len(questions) != 1 {
@@ -510,6 +532,7 @@ func TestParseUserInputQuestions_Valid(t *testing.T) {
 }
 
 func TestParseUserInputQuestions_NormalizesMissingAndReservedIDs(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"questions":[{"header":"Framework","question":"Q","options":[{"label":"A"}]},{"question":"Mode","options":[{"label":"B"}]},{"id":"__proto__","header":"constructor","question":"Safe","options":[{"label":"C"}]}]}`)
 	questions := parseUserInputQuestions(params)
 	if len(questions) != 3 {
@@ -523,6 +546,7 @@ func TestParseUserInputQuestions_NormalizesMissingAndReservedIDs(t *testing.T) {
 }
 
 func TestParseUserInputQuestions_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	questions := parseUserInputQuestions(json.RawMessage(`not json`))
 	if questions != nil {
 		t.Errorf("expected nil for invalid JSON, got %v", questions)
@@ -530,6 +554,7 @@ func TestParseUserInputQuestions_InvalidJSON(t *testing.T) {
 }
 
 func TestParseUserInputQuestions_EmptyQuestions(t *testing.T) {
+	t.Parallel()
 	questions := parseUserInputQuestions(json.RawMessage(`{"questions":[]}`))
 	if len(questions) != 0 {
 		t.Errorf("len = %d, want 0", len(questions))
@@ -537,6 +562,7 @@ func TestParseUserInputQuestions_EmptyQuestions(t *testing.T) {
 }
 
 func TestParseUserInputQuestions_NoQuestionsField(t *testing.T) {
+	t.Parallel()
 	questions := parseUserInputQuestions(json.RawMessage(`{"other":"data"}`))
 	if questions != nil {
 		t.Errorf("expected nil for missing questions field, got %v", questions)
@@ -546,6 +572,7 @@ func TestParseUserInputQuestions_NoQuestionsField(t *testing.T) {
 // -- parsePermissionRequest tests --
 
 func TestParsePermissionRequest_Valid(t *testing.T) {
+	t.Parallel()
 	enabled := true
 	params := json.RawMessage(`{"reason":"Need network access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp"],"write":["/tmp/out"]}}}`)
 	reason, perms := parsePermissionRequest(params)
@@ -565,6 +592,7 @@ func TestParsePermissionRequest_Valid(t *testing.T) {
 }
 
 func TestParsePermissionRequest_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	reason, perms := parsePermissionRequest(json.RawMessage(`not json`))
 	if reason != "" || perms != nil {
 		t.Errorf("expected empty/nil for invalid JSON, got %q, %v", reason, perms)
@@ -572,6 +600,7 @@ func TestParsePermissionRequest_InvalidJSON(t *testing.T) {
 }
 
 func TestParsePermissionRequest_EmptyObject(t *testing.T) {
+	t.Parallel()
 	reason, perms := parsePermissionRequest(json.RawMessage(`{}`))
 	if reason != "" {
 		t.Errorf("reason: got %q, want empty", reason)
@@ -584,6 +613,7 @@ func TestParsePermissionRequest_EmptyObject(t *testing.T) {
 // -- buildThreadParams edge cases --
 
 func TestBuildThreadParamsReadOnly(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{
 		Sandbox:        "read-only",
 		ApprovalPolicy: "on-request",
@@ -597,6 +627,7 @@ func TestBuildThreadParamsReadOnly(t *testing.T) {
 }
 
 func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
+	t.Parallel()
 	// Unknown sandbox value falls through to the safest thread-start value.
 	params := buildThreadParams(Config{
 		Sandbox:        "custom-sandbox",
@@ -617,6 +648,7 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 // previous runtime mode's choice. Sending it unconditionally is what makes the
 // wire state a function of the thread row alone.
 func TestBuildThreadParamsMinimal(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{}, "")
 	if len(params) != 1 {
 		t.Errorf("expected only the always-explicit reviewer for zero config, got %v", params)
@@ -632,6 +664,7 @@ func TestBuildThreadParamsMinimal(t *testing.T) {
 // t3-improvements.md §3.2 names — the thread keeps auto-reviewing approvals
 // under a runtime mode that promises a human will see them.
 func TestBuildThreadParamsAlwaysSendsReviewer(t *testing.T) {
+	t.Parallel()
 	for _, mode := range provider.AllRuntimeModes {
 		t.Run(string(mode), func(t *testing.T) {
 			cfg := ConfigFromOptions(provider.SessionOptions{Provider: "codex", RuntimeMode: mode})
@@ -654,6 +687,7 @@ func TestBuildThreadParamsAlwaysSendsReviewer(t *testing.T) {
 // no reviewer field at all. Treating an absent echo as the protocol default is
 // what turns that into a mismatch rather than a shrug.
 func TestVerifyApprovalsReviewerEcho(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		requested string
@@ -689,6 +723,7 @@ func TestVerifyApprovalsReviewerEcho(t *testing.T) {
 }
 
 func TestBuildThreadParamsWorkDir(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{WorkDir: "/home/user/project"}, "")
 	if params["cwd"] != "/home/user/project" {
 		t.Errorf("cwd: got %v, want %q", params["cwd"], "/home/user/project")
@@ -696,6 +731,7 @@ func TestBuildThreadParamsWorkDir(t *testing.T) {
 }
 
 func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
+	t.Parallel()
 	params := buildThreadParams(Config{
 		MCPServers: map[string]any{
 			"browser": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
@@ -714,6 +750,7 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 // -- readRouteFields edge cases --
 
 func TestReadRouteFieldsEmpty(t *testing.T) {
+	t.Parallel()
 	turnID, itemID := readRouteFields(json.RawMessage(`{}`))
 	if turnID != "" || itemID != "" {
 		t.Errorf("expected empty strings, got turnID=%q, itemID=%q", turnID, itemID)
@@ -721,6 +758,7 @@ func TestReadRouteFieldsEmpty(t *testing.T) {
 }
 
 func TestReadRouteFieldsMixedSources(t *testing.T) {
+	t.Parallel()
 	// turnId at top level, item.id nested.
 	params := json.RawMessage(`{"turnId":"turn-top","item":{"id":"item-nested"}}`)
 	turnID, itemID := readRouteFields(params)
@@ -733,6 +771,7 @@ func TestReadRouteFieldsMixedSources(t *testing.T) {
 }
 
 func TestBuildThreadParams(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Model:          "gpt-4.1",
 		Sandbox:        "workspace-write",
@@ -757,6 +796,7 @@ func TestBuildThreadParams(t *testing.T) {
 }
 
 func TestBuildThreadParamsDangerMode(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Sandbox: "danger-full-access"}
 	params := buildThreadParams(cfg, "")
 
@@ -769,6 +809,7 @@ func TestBuildThreadParamsDangerMode(t *testing.T) {
 }
 
 func TestBuildApprovalMetaCommand(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"itemId":"cmd-1","command":"ls -la","cwd":"/repo","availableDecisions":["accept","cancel"]}`)
 	meta := buildApprovalMeta("t1", "", "item/commandExecution/requestApproval", 42, params)
 
@@ -797,6 +838,7 @@ func TestBuildApprovalMetaCommand(t *testing.T) {
 }
 
 func TestBuildApprovalMetaWriteStdin(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"kind":"writeStdin","itemId":"cmd-1","approvalId":"stdin-2","stdin":"yes\n","processId":"42","cwd":"/repo","availableDecisions":["accept","decline"]}`)
 	meta := buildApprovalMeta("t1", "turn-1", "item/commandExecution/requestApproval", 43, params)
 
@@ -816,6 +858,7 @@ func TestBuildApprovalMetaWriteStdin(t *testing.T) {
 }
 
 func TestBuildApprovalMetaDistinguishesMissingAndEmptyAvailableDecisions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		params string
@@ -840,6 +883,7 @@ func TestBuildApprovalMetaDistinguishesMissingAndEmptyAvailableDecisions(t *test
 }
 
 func TestBuildApprovalMetaFileChange(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"filePath":"/tmp/test.go"}`)
 	meta := buildApprovalMeta("t1", "", "item/fileChange/requestApproval", 99, params)
 
@@ -855,6 +899,7 @@ func TestBuildApprovalMetaFileChange(t *testing.T) {
 }
 
 func TestReadRouteFields(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-7"},"item":{"id":"item-4"}}`)
 	turnID, itemID := readRouteFields(params)
 
@@ -867,6 +912,7 @@ func TestReadRouteFields(t *testing.T) {
 }
 
 func TestReadRouteFieldsTopLevelFallback(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turnId":"turn-9","itemId":"item-2"}`)
 	turnID, itemID := readRouteFields(params)
 
@@ -879,6 +925,7 @@ func TestReadRouteFieldsTopLevelFallback(t *testing.T) {
 }
 
 func TestBuildUserInputMetaFromQuestions(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-2"},"questions":[{"id":"sandbox_mode","header":"Sandbox","question":"Which mode should be used?","options":[{"label":"workspace-write","description":"Allow workspace writes only"}],"multiSelect":true}]}`)
 	// Same three steps handleServerRequest takes for
 	// `item/tool/requestUserInput`: route fields off the envelope, questions
@@ -907,6 +954,7 @@ func TestBuildUserInputMetaFromQuestions(t *testing.T) {
 }
 
 func TestBuildPermissionMeta(t *testing.T) {
+	t.Parallel()
 	params := json.RawMessage(`{"turnId":"turn-5","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}`)
 	meta := buildPermissionMeta("t1", "turn-5", 77, params)
 

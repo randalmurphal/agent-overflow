@@ -84,6 +84,7 @@ func pageMemberIDs(page store.PagedItems, prefix string) []string {
 // byte trim keeps the anchor whatever else it drops. Landing a jump on a
 // row the page did not ship leaves the pane with nothing to scroll to.
 func TestListThreadSliceAround_AnchorInsideALongRun(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	const members, runWindow = 500, 30
 	thread, memberIDs := seedLongRunThread(t, app, members)
@@ -161,6 +162,7 @@ func memberItemIDs(members store.ActivityRunMembers) []string {
 // The rows a members response carries are projected like a page's, and
 // the preference rides the request the same way.
 func TestListActivityRunMembers_ProjectsUnderTheCallersPreference(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(60))
 
@@ -206,6 +208,7 @@ func TestListActivityRunMembers_ProjectsUnderTheCallersPreference(t *testing.T) 
 // up holding. A stub edited in the app would be arithmetic nobody
 // derived from the database.
 func TestListActivityRunMembers_ByteCeilingShrinksTheAnswerNotTheStub(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(60))
 
@@ -254,6 +257,7 @@ func TestListActivityRunMembers_ByteCeilingShrinksTheAnswerNotTheStub(t *testing
 // target. The byte ceiling must not be what loses it: the answer
 // narrows around the same member the caller named.
 func TestListActivityRunMembers_AroundKeepsTheTargetUnderTheCeiling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(60))
 	const target = "item-0020"
@@ -296,6 +300,7 @@ func TestListActivityRunMembers_AroundKeepsTheTargetUnderTheCeiling(t *testing.T
 // show a person and act on, not a partial answer whose counts are wrong
 // in a way nothing downstream could detect.
 func TestListActivityRunMembers_ReportsAStaleRun(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(20))
 

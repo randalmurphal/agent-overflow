@@ -27,11 +27,9 @@ function idOf(el: Element): string {
   return el.getAttribute('data-id') ?? el.tagName.toLowerCase();
 }
 
-/** jsdom has no WAAPI; install a recording stub. */
+/** Replaces setup.ts's WAAPI stub with a recording one. */
 function installAnimateStub() {
-  (Element.prototype as unknown as { animate: unknown }).animate = function (
-    this: Element,
-  ) {
+  vi.spyOn(Element.prototype, 'animate').mockImplementation(function (this: Element) {
     const id = idOf(this);
     log.push(`create:${id}`);
     return {
@@ -40,8 +38,8 @@ function installAnimateStub() {
       cancel: () => {
         log.push(`cancel:${id}`);
       },
-    };
-  };
+    } as unknown as Animation;
+  });
 }
 
 /** Rects derived from live DOM order, so a moved row's rect changes. */
@@ -81,7 +79,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  delete (Element.prototype as { animate?: unknown }).animate;
 });
 
 describe('svelte patch: phased FLIP application on keyed-each reorder', () => {

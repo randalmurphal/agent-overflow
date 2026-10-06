@@ -139,6 +139,16 @@ The complete mocked-provider isolation configuration belongs in
 guarded helpers, temporary provider homes, and fake binaries. Tests must never
 read the developer's Claude or Codex homes or start a real provider CLI.
 
+Application tests call `t.Parallel()`. `TestMain` detaches the process home,
+and the fixtures give each App its own provider home through
+`credentialHomeOverride`; resolve test provider paths with `testProviderHome`
+or `testProviderProjectsDir`, not the environment. A test stays serial only
+when it sets the environment, replaces a package-level variable such as a
+`network` or WSL seam, resets or inspects a process-wide cache
+(`claudecatalog`, editor detection, the default discovery caches), captures
+the global logger, counts process-wide goroutines or memory, or must act
+inside a fixed real-time window such as a triage flush timer.
+
 Application tests run with the repository root as their working directory for
 whole-tree contracts and committed fixtures. Prefer `t.TempDir()` and explicit
 paths in new tests. Test responsibility-owned behavior in its narrower

@@ -2,10 +2,10 @@ package provider
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestDetectProviderNotFound(t *testing.T) {
@@ -165,9 +165,5 @@ func createMockBinary(t *testing.T, contents string) string {
 		t.Skip("mock shell scripts require unix")
 	}
 
-	script := filepath.Join(t.TempDir(), "mock-binary")
-	if err := os.WriteFile(script, []byte(contents), 0755); err != nil {
-		t.Fatalf("failed to create mock binary: %v", err)
-	}
-	return script
+	return mockexec.WriteIn(t, t.TempDir(), "mock-binary", contents)
 }

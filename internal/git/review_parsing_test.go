@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func readTestdata(t *testing.T, name string) string {
@@ -21,6 +23,7 @@ func readTestdata(t *testing.T, name string) string {
 }
 
 func TestParseGitHubPRDetailFixture(t *testing.T) {
+	t.Parallel()
 	detail, err := parseGitHubPRDetail(readTestdata(t, "github-pr-detail.json"))
 	if err != nil {
 		t.Fatalf("parseGitHubPRDetail: %v", err)
@@ -50,6 +53,7 @@ func TestParseGitHubPRDetailFixture(t *testing.T) {
 }
 
 func TestParseGitHubReviewThreadsNullableAnchorsAndReplies(t *testing.T) {
+	t.Parallel()
 	threads, pageInfo, err := parseGitHubReviewThreads(readTestdata(t, "github-review-threads.json"))
 	if err != nil {
 		t.Fatalf("parseGitHubReviewThreads: %v", err)
@@ -77,6 +81,7 @@ func TestParseGitHubReviewThreadsNullableAnchorsAndReplies(t *testing.T) {
 }
 
 func TestParseGitHubStatusCheckRollupUnionAndZeroValues(t *testing.T) {
+	t.Parallel()
 	for _, fixture := range []string{"github-statusrollup-mixed.json", "github-statusrollup-statuscontext.json"} {
 		var raw struct {
 			StatusCheckRollup []json.RawMessage `json:"statusCheckRollup"`
@@ -104,6 +109,7 @@ func TestParseGitHubStatusCheckRollupUnionAndZeroValues(t *testing.T) {
 }
 
 func TestParseGitHubMergeableConflictFixture(t *testing.T) {
+	t.Parallel()
 	detail, err := parseGitHubPRDetail(readTestdata(t, "github-mergeable-conflict.json"))
 	if err != nil {
 		t.Fatalf("parseGitHubPRDetail: %v", err)
@@ -114,6 +120,7 @@ func TestParseGitHubMergeableConflictFixture(t *testing.T) {
 }
 
 func TestParseGitLabPRDetailAndApprovalsFixtures(t *testing.T) {
+	t.Parallel()
 	approvals, err := parseGitLabApprovals(readTestdata(t, "gitlab-approvals.json"))
 	if err != nil {
 		t.Fatalf("parseGitLabApprovals: %v", err)
@@ -137,6 +144,7 @@ func TestParseGitLabPRDetailAndApprovalsFixtures(t *testing.T) {
 }
 
 func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
+	t.Parallel()
 	detail, err := parseGitLabPRDetail(readTestdata(t, "gitlab-mr-detail.json"), nil)
 	if err != nil {
 		t.Fatalf("parseGitLabPRDetail: %v", err)
@@ -191,6 +199,7 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 }
 
 func TestParseGitHubPRCommentsSkipsMinimized(t *testing.T) {
+	t.Parallel()
 	threads, pageInfo, err := parseGitHubPRComments(readTestdata(t, "github-pr-comments.json"))
 	if err != nil {
 		t.Fatalf("parseGitHubPRComments: %v", err)
@@ -215,6 +224,7 @@ func TestParseGitHubPRCommentsSkipsMinimized(t *testing.T) {
 }
 
 func TestParseGitLabMergeableConflictFixture(t *testing.T) {
+	t.Parallel()
 	detail, err := parseGitLabPRDetail(readTestdata(t, "gitlab-mergeable-conflict.json"), nil)
 	if err != nil {
 		t.Fatalf("parseGitLabPRDetail: %v", err)
@@ -237,9 +247,7 @@ echo "$@" > "$AO_ARGS_LOG"
 cat > "$AO_STDIN_LOG"
 echo '{}'
 `
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_ARGS_LOG", argsLog)
 	t.Setenv("AO_STDIN_LOG", stdinLog)
@@ -296,9 +304,7 @@ JSON
   ;;
 esac
 `
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_ARGS_LOG", argsLog)
 	t.Setenv("AO_STDIN_LOG", stdinLog)
@@ -365,9 +371,7 @@ JSON
     ;;
 esac
 `
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	core := NewCore()
 	_, err := core.ForgeByID("github").SubmitReview("", "owner/repo", 9, SubmitReviewRequest{
@@ -405,9 +409,7 @@ JSON
   ;;
 esac
 `
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock glab: %v", err)
-	}
+	mockexec.Write(t, glabPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	line := 7
 	core := NewCore()
@@ -452,9 +454,7 @@ JSON
     ;;
 esac
 `
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
+	mockexec.Write(t, ghPath, script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_USER_CALL_LOG", userCallLog)
 
@@ -492,9 +492,7 @@ func writeMockForgeCLI(t *testing.T, binary, script string) (binDir, argsLog str
 	t.Helper()
 	binDir = t.TempDir()
 	argsLog = filepath.Join(binDir, "args.log")
-	if err := os.WriteFile(filepath.Join(binDir, binary), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock %s: %v", binary, err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, binary), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_ARGS_LOG", argsLog)
 	return binDir, argsLog
@@ -657,6 +655,7 @@ func TestSetThreadResolvedRequiresAThreadID(t *testing.T) {
 }
 
 func TestUnsupportedForgeRefusesThreadResolution(t *testing.T) {
+	t.Parallel()
 	core := NewCore()
 	err := core.SetThreadResolved("", PRReference{Forge: "bitbucket", Namespace: "owner", Repo: "repo", Number: 9}, "abc", true)
 	if !errors.Is(err, ErrUnsupportedForge) {

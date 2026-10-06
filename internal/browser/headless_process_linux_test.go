@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // On Linux Chromium leads a process group of its own, which stop kills
@@ -360,7 +362,8 @@ func TestParseProcStatReadsTheGroupAndWhetherTheProcessExited(t *testing.T) {
 func TestAnEphemeralProfileIsRemovedAfterItsLastWriter(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	writerFile := filepath.Join(t.TempDir(), "writer")
-	script, err := os.ReadFile(browser.path)
+	// browser.path links the shared mockexec wrapper; the script is its payload.
+	script, err := os.ReadFile(browser.path + ".payload")
 	if err != nil {
 		t.Fatalf("read the fake Chromium: %v", err)
 	}
@@ -368,16 +371,14 @@ func TestAnEphemeralProfileIsRemovedAfterItsLastWriter(t *testing.T) {
 		"(while :; do mkdir -p \"$profile/Default\" && echo x > \"$profile/Default/index\"; sleep 0.01; done) &\n" +
 		"echo $! > " + shellQuote(writerFile) + "\n"
 	script = []byte(strings.Replace(string(script), "#!/bin/sh\n", "#!/bin/sh\n"+writer, 1))
-	if err := os.WriteFile(browser.path, script, 0o700); err != nil {
-		t.Fatalf("write the fake Chromium: %v", err)
-	}
+	mockexec.Write(t, browser.path, string(script))
 	engine := newTestHeadlessEngine(t, browser.path)
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	if _, err := profile.ensureBrowser(); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
 	writerPID := readPIDFile(t, writerFile)
-	t.Cleanup(func() { killTestProcess(t, writerPID, "/bin/sh\x00"+browser.path+"\x00") })
+	t.Cleanup(func() { killTestProcess(t, writerPID, "/bin/sh\x00"+browser.path+".payload\x00") })
 	eventually(t, "the writer to write into the profile", func() bool {
 		_, err := os.Stat(filepath.Join(profile.userDataDir, "Default", "index"))
 		return err == nil

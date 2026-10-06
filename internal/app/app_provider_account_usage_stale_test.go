@@ -54,6 +54,7 @@ func writeSlotCredentialDirectly(t *testing.T, app *App, accountID string, data 
 // test from cleanup on any spawn), the slot is untouched, no snapshot is
 // published, and no throttle is recorded — no request was sent to earn one.
 func TestInactiveExpiredClaudeUsageRefreshSpendsNothing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	expired := claudeCredentialExpiringAt("stale", time.Now().Add(-time.Hour))
 	installUsageTestAccounts(
@@ -105,6 +106,7 @@ func TestInactiveExpiredClaudeUsageRefreshSpendsNothing(t *testing.T) {
 // access token is still live reads its usage over HTTP exactly as before —
 // read-only, no CLI, no rotation.
 func TestInactiveLiveClaudeUsageRefreshProbesOverHTTP(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	live := claudeCredentialExpiringAt("live", time.Now().Add(8*time.Hour))
 	installUsageTestAccounts(
@@ -147,6 +149,7 @@ func TestInactiveLiveClaudeUsageRefreshProbesOverHTTP(t *testing.T) {
 // The server can retire a bearer the stored expiry still calls live. Same
 // verdict, same refusal to heal: only selecting the account rotates it.
 func TestInactiveClaudeUsageRefreshReadsA401AsStale(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installUsageTestAccounts(
 		t,
@@ -171,6 +174,7 @@ func TestInactiveClaudeUsageRefreshReadsA401AsStale(t *testing.T) {
 // account and the one recovery there is, rather than reporting a transport
 // failure the user cannot act on.
 func TestInactiveClaudeUsageRefreshOnAHuskedSlotAsksForALogin(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installUsageTestAccounts(
 		t,
@@ -206,6 +210,7 @@ func TestInactiveClaudeUsageRefreshOnAHuskedSlotAsksForALogin(t *testing.T) {
 // the probe's account object here is what let the husk reach the slot and
 // finish the account off.
 func TestSelectedClaudeUsageRefreshRefusesAHuskedCanonicalCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -262,6 +267,7 @@ func TestSelectedClaudeUsageRefreshRefusesAHuskedCanonicalCredential(t *testing.
 // no account and leaving no trail of a login that was destroyed. Refusing at
 // entry names the account and records the finding, before anything is sent.
 func TestSelectedClaudeUsageRefreshRefusesAnAlreadyHuskedCanonicalCredential(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
@@ -322,6 +328,7 @@ func TestSelectedClaudeUsageRefreshRefusesAnAlreadyHuskedCanonicalCredential(t *
 // read first, so the same husk yields the same named verdict as the populated
 // echo above.
 func TestSelectedClaudeUsageRefreshRefusesAHuskWhoseProbeEchoesNoIdentity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
@@ -383,6 +390,7 @@ func TestSelectedClaudeUsageRefreshRefusesAHuskWhoseProbeEchoesNoIdentity(t *tes
 // throttled-but-alive login indistinguishable from a dead one (the 2026-08-03
 // shape of this bug).
 func TestInactiveClaudeUsageRefreshRecordsItsOwn429Hold(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	live := claudeCredentialExpiringAt("live", time.Now().Add(8*time.Hour))
 	installUsageTestAccounts(

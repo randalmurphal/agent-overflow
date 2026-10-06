@@ -1,11 +1,14 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // defaultTestProjectID is the stable project id that test-only helpers
@@ -101,4 +104,28 @@ func waitForThreadLockRefs(t *testing.T, locks interface{ Refs(string) int }, th
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("lock refs for %s = %d, want %d", threadID, locks.Refs(threadID), want)
+}
+
+// mockScript returns the script a mockexec.Write mock runs. The mock's own
+// path is a link to the shared wrapper; mockexec keeps the script beside it.
+func mockScript(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path + ".payload")
+	if err != nil {
+		t.Fatalf("read mock script %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// migratedDatabaseAt places a database migrated by this build at path, as a
+// previous boot leaves it, without replaying the migration chain. A test of
+// the migration chain itself starts from an empty data directory instead.
+func migratedDatabaseAt(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(storetest.ClonePath(t), path); err != nil {
+		t.Fatal(err)
+	}
 }

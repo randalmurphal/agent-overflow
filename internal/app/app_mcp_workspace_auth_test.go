@@ -12,6 +12,7 @@ import (
 )
 
 func TestTriggerWorkspaceMCPAuthSingleFlightsWithoutThread(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(app.appCancel)
@@ -79,6 +80,7 @@ func TestTriggerWorkspaceMCPAuthSingleFlightsWithoutThread(t *testing.T) {
 }
 
 func TestTriggerWorkspaceMCPAuthFailedStartCanRetry(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	var starts atomic.Int32
 	deps := app.mcpDeps()
@@ -110,6 +112,7 @@ func TestTriggerWorkspaceMCPAuthFailedStartCanRetry(t *testing.T) {
 }
 
 func TestTriggerWorkspaceMCPAuthShutdownClosesFlowWithoutEvent(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	var emits atomic.Int32
@@ -151,6 +154,7 @@ func TestTriggerWorkspaceMCPAuthShutdownClosesFlowWithoutEvent(t *testing.T) {
 // only when none is live, so it waits out a delete and never replaces a
 // session another caller started.
 func TestMCPEnsureSessionTakesTheThreadLock(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	var starts atomic.Int32
 	app.startSessionFn = func(string) error { starts.Add(1); return nil }

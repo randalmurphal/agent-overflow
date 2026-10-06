@@ -12,13 +12,16 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestSpawnAndEcho(t *testing.T) {
@@ -710,19 +713,16 @@ func TestIsClosedPipeErr(t *testing.T) {
 }
 
 func TestCloseEscalatesToSignal(t *testing.T) {
+	shortenGraces(t, 100*time.Millisecond, 2*time.Second)
 	ctx := context.Background()
 	p, err := Spawn(ctx, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
 	if err != nil {
 		t.Fatalf("spawn sleep: %v", err)
 	}
 
-	start := time.Now()
 	err = p.Close()
 	if err != nil {
 		t.Fatalf("Close returned %v, want nil (signal-terminated subprocess is still a successful close)", err)
-	}
-	if elapsed := time.Since(start); elapsed > 6*time.Second {
-		t.Fatalf("Close took %v, want under 6s", elapsed)
 	}
 
 	select {
@@ -733,10 +733,57 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 
 	// Diagnostic exit details (signal name, exit code) must remain
 	// accessible on Err() — Close swallows the exit for return-value
-	// semantics, not for diagnostics.
-	if p.Err() == nil {
-		t.Fatal("Err() should still surface the signal-terminated exit for diagnostics")
+	// semantics, not for diagnostics. The child honours SIGTERM, so Close
+	// must not have needed SIGKILL.
+	if got := exitSignal(t, p.Err()); got != syscall.SIGTERM {
+		t.Fatalf("exit signal = %v, want SIGTERM before any SIGKILL", got)
 	}
+}
+
+// A child that ignores SIGTERM is killed once killGrace passes after it.
+func TestCloseEscalatesToKillWhenTermIsIgnored(t *testing.T) {
+	shortenGraces(t, 100*time.Millisecond, 200*time.Millisecond)
+	p, err := Spawn(context.Background(), SpawnConfig{Binary: writeSignalIgnoringScript(t)})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer p.Kill()
+	waitForScriptReady(t, p)
+
+	start := time.Now()
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed < shutdownGrace+killGrace {
+		t.Fatalf("Close returned after %v, want both graces served before SIGKILL", elapsed)
+	}
+	if got := exitSignal(t, p.Err()); got != syscall.SIGKILL {
+		t.Fatalf("exit signal = %v, want SIGKILL", got)
+	}
+}
+
+// shortenGraces lowers the Close and GracefulCancel escalation graces for one
+// test. Tests in this package do not run in parallel, so the swap is safe.
+func shortenGraces(t *testing.T, shutdown, kill time.Duration) {
+	t.Helper()
+	prevShutdown, prevKill := shutdownGrace, killGrace
+	shutdownGrace, killGrace = shutdown, kill
+	t.Cleanup(func() { shutdownGrace, killGrace = prevShutdown, prevKill })
+}
+
+// exitSignal returns the signal that terminated a child, failing the test when
+// err is not a signal exit.
+func exitSignal(t *testing.T, err error) syscall.Signal {
+	t.Helper()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Err() = %v, want a signal-terminated exit", err)
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		t.Fatalf("Err() = %v, want a signal-terminated exit", err)
+	}
+	return status.Signal()
 }
 
 // TestCloseSwallowsExitCodeOnIntentionalShutdown is the regression for
@@ -789,13 +836,13 @@ func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
 // oversized-line failure.
 func TestReadLineOversizedKillsProcess(t *testing.T) {
 	ctx := context.Background()
-	// Emit >cap bytes without a newline then sleep so the subprocess stays
-	// alive until the reader kills it. The cap is 32 MiB in the new
-	// implementation; yes/tr fills the pipe fast enough to trigger the
-	// overflow in a handful of milliseconds.
+	// Emit more than the cap without a newline, then sleep so the subprocess
+	// stays alive until the reader kills it. The excess spans several reader
+	// buffers: the cap is checked as each full buffer arrives, so a short tail
+	// past the cap would wait for EOF, which the sleep withholds.
 	script := fmt.Sprintf(
 		`perl -e 'print "x" x %d'; sleep 60`,
-		maxLineSize+100,
+		maxLineSize+256*1024,
 	)
 	p, err := Spawn(ctx, SpawnConfig{
 		Binary: "sh",
@@ -804,6 +851,8 @@ func TestReadLineOversizedKillsProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn oversize emitter: %v", err)
 	}
+
+	t.Cleanup(func() { _ = p.Kill() })
 
 	_, err = p.ReadLine()
 	if err == nil {
@@ -1005,10 +1054,7 @@ func writeSignalTrapScript(t *testing.T, marker string) string {
 		"trap 'printf term > \"" + marker + "\"; exit 0' TERM\n" +
 		"echo ready\n" +
 		"while true; do sleep 0.05; done\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return mockexec.Write(t, path, script)
 }
 
 // writeSignalIgnoringScript writes the same loop with SIGTERM ignored
@@ -1023,10 +1069,7 @@ func writeSignalIgnoringScript(t *testing.T) string {
 		"trap '' TERM\n" +
 		"echo ready\n" +
 		"while true; do sleep 0.05; done\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return mockexec.Write(t, path, script)
 }
 
 // A probe runs under a deadline while the CLI may be mid credential write, so
@@ -1076,6 +1119,7 @@ func TestGracefulCancelSignalsTermBeforeKilling(t *testing.T) {
 // group — and whatever it was writing — for as long as it liked, and the
 // probe's deadline would guarantee nothing.
 func TestGracefulCancelEscalatesToKillWhenTermIsIgnored(t *testing.T) {
+	shortenGraces(t, shutdownGrace, 300*time.Millisecond)
 	marker := filepath.Join(t.TempDir(), "signal")
 	binary := writeSignalIgnoringScript(t)
 
@@ -1097,7 +1141,7 @@ func TestGracefulCancelEscalatesToKillWhenTermIsIgnored(t *testing.T) {
 	}
 	// The lower bound is loose on purpose: what matters is that the child was
 	// given its grace rather than killed outright, not the exact killGrace.
-	if elapsed := time.Since(start); elapsed < time.Second {
+	if elapsed := time.Since(start); elapsed < killGrace/2 {
 		t.Fatalf("exited %v after cancel, want the SIGTERM grace served first", elapsed)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {

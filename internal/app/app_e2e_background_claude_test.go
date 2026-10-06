@@ -26,6 +26,7 @@ import (
 //   - ListLiveBackgroundTasks surfaces the pair within the retention
 //     window so the tray renders the Stopped badge.
 func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
@@ -140,6 +141,7 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 // request_id, so the session's per-request correlation map cannot mix
 // them up.
 func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()

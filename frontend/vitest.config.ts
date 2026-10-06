@@ -2,6 +2,7 @@ import { defineConfig, configDefaults } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
+import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
@@ -30,8 +31,50 @@ const happyDomResolve = {
   ],
 };
 
-// Three projects:
-//  - `unit`: the default happy-dom component/store suite. Deliberately does NOT
+const unitInclude = ['src/**/*.{test,spec}.{ts,js}'];
+// Real-browser layout tests run in the `browser` project below.
+const unitExclude = [...configDefaults.exclude, 'src/**/*.browser.{test,spec}.{ts,js}'];
+
+// `unit` files share workers and re-evaluate app modules per file, but
+// Vitest keeps a mocked module's exports by module id for the life of the
+// worker, so a later file mocking the same module would get the earlier
+// file's mock. Files that mock, unmock or re-evaluate modules therefore run
+// in `unit-isolated`, which gives each file a fresh context.
+const MODULE_GRAPH_API = /\bvi\.(?:mock|doMock|unmock|doUnmock|resetModules)\(/;
+const moduleMockFiles = globSync(unitInclude, {
+  cwd: import.meta.dirname,
+  exclude: (path) => path.includes('node_modules') || /\.browser\.(test|spec)\.[tj]s$/.test(path),
+}).filter((file) => MODULE_GRAPH_API.test(readFileSync(resolve(import.meta.dirname, file), 'utf8')));
+
+const unitTestOptions = {
+  environment: 'happy-dom',
+  environmentOptions: {
+    happyDOM: {
+      settings: {
+        navigation: {
+          // Component tests assert iframe attributes and mocked
+          // postMessage behavior; they do not need happy-dom to perform
+          // real child-frame navigations. Letting those fetches
+          // run leaves aborted async tasks behind during cleanup and
+          // floods stderr with teardown noise.
+          disableChildFrameNavigation: true,
+        },
+      },
+    },
+  },
+  globals: false,
+  setupFiles: ['./src/test/scrollGridMock.ts', './src/test/setup.ts'],
+  // Svelte 5 component imports are ESM-first; keep transforms minimal.
+  server: {
+    deps: {
+      inline: [/@testing-library\/svelte/, /svelte/],
+    },
+  },
+} as const;
+
+// Projects:
+//  - `unit` and `unit-isolated`: the default happy-dom component/store suite,
+//    split by module mocking as described above. Deliberately does NOT
 //    load tailwindcss -- those tests render against mocked bindings and don't
 //    exercise styles, and tailwind's plugin resolves project-level paths we'd
 //    otherwise have to stub.
@@ -49,7 +92,7 @@ const happyDomResolve = {
 //    neither other project's include glob, and no project runs unless it is
 //    named.
 //
-// The default `pnpm test` runs ONLY the unit project, so the `make test` /
+// The default `pnpm test` runs ONLY the two unit projects, so the `make test` /
 // `make verify` gate needs no browser binary (`make install` does not provision
 // one). Run the browser suite explicitly with `pnpm test:browser`, which needs
 // `pnpm exec playwright install chromium`; run a manual driver with
@@ -61,33 +104,29 @@ export default defineConfig({
         plugins: [svelte(svelteOptions)],
         resolve: happyDomResolve,
         test: {
+          ...unitTestOptions,
           name: 'unit',
-          environment: 'happy-dom',
-          environmentOptions: {
-            happyDOM: {
-              settings: {
-                navigation: {
-                  // Component tests assert iframe attributes and mocked
-                  // postMessage behavior; they do not need happy-dom to perform
-                  // real child-frame navigations. Letting those fetches
-                  // run leaves aborted async tasks behind during cleanup and
-                  // floods stderr with teardown noise.
-                  disableChildFrameNavigation: true,
-                },
-              },
-            },
-          },
-          globals: false,
-          setupFiles: ['./src/test/setup.ts'],
-          include: ['src/**/*.{test,spec}.{ts,js}'],
-          // Real-browser layout tests run in the `browser` project below.
-          exclude: [...configDefaults.exclude, 'src/**/*.browser.{test,spec}.{ts,js}'],
-          // Svelte 5 component imports are ESM-first; keep transforms minimal.
-          server: {
-            deps: {
-              inline: [/@testing-library\/svelte/, /svelte/],
-            },
-          },
+          // One worker process and happy-dom window run many files.
+          // sharedWorker.ts returns each file's worker to the state a fresh
+          // one would have, and fails a file that leaves a global changed.
+          isolate: false,
+          setupFiles: ['./src/test/sharedWorker.ts', ...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
+          include: unitInclude,
+          exclude: [...unitExclude, ...moduleMockFiles],
+        },
+      },
+      {
+        plugins: [svelte(svelteOptions)],
+        resolve: happyDomResolve,
+        test: {
+          ...unitTestOptions,
+          name: 'unit-isolated',
+          // A fresh VM context per file in a reused process: about half the
+          // cost of a process per file. Built-ins from `node:` modules come
+          // from another realm, so `instanceof` against them can fail.
+          pool: 'vmForks',
+          include: moduleMockFiles,
+          exclude: unitExclude,
         },
       },
       {
@@ -148,7 +187,7 @@ export default defineConfig({
           name: 'manual',
           environment: 'happy-dom',
           globals: false,
-          setupFiles: ['./src/test/setup.ts'],
+          setupFiles: ['./src/test/scrollGridMock.ts', './src/test/setup.ts'],
           include: ['src/**/*.manual.ts'],
           testTimeout: 300_000,
           server: {

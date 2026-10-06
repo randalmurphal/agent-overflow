@@ -283,7 +283,7 @@ func (t threadToolsApp) startRemoteRequest(
 	if err != nil {
 		_, issue, _ = threadErrorDetails(tool, err)
 	}
-	t.app.rescheduleThreadRequest(row, threadPollNormalDelay, issue)
+	t.app.rescheduleThreadRequest(row, t.app.threadPollNormal(), issue)
 	if err != nil {
 		if !uncertain {
 			return threadtools.RequestAck{}, t.settleUnconfirmedRequest(row.Token, err)

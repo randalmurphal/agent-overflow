@@ -11,6 +11,7 @@ import (
 )
 
 func TestTransferFenceRefusesSendAndProviderStartWithoutWritingHistory(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"preparing", "committed", "complete"} {
 		t.Run(phase, func(t *testing.T) {
 			app := newTestAppWithStore(t)
@@ -51,6 +52,7 @@ func TestTransferFenceRefusesSendAndProviderStartWithoutWritingHistory(t *testin
 }
 
 func TestTransferFenceRejectsNativeAliasBeforeSendSideEffects(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"claude", "claude-tui", "codex"} {
 		t.Run(provider, func(t *testing.T) {
 			app := newTestAppWithStore(t)

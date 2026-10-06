@@ -24,6 +24,7 @@ func aoTestSession(token string, scope transport.CallerScope) session {
 }
 
 func TestAOTokenRegistryFollowsTheSessionMap(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	manager := app.sessionManager()
 	scope := transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "thread", ProjectID: "project"}
@@ -98,6 +99,7 @@ func TestAOTokenRegistryFollowsTheSessionMap(t *testing.T) {
 }
 
 func TestSessionAOEnvIsLiveOnly(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	manager := app.sessionManager()
 	if env := app.sessionAOEnv("thread"); env != nil {
@@ -126,6 +128,7 @@ func TestSessionAOEnvIsLiveOnly(t *testing.T) {
 // taking one here would both spend a ticket nobody opens and put a page
 // credential into a child process's environment.
 func TestAOEndpointFromOriginIsBareAuthority(t *testing.T) {
+	t.Parallel()
 	endpoint, err := aoEndpointFromOrigin("http://127.0.0.1:54321")
 	if err != nil {
 		t.Fatalf("aoEndpointFromOrigin() error = %v", err)
@@ -148,6 +151,7 @@ func TestAOEndpointFromOriginIsBareAuthority(t *testing.T) {
 }
 
 func TestDeriveCallerScopeByThreadKind(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	project := store.Project{ID: "scope-project", Path: t.TempDir(), Name: "Scope", CreatedAt: 1, UpdatedAt: 1}
 	if _, err := app.store.CreateProject(project); err != nil {
@@ -234,6 +238,7 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 }
 
 func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
+	t.Parallel()
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		ID: "wf", Phases: []def.Phase{{ID: "build", Driver: def.DriverAgent}},
 	}})
@@ -250,6 +255,7 @@ func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
 }
 
 func TestSessionProcessEnvPrecedence(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.providerExtraEnv = map[string]string{"SHARED": "extra", "EXTRA_ONLY": "yes"}
 	credential := aoSessionCredential{env: map[string]string{
@@ -278,6 +284,7 @@ func TestSessionProcessEnvPrecedence(t *testing.T) {
 // resolves inside an agent's shell. The table walks the shapes a provider
 // config actually arrives in.
 func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
+	t.Parallel()
 	separator := string(os.PathListSeparator)
 	tests := []struct {
 		name      string
@@ -339,6 +346,7 @@ func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 // thread outside a project can legitimately have no scoped token, and
 // `agent-overflow workflow …` works offline.
 func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
+	t.Parallel()
 	app := &App{cliBinDir: "/cfg/bin"}
 	env := app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})
 	if env["PATH"] != "/cfg/bin" {
@@ -354,6 +362,7 @@ func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
 // contract are asserted together: a session that gets a credential gets the slug,
 // and a thread that gets no credential gets no AO_* at all.
 func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.SetTransportServer(startTestTransportServer(t))
 	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
@@ -397,6 +406,7 @@ func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
 
 // The provider env helper is shared, so pin that it merges rather than replaces.
 func TestBuildEnvironmentMergesOverrides(t *testing.T) {
+	t.Parallel()
 	env := provider.BuildEnvironment(map[string]string{"AO_TEST_ONLY": "1"})
 	var found bool
 	for _, entry := range env {

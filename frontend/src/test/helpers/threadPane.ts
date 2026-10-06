@@ -16,6 +16,7 @@
 // this module is only the store suites' environment and their smoothing /
 // design-fence fixtures.
 
+import { vi } from 'vitest';
 import { getQueueForThread, resetForTest as resetSendQueueForTest } from '../../lib/stores/sendQueue.svelte';
 import { resetForTest as resetThreadStatuses } from '../../lib/stores/threadStatuses.svelte';
 import { resetLayoutMetricsForTest } from '../../lib/stores/layoutMetrics.svelte';
@@ -101,11 +102,7 @@ export function seedThreadPaneLayout(paneId: string): void {
  * mocks it actually asserts on.
  */
 export function installThreadPaneTestEnv(): void {
-  Object.defineProperty(window, 'innerWidth', {
-    configurable: true,
-    writable: true,
-    value: 1400,
-  });
+  vi.stubGlobal('innerWidth', 1400);
   resetBindingMocks();
   resetLayoutMetricsForTest();
   resetPaneLayoutForTest();

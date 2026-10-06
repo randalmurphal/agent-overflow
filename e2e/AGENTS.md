@@ -10,7 +10,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `src/harness.ts` owns backend launch and the TypeScript harness wire client.
   Each backend's dev-server scan is scoped to the launching worker's process
   tree and its own, so a fake dev server must listen in the worker or a
-  descendant of it.
+  descendant of it. Every launch passes `HARNESS_TIMING`
+  (`diagenv.HarnessTiming`), which shortens product cadences a spec should
+  not wait out; a spec that needs another value passes its own through `env`.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.
@@ -47,7 +49,9 @@ memory boundary. The `desktop` project runs ordinary specs; `compact` runs
 `bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
 `make harness-build`, so rebuild after changing Go or frontend code. On Linux
 the launcher runs the suite in an isolated network namespace with one private
-LAN interface; a spec cannot reach host services or any real network. See
+LAN interface; a spec cannot reach host services or any real network.
+Elsewhere, macOS included, instances stay on loopback and specs that need an
+off-host peer skip. See
 [network isolation](../docs/specs/testing-harness.md#network-isolation).
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and

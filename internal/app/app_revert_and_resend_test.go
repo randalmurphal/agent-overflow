@@ -1,11 +1,11 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,7 +73,7 @@ func newResendTestAppAt(t *testing.T, dbPath string) (*App, *capturedEventBus) {
 func seedResendThread(t *testing.T, app *App, id string) (store.Thread, string) {
 	t.Helper()
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, os.Getenv("HOME"), workspace, resendSourceSessionID, resendSourceSessionJSONL)
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID, resendSourceSessionJSONL)
 	thread := e2eThread(id, string(provider.Claude), workspace)
 	thread.SessionRef = resendSourceSessionID
 	if err := app.store.CreateThread(thread); err != nil {
@@ -96,6 +96,7 @@ func seedResendThread(t *testing.T, app *App, id string) (store.Thread, string) 
 // draftPendingResend so the frontend knows the draft row it just saw was
 // saga state, not composer content.
 func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendThread(t, app, "t-resend")
 
@@ -147,7 +148,7 @@ func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 	if updated.SessionRef == "" || updated.SessionRef == resendSourceSessionID {
 		t.Fatalf("session ref = %q, want a recovered fork session", updated.SessionRef)
 	}
-	assertClaudeSessionText(t, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
+	assertClaudeSessionText(t, app, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
 
 	revertedIndex, ev := findRevertedEvent(t, bus)
 	if ev.ThreadID != thread.ID || ev.UserItemID != "user:1" || ev.TurnIndex != 1 {
@@ -173,6 +174,7 @@ func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 // and the error must be distinguishable from a guard rejection so the
 // caller knows the timeline really was truncated.
 func TestRevertAndResendKeepsMergedDraftWhenResendFails(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-fail")
 
@@ -230,6 +232,7 @@ func TestRevertAndResendKeepsMergedDraftWhenResendFails(t *testing.T) {
 // just the edited payload, and a successful resend leaves no draft row
 // behind at all.
 func TestRevertAndResendClearsDraftWhenNoWIP(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-nowip")
 
@@ -249,6 +252,7 @@ func TestRevertAndResendClearsDraftWhenNoWIP(t *testing.T) {
 // to observe the row mid-saga, and it must be the edited payload alone —
 // no phantom separator, no inherited content.
 func TestRevertAndResendStagesEditedPayloadWithoutWIP(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-stage")
 
@@ -276,6 +280,7 @@ func TestRevertAndResendStagesEditedPayloadWithoutWIP(t *testing.T) {
 // resolvable — a send whose ids died with the rolled-back row would fail
 // resolveSendMessageAttachments instead of re-sending the images.
 func TestRevertAndResendKeepsAttachments(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-attach")
 
@@ -324,6 +329,7 @@ func TestRevertAndResendKeepsAttachments(t *testing.T) {
 // during the rollback — dead work must not survive as a stale running
 // spinner — and the tray-change event fires.
 func TestRevertAndResendConfirmedKillClearsBackgroundRows(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-bg")
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 9)
@@ -356,9 +362,10 @@ func TestRevertAndResendConfirmedKillClearsBackgroundRows(t *testing.T) {
 // event must carry exactly that kept-set so the frontend trims to match
 // instead of hiding rows the backend kept.
 func TestRevertAndResendMidTurnAnchorEmitsKeptSet(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, os.Getenv("HOME"), workspace, resendSourceSessionID,
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID,
 		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}
@@ -396,7 +403,7 @@ func TestRevertAndResendMidTurnAnchorEmitsKeptSet(t *testing.T) {
 	if len(kept) != 2 || kept[0] != "user:0" || kept[1] != "asst:0" {
 		t.Fatalf("event kept-set = %v, want [user:0 asst:0]", kept)
 	}
-	assertClaudeSessionText(t, workspace, mustGetThread(t, app, thread.ID).SessionRef,
+	assertClaudeSessionText(t, app, workspace, mustGetThread(t, app, thread.ID).SessionRef,
 		[]string{"first"}, []string{"steer"})
 }
 
@@ -473,6 +480,7 @@ func decodeDraftAttachmentIDs(t *testing.T, raw string) []string {
 // a fresh composer send would — the expansion is derived state rebuilt
 // at send time, never copied from (or lost with) the original message.
 func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-expand")
 
@@ -482,9 +490,7 @@ func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
 	capture := filepath.Join(t.TempDir(), "stdin-capture.jsonl")
 	script := "#!/bin/bash\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '" + capture + "'\ndone\nexit 0\n"
 	binary := filepath.Join(t.TempDir(), "mock-claude-capture.sh")
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write capturing mock claude: %v", err)
-	}
+	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("install capturing mock claude: %v", err)
 	}
@@ -531,6 +537,7 @@ func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
 // The CONNECTION and not the device: two tabs of one browser run independent
 // flows on the same thread.
 func TestARevertAndResendNamesTheConnectionThatStartedIt(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-attribution")
 
@@ -555,6 +562,7 @@ func TestARevertAndResendNamesTheConnectionThatStartedIt(t *testing.T) {
 // meaning what it meant before the stamp existed, or a bundle against an
 // older backend would classify every committed revert as "nothing happened".
 func TestARevertWithNoConnectionCarriesNoStamp(t *testing.T) {
+	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-unstamped")
 
@@ -582,6 +590,7 @@ func revertAndResendForTest(a *App, ctx context.Context, threadID, itemID string
 }
 
 func TestReplacementRecoveryAtBootPreservesComposerAndDoesNotDispatch(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "recovery-boot")
 	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{ThreadID: thread.ID, Content: "my work", Attachments: "[]", TerminalChips: `[{"id":"terminal"}]`}); err != nil {
@@ -603,6 +612,7 @@ func TestReplacementRecoveryAtBootPreservesComposerAndDoesNotDispatch(t *testing
 }
 
 func TestPreparedReplacementCutCarriesPersistedPosition(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "ready-replacement")
 	result, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "new prompt", SendID: "ready-send"})
@@ -634,6 +644,7 @@ func TestPreparedReplacementCutCarriesPersistedPosition(t *testing.T) {
 }
 
 func TestConversationMutationReadWaitsForReplacement(t *testing.T) {
+	t.Parallel()
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "read-barrier")
 	entered, release := make(chan struct{}), make(chan struct{})

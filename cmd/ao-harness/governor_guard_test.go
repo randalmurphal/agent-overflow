@@ -12,11 +12,31 @@ import (
 	"agent-overflow/internal/harness/instanceinfo"
 )
 
+// testConfigBase is the private HOME and XDG_CONFIG_HOME TestMain sets for
+// the process. Written only by TestMain.
+var testConfigBase string
+
 // TestMain refuses the host-wide reservation store for the whole package. A
 // test that reached it would rewrite the reservations of live instances on
 // this machine; tests set env.governorDir instead. The failure is recorded as
 // well as returned, so a test that tolerates the error still fails the run.
+//
+// It also points the OS config lookup at a private temp tree for the whole
+// process, so no test can resolve the developer's real app data and
+// configRootFixture needs no per-test Setenv (which would forbid t.Parallel).
 func TestMain(m *testing.M) {
+	configBase, err := os.MkdirTemp("", "ao-harness-test-config-")
+	testConfigBase = configBase
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test config root: %v\n", err)
+		os.Exit(1)
+	}
+	for _, key := range []string{"XDG_CONFIG_HOME", "HOME"} {
+		if err := os.Setenv(key, configBase); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)
+			os.Exit(1)
+		}
+	}
 	var reached atomic.Pointer[string]
 	hostGovernorDir = func() (string, error) {
 		stack := string(debug.Stack())
@@ -26,6 +46,10 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if stack := reached.Load(); stack != nil {
 		fmt.Fprintf(os.Stderr, "a test reached the host-wide harness governor directory:\n%s", *stack)
+		code = 1
+	}
+	if err := os.RemoveAll(configBase); err != nil {
+		fmt.Fprintf(os.Stderr, "remove test config root: %v\n", err)
 		code = 1
 	}
 	os.Exit(code)

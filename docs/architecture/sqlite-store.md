@@ -105,6 +105,11 @@ open this way, so a database is migrated only by an update trial that
 snapshots it first
 ([no live migration](../specs/app-update.md#no-live-migration)).
 
+A scratch database, such as the one that validates an incoming conversation
+transfer, comes from `NewFromTemplate`: a copy of an empty database the chain
+migrated once per process, equal to a new database except for its own identity.
+Its comment states the build, retry and file contract.
+
 A rebuild must carry forward every column, index, trigger, and relationship
 added since the source definition. Rebuild migrations temporarily disable
 foreign keys on the dedicated writer connection so dropping a parent table does

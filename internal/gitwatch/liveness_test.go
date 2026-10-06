@@ -60,6 +60,7 @@ func newLivenessHarness(t *testing.T, configure func(w *workspaceWatcher)) *live
 func (h *livenessHarness) fastCallCount() int { return int(h.fastCalls.Load()) }
 
 func TestStatusDiffersIgnoringPR(t *testing.T) {
+	t.Parallel()
 	base := gitops.GitStatus{IsRepo: true, Branch: "main", Insertions: 3, Forge: "github"}
 
 	prOnly := base
@@ -81,6 +82,7 @@ func TestStatusDiffersIgnoringPR(t *testing.T) {
 // stream has been quiet proves the watches missed them: the watcher
 // must broadcast AND force a reinstall.
 func TestRequestRefreshMissDetectionReinstalls(t *testing.T) {
+	t.Parallel()
 	h := newLivenessHarness(t, func(w *workspaceWatcher) {
 		w.livenessQuiet = 0 // every refresh-observed change counts as a miss
 	})
@@ -102,6 +104,7 @@ func TestRequestRefreshMissDetectionReinstalls(t *testing.T) {
 // warm-up doing its job) says nothing about watchpoint health: it must
 // broadcast without reinstalling.
 func TestRequestRefreshPRWarmupDoesNotReinstall(t *testing.T) {
+	t.Parallel()
 	h := newLivenessHarness(t, func(w *workspaceWatcher) {
 		w.livenessQuiet = 0
 	})
@@ -125,6 +128,7 @@ func TestRequestRefreshPRWarmupDoesNotReinstall(t *testing.T) {
 // change is explained by the debounce race, not dead watches: the quiet
 // window must suppress the reinstall.
 func TestRequestRefreshSuppressedWhileEventsFlowing(t *testing.T) {
+	t.Parallel()
 	h := newLivenessHarness(t, nil) // production quiet window (3s)
 	sub := h.w.addSubscriber(gitops.GitStatus{Branch: "main"})
 	waitFor(t, 3*time.Second, func() bool { return h.installs.count() == 1 }, "initial install")
@@ -150,6 +154,7 @@ func TestRequestRefreshSuppressedWhileEventsFlowing(t *testing.T) {
 // The liveness ticker probes a silent watcher with the fast status fn
 // and, on drift, reinstalls the watches and broadcasts the fresh truth.
 func TestLivenessProbeReinstallsAfterSilentMiss(t *testing.T) {
+	t.Parallel()
 	h := newLivenessHarness(t, func(w *workspaceWatcher) {
 		w.livenessInterval = 30 * time.Millisecond
 	})
@@ -176,6 +181,7 @@ func TestLivenessProbeReinstallsAfterSilentMiss(t *testing.T) {
 // A live event stream stands the probe down entirely: ticks whose
 // interval saw an fs event never call the fast status fn.
 func TestLivenessProbeSkipsWhileEventsFlowing(t *testing.T) {
+	t.Parallel()
 	h := newLivenessHarness(t, func(w *workspaceWatcher) {
 		// Interval is 10× the feed cadence so scheduler jitter can't
 		// open a probe-eligible gap mid-feed.
@@ -201,4 +207,24 @@ feed:
 
 	// Silence resumes: the probe comes back.
 	waitFor(t, 3*time.Second, func() bool { return h.fastCallCount() >= 1 }, "probe after silence")
+}
+
+// A refresh whose status fetch fails is retried on the polling cadence,
+// so a transient failure after the last fs event of a burst still
+// reaches subscribers without another event.
+func TestFailedRefreshIsRetried(t *testing.T) {
+	t.Parallel()
+	h := newLivenessHarness(t, func(w *workspaceWatcher) {
+		w.pollInterval = 50 * time.Millisecond
+	})
+	sub := h.w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	waitFor(t, 3*time.Second, func() bool { return h.installs.count() == 1 }, "initial install")
+
+	h.stub.setStatus(gitops.GitStatus{Branch: "main", HasChanges: true})
+	h.stub.failNext.Store(true)
+	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, "f.txt"))
+	if got := recvWithin(t, sub, 3*time.Second); !got.HasChanges {
+		t.Fatalf("retried refresh delivered %+v, want the changed status", got)
+	}
+	expectNoUpdate(t, sub, 200*time.Millisecond)
 }

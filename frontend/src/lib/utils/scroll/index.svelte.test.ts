@@ -55,12 +55,25 @@ function nextFrameAfter(ms: number): Promise<void> {
     }),
   );
 }
+// The controller's timers (warm-up quiet window and failsafe, scroll-handler
+// and RO-clear timeouts) run on fake setTimeout/setInterval, so a wait
+// advances them instead of sleeping. rAF stays real: happy-dom runs it on
+// setImmediate, and `mockNow` drives performance.now.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+async function advanceMs(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+}
 function nextTimer(): Promise<void> {
-  // Resolves after the 1ms scroll-handler / RO-clear setTimeout.
-  return new Promise<void>((resolve) => setTimeout(resolve, 5));
+  // Runs the 1ms scroll-handler / RO-clear setTimeout.
+  return advanceMs(5);
 }
 function waitRealMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return advanceMs(ms);
 }
 
 function fireWheel(el: HTMLElement, deltaY: number, target?: HTMLElement): void {
@@ -2271,8 +2284,8 @@ describe('createUseStickToBottomController — spring chase', () => {
 
   // QUIET_MS is 100ms — past it (so warm fires on the quiet timer).
   // FAILSAFE_MS is 2500ms — past it (so warm fires on the failsafe).
-  async function waitMs(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  function waitMs(ms: number): Promise<void> {
+    return advanceMs(ms);
   }
 
   // Bounded "advance until" helper. Replaces the fixed `for (let i = 0;
@@ -7117,8 +7130,8 @@ describe('createUseStickToBottomController — external content-geometry source'
   // markdown-settled signal.
   let signal: boolean | undefined;
 
-  async function waitMs(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  function waitMs(ms: number): Promise<void> {
+    return advanceMs(ms);
   }
 
   /** Deliver one engine-sourced sample. Settle evidence defaults to

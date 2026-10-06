@@ -18,6 +18,7 @@ import (
 var probeTestWorkDir = os.TempDir()
 
 func TestRunAccountProbeRetriesOneCredentialRotationAndAdoptsMatchingIdentity(t *testing.T) {
+	t.Parallel()
 	app, activePath := newStableProbeTestApp(t, []byte("credential-one"))
 	cache := provider.NewProbeCache(time.Minute)
 	var calls atomic.Int32
@@ -61,6 +62,7 @@ func TestRunAccountProbeRetriesOneCredentialRotationAndAdoptsMatchingIdentity(t 
 }
 
 func TestRunAccountProbeRejectsRepeatedCredentialChangesWithoutCachingOrAdopting(t *testing.T) {
+	t.Parallel()
 	app, activePath := newStableProbeTestApp(t, []byte("credential-one"))
 	cache := provider.NewProbeCache(time.Minute)
 	var (

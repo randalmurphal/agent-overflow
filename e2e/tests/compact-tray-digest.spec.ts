@@ -57,10 +57,10 @@ test('the tray digest fits a phone and stays touch-scrollable', async ({ harness
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
     // The touch escape released the tail follow, so a jump to the top
     // holds and mounts the oldest rows on demand.
-    await expect(async () => {
+    await expect.poll(async () => {
       await clip.evaluate((el) => el.scrollTo({ top: 0 }));
-      await expect(child(0)).toBeVisible({ timeout: 500 });
-    }).toPass();
+      return await child(0).isVisible();
+    }, { intervals: [100] }).toBe(true);
     // Tap the header again to collapse.
     await row.getByTestId('agent-row-toggle').click();
     await expect(digest).toHaveCount(0);

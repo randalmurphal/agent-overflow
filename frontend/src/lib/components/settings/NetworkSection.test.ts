@@ -111,6 +111,7 @@ describe('<NetworkSection>', () => {
     resetRunMode();
     resetToLocalPage();
     vi.useRealTimers();
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   it('refreshes the tailnet certificate status after returning from its admin panel', async () => {

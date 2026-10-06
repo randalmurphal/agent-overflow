@@ -18,6 +18,7 @@ import (
 // fragment that module parses. A mismatch is a pairing link that opens
 // the app and silently does nothing.
 func TestDeviceSessionModuleMatchesTheWire(t *testing.T) {
+	t.Parallel()
 	// This suite runs from the repository root (main_test.go's TestMain).
 	const modulePath = "frontend/src/lib/transport/deviceSession.ts"
 	source, err := os.ReadFile(modulePath)

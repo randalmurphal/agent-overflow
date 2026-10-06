@@ -148,9 +148,8 @@ test('the footnote popup opens, navigates a chained reference, and closes from i
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');
-  // Settle barrier (see the first test): the popup resolves the body on
-  // the click and never re-resolves, so clicking before the reveal drain
-  // finishes snapshots a mid-drain definition.
+  // Settle barrier (see the first test): the chips render once the reveal
+  // drain reaches them. An open popup follows a definition still arriving.
   await expect(
     timeline.locator('.streamdown-mermaid-host svg').first(),
   ).toBeVisible({ timeout: 30_000 });

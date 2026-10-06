@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseBranchList(t *testing.T) {
+	t.Parallel()
 	// Inputs cover every behavior the parser is responsible for:
 	//   - "main"            local, current, default, ahead 3 behind 2
 	//   - "feature/demo"    local with no remote counterpart
@@ -74,6 +75,7 @@ func TestParseBranchList(t *testing.T) {
 }
 
 func TestParseBranchListPreservesLocalNamedLikeBranch(t *testing.T) {
+	t.Parallel()
 	// A local branch literally named "feature/HEAD" should pass through
 	// (only remote-namespaced HEAD symrefs are dropped).
 	branches := parseBranchList("feature/HEAD| ||\nfeature/regular| ||\n", "main", []string{"origin"})
@@ -83,6 +85,7 @@ func TestParseBranchListPreservesLocalNamedLikeBranch(t *testing.T) {
 }
 
 func TestParseUpstreamTrack(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in     string
 		ahead  int
@@ -111,6 +114,7 @@ func TestParseUpstreamTrack(t *testing.T) {
 }
 
 func TestParseBranchListProjectsRemoteOnlyDefault(t *testing.T) {
+	t.Parallel()
 	// When the default branch only exists on the remote (fresh clone with
 	// no local checkout yet of main), the projected "main" entry must
 	// still be flagged as default so the picker keeps the badge.
@@ -137,7 +141,8 @@ func TestParseBranchListProjectsRemoteOnlyDefault(t *testing.T) {
 }
 
 func TestListBranchesOnRepository(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	branches, err := core.ListBranches(repo)
@@ -153,7 +158,8 @@ func TestListBranchesOnRepository(t *testing.T) {
 }
 
 func TestListBranchesIncludesNewBranch(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/test")
 
 	core := NewCore()
@@ -190,7 +196,8 @@ func commitWithDate(t *testing.T, cwd, date, message string) {
 }
 
 func TestListBranchesOrdersByCommitterDateDescending(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	// Names chosen so refname order (git's default sort) contradicts
 	// committerdate order — the test fails without the --sort flag.
 	testutil.RunGit(t, repo, "checkout", "-b", "aa-oldest", "main")
@@ -220,6 +227,7 @@ func TestListBranchesOrdersByCommitterDateDescending(t *testing.T) {
 }
 
 func TestIsDefaultBranchNameEdgeCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		branch string
 		dflt   string

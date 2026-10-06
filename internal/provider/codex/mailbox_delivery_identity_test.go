@@ -16,6 +16,7 @@ const encryptedFinalAnswerHeader = "Message Type: FINAL_ANSWER\nTask name: /root
 // delivery lands on two rows — the exact duplicate the content key exists to
 // prevent.
 func TestEncryptedDeliveryHasOneIDAcrossBothCarriers(t *testing.T) {
+	t.Parallel()
 	header, err := json.Marshal(encryptedFinalAnswerHeader)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,7 @@ func TestEncryptedDeliveryHasOneIDAcrossBothCarriers(t *testing.T) {
 // A MESSAGE progress note keeps the tail: its payload never leaves the
 // ciphertext, so the tail is the only thing separating two beats.
 func TestEncryptedProgressDeliveriesStayDistinct(t *testing.T) {
+	t.Parallel()
 	item := func(tail string) map[string]json.RawMessage {
 		return map[string]json.RawMessage{
 			"type":      json.RawMessage(`"agent_message"`),
@@ -81,6 +83,7 @@ func TestEncryptedProgressDeliveriesStayDistinct(t *testing.T) {
 // deduper must not eat the second answer; only a repeat inside the SAME child
 // turn is the live-stream/rollout-tail duplicate it exists for.
 func TestIdenticalDeliveriesSurviveAcrossChildTurns(t *testing.T) {
+	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -131,6 +134,7 @@ func TestIdenticalDeliveriesSurviveAcrossChildTurns(t *testing.T) {
 // degenerate id, so the timeline shows one stuck entry instead of a conversation.
 // It refuses instead.
 func TestDurableCarrierRefusesAnEncryptedProgressBeatItCannotIdentify(t *testing.T) {
+	t.Parallel()
 	// The plaintext header of an encrypted MESSAGE: everything after
 	// "Payload:\n" is in the ciphertext block the rollout record does not have.
 	header := "Message Type: MESSAGE\nTask name: /root\nSender: /root/review_perf\nPayload:\n"
@@ -171,6 +175,7 @@ func TestDurableCarrierRefusesAnEncryptedProgressBeatItCannotIdentify(t *testing
 // bytes and agree on one id — refusing it would drop a progress activity the
 // timeline is supposed to show.
 func TestDurableCarrierStillReportsAPlaintextProgressBeat(t *testing.T) {
+	t.Parallel()
 	header := "Message Type: MESSAGE\nTask name: /root\nSender: /root/review_perf\nPayload:\nHalfway through the sweep."
 	encoded, err := json.Marshal(header)
 	if err != nil {

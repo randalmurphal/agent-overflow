@@ -335,7 +335,7 @@ func TestWaitForBackendInstanceLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := waitForBackendInstanceLock(context.Background(), root, 300*time.Millisecond); err == nil {
+	if _, err := waitForBackendInstanceLock(context.Background(), root, 50*time.Millisecond); err == nil {
 		t.Fatal("the lock was taken while held")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -343,8 +343,9 @@ func TestWaitForBackendInstanceLock(t *testing.T) {
 	if _, err := waitForBackendInstanceLock(ctx, root, time.Minute); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled wait = %v", err)
 	}
+	// Released after the first attempt and before the next poll.
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		held.file.Close()
 	}()
 	next, err := waitForBackendInstanceLock(context.Background(), root, 10*time.Second)

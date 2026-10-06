@@ -22,6 +22,7 @@ import (
 // a session entry without liveness wired up (legacy test fixtures)
 // can't panic when an event arrives.
 func TestSessionLivenessBumpActivityStampsClock(t *testing.T) {
+	t.Parallel()
 	l := newSessionLiveness(time.Unix(0, 1_000))
 	if got := l.LastActivityUnixNano.Load(); got != 1_000 {
 		t.Fatalf("initial lastActivity = %d, want 1000", got)
@@ -47,6 +48,7 @@ func TestSessionLivenessBumpActivityStampsClock(t *testing.T) {
 // mid-turn skip if a future refactor routed a non-Turn kind into the
 // EventTurnStart arm.
 func TestRecordSessionActivityBumpsOnEveryEventKind(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-bump")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -91,6 +93,7 @@ func TestRecordSessionActivityBumpsOnEveryEventKind(t *testing.T) {
 // clamp-at-zero guard against an unmatched EventTurnComplete (replay,
 // double-fire).
 func TestRecordSessionActivityTracksActiveTurns(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-turns")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -131,6 +134,7 @@ func TestRecordSessionActivityTracksActiveTurns(t *testing.T) {
 // previous incarnation. Non-disconnect status events ("ready", "error")
 // must not drain.
 func TestRecordSessionActivityDisconnectDrainsActiveTurns(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-drain")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -163,6 +167,7 @@ func TestRecordSessionActivityDisconnectDrainsActiveTurns(t *testing.T) {
 // session is in place — the bump must not target the wrong session.
 // Mirrors TestUnregisterSessionKeepsSessionWhenTokenIsStale.
 func TestRecordSessionActivityIgnoresStaleToken(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stale-tok")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -190,6 +195,7 @@ func TestRecordSessionActivityIgnoresStaleToken(t *testing.T) {
 // zero active turns must be evicted from a.sessions when the reaper
 // sweeps.
 func TestReapIdleSessionsClosesStaleSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stale-session")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -218,6 +224,7 @@ func TestReapIdleSessionsClosesStaleSession(t *testing.T) {
 // TestReapIdleSessionsSkipsRecentActivity confirms the threshold is a
 // floor: a session whose last bump is inside the window stays alive.
 func TestReapIdleSessionsSkipsRecentActivity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-recent")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -244,6 +251,7 @@ func TestReapIdleSessionsSkipsRecentActivity(t *testing.T) {
 // never reaped even when wall-clock idleness would otherwise qualify
 // it. Mirrors the t3-code reaper's activeTurnId guard.
 func TestReapIdleSessionsSkipsActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-active-turn")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -274,6 +282,7 @@ func TestReapIdleSessionsSkipsActiveTurn(t *testing.T) {
 // must stay alive so the reaper doesn't kill a long-running build
 // (Codex) or a server the model left running (Claude).
 func TestReapIdleSessionsSkipsRunningBackgroundItems(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-bg-running")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -314,6 +323,7 @@ func TestReapIdleSessionsSkipsRunningBackgroundItems(t *testing.T) {
 
 // A failed store check must preserve the session rather than authorize eviction.
 func TestReapIdleSessionsSkipsOnStoreError(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-store-err")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -346,6 +356,7 @@ func TestReapIdleSessionsSkipsOnStoreError(t *testing.T) {
 // the close call, the close is skipped. Without this guard the reaper
 // could yank a session out from under a live send.
 func TestIdleCloseSessionRespectsRaceWithFreshTurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-late-turn")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -380,6 +391,7 @@ func TestIdleCloseSessionRespectsRaceWithFreshTurn(t *testing.T) {
 // subprocess mid-send. This is a regression test for the TOCTOU bug
 // the post-task review surfaced.
 func TestIdleCloseSessionRespectsRaceWithFreshSend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fresh-send")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -419,6 +431,7 @@ func TestIdleCloseSessionRespectsRaceWithFreshSend(t *testing.T) {
 // close). Mirrors StopSession's "missing entry still scrubs state"
 // contract.
 func TestIdleCloseSessionRunsTeardownWhenEntryGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// No session inserted. idleCloseSession returns nil; nothing should
 	// panic.
@@ -433,6 +446,7 @@ func TestIdleCloseSessionRunsTeardownWhenEntryGone(t *testing.T) {
 // confirm the idle reaper can be restarted after a stop (defensive —
 // production never restarts it, but tests should be able to).
 func TestStartStopIdleSessionReaperRoundTrip(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.startIdleSessionReaper()
 	// Idempotency: a second start while running must not fan out a
@@ -456,6 +470,7 @@ func TestStartStopIdleSessionReaperRoundTrip(t *testing.T) {
 // (and any partial-init error path) must be able to call stop
 // without panicking.
 func TestStopIdleSessionReaperBeforeStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.stopIdleSessionReaper()
 }
@@ -472,6 +487,7 @@ func TestStopIdleSessionReaperBeforeStart(t *testing.T) {
 // the sweep would surface here as a data race, even when the
 // assertion still happens to pass.
 func TestReapIdleSessionsIsRaceFreeUnderChurn(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 
 	const seeded = 20
@@ -557,6 +573,7 @@ func staleSession() session {
 // waiting for the user to respond to a permission prompt is never
 // reaped, regardless of how long the user takes to answer.
 func TestReapIdleSessionsSkipsPendingApproval(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-pending-approval")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -592,6 +609,7 @@ func TestReapIdleSessionsSkipsPendingApproval(t *testing.T) {
 // waiting for the user to answer an AskUserQuestion prompt is never
 // reaped. This is the exact scenario from the bug report.
 func TestReapIdleSessionsSkipsPendingUserInput(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-pending-input")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -634,6 +652,7 @@ func TestReapIdleSessionsSkipsPendingUserInput(t *testing.T) {
 // TestReapIdleSessionsSkipsQueuedFlushItems verifies that a session
 // with user messages queued behind an in-flight turn is not reaped.
 func TestReapIdleSessionsSkipsQueuedFlushItems(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-queued-flush")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -657,6 +676,7 @@ func TestReapIdleSessionsSkipsQueuedFlushItems(t *testing.T) {
 // TestReapIdleSessionsSkipsPendingSend verifies that a session with a
 // pending send awaiting wire echo is not reaped.
 func TestReapIdleSessionsSkipsPendingSend(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-pending-send")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -679,6 +699,7 @@ func TestReapIdleSessionsSkipsPendingSend(t *testing.T) {
 // this, a resolved approval would shield a session from the reaper
 // forever.
 func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-resolved-approval")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -737,6 +758,7 @@ func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
 // grace has elapsed — a fired wakeup protects the session through
 // normal turn activity instead.
 func TestReapIdleSessionsSkipsPendingWakeup(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-pending-wakeup")
@@ -797,6 +819,7 @@ func TestReapIdleSessionsSkipsPendingWakeup(t *testing.T) {
 // Claude does not emit EventTurnStart into the runtime counter. An open
 // triage round must protect a quiet foreground tool without any heartbeat.
 func TestIdleCloseProtectsQuietOpenRound(t *testing.T) {
+	t.Parallel()
 	for _, direct := range []bool{false, true} {
 		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
 			app := newTestAppWithStore(t)
@@ -867,6 +890,7 @@ func TestIdleCloseProtectsQuietOpenRound(t *testing.T) {
 }
 
 func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 	thread := testThread("heartbeat-thread")
@@ -906,6 +930,7 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 // Select the candidate before new work arrives, then prove eviction checks the
 // current state after it obtains the action lock. No provider is executed.
 func TestIdleReaperRechecksWorkAfterWaitingForAction(t *testing.T) {
+	t.Parallel()
 	for _, work := range []string{"queue", "dispatch", "wakeup", "background"} {
 		t.Run(work, func(t *testing.T) {
 			app := newTestAppWithTriage(t)
@@ -967,6 +992,7 @@ func TestIdleReaperRechecksWorkAfterWaitingForAction(t *testing.T) {
 }
 
 func TestIdleCloseLockWaitStopsAtShutdown(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []string{"action", "queue-admission"} {
 		t.Run(gate, func(t *testing.T) {
 			app := newTestAppWithStore(t)

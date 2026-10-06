@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // installMockGit puts a `git` shim on PATH for the duration of the test and
@@ -16,9 +18,7 @@ func installMockGit(t *testing.T, script string) string {
 		t.Skip("shell script mock git is unix-only")
 	}
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock git: %v", err)
-	}
+	mockexec.Write(t, filepath.Join(binDir, "git"), script)
 	logPath := filepath.Join(binDir, "git.log")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AO_GIT_LOG", logPath)

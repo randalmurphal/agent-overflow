@@ -17,7 +17,7 @@ import (
 
 func TestTransferredWorkspaceCleanupWaitsForConfirmationAndPreservesRetirement(t *testing.T) {
 	a := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := a.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatal(err)

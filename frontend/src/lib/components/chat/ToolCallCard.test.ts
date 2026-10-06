@@ -7,9 +7,14 @@ import {
   setBindingMock,
 } from "../../../test/mocks/bindings-app";
 import { codexSubagentReceiverLabels } from "../../utils/subagentLaunch";
+import { resetProposedPlanCacheForTests } from "../../stores/proposedPlans.svelte";
 
 beforeEach(() => {
   resetBindingMocks();
+  // buildPane seeds the module-level plan cache, and only the latest plan in
+  // it offers "Open in plan sidebar". A previous case's plans on the same
+  // thread would demote this case's plan.
+  resetProposedPlanCacheForTests();
   // Default payload mocks keep unrelated rows from hanging if a test path
   // expands a body. Tests that assert payload behavior install their own
   // method-specific mock.

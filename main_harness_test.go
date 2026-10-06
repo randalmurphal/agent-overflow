@@ -404,7 +404,7 @@ func TestBrowserWindowGetterIsInstalledBeforeAppStart(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		text := string(source)
-		build := strings.Index(text, "newIsolatedProviderApp(paths, isolationOptionsFor(flags))")
+		build := strings.Index(text, "newIsolatedProviderApp(paths, ")
 		startApp := strings.Index(text, "appService.Start(bootCtx)")
 		if build < 0 || startApp < 0 || build > startApp {
 			t.Fatalf("%s: newIsolatedProviderApp=%d App.Start=%d; the browser window getter must be installed before startup", path, build, startApp)

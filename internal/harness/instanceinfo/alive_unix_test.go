@@ -3,6 +3,8 @@
 package instanceinfo
 
 import (
+	"errors"
+	"io/fs"
 	"os/exec"
 	"testing"
 	"time"
@@ -33,5 +35,18 @@ func TestProcessAliveCallsAnUnreapedChildDead(t *testing.T) {
 	}
 	if procutil.Exited(pid) {
 		t.Error("a reaped child still reads as exited")
+	}
+}
+
+// A process that exits between a listing and the identity read must read as
+// fs.ErrNotExist, which process-group teardown skips, rather than fail the
+// whole capture.
+func TestCaptureProcessIdentityReportsAnExitedProcessAsNotExist(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CaptureProcessIdentity(cmd.Process.Pid); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("identity of a reaped pid: %v, want fs.ErrNotExist", err)
 	}
 }

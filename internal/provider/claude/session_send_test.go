@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestSendWireFormat(t *testing.T) {
@@ -172,6 +173,7 @@ func TestSession_Interrupt_ErrorResponse(t *testing.T) {
 // silently mask a Claude Code CLI bug. The error surfaces to the user
 // as a toast.
 func TestSession_Interrupt_TimeoutSurfaces(t *testing.T) {
+	t.Parallel()
 	s := newInterruptResponderSession(t, "silent", 150*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -202,6 +204,7 @@ func TestSession_Interrupt_TimeoutSurfaces(t *testing.T) {
 // TestSession_Interrupt_CtxCancelSurfaces confirms the ctx.Done branch
 // returns the ctx error to the caller without killing the session.
 func TestSession_Interrupt_CtxCancelSurfaces(t *testing.T) {
+	t.Parallel()
 	s := newInterruptResponderSession(t, "silent", 5*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -245,7 +248,7 @@ func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
 			reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
 			printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
 			printf '%s\n' "$RESULT_LINE"
-			sleep 2
+			cat >/dev/null
 		`},
 		Env: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine},
 	})
@@ -504,9 +507,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:             scriptPath,
@@ -589,9 +590,7 @@ while IFS= read -r line; do
     esac
 done
 `
-			if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-				t.Fatalf("write fake claude script: %v", err)
-			}
+			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
 				Binary:             scriptPath,
@@ -676,6 +675,7 @@ func TestSession_StopTask_ErrorResponse(t *testing.T) {
 // consumes the request and goes silent; StopTask must return a
 // timeout error within the configured window.
 func TestSession_StopTask_Timeout(t *testing.T) {
+	t.Parallel()
 	// Use a generous test context so the timeout error comes from
 	// Session.controlRequestTimeout, not the caller context.
 	s := newStopTaskResponderSession(t, "silent", 150*time.Millisecond)
@@ -737,6 +737,7 @@ func TestSession_StopTask_EmptyTaskID(t *testing.T) {
 // match any pending StopTask. The in-flight StopTask still reaches
 // its timeout and the session keeps processing lines.
 func TestSession_StopTask_UnknownRequestIDDropped(t *testing.T) {
+	t.Parallel()
 	s := newStopTaskResponderSession(t, "stray", 200*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -784,9 +785,7 @@ read -r _discard
 sleep 0.05
 exit 0
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -905,7 +904,8 @@ func TestCommandResultAttributionFollowsActualSend(t *testing.T) {
 while IFS= read -r line; do
   case "$line" in
     *'"type":"user"'*)
-      id=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+      id=${line##*'"uuid":"'}
+      id=${id%%'"'*}
       printf '{"type":"command_lifecycle","command_uuid":"%s","state":"started"}\n' "$id"
       printf '{"type":"assistant","message":{"id":"result-%s","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Set effort level to low (this session only)"}]}}\n' "$id"
       printf '{"type":"command_lifecycle","command_uuid":"%s","state":"completed"}\n' "$id"
@@ -913,9 +913,7 @@ while IFS= read -r line; do
   esac
 done
 `
-			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.Write(t, path, script)
 			events := make(chan provider.ProviderEvent, 128)
 			s, err := NewSession(context.Background(), testThread, Config{Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
 			if err != nil {

@@ -11,6 +11,7 @@ import (
 // A reconnect must see the same accepted message while triage hands it to
 // the worker, while the worker waits for the thread lock, and after dispatch.
 func TestLiveQueueSnapshotCoversDispatchHandoff(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("live-queue-handoff")
 	thread.WorkspacePath = t.TempDir()
@@ -43,6 +44,7 @@ func TestLiveQueueSnapshotCoversDispatchHandoff(t *testing.T) {
 }
 
 func TestLiveQueueSnapshotHasOneHomeAcrossPendingRegistration(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("live-queue-registration")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -75,6 +77,7 @@ func TestLiveQueueSnapshotHasOneHomeAcrossPendingRegistration(t *testing.T) {
 // delayed snapshot published outside it could reclaim an already-flushed
 // message, which the next empty snapshot would then erase from the preview.
 func TestQueuePublicationHoldsDispatchOwnership(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	group := []triage.QueuedFlushItem{{ID: "q", Message: "pending"}}
 	app.beginFlushDispatchVisibility("thread", group)
@@ -96,6 +99,7 @@ func TestQueuePublicationHoldsDispatchOwnership(t *testing.T) {
 }
 
 func TestDispatchReleasesTriageClaimBeforeWorkerCanSettle(t *testing.T) {
+	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
 	const threadID = "claim-transfer"
 	// Stand in for an already-running worker; this admission only appends.

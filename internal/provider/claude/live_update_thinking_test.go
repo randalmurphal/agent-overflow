@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -261,9 +260,8 @@ func TestApplyLiveUpdateThinkingRequiresVersionFloor(t *testing.T) {
 		if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 			t.Fatalf("version %q: ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", version, err)
 		}
-		time.Sleep(50 * time.Millisecond)
-		if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
-			t.Fatalf("version %q: expected no stdin writes, captured: %s", version, data)
+		if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+			t.Fatalf("version %q: expected no stdin writes, captured: %q", version, lines)
 		}
 	}
 }
@@ -290,9 +288,8 @@ func TestApplyLiveUpdateThinkingRejectsMalformedAxis(t *testing.T) {
 			if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
 				t.Fatalf("ApplyLiveUpdate error = %v, want a validation failure", err)
 			}
-			time.Sleep(50 * time.Millisecond)
-			if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
-				t.Fatalf("expected no stdin writes, captured: %s", data)
+			if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+				t.Fatalf("expected no stdin writes, captured: %q", lines)
 			}
 		})
 	}

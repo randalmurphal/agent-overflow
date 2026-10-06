@@ -16,6 +16,7 @@ import (
 // how many commands it waits on, and the stored launch row holds none of
 // it.
 func TestListLiveBackgroundTasks_ServesAParkedClaudeAgentsRunState(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-park", "claude-sonnet-4-6", "")

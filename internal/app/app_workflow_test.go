@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -25,6 +26,7 @@ import (
 )
 
 func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
+	t.Parallel()
 	app, bus := setupE2EApp(t)
 	app.testEmitHook = bus.emit
 	configRoot := t.TempDir()
@@ -206,6 +208,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 }
 
 func TestWorkflowCodexQuestionAnswerCarriesSchemaEveryTurn(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	workflowDir := filepath.Join(configRoot, "workflows")
@@ -314,6 +317,7 @@ cleanup: manual
 }
 
 func TestWorkflowEnvelopeRetryCanRecover(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	workflowDir := filepath.Join(configRoot, "workflows")
@@ -438,9 +442,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 	path := filepath.Join(t.TempDir(), "workflow-codex.sh")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -534,9 +536,7 @@ while IFS= read -r line; do
   idx=$((idx+1))
 done
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -611,6 +611,7 @@ func assertWorkflowEmissions(t *testing.T, bus *capturedEventBus, itemID string)
 }
 
 func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("workflow-schema")
 	thread.Mode = "workflow"
@@ -626,6 +627,7 @@ func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
 }
 
 func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("workflow-dead-takeover")
 	thread.Mode = "workflow"
@@ -693,9 +695,10 @@ func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
 // derived from it, because the row is the source of truth every later session
 // start (restart, resume, Answer-continuation) re-derives from.
 func TestWorkflowPhaseAccessMapsToThreadRuntimeMode(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeMixedAccessWorkflow(t, configRoot)
@@ -793,9 +796,10 @@ reliability:
 // level that matters. A phase that says nothing about access gets no worktree
 // AND a restricted session — the two halves of "unset means read-only".
 func TestWorkflowUndeclaredAccessRunsReadOnly(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeUndeclaredAccessWorkflow(t, configRoot)
@@ -846,6 +850,7 @@ reliability:
 // TestWorkflowPhaseRuntimeModeMapping covers the pure mapping directly,
 // including the unset case the YAML fixtures cannot express twice.
 func TestWorkflowPhaseRuntimeModeMapping(t *testing.T) {
+	t.Parallel()
 	cases := map[def.Access]provider.RuntimeMode{
 		def.AccessWrite:    provider.RuntimeFullAccess,
 		def.AccessReadOnly: provider.RuntimeReadOnly,
@@ -874,6 +879,7 @@ func TestWorkflowPhaseRuntimeModeMapping(t *testing.T) {
 // Changing this is a scope conversation, not a bug fix: it would need a new
 // `access:` value in the workflow schema, which is a definition-format change.
 func TestWorkflowPhasesNeverRunUnderTheAutoRuntimeMode(t *testing.T) {
+	t.Parallel()
 	for _, access := range []def.Access{def.AccessWrite, def.AccessReadOnly, "", "auto", "nonsense"} {
 		if got := workflowPhaseRuntimeMode(access); got == provider.RuntimeAuto {
 			t.Errorf("workflowPhaseRuntimeMode(%q) = auto; unattended phases must never route approvals to a billed reviewer", access)
@@ -887,8 +893,9 @@ func TestWorkflowPhasesNeverRunUnderTheAutoRuntimeMode(t *testing.T) {
 // runtime mode is never applied — starting an unattended read-only phase on
 // it would silently grant full access.
 func TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 
 	phase := def.Phase{
@@ -930,8 +937,9 @@ func TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess(t *testing.T
 // naming `sonnet` parks as a wiring error instead of running on whatever the
 // alias means this release.
 func TestCreateWorkflowThreadRefusesAClaudeAlias(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 
 	_, err := app.createWorkflowThread(workflowhost.ThreadSpec{
@@ -1034,6 +1042,7 @@ func writeAccessWorkflowFixture(t *testing.T, configRoot, id, definition string)
 // invocation, and `ResolveCall` reads the workflow and inlines its prompt
 // bodies off disk every time.
 func TestCallResolutionReadsEditedPromptsPerInvocation(t *testing.T) {
+	t.Parallel()
 	configRoot := t.TempDir()
 	database := storetest.Clone(t)
 	projectRow := testutil.EnsureProject(t, database, t.TempDir())
@@ -1155,6 +1164,7 @@ func writePromptFile(t *testing.T, configRoot, name, body string) {
 }
 
 func TestWorkflowReliabilityStallTripsWatchdog(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeReliabilityWorkflow(t, configRoot, `
@@ -1184,6 +1194,7 @@ func TestWorkflowReliabilityStallTripsWatchdog(t *testing.T) {
 }
 
 func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeReliabilityWorkflow(t, configRoot, `
@@ -1220,6 +1231,7 @@ func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
 }
 
 func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeReliabilityWorkflow(t, configRoot, `
@@ -1284,6 +1296,7 @@ func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
 }
 
 func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{
 		{WorkItemID: "item", Model: "claude-opus-4-7", CostUSD: 0.5, CostSource: "wire"},
@@ -1426,9 +1439,7 @@ done
 func writeExecutable(t *testing.T, name, script string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
@@ -1573,6 +1584,7 @@ func runMapByID(t *testing.T, view WorkflowRunMapView) map[string]WorkflowRunMap
 }
 
 func TestWorkflowGetRunMapResolvesTheRootFromAnyRunInTheTree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedRunMapCampaign(t, app)
 
@@ -1606,6 +1618,7 @@ func TestWorkflowGetRunMapResolvesTheRootFromAnyRunInTheTree(t *testing.T) {
 // a stale nav entry, a discarded campaign — so it is an answer with a code the
 // client can stop retrying on, not an error string.
 func TestWorkflowGetRunMapRefusesAnUnknownRunPermanently(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedRunMapCampaign(t, app)
 
@@ -1629,6 +1642,7 @@ func TestWorkflowGetRunMapRefusesAnUnknownRunPermanently(t *testing.T) {
 // contract; what matters is that each typed refusal maps to its code, and that
 // everything else stays an error so the client keeps retrying it.
 func TestWorkflowRunMapRefusalClassification(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		err  error
@@ -1659,6 +1673,7 @@ func TestWorkflowRunMapRefusalClassification(t *testing.T) {
 }
 
 func TestWorkflowGetRunMapProjectsSkeletonRecordsAndMoney(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedRunMapCampaign(t, app)
 
@@ -1769,6 +1784,7 @@ func TestWorkflowGetRunMapProjectsSkeletonRecordsAndMoney(t *testing.T) {
 // none, and the engine enforces it. A map that read the run's own column alone
 // drew a profile-defaulted campaign as unbounded right up to the park.
 func TestWorkflowGetRunMapBudgetResolvesTheProjectProfileDefault(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// A run that declared NO budget, which is what makes the project profile the
 	// only possible source of a ceiling.
@@ -1830,6 +1846,7 @@ func TestWorkflowGetRunMapBudgetResolvesTheProjectProfileDefault(t *testing.T) {
 // for exactly that, and the ceiling it shows carries the same caveat the
 // enforcement refuses to judge on.
 func TestWorkflowGetRunMapSpendSaysWhatItCouldNotPrice(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedRunMapCampaign(t, app)
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{{
@@ -1857,6 +1874,7 @@ func TestWorkflowGetRunMapSpendSaysWhatItCouldNotPrice(t *testing.T) {
 }
 
 func TestWorkflowGetRunMapDegradesToRecordsOnlyWithoutASnapshot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	seedRunMapCampaign(t, app)
 

@@ -14,6 +14,7 @@ import (
 // byte-for-byte unchanged: Run executes inline, in the caller's own goroutine,
 // and its error is still the boot's error.
 func TestTheZeroActivationGateRunsWorkInlineAndPropagatesItsError(t *testing.T) {
+	t.Parallel()
 	var gate activation
 	if gate.Parked() {
 		t.Fatal("the zero value is parked, so every ordinary boot would defer its startup work")
@@ -39,6 +40,7 @@ func TestTheZeroActivationGateRunsWorkInlineAndPropagatesItsError(t *testing.T) 
 // arrives. That is the whole property a rollback rests on — a trial that fetched,
 // swept or spent would have done something no snapshot can undo.
 func TestAParkedGateDefersWorkUntilItOpens(t *testing.T) {
+	t.Parallel()
 	var gate activation
 	gate.Park()
 	if !gate.Parked() {
@@ -72,6 +74,7 @@ func TestAParkedGateDefersWorkUntilItOpens(t *testing.T) {
 // A rolled-back trial is stopped rather than committed, so its parked work must
 // never run — and the goroutine holding it must not outlive the process either.
 func TestAParkedGateReleasesItsWaiterOnShutdownWithoutRunningTheWork(t *testing.T) {
+	t.Parallel()
 	var gate activation
 	gate.Park()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,6 +94,7 @@ func TestAParkedGateReleasesItsWaiterOnShutdownWithoutRunningTheWork(t *testing.
 // With no supervisor there is no update path, and the refusal names what to do
 // instead rather than what field was missing.
 func TestServiceUpdateRequestRefusesWithoutASupervisor(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	if _, err := app.serviceUpdateRequest("2.0.0"); !errors.Is(err, errNoSupervisor) {
 		t.Fatalf("serviceUpdateRequest = %v, want errNoSupervisor", err)
@@ -114,6 +118,7 @@ func TestServiceUpdateRequestRefusesWithoutASupervisor(t *testing.T) {
 // missed the restatement would leave the supervisor snapshotting a file nobody
 // writes and restoring nothing over a trial's work.
 func TestSuperviseSnapshotsTheDatabaseFilesThisPackageOpens(t *testing.T) {
+	t.Parallel()
 	want := []string{databaseFileName, databaseFileName + "-wal", databaseFileName + "-shm"}
 	got := supervise.DatabaseFiles()
 	if len(got) != len(want) {
@@ -127,6 +132,7 @@ func TestSuperviseSnapshotsTheDatabaseFilesThisPackageOpens(t *testing.T) {
 }
 
 func TestClientAdmissionFollowsTrialCommit(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	if err := WaitForActivation(app, context.Background()); err != nil {
 		t.Fatal("ordinary boot refused clients", err)

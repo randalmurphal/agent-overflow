@@ -108,6 +108,7 @@ func approvalRequested(a *App) func() {
 // the most common moment: a wire event on the funnel, a title read from
 // SQLite off the emitting goroutine, and one send.
 func TestTurnCompletionNotifiesWithTheThreadsOwnTitle(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, turnCompleted(app, false))
 	if len(sends) != 1 {
@@ -135,6 +136,7 @@ func TestTurnCompletionNotifiesWithTheThreadsOwnTitle(t *testing.T) {
 // while the top-level agent keeps working, and the user is not told the
 // thread is done.
 func TestASubagentRoundDoesNotInterruptAnyone(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, func() {
 		app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
@@ -150,6 +152,7 @@ func TestASubagentRoundDoesNotInterruptAnyone(t *testing.T) {
 // at the app level: the completion the user never looked at is taken back
 // when the thread starts working again, by the id that presented it.
 func TestResumingAThreadWithdrawsItsRestNotification(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		turnCompleted(app, false),
@@ -178,6 +181,7 @@ func TestResumingAThreadWithdrawsItsRestNotification(t *testing.T) {
 // on purpose — a thread holds one rest notification — and both are the ones
 // with provider prose in the event to leave behind.
 func TestAFailedTurnAndADeadProviderReplaceEachOtherAndSayNothingSpecific(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		turnCompleted(app, true),
@@ -214,6 +218,7 @@ func TestAFailedTurnAndADeadProviderReplaceEachOtherAndSayNothingSpecific(t *tes
 // with the most branches on the wire: the request carries the whole
 // ApprovalRequest, and the resolve carries only its id.
 func TestAnApprovalIsPresentedThenWithdrawnWhenItIsAnswered(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		approvalRequested(app),
@@ -243,6 +248,7 @@ func TestAnApprovalIsPresentedThenWithdrawnWhenItIsAnswered(t *testing.T) {
 // notification pointing at a prompt that no longer exists is the stale alert
 // retraction exists to prevent.
 func TestAFailedApprovalStillWithdrawsThePrompt(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		approvalRequested(app),
@@ -263,6 +269,7 @@ func TestAFailedApprovalStillWithdrawsThePrompt(t *testing.T) {
 // the transition may notify — otherwise opening the provider picker would
 // raise the same alert again.
 func TestProviderSignOutIsAnEdgeNotALevel(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	signedOut := func() {
 		app.emit(eventchan.ProviderStatus, providerstatus.Event{
@@ -303,6 +310,7 @@ func TestProviderSignOutIsAnEdgeNotALevel(t *testing.T) {
 // session, with no alert standing, must not send a retraction for a
 // notification that was never presented.
 func TestAnOrdinarySignInRetractsNothing(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, func() {
 		app.emit(eventchan.ProviderLogin, provideraccountapp.LoginState{
@@ -316,6 +324,7 @@ func TestAnOrdinarySignInRetractsNothing(t *testing.T) {
 
 // TestAnUnfinishedLoginIsNotASignIn: only the succeeded phase is an edge.
 func TestAnUnfinishedLoginIsNotASignIn(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		func() {
@@ -338,6 +347,7 @@ func TestAnUnfinishedLoginIsNotASignIn(t *testing.T) {
 // status, so a `ready` re-emission must not be read as the user having just
 // signed in.
 func TestAReadyStatusIsNotASignIn(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
 		func() {
@@ -359,6 +369,7 @@ func TestAReadyStatusIsNotASignIn(t *testing.T) {
 // TestPreferenceSilencesOnlyTheKindItNames is the per-kind gate: one toggle
 // off must not silence the other three.
 func TestPreferenceSilencesOnlyTheKindItNames(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	if _, err := app.settings.BackendScreen().Update(map[string]any{
 		"notifyTurnComplete": false,
@@ -380,6 +391,7 @@ func TestPreferenceSilencesOnlyTheKindItNames(t *testing.T) {
 // are driven through notifyOS directly because that is how their senders
 // reach it: neither is mapped off the event funnel.
 func TestWorkflowAttentionAndAppUpdateHaveTogglesOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		key      string
 		silenced notify.Kind
@@ -415,6 +427,7 @@ func TestWorkflowAttentionAndAppUpdateHaveTogglesOfTheirOwn(t *testing.T) {
 // TestTheMasterSwitchSilencesEveryKind, every one of the six: "off" on this
 // screen has to mean off, whatever the per-kind toggles say.
 func TestTheMasterSwitchSilencesEveryKind(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	if _, err := app.settings.BackendScreen().Update(map[string]any{
 		"notificationsEnabled": false,
@@ -449,6 +462,7 @@ func TestTheMasterSwitchSilencesEveryKind(t *testing.T) {
 // logging, but a direct caller — the workflow attention sender, the update
 // notice — gets a code it can distinguish from a broken daemon.
 func TestSuppressionIsTypedNotSilent(t *testing.T) {
+	t.Parallel()
 	app, _ := newNotificationMappingApp(t)
 	if _, err := app.settings.BackendScreen().Update(map[string]any{
 		"notifyError": false,
@@ -473,6 +487,7 @@ func TestSuppressionIsTypedNotSilent(t *testing.T) {
 // clear: turning a kind off between the send and the retraction must not
 // strand what is already on screen.
 func TestARetractionIsNeverSuppressed(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, turnCompleted(app, false))
 	if len(sends) != 1 {
@@ -510,6 +525,7 @@ func hiddenThreads(t *testing.T, app *App, on bool) {
 // title read is still best-effort and the notification carries the generic
 // heading.
 func TestAThreadWithNoRowIsNotInTheSidebar(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	completed := func() {
 		app.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{
@@ -540,6 +556,7 @@ func TestAThreadWithNoRowIsNotInTheSidebar(t *testing.T) {
 // kind is covered by the one toggle, and the per-kind toggles still apply on
 // top of it.
 func TestAWorkflowThreadIsSilentUntilTheScreenOptsIn(t *testing.T) {
+	t.Parallel()
 	const workflowThreadID = "thread-workflow-phase"
 	app, recorder := newNotificationMappingApp(t)
 	phase := testThread(workflowThreadID)
@@ -610,6 +627,7 @@ func TestAWorkflowThreadIsSilentUntilTheScreenOptsIn(t *testing.T) {
 // opted into hearing is withdrawn when the thread resumes, even if the
 // opt-in was flipped off in between.
 func TestAHiddenThreadsRetractionIsNeverGated(t *testing.T) {
+	t.Parallel()
 	const workflowThreadID = "thread-workflow-phase"
 	app, recorder := newNotificationMappingApp(t)
 	phase := testThread(workflowThreadID)
@@ -639,6 +657,7 @@ func TestAHiddenThreadsRetractionIsNeverGated(t *testing.T) {
 // channels that carry a turn's streaming deltas fall through the switch and
 // queue nothing.
 func TestTheHotChannelsAreNotMapped(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, func() {
 		for range 100 {
@@ -654,6 +673,7 @@ func TestTheHotChannelsAreNotMapped(t *testing.T) {
 // TestAMismatchedPayloadIsIgnored: the tap type-asserts, and a channel whose
 // payload is not the shape it names must not panic the emitting goroutine.
 func TestAMismatchedPayloadIsIgnored(t *testing.T) {
+	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, func() {
 		app.emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": mappingThreadID})

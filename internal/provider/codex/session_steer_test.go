@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestSessionSteerSendsTurnSteerOnActiveTurn pins the wire shape for
@@ -21,6 +22,7 @@ import (
 // / sandboxPolicy / collaborationMode — those are turn-creation
 // params for turn/start, not steer.
 func TestSessionSteerSendsTurnSteerOnActiveTurn(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -39,9 +41,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
@@ -112,6 +112,7 @@ done
 // "no active turn yet" branch so the app layer can errors.Is-check
 // against the sentinel and fall back to Send.
 func TestSessionSteerWithoutActiveTurnReturnsErrNoActiveTurn(t *testing.T) {
+	t.Parallel()
 	scriptPath := filepath.Join(t.TempDir(), "codex")
 	script := `#!/bin/bash
 while IFS= read -r line; do
@@ -122,9 +123,7 @@ while IFS= read -r line; do
     echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-noturn\"}}}"
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
 		Model:   "test-model",
@@ -145,6 +144,7 @@ done
 // shared with Send: a zero-length steer with no attachments fails fast
 // rather than hitting the wire with an empty input vec.
 func TestSessionSteerEmptyContentRejected(t *testing.T) {
+	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	script := fmt.Sprintf(`#!/bin/bash
 while IFS= read -r line; do
@@ -161,9 +161,7 @@ while IFS= read -r line; do
 done
 `, capturePath)
 	scriptPath := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:  scriptPath,
 		Model:   "test-model",

@@ -23,6 +23,8 @@ import (
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/chromedp"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The headless engine is exercised against a FAKE Chromium: a shell script
@@ -124,9 +126,7 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 		"echo $$ > " + shellQuote(browser.pidFile) + "\n" +
 		"echo \"DevTools listening on " + wsURL + "/devtools/browser/$$\" >&2\n" +
 		"exec sleep 300\n"
-	if err := os.WriteFile(browser.path, []byte(script), 0o700); err != nil {
-		t.Fatalf("write the fake Chromium: %v", err)
-	}
+	mockexec.Write(t, browser.path, script)
 	return browser
 }
 
@@ -597,9 +597,7 @@ func TestHeadlessProfileSurfacesWhyTheBrowserRefusedToStart(t *testing.T) {
 		"echo $$ > " + shellQuote(pidFile) + "\n" +
 		"echo 'Failed to move to new namespace: Operation not permitted' >&2\n" +
 		"exit 1\n"
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	engine := newTestHeadlessEngine(t, binary)
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
 
@@ -1120,9 +1118,7 @@ func TestHeadlessProfileDisposeReapsALaunchInFlight(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo $$ > " + shellQuote(pidFile) + "\n" +
 		"exec sleep 300\n"
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, binary, script)
 	engine := newTestHeadlessEngine(t, binary)
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	launched := make(chan error, 1)

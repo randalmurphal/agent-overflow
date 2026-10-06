@@ -13,6 +13,7 @@ import (
 // the only thing that can carry it into a bound method is the call context.
 // This is the end-to-end proof of that conduit for thread creation.
 func TestACreatedThreadRemembersTheScreenThatStartedIt(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -33,6 +34,7 @@ func TestACreatedThreadRemembersTheScreenThatStartedIt(t *testing.T) {
 // connection would make the attribution expire the moment the tab reloads,
 // which defeats the purpose of persisting it at all.
 func TestCreationAttributionIsTheDeviceNotTheConnection(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -52,6 +54,7 @@ func TestCreationAttributionIsTheDeviceNotTheConnection(t *testing.T) {
 // An in-process caller — a background saga, the harness RPC, a test — has no
 // screen behind it. Empty is the correct answer, not a failure.
 func TestABackendCreatedThreadIsAttributedToNoDevice(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread, err := createTestThread(t, app, "claude", t.TempDir(), "claude-sonnet-4-6", "chat")
 	if err != nil {
@@ -66,6 +69,7 @@ func TestABackendCreatedThreadIsAttributedToNoDevice(t *testing.T) {
 // repository is the honest "nothing known" case — and the one that must not
 // error, since plenty of real workspaces are exactly this.
 func TestObservingANonRepositoryWorkspaceReportsNothingKnown(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	if origin := app.observeThreadOrigin(t.TempDir()); !origin.IsZero() {
 		t.Fatalf("origin = %+v, want zero for a directory that is not a repository", origin)
@@ -78,6 +82,7 @@ func TestObservingANonRepositoryWorkspaceReportsNothingKnown(t *testing.T) {
 // stampThreadCreation is the single entry point every creation path uses, so
 // its contract — fill both, overwrite whatever was there — is worth pinning.
 func TestStampingCreationFactsFillsBothAndToleratesANilThread(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	thread := store.Thread{WorkspacePath: t.TempDir(), CreatedByDevice: "stale"}
 	app.stampThreadCreation(ctxFromClient(transport.ClientIdentity{DeviceID: "desk-2"}), &thread)
@@ -94,6 +99,7 @@ func TestStampingCreationFactsFillsBothAndToleratesANilThread(t *testing.T) {
 // three coordinates a transfer needs, and each comes from a different git
 // command, so a test that stubs them proves nothing about whether they work.
 func TestObservingARepositoryRecordsBranchRemoteAndHead(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	repo := initCommitMsgRepo(t)
 	remote := "git@example.com:owner/repo.git"
@@ -118,6 +124,7 @@ func TestObservingARepositoryRecordsBranchRemoteAndHead(t *testing.T) {
 // A repository with no `origin` is ordinary — a local-only repo, a clone whose
 // remote was renamed. The other two coordinates must still be recorded.
 func TestARepositoryWithNoRemoteStillRecordsBranchAndHead(t *testing.T) {
+	t.Parallel()
 	app := newTestApp(t)
 	origin := app.observeThreadOrigin(initCommitMsgRepo(t))
 	if origin.RemoteURL != "" {

@@ -21,6 +21,7 @@ func itemCount(t *testing.T, app *App, threadID string) int {
 }
 
 func TestThreadImportUpdatesAppendsAClaudeTail(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -89,6 +90,7 @@ func TestThreadImportUpdatesAppendsAClaudeTail(t *testing.T) {
 }
 
 func TestThreadImportUpdatesAppendsACodexTail(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -129,6 +131,7 @@ func TestThreadImportUpdatesAppendsACodexTail(t *testing.T) {
 }
 
 func TestThreadImportUpdatesReportsAndAppliesAProfileOnlyRepair(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -171,6 +174,7 @@ func TestThreadImportUpdatesReportsAndAppliesAProfileOnlyRepair(t *testing.T) {
 // the file's tail would interleave two conversations, so the refresh refuses
 // instead of repairing.
 func TestThreadImportUpdatesRefusesAThreadContinuedInAO(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -207,6 +211,7 @@ func TestThreadImportUpdatesRefusesAThreadContinuedInAO(t *testing.T) {
 }
 
 func TestThreadImportUpdatesReportsAMissingSource(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -231,6 +236,7 @@ func TestThreadImportUpdatesReportsAMissingSource(t *testing.T) {
 // A rollout that shrank was replaced, not extended: its history no longer
 // continues the thread, and a tail read from the old offset would be garbage.
 func TestThreadImportUpdatesReportsADivergedCodexSource(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	home := newImportHome(t)
 	home.attach(app)
@@ -255,6 +261,7 @@ func TestThreadImportUpdatesReportsADivergedCodexSource(t *testing.T) {
 }
 
 func TestCheckThreadImportUpdatesReportsANonImportedThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	// Even the answer "this thread was never imported" resolves the provider
 	// homes first, so the fixture home is required — sessionImportDeps refuses

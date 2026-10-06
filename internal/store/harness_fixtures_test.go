@@ -73,8 +73,7 @@ func harnessFixturePath(t *testing.T, env string) string {
 // build does and runs the deferred phase, so the fixture the harness boots
 // is known to exercise every step.
 func TestHistoryRepairFixtureRepairs(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-overflow.db")
-	writeHistoryRepairFixture(t, path)
+	path := fixtureCopy(t, "history-repair.db", writeHistoryRepairFixture)
 
 	s, err := New(path)
 	if err != nil {

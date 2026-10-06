@@ -74,6 +74,7 @@ func draftTestApp(t *testing.T, threadIDs ...string) *App {
 }
 
 func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
+	t.Parallel()
 	phone := transport.ClientIdentity{DeviceID: "device-phone", ConnectionID: "conn-phone-1"}
 
 	t.Run("a save announces the thread and the writer", func(t *testing.T) {
@@ -172,6 +173,7 @@ func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
 // a per-call-site emit would have converged some of them and silently not the
 // rest.
 func TestOnlyTheDraftHelpersWriteDrafts(t *testing.T) {
+	t.Parallel()
 	const (
 		upsert = "UpsertThreadDraft"
 		remove = "DeleteThreadDraft"
@@ -212,6 +214,7 @@ func TestOnlyTheDraftHelpersWriteDrafts(t *testing.T) {
 // The two helpers must stay the only emit sites for the channel, so that
 // "persisted" and "announced" cannot come apart.
 func TestDraftBroadcastHasOneEmitSite(t *testing.T) {
+	t.Parallel()
 	var emitters []string
 	for _, file := range parsePackageFiles(t, appPackageDir) {
 		for _, decl := range file.Decls {
@@ -243,6 +246,7 @@ func TestDraftBroadcastHasOneEmitSite(t *testing.T) {
 // A draft the backend wrote on the user's behalf still converges every client:
 // the saga has no screen to credit, which is what the empty identity means.
 func TestBackendWrittenDraftsBroadcastAnonymously(t *testing.T) {
+	t.Parallel()
 	app := draftTestApp(t, "thr-saga")
 	broadcasts := captureDraftBroadcasts(t, app)
 
@@ -274,6 +278,7 @@ func TestBackendWrittenDraftsBroadcastAnonymously(t *testing.T) {
 // ctx-carrying bound method reaches (StartCodexReview), with the composer
 // fixture's passthrough Claude script installed over the poisoned binary.
 func TestASendConsumingADraftNamesTheSendingScreen(t *testing.T) {
+	t.Parallel()
 	phone := transport.ClientIdentity{DeviceID: "device-phone", ConnectionID: "conn-phone-1"}
 
 	// A thread with a live provider session and a persisted draft, capturing

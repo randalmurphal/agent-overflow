@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // credentialProbeGit logs "<GIT_TERMINAL_PROMPT>|<GIT_ASKPASS>|<SSH_ASKPASS>|
@@ -225,16 +226,14 @@ func TestBackgroundFetchFailsFastInsteadOfAskingRealGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
-	repo := testutil.InitGitRepo(t)
+	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", server.URL+"/repo.git")
 
 	helperDir := t.TempDir()
 	askpassLog := filepath.Join(helperDir, "askpass.log")
 	askpass := filepath.Join(helperDir, "askpass.sh")
 	script := "#!/bin/sh\necho \"invoked $*\" >> " + askpassLog + "\necho someone\n"
-	if err := os.WriteFile(askpass, []byte(script), 0o755); err != nil {
-		t.Fatalf("write askpass helper: %v", err)
-	}
+	mockexec.Write(t, askpass, script)
 	t.Setenv("GIT_ASKPASS", askpass)
 
 	core := NewCore()

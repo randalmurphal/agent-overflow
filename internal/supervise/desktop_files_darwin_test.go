@@ -11,6 +11,7 @@ import (
 // A staged or set-aside version is a bundle or a bare executable. Either is
 // kept while a process has it, or a file in it, open, and only then.
 func TestLsofInUseJudgesBundlesAndExecutables(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	executable := filepath.Join(dir, ".agent-overflow-update-0123456789abcdef")
 	if err := os.WriteFile(executable, []byte("new"), 0o755); err != nil {

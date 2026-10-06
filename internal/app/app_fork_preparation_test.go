@@ -15,11 +15,14 @@ import (
 	"agent-overflow/internal/triage"
 )
 
+// TestForkRejectsSourceFlushFailure is serial: the fork must reach its flush
+// before the router's stream persistence timer (250ms) takes the buffered
+// text, and parallel load under -race can exceed that window.
 func TestForkRejectsSourceFlushFailure(t *testing.T) {
 	for _, message := range []bool{false, true} {
 		t.Run(map[bool]string{false: "tail", true: "message"}[message], func(t *testing.T) {
 			a, path := newTestAppWithStorePath(t)
-			fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
+			fixture := newMidTurnForkFixture(t, testProviderHome(t, a), "mid-turn-session", midTurnSourceJSONL)
 			source := createAppTestThread(t, a, "flush-source", "claude", fixture.workspace)
 			source.SessionRef = fixture.sessionID
 			if err := a.store.UpdateThread(source); err != nil {
@@ -80,10 +83,11 @@ func TestForkRejectsSourceFlushFailure(t *testing.T) {
 }
 
 func TestForkPreparationPublication(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ready", true: "failure"}[fail], func(t *testing.T) {
 			a := newTestApp(t)
-			fixture := newMidTurnForkFixture(t, "preparation", `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"preparation","message":{"role":"user","content":"first"}}
+			fixture := newMidTurnForkFixture(t, testProviderHome(t, a), "preparation", `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"preparation","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"preparation","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}
 `)
 			source := createAppTestThread(t, a, "source", "claude", fixture.workspace)
@@ -206,6 +210,7 @@ func TestForkPreparationPublication(t *testing.T) {
 }
 
 func TestForkPreparationBootCleanup(t *testing.T) {
+	t.Parallel()
 	a := newTestApp(t)
 	source := createAppTestThread(t, a, "source", "claude", t.TempDir())
 	fork := store.BuildForkedThread(source)
@@ -237,8 +242,9 @@ func TestForkPreparationBootCleanup(t *testing.T) {
 }
 
 func TestIdleClaudeForkKeepsItsProviderCutAfterSourceAdvances(t *testing.T) {
+	t.Parallel()
 	a := newTestApp(t)
-	fixture := newMidTurnForkFixture(t, "idle-cut", `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"idle-cut","message":{"role":"user","content":"first"}}
+	fixture := newMidTurnForkFixture(t, testProviderHome(t, a), "idle-cut", `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"idle-cut","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"idle-cut","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}
 `)
 	source := createAppTestThread(t, a, "source", "claude", fixture.workspace)
@@ -273,7 +279,7 @@ func TestIdleClaudeForkKeepsItsProviderCutAfterSourceAdvances(t *testing.T) {
 		if row.PendingForkRef != source.SessionRef || row.PendingForkResumeAt != "a0" {
 			t.Fatalf("cut drifted: %+v", row)
 		}
-		resumeAt, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), row.PendingForkRef, row.WorkspacePath, row.PendingForkResumeAt)
+		resumeAt, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t, a), row.PendingForkRef, row.WorkspacePath, row.PendingForkResumeAt)
 		if err != nil || resumeAt != "a0" {
 			t.Fatalf("provider resume cut=%q: %v", resumeAt, err)
 		}
@@ -285,6 +291,7 @@ func TestIdleClaudeForkKeepsItsProviderCutAfterSourceAdvances(t *testing.T) {
 }
 
 func TestForkPreparationCancellationRemovesPendingRow(t *testing.T) {
+	t.Parallel()
 	a := newTestApp(t)
 	source := createAppTestThread(t, a, "source", "codex", t.TempDir())
 	insertUserItemWithMeta(t, a.store, source.ID, "u0", 0, "first", `{}`)

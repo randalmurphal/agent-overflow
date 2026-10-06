@@ -78,6 +78,7 @@ func (h *memoryHarness) notes(t *testing.T, rootID string) []memory.Note {
 // A campaign is the TREE, not the run: a lane three calls deep records into the
 // root's log, and the wave it records is its own call depth.
 func TestAddMemoryWritesTheRootTreeAndStampsTheWave(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	runs := h.campaign(t, "root", "wave-1", "lane")
 
@@ -126,6 +127,7 @@ func TestAddMemoryWritesTheRootTreeAndStampsTheWave(t *testing.T) {
 // caller sends: the RPC input has no field for it at all, and the attempt and
 // unit come off the row the calling thread is attached to.
 func TestAddMemoryResolvesTheAttemptAndUnitFromTheSession(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	h.phase(t, store.WorkItemPhase{ItemID: "root", PhaseID: "implement", Attempt: 3, ThreadID: "phase-thread"})
@@ -162,6 +164,7 @@ func TestAddMemoryResolvesTheAttemptAndUnitFromTheSession(t *testing.T) {
 }
 
 func TestAddMemoryRefusesABadKindAndAnOversizeNote(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	ctx := h.phaseScope("root", "implement", "thread")
@@ -186,6 +189,7 @@ func TestAddMemoryRefusesABadKindAndAnOversizeNote(t *testing.T) {
 // even when the phase holds `introspect`: reading another campaign's lessons is
 // not what a project-wide read grant is for, and writing them never is.
 func TestMemoryScopeIsConfinedToTheCallersOwnTree(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root", "lane")
 	h.campaign(t, "other-root")
@@ -236,6 +240,7 @@ func TestMemoryScopeIsConfinedToTheCallersOwnTree(t *testing.T) {
 // An interactive session has no run to infer, so it must name one — and it is
 // confined to its own project like every other scoped read.
 func TestMemoryFromAnInteractiveThreadRequiresARunId(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	ctx := transport.WithCallerScope(context.Background(), transport.CallerScope{
@@ -258,6 +263,7 @@ func TestMemoryFromAnInteractiveThreadRequiresARunId(t *testing.T) {
 }
 
 func TestListMemoryRendersProvenanceAndFiltersByKind(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	ctx := h.phaseScope("root", "implement", "thread")
@@ -312,6 +318,7 @@ func TestListMemoryRendersProvenanceAndFiltersByKind(t *testing.T) {
 // A torn line is counted, not hidden: a reader deciding whether the memory is
 // complete has to know one was lost.
 func TestListMemoryReportsUnreadableLines(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	ctx := h.phaseScope("root", "implement", "thread")
@@ -344,6 +351,7 @@ func TestListMemoryReportsUnreadableLines(t *testing.T) {
 // run whose tree cannot be resolved gets an empty digest rather than a failure:
 // memory is context, and an element that runs without it still does the work.
 func TestWorkflowMemoryDigestRendersTheTreeAndSurvivesAnUnresolvableRun(t *testing.T) {
+	t.Parallel()
 	h := newMemoryHarness(t)
 	h.campaign(t, "root", "lane")
 	ctx := h.phaseScope("root", "plan", "thread")
@@ -373,6 +381,7 @@ func TestWorkflowMemoryDigestRendersTheTreeAndSurvivesAnUnresolvableRun(t *testi
 // Lifecycle: the tree goes with the run RECORDS. Project deletion drops both;
 // discard drops neither, because it leaves the rows in place.
 func TestProjectDeletionRemovesTheMemoryTree(t *testing.T) {
+	t.Parallel()
 	fixture := newProjectDeleteFixture(t, "memory-lifecycle")
 	scope := transport.WithCallerScope(context.Background(), transport.CallerScope{
 		Kind: transport.ScopeKindPhase, ThreadID: "phase-thread",
@@ -407,6 +416,7 @@ func TestProjectDeletionRemovesTheMemoryTree(t *testing.T) {
 // as it leaves the narratives and envelopes of the campaign it discarded. The
 // two lifecycles are one rule, and this is what holds them together.
 func TestDiscardKeepsTheMemoryTree(t *testing.T) {
+	t.Parallel()
 	fixture := newDiscardFixture(t, "memory-discard")
 	scope := transport.WithCallerScope(context.Background(), transport.CallerScope{
 		Kind: transport.ScopeKindPhase, ThreadID: "phase-thread",
@@ -484,6 +494,7 @@ func (h *goalHarness) chain(itemID string, workflow def.Workflow) workflowrunner
 // The chain a lane reads is the whole call stack above it, root-first, and the
 // non-goals riding with it are the ones its OWN definition declared.
 func TestGoalChainResolvesTheCallStackRootFirst(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", nil,
 		"root=port the renderer", "wave-1=port the effects layer", "lane=port effects/blur.go")
@@ -511,6 +522,7 @@ func TestGoalChainResolvesTheCallStackRootFirst(t *testing.T) {
 // collapse to one link attributed to the ROOT-most run that stated it — the run
 // the goal was actually recorded on.
 func TestConsecutiveInheritedGoalsCollapseToOneLink(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", nil,
 		"root=port the renderer", "wave-1=port the renderer", "wave-2=port the renderer",
@@ -533,6 +545,7 @@ func TestConsecutiveInheritedGoalsCollapseToOneLink(t *testing.T) {
 // A run with no goal and no ancestry produces nothing to render at all — the
 // bare single-run case must cost zero prompt bytes.
 func TestABareRunResolvesAnEmptyChain(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "review", nil, "solo")
 	if chain := h.chain("solo", def.Workflow{ID: "review"}); !chain.Empty() {
@@ -549,6 +562,7 @@ func TestABareRunResolvesAnEmptyChain(t *testing.T) {
 // A called run that stated no goal of its own still reads the chain above it,
 // and no link claims to be its.
 func TestAChildWithoutAGoalKeepsTheChainAboveIt(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", nil, "root=port the renderer", "lane")
 	chain := h.chain("lane", def.Workflow{ID: "port-one-task"})
@@ -563,6 +577,7 @@ func TestAChildWithoutAGoalKeepsTheChainAboveIt(t *testing.T) {
 // The root's non-goals bind every run inside the campaign it started, so a lane
 // running a DIFFERENT definition reads both lists.
 func TestARootsNonGoalsRideDownToAChildRunningAnotherDefinition(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", []string{"Do not redesign the build system."},
 		"root=port the renderer", "lane=port one file")
@@ -586,6 +601,7 @@ func TestARootsNonGoalsRideDownToAChildRunningAnotherDefinition(t *testing.T) {
 // below are: the ancestors carry no snapshot, and the root's non-goals arrive
 // anyway.
 func TestTheAncestryWalkCarriesNoFrozenSnapshots(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", []string{"Do not redesign the build system."},
 		"root=port the renderer", "wave-1=port the effects layer", "lane=port one file")
@@ -632,6 +648,7 @@ func TestTheAncestryWalkCarriesNoFrozenSnapshots(t *testing.T) {
 // one list — printing it twice under two headings would say nothing more and
 // read as two separate boundaries.
 func TestIdenticalRootNonGoalsAreNotPrintedTwice(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	nonGoals := []string{"Do not redesign the build system."}
 	h.callChain(t, "port-campaign", nonGoals, "root=port the renderer", "wave-1=port the effects layer")
@@ -648,6 +665,7 @@ func TestIdenticalRootNonGoalsAreNotPrintedTwice(t *testing.T) {
 // The root of a tree is its own root: there is no second list to carry, whether
 // or not it declares any.
 func TestARootRunCarriesOnlyItsOwnNonGoals(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	h.callChain(t, "port-campaign", []string{"Do not redesign the build system."}, "root=port the renderer")
 	chain := h.chain("root", def.Workflow{ID: "port-campaign", NonGoals: []string{"Do not redesign the build system."}})
@@ -663,6 +681,7 @@ func TestARootRunCarriesOnlyItsOwnNonGoals(t *testing.T) {
 // frozen snapshot will not decode, both yield the blocks that could be built
 // rather than failing the attempt that was about to start.
 func TestAnUnresolvableAncestryDegradesToWhatIsInHand(t *testing.T) {
+	t.Parallel()
 	h := newGoalHarness(t)
 	// The definition is in hand, so its non-goals survive a run that cannot be
 	// loaded at all; only the goals, which live on the rows, are lost.
@@ -707,9 +726,10 @@ func TestAnUnresolvableAncestryDegradesToWhatIsInHand(t *testing.T) {
 // phase's file can only come from recovery, and the writing phase's can only come
 // from the agent — and the recovery must leave that one alone.
 func TestWorkflowNarrativeIsRecoveredOnlyWhenTheAgentWroteNone(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeMixedAccessWorkflow(t, configRoot)
@@ -763,9 +783,10 @@ reliability:
 // becomes the attempt's narrative file — authored, not recovered — and never
 // reaches the persisted envelope the gate and the wake read.
 func TestWorkflowEnvelopeNarrativeBecomesTheAttemptNarrative(t *testing.T) {
+	t.Parallel()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeUndeclaredAccessWorkflow(t, configRoot)

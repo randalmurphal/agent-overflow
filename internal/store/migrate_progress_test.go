@@ -222,7 +222,7 @@ func TestMigrationInterruptedMidStatementRollsBack(t *testing.T) {
 			name = "rebuild"
 		}
 		t.Run(name, func(t *testing.T) {
-			db := migrateThrough(t, migrations[len(migrations)-1].Version)
+			db := migratedDB(t)
 			slow := Migration{Version: 1_000_000, Name: "slow_probe", SQL: slowMigrationSQL, Rebuild: rebuild}
 			apply := applyMigrationContext
 			if rebuild {

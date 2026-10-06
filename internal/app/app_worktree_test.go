@@ -20,8 +20,9 @@ import (
 )
 
 func TestGitCreateAndRemoveWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	// The thread must belong to a project whose path is the repo root
 	// so GitCreateWorktree can drive git from the correct cwd.
@@ -99,8 +100,9 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 }
 
 func TestAttachThreadWorktreeKeepsMessageAnchors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/attach")
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -162,8 +164,9 @@ func assertSetupRecipeRanIn(t *testing.T, app *App, threadID, worktreePath strin
 
 // Cutting a worktree for a NEW branch runs the project's setup recipe over it.
 func TestPrepareThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project := seedWorktreeSetupRecipe(t, app, repo)
 
 	thread := testThread("thread-prepare-runs-setup")
@@ -189,8 +192,9 @@ func TestPrepareThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
 // skip setup entirely, leaving an MR-review worktree without the files the
 // project declared.
 func TestAttachThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/setup-attach")
 	project := seedWorktreeSetupRecipe(t, app, repo)
 
@@ -217,8 +221,9 @@ func TestAttachThreadWorktreeRunsProjectSetupRecipe(t *testing.T) {
 // load — before any git mutation — instead of cutting a worktree and then
 // failing UpdateThread with a bare "no rows in result set".
 func TestAttachThreadWorktreeReadsThreadUnderLock(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/deleted-thread")
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -272,8 +277,9 @@ func TestAttachThreadWorktreeReadsThreadUnderLock(t *testing.T) {
 }
 
 func TestSwitchThreadWorkspaceKeepsMessageAnchors(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -305,8 +311,9 @@ func TestSwitchThreadWorkspaceKeepsMessageAnchors(t *testing.T) {
 }
 
 func TestOpenWorkspaceDiffUsesLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -359,8 +366,9 @@ func TestOpenWorkspaceDiffUsesLinkedWorktree(t *testing.T) {
 }
 
 func TestOpenBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-diff")
 
 	testutil.RunGit(t, repo, "checkout", "-b", "feature/review")
@@ -394,8 +402,9 @@ func TestOpenBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) 
 }
 
 func TestOpenBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-current")
 
 	if err := os.WriteFile(filepath.Join(repo, "committed.txt"), []byte("main work\n"), 0o644); err != nil {
@@ -420,8 +429,9 @@ func TestOpenBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
 }
 
 func TestOpenBranchBaseDiffMissingBranchErrors(t *testing.T) {
+	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-missing")
 
 	_, err := openBranchBasePatch(t, app, workspaceRefForThread(thread), "missing-branch", false)
@@ -449,8 +459,9 @@ func createGitDiffTestThread(t *testing.T, app *App, repo string, threadID strin
 }
 
 func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -519,8 +530,9 @@ func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
 }
 
 func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -551,8 +563,9 @@ func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
 }
 
 func TestWorktreeMutationRejectsActiveTurnWithoutSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -581,8 +594,9 @@ func TestWorktreeMutationRejectsActiveTurnWithoutSession(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeWaitsForLiveSessionRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -660,8 +674,9 @@ func TestPrepareThreadWorktreeWaitsForLiveSessionRestart(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeRestartsAfterInFlightSessionStart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -773,8 +788,9 @@ func TestPrepareThreadWorktreeRestartsAfterInFlightSessionStart(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeKeepsWorkspaceSwitchWhenRestartFails(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -816,8 +832,9 @@ func TestPrepareThreadWorktreeKeepsWorkspaceSwitchWhenRestartFails(t *testing.T)
 // (including archived ones, which the user might restore later) back to the
 // project root and proceeds with the removal.
 func TestGitRemoveWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -868,8 +885,9 @@ func TestGitRemoveWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 // position the user had built up. Set known-old timestamps before the
 // removal and assert they survive intact.
 func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -927,8 +945,9 @@ func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
 }
 
 func TestGitRemoveWorktreeReattachesArchivedThreads(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -972,8 +991,9 @@ func TestGitRemoveWorktreeReattachesArchivedThreads(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeBranchesFromSelectedBase(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "checkout", "-b", "release")
 	if err := os.WriteFile(filepath.Join(repo, "BASE.txt"), []byte("release\n"), 0o644); err != nil {
@@ -1012,8 +1032,9 @@ func TestPrepareThreadWorktreeBranchesFromSelectedBase(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeCarriesLocalChanges(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1084,7 +1105,7 @@ func gitRevParse(t *testing.T, cwd, rev string) string {
 // missing that commit" report starts from.
 func staleCloneProject(t *testing.T, app *App, threadID string) (string, store.Thread) {
 	t.Helper()
-	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	repo, bare := initGitRepoWithOrigin(t)
 	testutil.AdvanceOriginMain(t, bare)
 
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -1102,6 +1123,7 @@ func staleCloneProject(t *testing.T, app *App, threadID string) (string, store.T
 }
 
 func TestPrepareThreadWorktreeCutsFromTheFetchedOriginTip(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, thread := staleCloneProject(t, app, "thread-worktree-fresh-base")
 	localMainBefore := gitRevParse(t, repo, "main")
@@ -1122,6 +1144,7 @@ func TestPrepareThreadWorktreeCutsFromTheFetchedOriginTip(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeCarryingChangesStaysOnTheLocalBase(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	repo, thread := staleCloneProject(t, app, "thread-worktree-carry-local-base")
 
@@ -1149,8 +1172,9 @@ func TestPrepareThreadWorktreeCarryingChangesStaysOnTheLocalBase(t *testing.T) {
 }
 
 func TestPrepareThreadWorktreeRejectsCarryFromDifferentBase(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	testutil.RunGit(t, repo, "branch", "release")
 
@@ -1172,8 +1196,9 @@ func TestPrepareThreadWorktreeRejectsCarryFromDifferentBase(t *testing.T) {
 }
 
 func TestGitWorktreeStatusReportsDirtyAndAttached(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1226,8 +1251,9 @@ func TestGitWorktreeStatusReportsDirtyAndAttached(t *testing.T) {
 }
 
 func TestGitWorktreeStatusDoesNotRequireAnOccupantThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1265,8 +1291,9 @@ func TestGitWorktreeStatusDoesNotRequireAnOccupantThread(t *testing.T) {
 }
 
 func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1304,8 +1331,9 @@ func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
 }
 
 func TestRemoveOtherWorktreeRemovesAndReturnsPlaceholderState(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1355,8 +1383,9 @@ func TestRemoveOtherWorktreeRemovesAndReturnsPlaceholderState(t *testing.T) {
 }
 
 func TestRemoveOtherWorktreeRefusesProjectRoot(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1382,8 +1411,9 @@ func TestRemoveOtherWorktreeRefusesProjectRoot(t *testing.T) {
 // old behavior activity-checked the caller unconditionally, forcing the
 // user to wait out their own turn before cleaning up unrelated worktrees.
 func TestRemoveOtherWorktreeAllowsBusyCallerOnUnoccupiedWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1436,8 +1466,9 @@ func TestRemoveOtherWorktreeAllowsBusyCallerOnUnoccupiedWorktree(t *testing.T) {
 // Also pins the toast contract: the final `: `-segment of the error must
 // stand alone because the frontend keeps only that segment.
 func TestRemoveOtherWorktreeRejectsRunningBackgroundTaskOnSibling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1483,8 +1514,9 @@ func TestRemoveOtherWorktreeRejectsRunningBackgroundTaskOnSibling(t *testing.T) 
 // occupancy gate — callerThreadID=="" skips the caller lock append, never
 // the attached-thread check.
 func TestRemoveOtherWorktreeRejectsBusyOccupantWithoutACallerThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1530,8 +1562,9 @@ func TestRemoveOtherWorktreeRejectsBusyOccupantWithoutACallerThread(t *testing.T
 // Busy: gate refuses. Idle: the sweep's workspace-only branch reattaches
 // it to the project root with the branch reset.
 func TestRemoveOtherWorktreeHandlesWorkspaceOnlyOccupant(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1592,8 +1625,9 @@ func TestRemoveOtherWorktreeHandlesWorkspaceOnlyOccupant(t *testing.T) {
 // boundary. Without it the only guard against force-removing an
 // arbitrary directory is git's own refusal.
 func TestRemoveOtherWorktreeForceRejectsNonWorktreePath(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1631,8 +1665,9 @@ func TestRemoveOtherWorktreeForceRejectsNonWorktreePath(t *testing.T) {
 // thread. Needs several attached threads (len < cap after append growth)
 // plus a low-sorting busy caller to reproduce.
 func TestRemoveOtherWorktreeBusyCallerReattachesAllIdleOccupants(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1695,8 +1730,9 @@ func TestRemoveOtherWorktreeBusyCallerReattachesAllIdleOccupants(t *testing.T) {
 // occupies — it is one of the attached threads the per-worktree gate
 // checks, and removal would reattach it mid-turn.
 func TestGitRemoveWorktreeRejectsBusyCallerOnOwnWorktree(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1735,8 +1771,9 @@ func TestGitRemoveWorktreeRejectsBusyCallerOnOwnWorktree(t *testing.T) {
 }
 
 func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1812,8 +1849,9 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 }
 
 func TestGitListWorktreesMarksDeleteBlockedBySiblingBackgroundTask(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1856,8 +1894,9 @@ func TestGitListWorktreesMarksDeleteBlockedBySiblingBackgroundTask(t *testing.T)
 }
 
 func TestRemoveOtherWorktreeIgnoresObsoleteInflightTurnOnSibling(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -1922,8 +1961,9 @@ func TestRemoveOtherWorktreeIgnoresObsoleteInflightTurnOnSibling(t *testing.T) {
 }
 
 func TestRemoveOtherWorktreeBroadcastsSiblingUpdates(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -2070,8 +2110,9 @@ func claudeProjectSlugForTest(t *testing.T, path string) string {
 // transcript to the root's slug AND preserves the session ref — it must never
 // clear the ref or silently start a fresh session.
 func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -2089,12 +2130,9 @@ func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
 		t.Fatalf("GitCreateWorktree() error = %v", err)
 	}
 
-	// Point HOME at a temp ~/.claude AFTER git setup — InitGitRepo uses
-	// repo-local git config, so this doesn't disturb git. Simulate a session
-	// born inside the worktree: its transcript lives only under the worktree's
-	// slug.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	// Simulate a session born inside the worktree: its transcript lives only
+	// under the worktree's slug in the App's provider home.
+	home := testProviderHome(t, app)
 
 	const sessionID = "01079734-relocate-test"
 	live, err := app.store.GetThread(owner.ID)
@@ -2127,7 +2165,7 @@ func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
 	if _, err := os.Stat(wantDest); err != nil {
 		t.Errorf("transcript not relocated to project-root slug %q: %v", wantDest, err)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2172,7 +2210,7 @@ type relocateTestEnv struct {
 func setupWorktreeThreadForRelocate(t *testing.T, name, providerName string) relocateTestEnv {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -2188,8 +2226,7 @@ func setupWorktreeThreadForRelocate(t *testing.T, name, providerName string) rel
 	if err != nil {
 		t.Fatalf("GitCreateWorktree() error = %v", err)
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	return relocateTestEnv{app: app, repo: repo, owner: owner, worktreePath: worktreePath, home: home}
 }
 
@@ -2233,6 +2270,7 @@ func attachSessionToWorktree(t *testing.T, env relocateTestEnv, sessionRef, pend
 // would brick the pending fork. Both refs must land under the root slug and
 // survive on the thread row.
 func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "thread-fork-relocate", string(provider.Claude))
 
 	const sessionID = "session-keep"
@@ -2247,7 +2285,7 @@ func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
 
 	for _, id := range []string{sessionID, forkID} {
 		want := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), id+".jsonl")
-		if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), id, env.repo); err != nil {
+		if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), id, env.repo); err != nil {
 			t.Errorf("LocateSessionFile(%s) from repo root: %v", id, err)
 		} else if !samePath(located, want) {
 			t.Errorf("LocateSessionFile(%s) = %q, want relocated %q", id, located, want)
@@ -2275,6 +2313,7 @@ func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
 // the relocate and the purge assertion without the claude-tui branch of the
 // gate).
 func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "thread-claude-tui-relocate", string(provider.ClaudeTUI))
 
 	const sessionID = "claude-tui-session-keep"
@@ -2289,7 +2328,7 @@ func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
 	// Relocated under the project-root slug so `claude --resume` with cwd == repo
 	// resolves it.
 	wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), sessionID+".jsonl")
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, env.repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2316,6 +2355,7 @@ func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
 // must still SUCCEED, leave the SessionRef intact, and leave the session
 // genuinely unresolvable — never cleared, never replaced with a fresh one.
 func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "thread-missing-transcript", string(provider.Claude))
 
 	// A populated ~/.claude/projects but NO transcript for this session.
@@ -2344,7 +2384,7 @@ func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *te
 	}
 	// Positive proof of "bricked, not fabricated": the session stays
 	// unresolvable from the reattach target.
-	if _, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); !errors.Is(err, sessionfork.ErrSessionFileNotFound) {
+	if _, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, env.repo); !errors.Is(err, sessionfork.ErrSessionFileNotFound) {
 		t.Errorf("LocateSessionFile err = %v, want ErrSessionFileNotFound (bricked, not silently rehomed)", err)
 	}
 }
@@ -2354,6 +2394,7 @@ func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *te
 // removal succeeds, the ref is preserved, and no ~/.claude/projects dir is
 // created — proof the Claude-only relocation never ran.
 func TestGitRemoveWorktreeCodexThreadSkipsRelocation(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "thread-codex-noop", string(provider.Codex))
 
 	const sessionID = "codex-thread-xyz"
@@ -2385,6 +2426,7 @@ func TestGitRemoveWorktreeCodexThreadSkipsRelocation(t *testing.T) {
 // regression this guards (the package-level E4 only proves the sentinel is
 // returned, not that the app caller swallows it).
 func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "thread-subagent-fail", string(provider.Claude))
 
 	const sessionID = "01079734-subfail"
@@ -2418,7 +2460,7 @@ func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
 
 	// The transcript itself relocated, so resume resolves at the root slug.
 	wantDest := filepath.Join(rootSlugDir, sessionID+".jsonl")
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, env.repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2455,7 +2497,7 @@ func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
 func setupRootThreadForRelocate(t *testing.T, name, sessionID string) (env relocateTestEnv, srcTranscript string) {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	// Pre-create the branch the attach test will point at; harmless for create.
 	testutil.RunGit(t, repo, "branch", "feature/"+name)
 	project, err := app.ensureProjectForWorkspace(repo)
@@ -2471,8 +2513,7 @@ func setupRootThreadForRelocate(t *testing.T, name, sessionID string) (env reloc
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 	placeWorktreeTranscript(t, home, repo, sessionID)
 	srcTranscript = filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, repo), sessionID+".jsonl")
 	return relocateTestEnv{app: app, repo: repo, owner: owner, home: home}, srcTranscript
@@ -2487,7 +2528,7 @@ func assertSessionMovedTo(t *testing.T, env relocateTestEnv, destWorkspace, srcT
 	if _, err := os.Stat(wantDest); err != nil {
 		t.Errorf("transcript not relocated to destination slug %q: %v", wantDest, err)
 	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, destWorkspace); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, destWorkspace); err != nil {
 		t.Errorf("LocateSessionFile from destination: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2512,6 +2553,7 @@ func assertSessionMovedTo(t *testing.T, env relocateTestEnv, destWorkspace, srcT
 // PrepareThreadWorktree must carry it to the worktree slug (and purge the root
 // copy) so resume keeps working; it never clears the ref or starts fresh.
 func TestPrepareThreadWorktreeRelocatesClaudeSession(t *testing.T) {
+	t.Parallel()
 	const sessionID = "01079734-create"
 	env, srcTranscript := setupRootThreadForRelocate(t, "create-relocate", sessionID)
 
@@ -2526,6 +2568,7 @@ func TestPrepareThreadWorktreeRelocatesClaudeSession(t *testing.T) {
 // way create does — the root-born transcript must move to the attached worktree
 // slug, the root copy is purged, and the ref survives.
 func TestAttachThreadWorktreeRelocatesClaudeSession(t *testing.T) {
+	t.Parallel()
 	const sessionID = "01079734-attach"
 	env, srcTranscript := setupRootThreadForRelocate(t, "attach-relocate", sessionID)
 
@@ -2567,6 +2610,7 @@ func writeTranscriptContent(t *testing.T, home, workspace, id, content string) {
 // no-op'd, and resume silently dropped the turns taken away. This test plants
 // that exact stale copy and asserts it is overwritten.
 func TestSwitchThreadWorkspaceRoundTripPreservesLatestTurns(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "roundtrip", string(provider.Claude))
 
 	const sessionID = "01079734-roundtrip"
@@ -2618,9 +2662,9 @@ func TestSwitchThreadWorkspaceRoundTripPreservesLatestTurns(t *testing.T) {
 // slug `claude --resume` reads from at that cwd, and the pre-move source comes
 // back as a purge entry like any other workspace change.
 func TestCopyClaudeSessionForWorkspaceChangeResolvesOverLengthDest(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testProviderHome(t, app)
 
 	fromWS := t.TempDir()
 	const sessionID = "01079734-overlength"
@@ -2673,6 +2717,7 @@ func TestCopyClaudeSessionForWorkspaceChangeResolvesOverLengthDest(t *testing.T)
 // first. The destination transcript must hold the exit records, with no
 // second copy left under the source slug.
 func TestSwitchThreadWorkspaceLeavesLiveSessionTranscriptToTheRestart(t *testing.T) {
+	t.Parallel()
 	env := setupWorktreeThreadForRelocate(t, "live-switch", string(provider.Claude))
 	const sessionID = "01079734-live-switch"
 	attachSessionToWorktree(t, env, sessionID, "")

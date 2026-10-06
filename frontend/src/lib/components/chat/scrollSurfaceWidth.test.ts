@@ -42,21 +42,14 @@ function observer(): FireableResizeObserver {
 }
 
 describe('observeScrollSurfaceContentWidth', () => {
-  let originalResizeObserver: typeof ResizeObserver | undefined;
-
   beforeEach(() => {
-    originalResizeObserver = globalThis.ResizeObserver;
     FireableResizeObserver.instances = [];
-    globalThis.ResizeObserver = FireableResizeObserver as unknown as typeof ResizeObserver;
+    vi.stubGlobal('ResizeObserver', FireableResizeObserver);
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
-    if (originalResizeObserver) {
-      globalThis.ResizeObserver = originalResizeObserver;
-    } else {
-      Reflect.deleteProperty(globalThis, 'ResizeObserver');
-    }
+    vi.unstubAllGlobals();
     FireableResizeObserver.instances = [];
   });
 

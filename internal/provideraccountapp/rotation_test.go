@@ -1,6 +1,8 @@
 package provideraccountapp
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +75,31 @@ func TestClaudeProbeConfigAlwaysWiresTheRotationReader(t *testing.T) {
 	}
 	if string(data) != string(pinned) {
 		t.Fatalf("pinned reader read %q, want the pinned home's credential", data)
+	}
+}
+
+// The probe arms its rotation hold on any read error except fs.ErrNotExist,
+// so a missing credential that surfaces as another error (the macOS Keychain
+// returns ErrCredentialMissing) holds every probe on an unauthenticated home
+// for the full settle window.
+func TestClaudeProbeReaderReportsAnAbsentCredentialAsNotExist(t *testing.T) {
+	credentials, _ := rotationTestCredentials(t)
+	accounts, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(Deps{})
+	if err := manager.Attach(accounts, credentials, ""); err != nil {
+		t.Fatal(err)
+	}
+	for name, pins := range map[string]map[string]string{
+		"unpinned": nil,
+		"pinned":   {"CLAUDE_CONFIG_DIR": t.TempDir()},
+	} {
+		_, err := manager.claudeProbeConfig("claude", pins).ReadCredential()
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s reader on an absent credential: %v, want fs.ErrNotExist", name, err)
+		}
 	}
 }
 

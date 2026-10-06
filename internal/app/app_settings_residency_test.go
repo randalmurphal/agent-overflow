@@ -30,6 +30,7 @@ func withTierStore(t *testing.T, app *App) *App {
 // The headline of the wave: one backend, two screens, two font sizes — and
 // one shared answer for the user-tier keys.
 func TestGetSettingsResolvesTheDeviceTierPerCaller(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, newTestAppWithStore(t))
 	phone, desk := callerCtx("client-phone-0001"), callerCtx("client-desk-0001")
 
@@ -70,6 +71,7 @@ func TestGetSettingsResolvesTheDeviceTierPerCaller(t *testing.T) {
 // writes: settings.json keeps the host key, the reserved user scope keeps the
 // user key, the caller's own bucket keeps the device key.
 func TestUpdateSettingsRoutesEachKeyToItsTier(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, newTestAppWithStore(t))
 	phone := callerCtx("client-phone-0002")
 
@@ -107,6 +109,7 @@ func TestUpdateSettingsRoutesEachKeyToItsTier(t *testing.T) {
 // The recent list is device-tier, so a thread created from a screen is
 // remembered by THAT screen.
 func TestCreateThreadAttributesRecentWorkspacesToTheCaller(t *testing.T) {
+	t.Parallel()
 	app := withTierStore(t, newTestAppWithStore(t))
 	dir := t.TempDir()
 	project, err := app.CreateProject(dir)

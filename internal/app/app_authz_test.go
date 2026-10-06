@@ -116,6 +116,7 @@ func autonomyApp(t *testing.T) (app *App, withScope, withoutScope string) {
 // vocabulary rather than a sample, so a tier added to
 // provider.AllRuntimeModes has to be classified here before this passes.
 func TestRequireAutonomyFollowsTheSelectedMode(t *testing.T) {
+	t.Parallel()
 	app, granted, ungranted := autonomyApp(t)
 
 	for _, mode := range provider.AllRuntimeModes {
@@ -137,6 +138,7 @@ func TestRequireAutonomyFollowsTheSelectedMode(t *testing.T) {
 // in-process saga, a workflow phase, a test, and every launch-credential
 // connection name no session and must keep working exactly as before.
 func TestRequireAutonomyAdmitsACallWithNoSession(t *testing.T) {
+	t.Parallel()
 	app, _, _ := autonomyApp(t)
 
 	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
@@ -151,6 +153,7 @@ func TestRequireAutonomyAdmitsACallWithNoSession(t *testing.T) {
 // the method's own validator explains. Neither is a capability request, and
 // answering scope_required for either would be a false instruction.
 func TestRequireAutonomyIgnoresWhatIsNotASelection(t *testing.T) {
+	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
 
 	for _, mode := range []string{"", "   ", "yolo"} {
@@ -164,6 +167,7 @@ func TestRequireAutonomyIgnoresWhatIsNotASelection(t *testing.T) {
 // connection microseconds ago; a revocation landing in between must refuse
 // on THIS answer rather than on the next watchdog tick (§4 "Revocation").
 func TestRequireAutonomyRefusesARevokedSession(t *testing.T) {
+	t.Parallel()
 	app, granted, _ := autonomyApp(t)
 	if _, err := app.identityState().sessions.RevokeSession(granted); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
@@ -189,6 +193,7 @@ func TestRequireAutonomyRefusesARevokedSession(t *testing.T) {
 // resolves to. §5 draws the boundary by outcome, so an omitted argument
 // that lands in full-access is an autonomy act.
 func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
+	t.Parallel()
 	app, granted, ungranted := autonomyApp(t)
 	project, err := app.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
@@ -238,6 +243,7 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 // in, because sending into a full-access thread commits the agent to
 // acting without approval gates just as surely as selecting it does.
 func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
+	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
 	ctx := callFrom(ungranted, false)
 	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
@@ -280,6 +286,7 @@ func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 // replaced: an explicit argument is judged as the override it is, on a
 // thread whose current mode would have passed on its own.
 func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
+	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
 	ctx := callFrom(ungranted, false)
 	gated := threadInMode(t, app, provider.RuntimeApprovalRequired)
@@ -322,6 +329,7 @@ func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
 // caller with no session: the workflow engine drives full-access threads
 // constantly and must keep doing so.
 func TestEffectiveModeLeavesSessionlessCallersAlone(t *testing.T) {
+	t.Parallel()
 	app, _, _ := autonomyApp(t)
 	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
 
@@ -339,6 +347,7 @@ func TestEffectiveModeLeavesSessionlessCallersAlone(t *testing.T) {
 // read is a bad argument, not a capability request, and the method's own
 // lookup answers it a step later with something true.
 func TestUnloadableThreadDefersToTheMethodsOwnError(t *testing.T) {
+	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
 
 	if err := app.requireAutonomyForThread(callFrom(ungranted, false), "no-such-thread", ""); err != nil {
@@ -365,6 +374,7 @@ func settingsTierApp(t *testing.T) (app *App, full, limited string) {
 // screen in front of the person. Refusing it would mean a phone cannot set
 // its own.
 func TestDeviceTierSettingRidesAnyValidSession(t *testing.T) {
+	t.Parallel()
 	app, _, limited := settingsTierApp(t)
 
 	patch := map[string]any{"fontSize": 15}
@@ -376,6 +386,7 @@ func TestDeviceTierSettingRidesAnyValidSession(t *testing.T) {
 // TestUserTierSettingNeedsSettingsWrite: a working preference follows the
 // person, and writing one is a grant they gave this device.
 func TestUserTierSettingNeedsSettingsWrite(t *testing.T) {
+	t.Parallel()
 	app, full, limited := settingsTierApp(t)
 	patch := map[string]any{"confirmDelete": false}
 
@@ -391,6 +402,7 @@ func TestUserTierSettingNeedsSettingsWrite(t *testing.T) {
 // still refused off-host, which is the property worth pinning — a host-tier
 // write is not a scope anybody can be given.
 func TestHostTierSettingNeedsAStepUpProof(t *testing.T) {
+	t.Parallel()
 	app, full, _ := settingsTierApp(t)
 	patch := map[string]any{"retention": map[string]any{}}
 
@@ -412,6 +424,7 @@ func TestHostTierSettingNeedsAStepUpProof(t *testing.T) {
 // (TierHost, false) for a key nobody classified, and this is the enforcement
 // half of that fail-closed default.
 func TestUnclassifiedSettingsKeyIsHostTier(t *testing.T) {
+	t.Parallel()
 	app, full, _ := settingsTierApp(t)
 
 	err := app.requireSettingsTier(callFrom(full, false), map[string]any{"noSuchSetting": 1})
@@ -424,6 +437,7 @@ func TestUnclassifiedSettingsKeyIsHostTier(t *testing.T) {
 // TestSettingsTierAdmitsACallWithNoSession is the compatibility case: the
 // launch-credential connection and every in-process caller are unchanged.
 func TestSettingsTierAdmitsACallWithNoSession(t *testing.T) {
+	t.Parallel()
 	app, _, _ := settingsTierApp(t)
 
 	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
@@ -438,6 +452,7 @@ func TestSettingsTierAdmitsACallWithNoSession(t *testing.T) {
 // placed after settings.Update would pass every assertion above and still
 // have applied the change.
 func TestUpdateSettingsRefusesBeforeItWrites(t *testing.T) {
+	t.Parallel()
 	app, full, _ := settingsTierApp(t)
 	before := app.currentSettings()
 

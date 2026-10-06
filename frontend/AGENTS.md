@@ -118,6 +118,12 @@ logic. Stateful APIs need transition coverage, including repeated attach and
 detach. Browser-only geometry, focus, and scroll behavior belongs in the browser
 project.
 
+Files in the `unit` Vitest project share a worker process, so a test must
+restore every global and prototype method it changes; prefer `vi.stubGlobal`.
+`src/test/sharedGlobals.ts` fails a file that leaves one replaced. Files that
+use `vi.mock`, `vi.doMock`, `vi.unmock` or `vi.resetModules` run in the
+`unit-isolated` project automatically.
+
 Preserve unlisted exports when mocking shared modules with `importOriginal`.
 Prefer binding mocks over mocking through `.svelte.ts` import boundaries. Add
 passive-load bindings to the shared app defaults when every rendered app needs

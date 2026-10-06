@@ -3,11 +3,11 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestAgentMessageDeliveryRidesOnTheBlockMeta — item 6. `delivery: "async"`
@@ -15,6 +15,7 @@ import (
 // answer (`phase` says finalAnswer for both), so it has to reach the frontend
 // as a typed field rather than being dropped in the item decode.
 func TestAgentMessageDeliveryRidesOnTheBlockMeta(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		item         string
@@ -86,6 +87,7 @@ func TestAgentMessageDeliveryRidesOnTheBlockMeta(t *testing.T) {
 // Deserialize defaults the field to TRUE, so an absent or malformed value must
 // read as blocking; only an explicit false is non-blocking.
 func TestParseUserInputIsBlocking(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		params string
 		want   bool
@@ -134,6 +136,7 @@ func TestNonBlockingUserInputIsLoggedNotAdapted(t *testing.T) {
 // would break every start and every probe at once, so both responses are
 // exercised with the field present.
 func TestThreadProjectIDIsIgnoredWithoutError(t *testing.T) {
+	t.Parallel()
 	t.Run("thread/read (probe)", func(t *testing.T) {
 		resp := json.RawMessage(`{"thread":{"id":"th-1","projectId":"proj-1","status":{"type":"idle"}}}`)
 		result, err := decodeProbeResponse(resp)
@@ -176,9 +179,7 @@ done
 `
 		dir := t.TempDir()
 		scriptPath := dir + "/codex"
-		if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-			t.Fatalf("write mock script: %v", err)
-		}
+		mockexec.Write(t, scriptPath, script)
 		s, err := NewSession(context.Background(), testThread, Config{
 			Binary:  scriptPath,
 			Model:   "test-model",

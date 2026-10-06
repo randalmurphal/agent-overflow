@@ -11,38 +11,22 @@
 // happy-dom doesn't report realistic layout geometry, so pixel-position
 // assertions use explicit viewport and element geometry stubs.
 
-import { describe, expect, it, vi, beforeAll, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './PopoverHarness.svelte';
 import NestedHarness from './NestedPopoverHarness.svelte';
 import { setCompactLayoutForTest } from '../../../stores/layoutMode.svelte';
 
-// happy-dom lacks ResizeObserver. Minimal stub — our tests don't depend
-// on it firing, they just need construction to not throw.
-class StubResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-
-beforeAll(() => {
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-    StubResizeObserver as unknown as typeof ResizeObserver;
-});
-
-const originalInnerWidth = window.innerWidth;
-const originalInnerHeight = window.innerHeight;
-
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   setCompactLayoutForTest(false);
-  setViewport(originalInnerWidth, originalInnerHeight);
 });
 
 function setViewport(width: number, height: number): void {
-  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
-  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
+  vi.stubGlobal('innerWidth', width);
+  vi.stubGlobal('innerHeight', height);
 }
 
 function rectFrom(partial: Partial<DOMRect>): DOMRect {

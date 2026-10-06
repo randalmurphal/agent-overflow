@@ -26,6 +26,7 @@ func armWatchdogWindow(app *App, d time.Duration) {
 // lifecycle frame, nothing: the axis must revert, degrade so the reconciler
 // stops re-sending into the silence, and converge through the restart path.
 func TestUnansweredLiveApplyDeclinesAfterTheWindow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-silent", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -52,6 +53,7 @@ func TestUnansweredLiveApplyDeclinesAfterTheWindow(t *testing.T) {
 // TestUnansweredFastApplyDeclinesAfterTheWindow — the fast axis has no
 // structured read-back at all, so silence is its only unhandled outcome.
 func TestUnansweredFastApplyDeclinesAfterTheWindow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-fast", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -78,6 +80,7 @@ func TestUnansweredFastApplyDeclinesAfterTheWindow(t *testing.T) {
 // declining here would revert an axis the CLI is still going to apply and
 // restart the session out from under the running turn.
 func TestWatchdogWaitsWhileATurnRuns(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-busy", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -118,6 +121,7 @@ func TestWatchdogWaitsWhileATurnRuns(t *testing.T) {
 // by the CLI. Neither may produce a revert or a restart when the windows
 // later expire.
 func TestWatchdogIgnoresAnsweredAndSupersededApplies(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-settled", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -147,6 +151,7 @@ func TestWatchdogIgnoresAnsweredAndSupersededApplies(t *testing.T) {
 // that matches the request the command DID run and only its output went
 // missing: no revert, no degrade, no restart.
 func TestUnansweredEffortApplyConfirmsFromGetSettings(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-readback", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -177,6 +182,7 @@ func TestUnansweredEffortApplyConfirmsFromGetSettings(t *testing.T) {
 // back, other direction: the session is running a tier AO did not ask for,
 // which is the wrong-state launchOpts must never keep.
 func TestUnansweredEffortApplyDeclinesWhenGetSettingsDisagrees(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-readback-bad", "tok-1"
 	binary := writeGetSettingsFakeCLI(t,
@@ -220,6 +226,7 @@ func installClaudeLivenessForThread(app *App, threadID string) *sessionLiveness 
 // idle, sweep busy, drain, sweep. The window override is long enough that no
 // armed timer can fire underneath the sequence.
 func TestWatchdogRestartsTheWindowWhenTheTurnDrains(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-drain", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -277,6 +284,7 @@ func TestWatchdogRestartsTheWindowWhenTheTurnDrains(t *testing.T) {
 // idle thread and a full window's worth of silence — evidence it does not
 // have. The deferral is therefore stamped at REGISTRATION, not by a sweep.
 func TestWatchdogRestartsTheWindowWhenATurnDrainsInsideTheFirstOne(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-drain-early", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -320,6 +328,7 @@ func TestWatchdogRestartsTheWindowWhenATurnDrainsInsideTheFirstOne(t *testing.T)
 // staying pending — otherwise a single early turn would make the axis
 // permanently unresolvable.
 func TestWatchdogSpendsATurnDeferralOnlyOnce(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-deferral-once", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}

@@ -334,6 +334,7 @@ func TestClaudeAskUserQuestionAnswersAvoidsDuplicateQuestionTextCollision(t *tes
 }
 
 func TestClaudeApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	approvalLine := []byte(`{"type":"control_request","request_id":"req-waiting","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
@@ -374,6 +375,7 @@ waitWithoutResolution:
 }
 
 func TestClaudeUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	uqLine := []byte(`{"type":"control_request","request_id":"uq-waiting","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}}`)
@@ -800,6 +802,7 @@ func TestExitPlanModeWriteFailureClosesSession(t *testing.T) {
 // unchanged: a plan arrives, the deny response is written, the
 // subprocess continues happily.
 func TestExitPlanModeWritesDenyOnHappyPath(t *testing.T) {
+	t.Parallel()
 	s, eventCh := newTestClaudeSession(t)
 
 	planReq := []byte(`{"type":"control_request","request_id":"plan-ok","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# hi"}}}`)

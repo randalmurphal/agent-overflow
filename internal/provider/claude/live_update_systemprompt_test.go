@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestPlanLiveUpdateSystemPromptTransitions covers the TRANSITIONS, not the
@@ -230,9 +230,8 @@ func TestApplyLiveUpdateSystemPromptRequiresNewEnoughCLI(t *testing.T) {
 			if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 				t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 			}
-			time.Sleep(100 * time.Millisecond)
-			if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-				t.Fatalf("expected no stdin writes on the restart path, captured: %s", data)
+			if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+				t.Fatalf("expected no stdin writes on the restart path, captured: %q", lines)
 			}
 		})
 	}
@@ -251,9 +250,8 @@ func TestApplyLiveUpdateSystemPromptRefusedWithoutAModel(t *testing.T) {
 	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
 		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if data, err := os.ReadFile(capturePath); err == nil && len(data) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %s", data)
+	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+		t.Fatalf("expected no stdin writes, captured: %q", lines)
 	}
 }
 
@@ -279,9 +277,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, script)
 	cfg := Config{
 		Binary:             scriptPath,
 		BasePermissionMode: "default",

@@ -11,6 +11,7 @@ import (
 )
 
 func TestDownloadFileName(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, mimeType, want string }{
 		{"hero.png", "image/png", "hero.png"},
 		{"Screen Shot (1).png", "image/png", "Screen Shot (1).png"},
@@ -45,6 +46,7 @@ func TestDownloadFileName(t *testing.T) {
 // what the byte classifiers answer: a media type they can return without
 // an entry would save an extensionless file again.
 func TestDownloadExtensionsCoverTheClassifiers(t *testing.T) {
+	t.Parallel()
 	samples := map[string][]byte{
 		"png":  realPNGBytes(t),
 		"svg":  []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>`),

@@ -221,8 +221,15 @@ func TestDetachedStartReportsProvisioningFailureThroughEventsAndSync(t *testing.
 	if startErr != nil {
 		t.Fatalf("detached start returned provisioning error: %v", startErr)
 	}
+	// Sync reports the starts still in flight when the loop reaches it. The
+	// loop must take the Sync before the start settles, so the test releases
+	// the runner between the loop's reply and the caller's wait that
+	// Engine.Sync performs together.
+	reply := make(chan response, 1)
+	h.engine.commands <- syncCommand{reply: reply}
+	pending := <-reply
 	close(block)
-	if err := h.engine.Sync(); !errors.Is(err, ErrSetupFailed) {
+	if err := h.engine.waitEngineResponse(pending); !errors.Is(err, ErrSetupFailed) {
 		t.Fatalf("Sync error = %v, want setup failure", err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonSetupFailed)

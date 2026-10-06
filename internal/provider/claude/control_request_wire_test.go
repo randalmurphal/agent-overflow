@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestControlRequestWireKeys pins the exact JSON keys of every
@@ -268,9 +269,7 @@ func newControlWireSession(t *testing.T) (*Session, string) {
 	dir := t.TempDir()
 	capturePath := dir + "/capture.ndjson"
 	scriptPath := dir + "/fake-claude"
-	if err := os.WriteFile(scriptPath, []byte(controlWireResponderScript(capturePath)), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
+	mockexec.Write(t, scriptPath, controlWireResponderScript(capturePath))
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {

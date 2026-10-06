@@ -15,6 +15,7 @@ import (
 // to the scope of the row it describes, and a scope is derived only for the
 // channels the transport narrows by it.
 func TestEmitAttributesItemEventsToTheirScope(t *testing.T) {
+	t.Parallel()
 	app := &App{}
 	bus := transport.NewEventBus(8)
 	t.Cleanup(bus.Close)

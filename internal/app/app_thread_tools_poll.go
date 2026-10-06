@@ -407,8 +407,18 @@ func (a *App) failThreadRequestPoll(computerID string, rows []store.ThreadReques
 // threadPollDelay is the cadence for one token: faster while a call is
 // parked on it, because that call is paying for the latency.
 func (a *App) threadPollDelay(token string) time.Duration {
+	normal := a.threadPollNormal()
 	if a.requestWaitActive(token) {
-		return threadPollWaitingDelay
+		return min(threadPollWaitingDelay, normal)
+	}
+	return normal
+}
+
+// threadPollNormal is threadPollNormalDelay, or the shorter cadence an
+// isolated test boot set (IsolationConfig.ThreadRequestPoll).
+func (a *App) threadPollNormal() time.Duration {
+	if a.threadPollOverride > 0 {
+		return a.threadPollOverride
 	}
 	return threadPollNormalDelay
 }
@@ -462,7 +472,7 @@ func (a *App) scheduleNextThreadPoll(row store.ThreadRequest) {
 	// which is what an error reschedule counts too, so a destination that
 	// is also unreachable backs off on one clock rather than two.
 	attempts := current.Attempts + 1
-	a.rescheduleThreadRequestAt(current.Token, threadLatePollDelay(attempts), attempts, "")
+	a.rescheduleThreadRequestAt(current.Token, threadLatePollDelay(a.threadPollNormal(), attempts), attempts, "")
 }
 
 // threadLateReplyAwaited reports whether a settled request could still be
@@ -485,8 +495,8 @@ func threadLateReplyAwaited(row store.ThreadRequest, now time.Time) bool {
 
 // threadLatePollDelay doubles the normal cadence for each poll that reported
 // nothing new, up to the ceiling.
-func threadLatePollDelay(attempts int64) time.Duration {
-	delay := threadPollNormalDelay
+func threadLatePollDelay(normal time.Duration, attempts int64) time.Duration {
+	delay := normal
 	for range attempts {
 		delay *= 2
 		if delay >= threadPollLateCap {

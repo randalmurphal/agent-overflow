@@ -659,9 +659,9 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 		return "", "", "", fmt.Errorf("access: transport server unavailable")
 	}
 	if networkChoice == "" {
-		pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings())
+		pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings(), a.netReach)
 	} else {
-		pageURL, fingerprint, err = network.PairingURLOnNetwork(srv, a.persistedNetworkSettings(), networkChoice)
+		pageURL, fingerprint, err = network.PairingURLOnNetwork(srv, a.persistedNetworkSettings(), a.netReach, networkChoice)
 		if err != nil {
 			return "", "", "", err
 		}

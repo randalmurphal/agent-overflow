@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // probeWorkDir is the absolute, project-free directory the probes run in.
@@ -45,7 +46,9 @@ func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg 
 	}
 
 	script := "#!/bin/bash\n" +
-		// Drain the three probe writes (initialize, initialized, rateLimits/read).
+		// Drain the four probe writes (initialize, initialized, account/read,
+		// rateLimits/read) before exiting, so no write meets a closed pipe.
+		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
@@ -57,21 +60,18 @@ func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg 
 		`printf '%s\n' '` + idTwoFrame + `'` + "\n" +
 		`exit 0` + "\n"
 
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
+	mockexec.Write(t, path, script)
 	return path
 }
 
 func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-out-of-order")
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"pro"}}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"pro"}}}'` + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
 		WorkDir: probeWorkDir,
@@ -85,14 +85,13 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 }
 
 func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-identity")
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"identity@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.Write(t, path, script)
 
 	info, err := ProbeIdentity(context.Background(), ProbeConfig{
 		WorkDir: probeWorkDir,
@@ -106,6 +105,7 @@ func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
 }
 
 func TestTryParseIdentityResponseSurfacesRPCError(t *testing.T) {
+	t.Parallel()
 	_, matched, err := tryParseIdentityResponse(
 		[]byte(`{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"not found"}}`),
 	)
@@ -115,6 +115,7 @@ func TestTryParseIdentityResponseSurfacesRPCError(t *testing.T) {
 }
 
 func TestProbeAccountExtractsPlanType(t *testing.T) {
+	t.Parallel()
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`,
 		"")
@@ -134,6 +135,7 @@ func TestProbeAccountExtractsPlanType(t *testing.T) {
 }
 
 func TestProbeAccountSkipsNonMatchingFrames(t *testing.T) {
+	t.Parallel()
 	// The init reply (id=1) and the bare notification baked into the
 	// mock must not confuse the matcher — we read past them until
 	// we see id=2.
@@ -152,6 +154,7 @@ func TestProbeAccountSkipsNonMatchingFrames(t *testing.T) {
 }
 
 func TestProbeAccountMissingPlanTypeReturnsZero(t *testing.T) {
+	t.Parallel()
 	// Authenticated but the backend hasn't yet seen activity / hasn't
 	// populated planType. Probe must return AccountInfo with empty
 	// SubscriptionType (still APIProvider="openai") and no error so the
@@ -175,6 +178,7 @@ func TestProbeAccountMissingPlanTypeReturnsZero(t *testing.T) {
 }
 
 func TestProbeAccountEmptyResultReturnsZero(t *testing.T) {
+	t.Parallel()
 	// The wire could legitimately return result:{} (no rateLimits
 	// container at all). Same outcome: zero SubscriptionType, no error.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "")
@@ -194,6 +198,7 @@ func TestProbeAccountEmptyResultReturnsZero(t *testing.T) {
 }
 
 func TestProbeAccountSurfacesError(t *testing.T) {
+	t.Parallel()
 	// A JSON-RPC error reply must propagate as a typed Go error rather
 	// than silently mapping to a zero-value account.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "auth required")
@@ -210,6 +215,7 @@ func TestProbeAccountSurfacesError(t *testing.T) {
 }
 
 func TestProbeAccountBuildsAppServerArgs(t *testing.T) {
+	t.Parallel()
 	args := buildProbeArgs()
 	// Pin the exact args. The config override only selects Codex's native file
 	// credential store; app-server still starts no thread and performs no
@@ -226,6 +232,7 @@ func TestProbeAccountBuildsAppServerArgs(t *testing.T) {
 }
 
 func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
+	t.Parallel()
 	// The probe must hand the rate-limit snapshot back to the caller via
 	// OnSnapshot so app_codex_probe.go can emit it onto provider:usage —
 	// otherwise the 5h/7d rings stay empty until the user runs a turn.
@@ -271,6 +278,7 @@ func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
 // values across them. Mirrors the bug user's scenario (codex at 100%,
 // spark at 46%); proves the probe retains every server-advertised bucket.
 func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
+	t.Parallel()
 	// Mock binary's printf is line-oriented — keep the fixture on one
 	// line so the NDJSON frame doesn't span multiple ReadLine calls.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
@@ -310,6 +318,7 @@ func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
 }
 
 func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
+	t.Parallel()
 	// Authenticated but no rate-limit data (e.g. fresh account, backend
 	// hasn't yet seen activity). AccountInfo still succeeds; OnSnapshot
 	// must NOT fire — emitting an empty snapshot would clobber any
@@ -336,6 +345,7 @@ func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
 }
 
 func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
+	t.Parallel()
 	// Server-advertised buckets are dynamic. A renamed or newly introduced
 	// model allowance must remain visible without an app release.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
@@ -364,6 +374,7 @@ func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
 }
 
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
+	t.Parallel()
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
 		WorkDir: probeWorkDir,
 		Binary:  "/nonexistent/path/to/codex-12345"})
@@ -381,10 +392,8 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	// well below the configured Timeout.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "silent")
-	script := "#!/bin/bash\nread -r _ || true\nread -r _ || true\nread -r _ || true\nexit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write silent: %v", err)
-	}
+	script := "#!/bin/bash\nread -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\nexit 0\n"
+	mockexec.Write(t, path, script)
 
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
@@ -413,11 +422,9 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "slow")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		"sleep 5\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write slow: %v", err)
-	}
+	mockexec.Write(t, path, script)
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
@@ -442,6 +449,7 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 // --- ProbeCache (mirror of the Claude cache contract) ---
 
 func TestProbeCacheReturnsStored(t *testing.T) {
+	t.Parallel()
 	cache := NewProbeCache(5 * time.Minute)
 	info := provider.AccountInfo{SubscriptionType: "pro", APIProvider: "openai"}
 
@@ -457,6 +465,7 @@ func TestProbeCacheReturnsStored(t *testing.T) {
 }
 
 func TestProbeCacheExpires(t *testing.T) {
+	t.Parallel()
 	cache := NewProbeCache(10 * time.Millisecond)
 	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "team"})
 
@@ -472,6 +481,7 @@ func TestProbeCacheExpires(t *testing.T) {
 }
 
 func TestProbeCacheScopedPerBinary(t *testing.T) {
+	t.Parallel()
 	cache := NewProbeCache(5 * time.Minute)
 	cache.Set(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "alpha"})
 	cache.Set(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "beta"})
@@ -489,6 +499,7 @@ func TestProbeCacheScopedPerBinary(t *testing.T) {
 // --- extractAccountInfoFromRateLimits unit tests ---
 
 func TestExtractAccountInfoFromRateLimitsPopulatesPlanType(t *testing.T) {
+	t.Parallel()
 	payload, _ := json.Marshal(map[string]any{
 		"rateLimits": map[string]any{
 			"limitId":  "codex",
@@ -511,6 +522,7 @@ func TestExtractAccountInfoFromRateLimitsPopulatesPlanType(t *testing.T) {
 }
 
 func TestExtractAccountInfoFromRateLimitsTreatsEmptyAsZero(t *testing.T) {
+	t.Parallel()
 	got := extractAccountInfoFromRateLimits(nil)
 	if got.SubscriptionType != "" {
 		t.Errorf("nil payload SubscriptionType: got %q, want empty", got.SubscriptionType)
@@ -537,6 +549,7 @@ func TestExtractAccountInfoFromRateLimitsTreatsEmptyAsZero(t *testing.T) {
 // probe entry points: a working binary is still refused without an explicit
 // absolute directory, so no caller can fall back to the inherited cwd.
 func TestProbeRequiresWorkDir(t *testing.T) {
+	t.Parallel()
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`, "")
 

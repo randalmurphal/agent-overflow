@@ -50,8 +50,9 @@ func firstEmission(t *testing.T, captured []capturedEmission, name string) any {
 // worktree cut on one client left every other pane pointing at the old
 // checkout.
 func TestPrepareThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -78,8 +79,9 @@ func TestPrepareThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 // The attach path is the same move against a branch that already exists, and
 // carried the same hole.
 func TestAttachThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/broadcast-attach")
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
@@ -108,8 +110,9 @@ func TestAttachThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 // that moves nothing says nothing. Re-selecting the workspace a thread already
 // sits in is not a change, and a frame for it would wake every sidebar row.
 func TestSwitchThreadWorkspaceToTheSamePathIsSilent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -166,6 +169,7 @@ func assertThreadRowBroadcast(t *testing.T, captured []capturedEmission, want st
 // surface reads the set once at mount, so its output frames were dropped as
 // belonging to an id it had never seen.
 func TestOpenTerminalAnnouncesTheNewSession(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
@@ -190,6 +194,7 @@ func TestOpenTerminalAnnouncesTheNewSession(t *testing.T) {
 // Rewriting the keybindings file told nobody, so a rebind made in one window
 // left every other one dispatching the old chord.
 func TestUpdateKeybindingsAnnouncesTheRewrite(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, string(eventchan.KeybindingsUpdated))
 	if err := app.UpdateKeybindings(nil); err != nil {
@@ -206,6 +211,7 @@ func TestUpdateKeybindingsAnnouncesTheRewrite(t *testing.T) {
 // Starring a model answered the clicking client with the whole new list and
 // told nobody, so every other open model menu kept the old stars.
 func TestSetChatBarFavoriteAnnouncesTheWholeList(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, string(eventchan.ChatBarFavorites))
 
@@ -233,8 +239,9 @@ func TestSetChatBarFavoriteAnnouncesTheWholeList(t *testing.T) {
 // other "+ New" composer on the project was about to create a thread with the
 // superseded model, effort and runtime mode.
 func TestUpdateNewThreadDefaultsAnnouncesTheSeed(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -266,6 +273,7 @@ func TestUpdateNewThreadDefaultsAnnouncesTheSeed(t *testing.T) {
 // signal at all, so a definition written on one device never appeared on
 // another until that screen was reopened.
 func TestDiscussionDefinitionWritesAnnounceTheList(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, string(eventchan.DiscussionDefinitionsChanged))
 
@@ -294,6 +302,7 @@ func TestDiscussionDefinitionWritesAnnounceTheList(t *testing.T) {
 // on this host kept a row for a profile that no longer exists — and a socket
 // to it.
 func TestBackendSetMutationsAnnounceThemselves(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, string(eventchan.BackendSetChanged))
 
@@ -314,6 +323,7 @@ func TestBackendSetMutationsAnnounceThemselves(t *testing.T) {
 // sets. A delete is a DELETE-OR-RESOLVE, so the frame is a refetch nudge
 // naming the set rather than a row.
 func TestDiffReviewCommentWritesAnnounceTheirSet(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-diff-comments")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -360,6 +370,7 @@ func TestDiffReviewCommentWritesAnnounceTheirSet(t *testing.T) {
 // any emit, so the card stayed on every other client's Settings screen until
 // reload. The nudge is published before that branch.
 func TestRemovingAnInactiveProviderAccountAnnouncesTheListing(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	installRemovalTestAccounts(t, app, string(provider.Claude), "first", "second")
 
@@ -377,8 +388,9 @@ func TestRemovingAnInactiveProviderAccountAnnouncesTheListing(t *testing.T) {
 // compensated with a whole-sidebar resync, which no other client could be
 // given. Now every imported row arrives as the ordinary `listed` frame.
 func TestImportedRowsAreAnnouncedPerRow(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
@@ -449,8 +461,9 @@ func TestImportedRowsAreAnnouncedPerRow(t *testing.T) {
 // once and the second run's rows would arrive naming a project a fresh client
 // never heard of.
 func TestASecondImportRunReannouncesItsProject(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	repo := initMainGitRepo(t)
 	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)

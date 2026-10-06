@@ -30,7 +30,12 @@ type nativeNetworkState struct {
 	generation uint64
 	scanID     uint64
 	scan       *nativeScan
+	// scanTimeout bounds an unanswered scan. Zero means
+	// defaultNativeScanTimeout; tests shorten it.
+	scanTimeout time.Duration
 }
+
+const defaultNativeScanTimeout = 6 * time.Second
 
 type nativeScan struct {
 	id      uint64
@@ -87,6 +92,12 @@ func (a *App) invalidateNativeNetwork() {
 //ao:scope host
 //ao:route home
 func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config, error) {
+	if a.netReach.LoopbackOnly() {
+		// The launcher would bind the Windows LAN and send multicast for an
+		// instance confined to this machine. It gets a disabled config and
+		// never becomes this backend's LAN ingress (nativeLANStatus stays nil).
+		return nativenetwork.Config{}, nil
+	}
 	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {
@@ -146,6 +157,9 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 //ao:scope host
 //ao:route home
 func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork.State) error {
+	if a.netReach.LoopbackOnly() {
+		return errNativeNetworkIsolated
+	}
 	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {
@@ -194,6 +208,10 @@ func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork
 	}
 	return nil
 }
+
+// errNativeNetworkIsolated refuses the launcher's LAN observations for an
+// instance confined to this machine.
+var errNativeNetworkIsolated = errors.New("local network access is off in an isolated instance")
 
 func nativeLANListenerError(address string) string {
 	host, _, err := net.SplitHostPort(address)
@@ -248,7 +266,11 @@ func (a *App) discoverNativeComputers(ctx context.Context) []attachedbackends.Di
 		s.scanID++
 		scan := &nativeScan{id: s.scanID, done: make(chan struct{})}
 		s.scan = scan
-		scan.timer = time.AfterFunc(6*time.Second, func() {
+		timeout := s.scanTimeout
+		if timeout <= 0 {
+			timeout = defaultNativeScanTimeout
+		}
+		scan.timer = time.AfterFunc(timeout, func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			if s.scan == scan {

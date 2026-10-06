@@ -11,6 +11,7 @@ import (
 )
 
 func TestParseEffortSetText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		text string
@@ -85,6 +86,7 @@ func launchOptsForThread(t *testing.T, app *App, threadID string) provider.Sessi
 // text settles the pending apply with no side effects: launchOpts keeps the
 // optimistically written value, no degraded mark, no restart.
 func TestObserveClaudeCommandResultConfirmsEffortApply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-live-effort-ok", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -116,6 +118,7 @@ func TestObserveClaudeCommandResultConfirmsEffortApply(t *testing.T) {
 // reverts in launchOpts, goes degraded so the reconciler stops re-sending,
 // and the deferred-restart watcher converges.
 func TestObserveClaudeCommandResultUnexpectedAnswerFallsBackToRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-live-effort-bad", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -142,6 +145,7 @@ func TestObserveClaudeCommandResultUnexpectedAnswerFallsBackToRestart(t *testing
 // unavailable" is an account-level gate a restart would hit identically, so
 // it settles as parity: no revert, no degraded mark, no restart.
 func TestObserveClaudeCommandResultFastUnavailableIsAccepted(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-live-fast-gate", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -169,6 +173,7 @@ func TestObserveClaudeCommandResultFastUnavailableIsAccepted(t *testing.T) {
 // remembered profile, and launchOpts must follow or the next restart would
 // silently undo it.
 func TestObserveClaudeCommandResultSyncsUserTypedEffort(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-user-effort", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -214,6 +219,7 @@ func TestObserveClaudeCommandResultSyncsUserTypedEffort(t *testing.T) {
 // drops exactly its pending applies and degraded marks; another session's
 // state survives.
 func TestPurgeClaudeLiveConfigStateIsTokenScoped(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	opts := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortHigh}
 	app.registerClaudeLiveConfigApplies("t1", "tok-a", opts,
@@ -244,6 +250,7 @@ func TestPurgeClaudeLiveConfigStateIsTokenScoped(t *testing.T) {
 // died without unregistering (crash during app shutdown) cannot accumulate
 // entries forever: inserts evict anything past the staleness bound.
 func TestRegisterClaudeLiveConfigAppliesEvictsStaleEntries(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	opts := provider.SessionOptions{Model: "claude-opus-5"}
 	app.sessionManager().runtime.RegisterClaudeLiveApplies(map[string]claudeLiveConfigApply{
@@ -269,6 +276,7 @@ func TestRegisterClaudeLiveConfigAppliesEvictsStaleEntries(t *testing.T) {
 // pending applies and degraded marks, and take() is the one the deferred
 // restart and StopSession use.
 func TestSessionTakePurgesClaudeLiveConfigState(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-take-purge", "tok-1"
 	seedClaudeLiveConfigThread(t, app, id, token, provider.SessionOptions{Model: "claude-opus-5"})
@@ -292,6 +300,7 @@ func TestSessionTakePurgesClaudeLiveConfigState(t *testing.T) {
 // first — the CLI executes sequentially) must not degrade the axis or
 // revert the value the newer apply owns.
 func TestSupersededApplyAnswerIsIgnored(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-supersede", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortHigh}
@@ -326,6 +335,7 @@ func TestSupersededApplyAnswerIsIgnored(t *testing.T) {
 // tombstone and must not resolve, while launchOpts is restored so the
 // restart fallback sees a genuine diff.
 func TestRolledBackApplyAnswerIsIgnored(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-rollback", "tok-1"
 	prev := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortHigh}
@@ -355,6 +365,7 @@ func TestRolledBackApplyAnswerIsIgnored(t *testing.T) {
 // signal, and it must revert the optimistic write (no degraded mark — the
 // command never ran) and re-arm convergence.
 func TestCancelledCommandLifecycleRevertsApply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-cancelled", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -387,6 +398,7 @@ func TestCancelledCommandLifecycleRevertsApply(t *testing.T) {
 // still settle the pending apply (degrade + revert + restart) instead of
 // stranding the optimistic write silently.
 func TestUncorrelatedRejectionSettlesPendingApply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-nolifecycle", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -412,6 +424,7 @@ func TestUncorrelatedRejectionSettlesPendingApply(t *testing.T) {
 // TestUncorrelatedSuccessConfirmsPendingApply — same no-lifecycle CLI, but
 // the command succeeded: the pending apply confirms and nothing restarts.
 func TestUncorrelatedSuccessConfirmsPendingApply(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-nolifecycle-ok", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
@@ -441,6 +454,7 @@ func TestUncorrelatedSuccessConfirmsPendingApply(t *testing.T) {
 // an unrecognized uuid on an effort success must be treated as user-typed
 // and sync the row, not be discarded as AO-authored.
 func TestUserTypedEffortWithUUIDStillSyncs(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-user-uuid", "tok-1"
 	seedClaudeLiveConfigThread(t, app, id, token,
@@ -462,6 +476,7 @@ func TestUserTypedEffortWithUUIDStillSyncs(t *testing.T) {
 // switch the model and the reply may lead with that; the ON confirmation is
 // containment, not prefix (claude-wire.md §"Live config commands").
 func TestFastModeOnConfirmsByContainment(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-fast-on", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -489,6 +504,7 @@ func TestFastModeOnConfirmsByContainment(t *testing.T) {
 // spawn opt-in. Reaching it means the opt-in gate was wrong; the restart is
 // the correct recovery.
 func TestFastModeSDKUnavailableFallsBackToRestart(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-fast-sdk", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -516,6 +532,7 @@ func TestFastModeSDKUnavailableFallsBackToRestart(t *testing.T) {
 // restart anything: its registry state went with it and the replacement
 // spawned from the row.
 func TestResolveSkipsSessionScopedEffectsWhenSessionGone(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id := "thread-stale-answer"
 	started := seedClaudeLiveConfigThread(t, app, id, "tok-new", provider.SessionOptions{Model: "claude-opus-5"})
@@ -543,6 +560,7 @@ func TestResolveSkipsSessionScopedEffectsWhenSessionGone(t *testing.T) {
 // apply proceeds — the read-modify-write over launchOpts admits exactly
 // one writer per thread.
 func TestLiveApplySessionConfigSerializesPerThread(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	idA, idB := "thread-serial-a", "thread-serial-b"
 	seedClaudeLiveConfigThread(t, app, idA, "tok-a", provider.SessionOptions{Model: "claude-opus-5"})
@@ -587,6 +605,7 @@ func TestLiveApplySessionConfigSerializesPerThread(t *testing.T) {
 // through to the user-typed handling, stranding the pending apply until the
 // watchdog declines it and restarts a session that had already complied.
 func TestUncorrelatedFastReplyMatchesTheCLIsPrefixedSpellings(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		text string
@@ -637,6 +656,7 @@ func TestUncorrelatedFastReplyMatchesTheCLIsPrefixedSpellings(t *testing.T) {
 // something other than the expected state change" and declined an apply that
 // had in fact landed.
 func TestFastModeOffConfirmsByContainment(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-fast-off", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: false}
@@ -670,6 +690,7 @@ func TestFastModeOffConfirmsByContainment(t *testing.T) {
 // Only two reasons can come out of that site, because its own guard is the
 // same one the reason table branches on first.
 func TestBareFastModeGateRepliesSettleAsParity(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		text string
@@ -719,6 +740,7 @@ func TestBareFastModeGateRepliesSettleAsParity(t *testing.T) {
 // convert every SDK refusal into accepted parity, and the session would run
 // without fast mode forever while the UI said it was on.
 func TestBareSDKFastModeReasonStillRestarts(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-fast-sdk-bare", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -748,6 +770,7 @@ func TestBareSDKFastModeReasonStillRestarts(t *testing.T) {
 // watchdog's expiry; the verdict is decline, not parity, because a restart
 // spawning from launchOpts is exactly the recovery.
 func TestUnknownFastArgumentDeclinesInsteadOfStranding(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-fast-badarg", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
@@ -775,6 +798,7 @@ func TestUnknownFastArgumentDeclinesInsteadOfStranding(t *testing.T) {
 }
 
 func TestWireEffortPreservesUnselectedDefaults(t *testing.T) {
+	t.Parallel()
 	for _, userCommand := range []string{"", "review", "effort"} {
 		for _, alreadyApplied := range []bool{false, true} {
 			t.Run(fmt.Sprintf("command=%s/applied=%v", userCommand, alreadyApplied), func(t *testing.T) {

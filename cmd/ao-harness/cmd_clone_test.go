@@ -261,6 +261,7 @@ func openClone(t *testing.T, path string) *sql.DB {
 // left any one of them behind would hand a harness thread a handle onto a
 // real provider session.
 func TestCloneClearsEverySessionRefColumn(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{leaveOpen: true})
 	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -292,6 +293,7 @@ func TestCloneClearsEverySessionRefColumn(t *testing.T) {
 // imported thread is read through, and dropping it would change the
 // thread's shape rather than only its provider identity.
 func TestCloneNeutralizesImportIdentityWithoutDroppingTheRow(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -321,6 +323,7 @@ func TestCloneNeutralizesImportIdentityWithoutDroppingTheRow(t *testing.T) {
 // in the copy, and the restored copy still ENFORCES — a restore that
 // produced an inert row would weaken the clone's schema in silence.
 func TestCloneRestoresTheTriggersItDroppedForTheScrub(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -358,6 +361,7 @@ func TestCloneRestoresTheTriggersItDroppedForTheScrub(t *testing.T) {
 // sql.ErrNoRows in a different instance — the toast leak HarnessReset
 // fixed.
 func TestCloneWipesUIState(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -376,6 +380,7 @@ func TestCloneWipesUIState(t *testing.T) {
 // out loud rather than skipped silently, because "the scrub ran" is the
 // claim this verb makes.
 func TestCloneReportsAnAbsentScrubTableInsteadOfFailing(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{skipImportState: true})
 	e, _ := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -390,6 +395,7 @@ func TestCloneReportsAnAbsentScrubTableInsteadOfFailing(t *testing.T) {
 // item referencing one renders broken, which reads as a rendering bug in
 // the repro the clone exists to serve.
 func TestCloneCopiesAttachmentBytes(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{
 		"a.png":            "PNG-A",
@@ -413,6 +419,7 @@ func TestCloneCopiesAttachmentBytes(t *testing.T) {
 }
 
 func TestCloneForceReconcilesAttachmentsWithoutDeletingUnrelatedContent(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	sourceBefore := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{
 		"removed/old.txt": "old",
@@ -465,6 +472,7 @@ func TestCloneForceReconcilesAttachmentsWithoutDeletingUnrelatedContent(t *testi
 }
 
 func TestCloneForceRefusesASymlinkedAttachmentTree(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	sourceBefore := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{"kept.txt": "before"}})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -507,6 +515,7 @@ func TestCloneForceRefusesASymlinkedAttachmentTree(t *testing.T) {
 // prune refuses a metadata store whose stamp disagrees with the
 // credential home.
 func TestCloneCopiesNoFileBesidesTheDatabaseAndAttachments(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{"a.png": "x"}})
 	for _, name := range []string{
@@ -549,6 +558,7 @@ func TestCloneCopiesNoFileBesidesTheDatabaseAndAttachments(t *testing.T) {
 // read-only reader of a WAL database creates and which carry no database
 // content.
 func TestCloneLeavesTheSourceDatabaseByteIdentical(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{"a.png": "x"}})
 	sourceDB := filepath.Join(source, storeFileName)
@@ -590,6 +600,7 @@ func hashFile(t *testing.T, path string) string {
 // The target must pass the refusals `up` applies, because the whole point
 // is that `up` boots on it next.
 func TestCloneRefusesTheRealAppDataDirAsATarget(t *testing.T) {
+	t.Parallel()
 	configRoot, appData := configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 
@@ -608,6 +619,7 @@ func TestCloneRefusesTheRealAppDataDirAsATarget(t *testing.T) {
 // Two backends on one SQLite file is what `up` refuses; a clone that
 // overwrote a running instance's database would be worse.
 func TestCloneRefusesATargetALiveInstanceHolds(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := t.TempDir()
@@ -624,6 +636,7 @@ func TestCloneRefusesATargetALiveInstanceHolds(t *testing.T) {
 }
 
 func TestCloneRefusesWritingIntoItsOwnSource(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	sourceRoot := filepath.Dir(source)
@@ -648,6 +661,7 @@ func TestCloneRefusesWritingIntoItsOwnSource(t *testing.T) {
 // operator's second clone fails with SQLite's message rather than a
 // choice.
 func TestCloneRefusesAnExistingTargetDatabaseUntilForced(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -668,6 +682,7 @@ func TestCloneRefusesAnExistingTargetDatabaseUntilForced(t *testing.T) {
 }
 
 func TestCloneRefusesAFromPathWithNoDatabase(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	e, _, _ := testEnv(t.TempDir())
 	err := runClone(e, []string{"--from", t.TempDir(), "--data-dir", filepath.Join(t.TempDir(), "root")})
@@ -682,6 +697,7 @@ func TestCloneRefusesAFromPathWithNoDatabase(t *testing.T) {
 // --from takes either spelling because both are things an operator has a
 // name for: the app data dir, and the root holding it.
 func TestCloneAcceptsEitherSpellingOfTheSourcePath(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 
@@ -772,6 +788,7 @@ func queryString(t *testing.T, db *sql.DB, query string, args ...any) string {
 // wrote into the developer's checkout. Every workspace path in the copy has
 // to name something inside the clone's own root.
 func TestCloneRelocatesEveryWorkspacePathIntoTheTargetRoot(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -798,6 +815,7 @@ func TestCloneRelocatesEveryWorkspacePathIntoTheTargetRoot(t *testing.T) {
 // checkpoints and the branch picker all fail in the repro the clone exists
 // to serve.
 func TestCloneBuildsGitFixturesForEveryRelocatedWorkspace(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -872,6 +890,7 @@ func TestCloneBuildsGitFixturesForEveryRelocatedWorkspace(t *testing.T) {
 // Two project slugs that reduce to the same filesystem-safe name must not
 // land in one directory: the second would inherit the first's repository.
 func TestCloneGivesCollidingProjectNamesDistinctFixtures(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -901,6 +920,7 @@ func TestCloneGivesCollidingProjectNamesDistinctFixtures(t *testing.T) {
 // named maps onto that thread's fixture; one no thread named has no fixture
 // to point at and is cleared, which falls the item back to its project.
 func TestCloneMapsWorkflowWorktreesAndClearsTheRest(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -933,6 +953,7 @@ func TestCloneMapsWorkflowWorktreesAndClearsTheRest(t *testing.T) {
 // A store predating the workflow tables is not a failed clone, and the
 // skip is said out loud the way the scrub says it.
 func TestCloneReportsAbsentWorkflowTablesInsteadOfFailing(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{skipWorkItems: true})
 	e, _ := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
@@ -949,6 +970,7 @@ func TestCloneReportsAbsentWorkflowTablesInsteadOfFailing(t *testing.T) {
 // clone's repos and worktrees are in the way, and git refuses to attach a
 // worktree onto occupied state, so --force clears both generated trees.
 func TestCloneForceRebuildsWorkspaceFixtures(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	targetRoot := filepath.Join(t.TempDir(), "root")
@@ -989,6 +1011,7 @@ func TestCloneForceRebuildsWorkspaceFixtures(t *testing.T) {
 // not a store this code can relocate, and a partial relocation would leave
 // real paths behind.
 func TestCloneRefusesAStoreMissingAWorkspaceColumn(t *testing.T) {
+	t.Parallel()
 	configRootFixture(t)
 	source := newCloneSource(t, cloneSourceOptions{})
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(source, storeFileName))

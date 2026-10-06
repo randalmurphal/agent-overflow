@@ -13,7 +13,8 @@ import (
 // (merge/rebase/bisect) so the commit dialog can tell the user what a
 // commit will do.
 func TestPendingOperationClean(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	status, err := NewCore().Status(repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
@@ -24,7 +25,8 @@ func TestPendingOperationClean(t *testing.T) {
 }
 
 func TestPendingOperationMerge(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	// Create two diverging branches that touch the same line to force a
 	// conflict when we merge them back together.
@@ -58,7 +60,8 @@ func TestPendingOperationMerge(t *testing.T) {
 }
 
 func TestPendingOperationRebase(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	// Set up a conflicting commit on main, then start a rebase of a
 	// divergent branch onto main to trigger an unresolved rebase state.
@@ -90,7 +93,8 @@ func TestPendingOperationRebase(t *testing.T) {
 }
 
 func TestPendingOperationBisect(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 
 	// Create a short history so there's something to bisect.
 	for i := 0; i < 3; i++ {
@@ -117,7 +121,8 @@ func TestPendingOperationBisect(t *testing.T) {
 }
 
 func TestResolveGitDirMemoizesSuccess(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
+	t.Parallel()
+	repo := initGitRepo(t)
 	core := NewCore()
 
 	first := core.resolveGitDir(repo)
@@ -136,6 +141,7 @@ func TestResolveGitDirMemoizesSuccess(t *testing.T) {
 }
 
 func TestResolveGitDirDoesNotCacheFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	core := NewCore()
 
@@ -151,6 +157,7 @@ func TestResolveGitDirDoesNotCacheFailure(t *testing.T) {
 }
 
 func TestPendingOperationNonRepoReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	// A non-repo directory must yield an empty pendingOperation - never a
 	// false positive, since Status already reports IsRepo=false.
 	dir := t.TempDir()

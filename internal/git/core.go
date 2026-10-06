@@ -631,6 +631,10 @@ type commandSpec struct {
 	args     []string
 }
 
+// pipeWaitDelay bounds how long runSpec waits for output pipes after the
+// command exits or is killed.
+var pipeWaitDelay = time.Second
+
 // runSpec is the shared runner behind every git / gh / glab subprocess.
 func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	if (spec.input != nil && spec.stdin != "") || (spec.output != nil && spec.outputLimit <= 0) {
@@ -664,6 +668,10 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
+	// A child the CLI leaves behind (a hook, a helper) can hold stdout or
+	// stderr open after the CLI exits or is killed. Without a bound, Run
+	// waits for that child and the timeout stops nothing.
+	cmd.WaitDelay = pipeWaitDelay
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
 	// optimization for git, but it fires an fs event under the watched
@@ -700,6 +708,10 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 
 	err = cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The CLI itself succeeded; only a leftover child kept the pipes.
+		err = nil
+	}
 	result := commandResult{
 		stdout: stdoutBuf.String(),
 		stderr: stderrBuf.String(),

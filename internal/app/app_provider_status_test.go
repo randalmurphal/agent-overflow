@@ -34,6 +34,7 @@ func collectProviderStatusEmissions(a *App) *[]providerstatus.Event {
 // the wire frame goes out — the test observes the raw payload via the
 // testEmitHook seam.
 func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
@@ -85,6 +86,7 @@ func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
 // fire a provider:status event. Otherwise the UI would toggle the
 // banner on every poll from settings, causing flicker.
 func TestGetProviderStatusesDoesNotEmitForReadyProvider(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	// "echo" is always on PATH; DetectProvider returns Status="ready"
@@ -112,6 +114,7 @@ func TestGetProviderStatusesDoesNotEmitForReadyProvider(t *testing.T) {
 // the code under test must not crash, deduplicate at the Go layer, or
 // mutate state that changes between calls.
 func TestEmitProviderStatusesFromDetectIsIdempotent(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	events := collectProviderStatusEmissions(app)
 
@@ -146,6 +149,7 @@ func TestEmitProviderStatusesFromDetectIsIdempotent(t *testing.T) {
 // Expressed as a direct call on the emit helper so the test doesn't
 // need a running Claude probe.
 func TestEmitClaudeUnauthenticatedStatusShape(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	events := collectProviderStatusEmissions(app)
 

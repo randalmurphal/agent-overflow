@@ -79,6 +79,7 @@ func redeem(t *testing.T, app *App, token, label, thumbprint string) identity.Re
 // in one read: which devices hold credentials, the sessions they are
 // holding, and the credential log that explains how they got them.
 func TestGetAccessOverview_ListsWhatReachesThisBackend(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	paired, session := pairDevice(t, app, "A browser", "thumb-browser")
 	local := localChannelSession(t, app)
@@ -143,6 +144,7 @@ func TestGetAccessOverview_ListsWhatReachesThisBackend(t *testing.T) {
 // log is where that history already lives. The list is what a person can
 // act on.
 func TestGetAccessOverview_CarriesNoDeadSessions(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, session := pairDevice(t, app, "A browser", "thumb-browser")
 
@@ -168,6 +170,7 @@ func TestGetAccessOverview_CarriesNoDeadSessions(t *testing.T) {
 // which is never sent to a server, never written to an access log, and
 // never lands in a Referer header.
 func TestMintDevicePairing_HandsTheDeviceALoadablePageAndAFragmentPayload(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	invite, err := app.MintDevicePairing(string(identity.DevicePhone), "")
@@ -233,6 +236,7 @@ func TestMintDevicePairing_HandsTheDeviceALoadablePageAndAFragmentPayload(t *tes
 // redemption is recorded against. A boot that resolved none mints exactly
 // the link it always did.
 func TestMintDevicePairing_CarriesTheBackendCertificateFingerprint(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	const fingerprint = "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
 	SetCertFingerprint(app, fingerprint)
@@ -279,6 +283,7 @@ func TestMintDevicePairing_CarriesTheBackendCertificateFingerprint(t *testing.T)
 // enrolled through the federation flow with its own trust decisions;
 // admitting one here would give it the posture of an owner's own device.
 func TestMintDevicePairing_RefusesAClassItDoesNotPair(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	for name, class := range map[string]string{
@@ -330,6 +335,7 @@ func mintForAccess(t *testing.T, app *App, access, thumbprint string) transport.
 // set the session is minted with. An ABSENT level is full, because the
 // parameter was appended to a call that already existed.
 func TestMintDevicePairing_AccessLevelDecidesTheGrantSet(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	full := mintForAccess(t, app, "", "thumb-default")
@@ -365,6 +371,7 @@ func TestMintDevicePairing_AccessLevelDecidesTheGrantSet(t *testing.T) {
 // level is refused rather than widened to full, which is the direction a
 // typo must fail in.
 func TestMintDevicePairing_RefusesAnUndeclaredAccessLevel(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	for _, access := range []string{"read-only", "View only", "none"} {
@@ -380,6 +387,7 @@ func TestMintDevicePairing_RefusesAnUndeclaredAccessLevel(t *testing.T) {
 // size — the last of those only because UpdateSettings carries the
 // `session` floor and requireSettingsTier decides per key.
 func TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	grant := mintForAccess(t, app, string(identity.PairingAccessViewOnly), "thumb-view")
 
@@ -413,6 +421,7 @@ func TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen(t *testing.T) {
 // starts the owner's ten-minute confirmation window and reporting
 // "expired" would take away the step the exchange is waiting on.
 func TestDevicePairingStatus_WalksTheExchange(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	linkID, token := mintLink(t, app, identity.DevicePhone)
 
@@ -507,6 +516,7 @@ func TestDevicePairingStatus_WalksTheExchange(t *testing.T) {
 // number did not match, or the link was minted by mistake. Whatever the
 // redemption already created goes with it.
 func TestCancelDevicePairing_SettlesTheLinkAndTakesTheSessionWithIt(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	linkID, token := mintLink(t, app, identity.DevicePhone)
 	redemption := redeem(t, app, token, "A phone", "thumb-phone")
@@ -537,6 +547,7 @@ func TestCancelDevicePairing_SettlesTheLinkAndTakesTheSessionWithIt(t *testing.T
 // link that never existed from one already settled, and neither should
 // it: the difference is a fact about this backend's records.
 func TestConfirmAndCancelRefuseALinkTheyDoNotKnow(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	if err := app.ConfirmDevicePairing("no-such-link"); err == nil {
@@ -555,6 +566,7 @@ func TestConfirmAndCancelRefuseALinkTheyDoNotKnow(t *testing.T) {
 // device that came back paired must not inherit the view it had before
 // somebody took its access away.
 func TestRevokeAccessDevice_EndsEveryCredentialAndDropsTheDevicesUIState(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	gone, goneSession := pairDevice(t, app, "The removed one", "thumb-gone")
 	kept, keptSession := pairDevice(t, app, "The other one", "thumb-kept")
@@ -636,6 +648,7 @@ func (r *recordingConns) sawClose(sessionID string) bool {
 // open on a credential it presented once, so the revocation has to close
 // it rather than wait for a next presentation that never comes.
 func TestRevokeReachesTheLiveSockets(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	conns := &recordingConns{}
 	AttachSessionConns(app, conns)
@@ -664,6 +677,7 @@ func TestRevokeReachesTheLiveSockets(t *testing.T) {
 // half of the revoked-key refusal's remedy: the row comes back without
 // its sessions, ready to redeem a fresh link.
 func TestRestoreDeviceReadmitsItToTheOverview(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, _ := pairDevice(t, app, "A phone", "thumb-restore")
 	if _, err := app.RevokeAccessDevice(device.ID); err != nil {
@@ -692,6 +706,7 @@ func TestRestoreDeviceReadmitsItToTheOverview(t *testing.T) {
 // that order — which shipped, and which the live pairing exercise caught
 // as a revocation that left the revoked device's socket streaming.
 func TestRevokeReachesSocketsWhenTheTransportBootsFirst(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	conns := &recordingConns{}
 	AttachSessionConns(app, conns) // transport first,
@@ -735,6 +750,7 @@ func mintSessionFor(t *testing.T, app *App, device store.Device) store.Session {
 // embedded webview, the WSL relay, and the `--connect` stub all present.
 // Revoking it would sign the host's own window out.
 func TestRevokeAccessDevice_RefusesTheLocalPageChannel(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	local := localChannelSession(t, app)
 
@@ -761,6 +777,7 @@ func TestRevokeAccessDevice_RefusesTheLocalPageChannel(t *testing.T) {
 // narrower control: sign one session out without un-pairing the device
 // that holds it.
 func TestRevokeAccessSession_EndsOneCredentialAndLeavesTheDevicePaired(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 	device, session := pairDevice(t, app, "A browser", "thumb-browser")
 
@@ -788,6 +805,7 @@ func TestRevokeAccessSession_EndsOneCredentialAndLeavesTheDevicePaired(t *testin
 // say so rather than reporting success over a no-op, because the surface
 // would otherwise show a device as removed that is still connected.
 func TestRevokeRefusesRowsItCannotResolve(t *testing.T) {
+	t.Parallel()
 	app := accessApp(t)
 
 	if _, err := app.RevokeAccessDevice("no-such-device"); err == nil {
@@ -802,6 +820,7 @@ func TestRevokeRefusesRowsItCannotResolve(t *testing.T) {
 // not a fault, and every method has to say so rather than panicking on a
 // nil session core.
 func TestAccessSurfaceWithoutIdentity(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	if app.identityState() != nil {
 		t.Fatal("this fixture booted a session core")
@@ -834,6 +853,7 @@ func TestAccessSurfaceWithoutIdentity(t *testing.T) {
 // address is a link nothing can redeem, and minting one would spend a
 // single-use token on a URL that goes nowhere.
 func TestMintDevicePairing_NeedsATransportToPointAt(t *testing.T) {
+	t.Parallel()
 	app := identityApp(t)
 	if _, err := app.MintDevicePairing(string(identity.DevicePhone), ""); err == nil {
 		t.Fatal("MintDevicePairing minted a link with no transport running")

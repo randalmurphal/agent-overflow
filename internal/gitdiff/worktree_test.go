@@ -11,6 +11,7 @@ import (
 )
 
 func TestIsGitRepository(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	if !IsGitRepository(context.Background(), repo) {
 		t.Fatal("expected a git repo to be detected")
@@ -21,6 +22,7 @@ func TestIsGitRepository(t *testing.T) {
 }
 
 func TestWorktreeDiffCombinesTrackedAndUntracked(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "README.txt", "hello\nedited\n")
 	writeFile(t, repo, "new.txt", "brand new\n")
@@ -39,6 +41,7 @@ func TestWorktreeDiffCombinesTrackedAndUntracked(t *testing.T) {
 }
 
 func TestWorktreeDiffCleanTreeIsEmpty(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	patch, err := worktreePatch(t, repo, Options{})
 	if err != nil {
@@ -50,6 +53,7 @@ func TestWorktreeDiffCleanTreeIsEmpty(t *testing.T) {
 }
 
 func TestWorktreeDiffFreshInitRepo(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	testutil.RunGit(t, repo, "init", "-b", "main")
 	writeFile(t, repo, "new.txt", "no commits yet\n")
@@ -64,6 +68,7 @@ func TestWorktreeDiffFreshInitRepo(t *testing.T) {
 }
 
 func TestWorktreeDiffShowsDeletions(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "doomed.txt", "was here\n", "add doomed")
 	if err := os.Remove(filepath.Join(repo, "doomed.txt")); err != nil {
@@ -80,6 +85,7 @@ func TestWorktreeDiffShowsDeletions(t *testing.T) {
 }
 
 func TestWorktreeDiffStagesSymlinks(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	if err := os.Symlink("README.txt", filepath.Join(repo, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
@@ -96,6 +102,7 @@ func TestWorktreeDiffStagesSymlinks(t *testing.T) {
 }
 
 func TestWorktreeDiffRespectsGitignore(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, ".gitignore", "ignored.txt\n", "add gitignore")
 	writeFile(t, repo, "ignored.txt", "should not appear\n")
@@ -110,6 +117,7 @@ func TestWorktreeDiffRespectsGitignore(t *testing.T) {
 }
 
 func TestBranchBaseDiffSpansCommittedStagedAndUntracked(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "committed.txt", "committed change\n", "feature commit")
@@ -130,6 +138,7 @@ func TestBranchBaseDiffSpansCommittedStagedAndUntracked(t *testing.T) {
 }
 
 func TestBranchBaseDiffLeavesUserIndexUntouched(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	writeFile(t, repo, "untracked.txt", "untracked change\n")
@@ -151,6 +160,7 @@ func TestBranchBaseDiffLeavesUserIndexUntouched(t *testing.T) {
 }
 
 func TestBranchBaseDiffSkipsCleanFilters(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	// A repo-defined clean filter that would fail loudly if executed. The
 	// snapshot must hash with --no-filters, so the diff still succeeds and
@@ -170,6 +180,7 @@ func TestBranchBaseDiffSkipsCleanFilters(t *testing.T) {
 }
 
 func TestBranchBaseDiffRequiresBase(t *testing.T) {
+	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	if _, err := branchBasePatch(t, repo, "  ", Options{}); err == nil {
 		t.Fatal("expected error for an empty base branch")
@@ -177,6 +188,7 @@ func TestBranchBaseDiffRequiresBase(t *testing.T) {
 }
 
 func TestBranchBaseDiffResolvesRemoteOnlyBaseBranch(t *testing.T) {
+	t.Parallel()
 	clone := cloneWithRemoteOnlyBranch(t)
 	writeFile(t, clone, "untracked.txt", "uncommitted too\n")
 

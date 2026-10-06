@@ -39,9 +39,10 @@ func rejectSessionRefWrites(t *testing.T, dbPath, threadID string) {
 }
 
 func TestConversationRollbackRemovesSliceWhenSessionRefWriteFails(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	thread, workspace := setupSliceIDsThread(t, app)
-	sourcePath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), thread.SessionRef, workspace)
+	sourcePath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), thread.SessionRef, workspace)
 	if err != nil {
 		t.Fatalf("locate source session: %v", err)
 	}
@@ -68,6 +69,7 @@ func TestConversationRollbackRemovesSliceWhenSessionRefWriteFails(t *testing.T) 
 }
 
 func TestMaterializeImportedClaudeBranchRemovesCutWhenSessionRefWriteFails(t *testing.T) {
+	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	home := newImportHome(t)
 	home.attach(app)
