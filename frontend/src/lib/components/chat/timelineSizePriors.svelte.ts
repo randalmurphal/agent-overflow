@@ -30,7 +30,7 @@ import {
 import type { SizePriorsBucket, SizePriorsGeometry } from '../../utils/virtual/priors';
 import { installSizePriorsPersistence } from '../../utils/virtual/priorsStorage';
 import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
-import type { TimelineNode } from '../../utils/subagentGrouping';
+import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
 import type { Item } from '../../types/models';
 import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { nodeSignature } from '../../utils/timelineStructureSignature';
@@ -284,7 +284,7 @@ export function createTimelineSizePriors(
   //
   // Mid-stream cost is known and tolerated: on an actively-streaming thread the
   // size-gate passes once per geometry change (each append grows the total), so
-  // takeSnapshot() + the O(N) rows-map rebuild below run ~5–20×/sec — bounded
+  // measuredSizes() + the O(N) rows-map rebuild below run ~5–20×/sec, bounded
   // by the gate (never per-frame) and only while the visible thread streams.
   // Only the settle capture (isWarm rising) matters for replay; the interim
   // ones are overwritten by the next capture (setThreadSizePriors replaces
@@ -316,7 +316,7 @@ export function createTimelineSizePriors(
     const listRef = options.getListRef();
     if (!threadId || !listRef || options.getRestoredThreadId() !== pane.scrollStateKey) return;
     // O(1) read (the engine's prefix-sum total), the cheap change gate.
-    // Skip the takeSnapshot() slice when geometry has not moved (60Hz
+    // Skip the measuredSizes() copy when geometry has not moved (60Hz
     // spring), unless this is a final edge (see persistSizePriorsFinal).
     const totalSize = listRef.getTotalSize();
     if (!final && totalSize === lastPersistedTotalSize) return;
@@ -333,14 +333,11 @@ export function createTimelineSizePriors(
       previousBucket && previousBucket.expansionSig === expansionSig
         ? previousBucket.rows
         : undefined;
-    const nodes = options.getRevealedNodes();
-    const snapshot = listRef.takeSnapshot();
+    const measured = listRef.measuredSizes();
     const rows = new Map<string, number>();
-    for (let index = 0; index < snapshot.length; index++) {
-      const node = nodes[index];
-      if (!node) continue;
+    for (const node of options.getRevealedNodes()) {
       const signature = nodeSignature(node, currentItem);
-      const size = snapshot[index];
+      const size = measured.get(timelineNodeKey(node)) ?? -1;
       if (size >= 0) {
         // Negative sizes (UNMEASURED or any corrupt value) never persist.
         rows.set(signature, size);

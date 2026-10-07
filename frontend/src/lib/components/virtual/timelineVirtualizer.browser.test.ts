@@ -7,11 +7,20 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import TimelineVirtualizerHarness, { type HarnessRow } from './TimelineVirtualizerHarness.svelte';
-import type { ContentGeometrySample, EngineCompensation, RowEstimate } from '../../utils/virtual/types';
+import type {
+  ContentGeometrySample,
+  EngineCompensation,
+  RowEstimate,
+  TimelineVirtualizerHandle,
+} from '../../utils/virtual/types';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import { recordScrollEventObservation } from '../../utils/scroll/eventObservation';
 import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+import {
+  frontendErrorCaptureStateForTest,
+  resetFrontendErrorCaptureForTest,
+} from '../../utils/frontendErrorCapture';
 
 const VIEWPORT_PX = 600;
 const BUFFER_PX = 400;
@@ -181,7 +190,9 @@ describe('mount + tail seeding', () => {
         ctx.harness.handle()!.scrollToIndex(index);
         await waitForStableGeometry(scroller, 'visit history');
       }
-      expect(ctx.harness.handle()!.takeSnapshot().every((size) => size === ROW_PX)).toBe(true);
+      const measured = ctx.harness.handle()!.measuredSizes();
+      expect(measured.size).toBe(ROW_COUNT);
+      expect([...measured.values()].every((size) => size === ROW_PX)).toBe(true);
     }
     await pinToBottomAndSettle(scroller, 'initial bottom');
     controller.attach(scroller, scroller.querySelector('[data-virtual-row-plane]') as HTMLElement);
@@ -607,7 +618,7 @@ describe('exact leading header', () => {
     expect(header.getBoundingClientRect().height).toBe(60);
     expect(handle.getItemOffset(0)).toBe(60);
     expect(handle.findItemIndex(20)).toBe(0);
-    expect(handle.takeSnapshot()).toHaveLength(ROW_COUNT);
+    expect(handle.keyAt(20)).toBe('row-0');
 
     scrollEl.scrollTop = 860;
     await waitFor(() => handle.getScrollOffset() === 860, 'reading scroll input');
@@ -641,7 +652,7 @@ describe('exact leading header', () => {
     expect(readingRow!.getBoundingClientRect().top).toBeCloseTo(readingTop, 0);
     expect(handle.getTotalSize()).toBe(totalBeforeResize - 36);
     expect(handle.getItemOffset(0)).toBe(24);
-    expect(handle.takeSnapshot()).toHaveLength(ROW_COUNT + 2);
+    expect(handle.keyAt(30)).toBe('prepended-a');
 
     scrollEl.scrollTop = 0;
     await waitFor(
@@ -1363,8 +1374,8 @@ describe('hidden pane guard (display:none RO deliveries)', () => {
     await waitForStableGeometry(scrollEl, 'mount');
     const handle = harness.handle()!;
     const totalBefore = handle.getTotalSize();
-    const snapshotBefore = handle.takeSnapshot();
-    expect(snapshotBefore.some((size) => size === 0)).toBe(false);
+    const snapshotBefore = handle.measuredSizes();
+    expect([...snapshotBefore.values()].some((size) => size === 0)).toBe(false);
 
     // Hiding the pane makes the RO deliver 0×0 for the scroller and every
     // mounted row; without the offsetParent guard those would collapse
@@ -1375,7 +1386,7 @@ describe('hidden pane guard (display:none RO deliveries)', () => {
     await raf();
     expect(handle.getTotalSize()).toBe(totalBefore);
     expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
-    expect(handle.takeSnapshot()).toEqual(snapshotBefore);
+    expect(handle.measuredSizes()).toEqual(snapshotBefore);
 
     host.style.display = '';
     await raf();
@@ -1438,5 +1449,103 @@ describe('teardown', () => {
     // stray timers/observers a beat to surface.
     await raf();
     await raf();
+  });
+});
+
+describe('handle reads across a data change the virtualizer has not rendered', () => {
+  // Another animation-frame owner can read the handle after a reveal grew
+  // the rows and before Svelte flushes the change.
+  // Each read is the first after the change, so it is the one that has to
+  // take the new rows. The prepended head row is unmeasured and moves every
+  // measured row down by its estimate.
+  it.each<[string, (handle: TimelineVirtualizerHandle, top: number) => number | boolean, (total: number, top: number) => number | boolean]>([
+    ['getTotalSize', (handle) => handle.getTotalSize(), (total) => total + ESTIMATE_PX],
+    ['getScrollSize', (handle) => handle.getScrollSize(), (total) => total + ESTIMATE_PX],
+    ['getItemOffset', (handle) => handle.getItemOffset(1), (_total, top) => top + ESTIMATE_PX],
+    ['sizeAt', (handle) => handle.sizeAt(0), () => ESTIMATE_PX],
+    ['isMeasuredAt', (handle) => handle.isMeasuredAt(0), () => false],
+    ['findItemIndex', (handle, top) => handle.findItemIndex(top + ESTIMATE_PX), () => 1],
+  ])('answers %s against the new rows', async (_name, read, expected) => {
+    const { harness, scrollEl } = mountHarness({ initialRows: makeRows(ROW_COUNT), renderAll: true });
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+    const total = handle.getTotalSize();
+    const top = handle.getItemOffset(0);
+
+    harness.setRows([{ id: 'new-head', heightPx: ROW_PX, label: 'New head' }, ...harness.getRows()]);
+    expect(read(handle, top)).toBe(expected(total, top));
+  });
+
+  it('navigates to a row the virtualizer has not rendered yet', async () => {
+    const { harness, scrollEl } = mountHarness({ initialRows: makeRows(ROW_COUNT) });
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom');
+    const handle = harness.handle()!;
+
+    harness.setRows([{ id: 'new-head', heightPx: ROW_PX, label: 'New head' }, ...harness.getRows()]);
+    handle.scrollToIndex(0);
+    await waitFor(() => rowEl(scrollEl, 'new-head') !== null, 'new head row to mount');
+    await waitForStableGeometry(scrollEl, 'navigation');
+    expect(scrollEl.scrollTop).toBe(0);
+    expect(mountedRowIndexes(scrollEl)[0]).toBe(0);
+  });
+
+  it('keyed reads describe the rows it holds and apply nothing', async () => {
+    const { harness, scrollEl } = mountHarness({ initialRows: makeRows(ROW_COUNT), renderAll: true });
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom');
+    const handle = harness.handle()!;
+    // Pinned: the viewport top is exactly the top of row 54.
+    const offset = handle.getScrollOffset();
+    expect(offset).toBe((ROW_COUNT - VIEWPORT_PX / ROW_PX) * ROW_PX);
+    expect(handle.keyAt(offset)).toBe('row-54');
+    const measured = handle.measuredSizes();
+    expect(measured.size).toBeGreaterThan(0);
+
+    harness.setRows([{ id: 'new-head', heightPx: ROW_PX, label: 'New head' }, ...harness.getRows()]);
+    expect(handle.keyAt(offset)).toBe('row-54');
+    expect(handle.measuredSizes()).toEqual(measured);
+    // An index read takes the new rows. The unmeasured head row moved
+    // everything down by its estimate, so row 53 now spans the offset.
+    expect(handle.findItemIndex(offset)).toBe(54);
+    expect(handle.keyAt(offset)).toBe('row-53');
+  });
+
+  it('keeps rendering after reads past the end of the rendered rows', async () => {
+    // The nav-rail shape: indices from the new rows read before the flush,
+    // then a growth of several rows. A read that planted geometry past the
+    // engine's end left the window empty.
+    const { harness, scrollEl } = mountHarness({ initialRows: makeRows(ROW_COUNT) });
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom');
+    const handle = harness.handle()!;
+    for (let step = 0; step < 3; step++) {
+      const rows = harness.getRows();
+      harness.setRows([
+        ...rows,
+        ...[0, 1, 2].map((i) => ({ id: `grown-${step}-${i}`, heightPx: ROW_PX, label: 'grown' })),
+      ]);
+      for (let index = rows.length; index < rows.length + 3; index++) {
+        expect(Number.isFinite(handle.getItemOffset(index))).toBe(true);
+      }
+      await raf();
+    }
+    await waitForStableGeometry(scrollEl, 'growth');
+    expect(Number.isFinite(handle.getTotalSize())).toBe(true);
+    expect(mountedRowIndexes(scrollEl).length).toBeGreaterThan(0);
+    expect(rowEl(scrollEl, 'grown-0-0')).not.toBeNull();
+  });
+
+  it('reports a content size that is not finite', async () => {
+    resetFrontendErrorCaptureForTest();
+    onTestFinished(resetFrontendErrorCaptureForTest);
+    const { scrollEl } = mountHarness({
+      initialRows: makeRows(4),
+      estimate: { at: () => Number.NaN },
+    });
+    await raf();
+    await raf();
+    expect(scrollEl.isConnected).toBe(true);
+    expect(frontendErrorCaptureStateForTest().distinctSignatures).toBe(1);
   });
 });

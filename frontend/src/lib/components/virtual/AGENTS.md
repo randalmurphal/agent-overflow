@@ -27,6 +27,11 @@ list; only held rows have scroll offsets.
   unrelated motion rather than overriding reader input or another controller.
   It follows its destination row by key across data changes; an index is only
   a per-pass cache.
+- Handle reads in index space answer for the `data` the caller last passed:
+  each first applies a change not yet rendered, since frame owners sharing
+  one native frame read between a change and its flush. Code that computes
+  `data` uses only the keyed reads (`measuredSizes`, `keyAt`), which apply
+  nothing; an index read there would read its own result.
 
 Read [`frontend-scroll.md`](../../../../../docs/architecture/frontend-scroll.md)
 before changing measurement, compensation, anchoring, or write ownership.

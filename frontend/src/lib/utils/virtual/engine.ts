@@ -341,7 +341,8 @@ export function createEngine(options: EngineOptions): VirtualEngine {
     getItemOffset: (index) => storeItemOffset(store, index),
     sizeAt: (index) => storeItemSize(store, index),
     isMeasuredAt: (index) =>
-      isMeasured(store, index) || (estimate.isExact?.(index) ?? false),
+      isMeasured(store, index) ||
+      (index >= 0 && index < store.length && (estimate.isExact?.(index) ?? false)),
     takeSnapshot: () => takeSizeSnapshot(store),
 
     targetOffsetFor(index, align = 'start', extraOffset = 0) {

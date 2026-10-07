@@ -625,6 +625,12 @@ describe('exact-height rows', () => {
     expect(engine.isMeasuredAt(1)).toBe(true);
     expect(engine.getItemOffset(2)).toBe(240);
   });
+
+  it('a row outside the engine is not measured', () => {
+    const engine = createEngine({ itemCount: 3, estimate: exactEstimate(100), bufferSize: 200 });
+    expect(engine.isMeasuredAt(-1)).toBe(false);
+    expect(engine.isMeasuredAt(3)).toBe(false);
+  });
 });
 
 describe('mergeCompensations (same-flush adapter merge)', () => {
@@ -699,6 +705,21 @@ describe('queries', () => {
     engine.applyMeasurements([[3, 140]]);
     expect(engine.sizeAt(3)).toBe(140);
     expect(engine.isMeasuredAt(3)).toBe(true);
+  });
+
+  it('keeps its geometry finite when rows arrive after a read past the end', () => {
+    // A caller holding data the engine has not applied yet reads rows the
+    // engine does not hold, then the engine grows by several rows.
+    const engine = mountedEngine();
+    engine.applyScroll(700);
+    expect(engine.getItemOffset(12)).toBe(1000);
+    expect(engine.sizeAt(11)).toBe(0);
+    engine.applyLength(13);
+    expect(engine.getTotalSize()).toBe(1300);
+    expect(engine.getItemOffset(12)).toBe(1200);
+    const [start, end] = engine.getWindow();
+    expect(end).toBe(12);
+    expect(start).toBeGreaterThan(0);
   });
 
   it('takes a measured-only snapshot for priors persistence', () => {

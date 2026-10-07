@@ -81,7 +81,7 @@ test('a remote thread with no pane here settles to idle after its queued message
           { waitSignal: { name: 'later' } },
           emit([...textLines('msg-later', 'Finished while unreachable.'), RESULT_LINE]),
         ],
-      ], { queuedInputAtBoundary: true }),
+      ], { holdQueuedInput: true }),
     });
     const threadId = await seedAgentThread(remote, 'laptop-project', 'Laptop conversation');
 

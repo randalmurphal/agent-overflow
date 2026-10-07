@@ -686,7 +686,7 @@ export function createThreadSwitchLoad(
       // (`utils/virtual/priors.ts`), keyed by the scroll-pane width +
       // structure signature + expansion signature that make the sizes
       // valid — all component state the store can't see, and the store has
-      // no `listRef` to call `takeSnapshot()` on anyway. That is why they
+      // no `listRef` to call `measuredSizes()` on anyway. That is why they
       // are ASKED for at the top of this function instead. That keyed
       // replay is what lets a re-entry skip the estimate→measure cascade
       // safely; here we cache only the items.

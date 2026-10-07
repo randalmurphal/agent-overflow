@@ -202,7 +202,7 @@ test('a queued message the pane already holds hands over when Claude picks it up
         { waitSignal: { name: 'reply' } },
         emit([...textLines('msg-reply', 'Changelog updated.'), RESULT_LINE]),
       ],
-    ], { queuedInputAtBoundary: true }),
+    ], { holdQueuedInput: true }),
   });
   const threadId = await seedAgentThread(harness, 'queued-at-boundary', 'Queued at boundary');
   await harness.open(page);

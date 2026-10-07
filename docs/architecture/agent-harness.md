@@ -555,15 +555,23 @@ not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario
 loads.
 
-`claude.queuedInputAtBoundary` selects how the Claude mock consumes a user
+`claude.holdQueuedInput` selects how the Claude mock consumes a user
 envelope that arrives while a turn is running. The `command_lifecycle`
 `queued` ack is written on arrival either way. Off, the mock picks the
-envelope up into its own turn at once. On, it holds the envelope until the
-running turn ends and picks it up then, so the replay echo that confirms a
-queued message lands after every row that turn still wrote: the CLI's
-turn-pickup consumption (claude-wire.md §Queued-message consumption), and
-the case where the backend moves the message's row past output streamed
-since dispatch.
+envelope up into its own turn at once. On, it holds the envelope:
+
+- A `drainQueuedInput` step consumes every held envelope into the running
+  turn: the `started` ack and the replay echo with no `system/init` and no
+  new turn, and a `queued_command` attachment carrying the client uuid as
+  `source_uuid` in the transcript. This is the CLI's mid-loop consumption.
+  Validation rejects the step in a scenario that holds no input.
+- Input the turn never drains is picked up when the turn ends, so the
+  replay echo that confirms a queued message lands after every row that
+  turn still wrote. This is the CLI's turn-pickup consumption, and the case
+  where the backend moves the message's row past output streamed since
+  dispatch.
+
+See claude-wire.md §Queued-message consumption.
 
 A Codex sign-in is the exception among those: its argv is a plain
 `app-server`, so it reaches the ordinary adapter and DOES register on

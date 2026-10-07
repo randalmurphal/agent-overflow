@@ -59,13 +59,15 @@ export function initSizeStore(length: number, estimate: (index: number) => numbe
   };
 }
 
+/** A row outside the store has no size. */
 export function getItemSize(store: SizeStore, index: number): number {
+  if (index < 0 || index >= store.length) return 0;
   const size = store.sizes[index];
   return size === UNMEASURED ? store.estimate(index) : size;
 }
 
 export function isMeasured(store: SizeStore, index: number): boolean {
-  return store.sizes[index] !== UNMEASURED;
+  return index >= 0 && index < store.length && store.sizes[index] !== UNMEASURED;
 }
 
 /** Returns true when this is the row's first measurement. */
@@ -77,8 +79,18 @@ export function setItemSize(store: SizeStore, index: number, size: number): bool
   return isInitialMeasurement;
 }
 
+/**
+ * Top of row `index`. An index at or past `length` reads the total size and
+ * a negative one reads 0, so the memo and its watermark never extend past
+ * `length`: an entry planted beyond the end would be trusted after the next
+ * tail growth (`updateLength` keeps a watermark below the new length).
+ */
 export function getItemOffset(store: SizeStore, index: number): number {
+  if (!Number.isInteger(index)) {
+    throw new RangeError(`size store: row index ${index} is not an integer`);
+  }
   if (!store.length) return 0;
+  index = clamp(index, 0, store.length);
   if (store.offsetWatermark >= index) {
     return store.offsets[index];
   }

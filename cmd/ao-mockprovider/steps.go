@@ -64,6 +64,9 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 		e.runMcpList(vars, turn, step.McpList)
 	case step.Capture != nil:
 		e.runCapture(vars, turn, step.Capture)
+	case step.DrainQueuedInput:
+		// Validate admits the step only for a Claude scenario that holds input.
+		e.adapter.(heldInputHolder).drainHeldInput(turn)
 	default:
 		// Parse-time Validate guarantees exactly one action; an empty
 		// step here means the schema grew without this switch.
@@ -97,6 +100,8 @@ func stepName(step scenario.Step) string {
 		return "mcpList"
 	case step.Capture != nil:
 		return "capture"
+	case step.DrainQueuedInput:
+		return "drainQueuedInput"
 	}
 	return "unknown"
 }

@@ -1,10 +1,11 @@
-// Reproduction probe (2026-09-19 field report): five background agents
-// stream hundreds of child rows into a turn that already returned, their
-// notifications wake the assistant again, an auto compaction lands, and a
-// message queued around that moment opens the next turn. The timeline went
-// blank at that point until the pane was left and re-entered. Samples the
-// timeline every frame across the sequence and fails on any stretch where a
-// populated window paints no row inside the viewport.
+// The timeline keeps painting rows while a queued message is consumed
+// around a compaction. Two shapes: five background agents stream hundreds of
+// child rows into a turn that already returned, their notifications wake the
+// assistant, an auto compaction lands and the queued message opens the next
+// turn; and a long turn outruns its reveal while a message queued behind a
+// blocking tool is consumed mid-loop, then a compaction runs quiet. Samples
+// the timeline every frame across the sequence and fails on any stretch
+// where a populated window paints no row inside the viewport.
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -12,6 +13,7 @@ import {
   asyncAgentAckLine,
   backgroundTasksChangedLine,
   claudeScenario,
+  claudeTurnsScenario,
   emit,
   startMock,
   taskNotificationLine,
@@ -22,7 +24,16 @@ import {
   toolResultLine,
   toolUseLine,
   waitForGate,
+  type ScenarioStep,
 } from './agent-visibility-helpers.js';
+import {
+  FOOTER_TOKEN_PATTERN,
+  THREAD_TOOLS_SERVER,
+  advanceGate,
+  awaitGate,
+  setScenario,
+  threadToolsScenario,
+} from './thread-tools-helpers.js';
 
 const QUEUED = 'Queued mid-turn: also consider the unpaired case.';
 const AGENTS = 5;
@@ -324,5 +335,214 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     const blank = longestBlankRun(samples);
     expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
+  });
+}
+
+// The mid-loop shape. Activity blocks stream faster than the reveal shows
+// them, so the revealed rows trail the stream by seconds and grow on every
+// animation frame. A message queued behind a blocking tool, typed in the
+// composer or replied by another thread, is consumed into the running turn
+// at a later tool boundary. The rows that arrive with it reach the
+// virtualizer while other frame owners still read its geometry.
+const MID_LOOP_BLOCKS = 110;
+const MID_LOOP_PACE_MS = 60;
+const MID_LOOP_SILENCE_MS = 8_000;
+const MID_LOOP_QUEUED = 'Composer queued: also check the unpaired case.';
+
+// A whole (unstreamed) assistant block: the activity is not about streamed
+// prose, which reveals at reading pace.
+function wholeBlock(messageId: string, block: Record<string, unknown>): string {
+  return JSON.stringify({ type: 'assistant', message: { id: messageId, role: 'assistant', model: 'claude-mock-1', content: [block] } });
+}
+
+// Runs of thinking rows and tool calls separated by prose.
+function activityBlocks(count: number): string[] {
+  const lines: string[] = [];
+  for (let b = 0; b < count; b++) {
+    lines.push(wholeBlock(`th-${b}`, { type: 'thinking', thinking: `Thinking through step ${b}.` }));
+    lines.push(...toolRound(`b${b}`, 2 + (b % 7)));
+    if (b % 3 === 0) lines.push(wholeBlock(`th2-${b}`, { type: 'thinking', thinking: `More thought at ${b}.` }));
+    lines.push(wholeBlock(`tx-${b}`, {
+      type: 'text',
+      text: `Paragraph ${b}: a stretch of prose long enough to wrap onto a second line in a desktop-width pane so the row has real height.`,
+    }));
+  }
+  return lines;
+}
+
+type MidLoopSource = 'composer' | 'agent';
+
+function midLoopScenario(name: string, source: MidLoopSource, targetId: string): unknown {
+  const steps: ScenarioStep[] = [{ emit: { lines: activityBlocks(MID_LOOP_BLOCKS), delayBetweenMs: MID_LOOP_PACE_MS } }];
+  if (source === 'agent') {
+    // The reply arrives while thread_status waits for it.
+    steps.push(
+      {
+        mcpCall: {
+          server: THREAD_TOOLS_SERVER,
+          tool: 'thread_send',
+          args: { thread_id: targetId, message: 'Where does the stall come from?', wait_seconds: 0, notify: true },
+          toolUseId: 'tu-thread-send',
+        },
+      },
+      {
+        mcpCall: {
+          server: THREAD_TOOLS_SERVER,
+          tool: 'thread_status',
+          args: { thread_ids: [targetId], wait_seconds: 90 },
+          toolUseId: 'tu-thread-status',
+          timeoutMs: 120_000,
+        },
+      },
+    );
+  } else {
+    steps.push(
+      emit([toolUseLine('msg-block', 'tu-block', 'Bash', { command: 'sleep 900' })]),
+      { waitSignal: { name: 'queued' } },
+      emit([toolResultLine('tu-block', 'slept')]),
+    );
+  }
+  steps.push(
+    { waitSignal: { name: 'reserved' } },
+    emit([
+      ...thinkingLines('msg-check', 'Checking the watchdog.'),
+      ...textLines('msg-verify', 'Verifying before folding the message in.'),
+      toolUseLine('msg-test', 'tu-test', 'Bash', { command: 'go test ./internal/watchdog' }),
+    ]),
+    { delayMs: 1_500 },
+    emit([toolResultLine('tu-test', 'ok  internal/watchdog 1.2s')]),
+    { drainQueuedInput: true },
+    emit([
+      ...thinkingLines('msg-fold', 'Folding the message in.'),
+      ...thinkingLines('msg-recheck', 'One more check.'),
+      toolUseLine('msg-status', 'tu-status', 'Bash', { command: 'git status' }),
+      toolResultLine('tu-status', 'clean'),
+    ]),
+    { delayMs: 300 },
+    emit([compactingLine]),
+    { delayMs: MID_LOOP_SILENCE_MS },
+    emit([
+      ...compactionDone,
+      ...thinkingLines('msg-resume', 'Context compacted, continuing.'),
+      ...textLines('msg-resume-text', 'Continuing after the compaction.'),
+    ]),
+    { waitSignal: { name: 'finish' } },
+    emit([...textLines('msg-done', 'All done after the compaction.'), RESULT_LINE]),
+  );
+  return claudeTurnsScenario(name, [steps], { holdQueuedInput: true });
+}
+
+interface ListedItem { id: string; kind: string; summary?: string; meta?: string }
+
+for (const source of ['composer', 'agent'] as const) {
+  test(`timeline stays painted when ${source === 'agent' ? 'an agent reply' : 'a composer message'} is consumed mid-loop during a trailing reveal`, async ({ harness, page }) => {
+    test.setTimeout(300_000);
+    const callerTitle = `Mid-loop caller (${source})`;
+    const repo = { commits: [{ message: 'init', files: { 'README.md': '# fixture\n' } }] };
+    const history = Array.from({ length: 6 }, (_, i) => ({
+      userText: `History question ${i}`,
+      items: [
+        { kind: 'thinking', summary: `thinking about ${i}` },
+        ...Array.from({ length: 4 }, (_u, k) => ({ kind: 'tool_call', toolName: 'Bash', summary: `history call ${i} ${k}` })),
+        { kind: 'assistant_text', summary: `History answer ${i}: a paragraph of prose that takes a few lines so the row has real height on screen.` },
+      ],
+    }));
+    const projects: unknown[] = [{ name: `mid-loop-caller-${source}`, repo, threads: [{ title: callerTitle, provider: 'claude', turns: history }] }];
+    if (source === 'agent') {
+      projects.push({
+        name: 'mid-loop-target',
+        repo,
+        threads: [{ title: 'Mid-loop target', provider: 'claude', turns: [{ userText: 'set the stage', items: [{ kind: 'assistant_text', summary: 'Ready.' }] }] }],
+      });
+    }
+    const seed = await harness.rpc('HarnessSeed', { projects }) as SeedResult;
+    const caller = seed.projects[0].threadIds[0];
+    const callerPath = seed.projects[0].path;
+    const targetId = source === 'agent' ? seed.projects[1].threadIds[0] : '';
+    const targetPath = source === 'agent' ? seed.projects[1].path : '';
+
+    await setScenario(harness, callerPath, midLoopScenario(`mid-loop-${source}`, source, targetId) as Record<string, unknown>);
+    if (source === 'agent') {
+      await setScenario(harness, targetPath, threadToolsScenario({
+        name: 'mid-loop-target',
+        provider: 'claude',
+        afterTurns: 'silent',
+        turns: [{
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'hold-reply' },
+            { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' } } },
+          ],
+          text: 'Answered the caller.',
+        }],
+      }));
+    }
+
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText(callerTitle, { exact: true }).click();
+    await expect(page.getByText('History answer 5', { exact: false })).toBeVisible();
+    const input = page.getByLabel('Message Input');
+    await input.fill('Run the long investigation.');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await installSampler(page);
+
+    // The reservation: the consumed message's quiet row, before it moves to
+    // where the drain consumes it.
+    const consumedRows = async () => (await harness.rpc('ListItems', caller, true) as ListedItem[]).filter((item) =>
+      item.kind === 'user_text' && (source === 'agent'
+        ? (item.meta ?? '').includes('thread-wake:')
+        : (item.summary ?? '').includes(MID_LOOP_QUEUED)));
+    let callerMock: string;
+    if (source === 'agent') {
+      const target = await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
+        'harness:mock',
+        (ev) => ev.cwd === targetPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-reply',
+        240_000,
+      );
+      await advanceGate(harness, target.mockId, 'hold-reply');
+      await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
+      callerMock = (await awaitGate(harness, 'reserved', callerPath)).mockId;
+    } else {
+      callerMock = (await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
+        'harness:mock',
+        (ev) => ev.cwd === callerPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'queued',
+        240_000,
+      )).mockId;
+      await input.fill(MID_LOOP_QUEUED);
+      await input.press('Enter');
+      await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
+      await advance(harness, callerMock, 'queued');
+      await awaitGate(harness, 'reserved', callerPath);
+    }
+    await advance(harness, callerMock, 'reserved');
+
+    // The drain consumed the message into the running turn, not a turn of
+    // its own.
+    await harness.waitForEvent('harness:mock', (ev: any) =>
+      ev.mockId === callerMock && ev.report.kind === 'user_input' && ev.report.detail === 'midLoop', 30_000);
+    // A blank timeline never shows these rows. The blank check reports
+    // first, so a failed wait here only adds what it waited for.
+    const shown = async (text: string, timeout: number): Promise<unknown> => {
+      try {
+        await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout });
+        await timelineSettled(page, 12);
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    };
+    await awaitGate(harness, 'finish', callerPath);
+    let notShown = await shown('Continuing after the compaction.', 30_000);
+    await advance(harness, callerMock, 'finish');
+    await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
+    notShown ??= await shown('All done after the compaction.', 20_000);
+    // A blank that persists into the settled state runs past the limit.
+    await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+
+    const samples = await collectSamples(page);
+    const blank = longestBlankRun(samples);
+    expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
+    if (notShown) throw notShown;
+    expect((await consumedRows()).length).toBe(1);
   });
 }

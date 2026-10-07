@@ -27,7 +27,6 @@
     type HeldLimits,
     type HeldRange,
   } from '../../utils/virtual/heldRows';
-  import { UNMEASURED } from '../../utils/virtual/sizes';
   import type {
     EngineCompensation,
     RowEstimate,
@@ -77,8 +76,9 @@
 
   let list: TimelineVirtualizerHandle | undefined = $state();
 
-  // What the virtualizer was last handed. Updated when it reads `held`,
-  // so these always describe the rows its engine holds.
+  // The range of the last plan. The virtualizer's engine can still hold
+  // the previous range until it reads `held`, so a plan reads the
+  // virtualizer's rows by key, never by these indices.
   let heldStart = 0;
   let heldKeys: unknown[] = [];
   let heldCount = 0;
@@ -144,33 +144,41 @@
     return rangeAround(count, sizeAt, Math.max(0, top >= 0 ? top : first), limits.span);
   }
 
+  // A plan runs while the virtualizer reads `held`, so it uses only the
+  // virtualizer's keyed reads: its index reads would read `held` again.
+
   /** Row heights for a plan: what the virtualizer measured for the rows
    * it holds, by key, else the estimate. */
   function sizesFor(keys: readonly unknown[]): (index: number) => number {
-    const measured = new Map<unknown, number>();
-    const sizes = list?.takeSnapshot() ?? [];
-    for (let local = 0; local < sizes.length && local < heldKeys.length; local += 1) {
-      if (sizes[local] !== UNMEASURED) measured.set(heldKeys[local], sizes[local]);
-    }
-    if (measured.size === 0) return (index) => estimate.at(index);
+    const measured = list?.measuredSizes();
+    if (!measured?.size) return (index) => estimate.at(index);
     return (index) => measured.get(keys[index]) ?? estimate.at(index);
   }
 
   /** The new index of the row under the viewport top, else of the first
-   * row below it that survived, else -1. */
+   * held row below it that survived, else -1. */
   function topRow(indexOf: ReadonlyMap<unknown, number>): number {
     const inner = list;
-    if (!inner || heldKeys.length === 0) return -1;
-    for (let local = inner.findItemIndex(inner.getScrollOffset()); local < heldKeys.length; local += 1) {
-      const index = indexOf.get(heldKeys[local]);
-      if (index !== undefined) return index;
+    if (!inner) return -1;
+    const top = inner.keyAt(inner.getScrollOffset());
+    const index = indexOf.get(top);
+    if (index !== undefined) return index;
+    for (let local = heldKeys.indexOf(top) + 1; local > 0 && local < heldKeys.length; local += 1) {
+      const below = indexOf.get(heldKeys[local]);
+      if (below !== undefined) return below;
     }
     return -1;
   }
 
+  /** The virtualizer, after it and `held` have taken the current data. */
+  function current(): TimelineVirtualizerHandle | undefined {
+    untrack(() => held);
+    return list;
+  }
+
   function handleScroll(offset: number): void {
     onscroll?.(offset);
-    const inner = list;
+    const inner = current();
     if (!inner || heldKeys.length === 0) return;
     const range = { start: heldStart, end: heldStart + heldKeys.length };
     const view = { offset, viewport: inner.getViewportSize(), total: inner.getTotalSize() };
@@ -184,7 +192,7 @@
   let jumpSeq = 0;
 
   export function scrollToIndex(index: number, opts: { align?: ScrollToIndexAlign; offset?: number } = {}): void {
-    const inner = list;
+    const inner = current();
     if (!inner || data.length === 0) return;
     const seq = ++jumpSeq;
     const target = Math.max(0, Math.min(data.length - 1, index));
@@ -207,10 +215,12 @@
   }
 
   export function findItemIndex(offset: number): number {
-    return (list?.findItemIndex(offset) ?? 0) + heldStart;
+    const local = current()?.findItemIndex(offset) ?? 0;
+    return local + heldStart;
   }
 
   export function holds(index: number): boolean {
+    current();
     return index >= heldStart && index < heldStart + heldKeys.length;
   }
 

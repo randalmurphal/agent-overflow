@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
@@ -102,9 +104,11 @@ const claudeContextUsageResponsePayload = `{"totalTokens":24028,"maxTokens":2000
 //
 // A user envelope that arrives while a turn is running is acked `queued`
 // on arrival and, by default, picked up into its own turn at once. With
-// scenario.ClaudeOptions.QueuedInputAtBoundary the pickup waits for the
-// running turn to end, however it ends, so the echo lands after every
-// frame that turn still wrote: the CLI's turn-pickup consumption.
+// scenario.ClaudeOptions.HoldQueuedInput it is held: a drainQueuedInput
+// step consumes it into the running turn (the CLI's mid-loop
+// consumption), or the pickup waits for the running turn to end, however
+// it ends, so the echo lands after every frame that turn still wrote (the
+// CLI's turn-pickup consumption).
 type claudeAdapter struct {
 	e *engine
 	w *lineWriter
@@ -132,8 +136,9 @@ type claudeAdapter struct {
 	tasks *claudeTaskLedger
 
 	// heldMu guards held: user envelopes that arrived while a turn was
-	// running under scenario.ClaudeOptions.QueuedInputAtBoundary, picked
-	// up when that turn ends (holdQueuedInput / releaseHeldInput).
+	// running under scenario.ClaudeOptions.HoldQueuedInput, drained into
+	// that turn or picked up when it ends (holdQueuedInput /
+	// drainHeldInput / releaseHeldInput).
 	heldMu sync.Mutex
 	held   [][]byte
 }
@@ -337,14 +342,15 @@ func (a *claudeAdapter) handleLine(line []byte) {
 	}
 }
 
-// holdQueuedInput keeps a mid-turn user envelope for the running turn's end
-// when the scenario asks for it (scenario.ClaudeOptions.QueuedInputAtBoundary).
+// holdQueuedInput keeps a mid-turn user envelope for a drain or the running
+// turn's end when the scenario asks for it (scenario.ClaudeOptions
+// HoldQueuedInput).
 // The decision and the append share heldMu with releaseHeldInput, and the
 // engine clears its active turn before calling that release, so an envelope
 // racing the turn's end is either held and drained by the release or picked
 // up here directly; never both, never neither.
 func (a *claudeAdapter) holdQueuedInput(line []byte) bool {
-	if a.e.sc.Claude == nil || !a.e.sc.Claude.QueuedInputAtBoundary {
+	if a.e.sc.Claude == nil || !a.e.sc.Claude.HoldQueuedInput {
 		return false
 	}
 	a.heldMu.Lock()
@@ -369,6 +375,24 @@ func (a *claudeAdapter) releaseHeldInput() {
 	}
 }
 
+// drainHeldInput consumes every held envelope into the running turn, the
+// CLI's mid-loop drain: `started`, then the replay echo, with no init and
+// no new scenario turn.
+func (a *claudeAdapter) drainHeldInput(turn int) {
+	a.heldMu.Lock()
+	held := a.held
+	a.held = nil
+	a.heldMu.Unlock()
+	for _, line := range held {
+		a.e.rep.report(control.Report{
+			Kind: control.ReportUserInput, Turn: turn,
+			Input: claudeUserText(line), Detail: "midLoop",
+		})
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
+		a.echoDrainedEnvelope(line)
+	}
+}
+
 // pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
 // already written: init, replay echo, `started`, and the turn's steps.
 func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
@@ -387,14 +411,8 @@ func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 	})
 	a.writeInit(vars)
 	a.echoUserEnvelope(line)
-	// `started` AFTER the init: this mock always picks a message up
-	// into a turn of its own, and writing the ack once the init has
-	// opened that turn is what makes the app classify the delivery
-	// as new_turn rather than mid-turn. See claude-wire.md
-	// §command_lifecycle for the real CLI's flavours. This mock picks
-	// up at once or, under QueuedInputAtBoundary, when the running turn
-	// ends; the mid-turn-drain classification is covered by the triage
-	// unit tests instead.
+	// `started` after the init, so the app classifies this delivery as
+	// a new turn (claude-wire.md §command_lifecycle).
 	a.writeCommandLifecycle(commandUUID, "started")
 	a.e.enqueueTurn(n)
 }
@@ -549,6 +567,44 @@ func (a *claudeAdapter) echoUserEnvelope(line []byte) {
 	// transcript gives crash recovery: once AO can observe the user echo, a cold
 	// restart must already be able to find its leaf.
 	a.w.writeLine(mustJSON(env), 0, 0)
+}
+
+// echoDrainedEnvelope writes the replay echo of an envelope drained into the
+// running turn. The CLI's transcript records that message as a
+// `queued_command` attachment carrying the client uuid as `source_uuid`,
+// not as a user entry, and the next entry parents to the attachment
+// (claude-wire.md §Queued-message consumption).
+func (a *claudeAdapter) echoDrainedEnvelope(line []byte) {
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(line, &env); err != nil {
+		log.Printf("claude: user envelope unparseable for echo (skipped): %v", err)
+		return
+	}
+	env["isReplay"] = json.RawMessage("true")
+	leaf := a.transcriptLeaf()
+	if leaf != "" {
+		env["parentUuid"] = json.RawMessage(mustJSON(leaf))
+	}
+	entry := map[string]any{
+		"type":        "attachment",
+		"uuid":        uuid.NewString(),
+		"isSidechain": false,
+		"attachment": map[string]any{
+			"type":        "queued_command",
+			"prompt":      []map[string]string{{"type": "text", "text": claudeUserText(line)}},
+			"source_uuid": claudeEnvelopeUUID(line),
+			"commandMode": "prompt",
+			"timestamp":   time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
+	if leaf != "" {
+		entry["parentUuid"] = leaf
+	}
+	a.persistTranscript(mustJSON(entry))
+	a.w.writeLine(mustJSON(env), 0, 0)
+	a.leafMu.Lock()
+	a.leafUUID = entry["uuid"].(string)
+	a.leafMu.Unlock()
 }
 
 // persistTranscript gives the mock the one durable behavior cold workflow

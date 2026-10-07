@@ -415,7 +415,7 @@ func (e *engine) finishTurn(n int) {
 	e.reportDroppedAdvances(n, dropped)
 	// After the active turn is cleared, so a pickup here begins the next
 	// turn and an envelope arriving now is picked up directly instead.
-	if holder, ok := e.adapter.(heldInputReleaser); ok {
+	if holder, ok := e.adapter.(heldInputHolder); ok {
 		holder.releaseHeldInput()
 	}
 }
@@ -427,11 +427,14 @@ func (e *engine) turnActive() bool {
 	return e.activeTurn != 0
 }
 
-// heldInputReleaser is the adapter half of holding mid-turn user input for
-// the turn boundary (scenario.ClaudeOptions.QueuedInputAtBoundary). Optional:
-// only the Claude adapter's CLI consumes queued input that way.
-type heldInputReleaser interface {
+// heldInputHolder is the adapter half of holding mid-turn user input
+// (scenario.ClaudeOptions.HoldQueuedInput). Optional: only the Claude
+// adapter's CLI consumes queued input that way.
+type heldInputHolder interface {
+	// releaseHeldInput picks the held input up once the running turn ended.
 	releaseHeldInput()
+	// drainHeldInput consumes the held input into the running turn.
+	drainHeldInput(turn int)
 }
 
 // shutdownTurn interrupts a matching live turn and waits until its adapter has

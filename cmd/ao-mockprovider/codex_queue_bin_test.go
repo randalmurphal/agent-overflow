@@ -46,7 +46,7 @@ func queueScenario() *scenario.Scenario {
 // startControlledMock boots the real binary with a live control channel, so a
 // test can release a waitSignal gate — the only way to hold a turn open for an
 // unbounded, non-flaky amount of wall time.
-func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string) (*mockProc, func(name string)) {
+func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string, extraEnv ...string) (*mockProc, func(name string)) {
 	t.Helper()
 	scenarioJSON, err := json.Marshal(sc)
 	if err != nil {
@@ -76,10 +76,10 @@ func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string) (*m
 		_ = srv.Shutdown(ctx)
 	})
 
-	p := startMock(t, args, []string{
+	p := startMock(t, args, append([]string{
 		control.EnvAddr + "=" + srv.Addr(),
 		control.EnvToken + "=" + srv.Token(),
-	}, t.TempDir())
+	}, extraEnv...), t.TempDir())
 
 	var mockID string
 	select {

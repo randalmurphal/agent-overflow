@@ -55,7 +55,7 @@ test('removing a busy thread\'s worktree outside the app interrupts the turn, mo
   await harness.rpc('HarnessSetScenario', {
     scenario: claudeTurnsScenario('external-removal-hold', [
       [emit(textLines('msg-working', 'Working on the long job.')), { waitSignal: { name: 'hold' } }, emit([RESULT_LINE])],
-    ], { queuedInputAtBoundary: true }),
+    ], { holdQueuedInput: true }),
   });
 
   await harness.open(page);

@@ -157,6 +157,26 @@ describe('LongListVirtualizer', () => {
     expect(topRow(scrollEl).id).toBe('new0');
   });
 
+  it('answers reads made before a data change renders against the new rows', async () => {
+    const { harness, scrollEl } = await mountHarness(makeRows(1000));
+    const handle = harness.handle()!;
+    handle.scrollToIndex(500);
+    await settle(scrollEl);
+    let last = 500;
+    while (handle.holds(last + 1)) last += 1;
+    const lastOffset = handle.getItemOffset(last);
+    const top = handle.findItemIndex(scrollEl.scrollTop);
+
+    // Rows arrive above the held range; the held rows keep their offsets.
+    harness.setRows([...makeRows(50, 100, 100, 'new'), ...makeRows(1000)]);
+    expect(handle.holds(last + 50)).toBe(true);
+    expect(handle.holds(last + 51)).toBe(false);
+    expect(handle.getItemOffset(last + 50)).toBe(lastOffset);
+    expect(handle.findItemIndex(scrollEl.scrollTop)).toBe(top + 50);
+    await settle(scrollEl);
+    expect(topRow(scrollEl).id).toBe(`r${top}`);
+  });
+
   it('keeps the row being read when a list that fit grows past the limit', async () => {
     // A diff still arriving: held whole, then too tall to hold.
     const { harness, scrollEl } = await mountHarness(makeRows(200));

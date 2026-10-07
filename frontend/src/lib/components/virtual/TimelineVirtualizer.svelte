@@ -12,6 +12,7 @@
     type VirtualPlaneState,
   } from '../../utils/virtual/plane';
   import { createRowEstimate } from '../../utils/virtual/priors';
+  import { UNMEASURED } from '../../utils/virtual/sizes';
   import {
     measureReadingAnchorShift,
     sampleReadingAnchor,
@@ -25,6 +26,7 @@
     ScrollToIndexAlign,
   } from '../../utils/virtual/types';
   import { observedScrollTopFromEvent } from '../../utils/scroll/eventObservation';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import VirtualRow from './VirtualRow.svelte';
 
   // The bespoke timeline virtualizer adapter: binds the pure engine
@@ -306,6 +308,7 @@
       convergeIndexScroll();
       const spliceCorrected = correctHeadSpliceAnchor();
       maybeDeliverContentGeometry();
+      reportNonFiniteGeometry();
       if (measurementBarrier.active && (engine.getItemCount() === 0 || windowFullyMeasured())) {
         measurementBarrier.commit();
       }
@@ -573,6 +576,27 @@
 
   function queueUpdate(update: EngineUpdate | null): void {
     if (update?.compensation) queueCompensation(publicCompensation(update.compensation));
+  }
+
+  // Handle reads in index space answer against the data the caller passed.
+  // A caller can read between a data change and the flush that renders it:
+  // animation-frame owners share one native frame, so a nav-rail sync runs
+  // right after the reveal that grew the rows. Answered from the previous
+  // rows, its indices address rows the engine does not hold.
+  function reconcile(): void {
+    untrack(() => reconciledData);
+  }
+
+  // A non-finite total leaves an empty window and a blank viewport with no
+  // error anywhere, so report it.
+  function reportNonFiniteGeometry(): void {
+    const total = engine.getTotalSize();
+    if (Number.isFinite(total)) return;
+    const [start, end] = engine.getWindow();
+    reportFrontendDiagnostic(
+      'TimelineVirtualizer: content size is not finite',
+      `total=${total} rows=${engine.getItemCount()} window=${start}..${end}`,
+    );
   }
 
   const renderTotalSize = $derived.by(() => {
@@ -1268,6 +1292,7 @@
     opts: { align?: ScrollToIndexAlign; offset?: number } = {},
   ): void {
     clearIndexScroll();
+    reconcile();
     // Same clamp as the engine's target math: a navigation past either
     // end lands on the end row. No rows means nothing to navigate to.
     if (prevKeys.length === 0) return;
@@ -1348,25 +1373,43 @@
     return engine.getViewportSize();
   }
   export function getScrollSize(): number {
+    reconcile();
     return Math.max(engine.getTotalSize() + renderHeaderSize, engine.getViewportSize());
   }
   export function getTotalSize(): number {
+    reconcile();
     return engine.getTotalSize() + renderHeaderSize;
   }
   export function findItemIndex(offset: number): number {
+    reconcile();
     return engine.findItemIndex(engineOffsetFor(offset));
   }
   export function getItemOffset(index: number): number {
+    reconcile();
     return engine.getItemOffset(index) + renderHeaderSize;
   }
   export function sizeAt(index: number): number {
+    reconcile();
     return engine.sizeAt(index);
   }
   export function isMeasuredAt(index: number): boolean {
+    reconcile();
     return engine.isMeasuredAt(index);
   }
-  export function takeSnapshot(): number[] {
-    return engine.takeSnapshot();
+
+  // Keyed reads of the rows the engine holds. They never reconcile, so code
+  // that computes `data` can call them without reading its own result.
+  export function measuredSizes(): Map<unknown, number> {
+    const sizes = engine.takeSnapshot();
+    const measured = new Map<unknown, number>();
+    for (let index = 0; index < sizes.length; index++) {
+      if (sizes[index] !== UNMEASURED) measured.set(prevKeys[index], sizes[index]);
+    }
+    return measured;
+  }
+  export function keyAt(offset: number): unknown {
+    if (engine.getItemCount() === 0) return undefined;
+    return prevKeys[engine.findItemIndex(engineOffsetFor(offset))];
   }
 </script>
 

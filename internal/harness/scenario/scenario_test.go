@@ -104,7 +104,7 @@ func TestRepeatStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate()
+			err := step.validate(false)
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -115,18 +115,18 @@ func TestRepeatStepValidation(t *testing.T) {
 	}
 
 	paced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{{DelayMs: 100}, emit}}}
-	if err := paced.validate(); err != nil {
+	if err := paced.validate(false); err != nil {
 		t.Fatalf("paced infinite repeat rejected: %v", err)
 	}
 	bounded := Step{Repeat: &RepeatStep{Count: 3, Steps: []Step{emit}}}
-	if err := bounded.validate(); err != nil {
+	if err := bounded.validate(false); err != nil {
 		t.Fatalf("bounded repeat without pacing rejected: %v", err)
 	}
 	// An emit that paces itself between lines counts.
 	selfPaced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{Emit: &EmitStep{Lines: []string{`{"a":1}`, `{"b":2}`}, DelayBetweenMs: 50}},
 	}}}
-	if err := selfPaced.validate(); err != nil {
+	if err := selfPaced.validate(false); err != nil {
 		t.Fatalf("self-paced infinite repeat rejected: %v", err)
 	}
 }
@@ -271,7 +271,7 @@ func TestMcpCallStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate()
+			err := step.validate(false)
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -284,11 +284,11 @@ func TestMcpCallStepValidation(t *testing.T) {
 	// Args are optional, and a ${VAR} token inside a JSON string keeps
 	// the object valid before substitution.
 	ok := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note", Args: []byte(`{"text":"${USER_INPUT}"}`)}}
-	if err := ok.validate(); err != nil {
+	if err := ok.validate(false); err != nil {
 		t.Fatalf("valid mcpCall rejected: %v", err)
 	}
 	bare := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}}
-	if err := bare.validate(); err != nil {
+	if err := bare.validate(false); err != nil {
 		t.Fatalf("mcpCall without args rejected: %v", err)
 	}
 }
@@ -328,8 +328,60 @@ func TestMcpCallDoesNotPaceARepeat(t *testing.T) {
 	loop := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}},
 	}}}
-	err := loop.validate()
+	err := loop.validate(false)
 	if err == nil || !strings.Contains(err.Error(), "pacing step") {
 		t.Fatalf("unbounded repeat of mcpCall accepted: %v", err)
+	}
+}
+
+// TestDrainQueuedInputValidation refuses a drain step in a scenario that
+// holds no queued input, wherever the step is nested.
+func TestDrainQueuedInputValidation(t *testing.T) {
+	drain := Step{DrainQueuedInput: true}
+	emit := Step{Emit: &EmitStep{Lines: []string{`{"a":1}`}}}
+	scenarioWith := func(provider string, opts *ClaudeOptions, steps ...Step) *Scenario {
+		return &Scenario{
+			Version: CurrentVersion, Name: "drain", Provider: provider,
+			Claude: opts, Turns: []Turn{{Steps: steps}},
+		}
+	}
+	hold := &ClaudeOptions{HoldQueuedInput: true}
+	cases := []struct {
+		name    string
+		sc      *Scenario
+		wantErr string
+	}{
+		{"no hold", scenarioWith(ProviderClaude, nil, emit, drain), "drainQueuedInput: needs provider"},
+		{"codex provider", scenarioWith(ProviderCodex, hold, emit, drain), "drainQueuedInput: needs provider"},
+		{"in a repeat", scenarioWith(ProviderClaude, nil, Step{Repeat: &RepeatStep{Count: 2, Steps: []Step{emit, drain}}}), "repeat step 2: drainQueuedInput"},
+		{"in an approval branch", scenarioWith(ProviderClaude, nil, Step{Approval: &ApprovalStep{
+			ToolName: "Bash", OnAllow: []Step{emit}, OnDeny: []Step{drain},
+		}}), "approval onDeny step 1: drainQueuedInput"},
+		{"with another action", scenarioWith(ProviderClaude, hold, Step{DelayMs: 5, DrainQueuedInput: true}), "exactly one action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.sc.Validate()
+			if err == nil {
+				t.Fatalf("Validate accepted %+v", tc.sc)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	ok := scenarioWith(ProviderClaude, hold, emit, drain, Step{Repeat: &RepeatStep{Count: 2, Steps: []Step{emit, drain}}})
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("held drain rejected: %v", err)
+	}
+	doc := `{"version": 1, "name": "json", "provider": "claude", "claude": {"holdQueuedInput": true},
+		"turns": [{"steps":[{"drainQueuedInput": true}]}]}`
+	parsed, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !parsed.Claude.HoldQueuedInput || !parsed.Turns[0].Steps[0].DrainQueuedInput {
+		t.Fatalf("parsed %+v lost the hold fields", parsed)
 	}
 }

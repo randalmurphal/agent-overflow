@@ -112,14 +112,15 @@ type Scenario struct {
 
 // ClaudeOptions carries the Claude-specific pieces of a scenario.
 type ClaudeOptions struct {
-	// QueuedInputAtBoundary holds a user envelope that arrives while a
-	// turn is running until that turn ends, then picks it up as a turn of
-	// its own: the CLI's turn-pickup flavor of queued-message consumption
-	// (claude-wire.md §Queued-message consumption), where the replay echo
-	// lands after every frame the running turn still had to write. The
-	// `command_lifecycle` `queued` ack is written on arrival either way.
-	// Off, the mock picks a mid-turn envelope up at once.
-	QueuedInputAtBoundary bool `json:"queuedInputAtBoundary,omitempty"`
+	// HoldQueuedInput holds a user envelope that arrives while a turn is
+	// running instead of picking it up at once. The turn's next
+	// drainQueuedInput step consumes it into the running turn (the CLI's
+	// mid-loop flavor); otherwise it is picked up as a turn of its own when
+	// the running turn ends, after every frame that turn still had to write
+	// (the turn-pickup flavor). See claude-wire.md §Queued-message
+	// consumption. The `command_lifecycle` `queued` ack is written on
+	// arrival either way.
+	HoldQueuedInput bool `json:"holdQueuedInput,omitempty"`
 }
 
 // CodexOptions carries the Codex-specific pieces of a scenario.
@@ -184,6 +185,10 @@ type Step struct {
 	// scenario can already spell, so a later step can use a value the
 	// scenario file could not know.
 	Capture *CaptureStep `json:"capture,omitempty"`
+	// DrainQueuedInput consumes every user envelope held under
+	// claude.holdQueuedInput into the running turn, in arrival order.
+	// Holding nothing, it writes nothing.
+	DrainQueuedInput bool `json:"drainQueuedInput,omitempty"`
 }
 
 // McpListStep runs `tools/list` against one of the app's built-in MCP
@@ -498,8 +503,9 @@ func (s *Scenario) Validate() error {
 	if len(s.Turns) == 0 && len(s.OnStart) == 0 {
 		return fmt.Errorf("scenario %q: needs at least one turn or onStart step", s.Name)
 	}
+	holdsInput := s.Provider == ProviderClaude && s.Claude != nil && s.Claude.HoldQueuedInput
 	for i, step := range s.OnStart {
-		if err := step.validate(); err != nil {
+		if err := step.validate(holdsInput); err != nil {
 			return fmt.Errorf("scenario %q: onStart step %d: %w", s.Name, i+1, err)
 		}
 	}
@@ -508,7 +514,7 @@ func (s *Scenario) Validate() error {
 			return fmt.Errorf("scenario %q: turn %d has no steps", s.Name, ti+1)
 		}
 		for si, step := range turn.Steps {
-			if err := step.validate(); err != nil {
+			if err := step.validate(holdsInput); err != nil {
 				return fmt.Errorf("scenario %q: turn %d step %d: %w", s.Name, ti+1, si+1, err)
 			}
 		}
@@ -516,7 +522,9 @@ func (s *Scenario) Validate() error {
 	return nil
 }
 
-func (st *Step) validate() error {
+// validate checks one step; holdsInput says whether the scenario holds
+// queued input for a drainQueuedInput step to consume.
+func (st *Step) validate(holdsInput bool) error {
 	set := 0
 	if st.Emit != nil {
 		set++
@@ -562,12 +570,12 @@ func (st *Step) validate() error {
 			return fmt.Errorf("approval: toolName must be non-empty")
 		}
 		for i, sub := range st.Approval.OnAllow {
-			if err := sub.validate(); err != nil {
+			if err := sub.validate(holdsInput); err != nil {
 				return fmt.Errorf("approval onAllow step %d: %w", i+1, err)
 			}
 		}
 		for i, sub := range st.Approval.OnDeny {
-			if err := sub.validate(); err != nil {
+			if err := sub.validate(holdsInput); err != nil {
 				return fmt.Errorf("approval onDeny step %d: %w", i+1, err)
 			}
 		}
@@ -590,7 +598,7 @@ func (st *Step) validate() error {
 			return fmt.Errorf("repeat: steps must be non-empty")
 		}
 		for i, sub := range st.Repeat.Steps {
-			if err := sub.validate(); err != nil {
+			if err := sub.validate(holdsInput); err != nil {
 				return fmt.Errorf("repeat step %d: %w", i+1, err)
 			}
 		}
@@ -639,6 +647,12 @@ func (st *Step) validate() error {
 		}
 		if _, err := regexp.Compile(st.Capture.Pattern); err != nil {
 			return fmt.Errorf("capture: pattern does not compile: %w", err)
+		}
+	}
+	if st.DrainQueuedInput {
+		set++
+		if !holdsInput {
+			return fmt.Errorf("drainQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
 	if set != 1 {

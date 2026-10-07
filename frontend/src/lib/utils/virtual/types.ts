@@ -106,6 +106,11 @@ export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
  * scroll controller chokepoint (`applyScrollTarget` prop); `revalidate`
  * is the explicit host-layout geometry recheck; the rest are read-only
  * geometry queries.
+ *
+ * Indices are indices of the current `data`: a call first applies a data
+ * change the virtualizer has not rendered yet. `measuredSizes` and `keyAt`
+ * describe the rows the virtualizer holds by key and apply nothing, so a
+ * derivation that produces `data` can call them.
  */
 export interface TimelineVirtualizerHandle {
   scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
@@ -148,6 +153,8 @@ export interface TimelineVirtualizerHandle {
   getItemOffset(index: number): number;
   sizeAt(index: number): number;
   isMeasuredAt(index: number): boolean;
-  /** Measured sizes for priors persistence (UNMEASURED where unmeasured). */
-  takeSnapshot(): number[];
+  /** Measured heights of the held rows by key; unmeasured rows are absent. */
+  measuredSizes(): Map<unknown, number>;
+  /** Key of the held row at a scroll offset; undefined with no rows. */
+  keyAt(offset: number): unknown;
 }

@@ -20,7 +20,7 @@ import {
   __resetSizePriorsStorageForTest,
   installSizePriorsPersistence,
 } from '../../utils/virtual/priorsStorage';
-import type { TimelineNode } from '../../utils/subagentGrouping';
+import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
 import { nodeSignature } from '../../utils/timelineStructureSignature';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import { createTimelineSizePriors } from './timelineSizePriors.svelte';
@@ -54,7 +54,8 @@ function fakePane(
   } as unknown as ThreadPane;
 }
 
-function fakeListRef(sizes: number[]): TimelineVirtualizerHandle {
+/** A handle holding `nodes`, measured at `sizes` (-1 = unmeasured). */
+function fakeListRef(nodes: readonly TimelineNode[], sizes: number[]): TimelineVirtualizerHandle {
   return {
     scrollToIndex: () => {},
     revalidate: () => {},
@@ -69,7 +70,9 @@ function fakeListRef(sizes: number[]): TimelineVirtualizerHandle {
     getItemOffset: () => 0,
     sizeAt: (index) => sizes[index],
     isMeasuredAt: (index) => sizes[index] >= 0,
-    takeSnapshot: () => sizes.slice(),
+    measuredSizes: () =>
+      new Map(nodes.flatMap((node, index) => (sizes[index] >= 0 ? [[timelineNodeKey(node), sizes[index]]] : []))),
+    keyAt: () => undefined,
   };
 }
 
@@ -100,7 +103,7 @@ describe('createTimelineSizePriors', () => {
     const capturedSizes = capturedNodes.map((_, i) => 50 + i);
 
     let nodes = capturedNodes;
-    let listRef: TimelineVirtualizerHandle = fakeListRef(capturedSizes);
+    let listRef: TimelineVirtualizerHandle = fakeListRef(nodes, capturedSizes);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -119,7 +122,7 @@ describe('createTimelineSizePriors', () => {
     // never the full session window).
     const suffixNodes = capturedNodes.slice(18);
     nodes = suffixNodes;
-    listRef = fakeListRef(suffixNodes.map(() => -1)); // nothing measured yet this mount
+    listRef = fakeListRef(nodes, suffixNodes.map(() => -1)); // nothing measured yet this mount
 
     priors.resolveRowEstimateOnThreadEdge(threadId);
     const estimate = priors.rowEstimate;
@@ -130,6 +133,32 @@ describe('createTimelineSizePriors', () => {
     for (let i = 0; i < suffixNodes.length; i++) {
       expect(estimate!.at(i)).toBe(capturedSizes[18 + i]);
     }
+  });
+
+  it('captures each measured size under its own row when the rows moved since measurement', () => {
+    // The handle still holds the rows it measured while the revealed rows
+    // gained one at the head. Sizes pair with rows by key, not position.
+    const threadId = 'thread-moved';
+    const measuredNodes = [leaf('a', { summary: 'a' }), leaf('b', { summary: 'b' })];
+    let nodes: TimelineNode[] = [leaf('x', { summary: 'x' }), ...measuredNodes];
+    let listRef = fakeListRef(measuredNodes, [100, 200]);
+    const pane = fakePane(threadId);
+    const priors = createTimelineSizePriors({
+      getPane: () => pane,
+      getListRef: () => listRef,
+      getRevealedNodes: () => nodes,
+      getScrollSurfaceContentWidth: () => 800,
+      getTypographySignature: () => typography,
+      getRestoredThreadId: () => threadId,
+    });
+    priors.persistSizePriorsFinal();
+
+    nodes = [...nodes];
+    listRef = fakeListRef(nodes, [-1, -1, -1]);
+    priors.resolveRowEstimateOnThreadEdge(threadId);
+    expect(priors.rowEstimate!.at(0)).toBe(44);
+    expect(priors.rowEstimate!.at(1)).toBe(100);
+    expect(priors.rowEstimate!.at(2)).toBe(200);
   });
 
   it('captures a settled row under the signature the reopen looks up, not the stale node item', () => {
@@ -144,7 +173,7 @@ describe('createTimelineSizePriors', () => {
     const streaming = makeItem({ id: 'a', summary: '', status: 'streaming', updatedAt: 1 });
     const settled = makeItem({ id: 'a', summary: 'a settled answer', status: 'completed', updatedAt: 2 });
     let nodes: TimelineNode[] = [{ kind: 'leaf', item: streaming }];
-    let listRef = fakeListRef([121]);
+    let listRef = fakeListRef(nodes, [121]);
     let pane = fakePane(threadId, '', new Map([['a', settled]]));
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -158,7 +187,7 @@ describe('createTimelineSizePriors', () => {
 
     // Reopen: a fresh projection from the store, nothing measured yet.
     nodes = [{ kind: 'leaf', item: settled }];
-    listRef = fakeListRef([-1]);
+    listRef = fakeListRef(nodes, [-1]);
     pane = fakePane(threadId);
     priors.resolveRowEstimateOnThreadEdge(threadId);
     expect(priors.rowEstimate!.at(0)).toBe(121);
@@ -186,7 +215,7 @@ describe('createTimelineSizePriors', () => {
       atTail: false,
     });
     let nodes: TimelineNode[] = [run('early', true), run('tail', false)];
-    let listRef = fakeListRef([38, 69.5]);
+    let listRef = fakeListRef(nodes, [38, 69.5]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -199,7 +228,7 @@ describe('createTimelineSizePriors', () => {
     priors.persistSizePriorsFinal();
 
     nodes = [run('early', true), run('tail', true)];
-    listRef = fakeListRef([-1, -1]);
+    listRef = fakeListRef(nodes, [-1, -1]);
     priors.resolveRowEstimateOnThreadEdge(threadId);
     expect(priors.rowEstimate!.at(0)).toBe(38);
     expect(priors.rowEstimate!.at(1)).toBe(38);
@@ -209,7 +238,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-lazy';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })]; // default kind: assistant_text
     let currentWidth = 800;
-    const listRef = fakeListRef([120]);
+    const listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -250,7 +279,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-boot-race';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
     let currentWidth = 800;
-    const listRef = fakeListRef([120]);
+    const listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -282,7 +311,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-stats';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' }), leaf('b', { summary: 'yo' })];
     let currentWidth = 800;
-    const listRef = fakeListRef([120, 90]);
+    const listRef = fakeListRef(nodes, [120, 90]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -337,7 +366,7 @@ describe('createTimelineSizePriors', () => {
       leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
     );
     const settledSizes = nodes.map((_, i) => 60 + i);
-    let listRef = fakeListRef(settledSizes);
+    let listRef = fakeListRef(nodes, settledSizes);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -353,7 +382,7 @@ describe('createTimelineSizePriors', () => {
     // and restore fires a capture before any row has re-measured.
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef(nodes.map(() => -1));
+    listRef = fakeListRef(nodes, nodes.map(() => -1));
     priors.maybePersistSizePriors(); // restore-time capture, nothing measured
 
     // A later mount must still resolve every settled size.
@@ -371,7 +400,7 @@ describe('createTimelineSizePriors', () => {
       leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
     );
     const settledSizes = [50, 51, 52, 53, 54, 55];
-    let listRef = fakeListRef(settledSizes);
+    let listRef = fakeListRef(nodes, settledSizes);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -392,7 +421,7 @@ describe('createTimelineSizePriors', () => {
     ];
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef([70, 71, -1, -1, -1, -1]);
+    listRef = fakeListRef(nodes, [70, 71, -1, -1, -1, -1]);
     priors.maybePersistSizePriors();
 
     priors.resolveRowEstimateOnThreadEdge(null);
@@ -411,7 +440,7 @@ describe('createTimelineSizePriors', () => {
       leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
     );
     let currentWidth = 800;
-    let listRef = fakeListRef([90, 91, 92, 93]);
+    let listRef = fakeListRef(nodes, [90, 91, 92, 93]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -428,7 +457,7 @@ describe('createTimelineSizePriors', () => {
     currentWidth = 640;
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef([110, -1, -1, -1]);
+    listRef = fakeListRef(nodes, [110, -1, -1, -1]);
     priors.maybePersistSizePriors();
 
     priors.resolveRowEstimateOnThreadEdge(null);
@@ -452,7 +481,7 @@ describe('createTimelineSizePriors', () => {
     currentWidth = 640;
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef([-1, 111, -1, -1]);
+    listRef = fakeListRef(nodes, [-1, 111, -1, -1]);
     priors.maybePersistSizePriors();
 
     priors.resolveRowEstimateOnThreadEdge(null);
@@ -468,7 +497,7 @@ describe('createTimelineSizePriors', () => {
       leaf(`item-${i}`, { summary: `body ${i}`, status: 'completed', updatedAt: i }),
     );
     let currentWidth = 800;
-    let listRef = fakeListRef([90, 91, 92]);
+    let listRef = fakeListRef(nodes, [90, 91, 92]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -485,7 +514,7 @@ describe('createTimelineSizePriors', () => {
     currentWidth = 600;
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef([130, 131, 132]);
+    listRef = fakeListRef(nodes, [130, 131, 132]);
     priors.maybePersistSizePriors();
 
     // Each width replays its own measurements, both as full replays.
@@ -506,7 +535,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-width-cap';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
     let currentWidth = 800;
-    let listRef = fakeListRef([120]);
+    let listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -525,7 +554,7 @@ describe('createTimelineSizePriors', () => {
         priors.resolveRowEstimateOnThreadEdge(null);
         priors.resolveRowEstimateOnThreadEdge(threadId);
       }
-      listRef = fakeListRef([size]);
+      listRef = fakeListRef(nodes, [size]);
       priors.maybePersistSizePriors();
     });
 
@@ -552,7 +581,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-typography';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
     const currentWidth = 800;
-    let listRef = fakeListRef([120]);
+    let listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -571,7 +600,7 @@ describe('createTimelineSizePriors', () => {
     expect(priors.replayStats().validity).toBe('geometry-mismatch');
 
     // The new typography gets its OWN bucket at the same width...
-    listRef = fakeListRef([150]);
+    listRef = fakeListRef(nodes, [150]);
     priors.maybePersistSizePriors();
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
@@ -595,7 +624,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-typography-boot';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
     let currentWidth = 800;
-    const listRef = fakeListRef([120]);
+    const listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -622,7 +651,7 @@ describe('createTimelineSizePriors', () => {
     const threadId = 'thread-width-zero';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
     let currentWidth = 800;
-    let listRef = fakeListRef([120]);
+    let listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -637,7 +666,7 @@ describe('createTimelineSizePriors', () => {
     currentWidth = 600;
     priors.resolveRowEstimateOnThreadEdge(null);
     priors.resolveRowEstimateOnThreadEdge(threadId);
-    listRef = fakeListRef([170]);
+    listRef = fakeListRef(nodes, [170]);
     priors.maybePersistSizePriors();
 
     currentWidth = 0;
@@ -650,7 +679,7 @@ describe('createTimelineSizePriors', () => {
   it('never stores an entry for a capture that resolves nothing', () => {
     const threadId = 'thread-nothing';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
-    const listRef = fakeListRef([-1]);
+    const listRef = fakeListRef(nodes, [-1]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -674,7 +703,7 @@ describe('createTimelineSizePriors', () => {
 
     const threadId = 'thread-restart';
     const nodes: TimelineNode[] = [leaf('a', { summary: 'hi' })];
-    const listRef = fakeListRef([120]);
+    const listRef = fakeListRef(nodes, [120]);
     const pane = fakePane(threadId);
     const priors = createTimelineSizePriors({
       getPane: () => pane,
@@ -711,7 +740,7 @@ describe('createTimelineSizePriors', () => {
       const pane = fakePane(threadId);
       const priors = createTimelineSizePriors({
         getPane: () => pane,
-        getListRef: () => fakeListRef(sizes),
+        getListRef: () => fakeListRef([node], sizes),
         getRevealedNodes: () => [node],
         getScrollSurfaceContentWidth: () => 800,
         getTypographySignature: () => typography,

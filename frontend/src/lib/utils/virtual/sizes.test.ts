@@ -110,6 +110,12 @@ describe('getItemSize', () => {
     expect(getItemSize(store, 1)).toBe(200);
     expect(getItemSize(store, 2)).toBe(7);
   });
+  it('should give a row outside the store no size', () => {
+    const store = storeWithSizes([10, UNMEASURED], flat(20));
+    expect(getItemSize(store, -1)).toBe(0);
+    expect(getItemSize(store, 2)).toBe(0);
+    expect(getItemSize(store, 5)).toBe(0);
+  });
 });
 
 describe('isMeasured', () => {
@@ -117,6 +123,11 @@ describe('isMeasured', () => {
     const store = storeWithSizes([10, UNMEASURED], flat(20));
     expect(isMeasured(store, 0)).toBe(true);
     expect(isMeasured(store, 1)).toBe(false);
+  });
+  it('should report a row outside the store as unmeasured', () => {
+    const store = storeWithSizes([10, 20], flat(20));
+    expect(isMeasured(store, -1)).toBe(false);
+    expect(isMeasured(store, 2)).toBe(false);
   });
 });
 
@@ -227,6 +238,40 @@ describe('getItemOffset', () => {
     expect(getItemOffset(store, 0)).toBe(0);
     expect(getItemOffset(store, 10)).toBe(0);
     expect(store.offsets).toEqual([-1]);
+  });
+
+  it('should read the total size past the end without extending the memo', () => {
+    const store = storeWithSizes([10, 20, 30], flat(40));
+    expect(getItemOffset(store, 5)).toBe(60);
+    expect(store.offsets).toEqual([0, 10, 30, 60]);
+    expect(store.offsetWatermark).toBe(3);
+  });
+
+  it('should read 0 before the start', () => {
+    const store = storeWithSizes([10, 20, 30], flat(40));
+    expect(getItemOffset(store, -2)).toBe(0);
+    expect(store.offsetWatermark).toBe(0);
+  });
+
+  it.each([[Number.NaN], [1.5], [-0.5], [3.5], [Number.POSITIVE_INFINITY]])('should reject row index %s', (index) => {
+    const store = storeWithSizes([10, 20, 30], flat(40));
+    expect(() => getItemOffset(store, index)).toThrow(RangeError);
+    expect(store.offsetWatermark).toBe(-1);
+    expect(() => getItemOffset(storeWithSizes([], flat(40)), index)).toThrow(RangeError);
+  });
+
+  it('should keep the total exact when rows grow after a read past the end', () => {
+    // A caller holding a newer row count reads ahead of the store. The
+    // store then grows by more than one row: updateLength keeps the
+    // watermark below the new length, so any entry the early read wrote
+    // would be trusted.
+    const store = storeWithSizes([10, 20, 30], flat(40));
+    getItemOffset(store, 5);
+    updateLength(store, 6);
+    expect(getTotalSize(store)).toBe(60 + 40 * 3);
+    expect(getItemOffset(store, 4)).toBe(60 + 40);
+    setItemSize(store, 3, 5);
+    expect(getTotalSize(store)).toBe(60 + 5 + 40 * 2);
   });
 
   describe('with cached offsets', () => {

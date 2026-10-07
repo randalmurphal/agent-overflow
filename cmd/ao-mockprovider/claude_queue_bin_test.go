@@ -1,19 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
 
 // Queued-message consumption (claude-wire.md §Queued-message consumption).
 // A user envelope that arrives mid-turn is acked `queued` on arrival either
-// way; scenario.ClaudeOptions.QueuedInputAtBoundary decides whether its
-// init, replay echo and `started` follow at once (the default) or after the
-// running turn's last frame (the CLI's turn-pickup flavor).
+// way. By default its init, replay echo and `started` follow at once. Under
+// scenario.ClaudeOptions.HoldQueuedInput a drainQueuedInput step consumes it
+// into the running turn (the CLI's mid-loop flavor); undrained, it is picked
+// up after the running turn's last frame (the CLI's turn-pickup flavor).
 
 const claudeResultLine = `{"type":"result","subtype":"success","is_error":false}`
 
@@ -34,7 +39,7 @@ func queuedUserLine(uuid, text string) string {
 
 // claudeHeldTurnScenario holds turn 1 open at "hold" after its text block;
 // turn 2 answers with a text block of its own.
-func claudeHeldTurnScenario(atBoundary bool) *scenario.Scenario {
+func claudeHeldTurnScenario(hold bool) *scenario.Scenario {
 	sc := &scenario.Scenario{
 		Version:  scenario.CurrentVersion,
 		Name:     "queued-input",
@@ -51,8 +56,8 @@ func claudeHeldTurnScenario(atBoundary bool) *scenario.Scenario {
 		},
 		AfterTurns: "silent",
 	}
-	if atBoundary {
-		sc.Claude = &scenario.ClaudeOptions{QueuedInputAtBoundary: true}
+	if hold {
+		sc.Claude = &scenario.ClaudeOptions{HoldQueuedInput: true}
 	}
 	return sc
 }
@@ -110,7 +115,7 @@ func expectTurnTwoPickup(t *testing.T, p *mockProc) {
 	expectLifecycle(t, p.expectLine(testTimeout), "u2", "started")
 }
 
-func TestClaudeQueuedInputAtBoundaryWaitsForTheRunningTurn(t *testing.T) {
+func TestClaudeHeldQueuedInputWaitsForTheRunningTurn(t *testing.T) {
 	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-q")
 	p, advance := startControlledMock(t, claudeHeldTurnScenario(true), args)
 	// No turn running: the option changes nothing about the first pickup.
@@ -152,6 +157,107 @@ func TestClaudeQueuedInputIsPickedUpMidTurnByDefault(t *testing.T) {
 	}
 	p.expectLineContaining(`"text_delta","text":"hello turn 2"`, testTimeout)
 	p.expectLineContaining(`"type":"result"`, testTimeout)
+
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
+
+// claudeDrainScenario is the held scenario with a drainQueuedInput step
+// right after the hold.
+func claudeDrainScenario() *scenario.Scenario {
+	sc := claudeHeldTurnScenario(true)
+	held := sc.Turns[0].Steps
+	sc.Turns[0].Steps = []scenario.Step{held[0], held[1], {DrainQueuedInput: true}, held[2]}
+	return sc
+}
+
+func readClaudeTranscript(t *testing.T, home, sessionID string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "projects", "mock", sessionID+".jsonl"))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	var rows []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatalf("decode transcript row %q: %v", line, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func TestClaudeDrainQueuedInputConsumesHeldInputIntoTheRunningTurn(t *testing.T) {
+	home := t.TempDir()
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-q")
+	p, advance := startControlledMock(t, claudeDrainScenario(), args, control.EnvTranscriptHome+"="+home)
+	startHeldTurn(t, p)
+
+	for _, id := range []string{"u2", "u3"} {
+		p.send(queuedUserLine(id, "held "+id))
+		expectLifecycle(t, p.expectLine(testTimeout), id, "queued")
+	}
+	p.expectNoLine(300 * time.Millisecond)
+
+	// The drain writes `started` and the echo for each held message, in
+	// arrival order, inside turn 1 with no init, and turn 1 then finishes.
+	advance("hold")
+	for _, id := range []string{"u2", "u3"} {
+		expectLifecycle(t, p.expectLine(testTimeout), id, "started")
+		echo := p.expectLine(testTimeout)
+		if !strings.Contains(echo, `"isReplay":true`) || !strings.Contains(echo, `"uuid":"`+id+`"`) {
+			t.Fatalf("drain echo for %s = %q", id, echo)
+		}
+	}
+	if got := p.expectLine(testTimeout); got != claudeResultLine {
+		t.Fatalf("line after the drain = %q, want turn-1 result", got)
+	}
+	// The drained messages open no turn of their own.
+	p.expectNoLine(300 * time.Millisecond)
+
+	// The next message is picked up as turn 2.
+	p.send(queuedUserLine("u4", "next"))
+	expectLifecycle(t, p.expectLine(testTimeout), "u4", "queued")
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	p.expectLineContaining(`"uuid":"u4"`, testTimeout)
+	expectLifecycle(t, p.expectLine(testTimeout), "u4", "started")
+	p.expectLineContaining(`"type":"result"`, testTimeout)
+
+	// The transcript records each drained message as the CLI does: a
+	// queued_command attachment naming the client uuid, parented to the
+	// entry before it, and the next message parents to the last attachment.
+	rows := readClaudeTranscript(t, home, "sess-q")
+	if len(rows) != 4 || rows[0]["type"] != "user" || rows[0]["uuid"] != "u1" || rows[3]["type"] != "user" || rows[3]["uuid"] != "u4" {
+		t.Fatalf("transcript = %+v, want u1, two drained attachments, u4", rows)
+	}
+	parent := "u1"
+	for i, source := range []string{"u2", "u3"} {
+		row := rows[i+1]
+		attachment, _ := row["attachment"].(map[string]any)
+		if row["type"] != "attachment" || row["parentUuid"] != parent || row["uuid"] == "" ||
+			attachment["type"] != "queued_command" || attachment["source_uuid"] != source {
+			t.Fatalf("drained transcript row for %s = %+v, want parent %s", source, row, parent)
+		}
+		parent = row["uuid"].(string)
+	}
+	if rows[3]["parentUuid"] != parent {
+		t.Fatalf("u4 parentUuid = %v, want the last attachment %s", rows[3]["parentUuid"], parent)
+	}
+
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
+
+func TestClaudeDrainQueuedInputWithNothingHeldWritesNothing(t *testing.T) {
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-q")
+	p, advance := startControlledMock(t, claudeDrainScenario(), args)
+	startHeldTurn(t, p)
+
+	advance("hold")
+	if got := p.expectLine(testTimeout); got != claudeResultLine {
+		t.Fatalf("line after an empty drain = %q, want turn-1 result", got)
+	}
 
 	p.closeStdinAndExpectExit(0, testTimeout)
 	validateClaudeFrames(t, p.all)

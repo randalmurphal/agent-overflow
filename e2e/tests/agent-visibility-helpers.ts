@@ -386,6 +386,10 @@ export interface ScenarioStep {
     timeoutMs?: number;
   };
   delayMs?: number;
+  /** A real MCP call against one of the app's MCP servers. */
+  mcpCall?: { server: string; tool: string; args?: Json; toolUseId?: string; timeoutMs?: number };
+  /** Consumes the input held under `holdQueuedInput` into the running turn. */
+  drainQueuedInput?: true;
 }
 
 export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {
@@ -403,12 +407,14 @@ export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {
 /** The mock's Claude-specific knobs (`scenario.ClaudeOptions`). */
 export interface ClaudeScenarioOptions {
   /**
-   * Hold a user envelope that arrives mid-turn until that turn ends, then
-   * pick it up as a turn of its own: the CLI's turn-pickup consumption, so
-   * the echo confirming a queued message lands after every row the running
-   * turn still wrote. Off, the mock picks a mid-turn envelope up at once.
+   * Hold a user envelope that arrives mid-turn. The turn's next
+   * `drainQueuedInput` step consumes it into the running turn (the CLI's
+   * mid-loop consumption); undrained, it is picked up as a turn of its own
+   * when the running turn ends, after every row that turn still wrote (the
+   * CLI's turn-pickup consumption). Off, the mock picks a mid-turn envelope
+   * up at once.
    */
-  queuedInputAtBoundary?: boolean;
+  holdQueuedInput?: boolean;
 }
 
 /** A Claude scenario of several turns, each consumed by one user message. */
