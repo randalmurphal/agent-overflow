@@ -1,4 +1,4 @@
-import { advanceCatalogRevision } from './computerCatalogRevision';
+import { recordCatalogMutation, type CatalogMutation } from './computerCatalogReads';
 // Persist metadata at store mutation boundaries, never from a render effect.
 // One write per computer may run at once; bursts collapse into the latest
 // snapshot. Tokens prevent a queued write reaching a replaced/detached store.
@@ -10,7 +10,8 @@ import { observedCatalogStamp } from '../replica/catalogStamp';
 import type { CatalogKind, CatalogRows } from '../replica/catalog';
 
 export function computerCatalogWriter<K extends CatalogKind>(
-  kind: K, rows: () => readonly CatalogRows[K][], owner: (row: CatalogRows[K]) => BackendKey | undefined,
+  kind: K, rows: () => CatalogRows[K][], commit: (rows: CatalogRows[K][]) => void,
+  owner: (row: CatalogRows[K]) => BackendKey | undefined,
 ) {
   const pending = new Map<BackendKey, number>();
   const running = new Set<BackendKey>();
@@ -40,13 +41,35 @@ export function computerCatalogWriter<K extends CatalogKind>(
     });
   }
 
+  function persist(backend: BackendKey = HOME_BACKEND): void {
+    if (!backendById(backend)) return;
+    pending.set(backend, replicaToken(backend));
+    schedule();
+  }
+
   return {
-    changed(backend: BackendKey = HOME_BACKEND, mutation = true): void {
-      if (!backendById(backend)) return;
-      if (mutation) advanceCatalogRevision(backend, kind);
-      pending.set(backend, replicaToken(backend));
-      schedule();
+    /**
+     * Apply a local mutation to the rows of `backends`: commit it, record it
+     * for their reads in flight (./computerCatalogReads.ts) and persist it.
+     * `mutation` must be a pure transform that touches only those computers'
+     * rows, because it is replayed over each one's answer.
+     */
+    mutate(backends: BackendKey | undefined | Iterable<BackendKey | undefined>, mutation: CatalogMutation<CatalogRows[K]>): void {
+      const current = untrack(rows);
+      const next = mutation(current);
+      if (!sameRows(current, next)) commit(next);
+      const targets = typeof backends === 'string' || backends === undefined ? [backends] : backends;
+      for (const backend of new Set(Array.from(targets, (entry) => entry ?? HOME_BACKEND))) {
+        recordCatalogMutation(backend, kind, mutation);
+        persist(backend);
+      }
     },
+    /** Persist rows a read committed. Nothing is recorded: they are an answer, not a change. */
+    persist,
     reset(): void { ++epoch; queued = false; pending.clear(); running.clear(); },
   };
+}
+
+function sameRows<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a === b || (a.length === b.length && a.every((row, index) => row === b[index]));
 }

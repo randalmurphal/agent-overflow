@@ -152,6 +152,7 @@
     return [{
       backend: entry.id,
       name: hasMultipleBackends() ? backendDisplayName(entry) : '',
+      kind: projects.phase === 'loaded' ? 'threads' as const : 'projects' as const,
       error: failed === null ? null : failed.error,
     }];
   }));
@@ -392,7 +393,7 @@
     {#if pendingCatalogs.length > 0}
       <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
         {#each pendingCatalogs as pending (pending.backend)}
-          <CatalogStatusRow backend={pending.backend} name={pending.name} error={pending.error} />
+          <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
         {/each}
       </div>
     {/if}

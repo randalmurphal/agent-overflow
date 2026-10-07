@@ -231,9 +231,7 @@ export function isLoaded(): boolean {
  * Superseded reads neither publish an empty catalog nor mark initial load done. */
 export async function refreshProjects(): Promise<void> {
   try {
-    const result = await readComputerRows<ProjectWithCounts>(listProjectRows, noteProjectRow, projectCatalog());
-    if (!result) return;
-    commitProjectRows(result);
+    await readComputerRows<ProjectWithCounts>(listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog() });
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load projects:', err);
@@ -250,7 +248,7 @@ function noteProjectRow(row: ProjectWithCounts, backend: BackendKey): void {
 }
 
 function projectCatalog() {
-  return computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id), commitProjectRows);
+  return computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id));
 }
 
 function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
@@ -262,16 +260,13 @@ function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
 // The catalog store's retry for a computer whose projects have not loaded:
 // its rows alone, waiting for the answer rather than the startup deadline.
 async function retryProjectCatalog(backend: BackendKey): Promise<void> {
-  let result: ComputerRows<ProjectWithCounts> | null;
   try {
-    result = await readComputerRows<ProjectWithCounts>(
-      listProjectRows, noteProjectRow, projectCatalog(), undefined, undefined, { only: backend, deadlineMs: null });
+    await readComputerRows<ProjectWithCounts>(
+      listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog(), only: backend, deadlineMs: null });
   } catch {
     // readComputerRows settled this computer's failure into the catalog
     // state, which is where it is shown and retried.
-    return;
   }
-  if (result) commitProjectRows(result);
 }
 
 registerCatalogReader('projects', retryProjectCatalog);
@@ -282,19 +277,18 @@ registerCatalogReader('projects', retryProjectCatalog);
  * wraps it as ProjectWithCounts with zero counts — the next refresh will
  * reconcile actual totals.
  */
-const catalogWriter = computerCatalogWriter('projects', () => projects, (row) => projectBackend(row.project.id));
+const catalogWriter = computerCatalogWriter('projects', () => projects, (rows) => { projects = rows; }, (row) => projectBackend(row.project.id));
 
 export function addProjectLocal(p: Project): void {
-  // Prevent duplicate inserts if the caller fires this and a refresh
-  // races. Refresh wins because it carries thread counts.
-  if (projects.some((existing) => existing.project.id === p.id)) return;
   const wrapped: ProjectWithCounts = {
     project: p,
     threadCount: 0,
     lastActive: 0,
   };
-  projects = [wrapped, ...projects];
-  catalogWriter.changed(projectBackend(p.id));
+  // Prevent duplicate inserts if the caller fires this and a refresh
+  // races. Refresh wins because it carries thread counts.
+  catalogWriter.mutate(projectBackend(p.id), (rows) =>
+    rows.some((existing) => existing.project.id === p.id) ? rows : [wrapped, ...rows]);
 }
 
 /**
@@ -303,12 +297,11 @@ export function addProjectLocal(p: Project): void {
  * back to 0 threads until the next refresh.
  */
 export function updateProjectLocal(p: Project): void {
-  catalogWriter.changed(projectBackend(p.id));
-  projects = projects.map((existing) =>
+  catalogWriter.mutate(projectBackend(p.id), (rows) => rows.map((existing) =>
     existing.project.id === p.id
       ? { ...existing, project: p }
       : existing,
-  );
+  ));
 }
 
 /**
@@ -337,8 +330,7 @@ export function getProjectLiveActivityAt(p: ProjectWithCounts): number {
 /** Drop a project row and any related thread counts. */
 export function removeProjectLocal(id: string): void {
   invalidateReplicaCatalog(projectBackend(id) ?? '', 'projects');
-  catalogWriter.changed(projectBackend(id));
-  projects = projects.filter((p) => p.project.id !== id);
+  catalogWriter.mutate(projectBackend(id), (rows) => rows.filter((p) => p.project.id !== id));
   liveActivityAt.drop(id);
 }
 

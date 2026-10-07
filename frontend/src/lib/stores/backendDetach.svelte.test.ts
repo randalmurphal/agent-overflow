@@ -10,6 +10,7 @@ import {
   __attachBackendForTest,
   __resetBackendsForTest,
   detachBackend,
+  takePinnedBackend,
   type BackendDescriptor,
 } from '../transport/backends';
 import {
@@ -19,8 +20,7 @@ import {
   noteThreadGroup,
   threadBackend,
 } from '../transport/entityIndex';
-import { getThreads, prependThread, removeThread } from './threads.svelte';
-import { catalogRevision } from './computerCatalogRevision';
+import { getThreads, loadThreads, prependThread, removeThread } from './threads.svelte';
 import { setupEventListeners } from './events';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
@@ -144,26 +144,21 @@ beforeEach(() => {
 });
 
 describe('a backend detaching', () => {
-  it('invalidates the former computer’s catalog when ownership changes', () => {
-    attachLaptop();
-    noteThread('moved', LAPTOP, 0);
-    prependThread(makeThread('moved'));
-    const revision = catalogRevision(LAPTOP, 'threads');
-    noteThread('moved', '', 1);
-    expect(catalogRevision(LAPTOP, 'threads')).toBeGreaterThan(revision);
-  });
-
-  it('invalidates the remote catalog before forgetting a deleted thread’s owner', () => {
+  it('keeps a deleted thread out of its former computer’s read in flight before forgetting its owner', async () => {
     attachLaptop();
     noteThread('deleted', LAPTOP, 0);
     prependThread(makeThread('deleted'));
-    const revision = catalogRevision(LAPTOP, 'threads');
+    const laptop = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => takePinnedBackend() === LAPTOP ? laptop.promise : Promise.resolve([]));
+    const read = loadThreads();
     const stop = setupEventListeners();
     try {
       emitWailsEvent('thread:updated', { action: 'deleted', id: 'deleted' }, descriptor().backendId);
       expect(getThreads()).toEqual([]);
-      expect(catalogRevision(LAPTOP, 'threads')).toBeGreaterThan(revision);
       expect(threadBackend('deleted')).toBeUndefined();
+      laptop.resolve([makeThread('deleted'), makeThread('kept')]);
+      await read;
+      expect(getThreads().map((t) => t.id)).toEqual(['kept']);
     } finally { stop(); }
   });
 

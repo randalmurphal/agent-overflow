@@ -25,13 +25,13 @@ it('coalesces a burst, writes only its computer, and records an empty catalog af
   stageBackend({ id: 'gpu' });
   observeCatalogStamp('gpu', 'groups', 'stamp');
   let rows = [group('gpu'), group('local')];
-  const writer = computerCatalogWriter('groups', () => rows, (row) => row.id === 'local' ? '' : 'gpu');
-  writer.changed('gpu');
-  writer.changed('gpu');
+  const writer = computerCatalogWriter('groups', () => rows, (next) => { rows = next; }, (row) => row.id === 'local' ? '' : 'gpu');
+  writer.persist('gpu');
+  writer.persist('gpu');
   await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(1));
   expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', [group('gpu')], 'stamp', 1);
   rows = [group('local')];
-  writer.changed('gpu');
+  writer.persist('gpu');
   await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(2));
   expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', [], 'stamp', 1);
 });
@@ -39,12 +39,12 @@ it('coalesces a burst, writes only its computer, and records an empty catalog af
 it('does not write queued rows to a removed computer or a new generation', async () => {
   stageBackend({ id: 'gpu' });
   observeCatalogStamp('gpu', 'groups', 'stamp');
-  const writer = computerCatalogWriter('groups', () => [group('gpu')], () => 'gpu');
-  writer.changed('gpu');
+  const writer = computerCatalogWriter('groups', () => [group('gpu')], () => {}, () => 'gpu');
+  writer.persist('gpu');
   ++cache.token;
   await Promise.resolve();
   expect(cache.write).not.toHaveBeenCalled();
-  writer.changed('gpu');
+  writer.persist('gpu');
   detachBackend('gpu');
   await Promise.resolve();
   expect(cache.write).not.toHaveBeenCalled();
@@ -56,12 +56,12 @@ it('keeps at most one write running and saves the newest rows after it finishes'
   let done!: () => void;
   cache.write.mockImplementationOnce(() => new Promise<void>((resolve) => { done = resolve; }));
   let rows = [group('first')];
-  const writer = computerCatalogWriter('groups', () => rows, () => 'gpu');
-  writer.changed('gpu');
+  const writer = computerCatalogWriter('groups', () => rows, (next) => { rows = next; }, () => 'gpu');
+  writer.persist('gpu');
   await Promise.resolve();
   rows = [group('last')];
-  writer.changed('gpu');
-  writer.changed('gpu');
+  writer.persist('gpu');
+  writer.persist('gpu');
   await Promise.resolve();
   expect(cache.write).toHaveBeenCalledTimes(1);
   done();
@@ -73,14 +73,28 @@ it('cancels queued writes on reset and accepts new changes', async () => {
   stageBackend({ id: 'gpu' });
   observeCatalogStamp('gpu', 'groups', 'stamp');
   let rows = [group('before-reset')];
-  const writer = computerCatalogWriter('groups', () => rows, () => 'gpu');
-  writer.changed('gpu');
+  const writer = computerCatalogWriter('groups', () => rows, (next) => { rows = next; }, () => 'gpu');
+  writer.persist('gpu');
   writer.reset();
   await Promise.resolve();
   expect(cache.write).not.toHaveBeenCalled();
 
   rows = [group('after-reset')];
-  writer.changed('gpu');
+  writer.persist('gpu');
   await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(1));
   expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', rows, 'stamp', 1);
+});
+
+it('commits a mutation, persists its computer, and skips a commit that changes nothing', async () => {
+  stageBackend({ id: 'gpu' });
+  observeCatalogStamp('gpu', 'groups', 'stamp');
+  let rows = [group('a')];
+  const commit = vi.fn((next: ThreadGroup[]) => { rows = next; });
+  const writer = computerCatalogWriter('groups', () => rows, commit, () => 'gpu');
+  writer.mutate('gpu', (current) => current.map((row) => row.id === 'missing' ? group('x') : row));
+  expect(commit).not.toHaveBeenCalled();
+  writer.mutate('gpu', (current) => [...current, group('b')]);
+  expect(commit).toHaveBeenCalledTimes(1);
+  expect(rows.map((row) => row.id)).toEqual(['a', 'b']);
+  await vi.waitFor(() => expect(cache.write).toHaveBeenLastCalledWith('gpu', 'groups', rows, 'stamp', 1));
 });

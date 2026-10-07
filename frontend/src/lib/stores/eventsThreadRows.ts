@@ -12,8 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread }
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, readThreadRows, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, type ThreadRowsRead } from './threads.svelte';
-import { settleCatalogAnswers } from './catalogLoad.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -155,35 +154,21 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
 }
 
 /**
- * Mid-session sidebar resync (transport-gap recovery). Unlike
- * refreshThreads' wholesale replacement — fine at boot, where no local
- * state exists yet — a resync races live local state in two directions:
- *
- *   - the snapshot's lastReadAt can predate the debounced MarkThreadRead
- *     persist for a read-mark the UI already applied, reverting a row
- *     the focused pane just cleared;
- *   - the snapshot can carry a completion (latestTurnCompletedAt) whose
- *     turn_completed event fell into the gap, which no pane ever saw.
- *
- * Rows therefore go through the same local-state merge as pushed
- * thread:updated rows, and panes showing a thread converge on the merged
- * copy. The pane fan-out is load-bearing: ChatView's read-mark effect
- * keys off pane.thread, so without it a gap-lost completion leaves the
- * sidebar "Completed" pill stuck on a thread the user is viewing.
+ * Mid-session sidebar resync (transport-gap recovery). The read commits
+ * through reconcileThreadRows like every thread answer; a resync then
+ * closes the panes of threads deleted while their frame was lost.
  */
 async function resyncThreadRows(): Promise<void> {
-  let read: ThreadRowsRead;
+  let rows: Thread[];
   try {
-    read = await readThreadRows();
+    rows = await loadThreads();
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to resync threads after transport gap:', err);
     addToast('error', 'Failed to load threads');
     return;
   }
-  reconcileThreadRows(read.rows);
-  settleCatalogAnswers('threads', read.answered);
-  closePanesOfDeletedThreads(read.rows);
+  closePanesOfDeletedThreads(rows);
 }
 
 /**
@@ -211,10 +196,26 @@ function closePanesOfDeletedThreads(rows: readonly Thread[]): void {
   }
 }
 
+/**
+ * Commit a thread catalog answer. A snapshot races live local state in two
+ * directions:
+ *
+ *   - its lastReadAt can predate the debounced MarkThreadRead persist for a
+ *     read-mark the UI already applied, reverting a row the focused pane
+ *     just cleared;
+ *   - it can carry a completion (latestTurnCompletedAt) whose turn_completed
+ *     event fell into a gap, which no pane ever saw.
+ *
+ * Rows therefore go through the same local-state merge as pushed
+ * thread:updated rows, and panes showing a thread converge on the merged
+ * copy. The pane fan-out is load-bearing: ChatView's read-mark effect keys
+ * off pane.thread, so without it a gap-lost completion leaves the sidebar
+ * "Completed" pill stuck on a thread the user is viewing.
+ */
 export function reconcileThreadRows(rows: Thread[]): void {
   const cachedById = new Map(getThreads().map((thread) => [thread.id, thread]));
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
-  replaceAllThreads(merged, false);
+  replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !pane.thread) continue;

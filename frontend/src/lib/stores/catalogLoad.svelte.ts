@@ -4,8 +4,8 @@
 // presents a catalog that is not loaded as an empty one.
 //
 // Every read settles here, the boot's, a hello's and a retry's alike: a
-// failure through computerCatalog (./computerRows.ts), an answer from the
-// store that commits its rows. Until a catalog loads, a failed read
+// failure through computerCatalog (./computerRows.ts), an answer in the
+// commit that readComputerRows calls with its rows. Until a catalog loads, a failed read
 // retries itself:
 //
 //   - A read that missed its startup deadline or met a backend answering

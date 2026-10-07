@@ -123,8 +123,16 @@ pending reads, and watched-thread routing for the old owner.
 `catalogLoad.svelte.ts` holds whether each computer's thread and project
 catalogs have loaded, and owns their retries until they do. A catalog that
 has not loaded is never presented as empty. Every read settles there: a
-failure inside `readComputerRows`, an answer in the same synchronous block
-that commits its rows.
+failure inside `readComputerRows`, an answer in the `commit` callback that
+commits its rows. `readComputerRows` calls `commit` in the same synchronous
+block that replays local mutations; never commit an answer after an `await`.
+
+Only a newer read of the same computer supersedes a sidebar catalog read.
+Change thread, project and group rows through the catalog writer's `mutate`,
+a pure transform that `computerCatalogReads.ts` records for the reads of that
+computer in flight and replays over their answers. A pushed or local change
+must never drop an answer: nothing would re-read a catalog that has not
+loaded.
 
 Frontend preferences and appearance libraries remain local to the frontend and
 survive host removal. Mirror only generated `FRONTEND_DEVICE_SETTINGS_KEYS` to

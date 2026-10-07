@@ -3,7 +3,7 @@ import { getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
-import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
+import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend, threadGroupBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
@@ -29,13 +29,15 @@ import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelt
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
 let threads: Thread[] = $state([]);
-const catalogWriter = computerCatalogWriter('threads', () => threads, (row) => threadBackend(row.id));
-// Ownership changes before the destination's row is applied. Invalidate the
-// former owner's pending reads and rewrite its catalog without the moved row;
+const catalogWriter = computerCatalogWriter('threads', () => threads, (rows) => { threads = rows; }, (row) => threadBackend(row.id));
+// Ownership changes before the destination's row is applied. Fence the
+// former owner's offline snapshot and rewrite it without the moved row;
 // otherwise removing the destination could expose the old offline snapshot.
+// A read of the former owner still in flight needs nothing: admission
+// (currentThreadRow) drops the moved row from its answer.
 onThreadOwnershipChanged((_id, previousBackend) => {
   invalidateReplicaCatalog(previousBackend, 'threads');
-  catalogWriter.changed(previousBackend);
+  catalogWriter.persist(previousBackend);
 });
 
 // Live-activity bumps arrive on every streaming flush (tens per second
@@ -55,18 +57,9 @@ export function getThreads(): Thread[] {
   return threads;
 }
 
-/** A thread catalog read: the rows to commit and the computers that answered. */
-export interface ThreadRowsRead {
-  rows: Thread[];
-  /** Settle these as loaded once `rows` are committed (settleCatalogAnswers). */
-  answered: ReadonlySet<BackendKey>;
-}
-
-const NO_ANSWERS: ReadonlySet<BackendKey> = new Set();
-
 // Only outstanding reads retain the latest promise; startup follows a newer
 // reconnect snapshot before validating saved pane IDs.
-let latestThreadRead: Promise<ThreadRowsRead> | null = null;
+let latestThreadRead: Promise<void> | null = null;
 let pendingThreadReads = 0;
 
 async function listThreadRows(): Promise<Thread[]> {
@@ -81,50 +74,49 @@ function threadRowOwner(row: Thread): BackendKey | undefined {
   return threadBackend(row.id);
 }
 
-function threadCatalog() {
-  return computerCatalog('threads', () => threads, threadRowOwner, (late) => {
-    reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, late, threadRowOwner)));
-    settleCatalogAnswers('threads', late.answered);
-  });
+// Every thread answer, on time, late or retried, merges with live local
+// state: a read mark or completion newer than the snapshot survives it.
+function commitThreadRows(result: ComputerRows<Thread>): void {
+  reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)));
+  settleCatalogAnswers('threads', result.answered);
 }
 
-export async function readThreadRows(): Promise<ThreadRowsRead> {
+function threadReadOptions(only?: BackendKey) {
+  const catalog = computerCatalog('threads', () => threads, threadRowOwner);
+  return only === undefined
+    ? { catalog, admit: currentThreadRow }
+    : { catalog, admit: currentThreadRow, only, deadlineMs: null };
+}
+
+/**
+ * Read every computer's threads and commit them. Resolves with the catalog
+ * once this read, or a newer one that superseded it, has committed:
+ * startup validates saved panes against the winning snapshot, even when a
+ * first hello superseded its read.
+ */
+export async function loadThreads(): Promise<Thread[]> {
   pendingThreadReads++;
   const request = readCurrentThreadRows();
   latestThreadRead = request;
-  try { return await request; }
+  try { await request; }
   finally { if (--pendingThreadReads === 0) latestThreadRead = null; }
+  return threads;
 
-  async function readCurrentThreadRows(): Promise<ThreadRowsRead> {
-    const result = await readComputerRows<Thread>(listThreadRows, noteThreadRow, threadCatalog(), currentThreadRow);
-    // Startup must validate saved panes against the winning snapshot, even
-    // when a first hello superseded its read. A local mutation with no newer
-    // read already lives in `threads`. Retain the latest promise only while
-    // reads are outstanding; no second persistent catalog is needed.
-    if (!result) {
-      return latestThreadRead && latestThreadRead !== request
-        ? latestThreadRead : { rows: currentRows(threads), answered: NO_ANSWERS };
-    }
-    return { rows: currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)), answered: result.answered };
+  async function readCurrentThreadRows(): Promise<void> {
+    if (await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions())) return;
+    if (latestThreadRead && latestThreadRead !== request) await latestThreadRead;
   }
 }
 
 // The catalog store's retry for a computer whose threads have not loaded:
-// its rows alone, waiting for the answer rather than the startup deadline,
-// merged like a resync so live local state survives.
+// its rows alone, waiting for the answer rather than the startup deadline.
 async function retryThreadCatalog(backend: BackendKey): Promise<void> {
-  let result: ComputerRows<Thread> | null;
   try {
-    result = await readComputerRows<Thread>(
-      listThreadRows, noteThreadRow, threadCatalog(), currentThreadRow, undefined, { only: backend, deadlineMs: null });
+    await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions(backend));
   } catch {
     // readComputerRows settled this computer's failure into the catalog
     // state, which is where it is shown and retried.
-    return;
   }
-  if (!result) return;
-  reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)));
-  settleCatalogAnswers('threads', result.answered);
 }
 
 registerCatalogReader('threads', retryThreadCatalog);
@@ -138,14 +130,6 @@ function currentRows(rows: Thread[]): Thread[] {
   });
 }
 
-export async function loadThreads(): Promise<Thread[]> {
-  const read = await readThreadRows();
-  threads = read.rows;
-  liveActivityAt.reset();
-  settleCatalogAnswers('threads', read.answered);
-  return threads;
-}
-
 export async function refreshThreads(): Promise<void> {
   try {
     await loadThreads();
@@ -157,13 +141,13 @@ export async function refreshThreads(): Promise<void> {
 }
 
 /**
- * Wholesale registry replacement for resync paths. The caller owns the
+ * Wholesale registry replacement for catalog answers. The caller owns the
  * merge policy — rows must already be reconciled against local state
- * (see eventsThreadRows.resyncThreadRows); this setter stays dumb so
+ * (see eventsThreadRows.reconcileThreadRows); this setter stays dumb so
  * that policy lives in one place.
  */
-export function replaceAllThreads(rows: Thread[], mutation = true): void {
-  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.changed(backend, mutation);
+export function replaceAllThreads(rows: Thread[]): void {
+  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
   threads = rows;
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
@@ -179,8 +163,7 @@ export function resetThreadsForTest(): void {
 }
 
 export function prependThread(thread: Thread): void {
-  catalogWriter.changed(threadBackend(thread.id));
-  threads = [thread, ...threads.filter((t) => t.id !== thread.id)];
+  catalogWriter.mutate(threadBackend(thread.id), (rows) => [thread, ...rows.filter((t) => t.id !== thread.id)]);
 }
 
 let threadRemovedObservers: Array<(id: string) => void> = [];
@@ -198,8 +181,7 @@ export function addThreadRemovedObserver(observer: (id: string) => void): () => 
 
 export function removeThread(id: string): void {
   invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.changed(threadBackend(id));
-  threads = threads.filter((t) => t.id !== id);
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
   liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.
@@ -227,18 +209,15 @@ export function removeThread(id: string): void {
 }
 
 export function updateThreadTitle(id: string, title: string): void {
-  catalogWriter.changed(threadBackend(id));
-  threads = threads.map((t) => t.id === id ? { ...t, title } : t);
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.map((t) => t.id === id ? { ...t, title } : t));
 }
 
 export function updateThreadModel(id: string, model: string): void {
-  catalogWriter.changed(threadBackend(id));
-  threads = threads.map((t) => t.id === id ? { ...t, model } : t);
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.map((t) => t.id === id ? { ...t, model } : t));
 }
 
 export function replaceThread(thread: Thread): void {
-  catalogWriter.changed(threadBackend(thread.id));
-  threads = threads.map((t) => t.id === thread.id ? thread : t);
+  catalogWriter.mutate(threadBackend(thread.id), (rows) => rows.map((t) => t.id === thread.id ? thread : t));
 }
 
 /**
@@ -277,10 +256,9 @@ export function updateThreadReadState(
   id: string,
   patch: ThreadReadStatePatch,
 ): void {
-  catalogWriter.changed(threadBackend(id));
-  threads = threads.map((t) =>
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.map((t) =>
     t.id === id ? { ...t, ...patch } : t,
-  );
+  ));
 }
 
 /**
@@ -339,10 +317,9 @@ export function updateThreadPinState(
   pinnedAt: number | undefined,
   pinGroup: number | undefined,
 ): void {
-  catalogWriter.changed(threadBackend(id));
-  threads = threads.map((t) =>
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.map((t) =>
     t.id === id ? { ...t, pinnedAt, pinGroup } : t,
-  );
+  ));
 }
 
 /**
@@ -356,13 +333,12 @@ export function updateThreadPinState(
  */
 export function updateThreadGroupState(rows: readonly Thread[]): void {
   if (rows.length === 0) return;
-  for (const backend of new Set(rows.map((row) => threadBackend(row.id)))) catalogWriter.changed(backend);
   const byId = new Map(rows.map((row) => [row.id, row] as const));
-  threads = threads.map((t) => {
+  catalogWriter.mutate(rows.map((row) => threadBackend(row.id)), (current) => current.map((t) => {
     const row = byId.get(t.id);
     if (row === undefined) return t;
     return { ...t, groupId: row.groupId, pinnedAt: row.pinnedAt, pinGroup: row.pinGroup };
-  });
+  }));
 }
 
 /**
@@ -379,14 +355,12 @@ export function clearThreadGroupMembership(groupId: string): void {
       pane.replaceThread({ ...pane.thread, groupId: undefined, pinnedAt: undefined, pinGroup: undefined });
     }
   }
-  let changed = false;
-  const next = threads.map((t) => {
-    if (t.groupId !== groupId) return t;
-    changed = true;
-    catalogWriter.changed(threadBackend(t.id));
-    return { ...t, groupId: undefined, pinnedAt: undefined, pinGroup: undefined };
-  });
-  if (changed) threads = next;
+  // A group's members live on the group's computer; a read of it in flight
+  // may carry members this client has not listed yet.
+  const backends = [threadGroupBackend(groupId), ...threads.filter((t) => t.groupId === groupId).map((t) => threadBackend(t.id))];
+  catalogWriter.mutate(backends, (rows) => rows.map((t) => t.groupId === groupId
+    ? { ...t, groupId: undefined, pinnedAt: undefined, pinGroup: undefined }
+    : t));
 }
 
 /**

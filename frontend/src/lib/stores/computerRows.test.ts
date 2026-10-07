@@ -6,10 +6,10 @@ import { takePinnedBackend, detachBackend } from '../transport/backends';
 import { __resetEntityIndexForTest, currentThreadRow, noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
 import { addProjectLocal, getProjects, isLoaded, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import { getToasts } from './toast.svelte';
-import { loadThreads, readThreadRows } from './threads.svelte';
+import { loadThreads } from './threads.svelte';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { preferredProjectTarget, rememberProjectTarget } from './projectTargets';
-import { readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
 import type { ProjectWithCounts, Thread } from '../types/models';
 
 function row(id: string): ProjectWithCounts {
@@ -22,11 +22,13 @@ afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
 describe('unavailable computer catalogs', () => {
   it.each([false, true])('admits only the newest owner of a moved thread (home owns it: %s)', async (homeOwns) => {
     stageBackend({ id: 'gpu' });
-    const result = await readComputerRows(async () => {
+    const commits: ComputerRows<Thread>[] = [];
+    expect(await readComputerRows(async () => {
       const home = takePinnedBackend() !== 'gpu';
       return [{ id: 'moved', ownershipEpoch: home === homeOwns ? 2 : 1 }] as Thread[];
-    }, (row, backend) => { noteThread(row.id, backend, row.ownershipEpoch); }, undefined, currentThreadRow);
-    expect(result!.rows).toEqual([{ id: 'moved', ownershipEpoch: 2 }]);
+    }, (row, backend) => { noteThread(row.id, backend, row.ownershipEpoch); }, (result) => { commits.push(result); },
+    { admit: currentThreadRow })).toBe(true);
+    expect(commits.map((result) => result.rows)).toEqual([[{ id: 'moved', ownershipEpoch: 2 }]]);
     expect(resolveThreadBackend('moved')).toBe(homeOwns ? '' : 'gpu');
   });
 
@@ -57,12 +59,14 @@ describe('unavailable computer catalogs', () => {
   it('drops late answers from a computer removed during the read', async () => {
     stageBackend({ id: 'gpu' });
     const remote = deferred<string[]>();
-    const read = readComputerRows(async () => takePinnedBackend() === 'gpu' ? remote.promise : ['mac'], () => {});
+    const commits: ComputerRows<string>[] = [];
+    const read = readComputerRows(async () => takePinnedBackend() === 'gpu' ? remote.promise : ['mac'], () => {},
+      (result) => { commits.push(result); });
     detachBackend('gpu');
     remote.resolve(['removed']);
-    const result = await read;
-    expect(result!.rows).toEqual(['mac']);
-    expect(retainUnavailableComputerRows(['old-gpu'], result!, () => 'gpu')).toEqual(['mac']);
+    await read;
+    expect(commits.map((result) => result.rows)).toEqual([['mac']]);
+    expect(retainUnavailableComputerRows(['old-gpu'], commits[0], () => 'gpu')).toEqual(['mac']);
   });
 
   it('does not hold a healthy computer behind the first host’s cold-start dial', async () => {
@@ -150,12 +154,12 @@ describe('unavailable computer catalogs', () => {
     const read = setBindingMock('ListThreads', () => old.promise);
     const startup = loadThreads();
     read.mockImplementation(() => next.promise);
-    const reconnect = readThreadRows();
+    const reconnect = loadThreads();
     const current = [{ id: 'saved-pane', ownershipEpoch: 1 }] as Thread[];
     if (winnerFirst) { next.resolve(current); await reconnect; }
     old.resolve([]);
     if (!winnerFirst) next.resolve(current);
-    expect(await startup).toEqual(current);
-    expect((await reconnect).rows).toEqual(current);
+    expect((await startup).map((thread) => thread.id)).toEqual(['saved-pane']);
+    expect((await reconnect).map((thread) => thread.id)).toEqual(['saved-pane']);
   });
 });

@@ -6,6 +6,7 @@
   // same computer already ticks it. A failed load shows its error and a
   // Retry; the catalog store keeps retrying on its own meanwhile.
   import type { BackendKey } from '../../transport/backendKey';
+  import type { CatalogKind } from '../../stores/catalogLoad.svelte';
   import { isTerminalConnectionStatus } from '../../transport/connectionRefusal';
   import { startupStatusText, startupStepText } from '../../transport/startupProgress';
   import { retryCatalogLoad } from '../../stores/catalogLoad.svelte';
@@ -18,17 +19,19 @@
     backend: BackendKey;
     /** The computer's name when several are attached; '' otherwise. */
     name: string;
+    /** The first catalog that has not loaded: projects before threads. */
+    kind: CatalogKind;
     /** The failed load's message, or null while loading. */
     error: string | null;
   }
 
-  let { backend, name, error }: Props = $props();
+  let { backend, name, kind, error }: Props = $props();
 
   let status = $derived(getTransportStatusFor(backend));
   let startup = $derived(status.status === 'starting' ? status.startup : undefined);
   let label = $derived.by(() => {
     if (startup) return startupStatusText(startup);
-    if (status.status === 'connected' || status.status === 'disconnected') return 'Loading projects…';
+    if (status.status === 'connected' || status.status === 'disconnected') return `Loading ${kind}…`;
     if (isTerminalConnectionStatus(status.status)) return 'Not connected.';
     return 'Connecting…';
   });

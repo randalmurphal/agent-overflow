@@ -164,16 +164,15 @@ export async function hydrateWorkflowAttention(): Promise<void> {
 
 async function readRuns(all: boolean): Promise<void> {
   const revision = ++listRevision;
-  const result = await readComputerRows<WorkItem>(
+  await readComputerRows<WorkItem>(
     () => all ? WorkflowListItems('') : WorkflowListUnresolvedItems(''),
     (item, backend) => {
       noteWorkflowItem(item.id, backend);
       if (item.projectId) noteProject(item.projectId, backend);
       if (item.triageThreadId) noteThread(item.triageThreadId, backend);
-    }, undefined, undefined, (late) => {
-      if (revision === listRevision) runs = retainUnavailableComputerRows(runs, late, (item) => workflowItemBackend(item.id));
+    }, (result) => {
+      if (revision === listRevision) runs = retainUnavailableComputerRows(runs, result, (item) => workflowItemBackend(item.id));
     });
-  if (result && revision === listRevision) runs = retainUnavailableComputerRows(runs, result, (item) => workflowItemBackend(item.id));
 }
 
 /**

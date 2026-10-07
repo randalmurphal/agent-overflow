@@ -3,9 +3,12 @@ export class ReadDeadlineError extends Error {
 }
 
 // Bound optional startup reads. The original promise remains observed; a late
-// answer is discarded unless its owner supplies a generation-checked callback.
+// answer is discarded unless its owner supplies a generation-checked callback,
+// and a late failure is reported only to `onLateFailure`.
 // Never wrap a mutation: its outcome must remain visible.
-export function readBeforeDeadline<T>(read: PromiseLike<T>, milliseconds: number, onLate?: (value: T) => void): Promise<T> {
+export function readBeforeDeadline<T>(
+  read: PromiseLike<T>, milliseconds: number, onLate?: (value: T) => void, onLateFailure?: (error: unknown) => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let expired = false;
     const timer = setTimeout(() => { expired = true; reject(new ReadDeadlineError()); }, milliseconds);
@@ -15,6 +18,10 @@ export function readBeforeDeadline<T>(read: PromiseLike<T>, milliseconds: number
         try { onLate?.(value); } catch (error) { console.error('Failed to apply a late computer response:', error); }
       }
       else resolve(value);
-    }, (error) => { clearTimeout(timer); reject(error); });
+    }, (error) => {
+      clearTimeout(timer);
+      if (expired) onLateFailure?.(error);
+      else reject(error);
+    });
   });
 }

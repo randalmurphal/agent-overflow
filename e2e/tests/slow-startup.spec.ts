@@ -4,7 +4,9 @@
 // page's 'starting' transport state, the startup screen and the sidebar's
 // catalog rows, which name the boot phase and never present an unloaded
 // catalog as empty. The second case delays every ListThreads and
-// ListProjects answer past the startup read deadline.
+// ListProjects answer past the startup read deadline. The third deletes a
+// thread while every ListThreads answer is held inside the deadline: the
+// sidebar must load from those answers with the deletion applied.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -159,6 +161,78 @@ test('a catalog answering after the startup deadline shows loading, then its row
         + ` catalog-reads=${delayed}`,
     });
     console.log(`[slow-startup] ${test.info().annotations.at(-1)!.description}`);
+    expect(problems()).toEqual([]);
+  } finally {
+    await page.close();
+    await harness.close();
+  }
+});
+
+test('a thread deleted while the thread catalog is out does not strand it loading', async ({ page }) => {
+  test.setTimeout(60_000);
+  const harness = await launchHarness();
+  const problems = consoleProblems(page);
+  try {
+    const turns = [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }];
+    const seeded = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{
+      name: 'pushed-during-read', repo: {}, threads: [
+        { title: 'Kept conversation', provider: 'claude', turns },
+        { title: 'Deleted conversation', provider: 'claude', turns },
+      ],
+    }] });
+    const deletedId = seeded.projects[0].threadIds[1];
+    // The page reads the thread catalog twice on a cold load: at boot and on
+    // its first hello. Hold both answers, which list both threads, delete
+    // one, and release them inside the startup deadline once the deletion's
+    // thread:updated frame has reached the page, as on a backend whose
+    // post-boot work slows its list reads. No read starts after the push,
+    // so only those two answers can load the catalog.
+    const BOOT_AND_HELLO_READS = 2;
+    const heldAnswers: string[] = [];
+    let readsBeforePush = 0;
+    let readsAfterPush = 0;
+    let deleted = false;
+    let pushed = false;
+    const pending = new Set<string>();
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      const release = () => { for (const answer of heldAnswers.splice(0)) socket.send(answer); };
+      socket.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+        if (frame.type === 'rpc' && frame.id && frame.methodId === LIST_THREADS) {
+          if (pushed) readsAfterPush++;
+          else {
+            readsBeforePush++;
+            pending.add(frame.id);
+          }
+        }
+        server.send(message);
+      });
+      server.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string; channel?: string; events?: Array<{ channel?: string }> };
+        if (frame.type === 'rpc' && frame.id && pending.delete(frame.id)) {
+          heldAnswers.push(String(message));
+          if (pushed) release();
+          else if (!deleted && heldAnswers.length === BOOT_AND_HELLO_READS) {
+            deleted = true;
+            void harness.rpc('DeleteThread', deletedId);
+          }
+          return;
+        }
+        socket.send(message);
+        const events = frame.type === 'batch' ? frame.events ?? [] : frame.type === 'event' ? [frame] : [];
+        if (!pushed && deleted && events.some((event) => event.channel === 'thread:updated')) {
+          pushed = true;
+          setTimeout(release, 300);
+        }
+      });
+    });
+
+    await harness.open(page);
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'Kept conversation' })).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.getByTestId('sidebar-catalog-status')).toHaveCount(0);
+    await expect(page.getByTestId('thread-row').filter({ hasText: 'Deleted conversation' })).toHaveCount(0);
+    expect({ readsBeforePush, readsAfterPush, pushed }).toEqual({ readsBeforePush: BOOT_AND_HELLO_READS, readsAfterPush: 0, pushed: true });
     expect(problems()).toEqual([]);
   } finally {
     await page.close();

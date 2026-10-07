@@ -148,8 +148,10 @@ describe('<ProjectsSection>', () => {
 
       await refreshProjects();
       await tick();
-      // Threads have not answered: still incomplete, still not empty.
+      // Threads have not answered: still incomplete, still not empty, and
+      // the row names the list it is waiting for.
       expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
       await refreshThreads();
