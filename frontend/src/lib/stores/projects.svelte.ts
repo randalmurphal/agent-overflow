@@ -152,7 +152,7 @@ export function projectRepoKey(projectId: string): string {
 export function checkoutMatchesProject(
   projectId: string,
   computer: BackendKey,
-  identity: Pick<Project, 'remoteURL' | 'rootCommit'>,
+  identity: Pick<Project, 'repositoryID'>,
 ): boolean {
   const candidate: ProjectWithCounts = {
     project: {

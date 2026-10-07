@@ -13,10 +13,13 @@ const MAX_REMEMBERED_PROJECTS = 512;
 function readTargets(): Map<string, string> {
   const raw = readFrontendValue(STORAGE_KEY);
   if (!Array.isArray(raw)) return new Map();
-  return new Map(raw.slice(-MAX_REMEMBERED_PROJECTS).filter(
+  const rows = raw.slice(-MAX_REMEMBERED_PROJECTS).filter(
     (row): row is [string, string] => Array.isArray(row) && row.length === 2
-      && row.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 4096),
-  ));
+      && row.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 4096)
+      && (row[0].startsWith('forge:') || row[0].startsWith('project:')),
+  );
+  if (rows.length !== raw.length) writeFrontendValue(STORAGE_KEY, rows);
+  return new Map(rows);
 }
 
 function keyFor(project: Project): string {
@@ -35,19 +38,33 @@ export function rememberProjectTarget(project: Project, backend: BackendKey): vo
 }
 
 export function preferredProjectTarget(project: Project): Project {
-  const remembered = readTargets().get(keyFor(project));
-  if (!remembered) return project;
+  const targets = readTargets();
+  if (targets.size === 0) return project;
+  const members = projectMembers(project.id);
+  const key = keyFor(project);
+  let rememberedKey = targets.has(key) ? key : undefined;
+  if (!rememberedKey) {
+    rememberedKey = members.map(row => `project:${row.project.id}`).find(candidate => targets.has(candidate));
+  }
+  if (!rememberedKey) return project;
+  const remembered = targets.get(rememberedKey)!;
   const computer = getAttachedBackends().find((entry) => entry.backendId === remembered);
   if (!computer) {
-    // Forgetting a computer also retires its default. Temporary outages keep
-    // the registry entry, so they never reach this branch or change a target.
-    const targets = readTargets();
-    targets.delete(keyFor(project));
+    // Forgetting a computer retires all its defaults; outages keep its entry.
+    for (const [candidate, target] of targets) if (target === remembered) targets.delete(candidate);
     writeFrontendValue(STORAGE_KEY, [...targets]);
     return project;
   }
-  const member = projectMembers(project.id).find((row) =>
+  const member = members.find((row) =>
     (projectBackend(row.project.id) ?? HOME_BACKEND) === computer.id);
-  if (!member) throw new Error('The preferred computer has no available checkout for this project. Choose another computer.');
+  if (!member) {
+    if (rememberedKey !== key) return project;
+    throw new Error('The preferred computer has no available checkout for this project. Choose another computer.');
+  }
+  if (rememberedKey !== key) {
+    targets.delete(rememberedKey);
+    targets.set(key, remembered);
+    writeFrontendValue(STORAGE_KEY, [...targets]);
+  }
   return member.project;
 }

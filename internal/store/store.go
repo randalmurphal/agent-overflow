@@ -402,30 +402,18 @@ func (s *Store) logCheckpoint(moment string, res CheckpointResult, err error) {
 
 // runMigrations is defined in migrate.go.
 
-// ThreadOrigin is a workspace's git coordinates at one moment: the moment a
-// thread was created. It is a historical record, not live state — the live
-// branch of a checkout is Thread.Branch, which moves with the working tree.
-//
-// Every field is optional and empty means "not known", never "none" and never
-// an error. A workspace outside a repository, a detached HEAD, a repository
-// with no remote, and any thread created before migration v78 all produce
-// empty values, and a consumer that cannot proceed without them has to say so
-// itself rather than assume they are there.
-//
-// It exists so a thread can be forked or transferred later: reproducing where
-// a thread grew from needs the repository, the branch and the commit, and by
-// the time anyone asks, the branch has moved and the workspace may hold
-// something else. Observed once, at creation, because that is the only moment
-// the answer is still true.
+// ThreadOrigin records the branch and commit observed when a thread was created.
+// It is write-once provenance; Thread.Branch tracks the live working tree.
+// Empty fields mean unknown, as for a plain directory or an unborn branch.
+// Repository identity belongs to the project, never to a copied remote URL.
 type ThreadOrigin struct {
 	Branch     string `json:"branch,omitempty"`
-	RemoteURL  string `json:"remoteUrl,omitempty"`
 	HeadCommit string `json:"headCommit,omitempty"`
 }
 
 // IsZero reports whether nothing at all was observed.
 func (o ThreadOrigin) IsZero() bool {
-	return o.Branch == "" && o.RemoteURL == "" && o.HeadCommit == ""
+	return o.Branch == "" && o.HeadCommit == ""
 }
 
 // Thread represents a conversation thread.
@@ -608,22 +596,12 @@ type Project struct {
 	CreatedAt    int64  `json:"createdAt"`
 	UpdatedAt    int64  `json:"updatedAt"`
 	Archived     bool   `json:"archived"`
-	// RemoteURL and RootCommit are the checkout's DERIVED repository
-	// identity, computed by the backend that owns the disk: the `origin`
-	// remote exactly as git reports it, and the lexicographically smallest
-	// root commit of HEAD. They exist so a client attached to several
-	// backends can recognise the same repository checked out on two
-	// machines as one project. Nothing here normalises the URL — the
-	// client owns that, because it is the side doing the matching.
-	//
-	// Empty is a first-class value, never an error: a non-git directory, a
-	// repository with no origin, and an unborn HEAD read as "not known".
-	RemoteURL  string `json:"remoteURL,omitempty"`
-	RootCommit string `json:"rootCommit,omitempty"`
-	// IdentityError is why the last identity read failed (git refused or
-	// could not read the checkout), "" after a successful read. RemoteURL
-	// and RootCommit keep their last good values beside it.
-	IdentityError string `json:"identityError,omitempty"`
+	// RepositoryID is the only cross-computer repository key, verified by its forge.
+	RepositoryID string `json:"repositoryID,omitempty"`
+	// IdentitySource invalidates a cached ID when this checkout changes origin.
+	// It is backend-private and never participates in project matching.
+	IdentitySource string `json:"-"`
+	IdentityError  string `json:"identityError,omitempty"`
 }
 
 // Item represents a persisted timeline entry.

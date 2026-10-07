@@ -2,8 +2,8 @@
 // is one sidebar entry. Covers a project the remote computer creates through
 // session import, and the machine picker's folder flow, which refuses a
 // checkout of another repository and adopts a checkout of the same one.
-// The home checkouts have no origin and the remote clones do, so the entries
-// merge on the root commit. Two harness backends, real pairing and the
+// Matching requires verified forge IDs. The renamed case uses renamed repositories,
+// an SSH alias and a credential-bearing locator. Two harness backends and the
 // production frontend; git runs with each harness home.
 import { expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -11,10 +11,11 @@ import * as path from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { seedForge, expectEveryForgeCallHandled } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
-interface ProjectRow { project: { id: string; name: string; path: string; remoteURL?: string; rootCommit?: string } }
+interface ProjectRow { project: { id: string; name: string; path: string; repositoryID?: string; identityError?: string } }
 interface ImportScan { rows: Array<{ id: string; sessionId: string }> }
 interface ImportProgress { importId: string; done?: boolean; error?: string; status?: string }
 
@@ -43,7 +44,7 @@ async function writeClaudeSession(remote: HarnessApp, workspace: string): Promis
   await writeFile(path.join(dir, `${IMPORT_SESSION}.jsonl`), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
 }
 
-test('one repository at different paths on two computers is one project', async ({ page }) => {
+for (const renamed of [false, true]) test(`one repository at different paths merges using ${renamed ? 'forge ID across a rename' : 'forge ID'}`, async ({ page }) => {
   test.setTimeout(120_000);
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
@@ -58,9 +59,20 @@ test('one repository at different paths on two computers is one project', async 
       })),
     });
     const [picker, imported, other] = seeded.projects;
-    const pickerClone = cloneOnto(remote, picker.path, 'picker-app-checkout', 'https://github.com/me/picker-app');
-    const importClone = cloneOnto(remote, imported.path, 'import-app-checkout', 'https://github.com/me/import-app');
-    const otherClone = cloneOnto(remote, other.path, 'other-app-checkout', 'git@github.com:me/other-app.git');
+    const names = ['picker-app', 'import-app', 'other-app'];
+    await seedForge(home, names.map((name, i) => ({ forge: 'github', project: `me/${name}`, id: i + 101 })));
+    await remote.rpc('HarnessForgeSeed', { repos: names.slice(1).map((name, i) => ({ forge: 'github', project: `me/${name}${renamed ? '-renamed' : ''}`, id: i + 102 })), sshHosts: { 'github-work': 'github.com' } });
+    {
+      for (const [i, project] of seeded.projects.entries()) {
+        harnessGit(home, project.path, 'remote', 'add', 'origin', `https://github.com/me/${names[i]}`);
+        await home.rpc('RefreshProjectIdentity', project.projectId);
+      }
+    }
+    const remoteURL = (name: string) => `https://github.com/me/${name}${renamed ? '-renamed' : ''}`;
+    const pickerClone = cloneOnto(remote, picker.path, 'picker-app-checkout', renamed ? 'https://user:AO_IDENTITY_SECRET@github.com/me/picker-app-renamed' : remoteURL('picker-app'));
+    const importRemote = renamed ? 'git@github-work:me/import-app-renamed.git' : remoteURL('import-app');
+    const importClone = cloneOnto(remote, imported.path, 'import-app-checkout', importRemote);
+    const otherClone = cloneOnto(remote, other.path, 'other-app-checkout', remoteURL('other-app'));
     const draft = await home.rpc<{ id: string }>('CreateThread', { projectId: picker.projectId, title: 'Picker draft', provider: 'claude' });
     await home.rpc('SaveDraft', draft.id, 'Not sent yet', [], [], null);
 
@@ -91,7 +103,7 @@ test('one repository at different paths on two computers is one project', async 
     const done = await remote.waitForEvent<ImportProgress>('session-import:progress', (frame) => frame.importId === run.importId && frame.done === true);
     expect(done.error ?? '').toBe('');
     const remoteImported = (await remote.rpc<ProjectRow[]>('ListProjects')).find((entry) => entry.project.name === 'import-app-checkout');
-    expect(remoteImported?.project).toMatchObject({ remoteURL: 'https://github.com/me/import-app', rootCommit: expect.stringMatching(/^[0-9a-f]{40}$/) });
+    expect(remoteImported?.project).toMatchObject({ repositoryID: 'github:github.com:102' });
     await expect(page.getByTestId('thread-row').filter({ hasText: IMPORT_PROMPT })).toBeVisible();
     await expect(labels.filter({ hasText: /^import-app$/ })).toHaveCount(1);
     await expect(labels.filter({ hasText: 'import-app-checkout' })).toHaveCount(0);
@@ -110,9 +122,16 @@ test('one repository at different paths on two computers is one project', async 
     await pathInput.fill(otherClone);
     await expect(add).toBeEnabled();
     await add.click();
-    await expect(page.getByTestId('add-project-error')).toHaveText('That folder is a checkout of github.com/me/other-app, not picker-app.');
+    await expect(page.getByTestId('add-project-error')).toHaveText("That folder isn't a verified checkout of picker-app.");
     await expect(modal).toBeVisible();
     expect((await remote.rpc<ProjectRow[]>('ListProjects')).some((entry) => entry.project.path === otherClone)).toBe(false);
+
+    // Shared history and even an identical origin cannot stand in for a verified ID.
+    await expect(remote.rpc('CreateProjectCheckout', pickerClone, { repositoryID: 'github:github.com:101' })).rejects.toThrow(/cannot verify that checkout/);
+    expect((await remote.rpc<ProjectRow[]>('ListProjects')).some(row => row.project.path === pickerClone)).toBe(false);
+    await remote.rpc('HarnessForgeSeed', { repos: names.map((name, i) => ({ forge: 'github', project: `me/${name}${renamed ? '-renamed' : ''}`, id: i + 101 })), sshHosts: { 'github-work': 'github.com' } });
+    // The bounded failure cache expires and verification can recover.
+    await expect.poll(async () => (await remote!.rpc<{ repositoryID?: string }>('InspectProjectFolder', pickerClone)).repositoryID, { timeout: 15_000 }).toBe('github:github.com:101');
 
     await pathInput.fill(pickerClone);
     await expect(add).toBeEnabled();
@@ -120,10 +139,25 @@ test('one repository at different paths on two computers is one project', async 
     await expect(modal).not.toBeVisible();
     await expect(page.getByTestId('machine-picker-trigger')).toContainText('Desktop');
     const remoteProjects = await remote.rpc<ProjectRow[]>('ListProjects');
-    expect(remoteProjects.find((entry) => entry.project.name === 'picker-app-checkout')?.project.remoteURL).toBe('https://github.com/me/picker-app');
+    expect(remoteProjects.find((entry) => entry.project.name === 'picker-app-checkout')?.project.repositoryID).toBe('github:github.com:101');
     await expect(labels.filter({ hasText: /^picker-app$/ })).toHaveCount(1);
     await expect(labels.filter({ hasText: 'picker-app-checkout' })).toHaveCount(0);
     await expect(labels.filter({ hasText: 'other-app' })).toHaveCount(1);
+    if (renamed) {
+      for (const retired of ['AO_IDENTITY_SECRET', 'remoteURL', 'rootCommit', 'identitySource', 'https://github.com']) expect(JSON.stringify(remoteProjects)).not.toContain(retired);
+      const homeProjects = await home.rpc<ProjectRow[]>('ListProjects');
+      const source = homeProjects.find(row => row.project.id === picker.projectId)!.project;
+      const destination = remoteProjects.find(row => row.project.path === pickerClone)!.project;
+      expect(destination.repositoryID).toBe(source.repositoryID);
+      expect(destination.repositoryID).toBe('github:github.com:101');
+      // A direct API caller cannot bypass the picker check.
+      await expect(remote.rpc('CreateProjectCheckout', otherClone, { repositoryID: source.repositoryID })).rejects.toThrow(/not a checkout/);
+      await page.reload();
+      await expect(labels.filter({ hasText: /^picker-app$/ })).toHaveCount(1);
+      await expect(labels.filter({ hasText: 'picker-app-checkout' })).toHaveCount(0);
+    }
+    await expectEveryForgeCallHandled(home);
+    await expectEveryForgeCallHandled(remote);
     expect(errors).toEqual([]);
   } finally {
     try {

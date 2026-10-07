@@ -29,6 +29,7 @@ var (
 		"WorkflowFootprint",
 	}
 	projectAppWrites = []string{
+		"RefreshProject", "CreateCheckout",
 		"Archive",
 		"Create",
 		"EnsureForWorkspace",

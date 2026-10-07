@@ -1,12 +1,12 @@
 // Path-based project operations capture their computer before any await.
 // Two hosts may have exactly the same path; neither browse nor duplicate
 // detection may infer ownership from that path or the currently focused pane.
-import { BrowseDirectory, CreateProject, InspectProjectFolder } from './bindings';
+import { BrowseDirectory, CreateProject, InspectProjectFolder, CreateProjectCheckout, RefreshProjectIdentity } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { noteProject, projectBackend } from '../transport/entityIndex';
-import { addProjectLocal, checkoutMatchesProject, getProject, getProjects } from './projects.svelte';
-import { hasRepoIdentity, normalizeRemoteURL } from '../utils/repoKey';
+import { addProjectLocal, updateProjectLocal, checkoutMatchesProject, getProject, getProjects } from './projects.svelte';
+import { hasRepoIdentity } from '../utils/repoKey';
 import type { Project } from '../types/models';
 
 export function browseComputerDirectory(backend: BackendKey, path: string) {
@@ -35,7 +35,10 @@ export function projectAtComputerPath(backend: BackendKey, path: string) {
  */
 export async function checkoutRefusal(projectId: string, backend: BackendKey, path: string): Promise<string | null> {
   const project = getProject(projectId)?.project;
-  if (!project || !hasRepoIdentity(project)) return null;
+  if (!project) return 'The source project is no longer available.';
+  if (!hasRepoIdentity(project)) {
+    return project.identityError ? `Could not verify the source project: ${project.identityError}` : null;
+  }
   let folder;
   try {
     folder = await withBackendTarget(backend, () => InspectProjectFolder(path));
@@ -45,12 +48,26 @@ export async function checkoutRefusal(projectId: string, backend: BackendKey, pa
   const expected = repositoryName(project);
   if (!folder.repository) return `That folder isn't a git repository, so it can't be ${expected}.`;
   if (checkoutMatchesProject(projectId, backend, folder)) return null;
-  const actual = normalizeRemoteURL(folder.remoteURL ?? '');
-  return actual === ''
-    ? `That folder isn't a checkout of ${expected}.`
-    : `That folder is a checkout of ${actual}, not ${expected}.`;
+  if (folder.identityError) return `Could not verify that checkout: ${folder.identityError}`;
+  return `That folder isn't a verified checkout of ${expected}.`;
 }
 
-function repositoryName(project: Project): string {
-  return normalizeRemoteURL(project.remoteURL ?? '') || project.name;
+function repositoryName(project: Project): string { return project.name; }
+
+/** Refresh the source and validate registration on the destination backend. */
+export async function addComputerCheckout(projectId: string, backend: BackendKey, path: string) {
+  const sourceBackend = projectBackend(projectId);
+  if (sourceBackend === undefined) throw new Error('The source computer is no longer attached');
+  const source = await withBackendTarget(sourceBackend, () => RefreshProjectIdentity(projectId));
+  updateProjectLocal(source);
+  const refusal = await checkoutRefusal(projectId, backend, path);
+  if (refusal) throw new Error(refusal);
+  const expected = {
+    repositoryID: source.repositoryID ?? '', identityError: source.identityError ?? '',
+  };
+  const project = await withBackendTarget(backend, () => CreateProjectCheckout(path, expected));
+  noteProject(project.id, backend);
+  if (getProject(project.id)) updateProjectLocal(project);
+  else addProjectLocal(project);
+  return project;
 }

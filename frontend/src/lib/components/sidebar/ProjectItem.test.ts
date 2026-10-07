@@ -144,11 +144,11 @@ describe('ProjectItem identity read failure', () => {
     const toggle = () => getByRole('button', { name: /^(Expand|Collapse) Project$/ }).getAttribute('aria-label');
     const before = toggle();
     const flag = getByTestId('project-item-identity-error');
-    expect(flag.getAttribute('title')).toBe("Git couldn't read /work/web: detected dubious ownership");
+    expect(flag.getAttribute('title')).toBe("Could not fully verify /work/web: detected dubious ownership");
     // A tap shows the reason where hover cannot, without toggling the row.
     await fireEvent.click(flag);
     expect(getToasts().map((toast) => [toast.type, toast.message]))
-      .toEqual([['warning', "Git couldn't read /work/web: detected dubious ownership"]]);
+      .toEqual([['warning', "Could not fully verify /work/web: detected dubious ownership"]]);
     expect(toggle()).toBe(before);
 
     updateProjectLocal({ ...failed, identityError: undefined });

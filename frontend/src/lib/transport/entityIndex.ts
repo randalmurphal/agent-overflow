@@ -313,6 +313,8 @@ function takeOwned(map: Map<string, BackendKey>, backendId: BackendKey): string[
 const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
   2367642633: 'thread', // AttachThreadWorktree
   969543070: 'project', // CreateProject
+  617214578: 'project', // CreateProjectCheckout
+  2745242207: 'project', // RefreshProjectIdentity
   2579322833: 'thread', // CreateThread
   2246569884: 'thread', // ForkSideChat
   4063914461: 'thread', // ForkThread

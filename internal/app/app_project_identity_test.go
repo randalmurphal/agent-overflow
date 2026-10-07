@@ -1,6 +1,8 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil/mockexec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,15 +16,16 @@ import (
 func TestProjectIdentityRefreshAnnouncesAnOriginAddedAfterCreation(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
+	mockRepositoryIdentity(t, app)
 	repo := initMainGitRepo(t)
 	created, err := app.CreateProject(repo)
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if created.RemoteURL != "" || created.RootCommit == "" {
-		t.Fatalf("created identity = %q/%q, want a root and no origin yet", created.RemoteURL, created.RootCommit)
+	if created.RepositoryID != "" || created.IdentityError == "" {
+		t.Fatalf("created identity = %+v, want verification unavailable without origin", created)
 	}
-	const origin = "git@example.com:me/app.git"
+	const origin = "git@github.com:me/app.git"
 	testutil.RunGit(t, repo, "remote", "add", "origin", origin)
 
 	announced := make(chan triage.ProjectUpdateEvent, 8)
@@ -40,7 +43,7 @@ func TestProjectIdentityRefreshAnnouncesAnOriginAddedAfterCreation(t *testing.T)
 	}
 	select {
 	case evt := <-announced:
-		if evt.Action != triage.ProjectActionFull || evt.Project == nil || evt.Project.ID != created.ID || evt.Project.RemoteURL != origin {
+		if evt.Action != triage.ProjectActionFull || evt.Project == nil || evt.Project.ID != created.ID || evt.Project.RepositoryID != "github:github.com:123" {
 			t.Fatalf("announced %+v, want the full row of %s with origin %q", evt, created.ID, origin)
 		}
 	case <-time.After(30 * time.Second):
@@ -56,7 +59,14 @@ func TestProjectIdentityRefreshAnnouncesAnOriginAddedAfterCreation(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
-	if stored.RemoteURL != origin || stored.RootCommit != created.RootCommit || stored.IdentityError != "" {
-		t.Fatalf("stored identity = %+v, want origin %q and root %q", stored, origin, created.RootCommit)
+	if stored.RepositoryID != "github:github.com:123" || stored.IdentityError != "" {
+		t.Fatalf("stored identity = %+v, want verified repository ID", stored)
 	}
+}
+
+func mockRepositoryIdentity(t *testing.T, app *App) {
+	t.Helper()
+	fake := filepath.Join(t.TempDir(), "identity-tool")
+	mockexec.Write(t, fake, "#!/bin/sh\nif [ \"$AO_FORGE_CLI\" = ssh ]; then for host do :; done; printf 'hostname %s\\n' \"$host\"; else printf '{\"id\":123}'; fi\n")
+	app.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: fake}
 }

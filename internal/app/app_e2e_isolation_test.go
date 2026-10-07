@@ -50,6 +50,8 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
 
 	isolation := kerneltest.IsolateProcessSpawns(t)
+	// Repository identity enrichment must not run a real forge CLI.
+	app.forgeCLIs.isolated = true
 	// The process home is shared by every test. Each fixture gets its own
 	// provider home through the seam every app-layer provider path resolves
 	// through (providerHome), so provider state one test writes is never

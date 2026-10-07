@@ -153,9 +153,9 @@ describe('projects store', () => {
 });
 
 describe('projects store — merged entries (wave 7d)', () => {
-  const home = () => makeProject('p-home', { name: 'app', path: '/home/me/app', remoteURL: 'git@github.com:me/app.git' });
-  const laptop = () => makeProject('p-laptop', { name: 'app', path: '/Users/me/app', remoteURL: 'https://github.com/me/app' });
-  const solo = () => makeProject('p-solo', { name: 'solo', path: '/Users/me/solo', remoteURL: 'https://github.com/me/solo' });
+  const home = () => makeProject('p-home', { name: 'app', path: '/home/me/app', repositoryID: 'github:github.com:1' });
+  const laptop = () => makeProject('p-laptop', { name: 'app', path: '/Users/me/app', repositoryID: 'github:github.com:1' });
+  const solo = () => makeProject('p-solo', { name: 'solo', path: '/Users/me/solo', repositoryID: 'github:github.com:3' });
 
   beforeEach(() => {
     resetProjectsForTest();
@@ -214,23 +214,23 @@ describe('projects store — merged entries (wave 7d)', () => {
     expect(getProjectLabelText('p-laptop')).toBe('app');
   });
 
-  it('merges a remoteless checkout with the remote checkout of the same history', async () => {
+  it('merges two checkouts with the same verified identity', async () => {
     stageBackend();
-    const mac = makeProject('p-home', { name: 'app', remoteURL: 'git@github.com:me/app.git', rootCommit: 'abc' });
-    const desktop = makeProject('l-desk', { name: 'app', rootCommit: 'abc' });
+    const mac = makeProject('p-home', { name: 'app', repositoryID: 'github:github.com:1' });
+    const desktop = makeProject('l-desk', { name: 'app', repositoryID: 'github:github.com:1' });
     await load([wrap(mac), wrap(desktop)]);
     noteProject('l-desk', 'laptop');
     expect(projectEntries().map((e) => e.project.id)).toEqual(['p-home']);
     expect(projectSiblingOn('p-home', 'laptop')?.project.id).toBe('l-desk');
-    expect(projectRepoKey('l-desk')).toBe('remote:github.com/me/app');
+    expect(projectRepoKey('l-desk')).toBe('forge:github:github.com:1');
   });
 
   it('keeps a second clone on one machine as its own entry', async () => {
     stageBackend();
-    const remote = 'https://github.com/me/app';
-    const first = makeProject('p-home', { name: 'app', path: '/a/app', remoteURL: remote, createdAt: 1 });
-    const second = makeProject('p-home-2', { name: 'app', path: '/b/app', remoteURL: remote, createdAt: 2 });
-    const laptop = makeProject('l-app', { name: 'app', remoteURL: remote, createdAt: 3 });
+    const remote = 'github:github.com:1';
+    const first = makeProject('p-home', { name: 'app', path: '/a/app', repositoryID: remote, createdAt: 1 });
+    const second = makeProject('p-home-2', { name: 'app', path: '/b/app', repositoryID: remote, createdAt: 2 });
+    const laptop = makeProject('l-app', { name: 'app', repositoryID: remote, createdAt: 3 });
     await load([wrap(second, 4), wrap(first, 1), wrap(laptop, 2)]);
     noteProject('l-app', 'laptop');
     expect(projectEntries().map((e) => e.project.id)).toEqual(['p-home-2', 'p-home']);
@@ -244,10 +244,10 @@ describe('projects store — merged entries (wave 7d)', () => {
 
   it('lets a live member represent the entry when the home member is archived', async () => {
     stageBackend();
-    const remote = 'https://github.com/me/app';
+    const remote = 'github:github.com:1';
     await load([
-      wrap(makeProject('p-home', { name: 'app', remoteURL: remote, archived: true })),
-      wrap(makeProject('l-app', { name: 'app', remoteURL: remote })),
+      wrap(makeProject('p-home', { name: 'app', repositoryID: remote, archived: true })),
+      wrap(makeProject('l-app', { name: 'app', repositoryID: remote })),
     ]);
     noteProject('l-app', 'laptop');
     expect(projectEntries().map((e) => e.project.id)).toEqual(['l-app']);
@@ -256,11 +256,10 @@ describe('projects store — merged entries (wave 7d)', () => {
 
   it('matches a candidate checkout by the rule entries merge on', async () => {
     stageBackend();
-    const mac = makeProject('p-home', { remoteURL: 'git@github.com:me/app.git', rootCommit: 'abc' });
+    const mac = makeProject('p-home', { repositoryID: 'github:github.com:1' });
     await load([wrap(mac), wrap(makeProject('p-plain'))]);
-    expect(checkoutMatchesProject('p-home', 'laptop', { remoteURL: 'https://github.com/me/app' })).toBe(true);
-    expect(checkoutMatchesProject('p-home', 'laptop', { rootCommit: 'abc' })).toBe(true);
-    expect(checkoutMatchesProject('p-home', 'laptop', { remoteURL: 'https://github.com/me/other', rootCommit: 'abc' })).toBe(false);
+    expect(checkoutMatchesProject('p-home', 'laptop', { repositoryID: 'github:github.com:1' })).toBe(true);
+    expect(checkoutMatchesProject('p-home', 'laptop', { repositoryID: 'github:github.com:2' })).toBe(false);
     expect(checkoutMatchesProject('p-home', 'laptop', {})).toBe(false);
     expect(checkoutMatchesProject('p-plain', 'laptop', {})).toBe(false);
   });

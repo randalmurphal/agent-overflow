@@ -70,7 +70,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     archived, last_read_at, pinned_at, pin_group,
     COALESCE(group_id, ''),
     worktree_setup_state, import_source,
-    created_by_device, created_branch, created_remote_url, created_head_commit,
+    created_by_device, created_branch, created_head_commit,
 	EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -220,7 +220,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
 		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
-		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
+		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 	); err != nil {
 		return Thread{}, err
@@ -338,7 +338,7 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		// threadColumns, and deliberately NOT in updateThreadSetSQL: a
 		// whole-row UpdateThread carrying a stale copy must not be able to
 		// blank a thread's provenance or its git origin.
-		t.CreatedByDevice, t.Origin.Branch, t.Origin.RemoteURL, t.Origin.HeadCommit,
+		t.CreatedByDevice, t.Origin.Branch, "", t.Origin.HeadCommit,
 		nilIfEmpty(t.GroupID),
 		t.GroupID, t.GroupID, t.ProjectID,
 	)

@@ -17,6 +17,8 @@ type Fixture struct {
 	// "ao-viewer".
 	Viewer string `json:"viewer,omitempty"`
 	Repos  []Repo `json:"repos"`
+	// SSHHosts maps an SSH alias to the hostname returned by ssh -G.
+	SSHHosts map[string]string `json:"sshHosts,omitempty"`
 }
 
 // Repo is one GitHub repository or GitLab project.
@@ -30,8 +32,8 @@ type Repo struct {
 	// Host is the web host URLs are built on. Defaults to github.com or
 	// gitlab.com.
 	Host string `json:"host,omitempty"`
-	// ID is the GitLab numeric project id, the other spelling a GitLab
-	// API path may use for the project. Generated when omitted.
+	// ID is the forge repository id. GitLab also accepts it in API paths.
+	// Generated when omitted.
 	ID int64 `json:"id,omitempty"`
 	// Pulls are the repository's pull or merge requests.
 	Pulls []Pull `json:"pulls,omitempty"`
@@ -190,6 +192,11 @@ func (f Fixture) clone() Fixture {
 // the handlers read one complete shape and the caller gets back the ids
 // it did not choose.
 func (f *Fixture) normalize(ids *idSource) error {
+	for alias, host := range f.SSHHosts {
+		if !fixtureSSHHost.MatchString(alias) || !fixtureSSHHost.MatchString(host) {
+			return fmt.Errorf("invalid SSH host mapping")
+		}
+	}
 	if len(f.Repos) == 0 {
 		return errors.New("forge fixture: no repos")
 	}
@@ -219,8 +226,8 @@ func (r *Repo) normalize(ids *idSource) error {
 		if r.Host == "" {
 			r.Host = "github.com"
 		}
-		if r.ID != 0 {
-			return errors.New("id is a GitLab project id")
+		if r.ID == 0 {
+			r.ID = ids.next()
 		}
 	case "gitlab":
 		if strings.Count(r.Project, "/") < 1 {

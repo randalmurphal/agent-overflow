@@ -27,26 +27,26 @@ func TestProjectIdentityErrorMigration(t *testing.T) {
 func TestUpdateProjectIdentityRecordsAndClearsTheError(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	created, err := s.CreateProject(Project{ID: "p", Path: "/p", Name: "p", RemoteURL: "r", RootCommit: "c"})
+	created, err := s.CreateProject(Project{ID: "p", Path: "/p", Name: "p", RepositoryID: "r", IdentitySource: "c"})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	failed, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RemoteURL: "r", RootCommit: "c", Error: "git refused"})
+	failed, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RepositoryID: "r", IdentitySource: "c", Error: "git refused"})
 	if err != nil || !changed {
 		t.Fatalf("record error: changed=%v err=%v", changed, err)
 	}
-	if failed.IdentityError != "git refused" || failed.RemoteURL != "r" || failed.RootCommit != "c" {
+	if failed.IdentityError != "git refused" || failed.RepositoryID != "r" || failed.IdentitySource != "c" {
 		t.Fatalf("row with error = %+v", failed)
 	}
-	if _, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RemoteURL: "r", RootCommit: "c", Error: "git refused"}); err != nil || changed {
+	if _, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RepositoryID: "r", IdentitySource: "c", Error: "git refused"}); err != nil || changed {
 		t.Fatalf("repeat write: changed=%v err=%v, want a no-op", changed, err)
 	}
-	cleared, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RemoteURL: "r", RootCommit: "c"})
+	cleared, changed, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RepositoryID: "r", IdentitySource: "c"})
 	if err != nil || !changed || cleared.IdentityError != "" {
 		t.Fatalf("clear error: row=%+v changed=%v err=%v", cleared, changed, err)
 	}
-	if _, _, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RemoteURL: "r", RootCommit: "c", Error: "again"}); err != nil {
+	if _, _, err := s.UpdateProjectIdentity(created.ID, ProjectIdentity{RepositoryID: "r", IdentitySource: "c", Error: "again"}); err != nil {
 		t.Fatalf("record error again: %v", err)
 	}
 	listed, err := s.ListProjectsWithThreadCounts()

@@ -519,6 +519,8 @@ export {
   CreateProject,
   DeleteProject,
   InspectProjectFolder,
+  RefreshProjectIdentity,
+  CreateProjectCheckout,
   ProjectDeletionPreview,
   ListProjects,
   RenameProject,

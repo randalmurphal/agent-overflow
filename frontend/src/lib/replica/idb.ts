@@ -1,3 +1,4 @@
+import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // Minimal promise-shaped IndexedDB adapter for the thread replica.
 // Deliberately not a general-purpose
 // wrapper — it knows this database's two object stores and nothing else.
@@ -11,7 +12,7 @@
 // have HANDED BACK has to be disposed of when it arrives late — see
 // `openReplicaDb`.
 
-export const REPLICA_DB_VERSION = 1;
+export const REPLICA_DB_VERSION = 3;
 export const THREADS_STORE = 'threads';
 export const META_STORE = 'meta';
 /** Key of the identity record inside META_STORE. */
@@ -199,6 +200,15 @@ export function openReplicaDb(name: string): Promise<IDBDatabase> {
           const db = request.result;
           if (!db.objectStoreNames.contains(THREADS_STORE)) db.createObjectStore(THREADS_STORE);
           if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
+          // Rewrite catalog metadata without discarding explicitly loaded history.
+          const meta = request.transaction!.objectStore(META_STORE);
+          for (const key of ['catalog:projects', 'catalog:threads']) {
+            const read = meta.get(key);
+            read.onsuccess = () => {
+              const safe = safeRepositoryMetadata(read.result);
+              if (safe !== read.result) meta.put(safe, key);
+            };
+          }
         };
         request.onsuccess = () => {
           const db = request.result;

@@ -503,23 +503,23 @@ func TestUpdateProjectSortPositionsBumpsUpdatedAt(t *testing.T) {
 func TestCreateProjectRoundTripsRepositoryIdentity(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/ident", "Ident")
-	p.RemoteURL = "git@github.com:owner/repo.git"
-	p.RootCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567"
+	p.RepositoryID = "github:github.com:1"
+	p.IdentitySource = "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567"
 	created, err := s.CreateProject(p)
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if created.RemoteURL != p.RemoteURL || created.RootCommit != p.RootCommit {
+	if created.RepositoryID != p.RepositoryID || created.IdentitySource != p.IdentitySource {
 		t.Fatalf("created row identity = (%q, %q), want (%q, %q)",
-			created.RemoteURL, created.RootCommit, p.RemoteURL, p.RootCommit)
+			created.RepositoryID, created.IdentitySource, p.RepositoryID, p.IdentitySource)
 	}
 	got, err := s.GetProject("p1")
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
-	if got.RemoteURL != p.RemoteURL || got.RootCommit != p.RootCommit {
+	if got.RepositoryID != p.RepositoryID || got.IdentitySource != p.IdentitySource {
 		t.Fatalf("read-back identity = (%q, %q), want (%q, %q)",
-			got.RemoteURL, got.RootCommit, p.RemoteURL, p.RootCommit)
+			got.RepositoryID, got.IdentitySource, p.RepositoryID, p.IdentitySource)
 	}
 
 	// The sidebar's own projection carries the identity too, since that is
@@ -534,9 +534,9 @@ func TestCreateProjectRoundTripsRepositoryIdentity(t *testing.T) {
 			continue
 		}
 		found = true
-		if row.Project.RemoteURL != p.RemoteURL || row.Project.RootCommit != p.RootCommit {
+		if row.Project.RepositoryID != p.RepositoryID || row.Project.IdentitySource != p.IdentitySource {
 			t.Fatalf("sidebar projection identity = (%q, %q), want (%q, %q)",
-				row.Project.RemoteURL, row.Project.RootCommit, p.RemoteURL, p.RootCommit)
+				row.Project.RepositoryID, row.Project.IdentitySource, p.RepositoryID, p.IdentitySource)
 		}
 	}
 	if !found {
@@ -550,18 +550,18 @@ func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	row, changed, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"})
+	row, changed, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RepositoryID: "github:github.com:1", IdentitySource: "aaaa1111"})
 	if err != nil {
 		t.Fatalf("UpdateProjectIdentity: %v", err)
 	}
 	if !changed {
 		t.Fatal("first identity write reported no change")
 	}
-	if row.RemoteURL != "https://example.com/repo.git" || row.RootCommit != "aaaa1111" {
-		t.Fatalf("written row = (%q, %q)", row.RemoteURL, row.RootCommit)
+	if row.RepositoryID != "github:github.com:1" || row.IdentitySource != "aaaa1111" {
+		t.Fatalf("written row = (%q, %q)", row.RepositoryID, row.IdentitySource)
 	}
 
-	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"}); err != nil {
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RepositoryID: "github:github.com:1", IdentitySource: "aaaa1111"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity (repeat): %v", err)
 	}
 	if changed {
@@ -569,17 +569,17 @@ func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
 	}
 
 	// Either half moving on its own is a change.
-	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "bbbb2222"}); err != nil {
-		t.Fatalf("UpdateProjectIdentity (root only): %v", err)
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RepositoryID: "github:github.com:1", IdentitySource: "bbbb2222"}); err != nil {
+		t.Fatalf("UpdateProjectIdentity (source only): %v", err)
 	}
 	if !changed {
-		t.Fatal("a moved root commit reported no change")
+		t.Fatal("a changed identity source reported no change")
 	}
-	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "", RootCommit: "bbbb2222"}); err != nil {
-		t.Fatalf("UpdateProjectIdentity (clear remote): %v", err)
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RepositoryID: "", IdentitySource: "bbbb2222"}); err != nil {
+		t.Fatalf("UpdateProjectIdentity (clear ID): %v", err)
 	}
 	if !changed {
-		t.Fatal("a cleared remote URL reported no change")
+		t.Fatal("a cleared verified ID reported no change")
 	}
 }
 
@@ -593,7 +593,7 @@ func TestUpdateProjectIdentityLeavesUpdatedAtAlone(t *testing.T) {
 	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, _, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"}); err != nil {
+	if _, _, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RepositoryID: "github:github.com:1", IdentitySource: "aaaa1111"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity: %v", err)
 	}
 	got, err := s.GetProject("p1")
@@ -621,8 +621,8 @@ func TestLegacyProjectRowReadsIdentityAsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
-	if got.RemoteURL != "" || got.RootCommit != "" {
-		t.Fatalf("legacy identity = (%q, %q), want both empty", got.RemoteURL, got.RootCommit)
+	if got.RepositoryID != "" || got.IdentitySource != "" {
+		t.Fatalf("legacy identity = (%q, %q), want both empty", got.RepositoryID, got.IdentitySource)
 	}
 }
 

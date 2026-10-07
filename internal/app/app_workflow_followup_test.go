@@ -22,8 +22,8 @@ import (
 )
 
 func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
-	installWorkflowPRFakeGitHub(t)
 	app, item := newWorkflowPRTestApp(t)
+	installWorkflowPRFakeGitHub(t, app)
 
 	comments, err := app.WorkflowFetchPRReviewComments(item.ID)
 	if err != nil {
@@ -106,6 +106,7 @@ func TestWorkflowPRReviewCommentErrorsAreReturned(t *testing.T) {
 	t.Run("forge binary missing", func(t *testing.T) {
 		app, item := newWorkflowPRTestApp(t)
 		t.Setenv("PATH", t.TempDir())
+		app.forgeCLIs.fake = "ao-test-missing-gh"
 		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "GitHub CLI") {
 			t.Fatalf("missing-binary error = %v", err)
 		}
@@ -119,7 +120,7 @@ func TestWorkflowPRReviewCommentErrorsAreReturned(t *testing.T) {
 		binDir := t.TempDir()
 		binary := filepath.Join(binDir, "gh")
 		mockexec.Write(t, binary, "#!/bin/sh\necho 'review service unavailable' 1>&2\nexit 1\n")
-		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		app.forgeCLIs.fake = binary
 		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "review service unavailable") {
 			t.Fatalf("fetch-failure error = %v", err)
 		}
@@ -172,7 +173,7 @@ func newWorkflowPRTestApp(t *testing.T) (*App, store.WorkItem) {
 	return app, item
 }
 
-func installWorkflowPRFakeGitHub(t *testing.T) {
+func installWorkflowPRFakeGitHub(t *testing.T, app *App) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake gh shim assumes a POSIX shell")
@@ -205,7 +206,7 @@ esac
 	t.Setenv("AO_GH_REVIEW_FIXTURE", reviewFixture)
 	t.Setenv("AO_GH_COMMENTS_FIXTURE", commentsFixture)
 	t.Setenv("AO_GH_DETAIL_FIXTURE", detailFixture)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	app.forgeCLIs.fake = binary
 }
 
 func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {

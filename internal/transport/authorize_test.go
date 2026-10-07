@@ -518,3 +518,18 @@ func readFrameOfType(t *testing.T, conn *websocket.Conn, want string) ServerFram
 		}
 	}
 }
+
+func TestRepositoryIdentityReadAndCheckoutRegistrationGrants(t *testing.T) {
+	t.Parallel()
+	read := []string{string(ScopeThreadsRead)}
+	if refused := AuthorizeSessionMethod(read, "RefreshProjectIdentity", CallerProof{}); refused != nil {
+		t.Fatalf("reading the selected project's identity requires a mutation grant: %+v", refused)
+	}
+	refused := AuthorizeSessionMethod(read, "CreateProjectCheckout", CallerProof{})
+	if refused == nil || refused.Scope != string(ScopeGitOperate) {
+		t.Fatalf("checkout registration admitted without git grant: %+v", refused)
+	}
+	if refused := AuthorizeSessionMethod([]string{string(ScopeGitOperate)}, "CreateProjectCheckout", CallerProof{}); refused != nil {
+		t.Fatalf("checkout registration refused with git grant: %+v", refused)
+	}
+}

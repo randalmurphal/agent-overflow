@@ -67,6 +67,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	565306783: 'thread', // CreateDiffReviewComment
 	757689265: 'selected', // CreateDiscussion
 	969543070: 'selected', // CreateProject
+	617214578: 'selected', // CreateProjectCheckout
 	4246792665: 'thread', // CreateProposedPlanComment
 	2579322833: 'selected', // CreateThread
 	1478438024: 'project', // CreateThreadGroup
@@ -290,6 +291,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	878560845: 'thread', // ReconnectMcpServer
 	1420075138: 'thread', // ReconnectSession
 	2215279661: 'selected', // RefreshMcpServerStatus
+	2745242207: 'project', // RefreshProjectIdentity
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
 	3682640111: 'thread', // RegenerateThreadTitle

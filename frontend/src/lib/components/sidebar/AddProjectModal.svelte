@@ -35,17 +35,16 @@
     initialBackend?: BackendKey;
     /** A containing workflow has already chosen its destination. */
     lockBackend?: boolean;
+    createProject?: (backend: BackendKey, path: string) => Promise<Project>;
     title?: string;
     description?: string;
-    /** Runs before Add: a message refuses the folder and keeps the modal open. */
-    checkFolder?: (backend: BackendKey, path: string) => Promise<string | null>;
   }
 
   let {
     open, onClose, onCreated, onDuplicate, initialPath = '~', initialBackend, lockBackend = false,
     title = 'Add Project',
     description = 'Pick a directory to track as a project. Threads created inside it will group here.',
-    checkFolder,
+    createProject,
   }: Props = $props();
 
   // Snapshot the initial path so $state init doesn't read a reactive prop
@@ -103,16 +102,10 @@
     const backend = computer;
     const path = pendingPath.trim();
     try {
-      const refusal = await checkFolder?.(backend, path);
-      if (generation !== dialogGeneration || !open) return;
-      if (refusal) {
-        submitError = refusal;
-        return;
-      }
-      const created = await addComputerProject(backend, path);
+      const created = await (createProject ?? addComputerProject)(backend, path);
       addToast('info', `Added project "${created.name}".`);
       if (created.identityError) {
-        addToast('warning', `Git couldn't read "${created.name}", so it won't merge with its other checkouts until it can: ${created.identityError}`);
+        addToast('warning', `Could not fully verify "${created.name}": ${created.identityError}`);
       }
       if (generation !== dialogGeneration || !open) return;
       onCreated?.(created);

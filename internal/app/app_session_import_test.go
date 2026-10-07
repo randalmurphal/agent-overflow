@@ -556,16 +556,13 @@ func importOneClaudeSession(t *testing.T, app *App, home importHome, sessionID s
 func TestImportSessionsRecordsTheIdentityOfACreatedProject(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
+	mockRepositoryIdentity(t, app)
 	home := newImportHome(t)
 	home.attach(app)
 	testutil.RunGit(t, home.workspace, "init", "-b", "main")
 	testutil.RunGit(t, home.workspace, "-c", "user.name=AO", "-c", "user.email=ao@example.com",
 		"commit", "--allow-empty", "-m", "root")
-	testutil.RunGit(t, home.workspace, "remote", "add", "origin", "git@example.com:owner/repo.git")
-	root, err := app.gitCore().HeadSHA(home.workspace)
-	if err != nil {
-		t.Fatalf("HeadSHA: %v", err)
-	}
+	testutil.RunGit(t, home.workspace, "remote", "add", "origin", "git@github.com:owner/repo.git")
 	home.claudeLinearSession(t, importFixtureClaudeSession)
 
 	if _, err := app.ListImportableSessions(ImportScanRequest{}); err != nil {
@@ -581,8 +578,7 @@ func TestImportSessionsRecordsTheIdentityOfACreatedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
-	if project.RemoteURL != "git@example.com:owner/repo.git" || project.RootCommit != root || project.IdentityError != "" {
-		t.Fatalf("imported project identity = (%q, %q, %q), want the checkout's origin and root %q",
-			project.RemoteURL, project.RootCommit, project.IdentityError, root)
+	if project.RepositoryID != "github:github.com:123" || project.IdentityError != "" {
+		t.Fatalf("imported project identity = %+v, want verified forge ID", project)
 	}
 }

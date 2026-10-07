@@ -1,6 +1,6 @@
 # Fake forge
 
-`forgefake` answers the `gh` and `glab` invocations an isolated boot makes,
+`forgefake` answers `gh`, `glab` and repository `ssh -G` invocations an isolated boot makes,
 from a fixture a test seeds. The path is:
 
 1. `internal/git` runs every forge CLI through `Core.runSpec`. Under
@@ -53,6 +53,9 @@ the Create PR/MR dialog:
 
 | CLI | Invocation | App caller |
 |---|---|---|
+| gh | `api --hostname H repos/O/R` | repository identity |
+| glab | `api --hostname H projects/P` | repository identity |
+| ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | gh | `pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | glab | `mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
 | gh | `pr view --repo P N --json ...` | GetPRDetail, CI rollup |

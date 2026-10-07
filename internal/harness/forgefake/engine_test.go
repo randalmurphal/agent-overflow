@@ -3,6 +3,7 @@ package forgefake
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -404,5 +405,39 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 	if inv := gh("pr", "create", "--title", "Filled", "--body", "", "--fill"); !strings.Contains(inv.Stderr, "unhandled") {
 		t.Errorf("gh pr create --fill = %q, want unhandled", inv.Stderr)
+	}
+}
+
+func TestRepositoryIdentityEndpointHonorsHost(t *testing.T) {
+	e, fixture := seeded(t, Options{})
+	for _, r := range fixture.Repos {
+		cli, endpoint := "gh", "repos/"+r.Project
+		if r.Forge == "gitlab" {
+			cli = "glab"
+			endpoint = "projects/" + url.PathEscape(r.Project)
+		}
+		result := decode[struct {
+			ID int64 `json:"id"`
+		}](t, handle(e, cli, "api", "--hostname", r.Host, endpoint))
+		if result.ID != r.ID {
+			t.Fatal("wrong repository ID")
+		}
+		if got := handle(e, cli, "api", "--hostname", "other.example", endpoint); got.ExitCode == 0 {
+			t.Fatalf("wrong host: %+v", got)
+		}
+	}
+}
+
+func TestRepositorySSHConfigIsIsolatedAndRejectsConnections(t *testing.T) {
+	e, _ := seeded(t, Options{})
+	answer := handle(e, "ssh", "-G", "-o", "CanonicalizeHostname=no", "-o", "PermitLocalCommand=no", "-l", "alice", "example.com")
+	if answer.ExitCode != 0 || string(answer.Stdout) != "hostname example.com\nuser alice\n" {
+		t.Fatalf("config: %+v", answer)
+	}
+	for _, args := range [][]string{{"example.com"}, {"-G", "-o", "ProxyCommand=anything", "example.com"}} {
+		answer = handle(e, "ssh", args...)
+		if answer.ExitCode == 0 || !strings.Contains(answer.Stderr, "unhandled") {
+			t.Fatalf("connection: %+v", answer)
+		}
 	}
 }

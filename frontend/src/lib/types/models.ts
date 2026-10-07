@@ -645,8 +645,7 @@ export interface Project {
    * directory that is not a repository. The client merges projects across
    * backends by `utils/repoKey.ts`, never by path.
    */
-  remoteURL?: string;
-  rootCommit?: string;
+  repositoryID?: string;
   /**
    * Why the last identity read of this checkout failed, absent once it
    * succeeds. The previous identity is kept meanwhile.

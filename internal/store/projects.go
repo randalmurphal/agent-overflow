@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/repoidentity"
 )
 
 // ErrProjectPathInUse is returned by CreateProject when the supplied path
@@ -31,14 +33,14 @@ type ProjectWithCounts struct {
 // columns survive only because SQLite refuses DROP COLUMN on a CHECK-bearing
 // column and rebuilding the FK-parent projects table to delete two unread
 // integers is not worth the blast radius. Nothing reads or writes them.
-const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit, identity_error`
+const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived, identity_error, repository_id, identity_source`
 
 func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 	var p Project
 	var archived int
 	if err := scanner.Scan(
 		&p.ID, &p.Path, &p.Name, &p.Slug, &p.Color, &p.SortPosition,
-		&p.CreatedAt, &p.UpdatedAt, &archived, &p.RemoteURL, &p.RootCommit, &p.IdentityError,
+		&p.CreatedAt, &p.UpdatedAt, &archived, &p.IdentityError, &p.RepositoryID, &p.IdentitySource,
 	); err != nil {
 		return Project{}, err
 	}
@@ -55,6 +57,7 @@ func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 // and put it on the wire as the created row. Returning what was written is
 // what makes the created row and the broadcast row the same object.
 func (s *Store) CreateProject(p Project) (Project, error) {
+	p.IdentityError = repoidentity.RedactText(p.IdentityError)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Project{}, fmt.Errorf("store: create project: begin: %w", err)
@@ -73,10 +76,10 @@ func (s *Store) CreateProject(p Project) (Project, error) {
 		return Project{}, fmt.Errorf("store: create project: %w", err)
 	}
 	_, err = tx.Exec(
-		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit, identity_error)
+		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived, identity_error, repository_id, identity_source)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Path, p.Name, p.Slug, p.Color, p.SortPosition,
-		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived), p.RemoteURL, p.RootCommit, p.IdentityError,
+		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived), p.IdentityError, p.RepositoryID, p.IdentitySource,
 	)
 	if err != nil {
 		_ = tx.Rollback()
@@ -205,7 +208,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 func listProjectsWithThreadCountsQuery() (string, []any) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
-		        p.created_at, p.updated_at, p.archived, p.remote_url, p.root_commit, p.identity_error,
+		        p.created_at, p.updated_at, p.archived, p.identity_error, p.repository_id, p.identity_source,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
 		        COALESCE(
 		          MAX(CASE
@@ -246,7 +249,7 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 			&pwc.Project.ID, &pwc.Project.Path, &pwc.Project.Name, &pwc.Project.Slug, &pwc.Project.Color,
 			&pwc.Project.SortPosition,
 			&pwc.Project.CreatedAt, &pwc.Project.UpdatedAt, &archived,
-			&pwc.Project.RemoteURL, &pwc.Project.RootCommit, &pwc.Project.IdentityError,
+			&pwc.Project.IdentityError, &pwc.Project.RepositoryID, &pwc.Project.IdentitySource,
 			&pwc.ThreadCount, &pwc.LastActive,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan project-with-counts row: %w", err)
@@ -271,15 +274,12 @@ func (s *Store) UpdateProjectName(id, name string) (Project, bool, error) {
 	})
 }
 
-// ProjectIdentity is what one derivation of a checkout's repository identity
-// stores: the `origin` remote as git reports it, the smallest root commit of
-// HEAD, and the reason the last read failed. RemoteURL and RootCommit are
-// stored verbatim; normalisation belongs to the client that matches them.
-// A failed read keeps the last good RemoteURL and RootCommit beside its Error.
+// ProjectIdentity stores the verified forge ID and its local cache validity.
+// No remote URL or commit ancestry is stored or used for matching.
 type ProjectIdentity struct {
-	RemoteURL  string
-	RootCommit string
-	Error      string
+	RepositoryID   string `json:"repositoryID,omitempty"`
+	IdentitySource string `json:"-"`
+	Error          string `json:"identityError,omitempty"`
 }
 
 // UpdateProjectIdentity records a derivation of the checkout's repository
@@ -294,13 +294,14 @@ type ProjectIdentity struct {
 // The Change predicate makes a re-derivation that agrees with the stored row a
 // no-op, so a boot pass announces only the rows it actually moved.
 func (s *Store) UpdateProjectIdentity(id string, identity ProjectIdentity) (Project, bool, error) {
+	identity.Error = repoidentity.RedactText(identity.Error)
 	return s.applyProjectRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update project identity %s", id),
 		ID:         id,
-		Set:        "remote_url = ?, root_commit = ?, identity_error = ?",
-		SetArgs:    []any{identity.RemoteURL, identity.RootCommit, identity.Error},
-		Change:     "(remote_url IS NOT ? OR root_commit IS NOT ? OR identity_error IS NOT ?)",
-		ChangeArgs: []any{identity.RemoteURL, identity.RootCommit, identity.Error},
+		Set:        "identity_error = ?, repository_id = ?, identity_source = ?",
+		SetArgs:    []any{identity.Error, identity.RepositoryID, identity.IdentitySource},
+		Change:     "(identity_error IS NOT ? OR repository_id IS NOT ? OR identity_source IS NOT ?)",
+		ChangeArgs: []any{identity.Error, identity.RepositoryID, identity.IdentitySource},
 	})
 }
 

@@ -36,8 +36,12 @@ func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string
 // repoIdentity reads a checkout's repository identity for projectapp.
 // Resolved through gitCore() at call time rather than captured when the
 // service is built, so the shared Core is the one the rest of the app uses.
-func (a *App) repoIdentity(ctx context.Context, path, knownRootCommit string) (gitops.RepoIdentity, error) {
-	return a.gitCore().ReadRepoIdentity(ctx, path, knownRootCommit)
+func (a *App) repoIdentity(ctx context.Context, path string) (gitops.RepoIdentity, error) {
+	identity, err := a.gitCore().ReadRepoIdentity(ctx, path)
+	if err != nil {
+		return identity, err
+	}
+	return a.gitCore().ResolveRepository(ctx, path, identity), ctx.Err()
 }
 
 // startProjectIdentityRefresh re-derives the repository identity of every
@@ -95,15 +99,15 @@ func (a *App) CreateProject(path string) (store.Project, error) {
 // InspectProjectFolder reads the repository identity of a directory on the
 // selected computer without creating a project there. The machine picker
 // checks with it that a folder chosen for an existing project is a checkout
-// of that project's repository before CreateProject adopts it.
+// of that project's repository before CreateProjectCheckout adopts it.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) InspectProjectFolder(path string) (projectapp.FolderIdentity, error) {
+func (a *App) InspectProjectFolder(ctx context.Context, path string) (projectapp.FolderIdentity, error) {
 	if err := a.requireIsolatedWorkspace(path); err != nil {
 		return projectapp.FolderIdentity{}, err
 	}
-	return a.projectApplication().InspectFolder(path)
+	return a.projectApplication().InspectFolder(ctx, path)
 }
 
 // RenameProject updates the display name. Path is immutable.
@@ -391,6 +395,35 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 // is the common case and says nothing.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {
 	write, err := a.projectApplication().EnsureForWorkspace(workspacePath)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionListed, write)
+	return write.Project, nil
+}
+
+// RefreshProjectIdentity rechecks a project's checkout on its owning computer.
+//
+//ao:scope threads:read
+//ao:route project
+func (a *App) RefreshProjectIdentity(ctx context.Context, projectID string) (store.Project, error) {
+	write, err := a.projectApplication().RefreshProject(ctx, projectID)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionFull, write)
+	return write.Project, nil
+}
+
+// CreateProjectCheckout checks identity before registering the selected folder.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) CreateProjectCheckout(ctx context.Context, path string, expected store.ProjectIdentity) (store.Project, error) {
+	if err := a.requireIsolatedWorkspace(path); err != nil {
+		return store.Project{}, err
+	}
+	write, err := a.projectApplication().CreateCheckout(ctx, path, expected)
 	if err != nil {
 		return store.Project{}, err
 	}

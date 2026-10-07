@@ -1,5 +1,5 @@
-// ao-mockforge stands in for gh and glab in an isolated boot (--harness,
-// --soak). internal/git runs it in place of either CLI and tells it which
+// ao-mockforge answers forge CLIs and ssh -G in an isolated boot
+// (--harness, --soak). internal/git pins these reads here and identifies which
 // one through AO_FORGE_CLI. It holds no forge behavior: it forwards its
 // argv, working directory and stdin over the harness control channel and
 // prints the harness's answer (internal/harness/forgefake), exiting with
@@ -31,8 +31,8 @@ func run(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		cli = filepath.Base(argv[0])
 	}
 	args := argv[1:]
-	if cli != "gh" && cli != "glab" {
-		fmt.Fprintf(stderr, "ao-mockforge: %s is unset and argv[0] is %q; run me as gh or glab\n", gitops.ForgeCLINameEnv, cli)
+	if cli != "gh" && cli != "glab" && cli != "ssh" {
+		fmt.Fprintf(stderr, "ao-mockforge: %s is unset and argv[0] is %q; run me as gh, glab or ssh\n", gitops.ForgeCLINameEnv, cli)
 		return 2
 	}
 	client, ok := control.FromEnv()

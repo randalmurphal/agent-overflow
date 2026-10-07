@@ -10,7 +10,6 @@ func TestACreatedThreadRecordsWhereItsWorkspaceStood(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	observed := store.ThreadOrigin{
 		Branch:     "feature/one",
-		RemoteURL:  "git@example.com:owner/repo.git",
 		HeadCommit: "0123456789abcdef0123456789abcdef01234567",
 	}
 	service.deps.Workspace = &testWorkspace{currentBranch: "feature/one", origin: observed}
@@ -60,7 +59,7 @@ func TestAWorkspaceWithNoGitCoordinatesCreatesAnyway(t *testing.T) {
 // sit inside one.
 func TestATerminalRecordsItsWorkspaceCoordinates(t *testing.T) {
 	service, _, _ := newServiceFixture(t)
-	observed := store.ThreadOrigin{Branch: "main", RemoteURL: "https://example.com/o/r.git", HeadCommit: "abc"}
+	observed := store.ThreadOrigin{Branch: "main", HeadCommit: "abc"}
 	service.deps.Workspace = &testWorkspace{origin: observed}
 
 	thread, err := service.StartTerminal(TerminalOptions{ProjectID: "project", CreatedByDevice: "device-b"})
@@ -77,7 +76,7 @@ func TestATerminalRecordsItsWorkspaceCoordinates(t *testing.T) {
 // can restate where the thread came from.
 func TestALaterUpdateCannotRestateCreationProvenance(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
-	observed := store.ThreadOrigin{Branch: "main", RemoteURL: "https://example.com/o/r.git", HeadCommit: "abc"}
+	observed := store.ThreadOrigin{Branch: "main", HeadCommit: "abc"}
 	service.deps.Workspace = &testWorkspace{origin: observed}
 
 	thread, err := service.Create(CreateOptions{ProjectID: "project", CreatedByDevice: "device-a"})
@@ -87,7 +86,7 @@ func TestALaterUpdateCannotRestateCreationProvenance(t *testing.T) {
 
 	rewritten := thread
 	rewritten.CreatedByDevice = "device-b"
-	rewritten.Origin = store.ThreadOrigin{Branch: "other", RemoteURL: "https://elsewhere", HeadCommit: "def"}
+	rewritten.Origin = store.ThreadOrigin{Branch: "other", HeadCommit: "def"}
 	rewritten.Title = "renamed"
 	if err := database.UpdateThread(rewritten); err != nil {
 		t.Fatalf("UpdateThread: %v", err)

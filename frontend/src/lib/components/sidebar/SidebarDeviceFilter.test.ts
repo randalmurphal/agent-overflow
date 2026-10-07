@@ -32,7 +32,7 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   const remote = stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
   for (const [id, backend] of [['local-project', ''], ['remote-project', 'remote']] as const) {
     noteProject(id, backend);
-    addProjectLocal({ id, name: 'Shared project', remoteURL: 'https://github.com/example/shared.git', path: `/repo/${id}`, createdAt: 0, updatedAt: 0, sortPosition: 0, archived: false });
+    addProjectLocal({ id, name: 'Shared project', repositoryID: 'github:github.com:1', path: `/repo/${id}`, createdAt: 0, updatedAt: 0, sortPosition: 0, archived: false });
   }
   const local = thread('Local pinned thread', 'local-project');
   const elsewhere = thread('Remote worktree thread', 'remote-project', 'remote-group');

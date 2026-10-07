@@ -24,6 +24,7 @@ export {
     Item,
     PagedItems,
     Project,
+    ProjectIdentity,
     ProjectWithCounts,
     ProposedPlanComment,
     ProposedPlanCommentInput,

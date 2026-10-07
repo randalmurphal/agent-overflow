@@ -1,5 +1,5 @@
-// Package forgefake answers the gh and glab invocations an isolated boot
-// makes, from a fixture a test seeds.
+// Package forgefake answers forge CLI calls and SSH configuration reads
+// from a fixture a test seeds.
 //
 // The app never talks to this package directly. internal/git runs every
 // forge CLI through one seam that, under --harness and --soak, executes
@@ -86,13 +86,14 @@ type Options struct {
 type Engine struct {
 	opts Options
 
-	mu      sync.Mutex
-	ids     idSource
-	viewer  string
-	repos   map[string]*Repo
-	log     []Invocation
-	seq     int
-	dropped int
+	mu       sync.Mutex
+	ids      idSource
+	viewer   string
+	sshHosts map[string]string
+	repos    map[string]*Repo
+	log      []Invocation
+	seq      int
+	dropped  int
 }
 
 // New builds an empty engine. Every invocation against it answers "not
@@ -134,6 +135,12 @@ func (e *Engine) Seed(fixture Fixture) (Fixture, error) {
 		e.viewer = fixture.Viewer
 	}
 	fixture.Viewer = e.viewer
+	if e.sshHosts == nil {
+		e.sshHosts = make(map[string]string)
+	}
+	for alias, host := range fixture.SSHHosts {
+		e.sshHosts[alias] = host
+	}
 	for i := range fixture.Repos {
 		repo := fixture.Repos[i]
 		e.repos[repo.key()] = &repo
@@ -148,6 +155,7 @@ func (e *Engine) Reset() {
 	defer e.mu.Unlock()
 	e.viewer = defaultViewer
 	clear(e.repos)
+	clear(e.sshHosts)
 	e.log = nil
 	e.dropped = 0
 }

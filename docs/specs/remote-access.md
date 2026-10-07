@@ -1918,12 +1918,11 @@ Prerequisite sweep, valuable standalone:
   history.
 - Gap-recovery switch gains an entry per new channel: LANDED (wave 4b)
   for settings/project/draft/queue.
-- Thread **branch / remote / head** at creation: LANDED 2026-08-31
-  (wave 4b) — v78 `created_branch` / `created_remote_url` /
-  `created_head_commit`, surfaced as `Thread.Origin`, observed at the
+- Thread **branch / head** at creation: LANDED 2026-08-31
+  (wave 4b), v78 `created_branch` / `created_head_commit`, surfaced as `Thread.Origin`, observed at the
   one moment the answer is true; forks re-observe, workflow threads
   attribute to no device, session import records nothing. Nothing
-  renders it yet.
+  renders it yet. The retired `created_remote_url` is emptied by v141.
 
 ## 9. Wire evolution, phone, notifications
 
@@ -2836,15 +2835,13 @@ machine that hosts it and everywhere else attached. The machine
 surfaces in exactly three places:
 
 - **Project identity is the repo, not the checkout.** A project entry
-  is the repository — matched by primary remote URL, root-commit hash
-  when remoteless — and each machine's checkout is a **target** under
+  is the repository, matched only by its verified forge ID, and each machine's checkout is a **target** under
   it: project ≠ workspace generalizes to project ≠ checkout ≠ machine.
   A machine contributes one checkout, its oldest; another clone of the
   same repo on that machine stays a separate project.
   Thread rows carry a target chip only when their project spans more
-  than one target. Identity is user-correctable (link/split) when the
-  remote-URL match gets it wrong; nothing beyond that match is
-  guessed.
+  than one target. Unverified repositories remain separate. Manual
+  link/split is deferred.
 - **The composer picks the target.** Sticky last-used per project. An
   unreachable target disables the composer for it and offers the
   reachable alternatives — never silent failover to a different
@@ -2949,12 +2946,10 @@ self-update RPC on rename and reconnect, preserving local peer nicknames and
 credential rotation. A phone/browser publishes its own frontend-local name;
 it never copies the destination computer's name into its device identity.
 
-**Project identity = repo.** Projects gain `remoteURL` and
-`rootCommit`; the sidebar merges entries across backends that match
-on remote URL (root commit when remoteless) into one project with
-targets. The machine chip renders in the worktree chip's slot only
-when the project spans more than one backend. Link/split is a settings
-action.
+**Project identity = repo.** Projects carry a verified `repositoryID`.
+Equal IDs merge entries across backends into one project with targets.
+The machine chip renders in the worktree chip's slot only when the project
+spans more than one backend. Manual link/split is deferred.
 
 **Waves.** 7a Go: the Route column and its TS mirror; `backendName` in
 the hello; attached-backend proxies with their §13 rows; the
@@ -3042,57 +3037,50 @@ staging a second is a harness change 7d will need anyway; the wave is
 proved by component suites over a staged second backend
 (`test/helpers/backends.ts`).
 
-**7d design (2026-09-01).** Identity is derived, never declared: a
-project row carries `remoteURL` (the `origin` remote as git reports
-it) and `rootCommit` (the lexicographically smallest root of `HEAD`,
-so a repo with several roots answers the same on every machine), both
-computed by the backend that owns the checkout at creation (the
-`CreateProject` RPC, the workspace-ensure path and session import
-alike) and re-read for every row once per boot, each changed row
-announced as a `project:updated` `full` frame so a client that loaded
-first converges. A git failure is recorded as `identityError` beside
-the last good identity and shown on the sidebar entry. The CLIENT
-merges: `utils/repoKey.ts` normalises the URL (scheme, user, `.git`,
-case of the host, the SSH alias form) and falls back to
-`commit:<rootCommit>`; a remoteless row joins the one remote group
-that holds its root commit. The projects store groups rows by that key
-only while more than one backend is attached, so a single-backend app
-computes nothing. Each computer contributes at most one member to an
-entry, its oldest live row; another clone on the same computer stays
-its own entry. A merged entry renders once in the sidebar under its
-home member (else its first live member), with every member's threads
-beneath it; the project picker lists the entry, and the machine picker
-becomes a TARGET choice, flipping the draft to the sibling on the
-chosen machine. When that machine has no checkout, it asks for the
-folder there and refuses one that is not a checkout of the same
-repository (`InspectProjectFolder`); a project with no identity
-accepts any folder as a separate entry. The machine chip renders in
-the worktree chip's slot only for threads of a project that spans more
-than one backend. Manual sort and the reorder RPC keep acting on
-home's rows; a member on another machine follows its entry. Link and
-split as a settings action are DEFERRED: derived identity covers the
-repo case, and a manual override needs persistence and a surface of
-its own — it is listed under the open items until a case that needs it
-appears. A remote re-pointed after creation is picked up on the next
-boot.
+<a id="7d-project-identity"></a>
 
-**7d LANDED 2026-09-01 (a1ee9e90 client, 1afa6c30 backend).** As
-designed. Migration v83 adds `remote_url` / `root_commit` and v140
-`identity_error`; `git.ReadRepoIdentity` derives them (origin read
-fresh, smallest root of HEAD, a known root kept without a walk);
-`projectapp` stamps a row at creation and on the workspace-ensure
-path's created rows, and `RefreshIdentity` runs once per boot outside
-the activation gate (its effect is three columns inside the snapshot
-boundary), announcing each moved row as `project:updated` `full`
-without touching `updated_at`. Archived rows are refreshed too, so an
-unarchive never yields the one entry that cannot merge. The client merges in
-`projects.svelte.ts` (`projectEntries`, `entryIdFor`,
-`projectMembers`, `projectSpansBackends`, `projectSiblingOn`), keyed
-by `utils/repoKey.ts`; the machine chip is `thread-row-machine` in the
-worktree slot; the project picker lists entries and the machine picker
-flips to the sibling. Accepted residuals: rename, colour and manual
-sort act on the representative row only; the reorder RPC stays
-`home`.
+**Repository identity.** Identity is derived on the checkout's computer.
+`repositoryID` is `forge:host:id`, resolved through that computer's `gh`
+or `glab` login. SSH aliases are resolved locally with `ssh -G`. The origin
+is read transiently from Git configuration to locate the forge repository.
+No repository URL or root commit is stored in project or thread metadata,
+sent to paired clients, or used for grouping. Only equal verified forge IDs
+match across computers, including across repository renames. Forks have
+different IDs and remain separate regardless of shared history.
+
+Lookups are cancellable, have an eight-second timeout and four concurrent
+slots, and cache up to 128 results. Successes last five minutes; failures
+last five seconds and are shared with pending readers. An unavailable forge
+leaves an explicit `identityError`. A previously verified ID remains usable
+only when a private origin-change stamp is unchanged. This stamp is a digest
+of the local origin locator before SSH resolution, never leaves the backend, and never
+matches different projects. A missing path or failed local Git read retains
+the last identity; an unsupported or absent forge origin cannot establish one.
+
+Creation, workspace registration and session import derive identity through
+`projectapp`. `RefreshIdentity` re-reads every row, archived included, once
+per boot after initial reads settle. Each changed row is announced as a
+`project:updated` full frame without changing `updated_at`. The machine
+picker also refreshes the source before validating a chosen destination.
+`CreateProjectCheckout` enforces equal verified IDs inside the API. Failed
+verification cannot be bypassed with a matching URL or commit. Plain
+non-Git folders remain supported as independent projects.
+
+The client groups entries in `utils/repoKey.ts` only when multiple backends
+are attached. Each computer contributes at most one member, its oldest live
+row; another clone on that computer stays separate. The home member, or the
+first live member, represents the entry and its members' threads. Rename,
+colour and manual sort act on that representative. The reorder RPC remains
+home-scoped. Manual link/split remains deferred.
+
+SQLite v141 adds `repository_id` and the private `identity_source`, clears
+retired `remote_url`, `root_commit` and `created_remote_url` values, and
+removes URLs from identity diagnostics. Project IDs, names, timestamps,
+thread placement and conversation history are preserved. The IndexedDB v3
+upgrade removes retired coordinate fields from catalogs while retaining
+loaded history. Runtime and catalog boundaries strip these fields from
+older peers too. Per-project target preferences migrate through project IDs;
+retired URL/commit preference keys are discarded without matching on them.
 
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit

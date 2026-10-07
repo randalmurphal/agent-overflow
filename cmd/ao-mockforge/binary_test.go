@@ -437,3 +437,34 @@ func exitCode(err error) int {
 	}
 	return -1
 }
+
+func TestRepositoryIdentityThroughRealFakeBinary(t *testing.T) {
+	t.Parallel()
+	for _, forge := range []string{"github", "gitlab"} {
+		t.Run(forge, func(t *testing.T) {
+			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: forge, Project: "owner/repo", ID: 123}}})
+			result := r.core.ResolveRepository(context.Background(), t.TempDir(), gitops.RepoIdentity{RemoteURL: "https://" + forge + ".com/owner/repo"})
+			if result.RepositoryID != forge+":"+forge+".com:123" || result.LookupError != "" {
+				t.Fatalf("identity: %+v", result)
+			}
+		})
+	}
+}
+
+func TestRepositorySSHIdentityThroughRealFakeBinary(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, forgefake.Fixture{SSHHosts: map[string]string{"work-github": "github.com"}, Repos: []forgefake.Repo{{Forge: "github", Project: "owner/repo", ID: 456}}})
+	result := r.core.ResolveRepository(context.Background(), t.TempDir(), gitops.RepoIdentity{RemoteURL: "git@work-github:owner/repo.git"})
+	if result.RepositoryID != "github:github.com:456" || result.LookupError != "" {
+		t.Fatalf("alias: %+v", result)
+	}
+	calls := r.engine.Invocations(0).Invocations
+	if len(calls) != 2 || calls[0].CLI != "ssh" || calls[1].CLI != "gh" {
+		t.Fatalf("calls: %+v", calls)
+	}
+	for _, call := range calls {
+		if call.Unhandled {
+			t.Fatalf("unhandled: %+v", call)
+		}
+	}
+}

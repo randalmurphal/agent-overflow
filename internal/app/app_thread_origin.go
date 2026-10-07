@@ -18,12 +18,12 @@ import (
 // thread grew from on a machine that never had the workspace.
 //
 // Every field is optional. A workspace outside a repository, a detached HEAD,
-// a repository with no remote, an in-process call with no screen behind it —
+// an unborn branch, an in-process call with no screen behind it,
 // all of these produce empty values, and empty means "not known". Nothing here
 // fails, because none of it is worth failing a thread creation over.
 
-// observeThreadOrigin reads a workspace's git coordinates. Three subprocess
-// reads, two of which the repo-metadata cache usually answers, run once per
+// observeThreadOrigin reads a workspace's git coordinates. Two subprocess
+// reads, one of which the repo-metadata cache usually answers, run once per
 // created thread — not on any hot path.
 func (a *App) observeThreadOrigin(workspacePath string) store.ThreadOrigin {
 	if workspacePath == "" {
@@ -40,7 +40,6 @@ func (a *App) observeThreadOrigin(workspacePath string) store.ThreadOrigin {
 	head, _ := core.HeadSHA(workspacePath)
 	return store.ThreadOrigin{
 		Branch:     core.CurrentBranch(workspacePath),
-		RemoteURL:  core.OriginRemoteURL(workspacePath),
 		HeadCommit: head,
 	}
 }

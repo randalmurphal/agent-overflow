@@ -751,6 +751,15 @@ export function CreateProject(path: string): $CancellablePromise<store$0.Project
     });
 }
 
+/**
+ * CreateProjectCheckout checks identity before registering the selected folder.
+ */
+export function CreateProjectCheckout(path: string, expected: store$0.ProjectIdentity): $CancellablePromise<store$0.Project> {
+    return $Call.ByID(617214578, path, expected).then(($result: any) => {
+        return $$createType20($result);
+    });
+}
+
 export function CreateProposedPlanComment(threadID: string, input: store$0.ProposedPlanCommentInput): $CancellablePromise<store$0.ProposedPlanComment> {
     return $Call.ByID(4246792665, threadID, input).then(($result: any) => {
         return $$createType21($result);
@@ -2473,7 +2482,7 @@ export function ImportThreadUpdates(threadID: string): $CancellablePromise<app$0
  * InspectProjectFolder reads the repository identity of a directory on the
  * selected computer without creating a project there. The machine picker
  * checks with it that a folder chosen for an existing project is a checkout
- * of that project's repository before CreateProject adopts it.
+ * of that project's repository before CreateProjectCheckout adopts it.
  */
 export function InspectProjectFolder(path: string): $CancellablePromise<projectapp$0.FolderIdentity> {
     return $Call.ByID(969607096, path).then(($result: any) => {
@@ -3834,6 +3843,15 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
 export function RefreshMcpServerStatus(providerName: string, workspacePath: string): $CancellablePromise<mcpstatus$0.ServerStatus[]> {
     return $Call.ByID(2215279661, providerName, workspacePath).then(($result: any) => {
         return $$createType135($result);
+    });
+}
+
+/**
+ * RefreshProjectIdentity rechecks a project's checkout on its owning computer.
+ */
+export function RefreshProjectIdentity(projectID: string): $CancellablePromise<store$0.Project> {
+    return $Call.ByID(2745242207, projectID).then(($result: any) => {
+        return $$createType20($result);
     });
 }
 

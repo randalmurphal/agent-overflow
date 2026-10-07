@@ -101,6 +101,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CreateDiffReviewComment", ID: 565306783, Scope: "threads:operate", Route: "thread"},                               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265, Scope: "threads:operate", Route: "selected"},                                    // main.App.CreateDiscussion
 	{Name: "CreateProject", ID: 969543070, Scope: "git:operate", Route: "selected"},                                           // main.App.CreateProject
+	{Name: "CreateProjectCheckout", ID: 617214578, Scope: "git:operate", Route: "selected"},                                   // main.App.CreateProjectCheckout
 	{Name: "CreateProposedPlanComment", ID: 4246792665, Scope: "threads:operate", Route: "thread"},                            // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833, Scope: "threads:operate", Route: "selected"},                                       // main.App.CreateThread
 	{Name: "CreateThreadGroup", ID: 1478438024, Scope: "threads:operate", Route: "project"},                                   // main.App.CreateThreadGroup
@@ -324,6 +325,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReconnectMcpServer", ID: 878560845, Scope: "settings:write", Route: "thread"},                                     // main.App.ReconnectMcpServer
 	{Name: "ReconnectSession", ID: 1420075138, Scope: "threads:operate", Route: "thread"},                                     // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661, Scope: "settings:write", Route: "selected"},                              // main.App.RefreshMcpServerStatus
+	{Name: "RefreshProjectIdentity", ID: 2745242207, Scope: "threads:read", Route: "project"},                                 // main.App.RefreshProjectIdentity
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                               // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                                       // main.App.RefreshTerminal
 	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate", Route: "thread"},                                // main.App.RegenerateThreadTitle

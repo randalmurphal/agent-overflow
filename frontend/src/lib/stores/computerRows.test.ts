@@ -8,13 +8,14 @@ import { addProjectLocal, getProjects, isLoaded, refreshProjects, resetProjectsF
 import { getToasts } from './toast.svelte';
 import { loadThreads } from './threads.svelte';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
+import { writeFrontendValue } from './frontendStorage';
 import { preferredProjectTarget, rememberProjectTarget } from './projectTargets';
 import { readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
 import type { ProjectWithCounts, Thread } from '../types/models';
 
 function row(id: string): ProjectWithCounts {
   return { project: { id, name: id, path: '/same/path', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false,
-    remoteURL: 'https://example.test/owner/repo.git' }, threadCount: 0, lastActive: 0 };
+    repositoryID: 'github:github.com:123' }, threadCount: 0, lastActive: 0 };
 }
 beforeEach(() => { resetStagedBackends(); resetProjectsForTest(); __resetEntityIndexForTest(); });
 afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
@@ -126,6 +127,28 @@ describe('unavailable computer catalogs', () => {
     machine.setStatus('disconnected');
     expect(preferredProjectTarget(row('mac').project).id).toBe('gpu');
     detachBackend('gpu');
+    expect(preferredProjectTarget(row('mac').project).id).toBe('mac');
+  });
+
+  it('keeps a project-key preference when verification joins previously separate projects', async () => {
+    stageBackend({ id: 'gpu' });
+    setBackendIdentityFromBootstrap('gpu-uuid', 'db-generation', 'GPU', 'gpu');
+    // Explicitly seed the former per-project choice; no URL/ancestry key is adopted.
+    writeFrontendValue('project-targets', [['project:mac', 'gpu-uuid']]);
+    setBindingMock('ListProjects', async () => [row(takePinnedBackend() === 'gpu' ? 'gpu' : 'mac')]);
+    await refreshProjects();
+    expect(preferredProjectTarget(row('mac').project).id).toBe('gpu');
+  });
+
+  it('discards retired URL and root preferences instead of matching on them', async () => {
+    stageBackend({ id: 'gpu' });
+    setBackendIdentityFromBootstrap('gpu-uuid', 'db-generation', 'GPU', 'gpu');
+    setBindingMock('ListProjects', async () => {
+      const id = takePinnedBackend() === 'gpu' ? 'gpu' : 'mac';
+      return [{ ...row(id), project: { ...row(id).project, repositoryID: `github:github.com:${id}` } }];
+    });
+    await refreshProjects();
+    writeFrontendValue('project-targets', [['commit:shared', 'gpu-uuid'], ['remote:github.com/me/app', 'gpu-uuid']]);
     expect(preferredProjectTarget(row('mac').project).id).toBe('mac');
   });
 

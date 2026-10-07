@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
@@ -95,10 +96,8 @@ func TestStampingCreationFactsFillsBothAndToleratesANilThread(t *testing.T) {
 	app.stampThreadCreation(t.Context(), nil) // must not panic
 }
 
-// The real read, against a real repository: branch, remote, and head are the
-// three coordinates a transfer needs, and each comes from a different git
-// command, so a test that stubs them proves nothing about whether they work.
-func TestObservingARepositoryRecordsBranchRemoteAndHead(t *testing.T) {
+// Capture branch and head from real Git without retaining the remote URL.
+func TestObservingARepositoryDoesNotRecordItsRemote(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
 	repo := initCommitMsgRepo(t)
@@ -113,8 +112,12 @@ func TestObservingARepositoryRecordsBranchRemoteAndHead(t *testing.T) {
 	if origin.Branch != "main" {
 		t.Fatalf("branch = %q, want main", origin.Branch)
 	}
-	if origin.RemoteURL != remote {
-		t.Fatalf("remoteUrl = %q, want %q", origin.RemoteURL, remote)
+	wire, err := json.Marshal(origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), "remoteUrl") || strings.Contains(string(wire), remote) {
+		t.Fatalf("origin exposes remote: %s", wire)
 	}
 	if len(strings.TrimSpace(origin.HeadCommit)) < 7 {
 		t.Fatalf("headCommit = %q, want a commit sha", origin.HeadCommit)
@@ -127,9 +130,7 @@ func TestARepositoryWithNoRemoteStillRecordsBranchAndHead(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
 	origin := app.observeThreadOrigin(initCommitMsgRepo(t))
-	if origin.RemoteURL != "" {
-		t.Fatalf("remoteUrl = %q, want empty", origin.RemoteURL)
-	}
+
 	if origin.Branch != "main" || origin.HeadCommit == "" {
 		t.Fatalf("branch = %q head = %q; both should still be known", origin.Branch, origin.HeadCommit)
 	}

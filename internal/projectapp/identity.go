@@ -11,10 +11,8 @@ import (
 //
 // One pass, meant to be run once per boot. Every row is read, not only rows
 // with no identity yet: an `origin` added or changed since the row was
-// written, and a read that failed last time, are both corrected here. The
-// cost stays bounded: a known root commit the repository still contains is
-// kept without walking history, so a row costs a few git subprocesses whose
-// work does not grow with the repository.
+// written, and a read that failed last time, are both corrected here. Local Git reads do not walk history; forge lookups have a timeout and
+// a bounded cache.
 //
 // ARCHIVED ROWS ARE INCLUDED. An archived project can be unarchived at any
 // time, and skipping it here would leave it the one entry that never merges

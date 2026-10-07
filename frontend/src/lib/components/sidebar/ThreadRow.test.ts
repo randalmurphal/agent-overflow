@@ -8,6 +8,7 @@ import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelt
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { refreshThreads } from '../../stores/threads.svelte';
+import { setupEventListeners } from '../../stores/events';
 import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
@@ -987,7 +988,6 @@ describe('<ThreadRow> live status dot', () => {
   // foreground running item from history must not keep the sidebar
   // stuck on Working after the backend turn has already completed.
   it('does not flip the pill to Working from a running provider:item_event row alone', async () => {
-    const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
       const pane = createThreadPane();
@@ -1040,7 +1040,6 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('flips the pill to Working when provider:turn_started arrives', async () => {
-    const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
       const pane = createThreadPane();
@@ -1543,8 +1542,8 @@ describe('<ThreadRow> machine chip', () => {
     setBindingMock('ListProjects', async () => {
       const backend = takePinnedBackend();
       return [
-      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
-      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
     await refreshProjects();
@@ -1599,8 +1598,8 @@ describe('<ThreadRow> machine chip', () => {
     setBindingMock('ListProjects', async () => {
       const backend = takePinnedBackend();
       return [
-      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
-      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
     await refreshProjects();
@@ -1617,7 +1616,7 @@ describe('<ThreadRow> machine chip', () => {
     setBindingMock('ListProjects', async () => {
       const backend = takePinnedBackend();
       return [
-      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
     await refreshProjects();

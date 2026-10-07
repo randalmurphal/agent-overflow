@@ -176,28 +176,28 @@ describe('<AddProjectModal>', () => {
     expect(projectAtComputerPath('gpu', '/repo')?.id).toBe('remote');
   });
 
-  it('keeps the modal open with the refusal when the folder check rejects it', async () => {
+  it('keeps the modal open with the refusal when checkout registration rejects it', async () => {
     const onClose = vi.fn();
     const create = setBindingMock('CreateProject', async () => { throw new Error('must not create'); });
-    const checkFolder = vi.fn(async () => "That folder isn't a checkout of github.com/me/app.");
+    const createProject = vi.fn(async () => { throw new Error("That folder isn't a verified checkout of app."); });
     const { getByTestId, findByTestId, getByRole } = render(AddProjectModal, {
-      props: { open: true, onClose, checkFolder, title: 'Choose app on Laptop', description: 'Pick it.' },
+      props: { open: true, onClose, createProject, title: 'Choose app on Laptop', description: 'Pick it.' },
     });
     await flushModalBoot();
     expect(getByRole('dialog', { name: 'Choose app on Laptop' })).toHaveTextContent('Pick it.');
     await fireEvent.click(getByTestId('add-project-submit'));
-    expect((await findByTestId('add-project-error')).textContent).toContain("isn't a checkout of github.com/me/app");
-    expect(checkFolder).toHaveBeenCalledWith('', '/Users/me');
+    expect((await findByTestId('add-project-error')).textContent).toContain("isn't a verified checkout of app");
+    expect(createProject).toHaveBeenCalledWith('', '/Users/me');
     expect(create).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('adds the folder once the check accepts it', async () => {
+  it('adds the folder once registration accepts it', async () => {
     const onCreated = vi.fn();
     const created = { id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false };
     setBindingMock('CreateProject', async () => created);
     const { getByTestId } = render(AddProjectModal, {
-      props: { open: true, onClose: () => {}, onCreated, checkFolder: async () => null },
+      props: { open: true, onClose: () => {}, onCreated },
     });
     await flushModalBoot();
     await fireEvent.click(getByTestId('add-project-submit'));

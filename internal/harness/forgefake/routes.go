@@ -30,6 +30,7 @@ type apiRoute struct {
 // Every invocation the fake answers. The report of which app calls have
 // handlers lives in AGENTS.md; keep the two in step.
 var commands = []command{
+	{cli: "ssh", flags: []flagDef{{long: "config", short: "G"}, {long: "option", short: "o", value: true}, {long: "user", short: "l", value: true}}, run: repositorySSHConfig},
 	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
 	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{
 		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
@@ -51,6 +52,7 @@ var commands = []command{
 
 // apiFlags is the `api` flag vocabulary the two CLIs share.
 var apiFlags = []flagDef{
+	{long: "hostname", value: true},
 	{long: "method", short: "X", value: true},
 	{long: "header", short: "H", value: true},
 	{long: "raw-field", short: "f", value: true},
@@ -63,6 +65,7 @@ var apiFlags = []flagDef{
 }
 
 var githubAPI = []apiRoute{
+	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
 	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"jq"}, run: ghAPIUser},
 	{name: "gh api graphql", method: "POST", pattern: regexp.MustCompile(`^graphql$`), flags: []string{"raw-field"}, run: ghGraphQL},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), run: ghJobLogs},
@@ -70,6 +73,7 @@ var githubAPI = []apiRoute{
 }
 
 var gitlabAPI = []apiRoute{
+	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"include"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"include"}, run: glabApprovals},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"include"}, run: glabDiscussions},

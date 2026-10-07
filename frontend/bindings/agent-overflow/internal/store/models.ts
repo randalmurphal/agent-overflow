@@ -1223,25 +1223,9 @@ export class Project {
     "archived": boolean;
 
     /**
-     * RemoteURL and RootCommit are the checkout's DERIVED repository
-     * identity, computed by the backend that owns the disk: the `origin`
-     * remote exactly as git reports it, and the lexicographically smallest
-     * root commit of HEAD. They exist so a client attached to several
-     * backends can recognise the same repository checked out on two
-     * machines as one project. Nothing here normalises the URL — the
-     * client owns that, because it is the side doing the matching.
-     * 
-     * Empty is a first-class value, never an error: a non-git directory, a
-     * repository with no origin, and an unborn HEAD read as "not known".
+     * RepositoryID is the only cross-computer repository key, verified by its forge.
      */
-    "remoteURL"?: string;
-    "rootCommit"?: string;
-
-    /**
-     * IdentityError is why the last identity read failed (git refused or
-     * could not read the checkout), "" after a successful read. RemoteURL
-     * and RootCommit keep their last good values beside it.
-     */
+    "repositoryID"?: string;
     "identityError"?: string;
 
     /** Creates a new Project instance. */
@@ -1280,6 +1264,29 @@ export class Project {
     static createFrom($$source: any = {}): Project {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Project($$parsedSource as Partial<Project>);
+    }
+}
+
+/**
+ * ProjectIdentity stores the verified forge ID and its local cache validity.
+ * No remote URL or commit ancestry is stored or used for matching.
+ */
+export class ProjectIdentity {
+    "repositoryID"?: string;
+    "identityError"?: string;
+
+    /** Creates a new ProjectIdentity instance. */
+    constructor($$source: Partial<ProjectIdentity> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectIdentity instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectIdentity {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProjectIdentity($$parsedSource as Partial<ProjectIdentity>);
     }
 }
 
@@ -1941,25 +1948,13 @@ export class ThreadMessageHit {
 }
 
 /**
- * ThreadOrigin is a workspace's git coordinates at one moment: the moment a
- * thread was created. It is a historical record, not live state — the live
- * branch of a checkout is Thread.Branch, which moves with the working tree.
- * 
- * Every field is optional and empty means "not known", never "none" and never
- * an error. A workspace outside a repository, a detached HEAD, a repository
- * with no remote, and any thread created before migration v78 all produce
- * empty values, and a consumer that cannot proceed without them has to say so
- * itself rather than assume they are there.
- * 
- * It exists so a thread can be forked or transferred later: reproducing where
- * a thread grew from needs the repository, the branch and the commit, and by
- * the time anyone asks, the branch has moved and the workspace may hold
- * something else. Observed once, at creation, because that is the only moment
- * the answer is still true.
+ * ThreadOrigin records the branch and commit observed when a thread was created.
+ * It is write-once provenance; Thread.Branch tracks the live working tree.
+ * Empty fields mean unknown, as for a plain directory or an unborn branch.
+ * Repository identity belongs to the project, never to a copied remote URL.
  */
 export class ThreadOrigin {
     "branch"?: string;
-    "remoteUrl"?: string;
     "headCommit"?: string;
 
     /** Creates a new ThreadOrigin instance. */

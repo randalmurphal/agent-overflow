@@ -17,13 +17,10 @@ import (
 // dialogs and the git menu call: GitCommit, GitPush and GitCreatePR. Rather
 // than test the UI, we assert that the backend can serve a realistic
 // sequence of those bindings against a real git repo + bare-remote setup
-// + a mock gh CLI on PATH.
+// + an explicitly pinned mock gh CLI.
 //
-// Each test creates a tempdir git repo with an initial commit, wires a bare
-// remote as "origin", and drives commit, push and PR creation. The mock gh
-// is installed by prepending a writable directory onto PATH via t.Setenv —
-// this matches internal/git/github_test.go's existing convention and lets the
-// live `gh` resolution in internal/git/core.go pick it up.
+// Each test creates a temporary repository and bare origin. The forge fake
+// is pinned through the same isolation seam as the harness.
 
 // gitActionTestSetup returns the ref addressing a fresh repo with a bare
 // "origin" remote, plus that repo's path. Callers can stage / commit / push
@@ -43,10 +40,10 @@ func gitActionTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace str
 	return app, testWorkspaceRef(t, app, workspace), workspace, remote
 }
 
-// installMockGh prepends a mock gh on PATH for a git action test. The mock
+// installMockGh pins a mock gh for a git action test. The mock
 // prints `stdout` to stdout and (optionally) `stderr` to stderr, then exits
 // with `exitCode`. gh tracks no state across invocations.
-func installMockGh(t *testing.T, stdout, stderr string, exitCode int) {
+func installMockGh(t *testing.T, app *App, stdout, stderr string, exitCode int) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("mock gh shim assumes POSIX shell")
@@ -60,7 +57,7 @@ echo %q 1>&2
 exit %d
 `, stdout, stderr, exitCode)
 	mockexec.Write(t, ghPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	app.forgeCLIs.fake = ghPath
 }
 
 // TestGitActions_CommitPushCreatePR: commit, push and PR creation end-to-end
@@ -83,7 +80,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	}
 
 	// Step 1: commit.
-	installMockGh(t, "https://example.com/pr/1", "", 0)
+	installMockGh(t, app, "https://example.com/pr/1", "", 0)
 	result, err := app.GitCommit(ref, "ship: add feature", "body")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
@@ -224,7 +221,7 @@ func TestGitActions_CreatePRFailsWhenNotPushed(t *testing.T) {
 	// Forge dispatch needs a classifiable origin to route to gh.
 	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 
-	installMockGh(t, "", "must push first", 1)
+	installMockGh(t, app, "", "must push first", 1)
 
 	_, err := app.GitCreatePR(ref, "PR title", "body", false)
 	if err == nil {
@@ -337,7 +334,7 @@ done
 echo "https://example.com/pr/draft-flag=$found_draft"
 `
 	mockexec.Write(t, ghPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	app.forgeCLIs.fake = ghPath
 
 	// draft=false: gh is invoked without --draft.
 	result, err := app.GitCreatePR(ref, "PR title", "body", false)

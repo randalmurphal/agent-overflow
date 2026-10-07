@@ -80,6 +80,14 @@ describe('Call', () => {
     expect(mockClient.callByID).toHaveBeenCalledWith(42, ['a', 'b']);
   });
 
+  it('sanitizes legacy repository coordinates returned by either call form', async () => {
+    const raw = 'https://user:SECRET@github.com/a/b?token=SECRET';
+    mockClient.callByID.mockResolvedValueOnce([{ project: { remoteURL: raw } }]);
+    await expect(Call.ByID(42)).resolves.toEqual([{ project: { identityError: 'Repository identity has not been verified yet.' } }]);
+    mockClient.callByName.mockResolvedValueOnce({ origin: { remoteUrl: raw } });
+    await expect(Call.ByName('Read')).resolves.toEqual({ origin: {} });
+  });
+
   it('refuses an absent pinned computer even when only home remains', async () => {
     await expect(withBackendTarget('removed', () => Call.ByID(42, '/same/path')))
       .rejects.toThrow('no longer connected');
@@ -136,6 +144,15 @@ describe('Events.On', () => {
 
     off();
     expect(subscription.unsubscribe).toHaveBeenCalled();
+  });
+
+  it('sanitizes legacy project events before consumers receive them', () => {
+    const subscription = captureSubscription();
+    const handler = vi.fn();
+    const off = Events.On('project:updated', handler);
+    subscription.deliver({ project: { remoteURL: 'https://user:SECRET@github.com/a/b' } });
+    expect(handler.mock.calls[0][0].data.project).not.toHaveProperty('remoteURL');
+    off();
   });
 
   it('drops old-owner runtime frames after a move', () => {

@@ -26,7 +26,7 @@
   } from '../../../stores/attachedBackends.svelte';
   import { HOME_BACKEND, type BackendKey } from '../../../transport/backendKey';
   import { rememberProjectTarget } from '../../../stores/projectTargets';
-  import { checkoutRefusal } from '../../../stores/computerProjects';
+  import { addComputerCheckout } from '../../../stores/computerProjects';
   import { hasRepoIdentity } from '../../../utils/repoKey';
   import AddProjectModal from '../../sidebar/AddProjectModal.svelte';
   import type { Project } from '../../../types/models';
@@ -214,8 +214,9 @@
     title={source ? `Choose ${source.name} on ${computerName}` : undefined}
     description={source && hasRepoIdentity(source)
       ? `${computerName} has no checkout of ${source.name} yet. Pick the folder where it is cloned there.`
+      : source?.identityError ? `The repository for ${source.name} could not be read. Adding will retry verification before choosing its checkout.`
       : source ? `Pick a folder on ${computerName}. It becomes its own project there.` : undefined}
-    checkFolder={source ? (backend, path) => checkoutRefusal(source.id, backend, path) : undefined}
+    createProject={source ? (backend, path) => addComputerCheckout(source.id, backend, path) : undefined}
     onClose={() => { addOn = null; }}
     onCreated={(project) => void useAddedProject(project)}
     onDuplicate={(id) => {

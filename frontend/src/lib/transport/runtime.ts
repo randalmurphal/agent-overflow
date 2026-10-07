@@ -1,3 +1,4 @@
+import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // Production shim that replaces `@wailsio/runtime` at build time. The
 // vite alias in vite.config.ts points every import of @wailsio/runtime
 // here so the generated bindings (which `import { Call, Create,
@@ -241,8 +242,8 @@ export const Call = {
       // because its computer was removed meanwhile.
       if (target === null) {
         return wrap(callEveryBackend(methodId, args, (result, backendId) => {
-          noteRowsFromCall(methodId, result, backendId);
-        }));
+          noteRowsFromCall(methodId, safeRepositoryMetadata(result), backendId);
+        }).then(safeRepositoryMetadata));
       }
       // One lookup: the handle is the entry's identity for the removed
       // check below, and a missing target is `resolveTransport`'s refusal.
@@ -250,6 +251,7 @@ export const Call = {
       verify = captureThreadMetadataRead(methodId, target);
       return wrap(transport.callByID(methodId, args).then((result) => {
         if (backendById(target)?.handle !== transport) throw removedDuringCall();
+        result = safeRepositoryMetadata(result);
         verify?.verify(result);
         // Index returned entities before the caller can issue its next RPC.
         noteRowsFromCall(methodId, result, target);
@@ -278,7 +280,7 @@ export const Call = {
       const transport = backendById(target)?.handle ?? resolveTransport(target);
       return wrap(transport.callByName(method, args).then((result) => {
         if (backendById(target)?.handle !== transport) throw removedDuringCall();
-        return result;
+        return safeRepositoryMetadata(result);
       }));
     }
     catch (error) { return wrap(Promise.reject(error)); }
@@ -363,7 +365,7 @@ export const Events = {
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
       if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
-      handler({ name, data, origin: transport.origin, sequence, replayed });
+      handler({ name, data: safeRepositoryMetadata(data), origin: transport.origin, sequence, replayed });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

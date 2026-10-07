@@ -116,8 +116,10 @@ type Worktree struct {
 
 // Core wraps git command execution with timeouts and bounded output capture.
 type Core struct {
-	timeout        time.Duration
-	maxOutputBytes int64
+	repositoryLookups     repositoryLookups
+	repositoryLookupSlots chan struct{}
+	timeout               time.Duration
+	maxOutputBytes        int64
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
 	// firing every fs-event-debounce) doesn't translate into a `gh pr
@@ -249,11 +251,12 @@ func NewCore(opts ...CoreOption) *Core {
 		gitDirCache:    make(map[string]string),
 		commonDirCache: make(map[string]string),
 
-		defaultBranchCache: make(map[string]repoMetaEntry[string]),
-		originCache:        make(map[string]repoMetaEntry[originIdentity]),
-		fetchCache:         make(map[string]time.Time),
-		untrackedLines:     make(map[string]*untrackedLineCache),
-		nowFn:              time.Now,
+		defaultBranchCache:    make(map[string]repoMetaEntry[string]),
+		originCache:           make(map[string]repoMetaEntry[originIdentity]),
+		repositoryLookupSlots: make(chan struct{}, 4),
+		fetchCache:            make(map[string]time.Time),
+		untrackedLines:        make(map[string]*untrackedLineCache),
+		nowFn:                 time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet
 	core.forges = map[string]Forge{

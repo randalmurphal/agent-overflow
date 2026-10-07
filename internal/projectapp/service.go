@@ -2,6 +2,8 @@ package projectapp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 
 	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/repoidentity"
 	"agent-overflow/internal/store"
 )
 
@@ -20,13 +23,9 @@ type Deps struct {
 	Store     *store.Store
 	Now       func() time.Time
 	Workspace WorkspaceResolver
-	// Identity reads a checkout's repository identity (git.ReadRepoIdentity:
-	// the `origin` remote and the smallest root commit of HEAD, with a known
-	// root kept when the repository still has it). `internal/app` supplies
-	// the git-backed implementation; nil means the service answers "not
-	// known" for every path, which is what keeps project policy testable
-	// without a git subprocess. ctx bounds the git commands.
-	Identity func(ctx context.Context, path, knownRootCommit string) (gitops.RepoIdentity, error)
+	// Identity resolves a forge ID using this checkout's transient origin.
+	// The origin itself never enters project persistence or client metadata.
+	Identity func(ctx context.Context, path string) (gitops.RepoIdentity, error)
 }
 
 // WorkspaceResolver returns git's canonical spelling for a registered
@@ -53,30 +52,36 @@ func New(deps Deps) *Service {
 // stands. ok is false when ctx ended the read: its error is not the
 // checkout's, and nothing may be recorded.
 //
-// A failed read keeps the last good remote and root beside the error, so a
+// A failed Git read keeps the last verified ID beside the error, so a
 // transient failure neither unmerges a project nor hides why it may be stale.
-// A path that is not a repository (any longer) keeps them too: a checkout
+// A path that is not a repository (any longer) keeps it too: a checkout
 // that is missing for a while, an unmounted volume say, is still the same
 // repository when it returns.
 func (s *Service) repoIdentity(ctx context.Context, path string, stored store.ProjectIdentity) (store.ProjectIdentity, bool) {
 	if s == nil || s.deps.Identity == nil {
 		return stored, true
 	}
-	identity, err := s.deps.Identity(ctx, path, stored.RootCommit)
+	identity, err := s.deps.Identity(ctx, path)
 	switch {
 	case ctx.Err() != nil:
 		return stored, false
 	case err != nil:
-		return store.ProjectIdentity{RemoteURL: stored.RemoteURL, RootCommit: stored.RootCommit, Error: err.Error()}, true
+		stored.Error = repoidentity.RedactText(err.Error())
+		return stored, true
 	case !identity.Repository:
-		return store.ProjectIdentity{RemoteURL: stored.RemoteURL, RootCommit: stored.RootCommit}, true
+		stored.Error = ""
+		return stored, true
 	}
-	return store.ProjectIdentity{RemoteURL: identity.RemoteURL, RootCommit: identity.RootCommit}, true
+	id := identity.RepositoryID
+	if id == "" && identity.LookupError != "" && identity.IdentitySource != "" && identity.IdentitySource == stored.IdentitySource {
+		id = stored.RepositoryID
+	}
+	return store.ProjectIdentity{RepositoryID: id, IdentitySource: identity.IdentitySource, Error: identity.LookupError}, true
 }
 
 // projectIdentity is the identity stored on row.
 func projectIdentity(row store.Project) store.ProjectIdentity {
-	return store.ProjectIdentity{RemoteURL: row.RemoteURL, RootCommit: row.RootCommit, Error: row.IdentityError}
+	return store.ProjectIdentity{Error: row.IdentityError, RepositoryID: row.RepositoryID, IdentitySource: row.IdentitySource}
 }
 
 func (s *Service) database(action string) (*store.Store, error) {
@@ -160,11 +165,11 @@ func (s *Service) Create(path string) (store.Project, error) {
 		// Derived at the one moment the row is written, so a project is
 		// identified from its first appearance in a client's sidebar
 		// rather than only after the next boot's backfill.
-		RemoteURL:     identity.RemoteURL,
-		RootCommit:    identity.RootCommit,
-		IdentityError: identity.Error,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		RepositoryID:   identity.RepositoryID,
+		IdentitySource: identity.IdentitySource,
+		IdentityError:  identity.Error,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	// The stored row, not the one built above: the slug is generated inside
 	// the insert, so the local copy has an empty one.
@@ -217,9 +222,10 @@ func (s *Service) UpdateSortPositions(orderedIDs []string) ([]store.Project, err
 // a project, answered before one is created there so a client can check the
 // folder is a checkout of the repository it expects.
 type FolderIdentity struct {
-	Repository bool   `json:"repository"`
-	RemoteURL  string `json:"remoteURL,omitempty"`
-	RootCommit string `json:"rootCommit,omitempty"`
+	RepositoryID   string `json:"repositoryID,omitempty"`
+	IdentityError  string `json:"identityError,omitempty"`
+	Repository     bool   `json:"repository"`
+	IdentitySource string `json:"-"`
 }
 
 // InspectFolder reads the repository identity of the directory at path. The
@@ -227,7 +233,7 @@ type FolderIdentity struct {
 // returned rather than answered as "not a repository": the caller is about to
 // decide whether the folder is the right checkout, and a read it could not
 // make must not look like a plain folder.
-func (s *Service) InspectFolder(path string) (FolderIdentity, error) {
+func (s *Service) InspectFolder(ctx context.Context, path string) (FolderIdentity, error) {
 	if s == nil || s.deps.Identity == nil {
 		return FolderIdentity{}, fmt.Errorf("inspect folder: repository identity unavailable")
 	}
@@ -246,9 +252,21 @@ func (s *Service) InspectFolder(path string) (FolderIdentity, error) {
 	if !info.IsDir() {
 		return FolderIdentity{}, fmt.Errorf("inspect folder: %s is not a directory", abs)
 	}
-	identity, err := s.deps.Identity(context.Background(), abs, "")
+	identity, err := s.deps.Identity(ctx, abs)
 	if err != nil {
 		return FolderIdentity{}, fmt.Errorf("inspect folder %s: %w", abs, err)
 	}
-	return FolderIdentity{Repository: identity.Repository, RemoteURL: identity.RemoteURL, RootCommit: identity.RootCommit}, nil
+	if err := ctx.Err(); err != nil {
+		return FolderIdentity{}, err
+	}
+	if identity.Repository && identity.RepositoryID == "" && identity.LookupError != "" && identity.IdentitySource != "" && s.deps.Store != nil {
+		stored, err := s.deps.Store.GetProjectByPath(abs)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return FolderIdentity{}, err
+		}
+		if err == nil && !stored.Archived && identity.IdentitySource == stored.IdentitySource {
+			identity.RepositoryID = stored.RepositoryID
+		}
+	}
+	return FolderIdentity{Repository: identity.Repository, IdentitySource: identity.IdentitySource, RepositoryID: identity.RepositoryID, IdentityError: identity.LookupError}, nil
 }

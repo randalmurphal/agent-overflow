@@ -265,7 +265,7 @@
   // with its other checkouts; say why on the entry rather than nowhere.
   let identityProblem = $derived(projectMembers(project.project.id)
     .filter((row) => row.project.identityError)
-    .map((row) => `Git couldn't read ${row.project.path}: ${row.project.identityError}`)
+    .map((row) => `Could not fully verify ${row.project.path}: ${row.project.identityError}`)
     .join('\n'));
 
   let manualMode = $derived(getProjectSortMode() === 'manual');

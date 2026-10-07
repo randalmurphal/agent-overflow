@@ -11,9 +11,9 @@ import { Create as $Create } from "@wailsio/runtime";
  * folder is a checkout of the repository it expects.
  */
 export class FolderIdentity {
+    "repositoryID"?: string;
+    "identityError"?: string;
     "repository": boolean;
-    "remoteURL"?: string;
-    "rootCommit"?: string;
 
     /** Creates a new FolderIdentity instance. */
     constructor($$source: Partial<FolderIdentity> = {}) {

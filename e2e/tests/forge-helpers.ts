@@ -44,6 +44,7 @@ export interface ForgeAttachment {
 }
 
 export interface ForgeRepo {
+  id?: number;
   forge: 'github' | 'gitlab';
   project: string;
   host?: string;
@@ -53,7 +54,7 @@ export interface ForgeRepo {
 
 export interface ForgeInvocation {
   seq: number;
-  cli: 'gh' | 'glab';
+  cli: 'gh' | 'glab' | 'ssh';
   args: string[];
   cwd: string;
   stdin?: string;

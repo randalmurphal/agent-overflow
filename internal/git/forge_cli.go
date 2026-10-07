@@ -11,23 +11,24 @@ import (
 var forgeCLINames = []string{"gh", "glab"}
 
 // ForgeCLINameEnv tells the fake which forge CLI it is standing in for
-// ("gh" or "glab"). argv[0] carries the same name, but an interpreter
+// ("gh", "glab", or "ssh"). argv[0] carries the same name, but an interpreter
 // replaces argv[0] with the script path, so a fake must read this instead.
 const ForgeCLINameEnv = "AO_FORGE_CLI"
 
 // CoreOption configures a Core at construction.
 type CoreOption func(*Core)
 
-// WithIsolatedForgeCLIs makes the Core unable to run a forge CLI from PATH.
+// WithIsolatedForgeCLIs pins forge CLIs and SSH configuration reads to a fake.
 //
 // An isolated boot (--harness, --soak) must never reach the developer's
 // real gh or glab, their login or the network behind them. With this
 // option every forge CLI invocation runs fake instead: the executable at
 // that absolute path, with argv[0] and ForgeCLINameEnv set to the
-// impersonated name ("gh" or "glab") and env appended to its environment
+// impersonated name ("gh", "glab", or "ssh") and env appended to its environment
 // only. An empty fake leaves forge CLIs unconfigured, and every invocation
 // fails with a ForgeCLIUnavailableError before anything is executed. Git
-// itself still resolves on PATH; any other binary is refused.
+// itself still resolves on PATH; any other binary is refused. SSH reads use
+// the fake too, so no test reads the developer's SSH configuration.
 func WithIsolatedForgeCLIs(fake string, env []string) CoreOption {
 	return func(c *Core) {
 		c.forgeCLIs = forgeCLIPolicy{
@@ -75,7 +76,7 @@ func (p forgeCLIPolicy) resolve(binary string) (commandTarget, error) {
 	switch {
 	case binary == "git":
 		return commandTarget{path: binary, argv0: binary}, nil
-	case slices.Contains(forgeCLINames, binary):
+	case slices.Contains(forgeCLINames, binary) || binary == "ssh":
 		if p.fake == "" {
 			return commandTarget{}, &ForgeCLIUnavailableError{Binary: binary}
 		}

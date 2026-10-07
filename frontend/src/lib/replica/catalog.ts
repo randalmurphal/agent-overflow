@@ -1,3 +1,4 @@
+import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // Bounded, versioned sidebar metadata. I/O shares the replica session's
 // identity token, connection, failure latch and purge lifecycle.
 import { validOwnershipEpoch } from '../transport/entityIndex';
@@ -29,7 +30,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
   if (kind === 'projects') {
     const project = row.project;
     return object(project) && fields(project, ['id', 'name', 'path'], ['sortPosition', 'createdAt', 'updatedAt'], ['archived'])
-      && optional(project, ['color', 'remoteURL', 'rootCommit', 'identityError'], [])
+      && optional(project, ['color', 'repositoryID', 'identityError'], [])
       && fields(row, [], ['threadCount']) && optional(row, [], ['lastActive']);
   }
   if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt']);
@@ -53,7 +54,7 @@ export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generatio
     const size = JSON.stringify(row).length;
     if (size > MAX_ROW_CHARS || (chars += size) > MAX_CATALOG_CHARS) return null;
   }
-  return raw.rows as CatalogRows[K][];
+  return safeRepositoryMetadata(raw.rows) as CatalogRows[K][];
 }
 
 export function makeCatalogRecord<K extends CatalogKind>(generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string): Catalog {
@@ -61,7 +62,7 @@ export function makeCatalogRecord<K extends CatalogKind>(generation: string, kin
   let chars = 0;
   for (const row of rows) {
     // Flatten Svelte proxies per row; never allocate a catalog-sized string.
-    const encoded = JSON.stringify(row);
+    const encoded = JSON.stringify(safeRepositoryMetadata(row));
     if (encoded.length > MAX_ROW_CHARS || !validRow(row, kind)) continue;
     if (kept.length === MAX_CATALOG_ROWS || chars + encoded.length > MAX_CATALOG_CHARS) break;
     kept.push(JSON.parse(encoded));

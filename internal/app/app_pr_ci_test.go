@@ -56,7 +56,7 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nprintf 'full log content\\nsecond line\\n'\n"
 	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	app.forgeCLIs.fake = filepath.Join(binDir, "gh")
 
 	pr := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
 	path, err := app.SavePRCIJobLog(pr, "901", "build")

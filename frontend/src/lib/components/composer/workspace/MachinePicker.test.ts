@@ -136,9 +136,9 @@ describe('<MachinePicker>', () => {
 
   it('flips to the SAME repository on the chosen machine when the entry spans it', async () => {
     stageBackend();
-    const homeRepo = makeProject({ id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git' });
-    const laptopRepo = makeProject({ id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app' });
-    const laptopOther = makeProject({ id: 'p-other', path: '/Users/me/other', name: 'other', remoteURL: 'https://github.com/me/other' });
+    const homeRepo = makeProject({ id: 'p-home', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1' });
+    const laptopRepo = makeProject({ id: 'p-laptop', path: '/Users/me/app', name: 'app', repositoryID: 'github:github.com:1' });
+    const laptopOther = makeProject({ id: 'p-other', path: '/Users/me/other', name: 'other', repositoryID: 'github:github.com:2' });
     // The other project sorts first on the laptop; the sibling must still win.
     await seedProjects([homeRepo, laptopOther, laptopRepo]);
     noteProject('p-laptop', 'laptop');
@@ -173,12 +173,13 @@ describe('<MachinePicker>', () => {
   });
 
   describe('choosing the checkout on a computer with none', () => {
-    const appRemote = 'git@github.com:me/app.git';
+    const appRepositoryID = 'github:github.com:1';
 
     async function openFolderPicker(source: Project) {
       stageBackend();
       await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'git:operate', 'files:read', 'settings:read']);
       await seedProjects([source]);
+      setBindingMock('RefreshProjectIdentity', async () => { takePinnedBackend(); return source; });
       setBindingMock('BrowseDirectory', async () => ({
         path: '/home/me/app', parent: '/home/me', separator: '/', entries: [], truncated: false, exists: true,
       }));
@@ -192,34 +193,34 @@ describe('<MachinePicker>', () => {
     }
 
     it('refuses a folder that is a checkout of another repository and keeps the computer fixed', async () => {
-      const create = setBindingMock('CreateProject', async () => { throw new Error('must not create'); });
+      const create = setBindingMock('CreateProjectCheckout', async () => { throw new Error('must not create'); });
       setBindingMock('InspectProjectFolder', async (path: string) => {
         expect(takePinnedBackend()).toBe('laptop');
         expect(path).toBe('/home/me/app');
-        return { repository: true, remoteURL: 'https://github.com/me/other', rootCommit: 'def' };
+        return { repository: true, repositoryID: 'github:github.com:2' };
       });
       const { pane, dialog, getByTestId, findByTestId } = await openFolderPicker(
-        makeProject({ name: 'app', remoteURL: appRemote, rootCommit: 'abc' }));
+        makeProject({ name: 'app', repositoryID: appRepositoryID }));
       expect(dialog).toHaveTextContent('Laptop has no checkout of app yet.');
       expect(dialog.querySelector('select')).toBeDisabled();
 
       await fireEvent.click(getByTestId('add-project-submit'));
       expect((await findByTestId('add-project-error')).textContent)
-        .toBe('That folder is a checkout of github.com/me/other, not github.com/me/app.');
+        .toBe("That folder isn't a verified checkout of app.");
       expect(create).not.toHaveBeenCalled();
       expect(pane.thread?.projectId).toBe('project-1');
     });
 
     it('adopts a checkout of the same repository and moves the draft onto it', async () => {
-      setBindingMock('InspectProjectFolder', async () => ({ repository: true, rootCommit: 'abc' }));
-      const created = makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app', rootCommit: 'abc', createdAt: 5 });
-      const create = setBindingMock('CreateProject', async (path: string) => {
+      setBindingMock('InspectProjectFolder', async () => ({ repository: true, repositoryID: 'github:github.com:1' }));
+      const created = makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1', createdAt: 5 });
+      const create = setBindingMock('CreateProjectCheckout', async (path: string) => {
         expect(takePinnedBackend()).toBe('laptop');
         expect(path).toBe('/home/me/app');
         return created;
       });
       setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
-      const { pane, getByTestId } = await openFolderPicker(makeProject({ name: 'app', remoteURL: appRemote, rootCommit: 'abc' }));
+      const { pane, getByTestId } = await openFolderPicker(makeProject({ name: 'app', repositoryID: appRepositoryID }));
 
       await fireEvent.click(getByTestId('add-project-submit'));
       await waitFor(() => {
@@ -231,7 +232,7 @@ describe('<MachinePicker>', () => {
 
     it('lets a plain-directory project pick any folder, as its own project there', async () => {
       const inspect = setBindingMock('InspectProjectFolder', async () => ({ repository: false }));
-      setBindingMock('CreateProject', async () => makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app' }));
+      setBindingMock('CreateProjectCheckout', async () => makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app' }));
       setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
       const { pane, dialog, getByTestId } = await openFolderPicker(makeProject({ name: 'notes' }));
       expect(dialog).toHaveTextContent('It becomes its own project there.');
@@ -239,6 +240,20 @@ describe('<MachinePicker>', () => {
       await fireEvent.click(getByTestId('add-project-submit'));
       await waitFor(() => expect(pane.thread?.projectId).toBe('p-laptop'));
       expect(inspect).not.toHaveBeenCalled();
+    });
+
+    it('explains an unreadable source and refuses registration when verification still fails', async () => {
+      const inspect = setBindingMock('InspectProjectFolder', async () => ({ repository: false }));
+      const create = setBindingMock('CreateProjectCheckout', async () => { throw new Error('must not create'); });
+      const { pane, dialog, getByTestId, findByTestId } = await openFolderPicker(
+        makeProject({ name: 'app', identityError: 'detected dubious ownership' }));
+      expect(dialog).toHaveTextContent('The repository for app could not be read.');
+      expect(dialog).not.toHaveTextContent('It becomes its own project there.');
+      await fireEvent.click(getByTestId('add-project-submit'));
+      expect(await findByTestId('add-project-error')).toHaveTextContent('Could not verify the source project: detected dubious ownership');
+      expect(inspect).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(pane.thread?.projectId).toBe('project-1');
     });
   });
 
