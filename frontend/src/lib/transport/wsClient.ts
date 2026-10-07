@@ -3436,6 +3436,10 @@ export class WSClient {
           handler(data, sequence, replayed);
         } catch (err) {
           console.warn(`wsClient: subscriber on ${clampString(channel)} threw`, err);
+          this.diagnosticsSink?.(
+            'transport: event subscriber threw',
+            `${clampString(channel)}\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+          );
         }
       }
     } finally {

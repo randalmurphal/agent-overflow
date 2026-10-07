@@ -2365,6 +2365,8 @@ describe('WSClient', () => {
   it('isolates a throwing subscriber so siblings on the channel still receive', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const diagnostics: Array<{ message: string; detail?: string }> = [];
+    client.setDiagnosticsSink((message, detail) => diagnostics.push({ message, detail }));
     const a = vi.fn(() => {
       throw new Error('boom');
     });
@@ -2380,6 +2382,11 @@ describe('WSClient', () => {
     ws.pushFrame({ type: 'event', channel: 'x', seq: 1, data: 'hi' });
     expect(a).toHaveBeenCalled();
     expect(b).toHaveBeenCalled();
+    // Console output is invisible in production builds; the throw must
+    // reach the persisted error log.
+    const threw = diagnostics.filter((d) => d.message === 'transport: event subscriber threw');
+    expect(threw).toHaveLength(1);
+    expect(threw[0]!.detail).toMatch(/^x\nError: boom/);
     client.close();
   });
 
