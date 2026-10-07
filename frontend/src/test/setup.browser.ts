@@ -10,7 +10,8 @@
 // and write into caches that deliberately survive thread switches. Without
 // these resets, one test's thread snapshot / item cache / active turn
 // leaks into the next as "already warm" or "still streaming" state.
-import { afterEach, beforeEach } from 'vitest';
+import { afterEach, beforeAll, beforeEach } from 'vitest';
+import { SHIPPED_FONT_FACES } from '../fonts';
 import './helpers/firstDivergence';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
@@ -36,6 +37,15 @@ function installBrowserTraceSinks(): void {
   setBindingMock('AppendUIRenderTraceBatch', async () => '');
   setBindingMock('BookmarkUIRenderTrace', async () => '');
 }
+
+// Layout assertions measure text. Without the app's own faces they would
+// measure whatever fallback font the host has installed, which differs by
+// platform. @font-face loads lazily, so load every shipped face up front.
+beforeAll(async () => {
+  const loaded = await Promise.all(SHIPPED_FONT_FACES.map((face) => document.fonts.load(face)));
+  const missing = SHIPPED_FONT_FACES.filter((_, index) => loaded[index].length === 0);
+  if (missing.length > 0) throw new Error(`Shipped fonts did not load: ${missing.join(', ')}`);
+});
 
 beforeEach(() => {
   // Real browser storage survives between files; backend settings only seed
