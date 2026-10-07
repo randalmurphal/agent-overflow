@@ -129,7 +129,7 @@ describe('<MachinePicker>', () => {
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
-    expect(await findByRole('dialog', { name: 'Add Project' })).toBeInTheDocument();
+    expect(await findByRole('dialog', { name: 'Choose Repo on Laptop' })).toBeInTheDocument();
     expect(defaults).not.toHaveBeenCalled();
     expect(selectedBackend()).toBe(HOME_BACKEND);
   });
@@ -166,10 +166,80 @@ describe('<MachinePicker>', () => {
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
 
-    expect(await findByRole('dialog', { name: 'Add Project' })).toBeInTheDocument();
+    expect(await findByRole('dialog', { name: 'Choose Repo on Laptop' })).toBeInTheDocument();
     expect(defaults).not.toHaveBeenCalled();
     expect(pane.hasDraftPlaceholder).toBe(true);
     expect(selectedBackend()).toBe(HOME_BACKEND);
+  });
+
+  describe('choosing the checkout on a computer with none', () => {
+    const appRemote = 'git@github.com:me/app.git';
+
+    async function openFolderPicker(source: Project) {
+      stageBackend();
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'git:operate', 'files:read', 'settings:read']);
+      await seedProjects([source]);
+      setBindingMock('BrowseDirectory', async () => ({
+        path: '/home/me/app', parent: '/home/me', separator: '/', entries: [], truncated: false, exists: true,
+      }));
+      const pane = buildPlaceholderPane(source);
+      const view = render(MachinePicker, { props: { pane } });
+      await fireEvent.click(view.getByTestId('machine-picker-trigger'));
+      await fireEvent.click(await view.findByRole('menuitem', { name: /Laptop/ }));
+      const dialog = await view.findByRole('dialog', { name: `Choose ${source.name} on Laptop` });
+      await waitFor(() => expect(view.getByTestId('add-project-submit')).not.toBeDisabled());
+      return { pane, dialog, ...view };
+    }
+
+    it('refuses a folder that is a checkout of another repository and keeps the computer fixed', async () => {
+      const create = setBindingMock('CreateProject', async () => { throw new Error('must not create'); });
+      setBindingMock('InspectProjectFolder', async (path: string) => {
+        expect(takePinnedBackend()).toBe('laptop');
+        expect(path).toBe('/home/me/app');
+        return { repository: true, remoteURL: 'https://github.com/me/other', rootCommit: 'def' };
+      });
+      const { pane, dialog, getByTestId, findByTestId } = await openFolderPicker(
+        makeProject({ name: 'app', remoteURL: appRemote, rootCommit: 'abc' }));
+      expect(dialog).toHaveTextContent('Laptop has no checkout of app yet.');
+      expect(dialog.querySelector('select')).toBeDisabled();
+
+      await fireEvent.click(getByTestId('add-project-submit'));
+      expect((await findByTestId('add-project-error')).textContent)
+        .toBe('That folder is a checkout of github.com/me/other, not github.com/me/app.');
+      expect(create).not.toHaveBeenCalled();
+      expect(pane.thread?.projectId).toBe('project-1');
+    });
+
+    it('adopts a checkout of the same repository and moves the draft onto it', async () => {
+      setBindingMock('InspectProjectFolder', async () => ({ repository: true, rootCommit: 'abc' }));
+      const created = makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app', rootCommit: 'abc', createdAt: 5 });
+      const create = setBindingMock('CreateProject', async (path: string) => {
+        expect(takePinnedBackend()).toBe('laptop');
+        expect(path).toBe('/home/me/app');
+        return created;
+      });
+      setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
+      const { pane, getByTestId } = await openFolderPicker(makeProject({ name: 'app', remoteURL: appRemote, rootCommit: 'abc' }));
+
+      await fireEvent.click(getByTestId('add-project-submit'));
+      await waitFor(() => {
+        expect(pane.thread?.projectId).toBe('p-laptop');
+        expect(selectedBackend()).toBe('laptop');
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a plain-directory project pick any folder, as its own project there', async () => {
+      const inspect = setBindingMock('InspectProjectFolder', async () => ({ repository: false }));
+      setBindingMock('CreateProject', async () => makeProject({ id: 'p-laptop', path: '/home/me/app', name: 'app' }));
+      setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
+      const { pane, dialog, getByTestId } = await openFolderPicker(makeProject({ name: 'notes' }));
+      expect(dialog).toHaveTextContent('It becomes its own project there.');
+
+      await fireEvent.click(getByTestId('add-project-submit'));
+      await waitFor(() => expect(pane.thread?.projectId).toBe('p-laptop'));
+      expect(inspect).not.toHaveBeenCalled();
+    });
   });
 
   describe('execution access', () => {
@@ -199,7 +269,7 @@ describe('<MachinePicker>', () => {
       expect(laptop.textContent).toContain('View only');
       await fireEvent.click(laptop);
       expect(defaults).not.toHaveBeenCalled();
-      expect(queryByRole('dialog', { name: 'Add Project' })).toBeNull();
+      expect(queryByRole('dialog', { name: /Choose Repo/ })).toBeNull();
       expect(pane.thread?.projectId).toBe('project-1');
       // A grant arriving while the picker is open enables the same row.
       await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);

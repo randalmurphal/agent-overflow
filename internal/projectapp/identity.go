@@ -1,48 +1,55 @@
 package projectapp
 
-import "agent-overflow/internal/store"
+import (
+	"context"
 
-// BackfillIdentity derives the repository identity of every project row that
-// has neither half yet, and hands each row it actually moved to persist.
+	"agent-overflow/internal/store"
+)
+
+// RefreshIdentity re-derives the repository identity of every project row and
+// hands each row it actually moved to persist.
 //
-// One pass, meant to be run once per boot. Rows written before migration v83,
-// and rows created while no identity deriver was wired, are the whole
-// population; a project that already has an answer is skipped without a git
-// subprocess, so the second boot after an upgrade costs nothing. There is no
-// polling and no retry: a checkout that gains an origin later is re-derived by
-// the next boot's pass, which is the same window the repo-meta cache already
-// accepts for the classification derived from it.
+// One pass, meant to be run once per boot. Every row is read, not only rows
+// with no identity yet: an `origin` added or changed since the row was
+// written, and a read that failed last time, are both corrected here. The
+// cost stays bounded: a known root commit the repository still contains is
+// kept without walking history, so a row costs a few git subprocesses whose
+// work does not grow with the repository.
 //
 // ARCHIVED ROWS ARE INCLUDED. An archived project can be unarchived at any
 // time, and skipping it here would leave it the one entry that never merges
 // across machines.
 //
-// A row whose path no longer exists, or was never a repository, derives ("",
-// "") and is skipped silently: that is not a failure, it is the answer, and
-// writing it back would only restate the empty values already stored.
+// A failed read is recorded on the row (store.Project.IdentityError) rather
+// than returned: it describes that checkout, and the pass continues with the
+// rest. The returned error is a store failure or ctx ending the pass; a read
+// ctx cut short is not recorded.
 //
 // persist is called once per changed row, in list order, on the caller's
 // goroutine — `internal/app` broadcasts it on `project:updated` so a client
 // that loaded its sidebar before the pass converges without a refresh. A nil
 // persist runs the writes and announces nothing.
-func (s *Service) BackfillIdentity(persist func(row store.Project)) error {
-	database, err := s.database("backfill project identity")
+func (s *Service) RefreshIdentity(ctx context.Context, persist func(row store.Project)) error {
+	database, err := s.database("refresh project identity")
 	if err != nil {
 		return err
+	}
+	if s.deps.Identity == nil {
+		return nil
 	}
 	rows, err := database.ListAllProjects()
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if row.RemoteURL != "" || row.RootCommit != "" {
-			continue
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		remoteURL, rootCommit := s.repoIdentity(row.Path)
-		if remoteURL == "" && rootCommit == "" {
-			continue
+		identity, ok := s.repoIdentity(ctx, row.Path, projectIdentity(row))
+		if !ok {
+			return ctx.Err()
 		}
-		identified, changed, err := database.UpdateProjectIdentity(row.ID, remoteURL, rootCommit)
+		identified, changed, err := database.UpdateProjectIdentity(row.ID, identity)
 		if err != nil {
 			return err
 		}

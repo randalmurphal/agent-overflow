@@ -11,6 +11,7 @@ import (
 
 	_ "modernc.org/sqlite" // fixture Codex thread index
 
+	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
 )
 
@@ -58,6 +59,16 @@ func (h providerHomes) deps(st *store.Store) Deps {
 		Store:             st,
 		ClaudeProjectsDir: h.claudeProjects,
 		CodexHome:         h.codexHome,
+		EnsureProject:     ensureProjectIn(st),
+	}
+}
+
+// ensureProjectIn is the store-only project resolver the fixtures import
+// through; production injects projectapp's, which also records identity.
+func ensureProjectIn(st *store.Store) func(string) (store.Project, error) {
+	return func(workspacePath string) (store.Project, error) {
+		proj, _, err := project.EnsureForWorkspace(st, workspacePath)
+		return proj, err
 	}
 }
 

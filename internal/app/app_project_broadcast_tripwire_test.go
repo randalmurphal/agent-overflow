@@ -22,6 +22,7 @@ import (
 var (
 	projectAppReads = []string{
 		"GetWorktreeSetup",
+		"InspectFolder",
 		"List",
 		"ProjectForWorkspaceOperation",
 		"ResolveSourceWorkspace",
@@ -29,9 +30,9 @@ var (
 	}
 	projectAppWrites = []string{
 		"Archive",
-		"BackfillIdentity",
 		"Create",
 		"EnsureForWorkspace",
+		"RefreshIdentity",
 		"Rename",
 		"SetWorktreeSetup",
 		"Unarchive",

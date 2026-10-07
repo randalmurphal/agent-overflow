@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Project, ProjectWithCounts } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 
 function makeProject(id: string, name: string, path: string): Project {
   return {
@@ -130,5 +131,28 @@ describe('ProjectItem compact layout', () => {
     expect(document.querySelector('[data-popover] [role="menu"]')).not.toBeNull();
     await fireEvent.click(getByRole('menuitem', { name: 'New Terminal' }));
     expect(onNewTerminal).toHaveBeenCalledWith('a');
+  });
+});
+
+describe('ProjectItem identity read failure', () => {
+  afterEach(() => resetToastsForTest());
+
+  it('flags the entry with git\'s reason and clears once the read succeeds', async () => {
+    const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'detected dubious ownership' };
+    addProjectLocal(failed);
+    const { getByTestId, queryByTestId, getByRole } = renderItem(failed);
+    const toggle = () => getByRole('button', { name: /^(Expand|Collapse) Project$/ }).getAttribute('aria-label');
+    const before = toggle();
+    const flag = getByTestId('project-item-identity-error');
+    expect(flag.getAttribute('title')).toBe("Git couldn't read /work/web: detected dubious ownership");
+    // A tap shows the reason where hover cannot, without toggling the row.
+    await fireEvent.click(flag);
+    expect(getToasts().map((toast) => [toast.type, toast.message]))
+      .toEqual([['warning', "Git couldn't read /work/web: detected dubious ownership"]]);
+    expect(toggle()).toBe(before);
+
+    updateProjectLocal({ ...failed, identityError: undefined });
+    await tick();
+    expect(queryByTestId('project-item-identity-error')).toBeNull();
   });
 });

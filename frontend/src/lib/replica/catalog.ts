@@ -29,7 +29,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
   if (kind === 'projects') {
     const project = row.project;
     return object(project) && fields(project, ['id', 'name', 'path'], ['sortPosition', 'createdAt', 'updatedAt'], ['archived'])
-      && optional(project, ['color', 'remoteURL', 'rootCommit'], [])
+      && optional(project, ['color', 'remoteURL', 'rootCommit', 'identityError'], [])
       && fields(row, [], ['threadCount']) && optional(row, [], ['lastActive']);
   }
   if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt']);

@@ -957,7 +957,7 @@ func TestImportedClaudeActiveHistoryMatchesIndependentFullActiveBranchBuild(t *t
 	}
 
 	baseline := newTestStore(t)
-	baselineProject, err := resolveProject(baseline, row)
+	baselineProject, err := resolveProject(homes.deps(baseline), row)
 	if err != nil {
 		t.Fatalf("resolve baseline project: %v", err)
 	}

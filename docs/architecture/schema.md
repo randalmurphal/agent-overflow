@@ -67,7 +67,7 @@ the kept history of a deleted one.
 
 | Tables | Ownership and key constraints |
 |---|---|
-| `projects` | User-defined repository grouping. `path` and immutable filesystem-safe `slug` are unique. `worktree_setup` is strict JSON owned by `internal/worktreesetup`. `remote_url` and `root_commit` are derived repository identity. Legacy workflow queue columns remain physically present but have no readers or writers. |
+| `projects` | User-defined repository grouping. `path` and immutable filesystem-safe `slug` are unique. `worktree_setup` is strict JSON owned by `internal/worktreesetup`. `remote_url` and `root_commit` are derived repository identity; `identity_error` is the last failed read of it, kept beside the last good identity. Legacy workflow queue columns remain physically present but have no readers or writers. |
 | `thread_groups` | Named per-project sidebar groups. Membership is `threads.group_id`; deleting a group ungroups its threads and clears their pins. A group has no pin; a grouped thread carries its own, cleared whenever it joins or leaves a group. A name is unique per project, case-insensitively, so resolve-or-create by name has one answer. |
 | `thread_drafts`, `thread_tracked_files`, `new_thread_mcp_defaults` | Composer drafts, per-thread tracked-file state, and defaults applied to newly materialized threads. Each uses narrow accessors rather than the broad thread projection. |
 | `channels`, `channel_messages`, `discussion_definitions` | Multi-agent discussion channels, ordered messages, and reusable global or project templates. |

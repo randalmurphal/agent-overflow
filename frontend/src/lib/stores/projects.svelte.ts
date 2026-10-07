@@ -22,7 +22,7 @@ import {
   formatProjectLabel,
   type ProjectLabel,
 } from '../utils/pathDisplay';
-import { repoKey } from '../utils/repoKey';
+import { groupRepositories } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend, noteProject } from '../transport/entityIndex';
 import { onBackendDetached } from '../transport/backends';
@@ -54,9 +54,11 @@ export function getProject(id: string): ProjectWithCounts | undefined {
 // A project is a repository, and the same repository checked out on two
 // attached machines is ONE sidebar entry with two targets. The rows stay as
 // the backends sent them (the entity index still answers which machine
-// owns each id); what merges is the VIEW. An entry is represented by its
-// home member when there is one, else its first member, so a person's own
-// machine is the one whose name, colour and sort position the entry wears.
+// owns each id); what merges is the VIEW. Grouping is `groupRepositories`:
+// at most one member per machine, so a second clone on one machine stays
+// its own entry. An entry is represented by its live home member when there
+// is one, else its first live member, so a person's own machine is the one
+// whose name, colour and sort position the entry wears.
 //
 // Computed only while more than one backend is attached: a single-backend
 // app returns the list itself, same array identity, and pays nothing.
@@ -67,61 +69,102 @@ interface MergedEntries {
   entryOf: Map<string, string>;
   /** representative id → every member, home first. */
   members: Map<string, ProjectWithCounts[]>;
+  /** member project id → the repository key its entry merged on. */
+  repoKeyOf: Map<string, string>;
 }
 
-const NO_MERGE: Pick<MergedEntries, 'entryOf' | 'members'> = { entryOf: new Map(), members: new Map() };
+const NO_MERGE: Pick<MergedEntries, 'entryOf' | 'members' | 'repoKeyOf'> = {
+  entryOf: new Map(), members: new Map(), repoKeyOf: new Map(),
+};
+
+function computerOf(projectId: string): BackendKey {
+  return projectBackend(projectId) ?? HOME_BACKEND;
+}
+
+/** Groups rows by repository, `computers` overriding the entity index. */
+function groupRows<T extends { project: Project }>(rows: readonly T[], computers?: Map<T, BackendKey>) {
+  const wrapped = rows.map((row) => ({ row, project: row.project, computer: computers?.get(row) ?? computerOf(row.project.id) }));
+  const groups = groupRepositories(wrapped);
+  const keyOf = new Map<string, string>();
+  for (const item of wrapped) keyOf.set(item.project.id, groups.keyOf.get(item) ?? '');
+  const members = [...groups.members.values()].map((items) => items.map((item) => item.row));
+  return { keyOf, members };
+}
 
 const merged = $derived.by((): MergedEntries => {
   if (!hasMultipleBackends()) return { entries: projects, ...NO_MERGE };
-  const byKey = new Map<string, ProjectWithCounts[]>();
-  const order: ProjectWithCounts[] = [];
-  const keyOf = new Map<string, string>();
-  for (const row of projects) {
-    const key = repoKey(row.project);
-    if (key === '') {
-      order.push(row);
-      continue;
-    }
-    const bucket = byKey.get(key);
-    if (bucket) {
-      bucket.push(row);
-    } else {
-      byKey.set(key, [row]);
-      order.push(row);
-      keyOf.set(row.project.id, key);
+  const { keyOf, members: groups } = groupRows(projects);
+  const position = new Map(projects.map((row, index) => [row, index]));
+  const repoKeyOf = new Map<string, string>();
+  const groupOf = new Map<ProjectWithCounts, ProjectWithCounts[]>();
+  for (const group of groups) {
+    if (group.length < 2) continue;
+    // Home first, then list order — stable, so the entry does not swap its
+    // representative when a machine reconnects.
+    group.sort((a, b) => Number(computerOf(b.project.id) === HOME_BACKEND) - Number(computerOf(a.project.id) === HOME_BACKEND)
+      || position.get(a)! - position.get(b)!);
+    for (const row of group) {
+      groupOf.set(row, group);
+      repoKeyOf.set(row.project.id, keyOf.get(row.project.id)!);
     }
   }
   const entryOf = new Map<string, string>();
   const members = new Map<string, ProjectWithCounts[]>();
   const entries: ProjectWithCounts[] = [];
-  for (const first of order) {
-    const key = keyOf.get(first.project.id);
-    const bucket = key === undefined ? undefined : byKey.get(key);
-    if (!bucket || bucket.length < 2) {
-      entries.push(first);
+  for (const row of projects) {
+    const group = groupOf.get(row);
+    if (!group) {
+      entries.push(row);
       continue;
     }
-    // Home first, then attach order — stable, so the entry does not swap
-    // its representative when a machine reconnects.
-    const home = bucket.find((row) => (projectBackend(row.project.id) ?? HOME_BACKEND) === HOME_BACKEND);
-    const rep = home ?? bucket[0];
-    const ordered = home ? [home, ...bucket.filter((row) => row !== home)] : bucket;
+    if (entryOf.has(row.project.id)) continue;
+    // An archived member never represents a live one: the sidebar hides an
+    // entry by its representative's archived flag.
+    const rep = group.find((member) => !member.project.archived) ?? group[0];
     let threadCount = 0;
     let lastActive = 0;
-    for (const row of ordered) {
-      threadCount += row.threadCount;
-      lastActive = Math.max(lastActive, row.lastActive ?? 0);
-      entryOf.set(row.project.id, rep.project.id);
+    for (const member of group) {
+      threadCount += member.threadCount;
+      lastActive = Math.max(lastActive, member.lastActive ?? 0);
+      entryOf.set(member.project.id, rep.project.id);
     }
-    members.set(rep.project.id, ordered);
+    members.set(rep.project.id, group);
     entries.push(
       threadCount === rep.threadCount && lastActive === (rep.lastActive ?? 0)
         ? rep
         : { ...rep, threadCount, lastActive },
     );
   }
-  return { entries, entryOf, members };
+  return { entries, entryOf, members, repoKeyOf };
 });
+
+/** The repository key of the merged entry `projectId` is a member of; ''
+ *  when it is in no merged entry. */
+export function projectRepoKey(projectId: string): string {
+  return merged.repoKeyOf.get(projectId) ?? '';
+}
+
+/**
+ * Whether a checkout with `identity` on `computer` is the same repository as
+ * `projectId`, by the rule entries merge on. False when `projectId` has no
+ * identity: nothing proves a folder is "the same" plain directory.
+ */
+export function checkoutMatchesProject(
+  projectId: string,
+  computer: BackendKey,
+  identity: Pick<Project, 'remoteURL' | 'rootCommit'>,
+): boolean {
+  const candidate: ProjectWithCounts = {
+    project: {
+      id: '\u0000checkout', path: '', name: '', sortPosition: 0,
+      createdAt: Number.MAX_SAFE_INTEGER, updatedAt: 0, archived: false, ...identity,
+    },
+    threadCount: 0,
+  };
+  const { keyOf } = groupRows([...projects, candidate], new Map([[candidate, computer]]));
+  const key = keyOf.get(projectId) ?? '';
+  return key !== '' && keyOf.get(candidate.project.id) === key;
+}
 
 /** The sidebar's list: one row per repository across attached machines. */
 export function projectEntries(): readonly ProjectWithCounts[] {

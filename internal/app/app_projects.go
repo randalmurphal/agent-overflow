@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"slices"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/projectapp"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
@@ -31,27 +33,32 @@ func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string
 	return worktree.Path, ok, err
 }
 
-// repoIdentity derives a checkout's repository identity for projectapp.
+// repoIdentity reads a checkout's repository identity for projectapp.
 // Resolved through gitCore() at call time rather than captured when the
-// service is built, so the shared Core — and with it the repo-meta TTL cache
-// the origin read rides — is the one the rest of the app uses.
-func (a *App) repoIdentity(path string) (remoteURL, rootCommit string) {
-	return a.gitCore().RepoIdentity(path)
+// service is built, so the shared Core is the one the rest of the app uses.
+func (a *App) repoIdentity(ctx context.Context, path, knownRootCommit string) (gitops.RepoIdentity, error) {
+	return a.gitCore().ReadRepoIdentity(ctx, path, knownRootCommit)
 }
 
-// backfillProjectIdentity derives the repository identity of every project row
-// that has none, and announces each row it moved so a client that already
-// loaded its sidebar converges without a refresh.
-//
-// One pass per boot, one derivation per unidentified row, no polling: after
-// the first boot following the v83 upgrade there is nothing left to do and the
-// pass reads the project list and stops.
-func (a *App) backfillProjectIdentity() {
-	if err := a.projectApplication().BackfillIdentity(func(row store.Project) {
-		a.broadcastProjectRow(triage.ProjectActionFull, row)
-	}); err != nil {
-		log.Printf("project identity backfill: %v", err)
-	}
+// startProjectIdentityRefresh re-derives the repository identity of every
+// project row once per boot, after the first client's catalog reads, and
+// announces each row it moved so a client that already loaded its sidebar
+// converges without a refresh. Shutdown joins it before closing the store.
+func (a *App) startProjectIdentityRefresh() {
+	a.projectIdentityWG.Add(1)
+	go func() {
+		defer a.projectIdentityWG.Done()
+		ctx := a.lifeCtx()
+		if err := a.awaitFirstReadsSettled(ctx); err != nil {
+			return
+		}
+		err := a.projectApplication().RefreshIdentity(ctx, func(row store.Project) {
+			a.broadcastProjectRow(triage.ProjectActionFull, row)
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("project identity refresh: %v", err)
+		}
+	}()
 }
 
 // ListProjects returns projects with a lightweight thread count per
@@ -83,6 +90,20 @@ func (a *App) CreateProject(path string) (store.Project, error) {
 	}
 	a.broadcastProjectRow(triage.ProjectActionListed, row)
 	return row, nil
+}
+
+// InspectProjectFolder reads the repository identity of a directory on the
+// selected computer without creating a project there. The machine picker
+// checks with it that a folder chosen for an existing project is a checkout
+// of that project's repository before CreateProject adopts it.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) InspectProjectFolder(path string) (projectapp.FolderIdentity, error) {
+	if err := a.requireIsolatedWorkspace(path); err != nil {
+		return projectapp.FolderIdentity{}, err
+	}
+	return a.projectApplication().InspectFolder(path)
 }
 
 // RenameProject updates the display name. Path is immutable.
@@ -364,10 +385,8 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	return result, nil
 }
 
-// ensureProjectForWorkspace delegates to project.EnsureForWorkspace.
-// Kept as an *App method so existing callers (and tests in this package)
-// don't need to thread the store through their call sites.
-// A workspace no project covers yet mints one, which is a new sidebar entry
+// ensureProjectForWorkspace resolves workspacePath to its project through
+// projectapp, which records a created row's repository identity. A workspace no project covers yet mints one, which is a new sidebar entry
 // and is announced like any other creation. Resolving to an existing project
 // is the common case and says nothing.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {

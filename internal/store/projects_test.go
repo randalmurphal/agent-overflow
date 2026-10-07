@@ -550,7 +550,7 @@ func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	row, changed, err := s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111")
+	row, changed, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"})
 	if err != nil {
 		t.Fatalf("UpdateProjectIdentity: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
 		t.Fatalf("written row = (%q, %q)", row.RemoteURL, row.RootCommit)
 	}
 
-	if _, changed, err = s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111"); err != nil {
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity (repeat): %v", err)
 	}
 	if changed {
@@ -569,13 +569,13 @@ func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
 	}
 
 	// Either half moving on its own is a change.
-	if _, changed, err = s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "bbbb2222"); err != nil {
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "bbbb2222"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity (root only): %v", err)
 	}
 	if !changed {
 		t.Fatal("a moved root commit reported no change")
 	}
-	if _, changed, err = s.UpdateProjectIdentity("p1", "", "bbbb2222"); err != nil {
+	if _, changed, err = s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "", RootCommit: "bbbb2222"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity (clear remote): %v", err)
 	}
 	if !changed {
@@ -593,7 +593,7 @@ func TestUpdateProjectIdentityLeavesUpdatedAtAlone(t *testing.T) {
 	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, _, err := s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111"); err != nil {
+	if _, _, err := s.UpdateProjectIdentity("p1", ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "aaaa1111"}); err != nil {
 		t.Fatalf("UpdateProjectIdentity: %v", err)
 	}
 	got, err := s.GetProject("p1")

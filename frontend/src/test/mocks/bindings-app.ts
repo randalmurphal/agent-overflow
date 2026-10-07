@@ -623,6 +623,7 @@ export const RequestWebviewMemoryTrim = dispatch('RequestWebviewMemoryTrim');
 // Projects (sidebar)
 export const ListProjects = dispatch('ListProjects');
 export const CreateProject = dispatch('CreateProject');
+export const InspectProjectFolder = dispatch('InspectProjectFolder');
 export const RenameProject = dispatch('RenameProject');
 export const DeleteProject = dispatch('DeleteProject');
 export const ProjectDeletionPreview = dispatch('ProjectDeletionPreview');

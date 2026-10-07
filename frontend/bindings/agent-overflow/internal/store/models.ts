@@ -1238,6 +1238,13 @@ export class Project {
     "remoteURL"?: string;
     "rootCommit"?: string;
 
+    /**
+     * IdentityError is why the last identity read failed (git refused or
+     * could not read the checkout), "" after a successful read. RemoteURL
+     * and RootCommit keep their last good values beside it.
+     */
+    "identityError"?: string;
+
     /** Creates a new Project instance. */
     constructor($$source: Partial<Project> = {}) {
         if (!("id" in $$source)) {

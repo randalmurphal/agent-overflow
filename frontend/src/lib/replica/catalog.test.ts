@@ -85,6 +85,14 @@ describe('offline computer catalogs', () => {
     expect(await getReplicaWindow('gpu-thread', replicaToken(''))).toBeNull();
   });
 
+  it('keeps the repository identity of a saved project row and its read failure', () => {
+    const identified = { ...project, project: { ...project.project, remoteURL: 'git@github.com:me/app.git', rootCommit: 'abc', identityError: 'detected dubious ownership' } };
+    const record = makeCatalogRecord('g1', 'projects', [identified], 'stamp');
+    expect(readCatalogRecord(record, 'g1', 'projects', 'stamp')).toEqual([identified]);
+    const malformed = { ...identified, project: { ...identified.project, identityError: 7 } };
+    expect(readCatalogRecord({ ...record, rows: [malformed] }, 'g1', 'projects', 'stamp')).toBeNull();
+  });
+
   it('rejects malformed, oversized and obsolete metadata', async () => {
     const record = makeCatalogRecord('g1', 'projects', [project], 'stamp');
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();

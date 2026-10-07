@@ -336,6 +336,10 @@ func (a *App) sessionImportDeps() (sessionimport.Deps, error) {
 		Store:             a.store,
 		ClaudeProjectsDir: providerHomeIfPresent(filepath.Join(home, ".claude", "projects")),
 		CodexHome:         providerHomeIfPresent(filepath.Join(home, ".codex")),
+		// A created project is announced like any other ensure; the run's
+		// row broadcast (importedRowBroadcast) also lists it ahead of its
+		// threads for clients that missed that frame.
+		EnsureProject: a.ensureProjectForWorkspace,
 	}, nil
 }
 

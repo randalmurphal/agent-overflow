@@ -20,7 +20,7 @@
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RenameProject } from '../../stores/bindings';
-  import { getProjectLabel, updateProjectLocal } from '../../stores/projects.svelte';
+  import { getProjectLabel, projectMembers, updateProjectLocal } from '../../stores/projects.svelte';
   import {
     getProjectSortMode,
     isProjectExpanded,
@@ -35,6 +35,7 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Plus from '@lucide/svelte/icons/plus';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
@@ -182,6 +183,12 @@
     onNewThread?.(project.project.id, { openInNewPane: true });
   }
 
+  // The reason as a toast, so a touch screen without hover can read it too.
+  function showIdentityProblem(e: MouseEvent): void {
+    e.stopPropagation();
+    addToast('warning', identityProblem);
+  }
+
   function handleNewGroupClick(e: MouseEvent): void {
     e.stopPropagation();
     void newThreadGroupInProject(project.project.id);
@@ -253,6 +260,13 @@
   let label = $derived(
     getProjectLabel(project.project.id) ?? { prefix: '', name: project.project.name },
   );
+
+  // A checkout git could not read keeps its last identity and may not merge
+  // with its other checkouts; say why on the entry rather than nowhere.
+  let identityProblem = $derived(projectMembers(project.project.id)
+    .filter((row) => row.project.identityError)
+    .map((row) => `Git couldn't read ${row.project.path}: ${row.project.identityError}`)
+    .join('\n'));
 
   let manualMode = $derived(getProjectSortMode() === 'manual');
   let isDragging = $derived(getDraggingProjectId() === project.project.id);
@@ -423,6 +437,18 @@
         >
           {project.project.name}
         </span>
+      {/if}
+      {#if identityProblem}
+        <button
+          type="button"
+          onclick={showIdentityProblem}
+          title={identityProblem}
+          aria-label={identityProblem}
+          data-testid="project-item-identity-error"
+          class="compact:h-9 compact:w-9 shrink-0 flex h-5 w-5 items-center justify-center rounded text-warning hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <Icon icon={TriangleAlert} size={12} strokeWidth={2} />
+        </button>
       {/if}
       <button
         type="button"

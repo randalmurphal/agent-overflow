@@ -202,12 +202,14 @@ func TestSendIdentityLookupHonorsImportedHistoryAndOverrides(t *testing.T) {
 func TestMigrationV89IndexesExistingSendIdentities(t *testing.T) {
 	db := migrateThrough(t, 88)
 	s := &Store{db: db}
-	if _, err := s.CreateProject(Project{ID: defaultTestProjectID, Path: t.TempDir(), Name: "Existing project", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+	// The fixture is written with SQL rather than the accessors: this
+	// database stops at v88, and an accessor writes against the current
+	// schema (project columns added later, the v103 search index an item
+	// write maintains).
+	if _, err := db.Exec(`INSERT INTO projects (id, path, name, slug, created_at, updated_at)
+		VALUES (?, ?, 'Existing project', 'existing-project', 1, 1)`, defaultTestProjectID, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	// The history fixture is written with SQL rather than the accessors:
-	// this database stops at v88, and an accessor writes against the current
-	// schema, where an item write also maintains the v103 search index.
 	if _, err := db.Exec(`
 		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 			created_at, updated_at, archived, mode)

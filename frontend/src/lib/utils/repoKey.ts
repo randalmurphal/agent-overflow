@@ -11,12 +11,89 @@
 
 import type { Project } from '../types/models';
 
-/** '' when the project carries no identity to merge on. */
-export function repoKey(project: Pick<Project, 'remoteURL' | 'rootCommit'>): string {
-  const remote = normalizeRemoteURL(project.remoteURL ?? '');
-  if (remote !== '') return `remote:${remote}`;
-  const root = (project.rootCommit ?? '').trim().toLowerCase();
-  return root === '' ? '' : `commit:${root}`;
+type Identity = Pick<Project, 'remoteURL' | 'rootCommit'>;
+
+/** Whether the project carries an identity to merge on: a remote or a root. */
+export function hasRepoIdentity(project: Identity): boolean {
+  return normalizeRemoteURL(project.remoteURL ?? '') !== '' || normalizeRootCommit(project.rootCommit) !== '';
+}
+
+function normalizeRootCommit(root: string | undefined): string {
+  return (root ?? '').trim().toLowerCase();
+}
+
+/** One project row as the grouping reads it. */
+export interface RepoGroupRow {
+  project: Identity & Pick<Project, 'id' | 'createdAt' | 'archived'>;
+  /** The computer the row lives on. */
+  computer: string;
+}
+
+export interface RepoGroups<T> {
+  /** Row → its repository key ('' for a row with no identity). */
+  keyOf: Map<T, string>;
+  /** Key → the rows that merge under it: at most one per computer. */
+  members: Map<string, T[]>;
+}
+
+/**
+ * Groups rows into repositories.
+ *
+ * A row with a remote groups by its normalised remote. A row without one
+ * (no `origin`, or a remote that is a local path) joins the remote group
+ * holding its root commit when exactly one does, so a remoteless checkout
+ * still merges with clones that have an origin; with none, or several (a
+ * fork and its upstream share a root), it groups by root commit.
+ *
+ * Each computer contributes at most one member to a group: its oldest
+ * live row, so a second clone on one computer stays its own entry and
+ * adding one never moves the clone already merged. Every keyed row,
+ * member or not, is in keyOf.
+ */
+export function groupRepositories<T extends RepoGroupRow>(rows: readonly T[]): RepoGroups<T> {
+  const keyOf = new Map<T, string>();
+  const remoteKeysByRoot = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const remote = normalizeRemoteURL(row.project.remoteURL ?? '');
+    if (remote === '') continue;
+    const key = `remote:${remote}`;
+    keyOf.set(row, key);
+    const root = normalizeRootCommit(row.project.rootCommit);
+    if (root === '') continue;
+    const keys = remoteKeysByRoot.get(root) ?? new Set<string>();
+    keys.add(key);
+    remoteKeysByRoot.set(root, keys);
+  }
+  for (const row of rows) {
+    if (keyOf.has(row)) continue;
+    const root = normalizeRootCommit(row.project.rootCommit);
+    if (root === '') {
+      keyOf.set(row, '');
+      continue;
+    }
+    const keys = remoteKeysByRoot.get(root);
+    keyOf.set(row, keys?.size === 1 ? keys.values().next().value! : `commit:${root}`);
+  }
+
+  const chosen = new Map<string, Map<string, T>>();
+  for (const row of rows) {
+    const key = keyOf.get(row)!;
+    if (key === '') continue;
+    const byComputer = chosen.get(key) ?? new Map<string, T>();
+    const current = byComputer.get(row.computer);
+    if (current === undefined || precedes(row, current)) byComputer.set(row.computer, row);
+    chosen.set(key, byComputer);
+  }
+  const members = new Map<string, T[]>();
+  for (const [key, byComputer] of chosen) members.set(key, [...byComputer.values()]);
+  return { keyOf, members };
+}
+
+/** Live before archived, then oldest, then id: stable across reloads. */
+function precedes(a: RepoGroupRow, b: RepoGroupRow): boolean {
+  if (a.project.archived !== b.project.archived) return !a.project.archived;
+  if (a.project.createdAt !== b.project.createdAt) return a.project.createdAt < b.project.createdAt;
+  return a.project.id < b.project.id;
 }
 
 /**

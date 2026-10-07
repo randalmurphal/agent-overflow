@@ -224,6 +224,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "HighlightSchemaVersion", ID: 2896867980, Scope: "files:read", Route: "home"},                                      // main.App.HighlightSchemaVersion
 	{Name: "ImportSessions", ID: 786331585, Scope: "threads:operate", Route: "selected"},                                      // main.App.ImportSessions
 	{Name: "ImportThreadUpdates", ID: 535929682, Scope: "threads:operate", Route: "thread"},                                   // main.App.ImportThreadUpdates
+	{Name: "InspectProjectFolder", ID: 969607096, Scope: "git:operate", Route: "selected"},                                    // main.App.InspectProjectFolder
 	{Name: "InterruptAndRevertIfClean", ID: 753394581, Scope: "threads:operate", Route: "thread"},                             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate", Route: "thread"},                                         // main.App.InterruptTurn
 	{Name: "IntroduceOwnDevice", ID: 2219602920, Scope: "session", Route: "home", Remote: true},                               // main.App.IntroduceOwnDevice

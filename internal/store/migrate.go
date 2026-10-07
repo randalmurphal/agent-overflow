@@ -1730,6 +1730,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: newestChunkRefsIndexMigrationVersion, Name: "newest_chunk_refs_index", SQL: newestChunkRefsIndexV137SQL},
 	{Version: dropThreadPRRefMigrationVersion, Name: "drop_thread_pr_ref", SQL: dropThreadPRRefV138SQL},
 	{Version: groupedThreadPinsMigrationVersion, Name: "grouped_thread_pins", SQL: groupedThreadPinsV139SQL, Rebuild: true},
+	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

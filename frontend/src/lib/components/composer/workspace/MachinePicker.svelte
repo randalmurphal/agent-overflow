@@ -26,6 +26,8 @@
   } from '../../../stores/attachedBackends.svelte';
   import { HOME_BACKEND, type BackendKey } from '../../../transport/backendKey';
   import { rememberProjectTarget } from '../../../stores/projectTargets';
+  import { checkoutRefusal } from '../../../stores/computerProjects';
+  import { hasRepoIdentity } from '../../../utils/repoKey';
   import AddProjectModal from '../../sidebar/AddProjectModal.svelte';
   import type { Project } from '../../../types/models';
   import { addToast } from '../../../stores/toast.svelte';
@@ -48,6 +50,7 @@
   let switching = $state(false);
   let addOn = $state<BackendKey | null>(null);
   let addForThread: string | null = null;
+  let addFor = $state<Project | null>(null);
 
   let isLocked = $derived(
     !pane.thread || (!pane.hasDraftPlaceholder && pane.thread.isDraft !== true),
@@ -104,6 +107,7 @@
       const project = thread.projectId ? projectSiblingOn(thread.projectId, key)?.project : undefined;
       if (!project) {
         addForThread = thread.id;
+        addFor = thread.projectId ? getProject(thread.projectId)?.project ?? null : null;
         addOn = key;
         return;
       }
@@ -200,9 +204,18 @@
 
 
 {#if addOn !== null}
+  {@const target = attachedBackendEntry(addOn)}
+  {@const computerName = target ? backendDisplayName(target) : 'that computer'}
+  {@const source = addFor}
   <AddProjectModal
     open={true}
     initialBackend={addOn}
+    lockBackend={true}
+    title={source ? `Choose ${source.name} on ${computerName}` : undefined}
+    description={source && hasRepoIdentity(source)
+      ? `${computerName} has no checkout of ${source.name} yet. Pick the folder where it is cloned there.`
+      : source ? `Pick a folder on ${computerName}. It becomes its own project there.` : undefined}
+    checkFolder={source ? (backend, path) => checkoutRefusal(source.id, backend, path) : undefined}
     onClose={() => { addOn = null; }}
     onCreated={(project) => void useAddedProject(project)}
     onDuplicate={(id) => {

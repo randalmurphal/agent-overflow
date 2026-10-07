@@ -244,6 +244,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed.
 	a.threadRequestsWG.Wait()
+	// The project identity refresh writes project rows. appCtx is already
+	// cancelled, which kills its git read and stops the pass unrecorded.
+	a.projectIdentityWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 

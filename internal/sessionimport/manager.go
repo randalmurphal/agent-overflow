@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/importir"
-	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -57,11 +56,10 @@ type Manager struct {
 	stopped bool
 	wg      sync.WaitGroup
 
-	scan          func(context.Context, Deps, Filter) (ScanResult, error)
-	importOne     func(context.Context, Deps, Row) (ImportOutcome, error)
-	planUpdate    func(context.Context, Deps, string) (Update, error)
-	applyUpdate   func(Deps, Update) (ApplyResult, error)
-	ensureProject func(*store.Store, string) (store.Project, error)
+	scan        func(context.Context, Deps, Filter) (ScanResult, error)
+	importOne   func(context.Context, Deps, Row) (ImportOutcome, error)
+	planUpdate  func(context.Context, Deps, string) (Update, error)
+	applyUpdate func(Deps, Update) (ApplyResult, error)
 }
 
 // RunHandle identifies an asynchronous import run.
@@ -148,15 +146,6 @@ func NewManager(config ManagerConfig) *Manager {
 		importOne:   ImportOne,
 		planUpdate:  PlanUpdate,
 		applyUpdate: ApplyUpdate,
-		ensureProject: func(database *store.Store, workspacePath string) (store.Project, error) {
-			// The created flag is dropped on purpose: an import that mints
-			// projects announces them through its own progress channel, which
-			// every attached client already resyncs the sidebar from
-			// (refreshSidebarProjections). A per-row project broadcast would be
-			// a second convergence path on a bulk hot loop.
-			proj, _, err := project.EnsureForWorkspace(database, workspacePath)
-			return proj, err
-		},
 	}
 	manager.scan = config.Scan
 	if manager.scan == nil {
@@ -372,7 +361,7 @@ func (m *Manager) run(ctx context.Context, run *managerRun, ids []string) {
 			path := strings.TrimSpace(row.ProjectPath)
 			resolved, ok := projectsByPath[path]
 			if !ok {
-				proj, resolveErr := m.ensureProject(deps.Store, row.ProjectPath)
+				proj, resolveErr := deps.ensureProject(row.ProjectPath)
 				resolved = projectResolution{err: resolveErr}
 				if resolveErr == nil {
 					resolved.id = proj.ID

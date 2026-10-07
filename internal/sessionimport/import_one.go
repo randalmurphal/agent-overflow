@@ -11,7 +11,6 @@ import (
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/importir"
-	"agent-overflow/internal/project"
 	"agent-overflow/internal/provider"
 	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/provider/codex/rollout"
@@ -76,7 +75,7 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 		return ImportOutcome{}, err
 	}
 
-	proj, err := resolveProject(d.Store, row)
+	proj, err := resolveProject(d, row)
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: resolve project for %s: %w", row.ID, err)
 	}
@@ -100,12 +99,12 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 // could only disagree with the project the listing showed the user, so the
 // stamped id wins.
 //
-// EnsureForWorkspace covers the two cases the stamp does not: a row that
+// Deps.EnsureProject covers the two cases the stamp does not: a row that
 // belongs to no project yet (it creates one at the repository root) and a
 // stamped project that has been deleted between the scan and the import.
-func resolveProject(s *store.Store, row Row) (store.Project, error) {
+func resolveProject(d Deps, row Row) (store.Project, error) {
 	if id := strings.TrimSpace(row.ProjectID); id != "" {
-		proj, err := s.GetProject(id)
+		proj, err := d.Store.GetProject(id)
 		if err == nil {
 			return proj, nil
 		}
@@ -113,8 +112,7 @@ func resolveProject(s *store.Store, row Row) (store.Project, error) {
 			return store.Project{}, err
 		}
 	}
-	proj, _, err := project.EnsureForWorkspace(s, row.ProjectPath)
-	return proj, err
+	return d.ensureProject(row.ProjectPath)
 }
 
 // branchPlan is one thread-to-be: everything the thread row needs and the

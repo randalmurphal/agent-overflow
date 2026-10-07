@@ -1,29 +1,49 @@
 package projectapp
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 )
 
-// fakeIdentity answers from a path → identity table and records every path it
-// was asked about, so a test can assert the pass costs one derivation per
-// unidentified row and none for the rest.
+type identityAnswer struct {
+	identity gitops.RepoIdentity
+	err      error
+}
+
+type identityAsk struct{ path, knownRoot string }
+
+// fakeIdentity answers from a path → answer table (a missing path is not a
+// repository) and records every question, so a test can assert what each
+// derivation was told about the stored row.
 type fakeIdentity struct {
-	answers map[string][2]string
-	asked   []string
+	answers map[string]identityAnswer
+	asked   []identityAsk
+	// during, when set, runs inside each derivation before it answers.
+	during func()
 }
 
-func (f *fakeIdentity) derive(path string) (string, string) {
-	f.asked = append(f.asked, path)
+func (f *fakeIdentity) derive(_ context.Context, path, knownRoot string) (gitops.RepoIdentity, error) {
+	f.asked = append(f.asked, identityAsk{path, knownRoot})
+	if f.during != nil {
+		f.during()
+	}
 	answer := f.answers[path]
-	return answer[0], answer[1]
+	return answer.identity, answer.err
 }
 
-func newIdentityService(t *testing.T, identity func(string) (string, string)) (*Service, *store.Store) {
+func repo(remoteURL, rootCommit string) identityAnswer {
+	return identityAnswer{identity: gitops.RepoIdentity{Repository: true, RemoteURL: remoteURL, RootCommit: rootCommit}}
+}
+
+func newIdentityService(t *testing.T, fake *fakeIdentity) (*Service, *store.Store) {
 	t.Helper()
 	database, err := store.New(":memory:")
 	if err != nil {
@@ -33,7 +53,7 @@ func newIdentityService(t *testing.T, identity func(string) (string, string)) (*
 	return New(Deps{
 		Store:    database,
 		Now:      func() time.Time { return time.UnixMilli(1234) },
-		Identity: identity,
+		Identity: fake.derive,
 	}), database
 }
 
@@ -46,27 +66,47 @@ func mustDir(t *testing.T, parent, name string) string {
 	return path
 }
 
+func identityOf(row store.Project) store.ProjectIdentity {
+	return store.ProjectIdentity{RemoteURL: row.RemoteURL, RootCommit: row.RootCommit, Error: row.IdentityError}
+}
+
+func mustGet(t *testing.T, database *store.Store, id string) store.Project {
+	t.Helper()
+	row, err := database.GetProject(id)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	return row
+}
+
 func TestCreateStampsRepositoryIdentity(t *testing.T) {
-	parent := t.TempDir()
-	path := mustDir(t, parent, "workspace")
-	fake := &fakeIdentity{answers: map[string][2]string{
-		path: {"git@example.com:owner/repo.git", "aaaa1111"},
-	}}
-	service, database := newIdentityService(t, fake.derive)
+	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("git@example.com:owner/repo.git", "aaaa1111")}}
+	service, database := newIdentityService(t, fake)
 
 	created, err := service.Create(path)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if created.RemoteURL != "git@example.com:owner/repo.git" || created.RootCommit != "aaaa1111" {
-		t.Fatalf("created identity = (%q, %q)", created.RemoteURL, created.RootCommit)
+	want := store.ProjectIdentity{RemoteURL: "git@example.com:owner/repo.git", RootCommit: "aaaa1111"}
+	if identityOf(created) != want || identityOf(mustGet(t, database, created.ID)) != want {
+		t.Fatalf("created identity = %+v, want %+v stored and returned", identityOf(created), want)
 	}
-	stored, err := database.GetProject(created.ID)
+}
+
+// A read git refuses is recorded with its reason on the created row, not
+// stored as the empty identity of a plain folder.
+func TestCreateRecordsAFailedIdentityRead(t *testing.T) {
+	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: {err: errors.New("detected dubious ownership")}}}
+	service, database := newIdentityService(t, fake)
+
+	created, err := service.Create(path)
 	if err != nil {
-		t.Fatalf("GetProject: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
-	if stored.RemoteURL != created.RemoteURL || stored.RootCommit != created.RootCommit {
-		t.Fatalf("stored identity = (%q, %q), want the created row's", stored.RemoteURL, stored.RootCommit)
+	if created.IdentityError != "detected dubious ownership" || mustGet(t, database, created.ID).IdentityError != created.IdentityError {
+		t.Fatalf("created row = %+v, want the read failure recorded", created)
 	}
 }
 
@@ -80,18 +120,15 @@ func TestCreateWithoutAnIdentityDeriverStoresEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if created.RemoteURL != "" || created.RootCommit != "" {
-		t.Fatalf("identity = (%q, %q), want both empty with no deriver wired",
-			created.RemoteURL, created.RootCommit)
+	if identityOf(created) != (store.ProjectIdentity{}) {
+		t.Fatalf("identity = %+v, want empty with no deriver wired", identityOf(created))
 	}
 }
 
 func TestEnsureForWorkspaceStampsIdentityOnTheCreatedRow(t *testing.T) {
 	path := mustDir(t, t.TempDir(), "workspace")
-	fake := &fakeIdentity{answers: map[string][2]string{
-		path: {"https://example.com/repo.git", "bbbb2222"},
-	}}
-	service, database := newIdentityService(t, fake.derive)
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("https://example.com/repo.git", "bbbb2222")}}
+	service, database := newIdentityService(t, fake)
 
 	write, err := service.EnsureForWorkspace(path)
 	if err != nil {
@@ -100,16 +137,9 @@ func TestEnsureForWorkspaceStampsIdentityOnTheCreatedRow(t *testing.T) {
 	if !write.Changed {
 		t.Fatal("first EnsureForWorkspace reported no creation")
 	}
-	if write.Project.RemoteURL != "https://example.com/repo.git" || write.Project.RootCommit != "bbbb2222" {
-		t.Fatalf("returned identity = (%q, %q), want the derived one",
-			write.Project.RemoteURL, write.Project.RootCommit)
-	}
-	stored, err := database.GetProject(write.Project.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if stored.RemoteURL != "https://example.com/repo.git" || stored.RootCommit != "bbbb2222" {
-		t.Fatalf("stored identity = (%q, %q)", stored.RemoteURL, stored.RootCommit)
+	want := store.ProjectIdentity{RemoteURL: "https://example.com/repo.git", RootCommit: "bbbb2222"}
+	if identityOf(write.Project) != want || identityOf(mustGet(t, database, write.Project.ID)) != want {
+		t.Fatalf("identity = %+v, want %+v returned and stored", identityOf(write.Project), want)
 	}
 
 	// Resolving to the existing row changes nothing and must not spend a
@@ -127,166 +157,250 @@ func TestEnsureForWorkspaceStampsIdentityOnTheCreatedRow(t *testing.T) {
 	}
 }
 
-func TestBackfillIdentityWritesAndAnnouncesOnlyTheRowsItMoved(t *testing.T) {
+// Every row is re-read, the stored root is offered as known, and only the
+// rows whose identity moved are written and announced.
+func TestRefreshIdentityRereadsEveryRowAndAnnouncesOnlyMoves(t *testing.T) {
 	parent := t.TempDir()
-	identified := mustDir(t, parent, "already")
-	remoteless := mustDir(t, parent, "remoteless")
-	plain := mustDir(t, parent, "plain")
+	unchanged := mustDir(t, parent, "unchanged")
+	moved := mustDir(t, parent, "moved")
 	archived := mustDir(t, parent, "archived")
+	plain := mustDir(t, parent, "plain")
 
-	fake := &fakeIdentity{answers: map[string][2]string{
-		identified: {"https://example.com/already.git", "cccc3333"},
-		remoteless: {"", "dddd4444"},
-		archived:   {"https://example.com/archived.git", "eeee5555"},
-		// `plain` answers ("", "") — not a repository.
+	fake := &fakeIdentity{answers: map[string]identityAnswer{
+		unchanged: repo("https://example.com/unchanged.git", "cccc3333"),
+		moved:     repo("", "dddd4444"),
+		archived:  repo("", "eeee5555"),
 	}}
-	service, database := newIdentityService(t, fake.derive)
-
-	for _, path := range []string{identified, remoteless, plain, archived} {
-		if _, err := service.Create(path); err != nil {
+	service, database := newIdentityService(t, fake)
+	rows := map[string]store.Project{}
+	for _, path := range []string{unchanged, moved, archived, plain} {
+		row, err := service.Create(path)
+		if err != nil {
 			t.Fatalf("Create %s: %v", path, err)
 		}
+		rows[path] = row
 	}
-	archivedRow, err := database.GetProjectByPath(archived)
-	if err != nil {
-		t.Fatalf("GetProjectByPath: %v", err)
-	}
-	if _, _, err := database.ArchiveProject(archivedRow.ID); err != nil {
+	if _, _, err := database.ArchiveProject(rows[archived].ID); err != nil {
 		t.Fatalf("ArchiveProject: %v", err)
 	}
-
-	// A row created before the deriver existed: clear its identity so the
-	// pass has something to fill, which is exactly the pre-v83 shape.
-	remotelessRow, err := database.GetProjectByPath(remoteless)
-	if err != nil {
-		t.Fatalf("GetProjectByPath: %v", err)
-	}
-	if _, _, err := database.UpdateProjectIdentity(remotelessRow.ID, "", ""); err != nil {
-		t.Fatalf("clear identity: %v", err)
-	}
+	// An origin added after creation, on a live and an archived row.
+	fake.answers[moved] = repo("git@example.com:o/moved.git", "dddd4444")
+	fake.answers[archived] = repo("git@example.com:o/archived.git", "eeee5555")
 
 	fake.asked = nil
-	var announced []store.Project
-	if err := service.BackfillIdentity(func(row store.Project) {
-		announced = append(announced, row)
+	var announced []string
+	if err := service.RefreshIdentity(context.Background(), func(row store.Project) {
+		announced = append(announced, row.ID)
 	}); err != nil {
-		t.Fatalf("BackfillIdentity: %v", err)
+		t.Fatalf("RefreshIdentity: %v", err)
 	}
 
-	// `identified` and `archived` were stamped at creation, so the pass
-	// must not have asked about them at all.
-	wantAsked := map[string]bool{remoteless: true, plain: true}
-	for _, path := range fake.asked {
-		if !wantAsked[path] {
-			t.Errorf("backfill derived %s, which already had an identity", path)
+	wantKnown := map[string]string{unchanged: "cccc3333", moved: "dddd4444", archived: "eeee5555", plain: ""}
+	if len(fake.asked) != len(wantKnown) {
+		t.Fatalf("derivations = %+v, want one per row", fake.asked)
+	}
+	for _, ask := range fake.asked {
+		if ask.knownRoot != wantKnown[ask.path] {
+			t.Errorf("derivation of %s was told root %q, want %q", ask.path, ask.knownRoot, wantKnown[ask.path])
 		}
 	}
-	if len(fake.asked) != len(wantAsked) {
-		t.Errorf("backfill derived %v, want exactly the unidentified rows", fake.asked)
+	if len(announced) != 2 || !(announced[0] == rows[moved].ID || announced[1] == rows[moved].ID) ||
+		!(announced[0] == rows[archived].ID || announced[1] == rows[archived].ID) {
+		t.Fatalf("announced %v, want exactly the moved and archived rows", announced)
 	}
-
-	if len(announced) != 1 || announced[0].ID != remotelessRow.ID {
-		t.Fatalf("announced %+v, want only the remoteless row", announced)
+	if got := mustGet(t, database, rows[moved].ID).RemoteURL; got != "git@example.com:o/moved.git" {
+		t.Fatalf("moved row remote = %q, want the added origin", got)
 	}
-	if announced[0].RemoteURL != "" || announced[0].RootCommit != "dddd4444" {
-		t.Fatalf("announced identity = (%q, %q), want the root-only answer",
-			announced[0].RemoteURL, announced[0].RootCommit)
-	}
-	stored, err := database.GetProject(remotelessRow.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if stored.RootCommit != "dddd4444" {
-		t.Fatalf("stored root commit = %q, want dddd4444", stored.RootCommit)
+	if got := mustGet(t, database, rows[archived].ID).RemoteURL; got != "git@example.com:o/archived.git" {
+		t.Fatalf("archived row remote = %q, want the added origin", got)
 	}
 }
 
-// The archived project is unarchived later; leaving it out of the pass would
-// make it the one entry that never merges across machines.
-func TestBackfillIdentityCoversArchivedRows(t *testing.T) {
-	path := mustDir(t, t.TempDir(), "archived")
-	fake := &fakeIdentity{answers: map[string][2]string{
-		path: {"https://example.com/archived.git", "ffff6666"},
-	}}
-	service, database := newIdentityService(t, fake.derive)
-
+// A failed read keeps the last good identity beside its error, so the
+// project stays merged and says why it may be stale; the next good read
+// clears the error.
+func TestRefreshIdentityKeepsTheLastGoodIdentityOnFailure(t *testing.T) {
+	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("https://example.com/r.git", "ffff6666")}}
+	service, database := newIdentityService(t, fake)
 	row, err := service.Create(path)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, _, err := database.UpdateProjectIdentity(row.ID, "", ""); err != nil {
-		t.Fatalf("clear identity: %v", err)
+
+	fake.answers[path] = identityAnswer{err: errors.New("git rev-parse failed: boom")}
+	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
 	}
-	if _, _, err := database.ArchiveProject(row.ID); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
+	want := store.ProjectIdentity{RemoteURL: "https://example.com/r.git", RootCommit: "ffff6666", Error: "git rev-parse failed: boom"}
+	if got := identityOf(mustGet(t, database, row.ID)); got != want {
+		t.Fatalf("after a failed read = %+v, want %+v", got, want)
 	}
 
-	if err := service.BackfillIdentity(nil); err != nil {
-		t.Fatalf("BackfillIdentity: %v", err)
+	fake.answers[path] = repo("https://example.com/r.git", "ffff6666")
+	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
 	}
-	stored, err := database.GetProject(row.ID)
+	if got := mustGet(t, database, row.ID).IdentityError; got != "" {
+		t.Fatalf("error after a good read = %q, want cleared", got)
+	}
+}
+
+// A checkout that is missing or no longer a repository keeps its identity:
+// an unmounted volume is the same repository when it returns.
+func TestRefreshIdentityKeepsTheIdentityOfAMissingCheckout(t *testing.T) {
+	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("https://example.com/r.git", "abab1212")}}
+	service, database := newIdentityService(t, fake)
+	row, err := service.Create(path)
 	if err != nil {
-		t.Fatalf("GetProject: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
-	if stored.RemoteURL != "https://example.com/archived.git" || stored.RootCommit != "ffff6666" {
-		t.Fatalf("archived row identity = (%q, %q), want it backfilled",
-			stored.RemoteURL, stored.RootCommit)
+
+	delete(fake.answers, path)
+	if err := service.RefreshIdentity(context.Background(), func(store.Project) {
+		t.Fatal("a missing checkout announced a change")
+	}); err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
+	}
+	if got := identityOf(mustGet(t, database, row.ID)); got != identityOf(row) {
+		t.Fatalf("identity = %+v, want %+v kept", got, identityOf(row))
 	}
 }
 
 // Identity is derived metadata, not user activity: the sidebar's "latest
 // activity" ordering must be unmoved by a boot pass.
-func TestBackfillIdentityLeavesTheActivityOrderAlone(t *testing.T) {
+func TestRefreshIdentityLeavesTheActivityOrderAlone(t *testing.T) {
 	path := mustDir(t, t.TempDir(), "workspace")
-	fake := &fakeIdentity{answers: map[string][2]string{
-		path: {"https://example.com/repo.git", "aaaa1111"},
-	}}
-	service, database := newIdentityService(t, fake.derive)
-
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("", "aaaa1111")}}
+	service, database := newIdentityService(t, fake)
 	row, err := service.Create(path)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, _, err := database.UpdateProjectIdentity(row.ID, "", ""); err != nil {
-		t.Fatalf("clear identity: %v", err)
-	}
 
-	if err := service.BackfillIdentity(nil); err != nil {
-		t.Fatalf("BackfillIdentity: %v", err)
+	fake.answers[path] = repo("https://example.com/repo.git", "aaaa1111")
+	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
 	}
-	stored, err := database.GetProject(row.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if stored.UpdatedAt != row.UpdatedAt {
-		t.Fatalf("UpdatedAt = %d, want it untouched at %d", stored.UpdatedAt, row.UpdatedAt)
+	stored := mustGet(t, database, row.ID)
+	if stored.RemoteURL == "" || stored.UpdatedAt != row.UpdatedAt {
+		t.Fatalf("stored = %+v, want the origin written and UpdatedAt untouched at %d", stored, row.UpdatedAt)
 	}
 }
 
-func TestBackfillIdentityWithoutADeriverIsANoop(t *testing.T) {
-	service, database := newTestService(t)
+func TestRefreshIdentityStopsWhenItsContextEnds(t *testing.T) {
 	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{}}
+	service, _ := newIdentityService(t, fake)
+	if _, err := service.Create(path); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake.asked = nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := service.RefreshIdentity(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RefreshIdentity = %v, want context.Canceled", err)
+	}
+	if len(fake.asked) != 0 {
+		t.Fatalf("derivations after cancellation = %+v, want none", fake.asked)
+	}
+}
+
+// A read the pass's ctx cut short fails because of the ctx, not the
+// checkout, so it is not recorded as the row's identity error.
+func TestRefreshIdentityDoesNotRecordAReadItsContextEnded(t *testing.T) {
+	path := mustDir(t, t.TempDir(), "workspace")
+	fake := &fakeIdentity{answers: map[string]identityAnswer{path: repo("git@example.com:owner/repo.git", "aaaa1111")}}
+	service, database := newIdentityService(t, fake)
 	row, err := service.Create(path)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := service.BackfillIdentity(func(store.Project) {
-		t.Fatal("backfill announced a row with no identity deriver wired")
+	ctx, cancel := context.WithCancel(context.Background())
+	fake.answers[path] = identityAnswer{err: errors.New("signal: killed")}
+	fake.during = cancel
+	var persisted []store.Project
+	if err := service.RefreshIdentity(ctx, func(row store.Project) { persisted = append(persisted, row) }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RefreshIdentity = %v, want context.Canceled", err)
+	}
+	if len(persisted) != 0 {
+		t.Fatalf("persisted = %+v, want nothing", persisted)
+	}
+	if got := identityOf(mustGet(t, database, row.ID)); got != identityOf(row) {
+		t.Fatalf("stored identity = %+v, want it unchanged at %+v", got, identityOf(row))
+	}
+}
+
+func TestRefreshIdentityWithoutADeriverIsANoop(t *testing.T) {
+	service, _ := newTestService(t)
+	if _, err := service.Create(mustDir(t, t.TempDir(), "workspace")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := service.RefreshIdentity(context.Background(), func(store.Project) {
+		t.Fatal("refresh announced a row with no identity deriver wired")
 	}); err != nil {
-		t.Fatalf("BackfillIdentity: %v", err)
-	}
-	stored, err := database.GetProject(row.ID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if stored.RemoteURL != "" || stored.RootCommit != "" {
-		t.Fatalf("identity = (%q, %q), want both empty", stored.RemoteURL, stored.RootCommit)
+		t.Fatalf("RefreshIdentity: %v", err)
 	}
 }
 
-func TestBackfillIdentityWithoutAStoreErrors(t *testing.T) {
+func TestRefreshIdentityWithoutAStoreErrors(t *testing.T) {
 	service := New(Deps{})
-	if err := service.BackfillIdentity(nil); err == nil {
-		t.Fatal("BackfillIdentity with no store returned no error")
+	if err := service.RefreshIdentity(context.Background(), nil); err == nil {
+		t.Fatal("RefreshIdentity with no store returned no error")
+	}
+}
+
+func TestInspectFolderAnswersTheFolderIdentityWithoutCreatingAProject(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	checkout := mustDir(t, parent, "checkout")
+	plain := mustDir(t, parent, "plain")
+	broken := mustDir(t, parent, "broken")
+	file := filepath.Join(parent, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fake := &fakeIdentity{answers: map[string]identityAnswer{
+		checkout: repo("git@example.com:owner/repo.git", "aaaa1111"),
+		broken:   {err: errors.New("detected dubious ownership")},
+	}}
+	service, database := newIdentityService(t, fake)
+
+	got, err := service.InspectFolder(checkout)
+	if err != nil {
+		t.Fatalf("InspectFolder(checkout): %v", err)
+	}
+	if want := (FolderIdentity{Repository: true, RemoteURL: "git@example.com:owner/repo.git", RootCommit: "aaaa1111"}); got != want {
+		t.Fatalf("InspectFolder(checkout) = %+v, want %+v", got, want)
+	}
+	if got, err := service.InspectFolder(plain); err != nil || got != (FolderIdentity{}) {
+		t.Fatalf("InspectFolder(plain) = %+v, %v; want not a repository", got, err)
+	}
+	if _, err := service.InspectFolder(broken); err == nil || !strings.Contains(err.Error(), "dubious ownership") {
+		t.Fatalf("InspectFolder(broken) error = %v, want the git failure", err)
+	}
+	for _, path := range []string{"", "  ", file, filepath.Join(parent, "missing")} {
+		if _, err := service.InspectFolder(path); err == nil {
+			t.Errorf("InspectFolder(%q) succeeded, want an error", path)
+		}
+	}
+	for _, ask := range fake.asked {
+		if ask.knownRoot != "" {
+			t.Errorf("InspectFolder passed known root %q, want none", ask.knownRoot)
+		}
+	}
+	rows, err := database.ListAllProjects()
+	if err != nil {
+		t.Fatalf("ListAllProjects: %v", err)
+	}
+	for _, row := range rows {
+		if row.Path == checkout {
+			t.Fatalf("InspectFolder created a project at %s", checkout)
+		}
+	}
+	if _, err := New(Deps{}).InspectFolder(checkout); err == nil {
+		t.Fatal("InspectFolder without a deriver succeeded, want an error")
 	}
 }

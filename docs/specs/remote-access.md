@@ -2837,10 +2837,10 @@ surfaces in exactly three places:
 
 - **Project identity is the repo, not the checkout.** A project entry
   is the repository — matched by primary remote URL, root-commit hash
-  when remoteless — and each machine × checkout path is a **target**
-  under it. Two clones of the same repo, on one machine or five, are
-  simply two targets of one project, exactly as worktrees already are:
-  project ≠ workspace generalizes to project ≠ checkout ≠ machine.
+  when remoteless — and each machine's checkout is a **target** under
+  it: project ≠ workspace generalizes to project ≠ checkout ≠ machine.
+  A machine contributes one checkout, its oldest; another clone of the
+  same repo on that machine stays a separate project.
   Thread rows carry a target chip only when their project spans more
   than one target. Identity is user-correctable (link/split) when the
   remote-URL match gets it wrong; nothing beyond that match is
@@ -3047,46 +3047,52 @@ project row carries `remoteURL` (the `origin` remote as git reports
 it) and `rootCommit` (the lexicographically smallest root of `HEAD`,
 so a repo with several roots answers the same on every machine), both
 computed by the backend that owns the checkout at creation (the
-`CreateProject` RPC and the workspace-ensure path alike) and backfilled
-once per boot for rows that have neither, each backfilled row
+`CreateProject` RPC, the workspace-ensure path and session import
+alike) and re-read for every row once per boot, each changed row
 announced as a `project:updated` `full` frame so a client that loaded
-first converges. The CLIENT merges: `utils/repoKey.ts` normalises the
-URL (scheme, user, `.git`, case of the host, the SSH alias form) and
-falls back to `commit:<rootCommit>`, and the projects store groups
-rows by that key only while more than one backend is attached, so a
-single-backend app computes nothing. A merged entry renders once in
-the sidebar under its home member (else its first member), with every
-member's threads beneath it; the project picker lists the entry, and
-the machine picker becomes a TARGET choice, flipping the draft to the
-sibling on the chosen machine. The machine chip renders in the
-worktree chip's slot only for threads of a project that spans more
+first converges. A git failure is recorded as `identityError` beside
+the last good identity and shown on the sidebar entry. The CLIENT
+merges: `utils/repoKey.ts` normalises the URL (scheme, user, `.git`,
+case of the host, the SSH alias form) and falls back to
+`commit:<rootCommit>`; a remoteless row joins the one remote group
+that holds its root commit. The projects store groups rows by that key
+only while more than one backend is attached, so a single-backend app
+computes nothing. Each computer contributes at most one member to an
+entry, its oldest live row; another clone on the same computer stays
+its own entry. A merged entry renders once in the sidebar under its
+home member (else its first live member), with every member's threads
+beneath it; the project picker lists the entry, and the machine picker
+becomes a TARGET choice, flipping the draft to the sibling on the
+chosen machine. When that machine has no checkout, it asks for the
+folder there and refuses one that is not a checkout of the same
+repository (`InspectProjectFolder`); a project with no identity
+accepts any folder as a separate entry. The machine chip renders in
+the worktree chip's slot only for threads of a project that spans more
 than one backend. Manual sort and the reorder RPC keep acting on
 home's rows; a member on another machine follows its entry. Link and
 split as a settings action are DEFERRED: derived identity covers the
 repo case, and a manual override needs persistence and a surface of
 its own — it is listed under the open items until a case that needs it
-appears. A remote re-pointed after creation keeps its stored identity
-until the next boot's backfill does not touch it (both fields are set);
-recomputing on `InvalidateForgeCache` is the residual.
+appears. A remote re-pointed after creation is picked up on the next
+boot.
 
 **7d LANDED 2026-09-01 (a1ee9e90 client, 1afa6c30 backend).** As
-designed. Migration v83 adds `remote_url` / `root_commit`;
-`git.RepoIdentity` derives them (origin verbatim through the shared
-repo-meta cache, smallest root of HEAD uncached); `projectapp` stamps a
-row at creation and on the workspace-ensure path's created rows, and
-`BackfillIdentity` runs once per boot outside the activation gate
-(its effect is two columns inside the snapshot boundary), announcing
-each moved row as `project:updated` `full` without touching
-`updated_at`. Archived rows are backfilled too, so an unarchive never
-yields the one entry that cannot merge. The client merges in
+designed. Migration v83 adds `remote_url` / `root_commit` and v140
+`identity_error`; `git.ReadRepoIdentity` derives them (origin read
+fresh, smallest root of HEAD, a known root kept without a walk);
+`projectapp` stamps a row at creation and on the workspace-ensure
+path's created rows, and `RefreshIdentity` runs once per boot outside
+the activation gate (its effect is three columns inside the snapshot
+boundary), announcing each moved row as `project:updated` `full`
+without touching `updated_at`. Archived rows are refreshed too, so an
+unarchive never yields the one entry that cannot merge. The client merges in
 `projects.svelte.ts` (`projectEntries`, `entryIdFor`,
 `projectMembers`, `projectSpansBackends`, `projectSiblingOn`), keyed
 by `utils/repoKey.ts`; the machine chip is `thread-row-machine` in the
 worktree slot; the project picker lists entries and the machine picker
 flips to the sibling. Accepted residuals: rename, colour and manual
 sort act on the representative row only; the reorder RPC stays
-`home`; a re-pointed remote keeps its stored identity. Still no
-Playwright coverage for two backends (harness has one).
+`home`.
 
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit

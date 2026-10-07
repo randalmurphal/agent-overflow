@@ -1,9 +1,8 @@
 // Last explicit target per frontend and repository. Persist computer UUIDs,
 // never the empty HOME slot or mutable nicknames. Offline targets remain chosen.
 import type { Project } from '../types/models';
-import { repoKey } from '../utils/repoKey';
 import { getAttachedBackends } from './attachedBackends.svelte';
-import { projectMembers } from './projects.svelte';
+import { projectMembers, projectRepoKey } from './projects.svelte';
 import { projectBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
@@ -21,7 +20,7 @@ function readTargets(): Map<string, string> {
 }
 
 function keyFor(project: Project): string {
-  return repoKey(project) || `project:${project.id}`;
+  return projectRepoKey(project.id) || `project:${project.id}`;
 }
 
 export function rememberProjectTarget(project: Project, backend: BackendKey): void {

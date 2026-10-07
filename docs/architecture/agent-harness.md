@@ -122,12 +122,13 @@ Boot performs, in order (`prepareHarness`):
    pinned at spawn-resolution time (`App.providerBinaryOverride`), so
    even an `UpdateSettings` call after boot cannot repoint a spawn at a
    real `claude`/`codex` binary. The data root is also the workspace
-   boundary (`IsolationConfig.WorkspaceRoot`): `CreateProject` and every
-   session start refuse a path outside it, because the mock runs with the
-   thread's workspace as cwd and a scenario `writeFile` step edits that
-   directory. Seeded repos (`<dataRoot>/workspaces`) and app-made
-   worktrees (`<dataDir>/worktrees`) are inside; a real checkout added
-   through the UI, a seed by explicit path, or an unrelocated store is not.
+   boundary (`IsolationConfig.WorkspaceRoot`): `CreateProject`,
+   `InspectProjectFolder` and every session start refuse a path outside
+   it, because the mock runs with the thread's workspace as cwd and a
+   scenario `writeFile` step edits that directory. Seeded repos
+   (`<dataRoot>/workspaces`) and app-made worktrees
+   (`<dataDir>/worktrees`) are inside; a real checkout added through the
+   UI, a seed by explicit path, or an unrelocated store is not.
 
 Dev-server discovery is pinned the same way (`IsolationConfig.ScanScopePIDs`).
 It probes only listeners in the backend's own process tree, which holds its

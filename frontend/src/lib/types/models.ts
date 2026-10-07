@@ -647,6 +647,11 @@ export interface Project {
    */
   remoteURL?: string;
   rootCommit?: string;
+  /**
+   * Why the last identity read of this checkout failed, absent once it
+   * succeeds. The previous identity is kept meanwhile.
+   */
+  identityError?: string;
   sortPosition: number;
   createdAt: number;
   updatedAt: number;

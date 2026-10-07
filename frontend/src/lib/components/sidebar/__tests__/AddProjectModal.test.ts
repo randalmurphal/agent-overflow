@@ -7,6 +7,7 @@ import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { addComputerProject, projectAtComputerPath } from '../../../stores/computerProjects';
 import { noteProject, __resetEntityIndexForTest } from '../../../transport/entityIndex';
 import { takePinnedBackend } from '../../../transport/backends';
+import { getToasts, resetToastsForTest } from '../../../stores/toast.svelte';
 
 // Flush the focus-trap + effect queue so the modal is fully mounted and
 // the browser has kicked off its initial BrowseDirectory.
@@ -43,6 +44,7 @@ describe('<AddProjectModal>', () => {
   beforeEach(() => {
     resetProjectsForTest();
     __resetEntityIndexForTest();
+    resetToastsForTest();
     mockBrowseDirectory();
   });
 
@@ -172,5 +174,47 @@ describe('<AddProjectModal>', () => {
     await addComputerProject('gpu', '/repo');
     expect(projectAtComputerPath('', '/repo')?.id).toBe('local');
     expect(projectAtComputerPath('gpu', '/repo')?.id).toBe('remote');
+  });
+
+  it('keeps the modal open with the refusal when the folder check rejects it', async () => {
+    const onClose = vi.fn();
+    const create = setBindingMock('CreateProject', async () => { throw new Error('must not create'); });
+    const checkFolder = vi.fn(async () => "That folder isn't a checkout of github.com/me/app.");
+    const { getByTestId, findByTestId, getByRole } = render(AddProjectModal, {
+      props: { open: true, onClose, checkFolder, title: 'Choose app on Laptop', description: 'Pick it.' },
+    });
+    await flushModalBoot();
+    expect(getByRole('dialog', { name: 'Choose app on Laptop' })).toHaveTextContent('Pick it.');
+    await fireEvent.click(getByTestId('add-project-submit'));
+    expect((await findByTestId('add-project-error')).textContent).toContain("isn't a checkout of github.com/me/app");
+    expect(checkFolder).toHaveBeenCalledWith('', '/Users/me');
+    expect(create).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('adds the folder once the check accepts it', async () => {
+    const onCreated = vi.fn();
+    const created = { id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false };
+    setBindingMock('CreateProject', async () => created);
+    const { getByTestId } = render(AddProjectModal, {
+      props: { open: true, onClose: () => {}, onCreated, checkFolder: async () => null },
+    });
+    await flushModalBoot();
+    await fireEvent.click(getByTestId('add-project-submit'));
+    for (let i = 0; i < 5; i += 1) await tick();
+    expect(onCreated).toHaveBeenCalledWith(created);
+  });
+
+  it('warns when git could not read the identity of the folder it added', async () => {
+    setBindingMock('CreateProject', async () => ({
+      id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false,
+      identityError: 'detected dubious ownership',
+    }));
+    const { getByTestId } = render(AddProjectModal, { props: { open: true, onClose: () => {} } });
+    await flushModalBoot();
+    await fireEvent.click(getByTestId('add-project-submit'));
+    for (let i = 0; i < 5; i += 1) await tick();
+    const warning = getToasts().find((toast) => toast.type === 'warning');
+    expect(warning?.message).toContain('detected dubious ownership');
   });
 });

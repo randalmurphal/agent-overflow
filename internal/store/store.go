@@ -617,10 +617,13 @@ type Project struct {
 	// client owns that, because it is the side doing the matching.
 	//
 	// Empty is a first-class value, never an error: a non-git directory, a
-	// repository with no origin, an unborn HEAD, and every row written
-	// before migration v83 all read as "not known".
+	// repository with no origin, and an unborn HEAD read as "not known".
 	RemoteURL  string `json:"remoteURL,omitempty"`
 	RootCommit string `json:"rootCommit,omitempty"`
+	// IdentityError is why the last identity read failed (git refused or
+	// could not read the checkout), "" after a successful read. RemoteURL
+	// and RootCommit keep their last good values beside it.
+	IdentityError string `json:"identityError,omitempty"`
 }
 
 // Item represents a persisted timeline entry.

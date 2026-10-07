@@ -518,6 +518,7 @@ export {
   BrowseDirectory,
   CreateProject,
   DeleteProject,
+  InspectProjectFolder,
   ProjectDeletionPreview,
   ListProjects,
   RenameProject,

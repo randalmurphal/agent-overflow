@@ -31,14 +31,14 @@ type ProjectWithCounts struct {
 // columns survive only because SQLite refuses DROP COLUMN on a CHECK-bearing
 // column and rebuilding the FK-parent projects table to delete two unread
 // integers is not worth the blast radius. Nothing reads or writes them.
-const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit`
+const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit, identity_error`
 
 func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 	var p Project
 	var archived int
 	if err := scanner.Scan(
 		&p.ID, &p.Path, &p.Name, &p.Slug, &p.Color, &p.SortPosition,
-		&p.CreatedAt, &p.UpdatedAt, &archived, &p.RemoteURL, &p.RootCommit,
+		&p.CreatedAt, &p.UpdatedAt, &archived, &p.RemoteURL, &p.RootCommit, &p.IdentityError,
 	); err != nil {
 		return Project{}, err
 	}
@@ -73,10 +73,10 @@ func (s *Store) CreateProject(p Project) (Project, error) {
 		return Project{}, fmt.Errorf("store: create project: %w", err)
 	}
 	_, err = tx.Exec(
-		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived, remote_url, root_commit, identity_error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Path, p.Name, p.Slug, p.Color, p.SortPosition,
-		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived), p.RemoteURL, p.RootCommit,
+		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived), p.RemoteURL, p.RootCommit, p.IdentityError,
 	)
 	if err != nil {
 		_ = tx.Rollback()
@@ -173,8 +173,8 @@ func (s *Store) ListProjects() ([]Project, error) {
 
 // ListAllProjects returns every project row, archived included, ordered by
 // name. ListProjects hides archived rows because the sidebar does; the boot
-// identity backfill must not, because an archived project can be unarchived
-// later and would otherwise stay unidentified forever.
+// identity refresh must not, because an archived project can be unarchived
+// later and would otherwise keep a stale identity.
 func (s *Store) ListAllProjects() ([]Project, error) {
 	rows, err := s.reader().Query(
 		`SELECT ` + projectColumns + ` FROM projects ORDER BY name ASC`,
@@ -205,7 +205,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 func listProjectsWithThreadCountsQuery() (string, []any) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
-		        p.created_at, p.updated_at, p.archived, p.remote_url, p.root_commit,
+		        p.created_at, p.updated_at, p.archived, p.remote_url, p.root_commit, p.identity_error,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
 		        COALESCE(
 		          MAX(CASE
@@ -246,7 +246,7 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 			&pwc.Project.ID, &pwc.Project.Path, &pwc.Project.Name, &pwc.Project.Slug, &pwc.Project.Color,
 			&pwc.Project.SortPosition,
 			&pwc.Project.CreatedAt, &pwc.Project.UpdatedAt, &archived,
-			&pwc.Project.RemoteURL, &pwc.Project.RootCommit,
+			&pwc.Project.RemoteURL, &pwc.Project.RootCommit, &pwc.Project.IdentityError,
 			&pwc.ThreadCount, &pwc.LastActive,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan project-with-counts row: %w", err)
@@ -271,27 +271,36 @@ func (s *Store) UpdateProjectName(id, name string) (Project, bool, error) {
 	})
 }
 
-// UpdateProjectIdentity records the checkout's derived repository identity —
-// the `origin` remote as git reports it and the smallest root commit of HEAD.
-// Both are stored verbatim; normalisation belongs to the client that matches
-// them, not to the row.
+// ProjectIdentity is what one derivation of a checkout's repository identity
+// stores: the `origin` remote as git reports it, the smallest root commit of
+// HEAD, and the reason the last read failed. RemoteURL and RootCommit are
+// stored verbatim; normalisation belongs to the client that matches them.
+// A failed read keeps the last good RemoteURL and RootCommit beside its Error.
+type ProjectIdentity struct {
+	RemoteURL  string
+	RootCommit string
+	Error      string
+}
+
+// UpdateProjectIdentity records a derivation of the checkout's repository
+// identity.
 //
 // It deliberately does NOT touch updated_at. Identity is derived metadata the
 // backend computed on its own initiative, not something the user did, and
 // updated_at is what the sidebar's "latest activity" ordering reads: a boot
-// backfill that stamped it would reshuffle every project in the list for no
+// pass that stamped it would reshuffle every project in the list for no
 // reason the user could see.
 //
 // The Change predicate makes a re-derivation that agrees with the stored row a
-// no-op, so a backfill announces only the rows it actually moved.
-func (s *Store) UpdateProjectIdentity(id, remoteURL, rootCommit string) (Project, bool, error) {
+// no-op, so a boot pass announces only the rows it actually moved.
+func (s *Store) UpdateProjectIdentity(id string, identity ProjectIdentity) (Project, bool, error) {
 	return s.applyProjectRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update project identity %s", id),
 		ID:         id,
-		Set:        "remote_url = ?, root_commit = ?",
-		SetArgs:    []any{remoteURL, rootCommit},
-		Change:     "(remote_url IS NOT ? OR root_commit IS NOT ?)",
-		ChangeArgs: []any{remoteURL, rootCommit},
+		Set:        "remote_url = ?, root_commit = ?, identity_error = ?",
+		SetArgs:    []any{identity.RemoteURL, identity.RootCommit, identity.Error},
+		Change:     "(remote_url IS NOT ? OR root_commit IS NOT ? OR identity_error IS NOT ?)",
+		ChangeArgs: []any{identity.RemoteURL, identity.RootCommit, identity.Error},
 	})
 }
 

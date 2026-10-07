@@ -9,7 +9,9 @@ import {
   getProjects,
   isLoaded,
   projectEntries,
+  checkoutMatchesProject,
   projectMembers,
+  projectRepoKey,
   projectSiblingOn,
   projectSpansBackends,
   refreshProjects,
@@ -171,7 +173,7 @@ describe('projects store — merged entries (wave 7d)', () => {
       const backend = takePinnedBackend();
       if (attachedBackendCount() === 1) return rows;
       return rows.filter((row) => {
-        const remote = ['p-laptop', 'p-solo', 'b'].includes(row.project.id);
+        const remote = ['p-laptop', 'p-solo', 'b'].includes(row.project.id) || row.project.id.startsWith('l-');
         return backend === 'laptop' ? remote : !remote;
       });
     });
@@ -210,6 +212,57 @@ describe('projects store — merged entries (wave 7d)', () => {
     noteProject('p-laptop', 'laptop');
     expect(getProjectLabelText('p-home')).toBe('app');
     expect(getProjectLabelText('p-laptop')).toBe('app');
+  });
+
+  it('merges a remoteless checkout with the remote checkout of the same history', async () => {
+    stageBackend();
+    const mac = makeProject('p-home', { name: 'app', remoteURL: 'git@github.com:me/app.git', rootCommit: 'abc' });
+    const desktop = makeProject('l-desk', { name: 'app', rootCommit: 'abc' });
+    await load([wrap(mac), wrap(desktop)]);
+    noteProject('l-desk', 'laptop');
+    expect(projectEntries().map((e) => e.project.id)).toEqual(['p-home']);
+    expect(projectSiblingOn('p-home', 'laptop')?.project.id).toBe('l-desk');
+    expect(projectRepoKey('l-desk')).toBe('remote:github.com/me/app');
+  });
+
+  it('keeps a second clone on one machine as its own entry', async () => {
+    stageBackend();
+    const remote = 'https://github.com/me/app';
+    const first = makeProject('p-home', { name: 'app', path: '/a/app', remoteURL: remote, createdAt: 1 });
+    const second = makeProject('p-home-2', { name: 'app', path: '/b/app', remoteURL: remote, createdAt: 2 });
+    const laptop = makeProject('l-app', { name: 'app', remoteURL: remote, createdAt: 3 });
+    await load([wrap(second, 4), wrap(first, 1), wrap(laptop, 2)]);
+    noteProject('l-app', 'laptop');
+    expect(projectEntries().map((e) => e.project.id)).toEqual(['p-home-2', 'p-home']);
+    expect(projectMembers('l-app').map((m) => m.project.id)).toEqual(['p-home', 'l-app']);
+    expect(projectSpansBackends('p-home-2')).toBe(false);
+    expect(projectRepoKey('p-home-2')).toBe('');
+    // A duplicate name between two entries is labelled apart again.
+    expect(getProjectLabelText('p-home')).toBe('a/app');
+    expect(getProjectLabelText('p-home-2')).toBe('b/app');
+  });
+
+  it('lets a live member represent the entry when the home member is archived', async () => {
+    stageBackend();
+    const remote = 'https://github.com/me/app';
+    await load([
+      wrap(makeProject('p-home', { name: 'app', remoteURL: remote, archived: true })),
+      wrap(makeProject('l-app', { name: 'app', remoteURL: remote })),
+    ]);
+    noteProject('l-app', 'laptop');
+    expect(projectEntries().map((e) => e.project.id)).toEqual(['l-app']);
+    expect(projectMembers('l-app').map((m) => m.project.id)).toEqual(['p-home', 'l-app']);
+  });
+
+  it('matches a candidate checkout by the rule entries merge on', async () => {
+    stageBackend();
+    const mac = makeProject('p-home', { remoteURL: 'git@github.com:me/app.git', rootCommit: 'abc' });
+    await load([wrap(mac), wrap(makeProject('p-plain'))]);
+    expect(checkoutMatchesProject('p-home', 'laptop', { remoteURL: 'https://github.com/me/app' })).toBe(true);
+    expect(checkoutMatchesProject('p-home', 'laptop', { rootCommit: 'abc' })).toBe(true);
+    expect(checkoutMatchesProject('p-home', 'laptop', { remoteURL: 'https://github.com/me/other', rootCommit: 'abc' })).toBe(false);
+    expect(checkoutMatchesProject('p-home', 'laptop', {})).toBe(false);
+    expect(checkoutMatchesProject('p-plain', 'laptop', {})).toBe(false);
   });
 
   it('never merges rows that carry no identity', async () => {

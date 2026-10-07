@@ -525,8 +525,13 @@ func (c *Core) run(cwd string, args ...string) (commandResult, error) {
 // Shared by watch-root discovery and CommonDir; keep it neutral about
 // which one is calling.
 func (c *Core) revParsePath(cwd string, arg string) (string, bool, error) {
-	// runLocaleC: the non-repo branch below matches git's English message.
-	result, err := c.runLocaleC(cwd, "rev-parse", arg)
+	return c.revParsePathContext(context.Background(), cwd, arg)
+}
+
+// revParsePathContext is revParsePath bounded by ctx.
+func (c *Core) revParsePathContext(ctx context.Context, cwd string, arg string) (string, bool, error) {
+	// C locale: the non-repo branch below matches git's English message.
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, extraEnv: localeCEnv, args: []string{"rev-parse", arg}})
 	if err != nil {
 		return "", false, fmt.Errorf("git rev-parse %s: %w", arg, err)
 	}

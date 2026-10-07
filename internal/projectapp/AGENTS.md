@@ -11,12 +11,15 @@ filesystem cleanup, scheduler refresh, and thread teardown.
 ## Contracts
 
 - `Create` accepts an existing directory, stores its absolute path, derives
-  the default name from its final component, and records repository identity
-  through `internal/project.EnsureForWorkspace`.
-- Repository identity is derived through the `Identity` port. An unavailable
-  or non-repository path yields empty identity fields rather than a second
-  result shape. `BackfillIdentity` visits archived and active rows whose two
-  identity fields are both empty, once per boot.
+  the default name from its final component, and records repository
+  identity. Every path that creates a project row, session import included,
+  goes through `Create` or `EnsureForWorkspace` so the row is identified.
+- Repository identity is derived through the `Identity` port. A git failure
+  is recorded in `identity_error` beside the last good identity; a path that
+  is missing or no longer a repository keeps the last identity.
+  `RefreshIdentity` re-reads every row, archived included, once per boot and
+  writes only rows that changed. `InspectFolder` answers a folder's identity
+  without writing and returns a git failure as an error.
 - A non-root workspace must resolve through `WorkspaceResolver` to a
   registered worktree. A caller-supplied spelling alone never authorizes a
   project-scoped git operation.

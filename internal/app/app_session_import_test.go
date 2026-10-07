@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 // progressRecorder captures the session-import progress channel through the
@@ -547,4 +548,41 @@ func importOneClaudeSession(t *testing.T, app *App, home importHome, sessionID s
 		threads = append(threads, thread)
 	}
 	return threads
+}
+
+// A project the import creates is created by projectapp, which records the
+// checkout's repository identity: an imported project with none would never
+// merge with the same repository on another computer.
+func TestImportSessionsRecordsTheIdentityOfACreatedProject(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	home := newImportHome(t)
+	home.attach(app)
+	testutil.RunGit(t, home.workspace, "init", "-b", "main")
+	testutil.RunGit(t, home.workspace, "-c", "user.name=AO", "-c", "user.email=ao@example.com",
+		"commit", "--allow-empty", "-m", "root")
+	testutil.RunGit(t, home.workspace, "remote", "add", "origin", "git@example.com:owner/repo.git")
+	root, err := app.gitCore().HeadSHA(home.workspace)
+	if err != nil {
+		t.Fatalf("HeadSHA: %v", err)
+	}
+	home.claudeLinearSession(t, importFixtureClaudeSession)
+
+	if _, err := app.ListImportableSessions(ImportScanRequest{}); err != nil {
+		t.Fatalf("list before import: %v", err)
+	}
+	runImport(t, app, "claude:"+importFixtureClaudeSession)
+
+	threads, err := app.store.ListThreads()
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("imported threads = %+v, err = %v, want one", threads, err)
+	}
+	project, err := app.store.GetProject(threads[0].ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if project.RemoteURL != "git@example.com:owner/repo.git" || project.RootCommit != root || project.IdentityError != "" {
+		t.Fatalf("imported project identity = (%q, %q, %q), want the checkout's origin and root %q",
+			project.RemoteURL, project.RootCommit, project.IdentityError, root)
+	}
 }

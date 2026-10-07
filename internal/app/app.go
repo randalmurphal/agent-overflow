@@ -204,6 +204,9 @@ type App struct {
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup
+	// projectIdentityWG joins the boot pass that re-derives project
+	// repository identity (startProjectIdentityRefresh).
+	projectIdentityWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.

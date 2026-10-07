@@ -47,6 +47,20 @@ type Deps struct {
 	// CodexHome is the directory holding Codex's thread index (normally
 	// `~/.codex`). Empty is the same "unavailable, not broken" state.
 	CodexHome string
+	// EnsureProject finds or creates the project for a session's recorded
+	// workspace. Injected so an imported project is created by the owner
+	// of project creation (projectapp), which records its repository
+	// identity; a row created here without one would never merge with the
+	// same repository on another computer. Required by every import.
+	EnsureProject func(workspacePath string) (store.Project, error)
+}
+
+// ensureProject resolves workspacePath through d.EnsureProject.
+func (d Deps) ensureProject(workspacePath string) (store.Project, error) {
+	if d.EnsureProject == nil {
+		return store.Project{}, fmt.Errorf("sessionimport: no project resolver configured")
+	}
+	return d.EnsureProject(workspacePath)
 }
 
 // Filter narrows a scan.

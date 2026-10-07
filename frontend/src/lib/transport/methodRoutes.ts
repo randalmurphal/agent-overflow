@@ -190,6 +190,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2896867980: 'home', // HighlightSchemaVersion
 	786331585: 'selected', // ImportSessions
 	535929682: 'thread', // ImportThreadUpdates
+	969607096: 'selected', // InspectProjectFolder
 	753394581: 'thread', // InterruptAndRevertIfClean
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice

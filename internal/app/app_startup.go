@@ -133,20 +133,16 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// behind for a rollback to undo.
 	a.startDevServerPreviews()
 
-	// Fill in the repository identity of projects that have none, so a
-	// client attached to several backends can recognise the same repo
-	// checked out on two machines. In a goroutine because each
-	// unidentified row costs a `git rev-list` (and, on a cold repo-meta
-	// cache, a `git remote get-url`), and a user with many projects would
-	// otherwise wait for them before the window paints. Bounded by
-	// construction: one pass, one derivation per unidentified row, and
-	// nothing to do at all on every boot after the first. See
-	// app_projects.go.
+	// Re-derive the repository identity of every project, so a client
+	// attached to several backends can recognise the same repo checked out
+	// on two machines after an origin changed or an earlier read failed.
+	// In the background, after the first catalog reads, because each row
+	// costs a few git subprocesses. See app_projects.go.
 	//
-	// NOT behind the activation gate. Its whole effect is two TEXT columns
+	// NOT behind the activation gate. Its whole effect is three TEXT columns
 	// in SQLite, which is inside the snapshot boundary — restoring the
 	// database undoes it — and the git reads it makes take no action.
-	go a.backfillProjectIdentity()
+	a.startProjectIdentityRefresh()
 
 	// Finish the deferred phases of the store's one-time data migrations:
 	// paced write transactions that run once per database, after which
