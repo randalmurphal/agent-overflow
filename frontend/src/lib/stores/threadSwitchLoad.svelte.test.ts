@@ -6,10 +6,11 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { createThreadPane } from './thread.svelte';
+import { __setSmoothingClockForTest, createThreadPane } from './thread.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
-import { flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { FakeSmoothingClock, flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { utf8Length } from '../utils/utf8Offsets';
 import { prependThread, removeThread } from './threads.svelte';
 
 describe('threadSwitchLoad', () => {
@@ -632,6 +633,41 @@ describe('threadSwitchLoad', () => {
       expect(pane.items.map((it) => it.id)).toEqual(['live']);
       // generalError still null — stale onError did not stamp.
       expect(pane.generalError).toBeNull();
+    });
+
+    it('caches a reply left mid-reveal whole, so a return paints all of it', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const user = makeItem({ id: 'u', threadId: 't', kind: 'user_message', role: 'user', turnIndex: 1, itemIndex: 0 });
+        const pane = await buildPane(makeThread({ id: 't' }), [user]);
+        const reply = Array.from({ length: 60 }, (_, i) => `w${i} `).join('');
+        pane.upsertItem(makeItem({ id: 'r', threadId: 't', kind: 'assistant_text', status: 'streaming', turnIndex: 1, itemIndex: 1, summary: '', streamEnd: 0, rev: -1 }));
+        pane.applyItemDelta({ threadId: 't', itemId: 'r', kind: 'assistant_text', delta: reply, offset: 0, updatedAt: 2 });
+        pane.applyItemPatch({ threadId: 't', itemId: 'r', kind: 'assistant_text', patch: { status: 'completed', streamEnd: utf8Length(reply), updatedAt: 3, rev: 9 } });
+        clock.tickFrame(16);
+        expect(pane.items.find((it) => it.id === 'r')?.summary).not.toBe(reply);
+
+        setBindingMock('ListThreadSliceAround', async () => ({ items: [], oldestTurnIndex: 0, hasMore: false }));
+        await pane.switchThread(makeThread({ id: 'other' }));
+
+        // A return that cannot verify (offline, unreachable computer) shows
+        // the cached rows as they are.
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        let sent: { haveWindow?: { count: number } } | undefined;
+        setBindingMock('SyncThreadWindow', async (_threadId: unknown, req: unknown) => {
+          sent = req as typeof sent;
+          throw new Error('unreachable');
+        });
+        await pane.switchThread(makeThread({ id: 't' }));
+        expect(pane.historyWindowPending).toBe(false);
+        expect(pane.items.find((it) => it.id === 'r')).toMatchObject({ status: 'completed', summary: reply, rev: 9 });
+        // The whole reply is cached under its stored revision, so a reachable
+        // return can verify the held window without transferring a page.
+        expect(sent?.haveWindow?.count).toBe(2);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 

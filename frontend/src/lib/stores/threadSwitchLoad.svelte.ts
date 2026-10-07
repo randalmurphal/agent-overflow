@@ -648,6 +648,16 @@ export function createThreadSwitchLoad(
     // priors are keyed by thread, so a same-thread reload benefits too, and
     // the timeline's own gates decide whether there is anything to store.
     options.getScrollController()?.persistSizePriors?.();
+    // The pane stops showing this window here, and the switch then disposes
+    // every smoother without publishing the text past its cursor. Cache the
+    // text the pane received, so a return never paints a reply cut off at
+    // its reveal cursor. A failed snap leaves that row unstamped, so the
+    // return re-reads it instead of trusting the cached text.
+    try {
+      options.streamingReveal.snapAllToReceived();
+    } catch (error) {
+      reportFrontendDiagnostic('streaming reveal: snap before caching the outgoing window failed', errString(error));
+    }
     // The pending write-back describes the pane we are leaving; the
     // snapshot below writes the same window synchronously with the
     // stamp it is paired with, so the timer has nothing left to do.
