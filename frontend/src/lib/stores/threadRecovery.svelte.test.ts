@@ -37,6 +37,23 @@ it('keeps a consumed message pending while its row is outside the loaded window'
   expect(getFlushedForThread(threadId)).toEqual([]);
 });
 
+it('hands a consumed message to history when its row is older than the loaded window', async () => {
+  const threadId = 'recovery-before-window';
+  const tail = [
+    makeItem({ id: 'user:5', threadId, turnIndex: 5, itemIndex: 0, kind: 'user_text', role: 'user', summary: 'latest ask' }),
+    makeItem({ id: 'text:5:0', threadId, turnIndex: 5, itemIndex: 1, summary: 'latest answer' }),
+  ];
+  pane = await buildPane(makeThread({ id: threadId }), tail);
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'user:flush:1', message: 'consumed long ago' }]);
+  const row = makeItem({ id: 'user:flush:1', threadId, turnIndex: 1, itemIndex: 12, kind: 'user_text', role: 'user', summary: 'consumed long ago', meta: '{"provider_item_id":"echo"}' });
+  setBindingMock('GetThreadItem', async () => row);
+  setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null, queueItems: [], flushedItems: [] }));
+  await pane.refreshFromBackend(true);
+  expect(pane.getItemById(row.id)).toBeUndefined();
+  expect(getFlushedForThread(threadId)).toEqual([]);
+  expect(isThreadWorking(threadId)).toBe(false);
+});
+
 it('does not retain an abandoned quiet reservation just because its cache row remains', async () => {
   pane = await buildPane(makeThread({ id: 'recovery-quiet' }));
   const threadId = pane.threadId!;

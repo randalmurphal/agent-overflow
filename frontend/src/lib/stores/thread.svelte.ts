@@ -57,7 +57,7 @@ import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRu
 import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
-import { renderedFlushedUserItemIds } from './threadFlushRowReveal';
+import { flushedUserItemIdsInTimeline } from './threadFlushRowReveal';
 import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import type { TextWindow } from '../utils/liveText';
@@ -491,7 +491,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * Hand every flushed message this pane now RENDERS over to the
    * timeline: Zone 2 of the send-queue preview drops the entry exactly
    * when its row is admitted to this window AND the reveal gate has
-   * opened past it (threadFlushRowReveal.ts). The XOR invariant in
+   * opened past it, or when the confirmed row is history before the
+   * window (threadFlushRowReveal.ts). The XOR invariant in
    * sendQueue.svelte.ts is enforced here and nowhere else on this side —
    * arrival of the row's `provider:item_event` upsert is not enough,
    * because the flush row lands at the turn tail behind whatever prose
@@ -508,7 +509,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!threadId) return;
     const pending = getFlushedForThread(threadId);
     if (pending.length === 0) return;
-    const rendered = renderedFlushedUserItemIds(
+    const rendered = flushedUserItemIdsInTimeline(
       pending,
       getItemById,
       streamingReveal.revealBoundary,

@@ -17,6 +17,7 @@ import type {
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 import { GetThreadItem, GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
+import { cursorFromItem } from './threadItems';
 import {
   finishThreadLiveStateHydration,
   getCanonicalActiveTurn as getActiveTurn,
@@ -174,13 +175,17 @@ export function createThreadLiveStateHydration(
       replaceQueueForThread(threadID, queueItems);
       const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
         .filter((item) => item.userItemId && item.queueItemId)
-        .map((item) => ({
-          sendId: item.sendId,
-          queueItemId: item.queueItemId,
-          userItemId: item.userItemId,
-          message: item.message,
-          flushedAt: Date.now(),
-        }));
+        .map((item) => {
+          const deliveredAt = (item as Partial<FlushedItem>).deliveredAt;
+          return {
+            sendId: item.sendId,
+            queueItemId: item.queueItemId,
+            userItemId: item.userItemId,
+            message: item.message,
+            flushedAt: Date.now(),
+            ...(deliveredAt ? { deliveredAt } : {}),
+          };
+        });
       replaceFlushedForThread(threadID, flushedItems);
       // The snapshot lists every send the backend still holds unconfirmed,
       // including quiet reservations loaded by this pane's history read.
@@ -276,15 +281,20 @@ export function createThreadLiveStateHydration(
         snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
         if (snapshot && previousFlushed.length > 0) {
           // The backend stops tracking a send on consumption; this screen
-          // keeps its preview until rendering. Resolve only missing markers
-          // against history so recovery distinguishes a consumed row outside
-          // the window from a message restored or removed while disconnected.
+          // keeps its preview until the timeline has the row. Resolve only
+          // missing markers against history so recovery distinguishes a
+          // consumed row outside the window from a message restored or
+          // removed while disconnected. The row's position goes with the
+          // entry, since a row before the window is history this pane may
+          // never hold.
           const queuedIDs = new Set((snapshot.queueItems ?? []).map(item => item.id));
           const flushedIDs = new Set((snapshot.flushedItems ?? []).map(item => item.userItemId));
           const missing = previousFlushed.filter(item => !queuedIDs.has(item.queueItemId) && !flushedIDs.has(item.userItemId));
-          const retained = await Promise.all(missing.map(async item => {
+          const retained = await Promise.all(missing.map(async (item): Promise<FlushedItem | null> => {
             const row = await withBackendTarget(backend, () => GetThreadItem(threadID, item.userItemId));
-            return row?.id === item.userItemId && row.kind === 'user_text' && !isPendingFlushRow(row as Item) ? item : null;
+            return row?.id === item.userItemId && row.kind === 'user_text' && !isPendingFlushRow(row as Item)
+              ? { ...item, deliveredAt: cursorFromItem(row as Item) }
+              : null;
           }));
           snapshot = { ...snapshot, flushedItems: [
             ...(snapshot.flushedItems ?? []),

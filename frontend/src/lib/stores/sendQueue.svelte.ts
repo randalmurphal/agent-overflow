@@ -5,6 +5,7 @@ import { RegisterQueueItem } from './bindings';
 import { isPendingFlushRow, parseUserMessageMeta } from '../utils/userMessageMeta';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import type { BackendKey } from '../transport/backendKey';
+import type { TimelineCursorLike } from './threadItems';
 import { requireEntityBackend } from '../transport/backends';
 import { threadOwner } from '../transport/threadOwner';
 
@@ -91,6 +92,11 @@ export interface FlushedItem {
   /** Undefined until the provider acks — and forever on a CLI that
    * never does. Never inferred from anything else. */
   lifecycle?: FlushedLifecycle;
+  /** The confirmed row's position, set when a live-state read finds the
+   * message consumed while this client still holds its entry. A pane that
+   * does not hold the row reads it to tell history before its window from
+   * a row it will still render. */
+  deliveredAt?: TimelineCursorLike;
 }
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
