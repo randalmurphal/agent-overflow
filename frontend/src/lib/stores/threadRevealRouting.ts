@@ -18,6 +18,7 @@
 import type { Item, ItemKind } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
 import { adoptRevIfEqual } from './threadItems';
+import { UNSTAMPED_ITEM_REV } from './threadWindowDigest';
 import { classifyRevealText } from './threadRevealText';
 import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
@@ -179,6 +180,9 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     // and read inside `onReveal` so the row's `updatedAt` stays close
     // to wire time even as the smoother lags.
     let latestUpdatedAt = 0;
+    // The stored row's revision once its text is all received; the settling
+    // reveal publishes that text and so may carry it (`setSettledRev`).
+    let settledRev: number | undefined;
     // Full previous revealed text of an assistant row. Appending each
     // emitted delta here keeps a canonical cons string without asking the
     // smoother to join its whole received buffer.
@@ -284,6 +288,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
           // smoother's last-known wire delta; the older value must not
           // overwrite it when the next rAF reveal lands.
           const updatedAt = Math.max(latestUpdatedAt, current.updatedAt);
+          const rev = settling && settledRev !== undefined ? settledRev : current.rev;
           if (!isReasoningTail && current.summary === prevRevealed) {
             // Publish before the reactive write. Its reconciliation hook can
             // then preserve the complete pending direct suffix instead of
@@ -299,6 +304,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
                   summary: revealed,
                   streamEnd,
                   updatedAt,
+                  rev,
                 });
               },
             );
@@ -321,6 +327,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
               summary: reasoning.summary,
               streamEnd,
               updatedAt,
+              rev,
             };
             options.setItemAt(idx, nextItem);
             registry.recordLiveTail(itemId, reasoning.window.append(delta));
@@ -341,6 +348,7 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
               summary: revealed,
               streamEnd,
               updatedAt,
+              rev,
             });
           }
         }
@@ -378,9 +386,13 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       append(text) {
         smoother.appendDelta(text);
         if (receivedEnd !== undefined) receivedEnd += utf8Length(text);
+        settledRev = undefined;
       },
       setLatestUpdatedAt(at) {
         latestUpdatedAt = at;
+      },
+      setSettledRev(rev) {
+        settledRev = rev;
       },
       dispose() {
         try {
@@ -532,7 +544,16 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       // its own: a later open would verify the held text as the stored one.
       const holdsStoredText = patch.summary !== undefined || patch.streamEnd === undefined
         || heldEnd === patch.streamEnd;
-      next.rev = holdsStoredText ? patch.rev : current.rev;
+      const revealing = itemSmoothers.get(itemId);
+      if (revealing && !revealing.smoother.isCaughtUp()) {
+        // The row shows the reveal cursor, short of the text the revision
+        // names. Carrying it would let a cached window that a thread switch
+        // left mid-reveal verify as fresh.
+        revealing.setSettledRev(holdsStoredText ? patch.rev : undefined);
+        next.rev = UNSTAMPED_ITEM_REV;
+      } else {
+        next.rev = holdsStoredText ? patch.rev : current.rev;
+      }
       if (patch.summary === undefined && patch.streamEnd !== undefined
         && heldEnd !== undefined && heldEnd < patch.streamEnd) {
         registry.markStale(itemId);

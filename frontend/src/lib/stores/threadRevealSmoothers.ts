@@ -48,6 +48,12 @@ export interface ItemSmoothing {
   append(text: string): void;
   setLatestUpdatedAt(at: number): void;
   /**
+   * The revision of the stored row the received text is, or undefined when
+   * none is known. While the reveal is behind, the row shows less than the
+   * stored text and is unstamped; the settling reveal adopts this revision.
+   */
+  setSettledRev(rev: number | undefined): void;
+  /**
    * Dispose the smoother and release its text from the live stream an
    * expanded row's payload may keep.
    */

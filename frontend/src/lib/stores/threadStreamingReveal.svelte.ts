@@ -32,6 +32,7 @@ import {
 } from './streamingAssistantReveal';
 import type { ProvenAppend } from '../markdown';
 import { createRevealGate } from './threadRevealGate.svelte';
+import { UNSTAMPED_ITEM_REV } from './threadWindowDigest';
 import { createRevealRouting } from './threadRevealRouting';
 import {
   createRevealSmootherRegistry,
@@ -397,6 +398,10 @@ export function createThreadStreamingReveal(
     }
     // The published text is the cursor's, so is its position.
     const streamEnd = incoming.status === 'streaming' ? current.streamEnd : undefined;
+    // A reveal still behind publishes less than the text `incoming.rev`
+    // names, so the row is unstamped until the settling reveal adopts it.
+    const revealing = itemSmoothers.has(incoming.id) && !entry.smoother.isCaughtUp();
+    if (revealing && !trailsTheCursor) entry.setSettledRev(incoming.rev);
     if (
       incoming.summary === current.summary &&
       incoming.streamEnd === streamEnd &&
@@ -407,6 +412,7 @@ export function createThreadStreamingReveal(
       summary: current.summary,
       streamEnd,
       updatedAt: Math.max(incoming.updatedAt, current.updatedAt),
+      rev: revealing ? UNSTAMPED_ITEM_REV : trailsTheCursor ? current.rev : incoming.rev,
     };
   }
 

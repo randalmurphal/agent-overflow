@@ -8,7 +8,8 @@
 // read lands must not be joined to the cached row it does not continue, and
 // the read must not be discarded for the rows those deltas touched. The
 // settled row must also not claim the stored row's revision over text it
-// lacks, or a reopen would verify the damage as fresh.
+// lacks, or a reopen would verify the damage as fresh. That includes a reply
+// left after it settled but before its reveal showed all of it.
 //
 // Every rendered frame is sampled, collapsed tail and reply alike, and every
 // numbered token must be present in order: during the stream, after the turn
@@ -188,6 +189,65 @@ async function expectWholeStream(page: Page, block: Block, when: string): Promis
   expect(numbered('thinking', await body.innerText()), `expanded tokens ${when}`).toEqual(consecutive(1, TOTAL));
   await timeline.getByTestId('thinking-toggle').click();
 }
+
+// A reply that reaches the client whole in one burst and settles while its
+// reveal still has most of the text to show.
+function settledBurstScenario(): unknown {
+  const reply = `${tokens('text', 1, TOTAL).join('')}${REPLY_END}`;
+  return {
+    version: 1,
+    name: 'stream-switch-return-settled-burst',
+    provider: 'claude',
+    turns: [{
+      label: 'burst',
+      steps: [
+        { emit: { lines: [
+          j({ type: 'stream_event', event: 'message_start', data: { type: 'message_start', message: { id: 'msg-burst', role: 'assistant' } } }),
+          blockStart(0, 'text'),
+          ...tokens('text', 1, TOTAL).map((text) => blockDelta(0, 'text', text)),
+          blockDelta(0, 'text', REPLY_END),
+          blockStop(0),
+          j({ type: 'stream_event', event: 'message_stop', data: { type: 'message_stop' } }),
+          j({ type: 'assistant', message: { id: 'msg-burst', role: 'assistant', model: 'claude-mock-1', content: [{ type: 'text', text: reply }] } }),
+          RESULT_LINE,
+        ] } },
+      ],
+    }],
+    afterTurns: 'silent',
+  };
+}
+
+test('a reply left while its settled text still reveals is whole on return', async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', { scenario: settledBurstScenario() });
+  const threadId = await seedThreads(harness);
+  await harness.open(page);
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(String(err)));
+  const timeline = page.getByTestId('message-timeline-scroll');
+  const open = (title: string) => page.getByTestId('thread-row').getByText(title, { exact: true }).click();
+  await open(MAIN);
+  await expect(timeline.getByText('Main ready.')).toBeVisible();
+  await startMock(harness, threadId);
+
+  const completed = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'stream something', null);
+  await completed;
+  const reply = timeline.getByTestId('assistant-message-body').filter({ hasText: token('text', 1).trim() });
+  await expect(reply).toContainText(token('text', 20).trim());
+  // The leave must land while the reveal is still behind the settled text.
+  expect(await reply.innerText()).not.toContain(REPLY_END);
+
+  await open(OTHER);
+  await expect(timeline.getByText('Other ready.')).toBeVisible();
+  await open(MAIN);
+  await expectWholeStream(page, 'text', 'after leaving during the reveal');
+
+  await open(OTHER);
+  await expect(timeline.getByText('Other ready.')).toBeVisible();
+  await open(MAIN);
+  await expectWholeStream(page, 'text', 'after a second reopen');
+  expect(pageErrors).toEqual([]);
+});
 
 for (const block of ['thinking', 'text'] as const) {
   test(`a ${block} stream left and returned to mid-stream keeps every word`, async ({ harness, page }) => {

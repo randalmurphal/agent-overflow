@@ -357,6 +357,10 @@ because a client builds its held window out of the rows it was pushed:
   real revision. A settle patch without a summary also carries
   `streamEnd`, where the stored text ends: a client whose text ends
   elsewhere missed deltas, keeps its own revision and re-reads the row.
+  A client whose reveal is still behind the text it received shows less
+  than the stored text, so the row stays unstamped until the reveal
+  settles and only then adopts the revision. A pane left mid-reveal
+  therefore caches an unstamped row and re-reads it on return.
 
 The mid-stream `meta` action still carries no revision. It only reaches
 rows that are streaming, and those settle through a patch that does, so a

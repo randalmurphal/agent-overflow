@@ -179,6 +179,69 @@ describe('settle patch revision', () => {
     expect(h.reveal.hasStreamGaps()).toBe(false);
   });
 
+  it('leaves a row unstamped while its reveal is behind and adopts the revision when it drains', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const h = harness([streaming({})]);
+    const text = Array.from({ length: 60 }, (_, i) => `w${i} `).join('');
+    h.delta(text, 0);
+    clock.tick(16);
+    h.patch({ status: 'completed', streamEnd: utf8Length(text), updatedAt: 20, rev: 7 });
+    expect(h.row().summary).not.toBe(text);
+    expect(h.row()).toMatchObject({ status: 'completed', rev: -1 });
+    for (let frame = 0; frame < 2_000 && h.reveal.isSmoothing('r'); frame++) {
+      clock.tick(16);
+      if (h.reveal.isSmoothing('r')) expect(h.row().rev).toBe(-1);
+    }
+    expect(h.row()).toMatchObject({ summary: text, rev: 7 });
+  });
+
+  it('leaves a row unstamped when its reveal is disposed before it drains', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const h = harness([streaming({})]);
+    h.delta('w1 w2 w3 w4 w5 w6 ', 0);
+    clock.tick(16);
+    h.patch({ status: 'completed', streamEnd: 18, rev: 7 });
+    h.reveal.disposeAll();
+    expect(h.row().summary).not.toBe('w1 w2 w3 w4 w5 w6 ');
+    expect(h.row().rev).toBe(-1);
+  });
+
+  it('unstamps a settled read committed while the reveal is behind until it drains', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const h = harness([streaming({})]);
+    h.delta('w1 w2 ', 0);
+    const read = makeItem({ id: 'r', kind: 'assistant_text', status: 'completed', summary: 'w1 w2 w3 ', rev: 7 });
+    h.commit([read]);
+    expect(h.row()).toMatchObject({ status: 'completed', summary: '', rev: -1 });
+    h.reveal.snapAllToReceived();
+    expect(h.reveal.isSmoothing('r')).toBe(false);
+    expect(h.row()).toMatchObject({ summary: 'w1 w2 w3 ', rev: 7 });
+  });
+
+  it('does not adopt a revision named before more text arrived', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const h = harness([streaming({})]);
+    h.delta('w1 w2 w3 ', 0);
+    h.commit([streaming({ summary: 'w1 w2 w3 ', streamEnd: 9, rev: 5 })]);
+    expect(h.row().rev).toBe(-1);
+    h.delta('w4 ', 9);
+    h.commit([makeItem({ id: 'r', kind: 'assistant_text', status: 'completed', summary: 'w1 w2 w3 ', rev: 5 })]);
+    h.reveal.snapAllToReceived();
+    expect(h.row()).toMatchObject({ summary: 'w1 w2 w3 w4 ', rev: -1 });
+  });
+
+  it('keeps its own revision when a settled read trails the revealed text', () => {
+    const h = harness([streaming({})]);
+    h.delta('w1 w2 w3 ', 0);
+    h.reveal.snapAllToReceived();
+    h.commit([makeItem({ id: 'r', kind: 'assistant_text', status: 'completed', summary: 'w1 w2 ', rev: 7 })]);
+    expect(h.row()).toMatchObject({ status: 'completed', summary: 'w1 w2 w3 ', rev: -1 });
+  });
+
   it('keeps a stale row when the pane re-commits the same row', () => {
     const h = harness([streaming({ summary: 'w1 ', streamEnd: 3 })]);
     h.patch({ status: 'completed', streamEnd: 12, rev: 7 });
