@@ -10,6 +10,8 @@ import {
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 import type { Thread } from '../../types/models';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 
 beforeAll(installAnimateShim);
 
@@ -387,6 +389,23 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     ).toBe('running');
     // The idle row doesn't.
     expect(idleRow.querySelector('[data-testid="thread-picker-status-dot"]')).toBeNull();
+  });
+
+  it("shows an unreachable computer's status still and labelled as its last report", async () => {
+    await seedThreads([makeThread({ id: 'remote', title: 'Remote' })]);
+    stageBackend({ status: 'reconnecting' });
+    // Newer than the claim the catalog read above made for home.
+    noteThread('remote', 'laptop', 2);
+    markThreadRunning('remote');
+    try {
+      const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
+      const dot = getByTestId('thread-picker-hit-remote').querySelector('[data-testid="thread-picker-status-dot"]');
+      expect(dot).not.toHaveClass('animate-pulse');
+      expect(dot?.getAttribute('aria-label')).toMatch(/^Last known: Working\. .+ is unreachable$/);
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 
   it('uses the shared sidebar pill presentation for running discussion threads', async () => {

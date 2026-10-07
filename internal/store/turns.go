@@ -163,6 +163,7 @@ type LateTurnPayload struct {
 	AssistantMessageIDOverwrite string
 	StopReasonOverwrite         string
 	ErrorMessageOverwrite       string
+	CompletedAtAdvance          int64
 }
 
 // UpdateTurnLatePayload folds late-arriving payload onto an
@@ -184,6 +185,10 @@ type LateTurnPayload struct {
 //     passes non-empty values. A soft message_delta close can settle the row
 //     before the trailing `result{is_error:true}` arrives; the late real
 //     result must still mark the persisted turn as failed.
+//   - `completed_at`: moves forward to a later non-zero value and never
+//     back. A later wire round of the turn announced its own completion
+//     time; the read state a client clears against that announcement is
+//     stamped from this column (MarkThreadReadNow).
 //
 // Passing every payload field empty is a silent no-op (no SQL roundtrip).
 //
@@ -200,7 +205,8 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	if payload.TokenUsageJSONIfEmpty == "" &&
 		payload.AssistantMessageIDOverwrite == "" &&
 		payload.StopReasonOverwrite == "" &&
-		payload.ErrorMessageOverwrite == "" {
+		payload.ErrorMessageOverwrite == "" &&
+		payload.CompletedAtAdvance == 0 {
 		return nil
 	}
 	label := fmt.Sprintf("store: update turn %s late payload", turnID)
@@ -227,12 +233,17 @@ func updateTurnLatePayloadTx(tx *sql.Tx, turnID string, payload LateTurnPayload,
 		        error_message = CASE
 		          WHEN ? != '' THEN ?
 		          ELSE error_message
+		        END,
+		        completed_at = CASE
+		          WHEN ? > completed_at THEN ?
+		          ELSE completed_at
 		        END
 		  WHERE turn_id = ?`,
 		payload.TokenUsageJSONIfEmpty, payload.TokenUsageJSONIfEmpty,
 		payload.AssistantMessageIDOverwrite, payload.AssistantMessageIDOverwrite,
 		payload.StopReasonOverwrite, payload.StopReasonOverwrite,
 		payload.ErrorMessageOverwrite, payload.ErrorMessageOverwrite,
+		payload.CompletedAtAdvance, payload.CompletedAtAdvance,
 		turnID,
 	)
 	if err != nil {

@@ -399,6 +399,22 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	if got.ErrorMessage != "API Error: 529 Overloaded." {
 		t.Fatalf("late error did not overwrite error_message: got %q", got.ErrorMessage)
 	}
+
+	// A later round's completion moves completed_at forward, never back.
+	for _, step := range []struct {
+		advance, want int64
+	}{{300, 300}, {250, 300}, {0, 300}, {400, 400}} {
+		if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{CompletedAtAdvance: step.advance}); err != nil {
+			t.Fatalf("completed_at fold %d: %v", step.advance, err)
+		}
+		got, _, _ = s.GetTurn("turn-late")
+		if got.CompletedAt == nil || *got.CompletedAt != step.want {
+			t.Fatalf("completed_at after advancing to %d = %v, want %d", step.advance, got.CompletedAt, step.want)
+		}
+	}
+	if got.StopReason != "error" || got.AssistantMessageID != "msg_round3" {
+		t.Fatalf("completed_at fold disturbed other columns: %+v", got)
+	}
 }
 
 func TestUpdateTurnCompletedRejectsUnknownTurn(t *testing.T) {

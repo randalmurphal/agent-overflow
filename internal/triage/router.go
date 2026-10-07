@@ -163,6 +163,11 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
+	// sendsPendingChanged is the app-layer observer told that a thread's
+	// SendsPending answer may have changed. Wired via
+	// SetSendsPendingObserver before the router serves events; called
+	// under r.mu (see sends_pending.go).
+	sendsPendingChanged func(threadID string)
 	// assistantTextDelta and assistantTextEnd are app-layer observers of
 	// a streaming assistant_text row. Delta receives every piece of text
 	// the row emits, in order, just before it is emitted (possibly on the

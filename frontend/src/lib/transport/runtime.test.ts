@@ -169,6 +169,17 @@ describe('Events.On', () => {
     __resetEntityIndexForTest();
   });
 
+  it("hands a moved thread's sends-pending frame to its subscriber, which needs the sequence", () => {
+    const subscription = captureSubscription();
+    const handler = vi.fn();
+    const off = Events.On('provider:sends_pending', handler);
+    noteThread('moving', 'gpu', 1);
+    subscription.deliver({ threadId: 'moving', pending: false }, 7);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ data: { threadId: 'moving', pending: false }, sequence: 7 }));
+    off();
+    __resetEntityIndexForTest();
+  });
+
   it('stamps each event with the backend the connection identified as', () => {
     setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
     const subscription = captureSubscription();

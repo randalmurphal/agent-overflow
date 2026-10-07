@@ -14,6 +14,8 @@ import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overf
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { applySendsPendingFrame } from './threadStatuses.svelte';
+import type { BackendKey } from '../transport/backendKey';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -30,6 +32,13 @@ export interface QueueStateChangedPayload {
 export interface QueueFlushedPayload {
   threadId: string;
   items: Array<{ queueItemId: string; userItemId: string; message: string; sendId?: string }>;
+}
+
+/** `provider:sends_pending`: whether the thread holds a message the
+ * provider has not echoed yet. Reaches every client, pane or not. */
+export interface SendsPendingPayload {
+  threadId: string;
+  pending: boolean;
 }
 
 export interface QueueRestoredPayload {
@@ -110,4 +119,14 @@ export function applyQueueRestored(evt: QueueRestoredPayload | undefined): void 
       void draft.reloadFromBackend(evt.threadId);
     }
   }
+}
+
+// A gap marker on the channel arrives here too, with no payload: its
+// sequence is what orders RegisterQueueItem's answers after the loss.
+export function applySendsPendingEvent(
+  evt: SendsPendingPayload | null | undefined,
+  backend: BackendKey,
+  sequence: number | undefined,
+): void {
+  applySendsPendingFrame(evt, backend, sequence);
 }

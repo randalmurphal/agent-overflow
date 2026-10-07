@@ -121,6 +121,7 @@ func TestGetThreadLiveStateReadsTodoWrittenByAPreviousSession(t *testing.T) {
 		t.Fatalf("todo update: %v", err)
 	}
 	app.triage.CleanupThread(thread.ID)
+	waitSendsPendingIdle(t, app)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 

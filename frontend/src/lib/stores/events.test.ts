@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
 import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import {
@@ -9,7 +10,7 @@ import {
   projectSendStarted,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread } from './sendQueue.svelte';
+import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
@@ -123,6 +124,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
+    expect(wailsListenerCount('provider:sends_pending')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
     expect(wailsListenerCount('thread-group:updated')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
@@ -144,6 +146,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
+    expect(wailsListenerCount('provider:sends_pending')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
     expect(wailsListenerCount('thread-group:updated')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
@@ -1097,6 +1100,47 @@ describe('setupEventListeners', () => {
     emitWailsEvent('thread:error_notice', { threadId: 'thread-1', itemId: 'error-1' });
 
     expect(getThreadStatus('thread-1')).toBe('error');
+  });
+
+  it('projects provider:sends_pending onto a thread this client has no pane for', () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['sends-pending.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    try {
+      emitWailsEvent('provider:sends_pending', { threadId: 'thread-unmounted', pending: true }, undefined, { sequence: 1 });
+      expect(getThreadStatus('thread-unmounted')).toBe('running');
+      emitWailsEvent('provider:sends_pending', { threadId: 'thread-unmounted', pending: false }, undefined, { sequence: 2 });
+      expect(getThreadStatus('thread-unmounted')).toBe('idle');
+    } finally {
+      __setTransportHelloForTest(null);
+    }
+  });
+
+  it("keeps this client's queued message running across the frames batched before its reply", async () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['sends-pending.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    const frame = (pending: boolean, sequence: number) => emitWailsEvent(
+      'provider:sends_pending', { threadId: 'thread-queued', pending }, undefined, { sequence });
+    try {
+      setBindingMock('RegisterQueueItem', async () => ({
+        id: 'queue:1', sendId: 'send-1', threadId: 'thread-queued', message: 'next', enqueuedAt: 1, attachmentIds: [],
+        sendsPending: { pending: true, sequence: 4 },
+      }));
+      await registerQueueItem('thread-queued', 'next', { sendId: 'send-1' } as Parameters<typeof registerQueueItem>[2]);
+      // The reply beat the batched frames; one written before it follows.
+      frame(false, 3);
+      expect(getThreadStatus('thread-queued')).toBe('running');
+      // A gap marker on the channel carries no payload and changes nothing.
+      emitWailsEvent('provider:sends_pending', null, undefined, { sequence: 4 });
+      expect(getThreadStatus('thread-queued')).toBe('running');
+      frame(false, 5);
+      expect(getThreadStatus('thread-queued')).toBe('idle');
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('sets thread error status for a thread this client has no row or pane for', async () => {

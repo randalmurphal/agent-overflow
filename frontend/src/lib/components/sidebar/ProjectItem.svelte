@@ -29,6 +29,7 @@
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
+  import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -133,6 +134,7 @@
     const tree = buildSidebarThreadTree({
       threads,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
     });
     return rollupDisplayStatus(tree);
   });

@@ -12,6 +12,9 @@ import { touchThreadActivity } from '../../stores/threads.svelte';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
 import type { Thread, ThreadGroup } from '../../types/models';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { __setTransportStatusForTest, getTransportStatus } from '../../stores/transportStatus.svelte';
 
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -195,4 +198,56 @@ it('aligns the group chevron with top-level pins and member pins with the folder
   const memberChevron = row(view.container, 'member').querySelector('[data-testid="thread-row-expand"]')!.getBoundingClientRect();
   expect(Math.abs(memberChevron.left - groupName.left)).toBeLessThanOrEqual(1);
   expect(titleLeft('member-child')).toBeGreaterThan(titleLeft('plain-member'));
+});
+
+it("bubbles a child's last-known status up still while its computer is unreachable", async () => {
+  const parent = thread('parent', { updatedAt: 2 });
+  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
+  // The parent lives on this page's own computer, which is up.
+  const home = getTransportStatus();
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  const staged = stageBackend({ status: 'reconnecting' });
+  noteThread('child', 'laptop');
+  projectTurnStarted('child', 'turn-1', 0, 0);
+  try {
+    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
+    await settled(view.container);
+    const dot = () => row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
+    expect(dot()?.getAttribute('data-status')).toBe('running');
+    expect(dot()).not.toHaveClass('animate-pulse');
+    // Attributed to the child's computer, not the parent's.
+    expect(dot()?.getAttribute('title')).toMatch(/^Last known: Working\. .+ is unreachable$/);
+
+    staged.setStatus('connected');
+    await tick();
+    expect(dot()).toHaveClass('animate-pulse');
+    expect(dot()?.getAttribute('title')).toBe('Working');
+  } finally {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    __setTransportStatusForTest(home);
+  }
+});
+
+it("keeps a reachable child's live status live on a parent whose computer is unreachable", async () => {
+  const parent = thread('parent', { updatedAt: 2 });
+  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
+  const home = getTransportStatus();
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  stageBackend({ status: 'reconnecting' });
+  noteThread('parent', 'laptop');
+  projectTurnStarted('child', 'turn-1', 0, 0);
+  try {
+    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
+    await settled(view.container);
+    expect(row(view.container, 'parent').getAttribute('data-machine-unreachable')).toBe('true');
+    const dot = row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
+    expect(dot?.getAttribute('data-status')).toBe('running');
+    expect(dot).toHaveClass('animate-pulse');
+    expect(dot?.getAttribute('title')).toBe('Working');
+  } finally {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    __setTransportStatusForTest(home);
+  }
 });

@@ -442,7 +442,7 @@ export function resetTransportStatusForTest(): void {
  * suite has no transport, so nothing would ever populate it; a test that
  * exercises a capability-gated path sets what it needs.
  */
-export function __setTransportHelloForTest(next: TransportHello | null): void {
-  hello = next;
-  helloByBackend.set(HOME_BACKEND, next);
+export function __setTransportHelloForTest(next: TransportHello | null, backend: BackendKey = HOME_BACKEND): void {
+  if (backend === HOME_BACKEND) hello = next;
+  helloByBackend.set(backend, next);
 }

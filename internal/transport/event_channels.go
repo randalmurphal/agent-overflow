@@ -826,6 +826,17 @@ var channelPolicies = []ChannelPolicy{
 			"queue row the backend has already moved back into the draft.",
 	},
 	{
+		Channel:   eventchan.ProviderSendsPending,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId, pending} only: whether a queued or " +
+			"flushed message still awaits its echo, which keeps a sidebar row " +
+			"running between rounds. No message text, so the sidebar audience of " +
+			"provider:turn_started; the queue frames that carry the text " +
+			"stay threads:operate. Keyed per thread: never latest-only.",
+	},
+	{
 		Channel:   eventchan.ProviderQueueStateChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

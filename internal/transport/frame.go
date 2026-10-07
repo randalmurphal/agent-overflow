@@ -82,6 +82,12 @@ const CapabilityTimelineScopes = "timeline.scopes.v1"
 // CapabilityTimelineDigests supports execution-bounded inline agent pages.
 const CapabilityTimelineDigests = "timeline.digests.v1"
 
+// CapabilitySendsPending publishes provider:sends_pending, the sendsPending
+// field of ListThreadLiveActivity and RegisterQueueItem's sendsPending
+// answer. A client reading a backend without it keeps a thread running on
+// its own send-queue mirror.
+const CapabilitySendsPending = "sends-pending.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -95,6 +101,7 @@ var serverCapabilities = []string{
 	CapabilityThreadTools,
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
+	CapabilitySendsPending,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

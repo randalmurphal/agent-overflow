@@ -1,9 +1,12 @@
 import type { Item, SourceDiffReview, SourceProposedPlan } from '../types/models';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
+import type { QueuedItem as WireQueuedItem, SendsPendingAnswer } from '../../../bindings/agent-overflow/internal/app/models';
 import type { OutgoingSendOptions } from '../utils/sendOptions';
 import { RegisterQueueItem } from './bindings';
 import { isPendingFlushRow, parseUserMessageMeta } from '../utils/userMessageMeta';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import type { BackendKey } from '../transport/backendKey';
+import { requireEntityBackend } from '../transport/backends';
+import { threadOwner } from '../transport/threadOwner';
 
 /**
  * Pending send queue.
@@ -129,6 +132,30 @@ export function hasQueueItems(threadId: string | null | undefined): boolean {
     || flushedByThread.get(threadId).length > 0;
 }
 
+// This client's RegisterQueueItem calls per thread that have not answered.
+// Counted apart from the provisional Zone 1 entry, which a queue frame can
+// replace before the reply arrives.
+const registeringByThread = createKeyedSignalRegistry<number>(0);
+
+/** True while one of this client's RegisterQueueItem calls for the thread
+ * has not answered. */
+export function isRegisteringQueueItem(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return registeringByThread.get(threadId) > 0;
+}
+
+// RegisterQueueItem's reply carries the thread's sends-pending answer once
+// the message is queued, with the computer the call went to. It reaches
+// the listeners before the call stops counting as registering, so the
+// thread's status never falls between the two. threadStatuses listens;
+// this module stays a leaf.
+type SendsPendingAnswerListener = (threadId: string, answer: SendsPendingAnswer, backend: BackendKey) => void;
+const sendsPendingAnswerListeners = new Set<SendsPendingAnswerListener>();
+export function onRegistrationSendsPending(listener: SendsPendingAnswerListener): () => void {
+  sendsPendingAnswerListeners.add(listener);
+  return () => sendsPendingAnswerListeners.delete(listener);
+}
+
 /** Monotonic revision for combined queued/flushed state stale-hydration guards. */
 export function getQueueRevisionForThread(threadId: string | null | undefined): number {
   if (!threadId) return 0;
@@ -230,9 +257,14 @@ export async function registerQueueItem(
     appendZoneItems(queueByThread, threadId, [pending]);
     bumpQueueRevision(threadId);
   }
+  registeringByThread.set(threadId, registeringByThread.get(threadId) + 1);
   try {
     if (ready) await ready;
+    // The computer the call routes to (transport/runtime.ts), which answers.
+    const backend = requireEntityBackend(threadOwner(threadId));
     const wire = await RegisterQueueItem(threadId, message, options);
+    const answer = wire.sendsPending;
+    if (answer) for (const listener of sendsPendingAnswerListeners) listener(threadId, answer, backend);
     const item = queueItemFromWire(wire);
     // Events can acknowledge and even render the message before the RPC
     // replies. Only replace our still-present provisional entry.
@@ -251,6 +283,10 @@ export async function registerQueueItem(
   } catch (err) {
     if (removeQueuedItemsById(threadId, new Set([id]))) bumpQueueRevision(threadId);
     throw err;
+  } finally {
+    const left = registeringByThread.get(threadId) - 1;
+    if (left > 0) registeringByThread.set(threadId, left);
+    else registeringByThread.drop(threadId);
   }
 }
 
@@ -503,5 +539,6 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
 export function resetForTest(): void {
   queueByThread.reset();
   flushedByThread.reset();
+  registeringByThread.reset();
   queueRevisionByThread.clear();
 }

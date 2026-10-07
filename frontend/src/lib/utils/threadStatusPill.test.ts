@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import threadStates from '../../../../internal/threadtools/testdata/thread_states.json';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
-import { hasUnread, resolveEffectiveThreadStatus, resolveThreadStatusPill } from './threadStatusPill';
+import {
+  hasUnread,
+  lastKnownThreadStatusPill,
+  resolveEffectiveThreadStatus,
+  resolveThreadStatusPill,
+} from './threadStatusPill';
 
 type MinimalThread = Pick<
   Thread,
@@ -319,4 +324,25 @@ describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
       expect(resolveEffectiveThreadStatus(t(testCase.thread), testCase.liveStatus)).toBe(testCase.want);
     });
   }
+});
+
+describe('lastKnownThreadStatusPill', () => {
+  const thread = { id: 't', lastReadAt: 0 } as Thread;
+
+  it('keeps the status and colour, drops the motion and names the computer', () => {
+    const running = resolveThreadStatusPill(thread, 'running');
+    expect(running?.pulse).toBe(true);
+    expect(lastKnownThreadStatusPill(running, 'gpu-box')).toEqual({
+      ...running, pulse: false, glowClass: undefined, label: `Last known: ${running!.label}. gpu-box is unreachable`,
+    });
+  });
+
+  it('labels a still pill too, and passes no pill through', () => {
+    const failed = resolveThreadStatusPill(thread, 'error');
+    expect(failed?.pulse).toBe(false);
+    expect(lastKnownThreadStatusPill(failed, '')).toEqual({
+      ...failed, glowClass: undefined, label: `Last known: ${failed!.label}. Its computer is unreachable`,
+    });
+    expect(lastKnownThreadStatusPill(null, 'gpu-box')).toBeNull();
+  });
 });

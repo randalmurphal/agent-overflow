@@ -427,11 +427,19 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// boundary flush can start the next turn.
 	// The revert marker belongs to the round claimed here and is taken with
 	// it, before clearOpenTurn below drops any marker still pending.
+	//
+	// A failed turn-index or payload read still ends the round it took:
+	// the event carries the round's own index, and nothing else would
+	// ever tell a client the round is over.
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
-	if hasRound && err == nil {
+	if hasRound {
 		reverted := r.consumeRevertedTurn(evt.ThreadID)
+		emitIndex := turnIndex
+		if err != nil {
+			emitIndex = round.TurnIndex
+		}
 		defer func() {
-			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta, reverted))
+			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta, reverted))
 		}()
 	}
 
@@ -504,7 +512,14 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			agentScopes, lateErr := r.agentOwnedOpenScopes(evt.ThreadID)
 			lateErr = errors.Join(lateErr, r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus, agentScopes))
 			lateErr = errors.Join(lateErr, r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now))
-			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta))
+			// A round of its own announced this completion time, which a
+			// client reads as the thread's newest activity; the row
+			// follows so a read clears it everywhere.
+			var roundCompletedAt int64
+			if hasRound {
+				roundCompletedAt = now
+			}
+			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt))
 			r.FlushUsageEmitThrottle(evt.ThreadID)
 			return lateErr
 		}
@@ -836,10 +851,15 @@ func (r *Router) buildRoundCompletedEvent(
 //     message_delta close can settle a turn as `end_turn` before the
 //     trailing wire `result{is_error:true}` arrives; the error must
 //     still be visible in persisted history.
+//   - completed_at: advances to roundCompletedAt, the CompletedAt a
+//     later round's provider:turn_completed carried (0 when this
+//     completion took no round, as a soft close's trailing `result`
+//     does). A thread the user read between rounds is unread again
+//     until read after the later round, on whichever client.
 //
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
-func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) error {
+func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta, roundCompletedAt int64) error {
 	turnID := r.persistedTurnID(evt, turnIndex)
 	// Ledger rows append on every settle event: the provider emits
 	// per-turn DELTAS, so a late fold's usage is new spend the first
@@ -853,7 +873,7 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 	}
 	amid := meta.AssistantMessageID
 	stopReason, errorMessage := lateErrorTurnPayload(meta)
-	if usageJSON == "" && amid == "" && stopReason == "" && errorMessage == "" {
+	if usageJSON == "" && amid == "" && stopReason == "" && errorMessage == "" && roundCompletedAt == 0 {
 		return usageErr
 	}
 	if err := r.store.UpdateTurnLatePayload(turnID, store.LateTurnPayload{
@@ -861,6 +881,7 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 		AssistantMessageIDOverwrite: amid,
 		StopReasonOverwrite:         stopReason,
 		ErrorMessageOverwrite:       errorMessage,
+		CompletedAtAdvance:          roundCompletedAt,
 	}); err != nil {
 		return errors.Join(usageErr, fmt.Errorf("update turn %s late payload: %w", turnID, err))
 	}
@@ -1809,8 +1830,16 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		closedCodexAgents      []closedCodexAgent
 		heldCodexCompletions   map[string]pendingCodexCompletion
 		idleSubagentCards      []*subagentCardEntry
+		strandedRound          ActiveTurnSnapshot
+		hasStrandedRound       bool
 	)
 	if st != nil {
+		// The truncated complete synthesized above closed the round that
+		// was open then. A round opened since, by a frame the dying
+		// session delivered before the stopped flag was set, would
+		// otherwise vanish with the state and leave every client showing
+		// it running.
+		strandedRound, hasStrandedRound = st.currentRound, st.currentRoundOpen
 		// The cards are store handles: closed below, once r.mu is
 		// released, or by the write still holding one.
 		idleSubagentCards = st.retireSubagentCardsLocked("")
@@ -1836,6 +1865,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		pendingProgress, hasPendingProgress = takeUsagePending(st.usageProgressThrottle)
 	}
 	delete(r.threads, threadID)
+	r.noteSendsPendingLocked(threadID)
 	if hadEffectiveModel {
 		// The revision counter lives on the identity, so it is still
 		// here after the delete: the frontend needs a STRICTLY newer
@@ -1844,6 +1874,20 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	}
 	r.mu.Unlock()
 	closeSubagentCards(threadID, idleSubagentCards)
+
+	if hasStrandedRound {
+		synth := provider.ProviderEvent{
+			Kind:         provider.EventTurnComplete,
+			ThreadID:     threadID,
+			TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true},
+			Timestamp:    time.UnixMilli(cleanupAt),
+		}
+		completed := r.buildRoundCompletedEvent(synth, strandedRound.TurnID, strandedRound.TurnIndex, cleanupAt, turnCompleteMeta{Truncated: true}, false)
+		// No turns row settles for this round, so it must not move the
+		// read clock a client derives unread from.
+		completed.CountsAsActivity = false
+		r.emit(eventchan.ProviderTurnCompleted, completed)
+	}
 
 	if hadEffectiveModel {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})

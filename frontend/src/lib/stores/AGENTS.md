@@ -74,12 +74,20 @@ Gap recovery belongs to `transportRecovery.ts`. Register snapshot reads with
 mutations that existed when replay ended. A gap snapshot must not overtake older
 queued replay, and later live events must not extend that recovery wait.
 
-Live turn, approval, user-input and compacting state is backend state, never
-derived from items or rows. `threadLiveActivity.ts` reads
-`ListThreadLiveActivity` for every thread of a computer on each connection
-edge and after a gap on one of those channels; a pane additionally reads
-`GetThreadLiveState` when it mounts. A push that lands while a snapshot is in
-flight wins over the snapshot.
+Live turn, approval, user-input, compacting and sends-pending state is
+backend state, never derived from items or rows. Sends pending
+(`provider:sends_pending`, capability `sends-pending.v1`) covers a queued or
+flushed message until its echo, so a thread surface with no pane reads
+running from it rather than from the queue frames. `RegisterQueueItem`
+replies with the thread's answer and the channel sequence it reflects. The
+reply can overtake earlier frames, so a frame at or below an applied answer
+is dropped, and an answer that the computer's stream (frames and gap
+markers, per `launchId`) has already passed is not applied.
+`threadLiveActivity.ts` reads `ListThreadLiveActivity` for every thread of a
+computer on each connection edge and after a gap on one of those channels,
+one read per computer at a time; a pane additionally reads
+`GetThreadLiveState` when it mounts. A push that lands while a snapshot is
+in flight wins over the snapshot.
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
 exists, including child threads with no pane, and for every subagent scope a

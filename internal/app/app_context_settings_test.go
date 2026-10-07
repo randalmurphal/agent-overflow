@@ -374,7 +374,9 @@ func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 		if got != thread.ID {
 			t.Fatalf("restart threadID = %q, want %q", got, thread.ID)
 		}
-	case <-time.After(time.Second):
+	// The restart runs on the deferred watcher, which re-checks a busy
+	// thread once per poll interval; allow several polls.
+	case <-time.After(5 * defaultConfigReconnectPollInterval):
 		t.Fatal("UpdateThreadContextSettings did not restart active session")
 	}
 }

@@ -45,11 +45,16 @@ import {
 } from './selectedBackend.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts } from './toast.svelte';
+import { __sendsPendingOrderForTest, applySendsPendingFrame, getActiveTurn, getThreadStatus, projectTurnStarted } from './threadStatuses.svelte';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
 import type { Project, Thread, ThreadGroup } from '../types/models';
+
+// A provider:sends_pending frame from the laptop, each one newer than the last.
+let frameSeq = 0;
+const push = (threadId: string, pending: boolean) => applySendsPendingFrame({ threadId, pending }, 'laptop', ++frameSeq);
 
 const LAPTOP = 'laptop';
 
@@ -339,6 +344,22 @@ describe('a backend detaching', () => {
     } finally {
       setCompactLayoutForTest(false);
     }
+  });
+
+  it('clears the live state of a thread it owned that no sidebar row lists', () => {
+    attachLaptop();
+    // Known from a pane, a search or a snapshot, never a sidebar row.
+    noteThread('t-unlisted', LAPTOP);
+    projectTurnStarted('t-unlisted', 'turn-1', 0, 0);
+    push('t-unlisted', true);
+    expect(getThreadStatus('t-unlisted')).toBe('running');
+    expect(__sendsPendingOrderForTest().streams).toBe(1);
+
+    detachBackend(LAPTOP);
+
+    expect(getActiveTurn('t-unlisted')).toBeNull();
+    expect(getThreadStatus('t-unlisted')).toBe('idle');
+    expect(__sendsPendingOrderForTest().streams).toBe(0);
   });
 
   it('leaves the stores untouched when it owned nothing', () => {

@@ -320,6 +320,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	if shape == sendShapeFlush {
 		st.recordFlushSendDigest(aoItemID, expect.ContentBlockDigest)
 	}
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -481,6 +482,7 @@ func (r *Router) popPendingSendAtLocked(threadID string, i int) pendingSend {
 	st := r.state(threadID)
 	queue := st.pendingSends
 	entry := queue[i]
+	defer r.noteSendsPendingLocked(threadID)
 	if len(queue) == 1 {
 		st.pendingSends = nil
 		return entry
@@ -562,6 +564,7 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 			next = append(next, queue[i+1:]...)
 			st.pendingSends = next
 		}
+		r.noteSendsPendingLocked(threadID)
 		return
 	}
 }
@@ -583,6 +586,7 @@ func (r *Router) clearPendingSendsForThread(threadID string) {
 func (r *Router) clearPendingSendsLocked(threadID string) {
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		st.pendingSends = nil
+		r.noteSendsPendingLocked(threadID)
 	}
 }
 
@@ -678,6 +682,7 @@ func (r *Router) reinsertPendingSendHead(threadID string, entry pendingSend) {
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.pendingSends = append([]pendingSend{entry}, st.pendingSends...)
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -814,6 +819,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			}
 		}
 	}
+	r.noteSendsPendingLocked(threadID)
 	confirmedHook := r.flushUserTextConfirmed
 	r.mu.Unlock()
 
@@ -909,6 +915,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 			pending[i].AnchoredAtInterrupt = true
 		}
 	}
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 
 	if len(ids) == 0 {
@@ -970,6 +977,7 @@ func (r *Router) restorePendingSendDeferred(threadID, aoItemID string) {
 			break
 		}
 	}
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -1179,6 +1187,7 @@ func (r *Router) unclaimPendingSendAnchor(threadID, aoItemID string) {
 			break
 		}
 	}
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -1198,6 +1207,7 @@ func (r *Router) markPendingSendsAnchoredAtInterrupt(threadID string, ids map[st
 			pending[i].AnchoredAtInterrupt = true
 		}
 	}
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -1268,6 +1278,7 @@ func (r *Router) clearPendingSendsMatching(threadID string, drop func(pendingSen
 	} else {
 		st.pendingSends = filtered
 	}
+	r.noteSendsPendingLocked(threadID)
 }
 
 // pendingSendsLocked returns the thread's pending-send FIFO, or nil when

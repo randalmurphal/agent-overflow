@@ -379,16 +379,17 @@ export function clearThreadGroupMembership(groupId: string): void {
  */
 export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
   if (ids.length === 0) return;
-  const gone = new Set(ids);
-  const kept = threads.filter((t) => !gone.has(t.id));
-  if (kept.length === threads.length) return;
-  threads = kept;
-  for (const id of gone) {
+  // Every indexed thread, listed or not: live state can be held for a
+  // thread that only a pane, a search or a snapshot named.
+  for (const id of ids) {
     liveActivityAt.drop(id);
     clearThreadStatus(id);
     dropLiveTodoUiPrefs(id);
     dropActivityRailUiPrefs(id);
   }
+  const gone = new Set(ids);
+  const kept = threads.filter((t) => !gone.has(t.id));
+  if (kept.length !== threads.length) threads = kept;
 }
 
 onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));

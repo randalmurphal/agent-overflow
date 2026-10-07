@@ -94,11 +94,15 @@ describe('transport gap', () => {
     // from the registry the snapshot repairs.
     applyTransportGap({ channel: 'provider:compacting', seq: 3 });
     await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(1));
+    // Nor does a sends-pending gap: panes read their own queue.
+    applyTransportGap({ channel: 'provider:sends_pending', seq: 3 });
+    await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(2));
     expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
     for (const channel of ['provider:turn_started', 'provider:turn_completed', 'provider:approval', 'provider:user_input']) {
       applyTransportGap({ channel, seq: 4 });
     }
-    await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(5));
+    // The burst shares the read in flight and one read after it.
+    await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(4));
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
   });
 

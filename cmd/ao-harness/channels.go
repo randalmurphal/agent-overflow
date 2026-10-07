@@ -75,6 +75,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderQueueFlushed,
 		eventchan.ProviderQueueRestored,
 		eventchan.ProviderQueueStateChanged,
+		eventchan.ProviderSendsPending,
 		eventchan.ProviderSessionAccount,
 		eventchan.ProviderSessionDied,
 		eventchan.ProviderStatus,

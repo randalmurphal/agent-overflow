@@ -91,6 +91,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
 		a.recordMessageAnchor(item)
 	})
+	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
 }
 
 // newTriageRouter constructs the triage router with every App-owned
@@ -130,6 +131,7 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 		generation: generation,
 	})
 	a.flushDispatch.inflightItems[threadID] += len(batch)
+	a.markSendsPendingDirty(threadID)
 	// The worker may finish before this callback returns. Retire triage's
 	// overlapping claim before starting it, so a later snapshot cannot
 	// resurrect a message whose dispatch has already settled.
@@ -174,6 +176,7 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 		a.flushDispatch.mu.Lock()
 		delete(a.flushDispatch.current, threadID)
 		delete(a.flushDispatch.dispatching, threadID)
+		a.markSendsPendingDirty(threadID)
 		if a.flushDispatch.generation[threadID] == batch.generation {
 			a.flushDispatch.inflightItems[threadID] -= len(batch.items)
 			if a.flushDispatch.inflightItems[threadID] <= 0 {
@@ -224,6 +227,7 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	delete(a.flushDispatch.current, threadID)
 	delete(a.flushDispatch.dispatching, threadID)
 	delete(a.flushDispatch.inflightItems, threadID)
+	a.markSendsPendingDirty(threadID)
 	a.flushDispatch.mu.Unlock()
 }
 
@@ -242,6 +246,7 @@ func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFl
 	delete(a.flushDispatch.queues, threadID)
 	delete(a.flushDispatch.dispatching, threadID)
 	delete(a.flushDispatch.inflightItems, threadID)
+	a.markSendsPendingDirty(threadID)
 	a.flushDispatch.mu.Unlock()
 	return drained
 }
@@ -347,12 +352,14 @@ func (a *App) beginFlushDispatchVisibility(threadID string, items []triage.Queue
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
 	a.flushDispatch.dispatching[threadID] = items
+	a.markSendsPendingDirty(threadID)
 	a.flushDispatch.mu.Unlock()
 }
 
 func (a *App) endFlushDispatchVisibility(threadID string) {
 	a.flushDispatch.mu.Lock()
 	delete(a.flushDispatch.dispatching, threadID)
+	a.markSendsPendingDirty(threadID)
 	a.flushDispatch.mu.Unlock()
 }
 
@@ -384,6 +391,7 @@ func (a *App) noteFlushDispatchItemSettledLocked(threadID, itemID string) {
 		} else {
 			a.flushDispatch.dispatching[threadID] = next
 		}
+		a.markSendsPendingDirty(threadID)
 		return
 	}
 }
@@ -979,26 +987,33 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 //
 // Returns the resolved QueuedItem with the assigned id and
 // EnqueuedAt timestamp so the frontend can mirror the same row
-// without an extra round-trip. Emits `provider:queue_state_changed`
-// for any other client (remote `--connect` peers, additional
-// webviews) that may be observing the same thread.
+// without an extra round-trip, and the thread's sends-pending answer
+// once the message is queued, stamped with the provider:sends_pending
+// sequence it reflects: the reply can arrive ahead of earlier frames. Emits
+// `provider:queue_state_changed` for any other client (remote
+// `--connect` peers, additional webviews) that may be observing the
+// same thread.
 //
 //ao:scope threads:operate
-func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (RegisteredQueueItem, error) {
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
-		return QueuedItem{}, err
+		return RegisteredQueueItem{}, err
 	}
 	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
-		return QueuedItem{}, err
+		return RegisteredQueueItem{}, err
 	}
 	defer unlockAdmission()
 
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
-	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{
+	item, err := a.registerQueueItem(threadID, message, opts, injectedQueueOptions{
 		expandComposerCommands: true,
 	})
+	if err != nil {
+		return RegisteredQueueItem{}, err
+	}
+	return RegisteredQueueItem{QueuedItem: item, SendsPending: a.publishSendsPending(threadID)}, nil
 }
 
 // injectedQueueOptions carries the two axes the wire does not, both of them

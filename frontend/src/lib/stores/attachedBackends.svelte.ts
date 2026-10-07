@@ -184,3 +184,13 @@ export function threadMachineUnreachable(threadId: string, projectId: string | n
   const key = threadMachine(threadId, projectId);
   return !backendReachable(key);
 }
+
+/**
+ * The display name of a thread's machine while it is unreachable
+ * (`threadMachineUnreachable`), or null while it can be reached.
+ */
+export function unreachableThreadMachineName(threadId: string, projectId: string | null | undefined): string | null {
+  if (!threadMachineUnreachable(threadId, projectId)) return null;
+  const entry = attachedBackendEntry(threadMachine(threadId, projectId));
+  return entry ? backendDisplayName(entry) : '';
+}

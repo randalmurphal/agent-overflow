@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -168,27 +170,31 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 
 // ThreadLiveActivity is the sidebar-grade live state of one thread. It
 // carries only what the threads:read push channels carry (turn, request
-// ids, compacting window), never the requests' prose.
+// ids, compacting window, sends pending), never the requests' prose or
+// the queued messages.
 type ThreadLiveActivity struct {
 	ThreadID              string               `json:"threadId"`
 	ActiveTurn            *LiveStateActiveTurn `json:"activeTurn,omitempty"`
 	ApprovalRequestIDs    []string             `json:"approvalRequestIds"`
 	UserInputRequestIDs   []string             `json:"userInputRequestIds"`
 	CompactingSinceUnixMs int64                `json:"compactingSinceUnixMs,omitempty"`
+	SendsPending          bool                 `json:"sendsPending,omitempty"`
 }
 
 // ListThreadLiveActivity returns every thread on this computer with live
-// activity: an open wire round, pending approvals or questions, or an open
-// compacting window. Idle threads are omitted, so the answer is authoritative
-// for the whole computer: a client reconciles every thread it attributes to
-// this computer against it and clears the ones not named.
+// activity: an open wire round, pending approvals or questions, an open
+// compacting window, or sends pending. Idle threads are omitted, so the
+// answer is authoritative for the whole computer: a client reconciles every
+// thread it attributes to this computer against it and clears the ones not
+// named.
 //
 // This is the snapshot leg of the threads:read push channels
 // (provider:turn_started / turn_completed, provider:approval,
-// provider:user_input, provider:compacting). A client that connects, reloads,
-// or drops frames mid-turn has no other way to learn that a thread it has no
-// pane on is running or blocked on the user; GetThreadLiveState is per thread
-// and rides threads:operate because it carries the requests themselves.
+// provider:user_input, provider:compacting, provider:sends_pending). A
+// client that connects, reloads, or drops frames mid-turn has no other way
+// to learn that a thread it has no pane on is running or blocked on the
+// user; GetThreadLiveState is per thread and rides threads:operate because
+// it carries the requests themselves.
 //
 //ao:scope threads:read
 //ao:route all
@@ -197,12 +203,17 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 	if a.triage == nil {
 		return rows, nil
 	}
+	sendsPending := a.sendsPendingThreads()
 	for _, live := range a.triage.LiveActivitySnapshot() {
 		row := ThreadLiveActivity{
 			ThreadID:              live.ThreadID,
 			ApprovalRequestIDs:    slicesx.OrEmpty(live.ApprovalRequestIDs),
 			UserInputRequestIDs:   slicesx.OrEmpty(live.UserInputRequestIDs),
 			CompactingSinceUnixMs: live.CompactingSinceUnixMs,
+		}
+		if _, pending := sendsPending[live.ThreadID]; pending {
+			row.SendsPending = true
+			delete(sendsPending, live.ThreadID)
 		}
 		if live.ActiveTurn != nil {
 			row.ActiveTurn = &LiveStateActiveTurn{
@@ -213,6 +224,14 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 			}
 		}
 		rows = append(rows, row)
+	}
+	for _, threadID := range slices.Sorted(maps.Keys(sendsPending)) {
+		rows = append(rows, ThreadLiveActivity{
+			ThreadID:            threadID,
+			ApprovalRequestIDs:  []string{},
+			UserInputRequestIDs: []string{},
+			SendsPending:        true,
+		})
 	}
 	return rows, nil
 }

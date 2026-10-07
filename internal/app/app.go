@@ -419,6 +419,9 @@ type App struct {
 	// flushDispatch is the queued-message flush concern
 	// (`app_flush_queue*.go`), including both of its mutexes.
 	flushDispatch appFlushDispatchState
+	// sendsPending publishes provider:sends_pending
+	// (`app_sends_pending.go`).
+	sendsPending appSendsPendingState
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState

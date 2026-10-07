@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -84,6 +85,11 @@ func TestQueuePublicationHoldsDispatchOwnership(t *testing.T) {
 	defer app.endFlushDispatchVisibility("thread")
 	var channels []string
 	app.testEmitHook = func(channel string, _ any) {
+		// provider:sends_pending is published by its own worker from an
+		// answer read under dispatch ownership; it is not a queue snapshot.
+		if channel == string(eventchan.ProviderSendsPending) {
+			return
+		}
 		channels = append(channels, channel)
 		if app.flushDispatch.mu.TryLock() {
 			app.flushDispatch.mu.Unlock()

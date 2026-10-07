@@ -120,5 +120,6 @@ func (r *Router) takeUnconfirmedFlushSendsLocked(threadID string) (restorable, e
 		kept = nil
 	}
 	st.pendingSends = kept
+	r.noteSendsPendingLocked(threadID)
 	return restorable, echoConsumed
 }

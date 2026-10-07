@@ -1501,6 +1501,24 @@ describe('<ThreadRow> on an unreachable machine', () => {
     expect(row).not.toHaveAttribute('data-machine-unreachable');
   });
 
+  it("shows the computer's last-known status still, labelled, and live again on reconnect", async () => {
+    resetThreadStatuses();
+    const staged = stageBackend({ status: 'reconnecting' });
+    noteThread('thread-1', 'laptop');
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot).not.toHaveClass('animate-pulse');
+    expect(dot.getAttribute('aria-label')).toMatch(/^Last known: Working\. .+ is unreachable$/);
+    expect(dot).toHaveAttribute('title', dot.getAttribute('aria-label'));
+
+    staged.setStatus('connected');
+    await tick();
+    expect(dot).toHaveClass('animate-pulse');
+    expect(dot).toHaveAttribute('aria-label', 'Working');
+    resetThreadStatuses();
+  });
+
   it('keeps an available home row undimmed while another computer is offline', async () => {
     stageBackend({ status: 'reconnecting' });
     const thread = makeThread();

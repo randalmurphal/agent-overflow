@@ -12,7 +12,7 @@ import { installComputerHydration } from './computerHydration';
 //                              participant threads → discussionLiveTail.ts)
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
-//   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
+//   - eventsQueue.ts         — send-queue mirror (state/flushed/restored, sends pending)
 //   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
 //   - eventsDraftRows.ts     — composer-draft convergence across clients
 //   - eventsProjectRows.ts   — project row projections (sidebar list)
@@ -144,10 +144,12 @@ import {
   applyQueueFlushed,
   applyQueueRestored,
   applyCommandLifecycle,
+  applySendsPendingEvent,
   type QueueStateChangedPayload,
   type QueueFlushedPayload,
   type QueueRestoredPayload,
   type CommandLifecyclePayload,
+  type SendsPendingPayload,
 } from './eventsQueue';
 import {
   applyFastModeState,
@@ -496,6 +498,15 @@ export function setupEventListeners(): () => void {
     'provider:queue_restored',
     applyQueueRestored,
   );
+  // provider:sends_pending — the backend's answer to "is a message still
+  // queued or awaiting its echo", which the thread's status reads as
+  // running. Wildcard and threads:read, so it reaches the threads with no
+  // pane, whose queue mirror never sees the echo that empties it. The
+  // transport leaves the ownership check of its frames to the handler.
+  const cancelSendsPending = wailsEventOn<SendsPendingPayload | null>(
+    'provider:sends_pending',
+    (evt, origin, sequence) => applySendsPendingEvent(evt, backendKeyForOrigin(origin.backendId), sequence),
+  );
   // provider:command_lifecycle — Claude's per-message delivery ack for a
   // user message written to provider stdin, keyed onto the Zone 2 entry
   // the backend resolved it to. Purely additive labelling: older CLIs
@@ -819,6 +830,7 @@ export function setupEventListeners(): () => void {
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
+    cancelSendsPending();
     cancelCommandLifecycle();
     cancelFastModeState();
     cancelCompactingState();

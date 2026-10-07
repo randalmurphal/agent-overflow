@@ -354,6 +354,12 @@ export const Create = {
 // back the same origin object until its identity moves, and the frame's
 // facts are fields of the envelope that is allocated per event anyway,
 // so no frame mints an origin of its own.
+// Channels whose subscriber applies `currentThreadEvent` itself, after it
+// has read the frame's sequence: provider:sends_pending orders
+// RegisterQueueItem's answers by every frame of the channel, including one
+// for a thread that moved away, which can carry a loss announcement.
+const SUBSCRIBER_OWNERSHIP_CHANNELS: ReadonlySet<string> = new Set(['provider:sends_pending']);
+
 export const Events = {
   On(
     name: string,
@@ -364,7 +370,8 @@ export const Events = {
       // Row ownership events use id/thread.id and are admitted separately so a
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
-      if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
+      if (typeof threadId === 'string' && !SUBSCRIBER_OWNERSHIP_CHANNELS.has(name)
+        && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
       handler({ name, data: safeRepositoryMetadata(data), origin: transport.origin, sequence, replayed });
     });
   },

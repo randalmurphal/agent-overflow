@@ -869,18 +869,24 @@ import {
   RegisterQueueItem as RegisterQueueItemRaw,
   GetQueueState as GetQueueStateRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
+import type {
+  QueuedItem as WireQueuedItem,
+  RegisteredQueueItem as WireRegisteredQueueItem,
+} from '../../../bindings/agent-overflow/internal/app/models';
+
+/** A backend without `sends-pending.v1` answers without `sendsPending`. */
+export type RegisteredQueueItem = WireQueuedItem & Partial<Pick<WireRegisteredQueueItem, 'sendsPending'>>;
 
 export function RegisterQueueItem(
   threadId: string,
   message: string,
   opts: SendMessageOptions,
-): Promise<WireQueuedItem> {
+): Promise<RegisteredQueueItem> {
   return RegisterQueueItemRaw(
     threadId,
     message,
     new SendMessageOptionsClass(opts),
-  ) as unknown as Promise<WireQueuedItem>;
+  ) as unknown as Promise<RegisteredQueueItem>;
 }
 
 export function GetQueueState(threadId: string): Promise<WireQueuedItem[]> {

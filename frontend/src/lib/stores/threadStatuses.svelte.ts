@@ -4,11 +4,18 @@ import type { ApprovalKind } from '../types/events';
 import type { Thread } from '../types/models';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import type { SendsPendingAnswer } from '../../../bindings/agent-overflow/internal/app/models';
 import {
   clearForThread as clearSendQueueForThread,
   hasQueueItems,
+  isRegisteringQueueItem,
+  onRegistrationSendsPending,
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
+import { getTransportHelloFor } from './transportStatus.svelte';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { onBackendDetached } from '../transport/backends';
+import { currentThreadEvent, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
 import {
   clearFastModeStateForThread,
   resetForTest as resetFastModeStateForTest,
@@ -87,7 +94,11 @@ export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null
 //   3. Send queue bridge: queued or flushed messages that have not yet
 //      produced the provider-visible user-message echo. This keeps the
 //      indicator hot between queue registration, provider write, and
-//      round-start confirmation.
+//      round-start confirmation. The status read here takes it from the
+//      backend's `provider:sends_pending` answer, which reaches every
+//      client; a pane's send-queue mirror (`isThreadWorking`) only
+//      empties when the echo row arrives, which a client with no pane on
+//      the thread never receives.
 //
 // Durable timeline item rows are deliberately not part of this
 // calculation. A stale foreground tool_call with status=running is
@@ -128,6 +139,17 @@ export type ThreadLiveStatus =
 const statuses = createKeyedSignalRegistry<ThreadLiveStatus>('idle');
 const liveStateHydratingThreads = createKeyedSignalRegistry<boolean>(false);
 const pendingSendThreads = createKeyedSignalRegistry<boolean>(false);
+// The backend's `provider:sends_pending` answer; only pending threads hold
+// a box. Each snapshot read in flight collects the threads whose answer
+// changed during it, so the snapshot yields to them.
+const sendsPendingThreads = createKeyedSignalRegistry<boolean>(false);
+const sendsPendingReads = new Set<Set<string>>();
+// Per computer, the launch and the newest provider:sends_pending sequence
+// this client has received or been told it lost. Per thread, the sequence
+// of a RegisterQueueItem answer applied ahead of that stream, until the
+// stream reaches it: a frame at or below it is older than the answer.
+const sendsPendingStreams = new Map<BackendKey, { launchId: string; sequence: number }>();
+const sendsPendingAhead = new Map<string, { backend: BackendKey; sequence: number }>();
 const interactiveRevisions = new Map<string, number>();
 let interactiveRevision = 0;
 export function interactiveRequestsRevision(threadId: string): number {
@@ -195,7 +217,7 @@ function recalculateThreadStatus(threadId: string): void {
     setThreadStatus(threadId, 'awaiting-input');
     return;
   }
-  if (isThreadWorking(threadId)) {
+  if (showsThreadRunning(threadId)) {
     setThreadStatus(threadId, 'idle');
     return;
   }
@@ -224,7 +246,7 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
   if ((awaitingInputIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'awaiting-input') {
     return 'awaiting-input';
   }
-  if (isThreadWorking(threadId)) return 'running';
+  if (showsThreadRunning(threadId)) return 'running';
   if (errorThreads.has(threadId) || stored === 'error') return 'error';
   if (interruptedThreads.has(threadId) || stored === 'interrupted') return 'interrupted';
   return 'idle';
@@ -302,6 +324,8 @@ export function clearThreadStatus(threadId: string): void {
   refusableStops.delete(threadId);
   retireUndoableSend(threadId);
   pendingSendThreads.drop(threadId);
+  sendsPendingThreads.drop(threadId);
+  sendsPendingAhead.delete(threadId);
   for (const requestIdSet of [
     approvalIDsByThread.get(threadId),
     awaitingInputIDsByThread.get(threadId),
@@ -386,6 +410,135 @@ export function isThreadWorking(threadId: string | null | undefined): boolean {
     || pendingSendThreads.get(threadId)
     || hasQueueItems(threadId);
 }
+
+/**
+ * The running half of the status every thread surface shows (sidebar row,
+ * pane header, picker). It is `isThreadWorking` with the send-queue bridge
+ * read from the backend, for a backend that publishes it: what a client
+ * learns from the queue frames alone goes stale on a thread it does not
+ * watch. This client's own queue RPC counts as running until it answers,
+ * the same optimistic hold `pendingSendThreads` is for a send, and its
+ * answer carries the backend's.
+ */
+function showsThreadRunning(threadId: string): boolean {
+  if (isThreadInterruptRestored(threadId)) return false;
+  if (activeTurns.get(threadId) !== null || pendingSendThreads.get(threadId)) return true;
+  const hello = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND);
+  if (!hello?.capabilities.includes('sends-pending.v1')) return hasQueueItems(threadId);
+  return sendsPendingThreads.get(threadId) || isRegisteringQueueItem(threadId);
+}
+
+function setSendsPending(threadId: string, pending: boolean): void {
+  if (pending) sendsPendingThreads.set(threadId, true);
+  else sendsPendingThreads.drop(threadId);
+  recalculateThreadStatus(threadId);
+}
+
+/** Record a change of answer that outranks every snapshot read in flight. */
+function settleSendsPending(threadId: string, pending: boolean): void {
+  for (const changed of sendsPendingReads) changed.add(threadId);
+  setSendsPending(threadId, pending);
+}
+
+// The stream of `backend`'s current launch. A new launch numbers its frames
+// from the start, and answers ahead of the old one died with it.
+function sendsPendingStream(backend: BackendKey): { launchId: string; sequence: number } {
+  const launchId = getTransportHelloFor(backend)?.launchId ?? '';
+  const stream = sendsPendingStreams.get(backend);
+  if (stream?.launchId === launchId) return stream;
+  forgetSendsPendingAhead(backend, Infinity);
+  const fresh = { launchId, sequence: 0 };
+  sendsPendingStreams.set(backend, fresh);
+  return fresh;
+}
+
+function forgetSendsPendingAhead(backend: BackendKey, through: number): void {
+  for (const [threadId, ahead] of sendsPendingAhead) {
+    if (ahead.backend === backend && ahead.sequence <= through) sendsPendingAhead.delete(threadId);
+  }
+}
+
+/**
+ * A `provider:sends_pending` delivery from `backend`: a frame, or a gap
+ * marker (no payload) whose sequence covers the frames it lost. Frames
+ * arrive in sequence order, but RegisterQueueItem's reply can overtake
+ * them, so a frame at or below the answer it applied is older and
+ * dropped. An unsequenced delivery cannot be ordered and applies as is.
+ * The transport hands this channel's frames over whatever thread they name
+ * (transport/runtime.ts), so the sequence of a frame for a thread that moved
+ * away still counts here before the frame itself is dropped.
+ */
+export function applySendsPendingFrame(
+  frame: { threadId: string; pending: boolean } | null | undefined,
+  backend: BackendKey,
+  sequence: number | undefined,
+): void {
+  if (sequence !== undefined) {
+    const stream = sendsPendingStream(backend);
+    const ahead = frame?.threadId ? sendsPendingAhead.get(frame.threadId) : undefined;
+    if (sequence > stream.sequence) {
+      stream.sequence = sequence;
+      forgetSendsPendingAhead(backend, sequence);
+    }
+    if (ahead?.backend === backend && sequence <= ahead.sequence) return;
+  }
+  if (!frame?.threadId || !currentThreadEvent(frame.threadId, backend)) return;
+  settleSendsPending(frame.threadId, frame.pending);
+}
+
+// RegisterQueueItem's answer, as of its sequence on `backend`'s stream. A
+// stream already past it delivered everything the answer knows, including
+// any loss the snapshot read it set off repairs, and so did a concurrent
+// call's answer applied at a later sequence. A thread that moved while the
+// call was out belongs to its new computer's answers.
+onRegistrationSendsPending((threadId, answer: SendsPendingAnswer, backend) => {
+  if (!currentThreadEvent(threadId, backend)) return;
+  if (answer.sequence <= sendsPendingStream(backend).sequence) return;
+  const ahead = sendsPendingAhead.get(threadId);
+  if (ahead?.backend === backend && answer.sequence <= ahead.sequence) return;
+  sendsPendingAhead.set(threadId, { backend, sequence: answer.sequence });
+  settleSendsPending(threadId, answer.pending);
+});
+
+onBackendDetached(({ backendId }) => {
+  sendsPendingStreams.delete(backendId);
+  forgetSendsPendingAhead(backendId, Infinity);
+});
+
+/** How many computers' streams and threads' answers the ordering retains. */
+export function __sendsPendingOrderForTest(): { streams: number; ahead: number } {
+  return { streams: sendsPendingStreams.size, ahead: sendsPendingAhead.size };
+}
+
+/**
+ * Open a snapshot read: the returned set collects every thread whose answer
+ * changes before `endSendsPendingRead`, which the snapshot must not
+ * overwrite.
+ */
+export function beginSendsPendingRead(): ReadonlySet<string> {
+  const changed = new Set<string>();
+  sendsPendingReads.add(changed);
+  return changed;
+}
+
+export function endSendsPendingRead(read: ReadonlySet<string>): void {
+  sendsPendingReads.delete(read as Set<string>);
+}
+
+/** Apply a snapshot's answer unless the thread's answer changed during the read. */
+export function hydrateSendsPending(threadId: string, pending: boolean, read: ReadonlySet<string>): void {
+  if (!threadId || read.has(threadId)) return;
+  setSendsPending(threadId, pending);
+}
+
+// A moved thread's answer belongs to its former computer. Moves happen when
+// nothing is pending; the new owner pushes any later change, numbered in its
+// own epoch. An epoch noted for the same computer is not a move.
+onThreadOwnershipChanged((threadId, previousBackend) => {
+  if (threadBackend(threadId) === previousBackend) return;
+  sendsPendingAhead.delete(threadId);
+  settleSendsPending(threadId, false);
+});
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
   return !isThreadInterruptRestored(threadId) && (paneSendInFlight || hasPendingSend(threadId));
@@ -619,6 +772,10 @@ export function projectThreadReverted(threadId: string): void {
   if (active) markCompletedTurnID(threadId, active.turnId);
   activeTurns.set(threadId, null);
   pendingSendThreads.set(threadId, false);
+  // The revert discarded the queue with the send; settled like a push so a
+  // snapshot read from before it cannot put the old answer back.
+  for (const changed of sendsPendingReads) changed.add(threadId);
+  sendsPendingThreads.drop(threadId);
   interruptedThreads.delete(threadId);
   errorThreads.delete(threadId);
   for (const requestIdSet of [
@@ -819,6 +976,10 @@ export function resetForTest(): void {
   completedTurnIDsByThread.clear();
   refusableStops.clear();
   pendingSendThreads.reset();
+  sendsPendingThreads.reset();
+  sendsPendingStreams.clear();
+  sendsPendingAhead.clear();
+  sendsPendingReads.clear();
   approvalIDsByThread.clear();
   interactiveRevisions.clear();
   awaitingInputIDsByThread.clear();

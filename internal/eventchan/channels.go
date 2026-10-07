@@ -153,6 +153,7 @@ const (
 	ProviderQueueFlushed           Channel = "provider:queue_flushed"
 	ProviderQueueRestored          Channel = "provider:queue_restored"
 	ProviderQueueStateChanged      Channel = "provider:queue_state_changed"
+	ProviderSendsPending           Channel = "provider:sends_pending"
 	ProviderSessionAccount         Channel = "provider:session_account"
 	ProviderSessionDied            Channel = "provider:session_died"
 	ProviderStatus                 Channel = "provider:status"

@@ -225,6 +225,7 @@ func (r *Router) RegisterQueueItem(threadID string, item QueuedFlushItem) int64 
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.queuedFlushItems = append(st.queuedFlushItems, item)
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 	return item.EnqueuedAt
 }
@@ -263,6 +264,7 @@ func (r *Router) RemoveQueuedFlushItem(threadID, id string) (QueuedFlushItem, bo
 			continue
 		}
 		st.queuedFlushItems = append(st.queuedFlushItems[:index:index], st.queuedFlushItems[index+1:]...)
+		r.noteSendsPendingLocked(threadID)
 		return item, true
 	}
 	return QueuedFlushItem{}, false
@@ -487,6 +489,7 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	// QueuedFlushItemCount lies to the revert predicate. identitiesMu is a
 	// leaf lock, so minting/reading the identity under r.mu is safe.
 	r.identity(threadID).claimedFlushItems = append(r.identity(threadID).claimedFlushItems, batch...)
+	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
 
 	defer r.ReleaseFlushClaim(threadID, batch)
@@ -502,6 +505,7 @@ func (r *Router) ReleaseFlushClaim(threadID string, items []QueuedFlushItem) {
 	defer r.mu.Unlock()
 	if id := r.identityIfPresent(threadID); id != nil {
 		id.claimedFlushItems = releaseClaimedFlushItems(id.claimedFlushItems, items)
+		r.noteSendsPendingLocked(threadID)
 	}
 }
 
@@ -599,6 +603,7 @@ func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 func (r *Router) clearFlushQueueLocked(threadID string) {
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		st.queuedFlushItems = nil
+		r.noteSendsPendingLocked(threadID)
 	}
 }
 
@@ -643,6 +648,7 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		})
 	}
 	drainState.queuedFlushItems = nil
+	r.noteSendsPendingLocked(threadID)
 
 	// The registry owns which entries a death drain takes, and which of
 	// those the provider provably consumed: an echoConsumed entry is NOT

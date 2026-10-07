@@ -19,6 +19,7 @@
     hasMultipleBackends,
     threadMachine,
     threadMachineUnreachable,
+    unreachableThreadMachineName,
   } from '../../stores/attachedBackends.svelte';
   import { backendHasBrowser } from '../../utils/browserTools';
   import { hasScope } from '../../transport/scopes';
@@ -67,6 +68,7 @@
   } from '../../stores/worktreeRemoval.svelte';
   import {
     hasUnread,
+    lastKnownThreadStatusPill,
     resolveThreadStatusPill,
     type ThreadStatusPill,
   } from '../../utils/threadStatusPill';
@@ -159,7 +161,7 @@
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
-  let pill = $derived(displayStatus !== undefined ? displayStatus : resolveThreadStatusPill(thread, effectiveStatus));
+  let ownPill = $derived(resolveThreadStatusPill(thread, effectiveStatus));
   let unread = $derived(hasUnread(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {
@@ -398,6 +400,15 @@
     const entry = attachedBackendEntry(key);
     return entry ? backendDisplayName(entry) : '';
   });
+  // A status from an unreachable computer is its last report: shown, but
+  // still, and labelled as such. A tree's display status (possibly a
+  // child's) already carries its own source's attribution.
+  let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
+  let pill = $derived(
+    displayStatus !== undefined
+      ? displayStatus
+      : unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
+  );
   // An agent on a machine with no browser tools cannot open a page at all.
   // Said on the chip that already names the machine rather than on a row of
   // its own: it is a property of that machine, and the chip is where the

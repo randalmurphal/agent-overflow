@@ -7,11 +7,12 @@
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
+  import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
-  import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
+  import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
   import { isHiddenThreadMode } from '../../utils/threadModes';
 
@@ -177,7 +178,9 @@
         <ul class="py-1 -mx-1" data-testid="thread-picker-results">
           {#each hits as hit, i (hit.thread.id)}
             {@const status = getEffectiveThreadStatus(hit.thread)}
-            {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
+            {@const unreachableMachine = unreachableThreadMachineName(hit.thread.id, hit.thread.projectId)}
+            {@const resolvedPill = resolveThreadStatusPill(hit.thread, status)}
+            {@const statusPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill}
             {@const basename = pathBasename(hit.thread.projectPath)}
             {@const providerDefinition = getProviderDefinition(hit.thread.provider)}
             <li>

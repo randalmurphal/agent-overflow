@@ -247,6 +247,26 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[0].ownLiveStatus).toBe('idle');
   });
 
+  it("shows an unreachable computer's status still, in its row and where it bubbles to", () => {
+    const parent = mkThread('parent', { updatedAt: 9000 });
+    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
+    const build = (unreachable: boolean) => buildSidebarThreadTree({
+      threads: [parent, child],
+      liveStatusOf: liveStatusMap({ child: 'running' }),
+      unreachableMachineOf: (thread) => (unreachable && thread.id === 'child' ? 'gpu-box' : null),
+    });
+    const live = build(false)[0];
+    expect(live.displayStatus).toMatchObject({ label: 'Working', pulse: true });
+    const lastKnown = build(true)[0];
+    const label = 'Last known: Working. gpu-box is unreachable';
+    expect(lastKnown.children[0].ownStatus).toMatchObject({ label, pulse: false, glowClass: undefined });
+    // The parent shows the child's status with the child's attribution.
+    expect(lastKnown.displayLiveStatus).toBe('running');
+    expect(lastKnown.displayStatus).toMatchObject({ label, pulse: false });
+    // The last-known status keeps its place in the order.
+    expect(lastKnown.sortGroup).toBe(live.sortGroup);
+  });
+
   it("does not bubble a child's lower-priority status when the parent has higher priority", () => {
     const parent = mkThread('parent', { updatedAt: 9000 });
     const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });

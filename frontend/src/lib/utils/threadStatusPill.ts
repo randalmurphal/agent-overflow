@@ -192,3 +192,21 @@ export function resolveThreadStatusPill(
   }
   return null;
 }
+
+/**
+ * The pill for a status last reported by a computer this client cannot
+ * reach right now: the same status and colour, without the motion that
+ * says it is live, labelled with the computer it came from. The status is
+ * corrected when the computer reconnects. Built where the status is read,
+ * so it keeps its attribution wherever it is shown (a parent row, a
+ * project rollup).
+ */
+export function lastKnownThreadStatusPill(pill: ThreadStatusPill | null, machineName: string): ThreadStatusPill | null {
+  if (!pill) return pill;
+  return {
+    ...pill,
+    pulse: false,
+    glowClass: undefined,
+    label: `Last known: ${pill.label}. ${machineName || 'Its computer'} is unreachable`,
+  };
+}

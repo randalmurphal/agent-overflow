@@ -208,6 +208,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// the rest of teardown.
 	record("drain triage", a.drainTriage(ctx, reactorDrainTimeout))
 	record("drain flush dispatch", a.drainFlushDispatch(ctx, reactorDrainTimeout))
+	// Fed by triage and the flush dispatcher, both drained above.
+	a.stopSendsPending()
 	// Notification jobs read the thread title out of SQLite, so they drain
 	// with the other reactors rather than after the database closes.
 	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))

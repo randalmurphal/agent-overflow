@@ -33,6 +33,7 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
 import {
   resolveEffectiveThreadStatus,
+  lastKnownThreadStatusPill,
   resolveThreadStatusPill,
   type ThreadStatusPill,
 } from './threadStatusPill';
@@ -149,6 +150,12 @@ export interface BuildSidebarThreadTreeInput {
    * Defaults to the row's own updatedAt.
    */
   activityOf?: (thread: Thread) => number;
+  /**
+   * The name of the thread's computer while it is unreachable, else null.
+   * Its status is the last one reported and is shown still and attributed
+   * (lastKnownThreadStatusPill), in its own row and wherever it bubbles to.
+   */
+  unreachableMachineOf?: (thread: Thread) => string | null;
   maxDepth?: number;
 }
 
@@ -380,7 +387,9 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     const ownLiveStatus = input.statusOf
       ? input.statusOf(thread)
       : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
-    const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
+    const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus);
+    const unreachableMachine = input.unreachableMachineOf?.(thread) ?? null;
+    const ownPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill;
     const ownGroup = getStatusSortGroup(thread, ownLiveStatus, ownPill);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);
     const latestActivityAt = resolveLatestActivityAt(

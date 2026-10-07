@@ -36,6 +36,7 @@
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
+  import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { openThreadIds } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
@@ -96,6 +97,7 @@
       threads: threads.filter(thread => !thread.forkPreparing),
       groups,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
       activityOf: (thread) => getThreadLiveActivityAt(thread),
     }),
   );
