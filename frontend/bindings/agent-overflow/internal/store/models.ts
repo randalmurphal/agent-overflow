@@ -1232,8 +1232,7 @@ export class Project {
      * client owns that, because it is the side doing the matching.
      * 
      * Empty is a first-class value, never an error: a non-git directory, a
-     * repository with no origin, an unborn HEAD, and every row written
-     * before migration v83 all read as "not known".
+     * repository with no origin, and an unborn HEAD read as "not known".
      */
     "remoteURL"?: string;
     "rootCommit"?: string;
