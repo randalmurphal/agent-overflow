@@ -111,6 +111,9 @@ func (l *backgroundLoop) halt() {
 // A run that leaves items unfinished raises a notice and the next launch
 // retries them; a quit stops the run at the next transaction and the next
 // launch resumes it. Idempotent. Shutdown joins it before the store closes.
+//
+// A run rewrites history across the whole database, so it waits for the
+// first client's catalog reads (awaitFirstReadsSettled).
 func (a *App) startDeferredMigrations() {
 	if a.store == nil {
 		return
@@ -138,6 +141,9 @@ func (a *App) startDeferredMigrations() {
 	go func() {
 		defer a.deferredMigrations.done()
 		defer cancel()
+		if err := a.awaitFirstReadsSettled(ctx); err != nil {
+			return
+		}
 		prior, err := a.store.DeferredMigrationFailure()
 		if err != nil {
 			log.Printf("app: deferred migrations: %v", err)

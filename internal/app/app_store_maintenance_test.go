@@ -232,6 +232,7 @@ func TestDeferredConversionWaitsForActivation(t *testing.T) {
 	app.maintenance.quietWindow = 10 * time.Millisecond
 	app.activation.Park()
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	time.Sleep(300 * time.Millisecond)
 	if mode := storeAutoVacuum(t, app); mode != store.AutoVacuumNone {
@@ -262,6 +263,7 @@ func TestDeferredConversionWaitStopsOnQuit(t *testing.T) {
 	app.maintenance.convertPoll = time.Millisecond
 	app.maintenance.quietWindow = time.Hour
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	time.Sleep(100 * time.Millisecond)
 	stopped := time.Now()
@@ -287,6 +289,7 @@ func TestDeferredMigrationsStartStopRoundTrip(t *testing.T) {
 	app.maintenance.convertPoll = time.Millisecond
 	app.maintenance.quietWindow = time.Hour
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	// Idempotent: a second start must not fan out a goroutine.
 	app.startDeferredMigrations()

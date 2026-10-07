@@ -129,9 +129,10 @@ A one-time data fix is a migration ([decisions](../decisions.md#background-maint
 When its work is too long to run while the store opens, the migration carries
 a `Deferred` phase (`migrate_deferred.go`), an ordered list of named steps.
 The chain applies the migration's SQL and records its version as usual. The
-app starts `RunDeferredMigrations` at boot, outside the activation gate, and
-joins it at shutdown; the phase runs as paced transactions inside the
-background-maintenance budget. A step that replaces the database file waits
+app starts `RunDeferredMigrations` at boot, outside the activation gate, once
+the first client's catalog reads have answered or their fallback has passed
+(`awaitFirstReadsSettled`), and joins it at shutdown; the phase runs as paced
+transactions inside the background-maintenance budget. A step that replaces the database file waits
 for the app's `DeferredHost.AwaitFileSwap`, which holds it behind the
 activation gate. A step that applies a rule the store does not own takes it
 from the host too: v124's settle of ended agents' rows uses

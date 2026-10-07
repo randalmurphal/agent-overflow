@@ -61,6 +61,12 @@ func waitFor(t *testing.T, what string, done func() bool) {
 	}
 }
 
+// releaseFirstReads answers both catalog reads the way a client's first
+// page load does, so gated post-boot work starts at once.
+func releaseFirstReads(app *App) {
+	answerRead(&app.firstReads, firstReadsAll, nil)
+}
+
 func sealedRowFolded(t *testing.T, app *App, threadID string) bool {
 	t.Helper()
 	item, found, err := app.store.GetThreadItem(threadID, "i1")
@@ -79,6 +85,7 @@ func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
 		t.Fatal("the seeded row is not sealed")
 	}
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	waitFor(t, "the deferred migrations", func() bool { return !deferredMigrationsPending(t, app) })
 	app.stopDeferredMigrations()
@@ -95,6 +102,57 @@ func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
 	}
 }
 
+// A run waits for the first client's catalog reads, and begins once both
+// have answered.
+func TestDeferredMigrationsWaitForTheFirstCatalogReads(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	app.maintenance.chunkPause = time.Millisecond
+	app.maintenance.firstReadsFallback = time.Hour
+	seedPendingHistoryRepair(t, app, dbPath, "sealed")
+	t.Cleanup(app.stopDeferredMigrations)
+
+	app.startDeferredMigrations()
+	if _, err := app.ListThreads(); err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	// Only the thread catalog has answered: the run must not touch history.
+	for until := time.Now().Add(300 * time.Millisecond); time.Now().Before(until); {
+		if sealedRowFolded(t, app, "sealed") {
+			t.Fatal("the deferred migration ran before the project catalog answered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := app.ListProjects(); err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	waitFor(t, "the deferred migrations", func() bool { return !deferredMigrationsPending(t, app) })
+}
+
+// A quit while the run still waits for its first reads returns promptly and
+// leaves the phase for the next launch.
+func TestDeferredMigrationsWaitEndsOnQuit(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	app.maintenance.firstReadsFallback = time.Hour
+	seedPendingHistoryRepair(t, app, dbPath, "sealed")
+
+	app.startDeferredMigrations()
+	stopped := make(chan struct{})
+	go func() {
+		app.stopDeferredMigrations()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop did not return while the run waited for its first reads")
+	}
+	if !deferredMigrationsPending(t, app) || sealedRowFolded(t, app, "sealed") {
+		t.Fatal("a run stopped while waiting touched history")
+	}
+}
+
 // A stop in the middle of the run returns within the pause, leaves the
 // phase pending, and a later start finishes it.
 func TestDeferredMigrationsStopWithoutRecording(t *testing.T) {
@@ -103,6 +161,7 @@ func TestDeferredMigrationsStopWithoutRecording(t *testing.T) {
 	app.maintenance.chunkPause = time.Hour
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	waitFor(t, "the first transaction", func() bool { return sealedRowFolded(t, app, "sealed") })
 	stopped := time.Now()
@@ -173,6 +232,7 @@ func TestDeferredMigrationFailureNoticesAndTheNextStartRetries(t *testing.T) {
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
 	execOnFile(t, dbPath, `CREATE TRIGGER fail_fold BEFORE INSERT ON items WHEN NEW.thread_id = 'sealed' BEGIN SELECT RAISE(ABORT, 'injected fault'); END`)
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	sends := waitForSends(t, recorder, 1)
 	app.stopDeferredMigrations()
@@ -227,6 +287,7 @@ func TestDeferredMigrationsCleanRunIsSilent(t *testing.T) {
 	app.maintenance.chunkPause = time.Millisecond
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
 
+	releaseFirstReads(app)
 	app.startDeferredMigrations()
 	waitFor(t, "the deferred migrations", func() bool { return !deferredMigrationsPending(t, app) })
 	app.stopDeferredMigrations()
