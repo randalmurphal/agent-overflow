@@ -109,6 +109,16 @@ Provider-side rollback differs by provider:
   transcript that ends before the anchor's turn, which is a session that
   died before persisting the prompt and is cloned whole.
 
+  A lazy fork that has not started a session of its own
+  (`pending_fork_session_ref` set, `session_ref` empty) resumes its
+  source at the pinned cut, which holds none of the messages the fork
+  sent. Rolling back to such a message, or forking from it, keeps that
+  pending resume state and slices nothing, even when the CLI wrote the
+  message to a forked session whose `system/init` arrived after the stop.
+  A message the fork inherited still slices the source. The rollback
+  reads the thread's resume state after the session stops, because that
+  `init` can commit the fork's own `session_ref` during the stop.
+
   Every queued batch is one row with one uuid, so it slices exactly: a
   batch AO dispatched as one joined message is joined at dispatch
   (`app_flush_dispatch_join.go`), and one the CLI merged across separate

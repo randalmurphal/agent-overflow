@@ -1,5 +1,6 @@
 import { isThreadWorking, projectSendStarted } from './threadStatuses.svelte';
 import { beginUndoableSend, retireUndoableSend } from './composerSendUndo';
+import { createComposerDraftStore } from './composerDraft.svelte';
 // Tests for the Stop-button revert-on-interrupt flow. The predicate
 // is pure (in-memory state only); the helper drives the bindings
 // mock to assert dispatch + rollback behavior.
@@ -587,6 +588,32 @@ describe('runInterruptOrRevert', () => {
 
     expect(draft.applied?.content).toBe('hello');
     expect(draft.cleared).toEqual(draft.applied);
+  });
+
+  it('empties the real composer when the backend rejects the un-send of an accepted send', async () => {
+    setBindingMock('GetDraft', async (id: string) => ({ threadId: id, content: '', attachmentIds: [], terminalChips: [], updatedAt: 1 }));
+    setBindingMock('SaveDraft', async () => {});
+    setBindingMock('ClearDraft', async () => {});
+    setBindingMock('ListAttachments', async () => []);
+    const draft = createComposerDraftStore({ debounceMs: 0 });
+    await draft.setThread('thread-1');
+    const pane = readyPane();
+    pane.upsertItem({ ...userItem('u:0', 0), meta: JSON.stringify({ sendId: 'send' }) });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const snapshot = { content: 'hello', attachments: [], terminalChips: [], sourceProposedPlan: null };
+    const pending = beginUndoableSend('thread-1', 'send', snapshot);
+    pending.finish('accepted');
+    setBindingMock('InterruptAndRevertIfClean', async () => {
+      throw new Error('interrupt-and-revert: claude rollback: refusing a slice');
+    });
+
+    runInterruptOrRevert(pane, draft);
+    expect(draft.content).toBe('hello');
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(draft.content).toBe('');
+    retireUndoableSend('thread-1');
   });
 
   it('keeps Send closed when a successful response cannot identify its committed cut', async () => {

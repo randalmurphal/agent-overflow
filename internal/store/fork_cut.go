@@ -33,6 +33,23 @@ func resolveForkCutTx(tx *sql.Tx, sourceID string, cut ForkCut) (forkCut, error)
 	}
 }
 
+// ForkCutPosition returns the first timeline position threadID does not
+// inherit: rows below it are read from its fork source, rows at or past it
+// are the thread's own. found is false when the thread inherits nothing.
+func (s *Store) ForkCutPosition(threadID string) (turnIndex, itemIndex int, found bool, err error) {
+	err = s.reader().QueryRow(
+		`SELECT cut_turn_index, cut_item_index FROM thread_fork_lineage WHERE thread_id = ? AND depth = 1`,
+		threadID,
+	).Scan(&turnIndex, &itemIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("store: read fork cut of %s: %w", threadID, err)
+	}
+	return turnIndex, itemIndex, true, nil
+}
+
 // timelineRow is one row's identity and position.
 type timelineRow struct {
 	id         string

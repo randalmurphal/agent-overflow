@@ -2312,6 +2312,36 @@ describe('<Composer>', () => {
     expect(interrupt).toHaveBeenCalledWith('thread-1', []);
   });
 
+  it('leaves an accepted send in the timeline and the composer empty when its un-send fails', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    setBindingMock('SaveDraft', async () => {});
+    setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const revert = deferred<never>();
+    setBindingMock('InterruptAndRevertIfClean', async () => revert.promise);
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'a side question' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(pane.items.some((item) => item.kind === 'user_text')).toBe(true));
+    const sent = pane.items.find((item) => item.kind === 'user_text')!;
+    pane.setActiveTurn({ turnId: 't1', turnIndex: sent.turnIndex, startedAt: 0 });
+
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    // The un-send paints the message back into the composer while it runs.
+    await waitFor(() => expect(textarea.value).toBe('a side question'));
+    revert.reject(new Error('interrupt-and-revert: claude rollback: refusing a slice'));
+
+    await waitFor(() => expect(pane.generalError ?? '').not.toBe(''));
+    await waitFor(() => {
+      expect(pane.items.some((item) => item.kind === 'user_text')).toBe(true);
+      expect(draft.content).toBe('');
+      expect(textarea.value).toBe('');
+    });
+  });
+
   it('keeps Send disabled with hover guidance until the revert cut is applied', async () => {
     const pane = await buildPane(makeTestThread(), [makeItem({
       id: 'user:0',

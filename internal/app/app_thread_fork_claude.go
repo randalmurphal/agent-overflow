@@ -219,6 +219,15 @@ func (a *App) scanClaudeSessionLeaf(op string, cut claudeMidTurnCut) (string, er
 }
 
 func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
+	// The source's pending resume state already ends before a message the
+	// unstarted fork sent itself, so the new fork takes that state as is.
+	ownMessage, err := a.unstartedForkOwnsMessage(source, anchorItem)
+	if err != nil {
+		return forkResumeState{}, fmt.Errorf("fork thread from message: %w", err)
+	}
+	if ownMessage {
+		return forkResumeState{PendingForkRef: source.PendingForkRef, PinnedResumeAt: source.PendingForkResumeAt}, nil
+	}
 	midTurn, err := claudeMidTurnAnchor(anchorItem)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread from message: %w", err)

@@ -15,7 +15,24 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
+// rollbackClaudeThreadToMessage runs after the thread's session stopped. The
+// caller read thread before that stop, and the stopped process's last frames
+// can still commit a lazy fork's own session ref, so the resume state is
+// re-read here: the cut must act on the session the next start resumes.
 func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {
+	thread, err := a.store.GetThread(thread.ID)
+	if err != nil {
+		return fmt.Errorf("claude rollback: reload thread: %w", err)
+	}
+	ownMessage, err := a.unstartedForkOwnsMessage(thread, userItem)
+	if err != nil {
+		return fmt.Errorf("claude rollback: %w", err)
+	}
+	if ownMessage {
+		// The fork's pending resume state already ends before this message,
+		// so it is the rolled-back provider history as it stands.
+		return nil
+	}
 	midTurn, err := claudeMidTurnAnchor(userItem)
 	if err != nil {
 		return fmt.Errorf("claude rollback: %w", err)
@@ -98,6 +115,23 @@ func claudeMidTurnAnchor(userItem store.Item) (bool, error) {
 		return false, fmt.Errorf("decode promotion state for %s/%s: %w", userItem.ThreadID, userItem.ID, err)
 	}
 	return userItem.ItemIndex > 0 || state.Promoted, nil
+}
+
+// unstartedForkOwnsMessage reports whether thread is a lazy Claude fork
+// that has not started a session of its own and userItem is a message the
+// fork itself sent. The fork's first start forks its source at the pinned
+// cut, so that history holds nothing past the fork's timeline cut: a
+// message the fork sent is in no session the thread will resume, even when
+// the CLI wrote it to a forked session the stopped process never reported.
+func (a *App) unstartedForkOwnsMessage(thread store.Thread, userItem store.Item) (bool, error) {
+	if thread.SessionRef != "" || thread.PendingForkRef == "" {
+		return false, nil
+	}
+	cutTurn, cutItem, found, err := a.store.ForkCutPosition(thread.ID)
+	if err != nil || !found {
+		return false, err
+	}
+	return userItem.TurnIndex > cutTurn || (userItem.TurnIndex == cutTurn && userItem.ItemIndex >= cutItem), nil
 }
 
 // writeRolledBackClaudeSession is the rollback-path call into
