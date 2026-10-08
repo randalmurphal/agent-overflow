@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, expect, it } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
 import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
@@ -7,10 +7,10 @@ import { stageNoRemoteBuild } from '../../../test/helpers/buildVariant';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { noteProject, noteThread } from '../../transport/entityIndex';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { addProjectLocal, updateProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
-import { showAllSidebarDevices } from '../../stores/sidebarDevices.svelte';
+import { showAllSidebarDevices, setSidebarDeviceVisible } from '../../stores/sidebarDevices.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
@@ -74,4 +74,42 @@ for (const remote of [true, false]) it(`renders the Projects heading as ${remote
   const view = render(SidebarDeviceFilter);
   expect(view.queryByRole('button', { name: 'Filter projects by computer' }) !== null).toBe(remote);
   expect(view.getByText('Projects')).toBeInTheDocument();
+});
+
+for (const compact of [false, true]) it(`labels only visible projects across filter and archive transitions (${compact ? 'phone' : 'desktop'})`, async () => {
+  setCompactLayoutForTest(compact);
+  stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  const local = { id: 'local', name: 'app', path: '/Users/randy/repos/app', repositoryID: 'github:github.com:1', createdAt: 0, updatedAt: 0, sortPosition: 0, archived: false };
+  const cached = { ...local, id: 'cached', path: '/home/randy/repos/app', repositoryID: '', identityError: 'Repository identity has not been verified yet.' };
+  noteProject(local.id, ''); noteProject(cached.id, 'remote');
+  // The persisted filter is already active when an older offline catalog arrives.
+  setSidebarDeviceVisible('remote-id', false);
+  addProjectLocal(local); addProjectLocal(cached);
+  const view = render(ProjectsSection, { pane: null });
+  const labels = () => [...view.container.querySelectorAll('[data-testid="project-item-label"]')].map(el => el.textContent?.replace(/\s+/g, ''));
+  await waitFor(() => expect(labels()).toEqual(['app']));
+  await fireEvent.contextMenu(view.getByTestId('project-item'));
+  await fireEvent.click(view.getByRole('menuitem', { name: 'Archive Project' }));
+  expect(view.getByRole('dialog')).toHaveTextContent('Hide "app" from the sidebar.');
+  await fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+  for (let i = 0; i < 2; i++) {
+    showAllSidebarDevices(); await tick();
+    expect(labels().sort()).toEqual(['/Users/randy/repos/app', '/home/randy/repos/app'].sort());
+    setSidebarDeviceVisible('remote-id', false); await tick();
+    await waitFor(() => expect(labels()).toEqual(['app']));
+  }
+  showAllSidebarDevices();
+  updateProjectLocal({ ...cached, archived: true }); await tick();
+  await waitFor(() => expect(labels()).toEqual(['app']));
+  updateProjectLocal(cached); await tick();
+  expect(labels()).toHaveLength(2);
+  setThreadFilterQuery('local-only');
+  const kept = thread('local-only', local.id); noteThread(kept.id, ''); replaceAllThreads([kept]);
+  await tick(); await waitFor(() => expect(labels()).toEqual(['app']));
+  setThreadFilterQuery(''); await tick(); expect(labels()).toHaveLength(2);
+  // The returning peer verifies its ID: two entries become one without a reload.
+  updateProjectLocal({ ...cached, repositoryID: local.repositoryID, identityError: '' });
+  await tick(); await waitFor(() => expect(labels()).toEqual(['app']));
+  updateProjectLocal(cached);
+  await tick(); expect(labels()).toHaveLength(2);
 });

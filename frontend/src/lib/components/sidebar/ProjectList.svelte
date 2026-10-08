@@ -8,6 +8,7 @@
   import { NO_GROUPS } from '../../stores/threadGroups.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
+  import { disambiguatedProjectLabels } from '../../utils/pathDisplay';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
   interface Props {
@@ -37,6 +38,7 @@
   }: Props = $props();
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
+  let labels = $derived(disambiguatedProjectLabels(projects.map((p) => p.project)));
 </script>
 
 {#if projects.length === 0}
@@ -58,6 +60,7 @@
       <div animate:sidebarFlip in:sidebarEnter out:sidebarExit>
       <ProjectItem
         {project}
+        displayLabel={labels.get(project.project.id)}
         threads={threadsByProject.get(project.project.id) ?? []}
         groups={groupsByProject?.get(project.project.id) ?? NO_GROUPS}
         {pane}

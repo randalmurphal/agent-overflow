@@ -29,8 +29,20 @@ describe('disambiguatedProjectLabels', () => {
       { id: 'a', name: 'web', path: '/alpha/src/web' },
       { id: 'b', name: 'web', path: '/beta/src/web' },
     ]);
-    expect(labels.get('a')).toEqual({ prefix: 'alpha/src', name: 'web' });
-    expect(labels.get('b')).toEqual({ prefix: 'beta/src', name: 'web' });
+    expect(labels.get('a')).toEqual({ prefix: '/alpha/src', name: 'web' });
+    expect(labels.get('b')).toEqual({ prefix: '/beta/src', name: 'web' });
+  });
+
+  it.each([
+    ['/Users/randy/repos/app', '/home/randy/repos/app', '/Users/randy/repos/app', '/home/randy/repos/app'],
+    ['C:\\repos\\app', 'D:\\repos\\app', 'C:/repos/app', 'D:/repos/app'],
+    ['\\\\one\\share\\app', '\\\\two\\share\\app', '//one/share/app', '//two/share/app'],
+    ['/app', '/work/app', '/app', '/work/app'],
+    ['/work/app', 'work/app', '/work/app', 'work/app'],
+  ])('preserves roots when the complete path is needed: %s', (a, b, expectedA, expectedB) => {
+    const labels = disambiguatedProjectLabels([{ id: 'a', name: 'app', path: a }, { id: 'b', name: 'app', path: b }]);
+    expect(formatProjectLabel(labels.get('a')!)).toBe(expectedA);
+    expect(formatProjectLabel(labels.get('b')!)).toBe(expectedB);
   });
 
   it('keeps the real dir name in the prefix for a renamed project', () => {
@@ -40,7 +52,7 @@ describe('disambiguatedProjectLabels', () => {
       { id: 'b', name: 'svc', path: '/work/svc' },
     ]);
     expect(labels.get('a')).toEqual({ prefix: 'backend', name: 'svc' });
-    expect(labels.get('b')).toEqual({ prefix: 'work', name: 'svc' });
+    expect(labels.get('b')).toEqual({ prefix: '/work', name: 'svc' });
   });
 
   it('handles Windows separators', () => {

@@ -61,9 +61,12 @@
     updateDropTarget,
   } from '../../stores/projectDnd.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { formatProjectLabel, type ProjectLabel } from '../../utils/pathDisplay';
 
   interface Props {
     project: ProjectWithCounts;
+    /** Disambiguation within the containing list's visible projects. */
+    displayLabel?: ProjectLabel;
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
@@ -88,6 +91,7 @@
 
   let {
     project,
+    displayLabel,
     threads,
     groups = [],
     pane,
@@ -257,10 +261,10 @@
   // icon). Click still toggles expand because click fires only when no
   // drag completed; HTML5 suppresses click after a successful drag.
   // Duplicate names are legal (paths are the unique key), so the label
-  // comes from the store's disambiguation map: unique names render bare,
-  // duplicates gain a dim parent-dir prefix.
+  // comes from the containing list, or the store for a standalone row:
+  // unique names render bare, duplicates gain a dim parent-dir prefix.
   let label = $derived(
-    getProjectLabel(project.project.id) ?? { prefix: '', name: project.project.name },
+    displayLabel ?? getProjectLabel(project.project.id) ?? { prefix: '', name: project.project.name },
   );
 
   // A checkout git could not read keeps its last identity and may not merge
@@ -425,7 +429,7 @@
           data-testid="project-item-label"
         >
           <span class="text-[0.6875rem] text-fg-subtle min-w-0 break-all leading-tight">
-            {label.prefix}/
+            {label.prefix}{label.prefix.endsWith('/') ? '' : '/'}
           </span>
           <span class="text-[0.78125rem] font-medium text-fg min-w-0 break-words leading-tight">
             {label.name}
@@ -505,6 +509,7 @@
 
 <ProjectContextMenu
   {project}
+  labelText={formatProjectLabel(label)}
   onNewThread={() => onNewThread?.(project.project.id, { openInNewPane: false })}
   onNewTerminal={() => onNewTerminal?.(project.project.id)}
   anchor={headerEl}

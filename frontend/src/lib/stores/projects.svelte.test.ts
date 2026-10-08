@@ -48,6 +48,19 @@ describe('projects store', () => {
     resetProjectsForTest();
   });
 
+  it('disambiguates active and archived project names independently', () => {
+    const active = makeProject('active', { name: 'app', path: '/Users/randy/repos/app' });
+    const archived = makeProject('archived', { name: 'app', path: '/home/randy/repos/app', archived: true });
+    addProjectLocal(active); addProjectLocal(archived);
+    expect(getProjectLabelText(active.id)).toBe('app');
+    expect(getProjectLabelText(archived.id)).toBe('app');
+    updateProjectLocal({ ...archived, archived: false });
+    expect(getProjectLabelText(active.id)).toBe('/Users/randy/repos/app');
+    expect(getProjectLabelText(archived.id)).toBe('/home/randy/repos/app');
+    updateProjectLocal(archived);
+    expect(getProjectLabelText(active.id)).toBe('app');
+  });
+
   describe('refreshProjects', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [wrap(makeProject('p1'), 3), wrap(makeProject('p2'), 0)];
@@ -238,8 +251,8 @@ describe('projects store — merged entries (wave 7d)', () => {
     expect(projectSpansBackends('p-home-2')).toBe(false);
     expect(projectRepoKey('p-home-2')).toBe('');
     // A duplicate name between two entries is labelled apart again.
-    expect(getProjectLabelText('p-home')).toBe('a/app');
-    expect(getProjectLabelText('p-home-2')).toBe('b/app');
+    expect(getProjectLabelText('p-home')).toBe('/a/app');
+    expect(getProjectLabelText('p-home-2')).toBe('/b/app');
   });
 
   it('lets a live member represent the entry when the home member is archived', async () => {

@@ -14,7 +14,7 @@
     ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
   import { openInEditor } from '../../stores/openInEditor';
-  import { getProjectLabelText, removeProjectLocal } from '../../stores/projects.svelte';
+  import { removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -33,6 +33,7 @@
 
   interface Props {
     project: ProjectWithCounts;
+    labelText: string;
     anchor: HTMLElement | undefined;
     open: boolean;
     onClose: (reason?: PopoverCloseReason) => void;
@@ -46,7 +47,7 @@
     onNewTerminal?: () => void;
   }
 
-  let { project, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
+  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
   // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
@@ -57,12 +58,6 @@
   let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
   // The one gated entry here opens an editor on the host desktop.
   let noHost = $derived(!hasScope('host', projectBackend(project.project.id) ?? HOME_BACKEND));
-
-  // Disambiguated label (parent-dir prefix when another project shares the
-  // name) so confirm/toast copy names the right copy. Falls back to the raw
-  // name once the row leaves the store (archive/delete remove it before the
-  // toast renders).
-  let labelText = $derived(getProjectLabelText(project.project.id) || project.project.name);
 
   let showArchiveConfirm = $state(false);
   let showDeleteConfirm = $state(false);

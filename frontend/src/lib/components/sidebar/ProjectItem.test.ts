@@ -112,6 +112,14 @@ describe('ProjectItem label', () => {
     const label = view.getByTestId('project-item-label');
     expect(label.textContent?.replace(/\s+/g, '')).toBe('web');
   });
+
+  it('renders a checkout at the filesystem root with a single leading slash', () => {
+    const root = makeProject('root', 'web', '/web');
+    addProjectLocal(root);
+    addProjectLocal(makeProject('nested', 'web', '/work/web'));
+    const { getByTestId } = renderItem(root);
+    expect(getByTestId('project-item-label').textContent?.replace(/\s+/g, '')).toBe('/web');
+  });
 });
 
 // The phone has no hover: the header's create controls cannot be revealed,

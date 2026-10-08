@@ -11,7 +11,8 @@
   // rendering an editor whose every save would fail.
 
   import { onMount } from 'svelte';
-  import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
+  import { getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
+  import { disambiguatedProjectLabels, formatProjectLabel } from '../../utils/pathDisplay';
 
   import SettingsField from './SettingsField.svelte';
   import WorktreeSetupEditor from './WorktreeSetupEditor.svelte';
@@ -20,6 +21,7 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { projectBackend } from '../../transport/entityIndex';
   let projects = $derived(getProjects().filter((row) => (projectBackend(row.project.id) ?? HOME_BACKEND) === backend));
+  let labels = $derived(disambiguatedProjectLabels(projects.map((row) => row.project)));
   let loaded = $derived(isLoaded());
   // The editable half is the worktree setup command, which runs in a PTY.
   let ungranted = $derived(!hasScope('terminal:operate'));
@@ -66,7 +68,7 @@
         onchange={(e) => (selectedId = (e.target as HTMLSelectElement).value)}
       >
         {#each projects as entry (entry.project.id)}
-          <option value={entry.project.id}>{getProjectLabelText(entry.project.id)}</option>
+          <option value={entry.project.id}>{formatProjectLabel(labels.get(entry.project.id)!)}</option>
         {/each}
       </select>
     </SettingsField>

@@ -197,16 +197,20 @@ export function projectSiblingOn(projectId: string, backend: BackendKey): Projec
   return undefined;
 }
 
-// Duplicate project names are legal (only paths are unique), so every
-// name-rendering surface reads its label here: unique names label as-is,
-// duplicates gain the minimal parent-dir prefix that tells them apart.
+// Labels for unfiltered project surfaces. Filtered lists derive their own
+// labels with disambiguatedProjectLabels so hidden rows cannot force prefixes.
+// Unique names label as-is; duplicates gain distinguishing parent dirs.
 // One shared $derived so the map is computed once per list change. Over
 // the ENTRIES, not the rows: two members of one repo share a name by
 // definition and are not a collision. A member that is not the
 // representative labels as its representative.
-const projectLabels = $derived(
-  disambiguatedProjectLabels(merged.entries.map((p) => p.project)),
-);
+const projectLabels = $derived.by(() => {
+  const active: Project[] = [];
+  const archived: Project[] = [];
+  for (const { project } of merged.entries) (project.archived ? archived : active).push(project);
+  // Active pickers and the archive list are separate surfaces.
+  return new Map([...disambiguatedProjectLabels(active), ...disambiguatedProjectLabels(archived)]);
+});
 
 /** Structured display label for a project (prefix + name). Undefined when
  *  the id isn't in the store. */

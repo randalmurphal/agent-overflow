@@ -88,6 +88,7 @@ function renderMenu() {
   return render(ProjectContextMenu, {
     props: {
       project: makeProject(),
+      labelText: 'Repo',
       anchor,
       open: true,
       onClose: () => {},
@@ -309,6 +310,7 @@ describe('<ProjectContextMenu> compact create items', () => {
     return render(ProjectContextMenu, {
       props: {
         project: makeProject(),
+        labelText: 'Repo',
         anchor: document.body,
         open: true,
         onClose: vi.fn(),
