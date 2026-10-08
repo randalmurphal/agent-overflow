@@ -8,7 +8,7 @@
     ScrollHost,
   } from '../../stores/threadPaneRoles';
   import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import {
     proposedPlanVersionForItem,
@@ -75,7 +75,7 @@
       if (expansion.hasMore) await expansion.showFull();
     } catch (err) {
       console.error('Failed to load proposed plan:', err);
-      addToast('error', 'Failed to load proposed plan');
+      addErrorToast('Failed to load proposed plan', err);
       return '';
     }
     if (expansion.error) {

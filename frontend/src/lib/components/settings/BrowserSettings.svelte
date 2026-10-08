@@ -2,7 +2,7 @@
   import { ClearBrowserSiteData } from '../../stores/bindings';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
   const { getSettings, updateSetting, call, hostTierWritable } = settingsComputer();
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -27,7 +27,7 @@
       addToast('success', 'Browser site data cleared');
     } catch (err) {
       console.error('Failed to clear browser site data:', err);
-      addToast('error', 'Failed to clear browser site data');
+      addErrorToast('Failed to clear browser site data', err);
     } finally {
       clearArmed = false;
       clearing = false;

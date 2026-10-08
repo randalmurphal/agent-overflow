@@ -30,7 +30,7 @@
   import { hasRepoIdentity } from '../../../utils/repoKey';
   import AddProjectModal from '../../sidebar/AddProjectModal.svelte';
   import type { Project } from '../../../types/models';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { canOfferConversationTransfer, openConversationTransfer, supportsConversationTransfer } from '../../../stores/conversationTransfers.svelte';
   import { hasScope } from '../../../transport/scopes';
@@ -114,7 +114,7 @@
       await switchToProject(project, key);
     } catch (err) {
       console.error('Failed to switch draft machine:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       switching = false;
       closeMenu();
@@ -136,7 +136,7 @@
     try {
       await switchToProject(project, key);
     } catch (err) {
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       switching = false;
     }

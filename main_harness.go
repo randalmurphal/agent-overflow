@@ -143,7 +143,7 @@ func runHarness(flags cliFlags) {
 	// aside for that single write.
 	bootstrapOut := os.Stdout
 	os.Stdout = os.Stderr
-	log.SetOutput(logging.WithHTTPDiagnostics(os.Stderr))
+	log.SetOutput(logging.Output(os.Stderr))
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()

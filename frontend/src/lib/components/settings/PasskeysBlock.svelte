@@ -25,7 +25,7 @@
     DeletePasskey,
     type PasskeySummary,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { answerChallenge, PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
@@ -49,7 +49,7 @@
     try {
       passkeys = await call(() => ListPasskeys());
     } catch (err) {
-      addToast('error', `Failed to load passkeys: ${errString(err)}`);
+      addErrorToast(`Failed to load passkeys: ${errString(err)}`, err);
     }
   }
 
@@ -83,7 +83,7 @@
       // Dismissing the prompt is not a failure and gets no error: nothing
       // went wrong, somebody changed their mind.
       if (!(err instanceof PasskeyAbandonedError)) {
-        addToast('error', `Failed to add a passkey: ${errString(err)}`);
+        addErrorToast(`Failed to add a passkey: ${errString(err)}`, err);
       }
     } finally {
       acting = false;
@@ -110,7 +110,7 @@
         // you cannot (internal/app/AGENTS.md).
         await call(() => DeletePasskey(passkey.id));
       } catch (err) {
-        addToast('error', `Failed to remove the passkey: ${errString(err)}`);
+        addErrorToast(`Failed to remove the passkey: ${errString(err)}`, err);
       } finally {
         acting = false;
         await load();

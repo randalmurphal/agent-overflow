@@ -16,7 +16,7 @@ import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
 import { noteThread } from '../../transport/entityIndex';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type { Thread } from '../../types/models';
 import type { UserMessageOriginThread } from '../../utils/userMessageMeta';
@@ -90,6 +90,6 @@ export async function openAgentThreadOrigin(
     }
     await openThreadInPane(thread);
   } catch (err) {
-    addToast('error', `Could not open ${origin.title || 'that thread'}: ${errString(err)}`);
+    addErrorToast(`Could not open ${origin.title || 'that thread'}: ${errString(err)}`, err);
   }
 }

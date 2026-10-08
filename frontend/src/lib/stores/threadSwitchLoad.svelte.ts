@@ -26,7 +26,7 @@ import {
   SyncThreadWindow,
   type SyncThreadWindowResult,
 } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import {
   createRefreshScheduler,
@@ -153,7 +153,7 @@ export interface ThreadSwitchLoadOptions {
   getContextWindow(): ContextWindow | null;
   setContextWindow(next: ContextWindow | null): void;
   /** The pane's ONE error-writing entry point (thread.svelte.ts `setPaneError`). */
-  setPaneError(message: string, kind?: PaneErrorKind): void;
+  setPaneError(message: string, kind?: PaneErrorKind, err?: unknown): void;
   /** Clear one error kind, or every kind when omitted. */
   clearPaneError(kind?: PaneErrorKind): void;
   setProviderBanner(status: ProviderStatusEvent | null | undefined): void;
@@ -820,7 +820,7 @@ export function createThreadSwitchLoad(
     if (!dropDraftPlaceholderTerminals(placeholderId)) return;
     void CloseThreadTerminals(placeholderId).catch((err) => {
       console.error('Failed to close placeholder terminals:', err);
-      addToast('error', `Could not close terminal: ${errString(err)}`);
+      addErrorToast(`Could not close terminal: ${errString(err)}`, err);
     });
   }
 
@@ -844,7 +844,7 @@ export function createThreadSwitchLoad(
       console.error('Failed to move placeholder terminals:', err);
       clearThreadTerminalState(placeholderId);
       options.setShowTerminal(false);
-      addToast('error', `Could not keep terminal open: ${errString(err)}`);
+      addErrorToast(`Could not keep terminal open: ${errString(err)}`, err);
     }
   }
 
@@ -1288,7 +1288,7 @@ export function createThreadSwitchLoad(
       failedHistoryLoad = { threadId, generation: gen, anchorItemId: sliceAnchorId };
       if (!isPassiveConnectionFailure(err)) console.error('Failed to sync thread window:', err);
       if (paintSource !== 'none' || options.getItems().length > 0) {
-        options.setPaneError(`Could not verify conversation history: ${errString(err)}`, 'history-load');
+        options.setPaneError(`Could not verify conversation history: ${errString(err)}`, 'history-load', err);
         return;
       }
       try {
@@ -1303,6 +1303,7 @@ export function createThreadSwitchLoad(
                     ? 'Thread history took too long to load.'
                     : `Failed to load thread items: ${errString(err)}`,
                   'history-load',
+                  err,
                 );
               },
             ]);
@@ -1326,7 +1327,7 @@ export function createThreadSwitchLoad(
           }
         } catch (warmupError) {
           console.error('Failed to prepare verified thread window:', warmupError);
-          options.setPaneError(`Could not prepare conversation history: ${errString(warmupError)}`, 'history-load');
+          options.setPaneError(`Could not prepare conversation history: ${errString(warmupError)}`, 'history-load', warmupError);
         } finally {
           historyWindowPending = false;
           liveTouchedDuringSync = null;
@@ -1443,7 +1444,7 @@ export function createThreadSwitchLoad(
         liveState.apply(() => refreshScheduler.request({ immediate: true }));
         if (gen === options.getSwitchGeneration() && liveState.error && !failedHistoryLoad
           && !isPassiveConnectionFailure(liveState.error)) {
-          options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
+          options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general', liveState.error);
         }
       } finally {
         // apply() consumes the token on every path it runs (its own
@@ -1726,7 +1727,7 @@ export function createThreadSwitchLoad(
       const liveState = await liveStatePromise;
       if (!readIsCurrent()) return stopped();
       if (liveState.error && !isPassiveConnectionFailure(liveState.error)) {
-        options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
+        options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general', liveState.error);
       }
       if (requireItems && liveState.error) return { superseded: false, error: liveState.error };
       const snapshot = itemsForThread(

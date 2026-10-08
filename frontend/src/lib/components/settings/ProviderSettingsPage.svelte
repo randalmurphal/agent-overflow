@@ -16,7 +16,7 @@
   import { GetProviderStatuses } from '../../stores/bindings';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
   const { getSettings, updateSetting, call, backend, hostTierWritable } = settingsComputer();
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import type { ProviderStatus } from '../../types/settings';
   import {
     dependentProviders,
@@ -92,12 +92,12 @@
         status = all.find((s) => s.provider === provider);
       } else {
         console.error('Failed to load provider statuses:', statusResult.reason);
-        addToast('error', 'Failed to load provider statuses.');
+        addErrorToast('Failed to load provider statuses.', statusResult.reason);
       }
 
       if (modelResult.status === 'rejected') {
         console.error(`Failed to load ${definition.label} models:`, modelResult.reason);
-        addToast('error', `Failed to load ${definition.label} models.`);
+        addErrorToast(`Failed to load ${definition.label} models.`, modelResult.reason);
       }
     })();
   });

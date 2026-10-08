@@ -387,7 +387,7 @@
           );
         } catch (err) {
           emptyDraftCleanupKey = null;
-          pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`);
+          pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`, err);
         }
       })();
     });
@@ -485,7 +485,7 @@
       return true;
     } catch (err) {
       console.error('Failed to prepare the thread workspace:', err);
-      if (isCurrent()) pane.setGeneralError(`Failed to prepare the workspace: ${errString(err)}`);
+      if (isCurrent()) pane.setGeneralError(`Failed to prepare the workspace: ${errString(err)}`, err);
       return false;
     } finally {
       if (isCurrent()) preparingWorktree = false;
@@ -656,7 +656,7 @@
         // admission too. Release typing admission once preparation succeeds.
         await registerQueueItem(midTurnThreadId, message, sendOptions, draftReady.then(release));
       } catch (err) {
-        pane.setGeneralError(`Failed to queue message: ${String(err)}`);
+        pane.setGeneralError(`Failed to queue message: ${String(err)}`, err);
         // Putting the message back is a second, independent operation: if
         // it fails too, the banner has to say so rather than let the queue
         // failure imply the text is safe in the composer.
@@ -666,6 +666,7 @@
           console.error('Failed to restore the draft after a failed queue:', restoreErr);
           pane.setGeneralError(
             `Failed to queue message, and the draft could not be restored: ${String(err)}`,
+            err,
           );
         }
         return;
@@ -725,7 +726,7 @@
         snapshot,
         restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
-        reportError: (msg) => sendPane.setGeneralError(msg),
+        reportError: (msg, err) => sendPane.setGeneralError(msg, err),
       });
       // `dispatchSend` awaits, and the user can switch this pane to
       // another thread while it does. The optimistic row belongs to
@@ -831,7 +832,7 @@
       ...getQueueForThread(pane.threadId).map((q) => q.message),
     ],
     paint: paintHistoryPreview,
-    reportError: (msg) => pane.setGeneralError(msg),
+    reportError: (msg, err) => pane.setGeneralError(msg, err),
   });
 
   function paintHistoryPreview(text: string, caret: 'start' | 'end'): void {
@@ -947,8 +948,8 @@
     resetTextareaHeight();
   }
 
-  function handlePromptError(message: string): void {
-    pane.setGeneralError(message);
+  function handlePromptError(message: string, err?: unknown): void {
+    pane.setGeneralError(message, err);
   }
 
   let releaseDraftRegistration: (() => void) | null = null;

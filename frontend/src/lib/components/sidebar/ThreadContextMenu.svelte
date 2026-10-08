@@ -63,7 +63,7 @@
   } from './threadGroupActions';
   import { providerSupports } from '../../providers/catalog';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
@@ -116,9 +116,9 @@
         if (pane) await openThreadFromNavigation(t, pane);
         else await openThreadFromNavigation(t);
       },
-      reportError: (msg) => {
-        if (pane) pane.setGeneralError(msg);
-        else addToast('error', msg);
+      reportError: (msg, err) => {
+        if (pane) pane.setGeneralError(msg, err);
+        else addErrorToast(msg, err);
       },
     };
   }
@@ -211,6 +211,7 @@
     const targets = selectedThreads.slice();
     let failures = 0;
     let lastError: string | null = null;
+    let lastCause: unknown;
     for (const t of targets) {
       try {
         await action({
@@ -221,13 +222,15 @@
             if (pane) await openThreadFromNavigation(next, pane);
             else await openThreadFromNavigation(next);
           },
-          reportError: (msg) => {
+          reportError: (msg, err) => {
             lastError = msg;
+            lastCause = err;
           },
         });
       } catch (err) {
         failures += 1;
         lastError = err instanceof Error ? err.message : String(err);
+        lastCause = err;
       }
     }
     if (failures === 0) {
@@ -235,8 +238,8 @@
     } else {
       const message = `${targets.length - failures}/${targets.length} succeeded` +
         (lastError ? ` — ${lastError}` : '');
-      if (pane) pane.setGeneralError(message);
-      else addToast('error', message);
+      if (pane) pane.setGeneralError(message, lastCause);
+      else addErrorToast(message, lastCause);
     }
   }
 

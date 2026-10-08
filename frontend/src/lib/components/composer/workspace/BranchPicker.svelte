@@ -38,7 +38,7 @@
     placeholderWorkspaceOf,
   } from '../../../stores/draftWorkspaceSync';
   import { workspaceKeyForRef, workspaceRefForProject } from '../../../utils/workspaceKey';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
@@ -283,7 +283,7 @@
       }
       addToast('info', `Synced ${branchName}`);
     } catch (err) {
-      addToast('error', `Sync failed: ${userFacingError(err)}`);
+      addErrorToast(`Sync failed: ${userFacingError(err)}`, err);
     } finally {
       syncingBranch = null;
     }
@@ -496,7 +496,7 @@
       addToast('info', `Checked out ${checkedOut.branch}`);
     } catch (err) {
       console.error('branch checkout failed:', err);
-      addToast('error', `Failed to checkout: ${userFacingError(err)}`);
+      addErrorToast(`Failed to checkout: ${userFacingError(err)}`, err);
     } finally {
       applying = false;
       closeMenu();

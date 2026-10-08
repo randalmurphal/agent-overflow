@@ -82,4 +82,32 @@ describe('userFacingError', () => {
       userFacingError(new TransportError('internal_error', 'method failed: database is closed')),
     ).toBe('Database is closed.');
   });
+
+  it('drops a quoted UUID together with its quotes', () => {
+    expect(userFacingError(new Error('stored provider uuid "550e8400-e29b-41d4-a716-446655440000" is missing'))).toBe(
+      'Stored provider uuid is missing.',
+    );
+  });
+
+  it('reads an unreviewed backend failure from its innermost cause, not the clamped message', () => {
+    const inner = 'stored provider uuid "550e8400-e29b-41d4-a716-446655440000" is missing from session /home/u/s.jsonl: refusing a slice';
+    const err = new TransportError('method_error', 'interrupt-and-revert: write rolled-back session: claude rollback: stored provid…', {
+      detail: { ref: 'r1', method: 'InterruptAndRevertIfClean', at: 1, chain: ['interrupt-and-revert', 'claude rollback', inner] },
+    });
+    expect(userFacingError(err)).toBe('Stored provider uuid is missing from session /home/u/s.jsonl: refusing a slice.');
+  });
+
+  it('shows a reviewed backend message whole', () => {
+    const err = new TransportError('remote_connection_failed', 'Could not stop "build" on Mac: Could not get a response.', {
+      detail: { ref: 'r2', method: 'StopRemoteJob', at: 1, chain: [] },
+    });
+    expect(userFacingError(err)).toBe('Could not stop "build" on Mac: Could not get a response.');
+  });
+
+  it('does not show an off-host reference as the reason', () => {
+    const err = new TransportError('method_error', 'method failed (id: rKVzmpRFjxI)', {
+      detail: { ref: 'rKVzmpRFjxI', method: 'InterruptAndRevertIfClean', at: 1 },
+    });
+    expect(userFacingError(err)).toBe('The backend could not complete this request.');
+  });
 });

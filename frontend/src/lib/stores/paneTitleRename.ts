@@ -45,6 +45,8 @@ export interface RenameResult {
   ok: boolean;
   /** User-facing failure text, already formatted. */
   error?: string;
+  /** The error behind `error`, for its details and copy actions. */
+  cause?: unknown;
 }
 
 /**
@@ -70,7 +72,7 @@ export async function renameThreadTitle(
     return { ok: true };
   } catch (err) {
     console.error('Rename thread failed:', err);
-    return { ok: false, error: `Failed to rename thread: ${errString(err)}` };
+    return { ok: false, error: `Failed to rename thread: ${errString(err)}`, cause: err };
   }
 }
 

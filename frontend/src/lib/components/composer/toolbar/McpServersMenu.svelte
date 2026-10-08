@@ -34,7 +34,7 @@
   } from '../../../stores/mcpServers.svelte';
   import type { ThreadMCPServer } from '../../../stores/bindings';
   import { OpenExternalURL } from '../../../stores/bindings';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
 
@@ -122,7 +122,7 @@
     try {
       await setMcpServerEnabled(target, row.name, enable);
     } catch (err) {
-      addToast('error', `Failed to update MCP server: ${errString(err)}`);
+      addErrorToast(`Failed to update MCP server: ${errString(err)}`, err);
     }
   }
 
@@ -140,7 +140,7 @@
         addToast('info', `Sign-in already complete for ${row.name}.`);
       }
     } catch (err) {
-      addToast('error', `Sign-in failed for ${row.name}: ${errString(err)}`);
+      addErrorToast(`Sign-in failed for ${row.name}: ${errString(err)}`, err);
     }
   }
 
@@ -149,7 +149,7 @@
     try {
       await reconnectMcpServer(target, row.name);
     } catch (err) {
-      addToast('error', `Reconnect failed for ${row.name}: ${errString(err)}`);
+      addErrorToast(`Reconnect failed for ${row.name}: ${errString(err)}`, err);
     }
   }
 
@@ -158,7 +158,7 @@
     try {
       await refreshMcpServerStatus(target, row.name);
     } catch (err) {
-      addToast('error', `Status check failed for ${row.name}: ${errString(err)}`);
+      addErrorToast(`Status check failed for ${row.name}: ${errString(err)}`, err);
     }
   }
 

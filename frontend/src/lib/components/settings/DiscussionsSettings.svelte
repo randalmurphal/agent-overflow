@@ -7,7 +7,7 @@
   import { createEmptyDiscussionDefinition } from '../../types/discussion';
   import { ListDiscussions } from '../../stores/bindings';
   import { discussionDefinitionsRevision } from '../../stores/discussionDefinitions.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import DiscussionListPanel from '../discussion/DiscussionListPanel.svelte';
   import DiscussionEditor from '../discussion/DiscussionEditor.svelte';
@@ -62,7 +62,7 @@
       if (seq !== loadSeq) return;
       console.error('Failed to load discussions:', err);
       loadError = String(err);
-      addToast('error', `Failed to load discussions: ${errString(err)}`);
+      addErrorToast(`Failed to load discussions: ${errString(err)}`, err);
     } finally {
       if (seq === loadSeq) loading = false;
     }

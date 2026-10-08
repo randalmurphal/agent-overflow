@@ -19,7 +19,7 @@
   interface Props {
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
-    onError: (message: string) => void;
+    onError: (message: string, err?: unknown) => void;
     responding?: boolean;
     /** Ungranted `approvals:respond`: every action is inert, never loading. */
     ungranted?: boolean;
@@ -188,7 +188,7 @@
       }));
     } catch (err) {
       console.error('Failed to respond to elicitation:', err);
-      onError(`Failed to respond to elicitation: ${errString(err)}`);
+      onError(`Failed to respond to elicitation: ${errString(err)}`, err);
     }
   }
 

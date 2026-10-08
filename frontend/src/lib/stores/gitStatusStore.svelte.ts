@@ -184,7 +184,7 @@ export interface GitStatusPaneBridge {
   syncThread(thread: Thread): void;
   /** Surface a failure on the panes still looking at that workspace. Takes
    *  the WORKSPACE KEY (`utils/workspaceKey.ts`), not a bare path. */
-  reportWorkspaceError(workspaceKey: string, message: string): void;
+  reportWorkspaceError(workspaceKey: string, message: string, err?: unknown): void;
 }
 
 let paneBridge: GitStatusPaneBridge | null = null;
@@ -260,7 +260,7 @@ async function drainBranchPersistQueue(): Promise<void> {
 // Surfaced on the panes still looking at that workspace. A pane that has
 // moved on is not shown an error about a checkout it left.
 function reportBranchPersistFailure(workspaceKey: string, err: unknown): void {
-  bridge()?.reportWorkspaceError(workspaceKey, `Failed to update thread branch: ${errString(err)}`);
+  bridge()?.reportWorkspaceError(workspaceKey, `Failed to update thread branch: ${errString(err)}`, err);
 }
 
 // ---------------------------------------------------------------------------

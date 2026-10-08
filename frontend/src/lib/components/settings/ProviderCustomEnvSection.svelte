@@ -18,7 +18,7 @@
   } from '../../stores/bindings';
   import { settingsComputer } from './settingsComputer';
   const { getSettings, applySettingsSnapshot, call } = settingsComputer();
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import type { ProviderEnvVar, Settings } from '../../types/settings';
   import type { ProviderDefinition } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
@@ -83,7 +83,7 @@
       return true;
     } catch (err) {
       console.error(failure, err);
-      addToast('error', err instanceof Error ? err.message : failure);
+      addErrorToast(err instanceof Error ? err.message : failure, err);
       return false;
     } finally {
       busy = false;

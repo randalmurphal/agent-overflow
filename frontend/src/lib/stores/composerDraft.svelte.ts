@@ -24,7 +24,7 @@ import {
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
@@ -213,7 +213,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   function surfaceSwallowedSaveFailure(failureLabel: string, err: unknown): void {
     if (saveFailureSurfaced) return;
     saveFailureSurfaced = true;
-    addToast('error', `${failureLabel}: ${errString(err)}`);
+    addErrorToast(`${failureLabel}: ${errString(err)}`, err);
   }
 
   async function hydrate(id: string, expectedGeneration: number): Promise<void> {
@@ -239,7 +239,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       if (threadId === id && switchGeneration === expectedGeneration) {
         // The composer renders empty over a row that still exists — say
         // so, or a draft the user KNOWS they left here reads as lost.
-        addToast('error', `Failed to load draft: ${errString(err)}`);
+        addErrorToast(`Failed to load draft: ${errString(err)}`, err);
       }
     } finally {
       if (threadId === id && switchGeneration === expectedGeneration) {

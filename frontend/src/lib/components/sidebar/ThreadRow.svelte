@@ -31,7 +31,7 @@
     openThreadInNewPane,
     openThreadInPane,
   } from '../../stores/panes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     getEffectiveThreadStatus,
     type ThreadLiveStatus,
@@ -178,9 +178,9 @@
         if (pane) await openThreadInPane(t, pane);
         else await openThreadInPane(t);
       },
-      reportError: (msg) => {
-        if (pane) pane.setGeneralError(msg);
-        else addToast('error', msg);
+      reportError: (msg, err) => {
+        if (pane) pane.setGeneralError(msg, err);
+        else addErrorToast(msg, err);
       },
       replacePaneThread: (t) => pane?.replaceThread(t),
     };

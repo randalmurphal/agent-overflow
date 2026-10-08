@@ -10,7 +10,7 @@ import {
   ListItemsBeforeCursor,
   ListThreadSliceAround,
 } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import {
   compareCursors,
   compareItemsByTimelinePosition,
@@ -916,7 +916,7 @@ export function createThreadTimelineWindow(
       )
         return loadOlderResult('stale');
       console.error('loadOlder failed:', err);
-      addToast('error', 'Failed to load older messages');
+      addErrorToast('Failed to load older messages', err);
       return loadOlderResult('error');
     } finally {
       if (loadingOlder === pageGen) loadingOlder = null;
@@ -989,7 +989,7 @@ export function createThreadTimelineWindow(
     } catch (err) {
       if (superseded()) return 'superseded';
       console.error('loadUntilItem GetThreadItem failed:', err);
-      addToast('error', 'Failed to load message');
+      addErrorToast('Failed to load message', err);
       return 'failed';
     }
     if (superseded()) return 'superseded';
@@ -1041,7 +1041,7 @@ export function createThreadTimelineWindow(
     } catch (err) {
       if (superseded()) return 'superseded';
       console.error('loadUntilItem ListThreadSliceAround failed:', err);
-      addToast('error', 'Failed to load message');
+      addErrorToast('Failed to load message', err);
       return 'failed';
     }
     if (windowHolds(itemID)) return 'loaded';
@@ -1139,7 +1139,7 @@ export function createThreadTimelineWindow(
       )
         return loadOlderResult('stale');
       console.error('loadNewer failed:', err);
-      addToast('error', 'Failed to load newer messages');
+      addErrorToast('Failed to load newer messages', err);
       return loadOlderResult('error');
     } finally {
       if (loadingNewer === pageGen) loadingNewer = null;
@@ -1182,7 +1182,7 @@ export function createThreadTimelineWindow(
       )
         return false;
       console.error('loadRecentTail failed:', err);
-      addToast('error', 'Failed to load latest messages');
+      addErrorToast('Failed to load latest messages', err);
       return false;
     } finally {
       if (loadingNewer === pageGen) loadingNewer = null;

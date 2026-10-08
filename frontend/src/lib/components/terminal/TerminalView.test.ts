@@ -65,7 +65,7 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
   },
 }));
 
-vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 vi.mock('../../stores/panes.svelte', () => ({
   addPaneThreadMountedObserver: vi.fn(() => () => {}),

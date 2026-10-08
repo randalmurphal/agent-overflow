@@ -11,7 +11,7 @@
     approval: ApprovalRequest;
     count: number;
     onResolve: (response: ApprovalResponse) => Promise<void>;
-    onError: (message: string) => void;
+    onError: (message: string, err?: unknown) => void;
     /**
      * This session was not granted `approvals:respond`. The panel still
      * renders — the request is what explains why the turn is parked — and
@@ -34,7 +34,7 @@
       await onResolve(response);
     } catch (err) {
       console.error('Failed to respond to approval:', err);
-      onError(`Failed to respond to approval: ${errString(err)}`);
+      onError(`Failed to respond to approval: ${errString(err)}`, err);
       responding = false;
     }
   }

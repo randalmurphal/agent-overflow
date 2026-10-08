@@ -15,7 +15,7 @@ import {
   type WorkflowActionRequest,
 } from './workflowActions';
 import { recordWorkflowReceipt } from './workflowRuns.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { isWorkflowSweepActive, setWorkflowArmedAction } from './workflowsOverlay.svelte';
 import { advanceWorkflowSweep } from './workflowSweep';
@@ -63,7 +63,7 @@ export async function resolveWorkflowRun(
     }
     return true;
   } catch (err) {
-    addToast('error', userFacingError(err, 'That action did not go through.'));
+    addErrorToast(userFacingError(err, 'That action did not go through.'), err);
     return false;
   }
 }

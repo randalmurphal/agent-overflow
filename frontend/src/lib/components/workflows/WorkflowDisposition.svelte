@@ -13,7 +13,7 @@
   import { WorkflowDiscussPR, WorkflowFetchPRReviewComments, WorkflowSendPRReviewCommentsToThread } from '../../stores/bindings';
   import type { Thread } from '../../types/models';
   import { openWorkflowThread } from '../../stores/workflowThreads';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
 
   interface Props {
@@ -67,10 +67,10 @@
       if (!thread?.id) throw new Error('No thread was returned');
       await openWorkflowThread(thread);
     } catch (err) {
-      addToast('error', userFacingError(
+      addErrorToast(userFacingError(
         err,
         kind === 'review' ? 'Could not send the review comments.' : 'Could not open the PR discussion.',
-      ));
+      ), err);
     } finally {
       busy = '';
     }

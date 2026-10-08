@@ -94,7 +94,7 @@
     renamePending = true;
     try {
       const result = await renameThreadTitle(threadId, draftTitle, currentTitle);
-      if (!result.ok && result.error) pane.setGeneralError(result.error);
+      if (!result.ok && result.error) pane.setGeneralError(result.error, result.cause);
     } finally {
       renamePending = false;
       editing = false;

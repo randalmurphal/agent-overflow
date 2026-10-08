@@ -84,6 +84,7 @@ describe('Stop All in the background tray', () => {
     expect(rowStop(view, 'b')).toBeEnabled();
     expect(stopError(view, 'a')).toBeNull();
     expect(toasts()).toEqual([['error', 'Failed to stop tasks: computer offline']]);
+    expect(getToasts()[0].captured?.report.chain).toEqual(['computer offline']);
   });
 
   it('names no row without a stop of its own', async () => {

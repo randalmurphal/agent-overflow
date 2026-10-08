@@ -37,7 +37,7 @@ import {
   type WorktreeRemovalResult,
 } from '../../stores/worktreeRemoval.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Thread } from '../../types/models';
@@ -60,7 +60,7 @@ export interface ThreadActionCtx {
   /** Switch the pane to a freshly-forked thread. */
   switchPane: (thread: Thread) => Promise<void>;
   /** Forward an error message to the pane's status row. */
-  reportError: (message: string) => void;
+  reportError: (message: string, err?: unknown) => void;
   /** Replace the active pane's thread struct in place. Used after a
    * rename so the chat header re-renders immediately rather than
    * waiting on the thread:updated event round-trip. */
@@ -86,7 +86,7 @@ export async function renameThreadAction(
     }
   } catch (err) {
     console.error('Failed to rename thread:', err);
-    ctx.reportError(userFacingError(err));
+    ctx.reportError(userFacingError(err), err);
   }
 }
 
@@ -102,7 +102,7 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     closePanesShowingThread(ctx.thread.id);
   } catch (err) {
     console.error('Failed to archive thread:', err);
-    ctx.reportError(userFacingError(err));
+    ctx.reportError(userFacingError(err), err);
   }
 }
 
@@ -122,7 +122,7 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
     addToast('info', `Forked "${ctx.thread.title}" into a new thread.`);
   } catch (err) {
     console.error('Failed to fork thread:', err);
-    ctx.reportError(userFacingError(err));
+    ctx.reportError(userFacingError(err), err);
   }
 }
 
@@ -139,7 +139,7 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
     closePanesShowingThread(ctx.thread.id);
   } catch (err) {
     console.error('Failed to delete thread:', err);
-    ctx.reportError(userFacingError(err));
+    ctx.reportError(userFacingError(err), err);
   }
 }
 
@@ -152,7 +152,7 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
     addToast('info', 'Marked unread.');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
   }
 }
 
@@ -172,7 +172,7 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
   } catch (err) {
     console.error('Failed to pin thread:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
   }
 }
 
@@ -182,7 +182,7 @@ export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
   } catch (err) {
     console.error('Failed to unpin thread:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
   }
 }
 
@@ -195,6 +195,6 @@ export async function setThreadPinGroupAction(
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
   } catch (err) {
     console.error('Failed to move pinned thread:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
   }
 }

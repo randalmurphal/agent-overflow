@@ -19,7 +19,7 @@
   import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
   import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
   import { syncThread } from '../../../stores/panes.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import Icon from '../../primitives/Icon.svelte';
   import Popover from '../../primitives/Popover.svelte';
@@ -175,7 +175,7 @@
         syncThread(updated);
       }
     } catch (err) {
-      addToast('error', `Failed to set access mode: ${errString(err)}`);
+      addErrorToast(`Failed to set access mode: ${errString(err)}`, err);
     } finally {
       closeMenu();
     }

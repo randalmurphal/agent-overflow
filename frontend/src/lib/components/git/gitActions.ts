@@ -88,7 +88,7 @@ export interface RemoveWorktreeCtx extends GitActionCtx {
 export interface GitActionCtx {
   /** The checkout every action below acts on. */
   workspace: WorkspaceRef;
-  reportError: (message: string) => void;
+  reportError: (message: string, err?: unknown) => void;
   refreshStatus: () => Promise<void>;
 }
 
@@ -104,7 +104,7 @@ export async function runPushAction(ctx: GitActionCtx): Promise<void> {
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Push failed:', err);
-    ctx.reportError(`Push failed: ${errString(err)}`);
+    ctx.reportError(`Push failed: ${errString(err)}`, err);
   }
 }
 
@@ -120,7 +120,7 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Pull failed:', err);
-    ctx.reportError(`Pull failed: ${errString(err)}`);
+    ctx.reportError(`Pull failed: ${errString(err)}`, err);
   }
 }
 
@@ -138,6 +138,6 @@ export async function runRemoveWorktreeAction(ctx: RemoveWorktreeCtx): Promise<v
     addToast('success', 'Worktree removed');
   } catch (err) {
     console.error('Remove worktree failed:', err);
-    ctx.reportError(`Remove worktree failed: ${errString(err)}`);
+    ctx.reportError(`Remove worktree failed: ${errString(err)}`, err);
   }
 }

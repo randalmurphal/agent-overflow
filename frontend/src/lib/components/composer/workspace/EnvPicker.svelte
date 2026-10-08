@@ -33,7 +33,7 @@
     terminalsClosingNote,
     type WorktreeRemovalResult,
   } from '../../../stores/worktreeRemoval.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import { pathBasename } from '../../../utils/pathDisplay';
@@ -271,7 +271,7 @@
       addToast('info', `Workspace switched to ${pathBasename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       applying = false;
       closeMenu();

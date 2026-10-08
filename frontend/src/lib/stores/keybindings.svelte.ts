@@ -12,7 +12,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 //     installs a single window-level keydown that calls dispatchKey(ev, ctx).
 //     That keeps this store testable without mounting any component.
 
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { GetKeybindings, Keybinding, ResetKeybindings, UpdateKeybindings } from './bindings';
 import { dismissCommandSurface, isCommandEnabled, runCommand, type CommandContext } from './commandRegistry.svelte';
 import { isSurfaceDismissalEvent } from '../utils/surfaceDismissal';
@@ -336,7 +336,7 @@ async function readKeybindings(announce: boolean): Promise<void> {
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load keybindings:', err);
-    if (announce) addToast('error', 'Failed to load keybindings');
+    if (announce) addErrorToast('Failed to load keybindings', err);
     rules = [];
     resolved = [];
     issues = [];

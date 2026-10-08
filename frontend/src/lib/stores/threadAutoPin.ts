@@ -8,7 +8,7 @@
 
 import { PinThread } from './bindings';
 import { getSettings } from './settings.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import type { Thread } from '../types/models';
 import { isHiddenThreadMode } from '../utils/threadModes';
 import { userFacingError } from '../utils/userFacingError';
@@ -37,7 +37,7 @@ export async function autoPinNewThread(thread: Thread): Promise<Thread> {
     return await PinThread(thread.id) as Thread;
   } catch (err) {
     console.error('Failed to auto-pin new thread:', err);
-    addToast('error', `Thread started, but auto-pin failed: ${userFacingError(err)}`);
+    addErrorToast(`Thread started, but auto-pin failed: ${userFacingError(err)}`, err);
     return thread;
   }
 }

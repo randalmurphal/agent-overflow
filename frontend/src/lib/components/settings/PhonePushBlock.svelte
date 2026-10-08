@@ -27,7 +27,7 @@
     ClearPushSenderCredential,
     type PushSenderStatus,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
 
   import SettingsField from './SettingsField.svelte';
@@ -69,7 +69,7 @@
     try {
       status = await call(() => GetPushSenderStatus());
     } catch (err) {
-      addToast('error', `${COPY.loadFailed}: ${errString(err)}`);
+      addErrorToast(`${COPY.loadFailed}: ${errString(err)}`, err);
     }
   }
 
@@ -101,7 +101,7 @@
       addToast('success', COPY.saved);
       await load();
     } catch (err) {
-      addToast('error', `${COPY.saveFailed}: ${errString(err)}`);
+      addErrorToast(`${COPY.saveFailed}: ${errString(err)}`, err);
     } finally {
       busy = false;
     }
@@ -115,7 +115,7 @@
       addToast('success', COPY.cleared);
       await load();
     } catch (err) {
-      addToast('error', `${COPY.clearFailed}: ${errString(err)}`);
+      addErrorToast(`${COPY.clearFailed}: ${errString(err)}`, err);
     } finally {
       busy = false;
     }

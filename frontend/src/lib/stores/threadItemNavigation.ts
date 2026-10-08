@@ -5,7 +5,7 @@ import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { threadBackend } from '../transport/entityIndex';
 import { agentStateForPane } from './agentPane.svelte';
 import { agentScopeRootId, subagentLaunchInfo } from '../utils/subagentLaunch';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 
 const requests = new WeakMap<ThreadPane, symbol>();
@@ -52,7 +52,7 @@ export async function navigateToThreadItem(pane: ThreadPane, threadId: string, i
     pane.openAgentPane(target.itemId, target.label);
     agentStateForPane(pane.paneId, threadId).openAtItem(trail, itemId);
   } catch (error) {
-    if (current()) addToast('error', `Could not open message: ${errString(error)}`);
+    if (current()) addErrorToast(`Could not open message: ${errString(error)}`, error);
   } finally {
     if (requests.get(pane) === request) requests.delete(pane);
   }

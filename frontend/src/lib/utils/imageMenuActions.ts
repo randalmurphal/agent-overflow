@@ -22,7 +22,7 @@
 
 import { SaveAttachment } from '../stores/bindings';
 import type { BackendKey } from '../transport/backendKey';
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { resolveThreadBackend } from '../transport/entityIndex';
@@ -202,7 +202,7 @@ export async function saveMenuImage(target: ImageMenuTarget): Promise<void> {
     const blob = await fetchAttachmentBytes(target.threadId, target.attachmentId);
     downloadBlob(blob, downloadName(target.filename, blob.type));
   } catch (err) {
-    addToast('error', errString(err));
+    addErrorToast(errString(err), err);
   }
 }
 

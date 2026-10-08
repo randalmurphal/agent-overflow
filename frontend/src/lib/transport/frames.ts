@@ -27,10 +27,13 @@ export interface ServerRPCFrame {
   // have killed. The transport carries it raw: the element shape belongs
   // to the method that refused, and ./backgroundKillRefusal.ts validates
   // it as untrusted input.
+  // `detail` is the failure's diagnostic record (internal/transport
+  // ErrorDetail), carried raw and validated by ./errorDetail.ts.
   error?: {
     code: string; message: string; reason?: string; scope?: string;
     transfer?: { operationId: string; backendId: string };
     backgroundAgents?: unknown;
+    detail?: unknown;
   };
 }
 

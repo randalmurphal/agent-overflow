@@ -13,7 +13,7 @@
   // sit on their own row so propagation generally doesn't matter, but
   // the prop is honoured in either mode for symmetry.
   //
-  // Errors flow through addToast. The Go binding produces user-friendly
+  // Errors flow through addErrorToast. The Go binding produces user-friendly
   // strings ("no editor available — install VS Code or set $EDITOR")
   // so we surface them verbatim rather than wrapping in a generic
   // "Failed to open editor" prefix.
@@ -21,7 +21,7 @@
   import Edit3 from '@lucide/svelte/icons/edit-3';
   import Icon from '../primitives/Icon.svelte';
   import { openInEditor } from '../../stores/openInEditor';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { openInEditorLabel } from '../../utils/editorLinkLabel';
   import { hasScope } from '../../transport/scopes';
@@ -98,7 +98,7 @@
       // never target a specific editor.
       await openInEditor(backend, path, line, col, workspacePath, '');
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     }
   }
 </script>

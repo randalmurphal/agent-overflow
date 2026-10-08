@@ -4,13 +4,13 @@
 // touch: the parameterized testids that let each pane surface keep its own
 // identity, and the no-thread gate.
 
-import { beforeEach, describe, expect, it } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PaneTitleHandle from './PaneTitleHandle.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
@@ -126,5 +126,25 @@ describe('<PaneTitleHandle>', () => {
     await tick();
     expect(queryByTestId('pane-title-input')).toBeNull();
     expect(getByTestId('pane-title')).toHaveTextContent('Other');
+  });
+
+  it('keeps a failed rename behind the pane banner', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('RenameThread', async () => {
+      throw new Error('database is locked');
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Original' }));
+    const { getByTestId } = render(PaneTitleHandle, { props: { pane } });
+    await tick();
+
+    await fireEvent.contextMenu(getByTestId('pane-title'));
+    await tick();
+    await fireEvent.input(getByTestId('pane-title-input'), { target: { value: 'Renamed' } });
+    await fireEvent.keyDown(getByTestId('pane-title-input'), { key: 'Enter' });
+
+    await waitFor(() => expect(pane.generalError).toBe('Failed to rename thread: database is locked'));
+    expect(pane.paneErrorList.find((e) => e.kind === 'general')?.captured?.report.chain)
+      .toEqual(['database is locked']);
+    consoleError.mockRestore();
   });
 });

@@ -51,7 +51,7 @@ export interface ThreadDraftPlaceholderOptions {
   /** `switchGeneration++`: every placeholder edit is a same-thread re-switch. */
   bumpSwitchGeneration(): void;
   setContextWindow(next: ContextWindow | null): void;
-  setGeneralError(message: string): void;
+  setGeneralError(message: string, err?: unknown): void;
   /** Pane-close snapshot, so "+ New" over a live thread is a warm-restore edge. */
   snapshotForClose(): void;
   /** The pane's own `clear()`. */
@@ -328,7 +328,7 @@ export function createThreadDraftPlaceholder(
         return created.id;
       } catch (err) {
         console.error('Failed to create draft thread:', err);
-        options.setGeneralError(`Failed to create thread: ${errString(err)}`);
+        options.setGeneralError(`Failed to create thread: ${errString(err)}`, err);
         return null;
       } finally {
         materializingThreadPromise = null;

@@ -45,6 +45,7 @@ export {
     EditDiffTurnLabel,
     EditDiffVerifyFile,
     EditorInfo,
+    ErrorLogLines,
     ForgeAttachment,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,

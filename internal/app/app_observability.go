@@ -1,8 +1,11 @@
 package app
 
 import (
+	"errors"
+	"strings"
 	"time"
 
+	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/settings"
@@ -117,6 +120,35 @@ func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
 		return "", err
 	}
 	return t.Append(lines)
+}
+
+// errorLogLineLimit bounds the log lines one error report carries.
+const errorLogLineLimit = 80
+
+// ErrorLogLines answers an error report: the backend log lines leading up
+// to and including the line that recorded the failure with this reference,
+// `(id: <ref>)`. Found is false once that line has aged out of the
+// retained log.
+type ErrorLogLines struct {
+	Lines []string `json:"lines"`
+	Found bool     `json:"found"`
+}
+
+// GetErrorLogLines returns the retained backend log lines that end at the
+// failure recorded under ref (transport.ErrorDetail.Ref).
+//
+//ao:scope host
+//ao:route home
+func (a *App) GetErrorLogLines(ref string) (ErrorLogLines, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ErrorLogLines{}, errors.New("error log lines: reference is required")
+	}
+	lines, found := logging.RecentLogLinesBefore("(id: "+ref+")", errorLogLineLimit)
+	if lines == nil {
+		lines = []string{}
+	}
+	return ErrorLogLines{Lines: lines, Found: found}, nil
 }
 
 // BookmarkUIRenderTrace freezes the current trace contents (and any

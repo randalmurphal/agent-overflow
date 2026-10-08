@@ -4,7 +4,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { FRONTEND_DEVICE_SETTINGS_KEYS } from '../generated/settingsDefaults';
 import type { Settings } from '../types/settings';
 import { GetSettings, UpdateSettings } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { defaultSettings, mergeSettingsWithDefaults } from './settingsDefaults';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -154,7 +154,7 @@ async function readSettings(backend: BackendKey, migrate: boolean): Promise<bool
     if (expected !== generation || backendById(backend) !== target) return false;
     if (isPassiveConnectionFailure(err)) return false;
     console.error('Failed to load computer settings:', err);
-    if (migrate) addToast('error', 'Failed to load settings');
+    if (migrate) addErrorToast('Failed to load settings', err);
     return false;
   }
 }
@@ -204,7 +204,7 @@ export function updateSettingsPatch(
       if (expected !== generation || backendById(backend) !== target) return;
       console.error('Failed to update computer settings:', err);
       if (Object.keys(patch).some((key) => !isFrontendPreference(key))) {
-        addToast('error', 'Failed to save setting');
+        addErrorToast('Failed to save setting', err);
       }
     } finally {
       if (expected === generation && backendById(backend) === target) {

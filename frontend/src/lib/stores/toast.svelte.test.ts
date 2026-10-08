@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { addToast, getToasts, removeToast } from './toast.svelte';
+import { addErrorToast, addToast, getToasts, holdToast, releaseToast, removeToast } from './toast.svelte';
 
 describe('toast store', () => {
   beforeEach(() => {
@@ -55,5 +55,38 @@ describe('toast store', () => {
     removeToast(id);
     expect(getToasts()).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the error behind an error toast', () => {
+    const err = new Error('disk full');
+    const id = addErrorToast('Could not save: disk full', err);
+    const toast = getToasts().find((t) => t.id === id);
+    expect(toast?.type).toBe('error');
+    expect(toast?.message).toBe('Could not save: disk full');
+    expect(toast?.captured?.report.context).toBe('Could not save: disk full');
+    expect(toast?.captured?.report.chain).toEqual(['disk full']);
+    expect(addToast('error', 'plain') && getToasts().at(-1)?.captured).toBeUndefined();
+  });
+
+  it('holds a toast past its delay and restarts the full delay on release', () => {
+    const id = addToast('info', 'held', 1000);
+    vi.advanceTimersByTime(900);
+    holdToast(id);
+    vi.advanceTimersByTime(5000);
+    expect(getToasts().find((t) => t.id === id)).toBeDefined();
+
+    releaseToast(id);
+    vi.advanceTimersByTime(999);
+    expect(getToasts().find((t) => t.id === id)).toBeDefined();
+    vi.advanceTimersByTime(2);
+    expect(getToasts().find((t) => t.id === id)).toBeUndefined();
+  });
+
+  it('does not start a timer for a persistent toast on release', () => {
+    const id = addToast('error', 'Computer unavailable', 0);
+    holdToast(id);
+    releaseToast(id);
+    expect(vi.getTimerCount()).toBe(0);
+    removeToast(id);
   });
 });

@@ -6,7 +6,7 @@ import { withBackendTarget } from '../transport/backends';
 import { onPurgeClientState } from '../transport/clientPurge';
 import { readBeforeDeadline } from '../utils/readBeforeDeadline';
 import { GetUIState } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 
 const BUCKET_KEY = 'agent-overflow:uistate:bucket';
 const MIGRATED_KEY = 'agent-overflow:uistate:frontend';
@@ -45,10 +45,10 @@ function persist(store: ViewStore): void {
     localStorage.setItem(keyFor(BUCKET_KEY, store.backend), JSON.stringify(Object.fromEntries(store.bucket)));
     localStorage.setItem(keyFor(MIGRATED_KEY, store.backend), '1');
     saveFailureShown = false;
-  } catch {
+  } catch (err) {
     if (!saveFailureShown) {
       saveFailureShown = true;
-      addToast('error', 'This device could not save its layout. Changes may be lost when the app closes.');
+      addErrorToast('This device could not save its layout. Changes may be lost when the app closes.', err);
     }
   }
 }

@@ -13,7 +13,7 @@
     DeleteProposedPlanComment,
     UpdateProposedPlanComment,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { threadHasScope } from '../../transport/entityScopes';
   import type { PathRef, ProposedPlanComment } from '../../types/models';
 
@@ -166,7 +166,7 @@
       await onRefresh();
     } catch (err) {
       console.error('CreateProposedPlanComment failed:', err);
-      addToast('error', 'Failed to save comment');
+      addErrorToast('Failed to save comment', err);
     } finally {
       saving = false;
     }
@@ -178,7 +178,7 @@
       await onRefresh();
     } catch (err) {
       console.error('DeleteProposedPlanComment failed:', err);
-      addToast('error', 'Failed to remove comment');
+      addErrorToast('Failed to remove comment', err);
     }
   }
 
@@ -199,7 +199,7 @@
       await onRefresh();
     } catch (err) {
       console.error('UpdateProposedPlanComment failed:', err);
-      addToast('error', 'Failed to update comment');
+      addErrorToast('Failed to update comment', err);
     }
   }
 

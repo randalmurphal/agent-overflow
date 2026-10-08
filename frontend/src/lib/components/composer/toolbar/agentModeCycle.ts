@@ -5,7 +5,7 @@ import type { ThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
 import { UpdateThreadMode } from '../../../stores/bindings';
 import { syncThread } from '../../../stores/panes.svelte';
-import { addToast } from '../../../stores/toast.svelte';
+import { addErrorToast } from '../../../stores/toast.svelte';
 import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
 import { isScratchThreadMode, renderedThreadMode } from '../../../utils/threadModes';
 import { errString } from '../../../utils/errors';
@@ -41,6 +41,6 @@ export async function cycleAgentMode(pane: ThreadPane): Promise<void> {
     syncThread(updated);
   } catch (err) {
     console.error('agent mode toggle: UpdateThreadMode failed', err);
-    addToast('error', `Failed to switch mode: ${errString(err)}`);
+    addErrorToast(`Failed to switch mode: ${errString(err)}`, err);
   }
 }

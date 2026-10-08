@@ -17,7 +17,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -175,7 +175,7 @@
       kind: browserVisible ? 'hide' : 'show',
       pageId: browserVisible ? '' : (state.activePageId ?? ''),
     });
-    if (failure) addToast('error', failure);
+    if (failure) addErrorToast(failure.error, failure.cause);
   }
 
   // Plain click on the PR badge opens the companion review pane on the PR
@@ -239,7 +239,7 @@
     try {
       await openInEditor(threadMachine(pane.threadId ?? '', pane.thread?.projectId), projectBadge.path, 0, 0, '', '');
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     }
   }
 </script>

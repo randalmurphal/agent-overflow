@@ -13,7 +13,7 @@
 
 import { DeleteAttachment } from '../../stores/bindings';
 import { uploadAttachmentBytes } from '../../transport/attachmentTransfer';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Attachment } from '../../types/attachment';
 import {
@@ -160,7 +160,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       discardAbandonedAttachmentRecords(threadId, [record.id]);
     } catch (err) {
       console.error('attachment upload failed:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     }
     return false;
   }

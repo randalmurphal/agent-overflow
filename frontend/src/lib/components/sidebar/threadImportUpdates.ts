@@ -15,7 +15,7 @@
 import { CheckThreadImportUpdates, ImportThreadUpdates } from '../../stores/bindings';
 import { refreshSidebarProjections } from '../../stores/eventsThreadRows';
 import { iterPanes } from '../../stores/panes.svelte';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import type { ImportUpdateStatus } from '../../types/sessionImport';
 import type { ToastType } from '../../stores/toast.svelte';
 import { countNoun } from '../../utils/format';
@@ -70,7 +70,7 @@ export async function checkThreadImportUpdatesAction(
     status = await CheckThreadImportUpdates(ctx.thread.id);
   } catch (err) {
     console.error('Failed to check provider updates:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
     return null;
   }
 
@@ -109,7 +109,7 @@ export async function applyThreadImportUpdatesAction(ctx: ThreadActionCtx): Prom
     }
   } catch (err) {
     console.error('Failed to import provider updates:', err);
-    addToast('error', userFacingError(err));
+    addErrorToast(userFacingError(err), err);
     return;
   }
 

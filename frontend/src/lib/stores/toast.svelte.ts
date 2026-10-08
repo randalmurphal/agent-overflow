@@ -1,3 +1,5 @@
+import { captureError, type CapturedError } from './errorReports.svelte';
+
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 export interface ToastAction { label: string; run: () => void }
 
@@ -7,6 +9,8 @@ interface Toast {
   message: string;
   duration: number;
   action?: ToastAction;
+  /** The error behind an error toast, for its details and copy actions. */
+  captured?: CapturedError;
 }
 
 let nextId = 0;
@@ -23,25 +27,49 @@ export function addToast(
   message: string,
   duration = 5000,
   action?: ToastAction,
+  captured?: CapturedError,
 ): string {
   const id = `toast-${++nextId}`;
-  toasts = [...toasts, { id, type, message, duration, action }];
-
-  // An actionable failure may remain until retried or explicitly dismissed.
-  if (duration > 0) {
-    const timer = setTimeout(() => { removeToast(id); }, duration);
-    timers.set(id, timer);
-  }
-
+  toasts = [...toasts, { id, type, message, duration, action, captured }];
+  startTimer(id, duration);
   return id;
 }
 
-export function removeToast(id: string): void {
+/**
+ * An error toast that keeps the error it reports: `message` is what the
+ * toast reads, and `err` is what its details and copy actions describe.
+ */
+export function addErrorToast(
+  message: string,
+  err: unknown,
+  duration = 5000,
+  action?: ToastAction,
+): string {
+  return addToast('error', message, duration, action, captureError(err, { context: message }));
+}
+
+// An actionable failure may remain until retried or explicitly dismissed.
+function startTimer(id: string, duration: number): void {
+  if (duration <= 0 || timers.has(id)) return;
+  timers.set(id, setTimeout(() => { removeToast(id); }, duration));
+}
+
+/** Keep a toast up while the person is reading or using it. */
+export function holdToast(id: string): void {
   const timer = timers.get(id);
-  if (timer) {
-    clearTimeout(timer);
-    timers.delete(id);
-  }
+  if (!timer) return;
+  clearTimeout(timer);
+  timers.delete(id);
+}
+
+/** Restart a held toast's full dismiss delay. */
+export function releaseToast(id: string): void {
+  const toast = toasts.find((t) => t.id === id);
+  if (toast) startTimer(id, toast.duration);
+}
+
+export function removeToast(id: string): void {
+  holdToast(id);
   toasts = toasts.filter((t) => t.id !== id);
 }
 

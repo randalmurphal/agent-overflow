@@ -93,7 +93,7 @@ export interface ComposerHistoryRecallDeps {
    * so a repeated press of the same arrow passes the caret gate and
    * keeps walking. */
   paint(text: string, caret: RecallCaret): void;
-  reportError(message: string): void;
+  reportError(message: string, err?: unknown): void;
 }
 
 interface RecallSession {
@@ -216,7 +216,7 @@ export function createComposerHistoryRecall(deps: ComposerHistoryRecallDeps) {
         rows = await deps.fetchHistory(threadId);
       } catch (err) {
         if (generation === startGeneration && deps.threadId() === threadId) {
-          deps.reportError(`Failed to load message history: ${errString(err)}`);
+          deps.reportError(`Failed to load message history: ${errString(err)}`, err);
         }
         return;
       }

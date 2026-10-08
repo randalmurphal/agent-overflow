@@ -22,7 +22,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { RegenerateThreadTitle } from './bindings';
 import { findPaneShowingThread } from './panes.svelte';
 import { onTransportStatusChange } from './transportStatus.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 
 /** Completion frame of one backend title-generation run. */
@@ -90,7 +90,7 @@ export async function regenerateThreadTitle(threadId: string): Promise<void> {
   } catch (err) {
     console.error('Regenerate thread title failed:', err);
     setPending(threadId, false);
-    surfaceFailure(threadId, errString(err));
+    surfaceFailure(threadId, errString(err), err);
   }
 }
 
@@ -103,11 +103,12 @@ export function applyThreadTitleGeneration(event: ThreadTitleGenerationEvent | n
   if (event.error && wasAwaited) surfaceFailure(threadId, event.error);
 }
 
-function surfaceFailure(threadId: string, message: string): void {
+function surfaceFailure(threadId: string, message: string, err?: unknown): void {
   const text = `Failed to regenerate title: ${message}`;
   const pane = findPaneShowingThread(threadId);
-  if (pane) pane.setGeneralError(text);
-  else addToast('error', text);
+  if (pane) pane.setGeneralError(text, err);
+  else if (err === undefined) addToast('error', text);
+  else addErrorToast(text, err);
 }
 
 export function resetThreadTitleGenerationForTest(): void {

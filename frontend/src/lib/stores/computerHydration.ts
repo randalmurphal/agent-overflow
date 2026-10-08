@@ -52,7 +52,7 @@ export function installComputerHydration(): () => void {
       const generation = pane.switchGeneration;
       holdBackendRecovery(backend, pane.refreshFromBackend(true).catch((error: unknown) => {
         if (pane.threadId === threadId && pane.switchGeneration === generation && !isPassiveConnectionFailure(error)) {
-          pane.setSessionError(`Could not synchronize conversation: ${String(error)}`);
+          pane.setSessionError(`Could not synchronize conversation: ${String(error)}`, error);
         }
       }));
     }

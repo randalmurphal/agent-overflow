@@ -102,8 +102,8 @@ type httpDiagnosticWriter struct {
 }
 
 // WithHTTPDiagnostics annotates the standard library's unattributed idle HTTP
-// warning. Ordinary logs pass through unchanged. Install on every shell's log
-// output; this neither changes HTTP behavior nor suppresses the original error.
+// warning. Ordinary logs pass through unchanged. Shells install it through
+// Output; it neither changes HTTP behavior nor suppresses the original error.
 func WithHTTPDiagnostics(output io.Writer) io.Writer {
 	if _, ok := output.(*httpDiagnosticWriter); ok {
 		return output

@@ -65,6 +65,7 @@ import type { AttachmentPreviewCache } from '../utils/attachmentPreview.svelte';
 import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
+import type { PaneErrorRow } from './threadPaneErrors.svelte';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { TextWindow } from '../utils/liveText';
 import type { TimelineCursorLike } from './threadItems';
@@ -325,17 +326,18 @@ export interface ErrorSurface {
   /** Read for its provider/mode when a banner row's affordance needs it. */
   readonly thread: Thread | null;
   /** Every stored error in banner-stack order; one row each. */
-  readonly paneErrorList: readonly { kind: PaneErrorKind; message: string }[];
+  readonly paneErrorList: readonly PaneErrorRow[];
   /** Newest stored error's message; presence-check convenience. */
   readonly generalError: string | null;
   /** Its kind, with `'general'` reported as `null` — an untagged error has no action. */
   readonly generalErrorKind: 'session' | 'history-load' | null;
   readonly providerBanner: ProviderStatusEvent | null | undefined;
-  readonly setPaneError: (message: string, kind?: PaneErrorKind) => void;
+  readonly setPaneError: (message: string, kind?: PaneErrorKind, err?: unknown) => void;
   readonly clearPaneError: (kind?: PaneErrorKind) => void;
-  readonly setGeneralError: (message: string | null) => void;
-  readonly setSessionError: (message: string) => void;
-  readonly setHistoryLoadError: (message: string | null) => void;
+  /** `err`, when given, is the failure behind `message` (details and copy). */
+  readonly setGeneralError: (message: string | null, err?: unknown) => void;
+  readonly setSessionError: (message: string, err?: unknown) => void;
+  readonly setHistoryLoadError: (message: string | null, err?: unknown) => void;
   readonly clearGeneralError: () => void;
   readonly clearSessionError: () => void;
   readonly setProviderBanner: (status: ProviderStatusEvent | null | undefined) => void;

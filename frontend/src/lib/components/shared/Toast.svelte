@@ -1,13 +1,10 @@
 <script lang="ts">
-  import { fly, fade } from 'svelte/transition';
   import CheckCircle2 from '@lucide/svelte/icons/check-circle-2';
   import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
   import Info from '@lucide/svelte/icons/info';
   import XCircle from '@lucide/svelte/icons/x-circle';
-  import X from '@lucide/svelte/icons/x';
-  import Icon from '../primitives/Icon.svelte';
-  import Button from '../primitives/Button.svelte';
-  import { getToasts, removeToast, type ToastType } from '../../stores/toast.svelte';
+  import ToastItem from './ToastItem.svelte';
+  import { getToasts, type ToastType } from '../../stores/toast.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -36,34 +33,7 @@
 {#if toasts.length > 0}
   <div class="fixed bottom-4 compact:bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
-      <div
-        in:fly={{ x: 80, duration: 200 }}
-        out:fade={{ duration: 150 }}
-        class="flex items-start gap-2.5 rounded-[12px] border px-3.5 py-2.5 shadow-menu backdrop-blur-md text-[0.8125rem] transition-transform duration-150 hover:scale-[1.015] {colorClasses(toast.type)}"
-        role="alert"
-        data-testid="toast"
-        data-toast-type={toast.type}
-      >
-        <span class="mt-0.5 shrink-0 flex items-center">
-          <Icon icon={iconForType(toast.type)} size={14} strokeWidth={2} class="opacity-90" />
-        </span>
-        <div class="min-w-0 flex-1 leading-snug">
-          <span class="line-clamp-3 break-words">{toast.message}</span>
-          {#if toast.action}
-            <Button size="xs" variant="ghost" class="mt-1" onclick={() => {
-              removeToast(toast.id);
-              toast.action?.run();
-            }}>{toast.action.label}</Button>
-          {/if}
-        </div>
-        <button
-          onclick={() => removeToast(toast.id)}
-          class="shrink-0 opacity-60 hover:opacity-100 cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-opacity"
-          aria-label="Dismiss Notification"
-        >
-          <Icon icon={X} size={13} strokeWidth={2.5} class="opacity-100" />
-        </button>
-      </div>
+      <ToastItem {toast} icon={iconForType(toast.type)} colorClasses={colorClasses(toast.type)} />
     {/each}
   </div>
 {/if}

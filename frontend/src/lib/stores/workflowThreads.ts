@@ -18,7 +18,7 @@ import { getThreadById } from './threads.svelte';
 import { findPaneShowingThread, getPane, openThreadInPane } from './panes.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
 import { closeWorkflowsOverlay } from './workflowsOverlay.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 
 async function resolveThread(threadId: string): Promise<Thread | null> {
@@ -53,7 +53,7 @@ export async function openWorkflowThreadById(threadId: string): Promise<string |
     }
     return await openWorkflowThread(thread);
   } catch (err) {
-    addToast('error', userFacingError(err, 'Could not open that thread.'));
+    addErrorToast(userFacingError(err, 'Could not open that thread.'), err);
     return null;
   }
 }
@@ -71,7 +71,7 @@ export async function takeOverWorkflowUnit(
   try {
     await WorkflowTakeOverUnit(itemId, unitId);
   } catch (err) {
-    addToast('error', userFacingError(err, `Could not take over ${unitId}.`));
+    addErrorToast(userFacingError(err, `Could not take over ${unitId}.`), err);
     return null;
   }
   return openWorkflowThreadById(threadId);

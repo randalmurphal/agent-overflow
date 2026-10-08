@@ -1,7 +1,7 @@
 // Preferences owned by this frontend, independent of any paired computer.
 // These values survive forgetting the first host and remain writable while
 // every host is offline. Never store credentials here.
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 
 const PREFIX = 'agent-overflow:frontend:';
 let failureShown = false;
@@ -20,10 +20,10 @@ export function writeFrontendValue(key: string, value: unknown): boolean {
     localStorage.setItem(PREFIX + key, JSON.stringify(value));
     failureShown = false;
     return true;
-  } catch {
+  } catch (err) {
     if (!failureShown) {
       failureShown = true;
-      addToast('error', 'This device could not save its preferences. Changes may be lost when the app closes.');
+      addErrorToast('This device could not save its preferences. Changes may be lost when the app closes.', err);
     }
     return false;
   }

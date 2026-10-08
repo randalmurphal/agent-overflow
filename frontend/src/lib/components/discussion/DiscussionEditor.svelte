@@ -10,7 +10,7 @@
     UpdateDiscussion,
     DeleteDiscussion,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ParticipantForm from './ParticipantForm.svelte';
   import Button from '../primitives/Button.svelte';
@@ -106,7 +106,7 @@
       onSaved(draft);
     } catch (rpcErr) {
       console.error('Failed to save discussion:', rpcErr);
-      addToast('error', `Failed to save discussion: ${rpcErr}`);
+      addErrorToast(`Failed to save discussion: ${rpcErr}`, rpcErr);
     } finally {
       saving = false;
     }
@@ -121,7 +121,7 @@
       onDeleted?.(initial);
     } catch (rpcErr) {
       console.error('Failed to delete discussion:', rpcErr);
-      addToast('error', `Failed to delete discussion: ${rpcErr}`);
+      addErrorToast(`Failed to delete discussion: ${rpcErr}`, rpcErr);
     } finally {
       deleting = false;
       showDeleteConfirm = false;

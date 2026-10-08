@@ -1,7 +1,7 @@
 import { OpenExternalURL } from '../stores/bindings';
 import { threadActsHere } from '../stores/attachedBackends.svelte';
 import { browserCompanionAct, browserCompanionState } from '../stores/browserCompanion.svelte';
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
@@ -114,7 +114,7 @@ export async function handleExternalURL(raw: string): Promise<boolean> {
     await OpenExternalURL(safeURL);
     return true;
   } catch (err) {
-    addToast('error', `Failed to open browser: ${errString(err)}`);
+    addErrorToast(`Failed to open browser: ${errString(err)}`, err);
     return true;
   }
 }

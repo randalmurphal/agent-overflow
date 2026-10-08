@@ -163,7 +163,7 @@
   function ctx(ws: WorkspaceRef): GitActionCtx {
     return {
       workspace: ws,
-      reportError: (msg) => pane.setGeneralError(msg),
+      reportError: (msg, err) => pane.setGeneralError(msg, err),
       refreshStatus: () => pane.gitStatus.refreshNow(),
     };
   }

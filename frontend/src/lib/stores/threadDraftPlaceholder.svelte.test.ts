@@ -61,6 +61,22 @@ describe('threadDraftPlaceholder', () => {
     } finally { pane.clear(); resetStagedBackends(); }
   });
 
+  it('keeps the create failure behind its banner', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pane = createThreadPane();
+    setBindingMock('CreateThread', async () => {
+      throw new Error('disk full');
+    });
+    try {
+      pane.startDraftPlaceholder({ id: 'project-1', path: '/repo', name: 'Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, 'chat');
+      expect(await pane.ensureMaterializedThread()).toBeNull();
+      expect(pane.generalError).toBe('Failed to create thread: disk full');
+      const report = pane.paneErrorList.find((e) => e.kind === 'general')?.captured?.report;
+      expect(report?.context).toBe('Failed to create thread: disk full');
+      expect(report?.chain).toEqual(['disk full']);
+    } finally { pane.clear(); consoleError.mockRestore(); }
+  });
+
   it('drops stale placeholder worktree intent when "+ New" replaces an unsent draft', () => {
     // Repeated "+ New" without typing would otherwise leak worktree
     // entries keyed by the prior placeholder id — they're unreachable

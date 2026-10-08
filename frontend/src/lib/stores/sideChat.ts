@@ -21,7 +21,7 @@ import {
   syncThread,
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import { userFacingError } from '../utils/userFacingError';
@@ -87,7 +87,7 @@ export async function keepSideChat(paneId: string): Promise<void> {
     promoted = (await PromoteScratchThread(threadId)) as Thread;
   } catch (err) {
     console.error('Failed to keep the side chat:', err);
-    addToast('error', userFacingError(err, 'Failed to keep this side chat.'));
+    addErrorToast(userFacingError(err, 'Failed to keep this side chat.'), err);
     return;
   }
   const insertIndex = getPaneLayoutItems().findIndex((item) => item.paneId === paneId);

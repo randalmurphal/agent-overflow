@@ -37,7 +37,7 @@ import {
   WorkflowListItems,
   WorkflowListUnresolvedItems,
 } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { patchWorkflowItems, patchWorkflowSoftStop, workflowAttentionCount } from './workflowData';
 import { readComputerRows, retainUnavailableComputerRows } from './computerRows';
@@ -197,7 +197,7 @@ export async function loadWorkflowsOverlayData(projectIds: readonly string[]): P
       loadError = null;
     } catch (err) {
       loadError = userFacingError(err, 'Could not load workflows.');
-      addToast('error', loadError);
+      addErrorToast(loadError, err);
     } finally {
       loading = false;
       inFlight = null;
@@ -284,7 +284,7 @@ export async function loadWorkflowDetail(itemId: string, force = false): Promise
       details = new Map(details).set(itemId, detail);
       return detail;
     } catch (err) {
-      if (detailLoads.get(itemId) === pending) addToast('error', userFacingError(err, 'Could not load this run.'));
+      if (detailLoads.get(itemId) === pending) addErrorToast(userFacingError(err, 'Could not load this run.'), err);
       return null;
     } finally {
       if (detailLoads.get(itemId) === pending) detailLoads.delete(itemId);

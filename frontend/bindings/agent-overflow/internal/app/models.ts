@@ -1979,6 +1979,41 @@ export class EditorInfo {
 }
 
 /**
+ * ErrorLogLines answers an error report: the backend log lines leading up
+ * to and including the line that recorded the failure with this reference,
+ * `(id: <ref>)`. Found is false once that line has aged out of the
+ * retained log.
+ */
+export class ErrorLogLines {
+    "lines": string[];
+    "found": boolean;
+
+    /** Creates a new ErrorLogLines instance. */
+    constructor($$source: Partial<ErrorLogLines> = {}) {
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+        if (!("found" in $$source)) {
+            this["found"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ErrorLogLines instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ErrorLogLines {
+        const $$createField0_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField0_0($$parsedSource["lines"]);
+        }
+        return new ErrorLogLines($$parsedSource as Partial<ErrorLogLines>);
+    }
+}
+
+/**
  * ForgeAttachment is what FetchForgeAttachment answers: the bytes of one
  * forge-hosted attachment (an image, video or file a PR/MR body or comment
  * references) are fetched through the user's forge CLI on the selected

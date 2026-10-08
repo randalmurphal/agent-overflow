@@ -42,7 +42,7 @@ import { remoteAccessAvailable } from '../transport/buildVariant';
 import { backendById, detachBackend } from '../transport/backends';
 import { purgeClientState } from '../transport/clientPurge';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import {
   descriptorForAttachedId,
@@ -243,7 +243,7 @@ export function applyBackendSetChange(
   if (origin !== HOME_BACKEND || !evt) return;
   if (evt.action === 'membership') {
     revision++;
-    void loadSystems().catch((err) => addToast('error', `Could not refresh device connections: ${errString(err)}`));
+    void loadSystems().catch((err) => addErrorToast(`Could not refresh device connections: ${errString(err)}`, err));
     return;
   }
   if (!evt.id) return;
@@ -262,7 +262,7 @@ export function applyBackendSetChange(
   // publishing the superseded answer over the fresh one.
   if (evt.action === 'renamed' || evt.action === 'device-name-sync') {
     revision++;
-    void loadSystems().catch((err) => addToast('error', `Could not refresh device connections: ${errString(err)}`));
+    void loadSystems().catch((err) => addErrorToast(`Could not refresh device connections: ${errString(err)}`, err));
   }
 }
 
@@ -314,7 +314,7 @@ export function applyBackendAttach(
     // The profile id IS the machine's UUID (attachedbackends.Attachment.ID
     // is the link's backend id), so the entry answers to it at once.
     if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name, '', '', evt.id));
-    if (hasScope('host')) void loadSystems().catch((err) => addToast('error', errString(err)));
+    if (hasScope('host')) void loadSystems().catch((err) => addErrorToast(errString(err), err));
     return { name, error: '' };
   }
   // A failure for a row this page no longer holds is not this page's to

@@ -16,7 +16,7 @@
     GetPayloadData,
     SendPlanRevisionComments,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import type { Thread } from '../../types/models';
   import {
@@ -200,7 +200,7 @@
       await refreshPlanComments(tid, planId);
     } catch (err) {
       console.error('Failed to send plan comments:', err);
-      addToast('error', 'Failed to send comments');
+      addErrorToast('Failed to send comments', err);
     } finally {
       sendingDrafts = false;
     }

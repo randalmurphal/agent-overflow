@@ -13,3 +13,8 @@ secrets as metadata.
 `NewProviderEventLogger` is enabled only by the `provider` or `all` debug
 topic. `NewEngineEventLogger` is always on. `PruneOlderThan` removes eligible
 daily log files and leaves unrelated files alone. Tests use temporary roots.
+
+Every shell installs `Output` as the process log output. It retains the most
+recent lines in a fixed byte budget so an error report can include what led up
+to a failure (`RecentLogLinesBefore`); retained lines carry whatever the log
+does, so they are read only by host-scoped callers.

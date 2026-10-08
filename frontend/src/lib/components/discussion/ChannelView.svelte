@@ -5,7 +5,7 @@
   import { PostChannelMessage, ConcludeDiscussion } from '../../stores/bindings';
   import { refreshDiscussionChannel, DISCUSSION_CHANNEL_FETCH_LIMIT } from '../../stores/eventsDiscussion';
   import { getSettings } from '../../stores/settings.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { installTimelineReconnect } from '../chat/timelineReconnect';
@@ -241,7 +241,7 @@
     } catch (err) {
       console.error('Failed to post channel message:', err);
       composing = savedText;
-      addToast('error', `Failed to post message: ${errString(err)}`);
+      addErrorToast(`Failed to post message: ${errString(err)}`, err);
     } finally {
       posting = false;
     }
@@ -264,7 +264,7 @@
       pane.applyChannelState(payload as ChannelStatePayload);
     } catch (err) {
       console.error('Failed to conclude discussion:', err);
-      addToast('error', `Failed to conclude discussion: ${errString(err)}`);
+      addErrorToast(`Failed to conclude discussion: ${errString(err)}`, err);
     } finally {
       concluding = false;
     }

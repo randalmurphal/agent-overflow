@@ -4,7 +4,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitActionResult } from '../../types/git';
   import { GenerateCommitMessage, GitCommit } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { FIELD_CLASS } from './dialogFieldClass';
 
   let { pane, open, onClose }: {
@@ -51,7 +51,7 @@
       body = message.body ?? '';
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      addToast('error', `Couldn't generate commit message: ${reason}`);
+      addErrorToast(`Couldn't generate commit message: ${reason}`, err);
     } finally {
       generating = false;
     }

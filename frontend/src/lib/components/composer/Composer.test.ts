@@ -1160,6 +1160,34 @@ describe('<Composer>', () => {
     expect(queue.mock.calls[0][2]).not.toEqual(queue.mock.calls[1][2]);
   });
 
+  it('keeps a failed workspace preparation behind its banner and does not send', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pane = await buildPane(makeTestThread({ branch: 'main', projectId: 'project-1' }));
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
+    const prepare = setBindingMock('PrepareThreadWorktree', async () => {
+      throw new Error('branch already exists');
+    });
+    const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'hello world' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => expect(pane.generalError).toBe('Failed to prepare the workspace: branch already exists'));
+    const report = pane.paneErrorList.find((e) => e.kind === 'general')?.captured?.report;
+    expect(report?.context).toBe('Failed to prepare the workspace: branch already exists');
+    expect(report?.chain).toEqual(['branch already exists']);
+    expect(prepare).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(draft.content).toBe('hello world');
+    consoleError.mockRestore();
+  });
+
   it('sends the draft and clears it on success', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();

@@ -18,7 +18,7 @@
     UNBOUND_CHORD,
     type KeybindingRule,
   } from '../../stores/keybindings.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
   import { GHOST_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
@@ -113,7 +113,7 @@
         addToast('success', `Rebound ${rule.command} to ${formatChord(newKey)}`);
       }
     } catch (err) {
-      addToast('error', `Failed to save keybinding: ${errString(err)}`);
+      addErrorToast(`Failed to save keybinding: ${errString(err)}`, err);
     } finally {
       capturingFor = null;
       saving = false;
@@ -127,7 +127,7 @@
       await resetKeybindingsToDefaults();
       addToast('info', 'Keybindings reset to defaults');
     } catch (err) {
-      addToast('error', `Reset failed: ${errString(err)}`);
+      addErrorToast(`Reset failed: ${errString(err)}`, err);
     } finally {
       saving = false;
     }

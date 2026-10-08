@@ -10,7 +10,7 @@ import {
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
@@ -277,7 +277,7 @@ export async function openTerminalThread(
     thread = await (projectId ? withBackendTarget(requireEntityBackend(projectBackend(projectId)), start) : start());
   } catch (err) {
     console.error('StartTerminal failed', err);
-    addToast('error', `Could not start terminal: ${errString(err)}`);
+    addErrorToast(`Could not start terminal: ${errString(err)}`, err);
     return null;
   }
   // Reveal where the new row will land (the possibly-collapsed project) so

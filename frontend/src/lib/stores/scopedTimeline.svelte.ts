@@ -27,7 +27,7 @@ import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { parseJsonObject } from '../utils/parseJsonObject';
 import { errString } from '../utils/errors';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 
 /** A surface owns its reading window, run expansion, payload leases and reveal state. */
 export function createScopedTimeline(thread: Thread, selection: TimelineSelection, key: string) {
@@ -96,7 +96,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     reloadWindow: () => refresh(),
     reportFetchFailure: (message, error, silent) => {
       reportFrontendDiagnostic('scoped timeline member load failed', errString(error));
-      if (!silent) addToast('error', message);
+      if (!silent) addErrorToast(message, error);
     },
   });
   const stream = createThreadItemStreamApply({

@@ -92,13 +92,15 @@ describe('forkThreadAction', () => {
   });
 
   it('reports the user-facing error on fork failure', async () => {
+    const failure = new Error('source thread is missing a session reference');
     setBindingMock('ForkThread', vi.fn(async () => {
-      throw new Error('source thread is missing a session reference');
+      throw failure;
     }));
     const ctx = makeCtx({});
     await forkThreadAction(ctx);
     expect(ctx.reportError).toHaveBeenCalledTimes(1);
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/missing a session/);
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(failure);
     expect(ctx.switchPane).not.toHaveBeenCalled();
   });
 });

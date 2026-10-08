@@ -12,7 +12,7 @@
     TerminalHandle,
     TerminalSessionSummary,
   } from '../../types/terminal';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { errString } from '../../utils/errors';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
@@ -138,7 +138,7 @@
       // A surface that is gone asked for nothing any more: its thread may have
       // been deleted while the open was in flight.
       if (!canUseTerminalResult(threadId, workspacePath)) return;
-      addToast('error', `Could not open terminal: ${userFacingError(err)}`);
+      addErrorToast(`Could not open terminal: ${userFacingError(err)}`, err);
     }
   }
 

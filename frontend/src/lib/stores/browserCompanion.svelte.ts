@@ -200,6 +200,12 @@ export function noteBrowserActionError(threadId: string, message: string): void 
   if (previous && previous.actionError !== message) store.apply(threadId, { ...previous, actionError: message });
 }
 
+/** A refused browser action: its banner text and the error behind it. */
+export interface BrowserActionFailure {
+  error: string;
+  cause: unknown;
+}
+
 /**
  * One chrome action against the thread's pages. The backend answers with the
  * next state, which lands like any push; a refusal lands in `actionError` (the
@@ -210,7 +216,7 @@ export function noteBrowserActionError(threadId: string, message: string): void 
 export async function browserCompanionAct(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number },
-): Promise<string | null> {
+): Promise<BrowserActionFailure | null> {
   noteBrowserActionError(threadId, '');
   try {
     const state = await BrowserCompanionDo(
@@ -227,7 +233,7 @@ export async function browserCompanionAct(
   } catch (err) {
     const message = errString(err);
     noteBrowserActionError(threadId, message);
-    return message;
+    return { error: message, cause: err };
   }
 }
 

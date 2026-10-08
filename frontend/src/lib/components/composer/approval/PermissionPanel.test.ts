@@ -110,8 +110,9 @@ describe('<PermissionPanel>', () => {
   });
 
   it('surfaces a resolver rejection via onError', async () => {
+    const failure = new Error('nope');
     const onResolve = makeResolver(async () => {
-      throw new Error('nope');
+      throw failure;
     });
     const onError = vi.fn();
     const { getByTestId } = render(PermissionPanel, {
@@ -126,6 +127,7 @@ describe('<PermissionPanel>', () => {
     await Promise.resolve();
     expect(onError).toHaveBeenCalled();
     expect(onError.mock.calls[0][0]).toMatch(/Failed to grant permission/i);
+    expect(onError.mock.calls[0][1]).toBe(failure);
   });
 
   it('moves focus across actions with j/k and arrow keys', async () => {

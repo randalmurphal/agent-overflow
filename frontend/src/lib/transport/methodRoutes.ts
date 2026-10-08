@@ -116,6 +116,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	875977146: 'thread', // GetDraft
 	949275134: 'thread', // GetEditDiffContextLines
 	1655853383: 'selected', // GetEditorSettings
+	1581952506: 'home', // GetErrorLogLines
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	3247514443: 'selected', // GetLocalImageData

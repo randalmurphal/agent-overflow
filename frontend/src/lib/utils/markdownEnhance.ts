@@ -22,7 +22,7 @@
 
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { openInEditor } from '../stores/openInEditor';
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast } from '../stores/toast.svelte';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
 import { FORGE_ATTACHMENT_HREF_PREFIX, parseForgeAttachmentHref } from './forgeAttachments';
@@ -107,7 +107,7 @@ function handlePathLinkClick(event: MouseEvent): void {
   // transition even though ChatMarkdown stops emitting new path links.
   const backend = link.closest<HTMLElement>('[data-computer]')?.dataset.computer ?? HOME_BACKEND;
   if (isHTMLFile(parsed.path) && canPreviewFiles(backend)) {
-    void openFilePreview(backend, parsed.path, parsed.workspacePath).catch(err => addToast('error', errString(err)));
+    void openFilePreview(backend, parsed.path, parsed.workspacePath).catch(err => addErrorToast(errString(err), err));
     return;
   }
   if (!hasScope('host', backend)) return;
@@ -142,7 +142,7 @@ async function invokePathLink(
     // catalog → $EDITOR). Path links never target a specific editor.
     await openInEditor(backend, path, line, col, workspacePath, '');
   } catch (err) {
-    addToast('error', errString(err));
+    addErrorToast(errString(err), err);
   }
 }
 

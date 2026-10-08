@@ -50,7 +50,7 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { errString } from '../utils/errors';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
@@ -226,7 +226,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setContextWindow: (next) => {
       contextWindow = next;
     },
-    setGeneralError: (message) => paneErrors.set(message, 'general'),
+    setGeneralError: (message, err) => paneErrors.set(message, 'general', err),
     snapshotForClose: snapshotPaneForClose,
     clearPane,
     switchLoad: () => switchLoad,
@@ -338,7 +338,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         return;
       }
       console.error(`${message}:`, err);
-      addToast('error', message);
+      addErrorToast(message, err);
     },
   });
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
@@ -1034,7 +1034,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         await switchLoad.refreshFromBackend();
       } catch (err) {
         if (switchGeneration === generation && thread?.id === id) {
-          paneErrors.set(`Could not load this conversation from its new computer: ${String(err)}`);
+          paneErrors.set(`Could not load this conversation from its new computer: ${String(err)}`, 'general', err);
         }
       }
     },
@@ -1375,18 +1375,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * renders as its own row beneath it. `null` keeps its historical
      * meaning of "clear every banner".
      */
-    setGeneralError(message: string | null): void {
+    setGeneralError(message: string | null, err?: unknown): void {
       if (message === null) paneErrors.clear();
-      else paneErrors.set(message, 'general');
+      else paneErrors.set(message, 'general', err);
     },
 
-    setSessionError(message: string): void {
-      paneErrors.set(message, 'session');
+    setSessionError(message: string, err?: unknown): void {
+      paneErrors.set(message, 'session', err);
     },
 
-    setHistoryLoadError(message: string | null): void {
+    setHistoryLoadError(message: string | null, err?: unknown): void {
       if (message === null) paneErrors.clear('history-load');
-      else paneErrors.set(message, 'history-load');
+      else paneErrors.set(message, 'history-load', err);
     },
 
     /** The banner's Dismiss button: clears the surface, whatever is on it. */

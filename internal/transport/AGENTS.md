@@ -45,7 +45,9 @@ development server.
 
 Browser-facing credential failures use the documented non-disclosing HTTP
 shape. RPC authorization failures use the wire error envelope. Do not expose
-internal errors, paths, or panic text; log full details with a correlation ID.
+internal errors, paths, or panic text; log full details with a correlation ID
+and return it as `ErrorDetail.ref` (see
+[RPC failures](../../docs/architecture/transport.md#rpc-failures)).
 Classify missing durable rows as `not_found`, distinct from
 `method_not_found`.
 

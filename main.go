@@ -106,7 +106,7 @@ func main() {
 	// An updater helper is an internal re-exec, not a desktop or CLI launch.
 	// Handle it before session guards, discovery, logging or provider setup.
 	updater.HandleHelperMode()
-	log.SetOutput(logging.WithHTTPDiagnostics(log.Writer()))
+	log.SetOutput(logging.Output(log.Writer()))
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
 	}
@@ -775,7 +775,7 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	// done with us. Routing log.Printf to stderr keeps the diagnostics
 	// where the launcher can still surface them via its log mirror.
 	os.Stdout = os.Stderr
-	log.SetOutput(logging.WithHTTPDiagnostics(os.Stderr))
+	log.SetOutput(logging.Output(os.Stderr))
 
 	// Boot the App's subsystems directly. Wails normally calls
 	// ServiceStartup with a context that lives until shutdown — we

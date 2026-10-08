@@ -53,6 +53,7 @@ const h = vi.hoisted(() => {
     }),
     expandProject: vi.fn(),
     addToast: vi.fn(),
+    addErrorToast: vi.fn(),
   };
 });
 
@@ -76,6 +77,7 @@ vi.mock('./sidebar.svelte', async (importOriginal) => ({
 vi.mock('./toast.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./toast.svelte')>()),
   addToast: h.addToast,
+  addErrorToast: h.addErrorToast,
 }));
 
 import { openTerminalThread } from './threadCreation.svelte';
@@ -98,6 +100,7 @@ beforeEach(() => {
   h.mountThreadInPane.mockClear();
   h.expandProject.mockClear();
   h.addToast.mockClear();
+  h.addErrorToast.mockClear();
   // openTerminalThread console.error's the failure before toasting; keep the
   // error-path test quiet. Restore only THIS spy in afterEach so the hoisted
   // vi.fn() implementations aren't wiped by a blanket restoreAllMocks.
@@ -182,23 +185,27 @@ describe('openTerminalThread', () => {
     } finally { resetStagedBackends(); }
 
     expect(h.startTerminal).not.toHaveBeenCalled();
-    expect(h.addToast).toHaveBeenCalledTimes(1);
-    expect(h.addToast.mock.calls[0]![1]).toContain('computer that owns');
+    expect(h.addToast).not.toHaveBeenCalled();
+    expect(h.addErrorToast).toHaveBeenCalledTimes(1);
+    expect(h.addErrorToast.mock.calls[0]![0]).toContain('computer that owns');
+    expect(h.addErrorToast.mock.calls[0]![1]).toEqual(expect.any(Error));
     expect(h.openEmptyPane).not.toHaveBeenCalled();
   });
 
   it('toasts an error and returns null without opening a pane when StartTerminal fails', async () => {
+    const failure = new Error('boom');
     h.startTerminal.mockImplementationOnce(async () => {
-      throw new Error('boom');
+      throw failure;
     });
 
     const pane = await openTerminalThread({ projectId: 'proj-1', cwd: '/work' });
 
     expect(pane).toBeNull();
-    expect(h.addToast).toHaveBeenCalledTimes(1);
-    const [type, message] = h.addToast.mock.calls[0]!;
-    expect(type).toBe('error');
+    expect(h.addToast).not.toHaveBeenCalled();
+    expect(h.addErrorToast).toHaveBeenCalledTimes(1);
+    const [message, err] = h.addErrorToast.mock.calls[0]!;
     expect(message).toContain('boom');
+    expect(err).toBe(failure);
 
     // The pane machinery must NOT run on a failed create — no orphan empty pane,
     // no stale focus latch, no sidebar expansion.

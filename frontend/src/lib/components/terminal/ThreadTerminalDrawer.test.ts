@@ -77,6 +77,7 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
 
 vi.mock('../../stores/toast.svelte', () => ({
   addToast: vi.fn(),
+  addErrorToast: vi.fn(),
 }));
 
 function makeSurface(threadId = 'thread-A') {
@@ -294,8 +295,8 @@ describe('ThreadTerminalDrawer', () => {
   // A pane whose thread its computer deleted closes while the open is in
   // flight: the refusal answers a surface that is gone and reports nothing.
   it('reports a failed open only while its surface remains', async () => {
-    const { addToast } = await import('../../stores/toast.svelte');
-    vi.mocked(addToast).mockClear();
+    const { addErrorToast } = await import('../../stores/toast.svelte');
+    vi.mocked(addErrorToast).mockClear();
     const rejects: Array<(err: Error) => void> = [];
     const bindings = await import('../../stores/bindings');
     (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
@@ -310,8 +311,10 @@ describe('ThreadTerminalDrawer', () => {
       await tick();
       getByTestId('terminal-open').click();
       await waitFor(() => expect(rejects).toHaveLength(1));
-      rejects[0]!(new Error('This terminal has ended.'));
-      await waitFor(() => expect(addToast).toHaveBeenCalledTimes(1));
+      const failure = new Error('This terminal has ended.');
+      rejects[0]!(failure);
+      await waitFor(() => expect(addErrorToast).toHaveBeenCalledTimes(1));
+      expect(addErrorToast).toHaveBeenCalledWith(expect.stringContaining('Could not open terminal'), failure);
 
       getByTestId('terminal-open').click();
       await waitFor(() => expect(rejects).toHaveLength(2));
@@ -319,7 +322,7 @@ describe('ThreadTerminalDrawer', () => {
       rejects[1]!(new Error('This terminal has ended.'));
       await Promise.resolve();
       await tick();
-      expect(addToast).toHaveBeenCalledTimes(1);
+      expect(addErrorToast).toHaveBeenCalledTimes(1);
     } finally {
       errorSpy.mockRestore();
     }

@@ -53,7 +53,7 @@ vi.mock('../../stores/bindings', () => ({
   },
 }));
 
-vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 // Swap the real xterm-backed body for a stub whose focus() records the tab it
 // was called for. The surface binds it and calls bodyEl.focus() from its rAF

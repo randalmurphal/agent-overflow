@@ -17,7 +17,7 @@
   import { removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { retainedNotice } from '../../utils/projectCleanup';
   import { userFacingError } from '../../utils/userFacingError';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -79,7 +79,7 @@
       addToast('info', `Archived project "${label}".`);
     } catch (err) {
       console.error('Failed to archive project:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     }
   }
 
@@ -90,7 +90,7 @@
       // Empty editorID → the user's default editor.
       await openInEditor(projectBackend(project.project.id) ?? HOME_BACKEND, project.project.path, 0, 0, '', '');
     } catch (err) {
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     }
   }
 
@@ -107,9 +107,9 @@
       }
     } catch (err) {
       console.error('Failed to inspect project before delete:', err);
-      addToast(
-        'error',
+      addErrorToast(
         userFacingError(err, 'Could not work out what deleting this project involves.'),
+        err,
       );
     }
   }
@@ -133,7 +133,7 @@
       if (notice) addToast('warning', notice, 12000);
     } catch (err) {
       console.error('Failed to delete project:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       deleting = false;
     }

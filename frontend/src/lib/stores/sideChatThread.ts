@@ -6,7 +6,7 @@
 
 import { DeleteThread } from './bindings';
 import { removeThread } from './threads.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 
 /**
@@ -23,9 +23,9 @@ export async function deleteSideChatThread(threadId: string): Promise<void> {
     removeThread(threadId);
   } catch (err) {
     console.error('Failed to delete the side chat thread:', err);
-    addToast(
-      'error',
+    addErrorToast(
       userFacingError(err, 'The side chat closed but its thread could not be deleted.'),
+      err,
     );
   }
 }

@@ -11,7 +11,7 @@ import { currentThreadRow, resolveThreadBackend, noteThread, workflowItemBackend
 import { hasScope } from '../transport/scopes';
 import { openThreadInPane } from './panes.svelte';
 import { openWorkflowRunInOverlay } from './workflowsOverlay.svelte';
-import { addToast, removeToast } from './toast.svelte';
+import { addErrorToast, removeToast } from './toast.svelte';
 import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
@@ -94,7 +94,7 @@ function createAppNotificationActivationQueue() {
       const reason = isTemporarilyUnavailableError(error) || (error instanceof DisconnectedError && !error.terminal)
         ? 'Its computer is unavailable. Reconnect, then try again.'
         : errString(error).slice(0, 500);
-      retryToast = addToast('error', `Could not open notification. ${reason}`, 0, {
+      retryToast = addErrorToast(`Could not open notification. ${reason}`, error, 0, {
         label: 'Try again',
         run: () => applyNotificationActivated(target),
       });

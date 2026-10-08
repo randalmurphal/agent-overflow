@@ -31,7 +31,7 @@
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
   import { syncThread } from '../../../stores/panes.svelte';
   import { getSettings } from '../../../stores/settings.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { hiddenModelSlugs } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
@@ -73,7 +73,7 @@
     } catch (err) {
       const label = getProviderDefinition(provider).label;
       console.error('GetModelsForProvider failed:', err);
-      addToast('error', `Failed to load ${label} models`);
+      addErrorToast(`Failed to load ${label} models`, err);
     }
   }
 
@@ -178,7 +178,7 @@
       await setChatBarFavorite(fav, starred);
     } catch (err) {
       console.error('SetChatBarFavorite failed:', err);
-      addToast('error', `Failed to update favorites: ${errString(err)}`);
+      addErrorToast(`Failed to update favorites: ${errString(err)}`, err);
     }
   }
 
@@ -223,7 +223,7 @@
       addToast('info', `Started discussion "${fav.label}"`);
     } catch (err) {
       console.error('StartDiscussionByID failed:', err);
-      addToast('error', `Failed to start discussion: ${errString(err)}`);
+      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
     }
   }
 

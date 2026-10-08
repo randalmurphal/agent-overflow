@@ -11,7 +11,7 @@
   // pure view state and stays live.
 
   import { WorkflowSetGlobalPause } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { hasScope } from '../../transport/scopes';
@@ -45,10 +45,11 @@
       }));
       const failed = results.flatMap((result, index) => result.status === 'rejected'
         ? [`${targets[index].name}: ${userFacingError(result.reason, 'Could not change pause state.')}`] : []);
-      if (failed.length) addToast('error', failed.join('\n'));
+      const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (rejected) addErrorToast(failed.join('\n'), rejected.reason);
       else addToast('info', next ? 'Paused — no new phases start; in-flight turns finish' : 'Resumed — phases start again');
     } catch (err) {
-      addToast('error', userFacingError(err, 'Could not change the global pause.'));
+      addErrorToast(userFacingError(err, 'Could not change the global pause.'), err);
     } finally {
       pausing = false;
     }

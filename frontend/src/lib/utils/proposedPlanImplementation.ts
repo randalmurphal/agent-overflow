@@ -13,7 +13,7 @@ import { mountThreadInPane, syncThread } from '../stores/panes.svelte';
 import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast, addToast } from '../stores/toast.svelte';
 import type { SourceProposedPlan, Thread } from '../types/models';
 import { errString } from './errors';
 import { sameNormalizedPath } from './path';
@@ -74,7 +74,7 @@ export async function implementProposedPlan(
   } catch (err) {
     console.error(`${failureLabel}:`, err);
     projectSendResolved(pane.threadId, { error: true });
-    addToast('error', `${failureLabel}: ${errString(err)}`);
+    addErrorToast(`${failureLabel}: ${errString(err)}`, err);
     return false;
   }
 }
@@ -209,7 +209,7 @@ export async function implementProposedPlanInNewThread(
     return true;
   } catch (err) {
     console.error(`${failureLabel}:`, err);
-    addToast('error', `${failureLabel}: ${errString(err)}`);
+    addErrorToast(`${failureLabel}: ${errString(err)}`, err);
     return false;
   }
 }

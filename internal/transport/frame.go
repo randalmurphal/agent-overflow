@@ -544,6 +544,22 @@ type FrameError struct {
 	// that refused (app.BackgroundKillAgent), and a client validates it as
 	// untrusted input.
 	BackgroundAgents json.RawMessage `json:"backgroundAgents,omitempty"`
+	// Detail is the diagnostic record of a method failure: present on
+	// method_error, temporarily_unavailable, internal and every reviewed
+	// (errorsx.Public) failure, absent on refusals the caller decides on
+	// (authorization, transfers, not_found, already_handled).
+	Detail *ErrorDetail `json:"detail,omitempty"`
+}
+
+// ErrorDetail identifies one failure for the person who saw it. Ref
+// matches the backend log line that holds the full error, `(id: <ref>)`.
+// Chain is the error's wrap layers, outermost first (errorsx.Chain); it
+// carries internal prose, so only a loopback caller receives it.
+type ErrorDetail struct {
+	Ref    string   `json:"ref"`
+	Method string   `json:"method"`
+	At     int64    `json:"at"`
+	Chain  []string `json:"chain,omitempty"`
 }
 
 type TransferRef struct {

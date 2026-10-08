@@ -18,7 +18,7 @@
     TerminateCodexBackgroundTerminal,
     type BackgroundTaskStop,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import {
     getProviderDefinition,
     type ProviderBackgroundStop,
@@ -188,7 +188,7 @@
         }
       }
     } catch (err) {
-      addToast('error', `Failed to stop task: ${errString(err)}`);
+      addErrorToast(`Failed to stop task: ${errString(err)}`, err);
     } finally {
       if (!keepMark) markStopping([rowId], false);
     }
@@ -263,11 +263,11 @@
         : StopBackgroundTasks(id, named.map((task) => task.launch!.id));
       const rowStops = oneByOne.map((task) => onStopRow(task.rowId, trayRowStopTarget(task, backgroundStop)!));
       const [stops, cancels] = await Promise.allSettled([providerStop, cancelRemoteJobs(id, remotes), ...rowStops]);
-      if (stops.status === 'rejected') addToast('error', `Failed to stop tasks: ${errString(stops.reason)}`);
+      if (stops.status === 'rejected') addErrorToast(`Failed to stop tasks: ${errString(stops.reason)}`, stops.reason);
       else renderStopResults(named, stops.value ?? []);
       const remoteFailures = cancels.status === 'rejected' ? [cancels.reason] : cancels.value;
       if (remoteFailures.length > 0) {
-        addToast('error', failureMessage(remoteFailures.length, errString(remoteFailures[0])));
+        addErrorToast(failureMessage(remoteFailures.length, errString(remoteFailures[0])), remoteFailures[0]);
       }
     } finally {
       markStopping(rowIds, false);

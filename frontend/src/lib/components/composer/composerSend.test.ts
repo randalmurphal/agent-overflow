@@ -89,8 +89,9 @@ describe('dispatchSend', () => {
     // materializes and dispatches (Composer.send), so this layer only owns
     // the send itself and its rollback.
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = new Error('send message: create branch: branch "BLITZ-187" already exists');
     const send = setBindingMock('SendMessageWithOptions', async () => {
-      throw new Error('send message: create branch: branch "BLITZ-187" already exists');
+      throw failure;
     });
     const restoreDraft = vi.fn(async () => {});
     const reportError = vi.fn();
@@ -114,6 +115,7 @@ describe('dispatchSend', () => {
     });
     expect(reportError).toHaveBeenCalledWith(
       'Failed to send message: Branch "BLITZ-187" already exists.',
+      failure,
     );
     expect(consoleErr).toHaveBeenCalled();
   });

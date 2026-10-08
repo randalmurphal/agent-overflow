@@ -14,7 +14,7 @@ import type {
   PaneSession,
 } from '../../stores/threadPaneRoles';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast } from '../../stores/toast.svelte';
 
 /** Landing-flash geometry, viewport-relative to the timeline wrapper. */
 export interface TimelineJumpFlash {
@@ -157,7 +157,7 @@ export function createTimelineJump(options: TimelineJumpOptions): TimelineJump {
       landed = await options.scrollToItem(id);
     } catch (err) {
       console.error('Failed to jump to message:', err);
-      addToast('error', 'Failed to jump to that message');
+      addErrorToast('Failed to jump to that message', err);
       return;
     }
     // A refused jump (superseded, item gone) must not flash — and must

@@ -36,7 +36,7 @@ import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
 import { copyToClipboard } from '../../utils/clipboard';
 import { handleExternalURL } from '../../utils/externalLinks';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
@@ -144,7 +144,7 @@ export function buildTerminal(
       })
       .catch((err) => {
         console.error('terminal: clipboard paste failed', err);
-        addToast('error', `Paste failed: ${errString(err)}`);
+        addErrorToast(`Paste failed: ${errString(err)}`, err);
       });
   }
 

@@ -18,7 +18,7 @@ import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 import { ListThreadGroups } from './bindings';
 import { onBackendDetached } from '../transport/backends';
 import { clearThreadGroupMembership } from './threads.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
 
@@ -110,7 +110,7 @@ export async function refreshThreadGroups(): Promise<void> {
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load thread groups:', err);
-    addToast('error', 'Failed to load thread groups');
+    addErrorToast('Failed to load thread groups', err);
   }
 }
 

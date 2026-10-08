@@ -13,7 +13,7 @@
   // explicit pick is persisted as the editor ID so a vendor binary
   // upgrade doesn't quietly switch selection.
   //
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
 
   import {
@@ -55,7 +55,7 @@
       // means we don't have to reject "VS Code (not installed)" here.
       await setEditorPreference(id, backend);
     } catch (err) {
-      addToast('error', `Failed to update editor preference: ${errString(err)}`);
+      addErrorToast(`Failed to update editor preference: ${errString(err)}`, err);
     } finally {
       saving = false;
     }

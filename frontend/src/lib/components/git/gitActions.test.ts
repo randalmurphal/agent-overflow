@@ -130,12 +130,13 @@ describe('runPushAction', () => {
   });
 
   it('surfaces a thrown error via errString', async () => {
+    const failure = new Error('network down');
     setBindingMock('GitPush', async () => {
-      throw new Error('network down');
+      throw failure;
     });
     const c = ctx();
     await runPushAction(c);
-    expect(c.reportError).toHaveBeenCalledWith('Push failed: network down');
+    expect(c.reportError).toHaveBeenCalledWith('Push failed: network down', failure);
   });
 
   it('refreshes status on success', async () => {
@@ -159,12 +160,13 @@ describe('runPullAction', () => {
   });
 
   it('surfaces a thrown error via errString', async () => {
+    const failure = new Error('offline');
     setBindingMock('GitPull', async () => {
-      throw new Error('offline');
+      throw failure;
     });
     const c = ctx();
     await runPullAction(c);
-    expect(c.reportError).toHaveBeenCalledWith('Pull failed: offline');
+    expect(c.reportError).toHaveBeenCalledWith('Pull failed: offline', failure);
   });
 });
 
@@ -219,12 +221,13 @@ describe('runRemoveWorktreeAction', () => {
   });
 
   it('surfaces a thrown error via errString and does not refresh', async () => {
+    const failure = new Error('worktree is dirty');
     setBindingMock('RemoveOtherWorktree', async () => {
-      throw new Error('worktree is dirty');
+      throw failure;
     });
     const c = removeCtx();
     await runRemoveWorktreeAction(c);
-    expect(c.reportError).toHaveBeenCalledWith('Remove worktree failed: worktree is dirty');
+    expect(c.reportError).toHaveBeenCalledWith('Remove worktree failed: worktree is dirty', failure);
     expect(c.refreshStatus).not.toHaveBeenCalled();
   });
 });

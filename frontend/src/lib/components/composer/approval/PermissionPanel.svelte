@@ -16,7 +16,7 @@
   interface Props {
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
-    onError?: (message: string) => void;
+    onError?: (message: string, err?: unknown) => void;
     responding?: boolean;
     /** Ungranted `approvals:respond`: every action is inert, never loading. */
     ungranted?: boolean;
@@ -37,7 +37,7 @@
         scope,
       }));
     } catch (err) {
-      onError?.(`Failed to grant permission: ${errString(err)}`);
+      onError?.(`Failed to grant permission: ${errString(err)}`, err);
     }
   }
 
@@ -48,7 +48,7 @@
         decision,
       }));
     } catch (err) {
-      onError?.(`Failed to respond to approval: ${errString(err)}`);
+      onError?.(`Failed to respond to approval: ${errString(err)}`, err);
     }
   }
 

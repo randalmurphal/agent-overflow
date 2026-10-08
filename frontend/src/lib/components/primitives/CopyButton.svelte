@@ -29,9 +29,9 @@
     write?: (value: string, event?: MouseEvent) => Promise<boolean>;
     label?: string;
     copiedLabel?: string;
-    size?: 'sm' | 'md';
+    size?: 'xs' | 'sm' | 'md';
     iconSize?: number;
-    variant?: 'ghost' | 'subtle';
+    variant?: 'ghost' | 'subtle' | 'tint';
     onError?: () => void;
     disabled?: boolean;
   }

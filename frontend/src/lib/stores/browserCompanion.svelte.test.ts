@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserCompanionState,
+  browserCompanionAct,
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
@@ -253,6 +254,15 @@ describe('pane.close on a browser companion', () => {
   it('falls through when the focused pane is not a browser companion', () => {
     focusPane('main');
     expect(closeFocusedBrowserTab()).toBe(false);
+  });
+
+  it('returns a refused action with the error behind it', async () => {
+    const failure = new Error('page is gone');
+    setBindingMock('BrowserCompanionDo', async () => {
+      throw failure;
+    });
+    expect(await browserCompanionAct('thread-browser', { kind: 'close', pageId: 'page-1' }))
+      .toEqual({ error: 'page is gone', cause: failure });
   });
 });
 

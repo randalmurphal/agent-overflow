@@ -333,6 +333,8 @@ describe('cold-open window sync', () => {
     expect(pane.items).toEqual([]);
     expect(pane.generalErrorKind).toBe('history-load');
     expect(pane.generalError).toBe('Thread history took too long to load.');
+    expect(pane.paneErrorList.find((e) => e.kind === 'history-load')?.captured?.report.code)
+      .toBe('temporarily_unavailable');
 
     expect(pane.loading).toBe(false);
     const retries = Promise.all([pane.retryHistoryLoad(), pane.retryHistoryLoad()]);
@@ -363,6 +365,8 @@ describe('cold-open window sync', () => {
 
     await pane.switchThread(makeThread({ id: THREAD_ID }));
     expect(pane.generalErrorKind).toBe('history-load');
+    expect(pane.paneErrorList.find((e) => e.kind === 'history-load')?.captured?.report.chain)
+      .toEqual(['database busy']);
     pane.setGeneralError('Rename failed');
 
     await pane.retryHistoryLoad();

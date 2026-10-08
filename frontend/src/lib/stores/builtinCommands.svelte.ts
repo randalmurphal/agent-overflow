@@ -20,7 +20,7 @@ import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './me
 import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
 import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
 import { toggleAccountSwitcher } from './accountSwitcher.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
@@ -185,7 +185,7 @@ function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionC
     isActive: pane.threadId === thread.id,
     clearPane: () => pane.clear(),
     switchPane: async (next) => { await openThreadInPane(next, pane); },
-    reportError: (msg) => pane.setGeneralError(msg),
+    reportError: (msg, err) => pane.setGeneralError(msg, err),
     replacePaneThread: (next) => pane.replaceThread(next),
   };
 }
@@ -457,7 +457,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           isActive: pane.threadId === t.id,
           clearPane: () => pane.clear(),
           switchPane: async (next) => { await openThreadInPane(next, pane); },
-          reportError: (msg) => pane.setGeneralError(msg),
+          reportError: (msg, err) => pane.setGeneralError(msg, err),
         });
       }),
   });
@@ -553,7 +553,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           const updated = (await UpdateThreadMode(t.id, next)) as Thread;
           syncThread(updated);
         } catch (err) {
-          addToast('error', userFacingError(err));
+          addErrorToast(userFacingError(err), err);
         }
       }),
   });
@@ -1003,7 +1003,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         })
         .catch((err) => {
           console.error('terminal: OpenTerminal (newTab) failed', err);
-          addToast('error', `Could not open terminal: ${userFacingError(err)}`);
+          addErrorToast(`Could not open terminal: ${userFacingError(err)}`, err);
         });
     },
   });
@@ -1097,7 +1097,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitPush(workspace);
           addToast('success', 'Pushed.');
         } catch (err) {
-          addToast('error', userFacingError(err));
+          addErrorToast(userFacingError(err), err);
         }
       }),
   });
@@ -1113,7 +1113,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitPull(workspace);
           addToast('success', 'Pulled.');
         } catch (err) {
-          addToast('error', userFacingError(err));
+          addErrorToast(userFacingError(err), err);
         }
       }),
   });

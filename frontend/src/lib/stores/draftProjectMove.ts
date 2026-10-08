@@ -11,7 +11,7 @@ import { seedDefaultWorktreeIntentForDraft, hasStagedWorktreeIntent, isWorktreeI
 import { setPaneBackend } from './selectedBackend.svelte';
 import { draftTextAndContextMatch, draftSnapshotMatchesPersistedState, forgetDraftSnapshotIfMatches, hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { moveDraftToComputer } from './draftProjectTransfer';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 
 export function draftThreadOptions(thread: Thread, projectId: string) {
@@ -102,7 +102,7 @@ export async function moveDraftProject(
       try {
         if (await DeleteEmptyDraftThread(destination.id)) removeThread(destination.id);
       } catch (error) {
-        addToast('error', `Could not clean up an empty destination draft: ${userFacingError(error)}`);
+        addErrorToast(`Could not clean up an empty destination draft: ${userFacingError(error)}`, error);
       }
     }
   }

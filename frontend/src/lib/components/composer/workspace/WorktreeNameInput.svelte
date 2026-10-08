@@ -23,7 +23,7 @@
   import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { isImeComposingEvent } from '../../../utils/imeComposition';
   import {
@@ -94,7 +94,7 @@
       }
     } catch (err) {
       console.error('apply worktree intent failed:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       applying = false;
     }

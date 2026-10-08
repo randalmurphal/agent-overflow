@@ -8,7 +8,7 @@
 // state. The factory exposes `getCopyableMarkdown` so the button can
 // fetch + normalize on click.
 
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { WriteWorkspaceFile } from '../stores/bindings';
 import type { WorkspaceRef } from '../types/git';
 import { buildProposedPlanMarkdownFilename, normalizePlanMarkdownForExport } from './proposedPlan';
@@ -76,7 +76,7 @@ export function createPlanSaveDialog(
       saveDialogOpen = false;
     } catch (err) {
       console.error('Failed to save proposed plan:', err);
-      addToast('error', err instanceof Error ? err.message : 'Failed to save plan');
+      addErrorToast(err instanceof Error ? err.message : 'Failed to save plan', err);
     } finally {
       saving = false;
     }

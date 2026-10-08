@@ -58,5 +58,5 @@ export function reportNonBenignInterruptError(
 ): void {
   if (isBenignInterruptError(err)) return;
   console.error('Failed to interrupt turn:', err);
-  pane.setGeneralError(userFacingError(err));
+  pane.setGeneralError(userFacingError(err), err);
 }

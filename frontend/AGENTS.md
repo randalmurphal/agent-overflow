@@ -76,6 +76,11 @@ mode. Every component must work in desktop and compact layouts.
 Raw backend content remains canonical; render Markdown, ANSI, paths, code, and
 diagrams as viewport-local projections.
 
+A toast or pane error built from a caught error passes that error
+(`addErrorToast`, `setGeneralError(message, err)`, `setPaneError`) so the
+surface can show its details and copy a report with the backend log
+([RPC failures](../docs/architecture/transport.md#rpc-failures)).
+
 Wrap new top-level regions in `shared/RenderBoundary.svelte`. Report production
 errors through `reportFrontendDiagnostic`; console-only errors are invisible in
 normal builds. Clipboard failures go through

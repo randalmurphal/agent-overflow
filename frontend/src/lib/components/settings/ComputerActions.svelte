@@ -6,7 +6,7 @@
   import { backendReachable } from '../../stores/attachedBackends.svelte';
   import { computerSSH } from '../../stores/computerSSH.svelte';
   import { StartSSHComputer } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import ComputerTransfers from '../transfers/ComputerTransfers.svelte';
   import ComputerAddress from './ComputerAddress.svelte';
@@ -20,7 +20,7 @@
     try {
       await StartSSHComputer({ ...profile, startService: true, lan: false });
       addToast('success', 'Service started. Reconnecting when it is ready.');
-    } catch (err) { addToast('error', errString(err)); }
+    } catch (err) { addErrorToast(errString(err), err); }
     finally { starting = false; }
   }
 </script>

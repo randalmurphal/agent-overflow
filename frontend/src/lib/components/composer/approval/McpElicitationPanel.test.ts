@@ -264,8 +264,9 @@ describe('<McpElicitationPanel>', () => {
   });
 
   it('surfaces a resolver rejection via onError', async () => {
+    const failure = new Error('down');
     const onResolve = makeResolver(async () => {
-      throw new Error('down');
+      throw failure;
     });
     const onError = vi.fn();
     const { getByTestId } = render(McpElicitationPanel, {
@@ -279,5 +280,6 @@ describe('<McpElicitationPanel>', () => {
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => expect(onError).toHaveBeenCalled());
     expect(onError.mock.calls[0][0]).toMatch(/Failed to respond to elicitation/i);
+    expect(onError.mock.calls[0][1]).toBe(failure);
   });
 });

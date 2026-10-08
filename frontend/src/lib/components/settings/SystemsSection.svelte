@@ -36,7 +36,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS } from './styles';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode, isFrontendOnly } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
@@ -107,7 +107,7 @@
   let armedAbandon: string | null = $state(null);
 
   onMount(() => {
-    if (hostList) void loadSystems().catch((err) => addToast('error', errString(err)));
+    if (hostList) void loadSystems().catch((err) => addErrorToast(errString(err), err));
     if (!nativeShell) return;
     shellPending = pendingAttachments();
     return onPendingAttachmentsChanged(() => {
@@ -146,7 +146,7 @@
           // Outside the try below, which has already returned: a failure
           // to open the socket after the confirmation still has somebody
           // waiting to be told.
-          .catch((err) => addToast('error', errString(err)));
+          .catch((err) => addErrorToast(errString(err), err));
         return;
       }
       await addSystem(raw);
@@ -181,7 +181,7 @@
       armedRemove = null;
       armedAbandon = null;
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
       armedAbandon = openThreadRequests(err) ? id : null;
     } finally {
       acting = false;
@@ -232,7 +232,7 @@
     try {
       await removeSystem(id);
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     } finally {
       acting = false;
     }

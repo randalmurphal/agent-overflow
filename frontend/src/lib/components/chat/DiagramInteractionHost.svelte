@@ -19,7 +19,7 @@
     type DiagramAction,
   } from './DiagramContextMenu.svelte';
   import { copyAsPNG, copyAsSVG, copySource } from '../../utils/diagramClipboard';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
 
   type MenuState = {
@@ -109,7 +109,7 @@
       await copy;
       addToast('success', success);
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     }
   }
 

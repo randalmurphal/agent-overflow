@@ -20,7 +20,7 @@
   import { onMount, tick } from 'svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import {
     canSaveMenuImage,
@@ -88,7 +88,7 @@
       await copy;
       addToast('success', 'Image copied');
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     }
   }
 

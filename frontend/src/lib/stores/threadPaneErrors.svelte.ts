@@ -13,11 +13,20 @@
 // stays on the pane.
 
 import type { PaneErrorKind } from './threadPaneShared';
+import { captureError, type CapturedError } from './errorReports.svelte';
 
 /** One stored error: the message plus the write order that ranks it. */
 interface PaneErrorEntry {
   readonly message: string;
   readonly seq: number;
+  readonly captured?: CapturedError;
+}
+
+/** One banner row: the message and, when a call failed, its error. */
+export interface PaneErrorRow {
+  readonly kind: PaneErrorKind;
+  readonly message: string;
+  readonly captured?: CapturedError;
 }
 
 /** Shared empty map so `clear()` on a clean pane is identity-stable. */
@@ -43,8 +52,10 @@ export interface ThreadPaneErrors {
    * The ONE error-writing entry point. `kind` decides which slot the
    * message occupies and which action the banner offers; a second write
    * of the same kind replaces that kind's message and nothing else.
+   * `err` is the failure behind the message, for the row's details and
+   * copy actions.
    */
-  set(message: string, kind?: PaneErrorKind): void;
+  set(message: string, kind?: PaneErrorKind, err?: unknown): void;
   /** Clear one kind, or every kind when `kind` is omitted. */
   clear(kind?: PaneErrorKind): void;
   /**
@@ -53,7 +64,7 @@ export interface ThreadPaneErrors {
    * Fixed by kind rather than by write order so rows never reshuffle
    * under the pointer when a second error lands.
    */
-  list(): { kind: PaneErrorKind; message: string }[];
+  list(): PaneErrorRow[];
   /**
    * The newest stored error — the single-error convenience read behind
    * `generalError`/`generalErrorKind`. Display goes through `list`; this
@@ -95,8 +106,9 @@ export function createThreadPaneErrors(): ThreadPaneErrors {
   let paneErrorWriteSeq = 0;
 
   return {
-    set(message: string, kind: PaneErrorKind = 'general'): void {
-      paneErrors = { ...paneErrors, [kind]: { message, seq: ++paneErrorWriteSeq } };
+    set(message: string, kind: PaneErrorKind = 'general', err?: unknown): void {
+      const captured = err === undefined ? undefined : captureError(err, { context: message });
+      paneErrors = { ...paneErrors, [kind]: { message, seq: ++paneErrorWriteSeq, captured } };
     },
     clear(kind?: PaneErrorKind): void {
       if (kind === undefined) {
@@ -109,11 +121,11 @@ export function createThreadPaneErrors(): ThreadPaneErrors {
       delete next[kind];
       paneErrors = next;
     },
-    list(): { kind: PaneErrorKind; message: string }[] {
-      const out: { kind: PaneErrorKind; message: string }[] = [];
+    list(): PaneErrorRow[] {
+      const out: PaneErrorRow[] = [];
       for (const kind of PANE_ERROR_DISPLAY_ORDER) {
         const entry = paneErrors[kind];
-        if (entry !== undefined) out.push({ kind, message: entry.message });
+        if (entry !== undefined) out.push({ kind, message: entry.message, captured: entry.captured });
       }
       return out;
     },

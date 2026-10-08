@@ -10,7 +10,7 @@ import { beginUndoableSend, retireUndoableSend, type SendUndoOutcome } from '../
 import { SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast } from '../../stores/toast.svelte';
 import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
 import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
@@ -41,7 +41,7 @@ export interface SendOptions {
   };
   restoreDraft: (threadId: string, snapshot: SendOptions['snapshot']) => Promise<void>;
   draftThreadId: () => string | null;
-  reportError: (message: string) => void;
+  reportError: (message: string, err?: unknown) => void;
 }
 
 /**
@@ -76,7 +76,7 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     let updated = (await SendMessageWithOptions(opts.threadId, opts.message, opts.options)) as Thread;
     if (autoPinAfterSend) {
       try { updated = await autoPinNewThread(updated); }
-      catch (err) { opts.reportError(`Message sent, but pinning the thread failed: ${userFacingError(err)}`); }
+      catch (err) { opts.reportError(`Message sent, but pinning the thread failed: ${userFacingError(err)}`, err); }
     }
     syncThread(updated);
     outcome = 'accepted';
@@ -86,7 +86,7 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     if (undo.undoRequested) {
       outcome = isUndeliveredSendError(err) ? 'unknown' : 'failed';
       if (sendStarted && outcome === 'failed') projectSendResolved(opts.threadId);
-      opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`);
+      opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`, err);
       return false;
     }
     // Flip to error so the sidebar pill reads "Failed" — the user
@@ -126,17 +126,18 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     }
     const readableError = userFacingError(err);
     if (opts.draftThreadId() !== opts.threadId) {
-      addToast(
-        'error',
+      addErrorToast(
         draftPreserved
           ? `Message to the previous thread failed to send; draft preserved: ${readableError}`
           : `Message to the previous thread failed to send, and its draft could not be saved: ${readableError}`,
+        err,
       );
     } else {
       opts.reportError(
         draftPreserved
           ? `Failed to send message: ${readableError}`
           : `Failed to send message, and the draft could not be restored: ${readableError}`,
+        err,
       );
     }
     return false;

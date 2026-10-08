@@ -271,6 +271,7 @@ export const DismissThreadWorktreeSetup = dispatch('DismissThreadWorktreeSetup')
 export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
 export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
 export const Version = dispatch('Version');
+export const GetErrorLogLines = dispatch('GetErrorLogLines');
 
 // Workflow surface.
 export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');

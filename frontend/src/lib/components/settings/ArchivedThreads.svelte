@@ -20,7 +20,7 @@
     withTerminalsNote,
     type WorktreeRemovalResult,
   } from '../../stores/worktreeRemoval.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { threadBackend } from '../../transport/entityIndex';
@@ -58,7 +58,7 @@
       addToast('info', `Unarchived "${restored.title || 'thread'}".`);
     } catch (err) {
       console.error('Failed to unarchive thread:', err);
-      addToast('error', `Failed to unarchive: ${errString(err)}`);
+      addErrorToast(`Failed to unarchive: ${errString(err)}`, err);
     }
   }
 
@@ -76,7 +76,7 @@
       addToast('info', `Deleted "${thread.title || 'thread'}".`);
     } catch (err) {
       console.error('Failed to delete archived thread:', err);
-      addToast('error', `Failed to delete: ${errString(err)}`);
+      addErrorToast(`Failed to delete: ${errString(err)}`, err);
     }
   }
 

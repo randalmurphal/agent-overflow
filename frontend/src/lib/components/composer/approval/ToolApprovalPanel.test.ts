@@ -173,8 +173,9 @@ describe('<ToolApprovalPanel>', () => {
   });
 
   it('surfaces a resolver rejection via onError', async () => {
+    const failure = new Error('network is down');
     const onResolve = makeResolver(async () => {
-      throw new Error('network is down');
+      throw failure;
     });
     const onError = vi.fn();
     const { getByTestId } = render(ToolApprovalPanel, {
@@ -187,6 +188,7 @@ describe('<ToolApprovalPanel>', () => {
     await fireEvent.click(getByTestId('approval-allow'));
     await waitFor(() => expect(onError).toHaveBeenCalled());
     expect(onError.mock.calls[0][0]).toMatch(/Failed to respond to approval/i);
+    expect(onError.mock.calls[0][1]).toBe(failure);
   });
 
   it('renders only the server-advertised decisions in provider order', () => {

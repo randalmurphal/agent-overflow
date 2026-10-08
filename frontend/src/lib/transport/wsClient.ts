@@ -1,4 +1,5 @@
 import { presentAuthReason } from './authReason';
+import { parseErrorDetail, type ErrorDetail } from './errorDetail';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -487,8 +488,11 @@ export class TransportError extends Error {
   // shape belongs to the method that refused, so ./backgroundKillRefusal.ts
   // validates it before anything renders it.
   backgroundAgents?: unknown;
+  // detail is the backend's diagnostic record of a failure: its log
+  // reference, method and, for a same-machine caller, the wrap chain.
+  detail?: ErrorDetail;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
-    const { reason, scope, transfer, backgroundAgents } = fields;
+    const { reason, scope, transfer, backgroundAgents, detail, backend = HOME_BACKEND } = fields;
     super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
@@ -502,6 +506,7 @@ export class TransportError extends Error {
     if (code === 'background_agents_running' && backgroundAgents !== undefined) {
       this.backgroundAgents = backgroundAgents;
     }
+    this.detail = parseErrorDetail(detail, backend);
   }
 }
 
@@ -511,6 +516,9 @@ export interface TransportErrorFields {
   scope?: string;
   transfer?: { operationId: string; backendId: string };
   backgroundAgents?: unknown;
+  detail?: unknown;
+  /** The backend that answered, stamped onto detail. Defaults to HOME. */
+  backend?: BackendKey;
 }
 
 // StepUpProver is the seam that turns a step-up refusal into a proof, and
@@ -3043,6 +3051,8 @@ export class WSClient {
               scope: frame.error.scope,
               transfer: frame.error.transfer,
               backgroundAgents: frame.error.backgroundAgents,
+              detail: frame.error.detail,
+              backend: this.backend,
             },
           ),
         );

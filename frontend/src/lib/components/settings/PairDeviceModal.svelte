@@ -37,7 +37,7 @@
   } from '../../stores/bindings';
   import { getTransportHello, getTransportHelloFor } from '../../stores/transportStatus.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
@@ -191,7 +191,7 @@
       startWatching(invite.linkId);
       onChanged();
     } catch (err) {
-      addToast('error', `Failed to mint a pairing link: ${errString(err)}`);
+      addErrorToast(`Failed to mint a pairing link: ${errString(err)}`, err);
     } finally {
       minting = null;
     }
@@ -263,7 +263,7 @@
       stage = { at: 'done' };
       onChanged();
     } catch (err) {
-      addToast('error', `Failed to allow the device: ${errString(err)}`);
+      addErrorToast(`Failed to allow the device: ${errString(err)}`, err);
     } finally {
       deciding = false;
     }
@@ -279,7 +279,7 @@
       onChanged();
       onClose();
     } catch (err) {
-      addToast('error', `Failed to cancel the link: ${errString(err)}`);
+      addErrorToast(`Failed to cancel the link: ${errString(err)}`, err);
     } finally {
       deciding = false;
     }

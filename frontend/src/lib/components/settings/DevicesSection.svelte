@@ -37,7 +37,7 @@
     type DeviceRevocationResult,
     type PendingPairing,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { isViewOnlyGrantSet } from '../../transport/scopes';
@@ -104,7 +104,7 @@
       const next = await call(() => GetAccessOverview());
       if (request === loadGeneration) overview = next;
     } catch (err) {
-      if (report) addToast('error', `Failed to load devices: ${errString(err)}`);
+      if (report) addErrorToast(`Failed to load devices: ${errString(err)}`, err);
     } finally {
       if (request === loadGeneration) loading = false;
     }
@@ -169,7 +169,7 @@
     try {
       await run();
     } catch (err) {
-      addToast('error', `${label}: ${errString(err)}`);
+      addErrorToast(`${label}: ${errString(err)}`, err);
     } finally {
       acting = false;
       await load();

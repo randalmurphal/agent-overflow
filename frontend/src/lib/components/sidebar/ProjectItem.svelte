@@ -30,7 +30,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
@@ -203,7 +203,7 @@
       const results = await Promise.allSettled(failing.map((row) => RefreshProjectIdentity(row.project.id)));
       for (const result of results) {
         if (result.status === 'fulfilled') updateProjectLocal(result.value);
-        else addToast('error', userFacingError(result.reason));
+        else addErrorToast(userFacingError(result.reason), result.reason);
       }
       if (identityProblem) addToast('warning', identityProblem);
     } finally {
@@ -248,7 +248,7 @@
       updateProjectLocal(updated);
     } catch (err) {
       console.error('Failed to rename project:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       renameSaving = false;
       renaming = false;

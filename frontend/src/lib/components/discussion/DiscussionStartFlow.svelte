@@ -4,7 +4,7 @@
   import type { DiscussionDefinition } from '../../types/discussion';
   import type { Thread } from '../../types/models';
   import { ListDiscussions, StartDiscussion, GetThread } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { syncThread } from '../../stores/panes.svelte';
   import DiscussionPicker from './DiscussionPicker.svelte';
@@ -97,7 +97,7 @@
     } catch (err) {
       console.error('Failed to start discussion:', err);
       startError = String(err);
-      addToast('error', `Failed to start discussion: ${errString(err)}`);
+      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
     } finally {
       starting = false;
     }

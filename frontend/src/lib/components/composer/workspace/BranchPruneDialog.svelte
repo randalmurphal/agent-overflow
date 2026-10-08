@@ -13,7 +13,7 @@
   import Button from '../../primitives/Button.svelte';
   import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import { GitListBranchPruneCandidates, GitPruneBranches } from '../../../stores/bindings';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import type {
     BranchPruneCandidate,
@@ -109,7 +109,7 @@
       }
     } catch (err) {
       console.error('GitPruneBranches failed:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       deleting = false;
     }

@@ -9,7 +9,7 @@ import { encodeTerminalInput } from '../../types/terminal';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 
 // xterm can't render under happy-dom (no real canvas/WebGL context), and these
@@ -139,7 +139,7 @@ vi.mock('../../stores/bindings', () => ({
   ResizeTerminal: mocks.ResizeTerminal,
 }));
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
-vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 function makeSummary(
   terminalID: string,
@@ -511,6 +511,7 @@ describe('TerminalBody copy/paste', () => {
     vi.mocked(copyToClipboard).mockReset();
     vi.mocked(copyToClipboard).mockResolvedValue(true);
     vi.mocked(addToast).mockReset();
+    vi.mocked(addErrorToast).mockReset();
     readText.mockReset();
     readText.mockResolvedValue('');
     Object.defineProperty(globalThis.navigator, 'clipboard', {
@@ -663,16 +664,17 @@ describe('TerminalBody copy/paste', () => {
 
   it('surfaces a paste failure with a toast and pastes nothing', async () => {
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    readText.mockRejectedValue(new Error('clipboard denied'));
+    const failure = new Error('clipboard denied');
+    readText.mockRejectedValue(failure);
     const { term, handler } = await handlerFor('t-paste-fail');
     const event = clip({ key: 'v', ctrlKey: true, shiftKey: true });
     expect(handler(event)).toBe(false);
     await Promise.resolve();
     await Promise.resolve();
     expect(term.pastes).toEqual([]);
-    expect(vi.mocked(addToast)).toHaveBeenCalledWith(
-      'error',
+    expect(vi.mocked(addErrorToast)).toHaveBeenCalledWith(
       expect.stringContaining('Paste failed'),
+      failure,
     );
     expect(consoleErrorSpy).toHaveBeenCalled();
   });
@@ -787,9 +789,9 @@ describe('TerminalBody copy/paste', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(term.pastes).toEqual([]);
-    expect(vi.mocked(addToast)).toHaveBeenCalledWith(
-      'error',
+    expect(vi.mocked(addErrorToast)).toHaveBeenCalledWith(
       expect.stringContaining('Paste failed'),
+      expect.objectContaining({ message: 'clipboard unavailable on this connection' }),
     );
   });
 });

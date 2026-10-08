@@ -16,7 +16,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { openInEditor } from '../../stores/openInEditor';
   import { errString } from '../../utils/errors';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     ensureEditorsLoaded,
     getAvailableEditors,
@@ -56,7 +56,7 @@
     try {
       await openInEditor(backend, path, 0, 0, '', editorID);
     } catch (err) {
-      addToast('error', errString(err));
+      addErrorToast(errString(err), err);
     } finally {
       // A primary open does not need the frontend catalog, but it is a useful
       // revalidation edge after the shared snapshot reaches its 60s TTL.

@@ -1,5 +1,5 @@
 import { getBackendIdentity } from '../transport/backendIdentity';
-import { addToast, removeToast } from './toast.svelte';
+import { addErrorToast, removeToast } from './toast.svelte';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { userFacingError } from '../utils/userFacingError';
 import { GetConversationMutationState } from './bindings';
@@ -42,7 +42,7 @@ export function conversationMutationReconciler(pane: ThreadPaneIngest, threadId:
           return state;
         } catch (error) {
           if (lifetime.signal.aborted || !stillOwned()) throw error;
-          if (!retryToast) retryToast = addToast('error', `Could not restore the conversation. Retrying; Send remains paused: ${userFacingError(error)}`, 0, {
+          if (!retryToast) retryToast = addErrorToast(`Could not restore the conversation. Retrying; Send remains paused: ${userFacingError(error)}`, error, 0, {
             label: 'Retry now', run: () => retryNow?.(),
           });
           await new Promise<void>((resolve, reject) => {

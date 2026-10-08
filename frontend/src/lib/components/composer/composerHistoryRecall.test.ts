@@ -312,12 +312,14 @@ describe('createComposerHistoryRecall', () => {
 
   it('surfaces a failed history read', async () => {
     const h = makeHarness();
-    (h.deps.fetchHistory as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    const failure = new Error('boom');
+    (h.deps.fetchHistory as ReturnType<typeof vi.fn>).mockRejectedValueOnce(failure);
     h.recall.arrowUp();
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     expect(h.deps.reportError).toHaveBeenCalledOnce();
+    expect(h.deps.reportError).toHaveBeenCalledWith('Failed to load message history: boom', failure);
     expect(h.recall.hasActiveSession()).toBe(false);
   });
 });

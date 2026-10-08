@@ -664,14 +664,17 @@ describe('gitStatusStore — observed branch reconciliation', () => {
     const hereError = vi.spyOn(here, 'setGeneralError');
     const elsewhereError = vi.spyOn(elsewhere, 'setGeneralError');
 
+    const failure = new Error('db locked');
     setBindingMock('UpdateThreadBranch', async () => {
-      throw new Error('db locked');
+      throw failure;
     });
     installSubscribeMock(status({ branch: 'feature/x', isDefaultBranch: false }));
 
     const a = attachGitStatus(WORKSPACE, { workspace: ref(WORKSPACE_PATH) });
     await vi.waitFor(() => expect(hereError).toHaveBeenCalled());
     expect(String(hereError.mock.calls[0][0])).toContain('Failed to update thread branch');
+    expect(hereError.mock.calls[0][1]).toBe(failure);
+    expect(here.paneErrorList.find((e) => e.kind === 'general')?.captured?.report.chain).toEqual(['db locked']);
     expect(elsewhereError).not.toHaveBeenCalled();
     a.release();
     vi.restoreAllMocks();

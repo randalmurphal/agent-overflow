@@ -7,7 +7,7 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
 
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
-vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 const copyMock = vi.mocked(copyToClipboard);
 const toastMock = vi.mocked(addToast);

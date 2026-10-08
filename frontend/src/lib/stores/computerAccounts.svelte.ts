@@ -19,7 +19,7 @@ import type { ManagedProviderAccount } from './bindings';
 import { canUseHostOpenExternalURL } from '../utils/externalLinks';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { recheckProviderAccount } from '../providers/actions';
 import { PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
@@ -221,7 +221,7 @@ export class ComputerAccounts {
       if (this.disposed || generation !== this.loadGeneration) return;
       if (isPassiveConnectionFailure(error)) return;
       console.error('Failed to load provider accounts:', error);
-      addToast('error', 'Failed to load provider accounts.');
+      addErrorToast('Failed to load provider accounts.', error);
     } finally {
       if (generation === this.loadGeneration) this.loading = false;
     }
@@ -282,9 +282,9 @@ export class ComputerAccounts {
     } catch (error) {
       if (!this.disposed) {
         console.error(`${label} account switch failed:`, error);
-        addToast(
-          'error',
+        addErrorToast(
           `${label} account did not switch. ${userFacingError(error, 'Try again.')}`,
+          error,
         );
         // A refusal is often a verdict about the account itself — a slot the
         // provider signed out. Re-read the listing so the card shows that state
@@ -327,7 +327,7 @@ export class ComputerAccounts {
     } catch (error) {
       if (this.disposed) return;
       console.error(`${label} usage refresh failed:`, error);
-      addToast('error', userFacingError(error, `Failed to refresh ${label} usage.`));
+      addErrorToast(userFacingError(error, `Failed to refresh ${label} usage.`), error);
     } finally {
       action.refreshingID = '';
     }
@@ -355,9 +355,9 @@ export class ComputerAccounts {
     } catch (error) {
       if (this.disposed) return false;
       console.error(`${label} account removal failed:`, error);
-      addToast(
-        'error',
+      addErrorToast(
         `${label} account was not removed. ${userFacingError(error, 'Try again.')}`,
+        error,
       );
       return false;
     } finally {

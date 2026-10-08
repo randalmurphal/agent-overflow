@@ -40,7 +40,7 @@
   } from '../terminal/terminalIoQueue';
   import { notifyTerminalFocus } from '../terminal/terminalStore.svelte';
   import { wailsEventOn } from '../../stores/wailsEvents';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
@@ -278,7 +278,7 @@
         console.error('take-control: control transition failed after destroy', err);
       } else {
         if (releasing) controlHeld = true;
-        addToast('error', `Take control failed: ${errString(err)}`);
+        addErrorToast(`Take control failed: ${errString(err)}`, err);
       }
     } finally {
       controlTransitionPending = false;

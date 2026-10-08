@@ -22,6 +22,7 @@ const scopes = vi.hoisted(() => ({ host: false, write: true, git: true }));
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
 const toasts = vi.hoisted(() => [] as Array<[string, string]>);
+const toastErrors = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('../native/platform', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../native/platform')>()),
@@ -50,6 +51,11 @@ vi.mock('./forgeAttachmentActions', () => ({
 vi.mock('../stores/toast.svelte', () => ({
   addToast: (kind: string, message: string) => {
     toasts.push([kind, message]);
+    return 'id';
+  },
+  addErrorToast: (message: string, err: unknown) => {
+    toasts.push(['error', message]);
+    toastErrors.push(err);
     return 'id';
   },
 }));
@@ -172,6 +178,7 @@ describe('saving an attachment image', () => {
     scopes.host = false;
     scopes.write = true;
     toasts.length = 0;
+    toastErrors.length = 0;
     resetBindingMocks();
   });
   afterEach(() => {
@@ -254,6 +261,7 @@ describe('saving an attachment image', () => {
     });
     await saveMenuImage(REF);
     expect(toasts).toEqual([['error', 'attachment: not an image: "att-1" is a file attachment']]);
+    expect(toastErrors).toEqual([expect.any(Error)]);
   });
 
   it('surfaces a failed download', async () => {
@@ -262,6 +270,7 @@ describe('saving an attachment image', () => {
     });
     await saveMenuImage(REF);
     expect(toasts).toEqual([['error', 'Could not load image: gone']]);
+    expect(toastErrors).toEqual([expect.any(Error)]);
   });
 });
 

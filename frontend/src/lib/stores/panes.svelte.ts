@@ -831,14 +831,14 @@ onBackendDetached(({ threadIds, projectIds }) => {
 
 setGitStatusPaneBridge({
   syncThread,
-  reportWorkspaceError(workspaceKey, message) {
+  reportWorkspaceError(workspaceKey, message, err) {
     // Only the panes still in that workspace — same backend AND same path,
     // since the key carries both. A pane that has moved on is not shown an
     // error about a checkout it left, and a pane on another machine is not
     // shown one about a directory that merely shares a name.
     for (const pane of panes.values()) {
       if (workspaceKeyForThread(pane.thread ?? null) !== workspaceKey) continue;
-      pane.setGeneralError(message);
+      pane.setGeneralError(message, err);
     }
   },
 });

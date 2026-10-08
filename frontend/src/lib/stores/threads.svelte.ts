@@ -18,7 +18,7 @@ import { invalidateReplicaCatalog } from '../replica/session';
 
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
@@ -136,7 +136,7 @@ export async function refreshThreads(): Promise<void> {
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load threads:', err);
-    addToast('error', 'Failed to load threads');
+    addErrorToast('Failed to load threads', err);
   }
 }
 

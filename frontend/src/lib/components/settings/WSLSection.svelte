@@ -52,7 +52,7 @@
 
 <script lang="ts">
   import { SetWSLDistroPreference } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
@@ -91,7 +91,7 @@
       // Drop the cache on failure so the next mount retries instead
       // of replaying the same rejection forever.
       resetWSLSectionCache();
-      addToast('error', `Failed to load WSL distros: ${errString(err)}`);
+      addErrorToast(`Failed to load WSL distros: ${errString(err)}`, err);
     } finally {
       loading = false;
     }
@@ -108,7 +108,7 @@
       selected = persisted;
     } catch (err) {
       selected = previous;
-      addToast('error', `Failed to set WSL distro: ${errString(err)}`);
+      addErrorToast(`Failed to set WSL distro: ${errString(err)}`, err);
     } finally {
       saving = false;
     }

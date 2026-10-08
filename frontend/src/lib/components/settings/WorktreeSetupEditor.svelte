@@ -16,7 +16,7 @@
   // keystroke until the row happened to parse.
 
   import { GetProjectWorktreeSetup, SetProjectWorktreeSetup } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { tokenizeCommandLine, formatArgv, CommandLineError } from '../../utils/shellArgv';
   import SettingsField from './SettingsField.svelte';
@@ -89,7 +89,7 @@
       draft = next;
       saved = cloneDraft(next);
     } catch (err) {
-      addToast('error', `Failed to load worktree setup: ${errString(err)}`);
+      addErrorToast(`Failed to load worktree setup: ${errString(err)}`, err);
     } finally {
       loading = false;
     }

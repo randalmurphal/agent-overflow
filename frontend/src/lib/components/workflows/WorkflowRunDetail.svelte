@@ -26,7 +26,7 @@
     workflowResolutionKind,
   } from '../../utils/workflowActionRows';
   import { openInEditor } from '../../stores/openInEditor';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { hasScope } from '../../transport/scopes';
   import {
@@ -86,7 +86,7 @@
     try {
       await openInEditor(workflowItemBackend(itemId) ?? HOME_BACKEND, path, 0, 0, '', '');
     } catch (err) {
-      addToast('error', userFacingError(err, 'Could not open that file.'));
+      addErrorToast(userFacingError(err, 'Could not open that file.'), err);
     }
   }
 </script>

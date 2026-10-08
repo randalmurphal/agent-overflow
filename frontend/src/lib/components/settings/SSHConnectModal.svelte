@@ -6,7 +6,7 @@
   import { StartSSHConnection, GetSSHConnection, ConfirmSSHConnection, CancelSSHConnection } from '../../stores/bindings';
   import { addSystem, removeSystem } from '../../stores/systems.svelte';
   import { errString } from '../../utils/errors';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { saveComputerSSH } from '../../stores/computerSSH.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
@@ -33,7 +33,7 @@
       ...(attached ? [Promise.resolve().then(() => removeSystem(attached))] : []),
     ]);
     for (const result of results) {
-      if (result.status === 'rejected') addToast('error', errString(result.reason));
+      if (result.status === 'rejected') addErrorToast(errString(result.reason), result.reason);
     }
   }
   // A dispatched confirmation is the remote's to answer: cancelling under

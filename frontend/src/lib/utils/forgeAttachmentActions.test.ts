@@ -8,6 +8,7 @@ const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
 const hostScope = vi.hoisted(() => ({ value: false }));
 const toasts = vi.hoisted(() => [] as Array<[string, string]>);
+const toastErrors = vi.hoisted(() => [] as unknown[]);
 const externalOpens = vi.hoisted(() => [] as string[]);
 const release = vi.hoisted(() => vi.fn());
 const acquired = vi.hoisted(() => ({ value: Promise.resolve({}) as Promise<unknown> }));
@@ -34,6 +35,7 @@ vi.mock('../stores/attachedBackends.svelte', async (importOriginal) => ({
 }));
 vi.mock('../stores/toast.svelte', () => ({
   addToast: (kind: string, message: string) => { toasts.push([kind, message]); return 'id'; },
+  addErrorToast: (message: string, err: unknown) => { toasts.push(['error', message]); toastErrors.push(err); return 'id'; },
 }));
 vi.mock('./externalLinks', () => ({
   handleExternalURL: async (url: string) => { externalOpens.push(url); return true; },
@@ -72,6 +74,7 @@ describe('activating a forge attachment', () => {
     webviewHosted.value = false;
     hostScope.value = false;
     toasts.length = 0;
+    toastErrors.length = 0;
     externalOpens.length = 0;
     release.mockClear();
     acquired.value = Promise.resolve({
@@ -134,6 +137,7 @@ describe('activating a forge attachment', () => {
     await openForgeAttachment(parsed());
     expect(toasts[0][0]).toBe('error');
     expect(toasts[0][1]).toContain('glab auth login');
+    expect(toastErrors).toEqual([expect.any(Error)]);
   });
 
   it('downloads through the browser when there is no desktop to write to', async () => {
@@ -150,6 +154,7 @@ describe('activating a forge attachment', () => {
     await openForgeAttachment(parsed());
     expect(toasts[0][0]).toBe('error');
     expect(toasts[0][1]).toContain('HTTP 404');
+    expect(toastErrors).toEqual([expect.any(Error)]);
     expect(release).toHaveBeenCalledTimes(1);
   });
 });

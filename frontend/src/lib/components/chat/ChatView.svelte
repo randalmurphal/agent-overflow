@@ -21,7 +21,7 @@
   import { markThreadRead, prependThread, updateThreadReadState } from '../../stores/threads.svelte';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
@@ -428,7 +428,7 @@
       await openThreadInPane(forked, pane);
       addToast('info', 'Forked from this message into a new thread.');
     } catch (err) {
-      addToast('error', `Fork failed: ${userFacingError(err)}`);
+      addErrorToast(`Fork failed: ${userFacingError(err)}`, err);
     } finally {
       if (forkingMessageItemId === item.id) forkingMessageItemId = null;
     }

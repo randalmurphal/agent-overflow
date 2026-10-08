@@ -11,7 +11,7 @@ import type { Thread } from '../types/models';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
@@ -165,7 +165,7 @@ async function resyncThreadRows(): Promise<void> {
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to resync threads after transport gap:', err);
-    addToast('error', 'Failed to load threads');
+    addErrorToast('Failed to load threads', err);
     return;
   }
   closePanesOfDeletedThreads(rows);

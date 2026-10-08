@@ -1,7 +1,7 @@
 <script lang="ts">
   import { automationHasScope } from '../../transport/entityScopes';
   import { WorkflowGetJobNotes, WorkflowSetJobNotes } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   interface Props { automationId: string }
   let { automationId }: Props = $props();
   let expanded = $state(false);
@@ -21,7 +21,7 @@
     expanded = !expanded;
     if (!expanded || loaded) return;
     try { notes = await WorkflowGetJobNotes(automationId); loaded = true; }
-    catch { addToast('error', 'Could not load continuity notes'); }
+    catch (err) { addErrorToast('Could not load continuity notes', err); }
   }
 
   function saveSoon(): void {
@@ -31,7 +31,7 @@
       timer = null;
       if (ungranted) return;
       try { await WorkflowSetJobNotes(automationId, notes); }
-      catch { addToast('error', 'Could not save continuity notes'); }
+      catch (err) { addErrorToast('Could not save continuity notes', err); }
     }, 350);
   }
 </script>

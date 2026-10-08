@@ -17,7 +17,7 @@
   //     in the backend, so it is gone from every client for good.
   import AnsiText from './AnsiText.svelte';
   import WorktreeSetupSteps from './WorktreeSetupSteps.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     dismissWorktreeSetup,
     getWorktreeSetup,
@@ -69,7 +69,7 @@
     try {
       await retryWorktreeSetup(setupKey);
     } catch (err) {
-      addToast('error', userFacingError(err, 'Failed to retry worktree setup'));
+      addErrorToast(userFacingError(err, 'Failed to retry worktree setup'), err);
     } finally {
       retrying = false;
     }
@@ -79,7 +79,7 @@
     try {
       await dismissWorktreeSetup(setupKey);
     } catch (err) {
-      addToast('error', userFacingError(err, 'Failed to dismiss worktree setup'));
+      addErrorToast(userFacingError(err, 'Failed to dismiss worktree setup'), err);
     }
   }
 </script>

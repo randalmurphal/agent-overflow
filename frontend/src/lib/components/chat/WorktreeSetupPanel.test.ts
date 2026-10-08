@@ -6,6 +6,7 @@ const DismissThreadWorktreeSetup = vi.fn();
 const GetThreadWorktreeSetup = vi.fn();
 const RetryThreadWorktreeSetup = vi.fn();
 const addToast = vi.fn();
+const addErrorToast = vi.fn();
 
 vi.mock('../../stores/bindings', () => ({
   DismissThreadWorktreeSetup: (...args: unknown[]) => DismissThreadWorktreeSetup(...args),
@@ -14,6 +15,7 @@ vi.mock('../../stores/bindings', () => ({
 }));
 vi.mock('../../stores/toast.svelte', () => ({
   addToast: (...args: unknown[]) => addToast(...args),
+  addErrorToast: (...args: unknown[]) => addErrorToast(...args),
 }));
 
 const {
@@ -49,6 +51,7 @@ beforeEach(() => {
   GetThreadWorktreeSetup.mockReset();
   RetryThreadWorktreeSetup.mockReset();
   addToast.mockReset();
+  addErrorToast.mockReset();
 });
 
 describe('<WorktreeSetupPanel>', () => {
@@ -142,15 +145,16 @@ describe('<WorktreeSetupPanel>', () => {
   });
 
   it('surfaces a rejected dismissal and restores the failure', async () => {
-    DismissThreadWorktreeSetup.mockRejectedValue(new Error('setup is still running'));
+    const failure = new Error('setup is still running');
+    DismissThreadWorktreeSetup.mockRejectedValue(failure);
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
     const { getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-dismiss')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-dismiss'));
-    await waitFor(() => expect(addToast).toHaveBeenCalled());
-    expect(addToast.mock.calls[0][0]).toBe('error');
+    await waitFor(() => expect(addErrorToast).toHaveBeenCalled());
+    expect(addErrorToast.mock.calls[0]).toEqual([expect.any(String), failure]);
     await waitFor(() => {
       expect(getByTestId('worktree-setup-panel').getAttribute('data-state')).toBe('failed');
     });
@@ -173,15 +177,16 @@ describe('<WorktreeSetupPanel>', () => {
   // A rejected retry must leave the affordance that produced it, or the user is
   // stuck looking at a card they can no longer act on.
   it('surfaces a rejected retry and restores the failure', async () => {
-    RetryThreadWorktreeSetup.mockRejectedValue(new Error('thread is not working in a worktree'));
+    const failure = new Error('thread is not working in a worktree');
+    RetryThreadWorktreeSetup.mockRejectedValue(failure);
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent(finish('failed', 'boom'));
     const { getByTestId } = render(WorktreeSetupPanel, { props: { setupKey: THREAD } });
     await waitFor(() => expect(getByTestId('worktree-setup-retry')).toBeTruthy());
 
     await fireEvent.click(getByTestId('worktree-setup-retry'));
-    await waitFor(() => expect(addToast).toHaveBeenCalled());
-    expect(addToast.mock.calls[0][0]).toBe('error');
+    await waitFor(() => expect(addErrorToast).toHaveBeenCalled());
+    expect(addErrorToast.mock.calls[0]).toEqual([expect.any(String), failure]);
     await waitFor(() => {
       expect(getByTestId('worktree-setup-panel').getAttribute('data-state')).toBe('failed');
     });

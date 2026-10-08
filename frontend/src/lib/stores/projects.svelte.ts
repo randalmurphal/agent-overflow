@@ -15,7 +15,7 @@ import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelt
 
 import type { Project, ProjectWithCounts } from '../types/models';
 import { ListProjects } from './bindings';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedProjectLabels,
@@ -239,7 +239,7 @@ export async function refreshProjects(): Promise<void> {
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load projects:', err);
-    addToast('error', 'Failed to load projects');
+    addErrorToast('Failed to load projects', err);
   }
 }
 

@@ -211,6 +211,23 @@ malformed 503 stays an ordinary transient failure on the reconnect ladder.
 The harness can hold a boot before `App.Start` for tests
 (`diagenv.HarnessHoldStartup`).
 
+## RPC failures
+
+A failed call answers with `FrameError`: a `code`, a `message`, and, for any
+failure the backend logged, `detail` (`ErrorDetail`). `detail.ref` matches the
+backend log line `(id: <ref>)` that holds the full error, and `detail.method`
+and `detail.at` name the call and its time. A loopback caller also receives
+`detail.chain`, the error's wrap layers outermost first (`errorsx.Chain`); an
+off-host caller receives only the reference, under the same redaction as
+`message`. `already_handled` carries no detail.
+
+The backend retains its recent log lines in memory (`logging.Output`).
+`GetErrorLogLines` (host scope) returns the lines leading up to a reference
+until they age out. The frontend reads them when it captures the error, so an
+error toast or pane banner can show the chain and copy a report with the log
+(`frontend/src/lib/stores/errorReports.svelte.ts`). The read is made only for
+an error from the page's own backend, because the call is answered by HOME.
+
 ## HTTP RPC and additional receivers
 
 `POST /rpc` is the bounded one-shot RPC surface for the `ao` CLI. It accepts a

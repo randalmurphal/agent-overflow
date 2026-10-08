@@ -10,7 +10,7 @@
 
   import WorkflowJobNotes from './WorkflowJobNotes.svelte';
   import { WorkflowRunAutomationNow, WorkflowSetAutomationEnabled } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { automationHasScope } from '../../transport/entityScopes';
   import type { WorkflowAutomationView, WorkflowDefinitionListing } from '../../types/workflow';
@@ -43,7 +43,7 @@
     try {
       await WorkflowSetAutomationEnabled(automation.id, !automation.enabled);
     } catch (err) {
-      addToast('error', userFacingError(err, `Could not update ${automation.name}.`));
+      addErrorToast(userFacingError(err, `Could not update ${automation.name}.`), err);
     } finally {
       busy = '';
     }
@@ -57,7 +57,7 @@
       addToast('success', `Started — ${automation.name}`);
       refreshWorkflowRunsSoon();
     } catch (err) {
-      addToast('error', userFacingError(err, `Could not run ${automation.name}.`));
+      addErrorToast(userFacingError(err, `Could not run ${automation.name}.`), err);
     } finally {
       busy = '';
     }

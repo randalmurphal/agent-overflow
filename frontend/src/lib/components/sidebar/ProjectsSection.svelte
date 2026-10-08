@@ -26,7 +26,7 @@
   import { getThreads } from '../../stores/threads.svelte';
   import { getThreadGroups } from '../../stores/threadGroups.svelte';
   import { UpdateProjectSortPositions } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import {
     openDraftThreadForProject,
@@ -290,7 +290,7 @@
       });
     } catch (err) {
       console.error('Failed to create draft thread:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     }
   };
 
@@ -315,7 +315,7 @@
       await UpdateProjectSortPositions(newOrderedIds);
     } catch (err) {
       console.error('Failed to persist project order:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
       await refreshProjects();
     }
   }

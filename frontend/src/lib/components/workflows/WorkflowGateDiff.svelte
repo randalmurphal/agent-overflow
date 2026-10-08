@@ -19,7 +19,7 @@
   import { OpenBranchBaseDiff } from '../../stores/bindings';
   import { ReviewDiffSource, type ReviewDiffRead } from '../../stores/reviewDiffStream';
   import type { WorkspaceRef } from '../../types/git';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { openWorkflowFullReview } from '../../stores/workflowThreads';
 
@@ -109,7 +109,7 @@
     try {
       await openWorkflowFullReview(threadId);
     } catch (err) {
-      addToast('error', userFacingError(err, 'Could not open the review pane.'));
+      addErrorToast(userFacingError(err, 'Could not open the review pane.'), err);
     }
   }
 </script>

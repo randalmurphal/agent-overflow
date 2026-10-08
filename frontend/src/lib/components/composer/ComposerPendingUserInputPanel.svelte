@@ -32,7 +32,7 @@
     setCustomAnswerText: (value: string) => void;
     onResolve: (response: UserInputResponse) => Promise<void>;
     onResolved: () => void;
-    onError: (message: string) => void;
+    onError: (message: string, err?: unknown) => void;
     /** Absolute base directory for resolving relative file paths the
      *  linkifier finds in option previews. */
     workspacePath?: string;
@@ -283,7 +283,7 @@
       onResolved();
     } catch (err) {
       console.error('Failed to submit user input:', err);
-      onError(`Failed to submit input: ${errString(err)}`);
+      onError(`Failed to submit input: ${errString(err)}`, err);
       responding = false;
     }
   }

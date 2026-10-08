@@ -7,6 +7,9 @@
     ReconnectSession,
   } from '../../stores/bindings';
   import { userFacingError } from '../../utils/userFacingError';
+  import ErrorReportActions from '../shared/ErrorReportActions.svelte';
+  import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
+  import type { PaneErrorKind } from '../../stores/threadPaneShared';
   import {
     getProviderStatus,
     recordProviderStatus,
@@ -38,6 +41,8 @@
 
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
   let reconnecting = $state(false);
+  // Rows whose error details are open, by kind.
+  let expandedRows = $state<Partial<Record<PaneErrorKind, boolean>>>({});
   let retryingHistory = $state(false);
   let rechecking = $state(false);
   // Reconnecting a provider session is a thread write; rechecking a
@@ -191,7 +196,7 @@
     } catch (err) {
       console.error('Failed to reconnect:', err);
       // Replace the session row's message so its Reconnect stays offered.
-      pane.setPaneError(userFacingError(err), 'session');
+      pane.setPaneError(userFacingError(err), 'session', err);
     } finally {
       reconnecting = false;
     }
@@ -347,36 +352,48 @@
         aria-live="assertive"
         data-testid="pane-error-banner"
         data-kind={err.kind}
-        class="border-b {rowBusy(err.kind) ? BUSY_ROW_CLASSES : ERROR_ROW_CLASSES} px-4 py-2 flex items-center gap-2"
+        class="border-b {rowBusy(err.kind) ? BUSY_ROW_CLASSES : ERROR_ROW_CLASSES} px-4 py-2"
       >
-        <p class="text-xs flex-1 line-clamp-2" title={rowMessage(err.kind, err.message)}>
-          {rowMessage(err.kind, err.message)}
-        </p>
-        {#if err.kind === 'session'}
+        <div class="flex items-center gap-2">
+          <p class="text-xs flex-1 {expandedRows[err.kind] ? 'break-words' : 'line-clamp-2'}" title={rowMessage(err.kind, err.message)}>
+            {rowMessage(err.kind, err.message)}
+          </p>
+          {#if err.kind === 'session'}
+            <button
+              onclick={handleReconnect}
+              disabled={reconnecting || operateUngranted}
+              title={operateUngranted ? 'Not granted to this device' : undefined}
+              class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+            </button>
+          {:else if err.kind === 'history-load'}
+            <button
+              onclick={handleHistoryRetry}
+              disabled={retryingHistory}
+              class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              {retryingHistory ? 'Retrying…' : 'Retry'}
+            </button>
+          {/if}
+          {#if err.captured}
+            <ErrorReportActions
+              captured={err.captured}
+              expanded={expandedRows[err.kind] ?? false}
+              onToggle={() => { expandedRows[err.kind] = !expandedRows[err.kind]; }}
+            />
+          {/if}
           <button
-            onclick={handleReconnect}
-            disabled={reconnecting || operateUngranted}
-            title={operateUngranted ? 'Not granted to this device' : undefined}
-            class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            onclick={() => { expandedRows[err.kind] = false; pane.clearPaneError(err.kind); }}
+            class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            aria-label="Dismiss Banner"
           >
-            {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+            Dismiss
           </button>
-        {:else if err.kind === 'history-load'}
-          <button
-            onclick={handleHistoryRetry}
-            disabled={retryingHistory}
-            class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            {retryingHistory ? 'Retrying…' : 'Retry'}
-          </button>
+        </div>
+        {#if err.captured && expandedRows[err.kind]}
+          <ErrorReportDetails captured={err.captured} />
         {/if}
-        <button
-          onclick={() => pane.clearPaneError(err.kind)}
-          class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-          aria-label="Dismiss Banner"
-        >
-          Dismiss
-        </button>
       </div>
     {/each}
   {/if}

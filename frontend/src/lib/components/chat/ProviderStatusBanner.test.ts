@@ -301,4 +301,23 @@ describe('<ProviderStatusBanner>', () => {
     await waitFor(() => expect(queryByTestId('provider-status-action')).toBeNull());
     expect(queryByTestId('provider-status-banner')).toBeNull();
   });
+
+  it('offers details and a copy for an error row that carries its failure', async () => {
+    setBindingMock('Version', async () => '1.2.3');
+    const pane = await buildPane();
+    pane.setGeneralError('Could not fork the thread', new Error('copy session', { cause: new Error('disk full') }));
+    pane.setHistoryLoadError('Failed to load thread items');
+
+    const { getAllByTestId, getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    const [historyRow, generalRow] = getAllByTestId('pane-error-banner');
+    expect(historyRow.querySelector('[aria-label="Copy error for an agent"]')).toBeNull();
+    expect(generalRow.querySelector('[aria-label="Copy error for an agent"]')).not.toBeNull();
+
+    await fireEvent.click(getByTestId('error-details-toggle'));
+    expect(getByTestId('error-details').textContent).toContain('disk full');
+
+    await fireEvent.click(generalRow.querySelector('[aria-label="Dismiss Banner"]')!);
+    await waitFor(() => expect(queryByTestId('error-details')).toBeNull());
+  });
 });
+

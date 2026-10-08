@@ -26,7 +26,7 @@
   import {
     switchDraftProject,
   } from '../../../stores/threadCreation.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast } from '../../../stores/toast.svelte';
   import { setPaneBackend } from '../../../stores/selectedBackend.svelte';
   import {
     attachedBackendEntry,
@@ -102,7 +102,7 @@
       }
     } catch (err) {
       console.error('Failed to switch draft project:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     } finally {
       switching = false;
       closeMenu();

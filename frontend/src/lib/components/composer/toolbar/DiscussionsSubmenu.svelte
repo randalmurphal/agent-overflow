@@ -22,7 +22,7 @@
   import type { Thread } from '../../../types/models';
   import { GetThread, StartDiscussionByID } from '../../../stores/bindings';
   import { syncThread } from '../../../stores/panes.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
@@ -82,7 +82,7 @@
       addToast('info', `Started discussion "${def.name}"`);
     } catch (err) {
       console.error('StartDiscussion failed:', err);
-      addToast('error', `Failed to start discussion: ${errString(err)}`);
+      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
     }
   }
 </script>

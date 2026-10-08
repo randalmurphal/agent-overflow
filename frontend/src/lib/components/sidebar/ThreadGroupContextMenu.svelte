@@ -21,7 +21,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { getThreadById, getThreads } from '../../stores/threads.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     deleteThreadGroupAction,
     newThreadInGroupAction,
@@ -81,10 +81,10 @@
             if (pane) await openThreadFromNavigation(next, pane);
             else await openThreadFromNavigation(next);
           },
-          reportError: (msg) => addToast('error', msg),
+          reportError: (msg, err) => addErrorToast(msg, err),
         });
       } catch (err) {
-        addToast('error', err instanceof Error ? err.message : String(err));
+        addErrorToast(err instanceof Error ? err.message : String(err), err);
       }
     }
   }

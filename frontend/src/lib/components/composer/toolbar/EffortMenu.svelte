@@ -15,7 +15,7 @@
     ensureProviderModels,
     getProviderModels,
   } from '../../../stores/providerModels.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -209,7 +209,7 @@
       await ensureProviderModels(provider, backend);
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
-      addToast('error', `Failed to load model capabilities: ${errString(err)}`);
+      addErrorToast(`Failed to load model capabilities: ${errString(err)}`, err);
     }
   }
 

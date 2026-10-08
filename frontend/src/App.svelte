@@ -117,7 +117,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     openDraftThreadForProject,
     resolveDraftTargetProject,
   } from './lib/stores/threadCreation.svelte';
-  import { addToast } from './lib/stores/toast.svelte';
+  import { addErrorToast, addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
@@ -284,7 +284,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       openInNewPane,
     }).catch((err) => {
       console.error('Failed to create draft thread:', err);
-      addToast('error', userFacingError(err));
+      addErrorToast(userFacingError(err), err);
     });
   }
 
@@ -498,7 +498,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
           setPaneLayoutItems([]);
           resetPaneRegistry(null);
         }
-        addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
+        addErrorToast(userFacingError(err, 'Failed to restore pane layout.'), err);
       } finally {
         if (disposed) return;
         // Release the startup screen even when offline. Saved-pane restore

@@ -82,6 +82,7 @@ const mocks = vi.hoisted(() => {
     wailsEventOn: vi.fn(),
     notifyTerminalFocus: vi.fn(),
     addToast: vi.fn(),
+    addErrorToast: vi.fn(),
   };
 });
 
@@ -99,7 +100,7 @@ vi.mock('../../stores/keybindings.svelte', () => ({
   eventEscapesTerminalToCommand: vi.fn(() => false),
 }));
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
-vi.mock('../../stores/toast.svelte', () => ({ addToast: mocks.addToast }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: mocks.addToast, addErrorToast: mocks.addErrorToast }));
 // Spread the real module: the bridge already degrades to an empty ITheme
 // without a canvas, and a factory that lists only the export this component
 // uses turns every LATER export of that module into `undefined` for the whole
@@ -415,7 +416,8 @@ describe('<TakeControlTerminal>', () => {
       fromSequence: 0,
       throughSequence: 0,
     });
-    mocks.ProviderTerminalSetControl.mockRejectedValue(new Error('lease busy'));
+    const failure = new Error('lease busy');
+    mocks.ProviderTerminalSetControl.mockRejectedValue(failure);
 
     const { getByRole } = render(TakeControlTerminal, {
       props: { paneId: 'tc-1', threadId: 'thread-1' },
@@ -426,9 +428,9 @@ describe('<TakeControlTerminal>', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Take control' }));
     await waitFor(() =>
-      expect(mocks.addToast).toHaveBeenCalledWith(
-        'error',
+      expect(mocks.addErrorToast).toHaveBeenCalledWith(
         expect.stringContaining('Take control failed'),
+        failure,
       ),
     );
 

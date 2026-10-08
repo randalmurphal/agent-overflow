@@ -15,7 +15,7 @@
   import type { WorkflowDefinitionListing } from '../../types/workflow';
   import { WorkflowStartRun } from '../../stores/bindings';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { workflowChainSummary, workflowDefinitionMeta } from '../../stores/workflowData';
   import { compactWorkflowSeeds, workflowIntakeError, workflowSeedDefault } from '../../utils/workflowIntake';
@@ -116,7 +116,7 @@
       refreshWorkflowRunsSoon();
       onClose();
     } catch (err) {
-      addToast('error', userFacingError(err, 'Could not start the run.'));
+      addErrorToast(userFacingError(err, 'Could not start the run.'), err);
     } finally {
       submitting = false;
     }

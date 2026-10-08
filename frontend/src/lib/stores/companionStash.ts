@@ -43,7 +43,7 @@ import {
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
 import { addThreadRemovedObserver } from './threads.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast } from './toast.svelte';
 
 type StashedKind = Exclude<CompanionKind, 'browser'>;
 type PersistedStashedKind = 'plan' | 'review' | 'agent';
@@ -256,9 +256,9 @@ async function reopenSideChat(
         { kind: 'side-chat', widthPx: widthPx ?? 0, thread: stashedThread },
       ]);
     }
-    addToast(
-      'error',
+    addErrorToast(
       `The side chat could not be reopened (${userFacingError(err)}). It will try again when you return to this thread.`,
+      err,
     );
   } finally {
     if (reopeningSideChats.get(companion.paneId) === stashedThread) {

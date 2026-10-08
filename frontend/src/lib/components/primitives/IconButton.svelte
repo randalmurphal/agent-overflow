@@ -28,8 +28,8 @@
      *  the click as a focus transition — which would smooth-scroll a pane
      *  that is about to be destroyed (see PaneCloseButton's rationale). */
     onPointerDown?: (e: PointerEvent) => void;
-    size?: 'sm' | 'md';
-    variant?: 'ghost' | 'subtle';
+    size?: 'xs' | 'sm' | 'md';
+    variant?: 'ghost' | 'subtle' | 'tint';
     ariaHaspopup?: 'dialog' | 'menu' | 'listbox' | 'tree' | 'grid' | boolean;
     ariaExpanded?: boolean;
     children: Snippet;
@@ -53,16 +53,19 @@
   // inner icon sizing is the caller's responsibility — the button just
   // guarantees the box is consistent.
   const SIZE_CLASSES: Record<NonNullable<Props['size']>, string> = {
+    xs: 'h-5 w-5 compact:h-9 compact:w-9',
     sm: 'h-7 w-7 compact:h-9 compact:w-9',
     md: 'h-8 w-8 compact:h-10 compact:w-10',
   };
 
   // Ghost = transparent until hover. Subtle = shows a low-contrast fill
   // at rest so it reads as a control rather than blank space. Both share
-  // the same hover tint so hover feedback is identical.
+  // the same hover tint so hover feedback is identical. Tint takes the
+  // surrounding text colour, for controls on a coloured notice.
   const VARIANT_CLASSES: Record<NonNullable<Props['variant']>, string> = {
     ghost: 'bg-transparent hover:bg-surface-2/60',
     subtle: 'bg-surface-2/40 hover:bg-surface-2/70',
+    tint: 'text-current opacity-70 hover:opacity-100 bg-transparent hover:bg-fg/10',
   };
 
   function handleClick(e: MouseEvent) {
@@ -81,14 +84,14 @@
   onclick={handleClick}
   onpointerdown={onPointerDown}
   class={[
-    'inline-flex items-center justify-center rounded-md text-text-secondary',
+    `inline-flex items-center justify-center rounded-md${variant === 'tint' ? '' : ' text-text-secondary'}`,
     'transition-colors cursor-pointer',
-    'hover:text-text-primary',
+    variant === 'tint' ? '' : 'hover:text-text-primary',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
     'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-text-secondary',
     SIZE_CLASSES[size],
     VARIANT_CLASSES[variant],
-  ].join(' ')}
+  ].filter(Boolean).join(' ')}
   data-icon-button
   data-testid={testId}
 >

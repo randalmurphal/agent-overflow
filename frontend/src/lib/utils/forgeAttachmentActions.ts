@@ -4,7 +4,7 @@
 // each one out and makes its result visible.
 
 import { SaveForgeAttachment } from '../stores/bindings';
-import { addToast } from '../stores/toast.svelte';
+import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { withBackendTarget } from '../transport/backends';
 import { handleExternalURL } from './externalLinks';
 import { errString } from './errors';
@@ -46,7 +46,7 @@ async function saveOnOwningComputer(
     );
     addToast('success', savedFileMessage(action, parsed.backend, path));
   } catch (err) {
-    addToast('error', errString(err));
+    addErrorToast(errString(err), err);
   }
 }
 
@@ -64,7 +64,7 @@ async function downloadForgeAttachment(parsed: ParsedForgeAttachmentHref): Promi
     anchor.click();
     anchor.remove();
   } catch (err) {
-    addToast('error', errString(err));
+    addErrorToast(errString(err), err);
   } finally {
     // The click has already handed the URL to the download by the time it
     // returns, so this holder's retention can go.

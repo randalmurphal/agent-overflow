@@ -34,7 +34,7 @@ import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import type { BackendKey } from '../../transport/backendKey';
 import { userFacingError } from '../../utils/userFacingError';
@@ -45,7 +45,7 @@ export const NEW_THREAD_GROUP_NAME = 'New Group';
 
 function reportGroupFailure(what: string, err: unknown): void {
   console.error(`Failed to ${what}:`, err);
-  addToast('error', userFacingError(err));
+  addErrorToast(userFacingError(err), err);
 }
 
 export async function newThreadInGroupAction(group: ThreadGroup, pane: ThreadPane | null): Promise<ThreadPane | null> {

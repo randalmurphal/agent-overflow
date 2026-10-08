@@ -10,7 +10,7 @@
     ForgetTailnetNode,
     NetworkSettings,
   } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { tokenizeCommandLine } from '../../utils/shellArgv';
 
@@ -114,7 +114,7 @@
       settings = await call(() => SetNetworkSettings(writeRequest(previous, { bindAll: next })));
     } catch (err) {
       settings = previous;
-      addToast('error', `Failed to update network settings: ${errString(err)}`);
+      addErrorToast(`Failed to update network settings: ${errString(err)}`, err);
     } finally {
       saving = false;
     }
@@ -131,7 +131,7 @@
     try {
       settings = await call(() => SetNetworkSettings(writeRequest(previous, { listenPort: port })));
     } catch (err) {
-      addToast('error', `Failed to change the port: ${errString(err)}`);
+      addErrorToast(`Failed to change the port: ${errString(err)}`, err);
     } finally {
       saving = false;
     }
@@ -156,7 +156,7 @@
         }),
       ));
     } catch (err) {
-      addToast('error', `Failed to update network settings: ${errString(err)}`);
+      addErrorToast(`Failed to update network settings: ${errString(err)}`, err);
     } finally {
       saving = false;
     }
@@ -174,7 +174,7 @@
         }),
       ));
     } catch (err) {
-      addToast('error', `Failed to update tailnet settings: ${errString(err)}`);
+      addErrorToast(`Failed to update tailnet settings: ${errString(err)}`, err);
     } finally {
       saving = false;
     }
@@ -186,7 +186,7 @@
     try {
       settings = await call(() => ForgetTailnetNode());
     } catch (err) {
-      addToast('error', `Failed to forget this node: ${errString(err)}`);
+      addErrorToast(`Failed to forget this node: ${errString(err)}`, err);
     } finally {
       saving = false;
     }
@@ -198,7 +198,7 @@
     try {
       settings = await call(() => RenewCanonicalDomainCert());
     } catch (err) {
-      addToast('error', `Failed to check the certificate: ${errString(err)}`);
+      addErrorToast(`Failed to check the certificate: ${errString(err)}`, err);
     } finally {
       saving = false;
     }

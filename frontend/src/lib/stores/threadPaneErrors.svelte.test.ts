@@ -94,5 +94,20 @@ describe('threadPaneErrors', () => {
       pane.clearPaneError('session');
       expect(pane.generalError).toBe('Untagged');
     });
+
+    it('keeps the failure behind a message for its row, and drops it with the row', () => {
+      const pane = createThreadPane();
+      const err = new Error('disk full');
+      pane.setGeneralError('Failed to rename thread', err);
+      pane.setHistoryLoadError('Failed to load thread items');
+      const [history, general] = pane.paneErrorList;
+      expect(history.captured).toBeUndefined();
+      expect(general.captured?.report.context).toBe('Failed to rename thread');
+      expect(general.captured?.report.chain).toEqual(['disk full']);
+
+      pane.setGeneralError('Failed to rename thread again');
+      expect(pane.paneErrorList.find((e) => e.kind === 'general')?.captured).toBeUndefined();
+    });
   });
 });
+

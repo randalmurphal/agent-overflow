@@ -13,8 +13,10 @@ import (
 	"hash/fnv"
 	"log"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Dispatcher owns the registered RPC method set. The set is built once
@@ -317,11 +319,13 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, isLoopback bool) (result json.RawMessage, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("transport: panic in %s: %v", m.FQN, r)
+			cid := newCorrelationID()
+			log.Printf("transport: panic in %s (id: %s): %v\n%s", m.FQN, cid, r, debug.Stack())
 			result = nil
 			frameErr = &FrameError{
 				Code:    ErrCodeInternal,
 				Message: "internal error",
+				Detail:  methodErrorDetail(m, cid, nil, false),
 			}
 		}
 	}()
@@ -338,7 +342,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 		return nil, fe
 	}
 
-	args, fe := d.buildArgs(ctx, m, params)
+	args, fe := d.buildArgs(ctx, m, params, isLoopback)
 	if fe != nil {
 		return nil, fe
 	}
@@ -360,7 +364,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 // context.Context, the dispatcher's ctx is injected and parameter
 // indexing on the wire stays zero-based — i.e. the wire never sees the
 // ctx slot.
-func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.RawMessage) ([]reflect.Value, *FrameError) {
+func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.RawMessage, exposeErrors bool) ([]reflect.Value, *FrameError) {
 	expectedParams := len(m.inputTypes)
 	if m.NeedsContext {
 		expectedParams--
@@ -405,11 +409,8 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 			for ; wireIdx < len(params); wireIdx++ {
 				ptr := reflect.New(elemType)
 				if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
-					log.Printf("transport: %s param %d (variadic): %v", m.FQN, wireIdx, err)
-					return nil, &FrameError{
-						Code:    ErrCodeBadParams,
-						Message: fmt.Sprintf("bad parameter %d", wireIdx),
-					}
+					return nil, loggedFailure(m, ErrCodeBadParams, fmt.Sprintf("bad parameter %d", wireIdx),
+						fmt.Sprintf("%s param %d (variadic)", m.FQN, wireIdx), err, exposeErrors)
 				}
 				slice = reflect.Append(slice, ptr.Elem())
 			}
@@ -419,11 +420,8 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 
 		ptr := reflect.New(declType)
 		if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
-			log.Printf("transport: %s param %d: %v", m.FQN, wireIdx, err)
-			return nil, &FrameError{
-				Code:    ErrCodeBadParams,
-				Message: fmt.Sprintf("bad parameter %d", wireIdx),
-			}
+			return nil, loggedFailure(m, ErrCodeBadParams, fmt.Sprintf("bad parameter %d", wireIdx),
+				fmt.Sprintf("%s param %d", m.FQN, wireIdx), err, exposeErrors)
 		}
 		args = append(args, ptr.Elem())
 		wireIdx++
@@ -478,7 +476,9 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				return nil, frame
 			}
 			if code, message, ok := errorsx.PublicDetails(methodErr); ok {
-				frame := &FrameError{Code: code, Message: message}
+				cid := newCorrelationID()
+				log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
+				frame := &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, methodErr, exposeErrors)}
 				// The refused stop names what it would have killed. A tiny
 				// interface for the same reason as the transfer ref above.
 				var agents interface{ RefusedBackgroundAgents() json.RawMessage }
@@ -505,15 +505,17 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				message = methodErr.Error()
 			}
 			code := ErrCodeMethodError
+			detail := methodErrorDetail(m, cid, methodErr, exposeErrors)
 			switch {
 			case errors.Is(methodErr, ErrTemporarilyUnavailable):
 				code = ErrCodeTemporarilyUnavailable
 			case errors.Is(methodErr, ErrAlreadyHandled):
-				code = ErrCodeAlreadyHandled
+				code, detail = ErrCodeAlreadyHandled, nil
 			}
 			return nil, &FrameError{
 				Code:    code,
 				Message: message,
+				Detail:  detail,
 			}
 		}
 		results = results[:len(results)-1]
@@ -525,11 +527,7 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 	case 1:
 		buf, err := json.Marshal(results[0].Interface())
 		if err != nil {
-			log.Printf("transport: %s: marshal result: %v", m.FQN, err)
-			return nil, &FrameError{
-				Code:    ErrCodeInternal,
-				Message: "internal error",
-			}
+			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal result", err, exposeErrors)
 		}
 		return buf, nil
 	default:
@@ -539,14 +537,28 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 		}
 		buf, err := json.Marshal(out)
 		if err != nil {
-			log.Printf("transport: %s: marshal multi-result: %v", m.FQN, err)
-			return nil, &FrameError{
-				Code:    ErrCodeInternal,
-				Message: "internal error",
-			}
+			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal multi-result", err, exposeErrors)
 		}
 		return buf, nil
 	}
+}
+
+// loggedFailure logs err under a new correlation ID, prefixed by what
+// failed, and answers code and message with that ID as the detail.
+func loggedFailure(m *Method, code, message, what string, err error, expose bool) *FrameError {
+	cid := newCorrelationID()
+	log.Printf("transport: %s (id: %s): %v", what, cid, err)
+	return &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, err, expose)}
+}
+
+// methodErrorDetail is the diagnostic record of m's failure logged under
+// cid. The wrap chain is internal prose, sent only when expose is set.
+func methodErrorDetail(m *Method, cid string, err error, expose bool) *ErrorDetail {
+	detail := &ErrorDetail{Ref: cid, Method: m.Name, At: time.Now().UnixMilli()}
+	if expose && err != nil {
+		detail.Chain = errorsx.Chain(err)
+	}
+	return detail
 }
 
 // Methods returns a snapshot of registered methods sorted by FQN.

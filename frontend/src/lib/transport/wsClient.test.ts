@@ -335,6 +335,33 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('carries a failure detail past the message clamp and drops a malformed one', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const longLayer = `stored provider uuid "8e78401f-fbd1-42d9-8c13-719b6dea8c1a" is missing from session /home/u/${'x'.repeat(300)}.jsonl`;
+    const good = client.callByID(7, []);
+    const bad = client.callByID(8, []);
+    const caught: unknown[] = [];
+    const settled = Promise.all([good, bad].map((p) => p.catch((err: unknown) => { caught.push(err); })));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const [first, second] = ws.sent.filter((frame) => frame.type === 'rpc');
+    ws.pushFrame({ type: 'rpc', id: first!.id, error: {
+      code: 'method_error', message: `revert: ${longLayer}`,
+      detail: { ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer, 7] },
+    } });
+    ws.pushFrame({ type: 'rpc', id: second!.id, error: {
+      code: 'method_error', message: 'boom', detail: { ref: 42, method: 'X', at: 1 },
+    } });
+    await settled;
+    const [withDetail, withoutDetail] = caught as TransportError[];
+    expect(withDetail!.message.length).toBeLessThan(longLayer.length);
+    expect(withDetail!.detail).toEqual({ ref: 'rKVz', method: 'InterruptAndRevertIfClean', at: 1, chain: ['revert', longLayer], backend: '' });
+    expect(withoutDetail!.detail).toBeUndefined();
+    client.close();
+  });
+
   it('subscribe receives event frames and unsubscribe stops them', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 

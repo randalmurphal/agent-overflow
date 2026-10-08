@@ -44,7 +44,7 @@ import { prependDraftSnapshot } from '../../utils/mergeDraftSnapshots';
 import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
 import { applyUserMessageReverted, onUserMessageReverted, consumeResendRevertMarker } from '../../stores/eventsMessageRevert';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { addToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import {
   isTransportClassError,
 } from '../../stores/transportStatus.svelte';
@@ -325,7 +325,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
       // The count is the only thing that failed — the message is intact,
       // so hand the editor back rather than dropping what was typed.
       if (flow === preflight) flow = { ...sessionOf(current), stage: 'editing' };
-      addToast('error', `Failed to check background tasks: ${userFacingError(err)}`);
+      addErrorToast(`Failed to check background tasks: ${userFacingError(err)}`, err);
       return;
     }
     // The invalidation passes (thread switch, anchor removed) may have
@@ -400,14 +400,14 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
     } catch (err) {
       if (isTransportClassError(err)) {
         executing.sagaOutcomeUnknown = true;
-        addToast('error', 'Connection lost while resending. Restoring the conversation state.');
+        addErrorToast('Connection lost while resending. Restoring the conversation state.', err);
         try {
           const state = await reconcile();
           if (flow === executing) flow = state.userItemExists ? { ...sessionOf(executing), stage: 'editing' } : null;
           if (!state.sendAccepted && !state.userItemExists) await recoverEditedText(executing);
           else if (!opts.getComposerDraft().hasPendingSave) await opts.getComposerDraft().reloadFromBackend(thread.id);
         } catch (recoveryError) {
-          addToast('error', `Could not restore the conversation state: ${userFacingError(recoveryError)}`);
+          addErrorToast(`Could not restore the conversation state: ${userFacingError(recoveryError)}`, recoveryError);
         }
       } else handleFailure(executing, err);
     } finally {
@@ -431,14 +431,14 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
         // send that — it turns out — never happened. Reclaim them.
         reclaimUploads(failed);
       }
-      addToast('error', `Edit failed: ${userFacingError(err)}`);
+      addErrorToast(`Edit failed: ${userFacingError(err)}`, err);
       return;
     }
     // The deleted editor hands its text to the composer. Merge against live
     // keystrokes; backend recovery protects the edit if this client disappears.
     if (flow === failed) flow = null;
     void recoverEditedText(failed);
-    addToast('error', 'Reverted, but sending failed — your message is in the composer.');
+    addErrorToast('Reverted, but sending failed — your message is in the composer.', err);
   }
 
   /**
@@ -489,7 +489,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
         // The paint above means the text IS on screen and sendable, so
         // this is a durability failure, not a loss — but it must not pass
         // for a save: the draft will not be there after a reload.
-        addToast('error', `Recovered your message, but saving the draft failed: ${userFacingError(err)}`);
+        addErrorToast(`Recovered your message, but saving the draft failed: ${userFacingError(err)}`, err);
       }
       return;
     }
@@ -505,7 +505,7 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
       // The edited text still lives in the flow's local store until GC,
       // but there is no durable home left to put it in — say so rather
       // than fail silently.
-      addToast('error', `Failed to restore edited message to the draft: ${userFacingError(err)}`);
+      addErrorToast(`Failed to restore edited message to the draft: ${userFacingError(err)}`, err);
     }
   }
 
