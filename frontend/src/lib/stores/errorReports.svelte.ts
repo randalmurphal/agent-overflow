@@ -15,6 +15,8 @@ import {
 } from '../utils/errorReport';
 import { userFacingError } from '../utils/userFacingError';
 import { devicePlatform } from '../utils/deviceLabel';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 export interface CapturedError {
   readonly report: ErrorReport;
@@ -29,10 +31,12 @@ async function requestAppVersion(): Promise<void> {
   if (versionRequested) return;
   versionRequested = true;
   try {
+    await pageGrantsResolved();
+    if (!hasScope('threads:read', HOME_BACKEND)) throw new Error('Version is not granted to this session');
     appVersion = await Version();
   } catch {
-    // A copy without the version is still a useful report, so a failed
-    // read leaves it out and lets the next capture try again.
+    // A copy without the version is still a useful report, so a failed or
+    // ungranted read leaves it out and lets the next capture check again.
     versionRequested = false;
   }
 }

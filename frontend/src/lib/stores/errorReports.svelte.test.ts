@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureError, capturedErrorText, resetErrorReportsForTest } from './errorReports.svelte';
 import { TransportError } from '../transport/wsClient';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 
 function backendError(chain: string[], backend = ''): TransportError {
   return new TransportError('method_error', 'failed', {
@@ -18,8 +19,12 @@ describe('captureError', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetErrorReportsForTest();
+    setPageGrantsFromBootstrap(false);
   });
-  afterEach(resetErrorReportsForTest);
+  afterEach(() => {
+    resetErrorReportsForTest();
+    __resetScopesForTest();
+  });
 
   it('reads the backend log when the error is captured', async () => {
     setBindingMock('Version', async () => '1.2.3');
@@ -55,5 +60,15 @@ describe('captureError', () => {
     const text = capturedErrorText(captured);
     expect(text).toMatch(/Backend log: could not be read \(.+\)/);
     expect(text).not.toContain('- app:');
+  });
+
+  it('does not ask for the version a session is not granted', async () => {
+    __resetScopesForTest();
+    setPageGrantsFromBootstrap(true);
+    const version = setBindingMock('Version', async () => '1.2.3');
+    const captured = captureError(new Error('disk full'));
+    await settle();
+    expect(version).not.toHaveBeenCalled();
+    expect(capturedErrorText(captured)).not.toContain('- app:');
   });
 });
