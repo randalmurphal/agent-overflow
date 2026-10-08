@@ -1180,9 +1180,9 @@ func TestSelectEngineTakesTheHeadlessEngineOnlyWhenAsked(t *testing.T) {
 // docs/architecture/development.md and is on no automatic target.
 //
 // What it proves that nothing above can: that this machine's Chromium
-// accepts the exact command line chromiumArgs builds, sandbox and all,
-// and hands out a target the shared CDP driver can attach to and
-// navigate; that Dispose leaves no process of it running and an ephemeral
+// accepts the command line chromiumArgs builds, sandbox and all, with only
+// the mock keychain added on macOS, and hands out a target the shared CDP
+// driver can attach to and navigate; that Dispose leaves no process of it running and an ephemeral
 // profile nowhere on disk; that a persisted profile keeps a cookie set
 // just before Dispose; that a popup's first request passes the
 // workspace's navigation policy; and that the crash handler writes
@@ -1206,12 +1206,24 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find a Chromium: %v", err)
 	}
+	t.Logf("launching %s", engine.binary)
+	if runtime.GOOS == "darwin" {
+		// macOS finds the keychain through HOME, and this one has none:
+		// Chrome would ask for one in a dialog at every launch and keep no
+		// cookie it cannot encrypt. The mock keychain keeps the smoke off
+		// the keychain; a serve backend runs with the user's own HOME.
+		wrapper := filepath.Join(t.TempDir(), "chromium")
+		script := "#!/bin/sh\nexec '" + strings.ReplaceAll(engine.binary, "'", `'\''`) + "' --use-mock-keychain \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		engine.binary = wrapper
+	}
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	if err := engine.Start(t.Context()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer engine.Stop()
-	t.Logf("launching %s", engine.binary)
 
 	profile := testHeadlessProfile(t, engine, t.TempDir(), false)
 	page, err := profile.NewPage(t.Context(), testPageHooks())
@@ -1254,6 +1266,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	}
 
 	assertRealPopupsPassThePolicy(t, engine)
+	assertRealEvaluateSemantics(t, engine)
 	if err := filepath.WalkDir(home, func(path string, _ os.DirEntry, err error) error {
 		if err == nil && filepath.Base(path) == "Crash Reports" {
 			t.Errorf("the crash handler wrote %s outside the profile", path)
@@ -1262,6 +1275,33 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read HOME: %v", err)
 	}
+}
+
+// assertRealEvaluateSemantics holds the CDP driver to the evaluate contract
+// on a page whose script policy forbids eval, as AO's own UI does.
+func assertRealEvaluateSemantics(t *testing.T, engine *headlessEngine) {
+	t.Helper()
+	workspace := t.TempDir()
+	index := filepath.Join(workspace, "evaluate.html")
+	if err := os.WriteFile(index, []byte(evaluateSemanticsPage), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := testHeadlessProfile(t, engine, workspace, false)
+	defer func() {
+		if err := profile.Dispose(context.Background()); err != nil {
+			t.Errorf("dispose: %v", err)
+		}
+	}()
+	page, err := profile.NewPage(t.Context(), testPageHooks())
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
+	defer cancel()
+	if err := page.Navigate(opCtx, "file://"+index); err != nil {
+		t.Fatalf("navigate to the evaluate page: %v", err)
+	}
+	assertEvaluateSemantics(t, evaluateEngineCDP, driverEvaluator(opCtx, page, false), driverEvaluator(opCtx, page, true))
 }
 
 // assertRealPopupsPassThePolicy opens an outside-workspace file in a popup
@@ -1334,7 +1374,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 			time.Sleep(20 * time.Millisecond)
 			status, _ = driver.PageStatus(popupCtx)
 		}
-		body, err := driver.Evaluate(popupCtx, `document.body ? document.body.innerText : ""`)
+		body, _, err := driverEvaluator(popupCtx, driver, false)(`document.body ? document.body.innerText : ""`, nil)
 		popupCancel()
 		driver.Close()
 		if err != nil {

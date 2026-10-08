@@ -254,14 +254,3 @@ func TestDOMNodeReferencesAreOpaqueAndBounded(t *testing.T) {
 		t.Fatal("forged selector was accepted as node reference")
 	}
 }
-
-func TestReadOnlyPromiseUnwrapIsNarrow(t *testing.T) {
-	if got := unwrapReadOnlyPromise(`Promise.resolve(document.title)`); got != "document.title" {
-		t.Fatalf("unwrap=%q", got)
-	}
-	for _, expression := range []string{`Promise.resolve(document.title).then(String)`, `Promise.resolve((document.title)) + "x"`, `document.title`} {
-		if got := unwrapReadOnlyPromise(expression); got != expression {
-			t.Fatalf("unexpected unwrap %q => %q", expression, got)
-		}
-	}
-}

@@ -309,7 +309,7 @@ mechanism:
 | snapshot / dom / locator | as today (CDP) | shared JS expressions |
 | click / type / press / pointer / scroll | CDP Input (trusted) | JS-driven default (untrusted); XTest escalation for the visible pane; parity note |
 | screenshot | CDP capture | engine snapshot API |
-| wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; a statement list retries through `eval` (a page CSP without `'unsafe-eval'` refuses it) |
+| wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; evaluate does not use page `eval`, so a page CSP without `'unsafe-eval'` allows it |
 | clipboard (isolated per tab) | AO-managed, engine-agnostic | same |
 | console_logs | CDP Runtime/Log | injected capture |
 | downloads | CDP Browser.download events → AO artifact dirs | WebKitDownload delegate → same dirs |

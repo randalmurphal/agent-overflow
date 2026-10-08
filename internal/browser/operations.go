@@ -274,47 +274,38 @@ func (m *Manager) History(ctx context.Context, access Access, pageID, action str
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, expression string) (any, error) {
-	if len(expression) > maxBrowserInputBytes {
-		return nil, fmt.Errorf("browser: expression exceeds %d bytes", maxBrowserInputBytes)
-	}
-	if strings.TrimSpace(expression) == "" {
-		return nil, fmt.Errorf("browser: expression is required")
-	}
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
-	if err != nil {
-		return nil, err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
-	defer cancel()
-	result, err := p.driver.Evaluate(opCtx, expression)
-	if err != nil {
-		return nil, err
-	}
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("browser: encode evaluation result: %w", err)
-	}
-	if len(encoded) > maxEvaluateBytes {
-		return nil, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
-	}
-	m.refreshPageAfterOperation(opCtx, p)
-	return result, nil
+// Evaluate runs JavaScript in the page as evaluate.go describes, with the
+// optional JSON argument for code that is one function. It returns the result
+// and a note the tool result carries, or "".
+func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+	return m.evaluate(ctx, access, pageID, code, argument, false)
 }
 
-// EvaluateReadOnly returns the bounded result and the engine's own caveat
-// about what "read only" could be enforced as. The caveat is a driver
-// capability answer, not a Manager judgement: an engine with engine-level
-// side-effect rejection returns none, and one that can only be best-effort
-// says so in the tool result rather than looking identical.
-func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, expression string) (any, string, error) {
-	if len(expression) > maxBrowserInputBytes {
-		return nil, "", fmt.Errorf("browser: expression exceeds %d bytes", maxBrowserInputBytes)
+// EvaluateReadOnly is Evaluate run synchronously, with the engine asked to
+// reject side effects. Its note leads with the engine's own caveat about what
+// "read only" could be enforced as. The caveat is a driver capability answer,
+// not a Manager judgement: an engine with engine-level side-effect rejection
+// returns none, and one that can only be best-effort says so in the tool
+// result rather than looking identical.
+func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+	return m.evaluate(ctx, access, pageID, code, argument, true)
+}
+
+func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage, readOnly bool) (any, string, error) {
+	// The evaluation's own failures (a refusal, a throw, a result the tools
+	// cannot send) are named for the tool; an engine failure already carries
+	// the package prefix.
+	failed := func(err error) error {
+		if strings.HasPrefix(err.Error(), "browser: ") {
+			return err
+		}
+		if readOnly {
+			return fmt.Errorf("browser: read-only evaluate: %w", err)
+		}
+		return fmt.Errorf("browser: evaluate: %w", err)
 	}
-	if strings.TrimSpace(expression) == "" {
-		return nil, "", fmt.Errorf("browser: expression is required")
+	if err := checkEvaluationInput(code, argument); err != nil {
+		return nil, "", failed(err)
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
@@ -324,68 +315,22 @@ func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, e
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	caveat := p.driver.ReadOnlyCaveat()
-	raw, err := p.driver.EvaluateReadOnly(opCtx, unwrapReadOnlyPromise(expression))
-	if err != nil {
-		return nil, caveat, err
+	caveat := ""
+	if readOnly {
+		caveat = p.driver.ReadOnlyCaveat()
 	}
-	if len(raw) == 0 {
-		return nil, caveat, nil
-	}
-	if len(raw) > maxEvaluateBytes {
-		return nil, caveat, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
-	}
-	var result any
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, caveat, fmt.Errorf("browser: decode evaluation result: %w", err)
-	}
+	value, note, err := runEvaluation(opCtx, func(ctx context.Context, source string) (json.RawMessage, error) {
+		return p.driver.Evaluate(ctx, source, readOnly)
+	}, code, argument, readOnly)
+	// The code may have changed the page before it failed.
 	m.refreshPageAfterOperation(opCtx, p)
-	return result, caveat, nil
-}
-
-func unwrapReadOnlyPromise(expression string) string {
-	trimmed := strings.TrimSpace(expression)
-	const prefix = "Promise.resolve("
-	if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, ")") {
-		return expression
+	if err != nil {
+		return nil, caveat, failed(err)
 	}
-	inner := trimmed[len(prefix) : len(trimmed)-1]
-	depth := 0
-	var quote rune
-	escaped := false
-	for _, r := range inner {
-		if quote != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if r == '\\' {
-				escaped = true
-				continue
-			}
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		if r == '\'' || r == '"' || r == '`' {
-			quote = r
-			continue
-		}
-		switch r {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth < 0 {
-				return expression
-			}
-		}
+	if caveat != "" && note != "" {
+		return value, caveat + " " + note, nil
 	}
-	if depth != 0 || quote != 0 {
-		return expression
-	}
-	return inner
+	return value, caveat + note, nil
 }
 
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {

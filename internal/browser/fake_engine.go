@@ -150,6 +150,8 @@ type fakePage struct {
 	viewports [][2]int
 	// screenshot, when set, answers Screenshot instead of the no-page error.
 	screenshot func(context.Context) ([]byte, error)
+	// evaluate, when set, answers Evaluate instead of the no-page error.
+	evaluate func(ctx context.Context, source string, readOnly bool) (json.RawMessage, error)
 	// viewportErr, when set, makes SetViewport fail so a test can drive the
 	// failure path.
 	viewportErr error
@@ -253,11 +255,13 @@ func (p *fakePage) Screenshot(ctx context.Context, _ ScreenshotOptions) ([]byte,
 	return nil, errFakeEngineHasNoPage
 }
 
-func (p *fakePage) Evaluate(context.Context, string) (any, error) {
-	return nil, errFakeEngineHasNoPage
-}
-
-func (p *fakePage) EvaluateReadOnly(context.Context, string) (json.RawMessage, error) {
+func (p *fakePage) Evaluate(ctx context.Context, source string, readOnly bool) (json.RawMessage, error) {
+	p.mu.Lock()
+	evaluate := p.evaluate
+	p.mu.Unlock()
+	if evaluate != nil {
+		return evaluate(ctx, source, readOnly)
+	}
 	return nil, errFakeEngineHasNoPage
 }
 

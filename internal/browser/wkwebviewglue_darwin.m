@@ -1270,6 +1270,16 @@ void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id) {
                              aoWKVEvalDone(call_id, NULL, NULL);
                              return;
                            }
+                           // NSJSONSerialization throws, which ends the app
+                           // here, on what JSON cannot spell, such as a
+                           // non-finite number or a date; the check also
+                           // refuses a cycle. The array admits a top-level
+                           // string or number.
+                           if (![NSJSONSerialization isValidJSONObject:@[ result ]]) {
+                             aoWKVEvalDone(call_id, NULL,
+                                           strdup("browser: result is not JSON-encodable"));
+                             return;
+                           }
                            NSError *encodeError = nil;
                            NSData *data = [NSJSONSerialization
                                dataWithJSONObject:result

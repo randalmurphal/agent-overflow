@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"agent-overflow/internal/keybindings"
@@ -397,6 +398,6 @@ type Controller interface {
 	Scroll(context.Context, Access, string, string, float64, float64) (PageInfo, error)
 	Wait(context.Context, Access, string, string, int) (PageInfo, error)
 	History(context.Context, Access, string, string) (PageInfo, error)
-	Evaluate(context.Context, Access, string, string) (any, error)
-	EvaluateReadOnly(context.Context, Access, string, string) (any, string, error)
+	Evaluate(context.Context, Access, string, string, json.RawMessage) (any, string, error)
+	EvaluateReadOnly(context.Context, Access, string, string, json.RawMessage) (any, string, error)
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 
@@ -23,19 +24,32 @@ func configureChromiumProcess(cmd *exec.Cmd) {
 // killChromium kills every process in Chromium's group.
 func killChromium(cmd *exec.Cmd) error { return procutil.KillConfiguredGroup(cmd) }
 
+// exitingPollInterval is how often the state of a process that kqueue
+// refused while it exits is read again.
+const exitingPollInterval = 5 * time.Millisecond
+
 // awaitExit returns once the child pid has exited, leaving it unreaped.
-func awaitExit(pid int) error {
+func awaitExit(pid int) error { return awaitChildExit(pid, notifyOnExit) }
+
+// awaitChildExit is awaitExit with the kqueue registration as a parameter,
+// so a test can hold the child in the state kqueue refuses. kqueue refuses a
+// process from the moment it begins to exit until it is a zombie, so the
+// state of a child that is already exiting is read every few milliseconds
+// until it is one.
+func awaitChildExit(pid int, notify func(kq, pid int) error) error {
 	kq, err := unix.Kqueue()
 	if err != nil {
 		return err
 	}
 	defer unix.Close(kq)
-	if err := notifyOnExit(kq, pid); err != nil {
-		if errors.Is(err, unix.ESRCH) {
-			// kqueue refuses a process that has already exited.
-			return nil
+	if err := notify(kq, pid); err != nil {
+		if !errors.Is(err, unix.ESRCH) {
+			return err
 		}
-		return err
+		for !procutil.Exited(pid) {
+			time.Sleep(exitingPollInterval)
+		}
+		return nil
 	}
 	events := make([]unix.Kevent_t, 1)
 	for {
@@ -49,7 +63,17 @@ func awaitExit(pid int) error {
 // or an error naming those still running when timeout passes. It runs after
 // the group was killed, so the group gains no members. kqueue reports each
 // member's exit whether or not anything reaps it and whoever its parent is.
+// It refuses a member that has begun to exit and is not yet a zombie, for
+// tens of milliseconds when the member has a large address space; that
+// member may still be closing its files, so its state is read every few
+// milliseconds until it is a zombie.
 func waitGroupExited(pgid int, timeout time.Duration) error {
+	return waitMembersExited(pgid, timeout, notifyOnExit)
+}
+
+// waitMembersExited is waitGroupExited with the kqueue registration as a
+// parameter, so a test can hold a member in the state kqueue refuses.
+func waitMembersExited(pgid int, timeout time.Duration, notify func(kq, pid int) error) error {
 	members, err := procutil.RunningGroupMembers(pgid)
 	if err != nil {
 		return err
@@ -60,13 +84,17 @@ func waitGroupExited(pgid int, timeout time.Duration) error {
 	}
 	defer unix.Close(kq)
 	waiting := make(map[uint64]bool, len(members))
+	var exiting []int
 	for _, pid := range members {
-		if err := notifyOnExit(kq, pid); err != nil {
-			// kqueue refuses a process that has exited.
+		if err := notify(kq, pid); err != nil {
 			if !procutil.RunningInGroup(pid, pgid) {
 				continue
 			}
-			return fmt.Errorf("watch Chromium process %d: %w", pid, err)
+			if !errors.Is(err, unix.ESRCH) {
+				return fmt.Errorf("watch Chromium process %d: %w", pid, err)
+			}
+			exiting = append(exiting, pid)
+			continue
 		}
 		// The registration names whichever process has the pid now. A
 		// process outside the group took the pid of a member that is gone.
@@ -76,10 +104,17 @@ func waitGroupExited(pgid int, timeout time.Duration) error {
 	}
 	deadline := time.Now().Add(timeout)
 	events := make([]unix.Kevent_t, len(members)+1)
-	for len(waiting) > 0 {
+	for {
+		exiting = slices.DeleteFunc(exiting, func(pid int) bool { return !procutil.RunningInGroup(pid, pgid) })
+		if len(waiting) == 0 && len(exiting) == 0 {
+			return nil
+		}
 		wait := time.Until(deadline)
 		if wait <= 0 {
 			return groupStillRunning(pgid, timeout)
+		}
+		if len(exiting) > 0 {
+			wait = min(wait, exitingPollInterval)
 		}
 		timespec := unix.NsecToTimespec(wait.Nanoseconds())
 		n, err := unix.Kevent(kq, nil, events, &timespec)
@@ -90,7 +125,6 @@ func waitGroupExited(pgid int, timeout time.Duration) error {
 			delete(waiting, event.Ident)
 		}
 	}
-	return nil
 }
 
 // notifyOnExit registers kq for pid's exit, once.

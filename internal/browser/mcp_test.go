@@ -4,18 +4,32 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type fakeController struct {
-	openedURL      string
-	openOptions    OpenOptions
-	access         Access
-	readExpression string
+	openedURL   string
+	openOptions OpenOptions
+	access      Access
+	evaluations []fakeEvaluation
+	// evaluated, evaluateNote and evaluateErr answer every evaluate call.
+	evaluated    any
+	evaluateNote string
+	evaluateErr  error
+}
+
+// fakeEvaluation is one evaluate call as the controller received it.
+type fakeEvaluation struct {
+	readOnly bool
+	code     string
+	argument string
 }
 
 func (f *fakeController) Open(_ context.Context, a Access, u string, opts OpenOptions) (PageInfo, error) {
@@ -91,12 +105,13 @@ func (f *fakeController) Wait(context.Context, Access, string, string, int) (Pag
 func (f *fakeController) History(context.Context, Access, string, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Evaluate(context.Context, Access, string, string) (any, error) {
-	return nil, nil
+func (f *fakeController) Evaluate(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+	f.evaluations = append(f.evaluations, fakeEvaluation{code: code, argument: string(argument)})
+	return f.evaluated, f.evaluateNote, f.evaluateErr
 }
-func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, expression string) (any, string, error) {
-	f.readExpression = expression
-	return nil, "", nil
+func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+	f.evaluations = append(f.evaluations, fakeEvaluation{readOnly: true, code: code, argument: string(argument)})
+	return f.evaluated, f.evaluateNote, f.evaluateErr
 }
 
 func TestMCPServerDisabledIsConnectedButAdvertisesNoTools(t *testing.T) {
@@ -216,77 +231,88 @@ func TestMCPRevokeThreadRetiresOnlyThatSessionsURL(t *testing.T) {
 	}
 }
 
-func TestMCPReadOnlyEvaluationPassesJSONArgumentWithoutCodeInterpolation(t *testing.T) {
+// The evaluate tools hand the code and the argument's JSON text to the
+// controller untouched: the engine alone reads the code, and the argument
+// never becomes source.
+func TestMCPEvaluationPassesCodeAndArgumentVerbatim(t *testing.T) {
 	fake := &fakeController{}
 	server := NewMCPServer(fake, true)
 	url := registerTestThread(t, server)
-	response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "browser_evaluate_readonly", "arguments": map[string]any{"expression": "arg => arg.value", "argument": map[string]any{"value": "safe\") ; document.body.remove(); //"}}}})
-	if response["error"] != nil {
-		t.Fatalf("response=%#v", response)
-	}
-	want := `(arg => arg.value)({"value":"safe\") ; document.body.remove(); //"})`
-	if fake.readExpression != want {
-		t.Fatalf("expression=%q want %q", fake.readExpression, want)
-	}
-}
-
-func TestMCPReadOnlyEvaluationInvokesZeroArgumentFunction(t *testing.T) {
-	fake := &fakeController{}
-	server := NewMCPServer(fake, true)
-	url := registerTestThread(t, server)
-	response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "browser_evaluate_readonly", "arguments": map[string]any{"expression": "() => document.title"}}})
-	if response["error"] != nil {
-		t.Fatalf("response=%#v", response)
-	}
-	if want := `(() => document.title)()`; fake.readExpression != want {
-		t.Fatalf("expression=%q want %q", fake.readExpression, want)
-	}
-}
-
-func TestMCPReadOnlyEvaluationPassesExplicitNullArgument(t *testing.T) {
-	fake := &fakeController{}
-	server := NewMCPServer(fake, true)
-	url := registerTestThread(t, server)
-	response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "browser_evaluate_readonly", "arguments": map[string]any{"expression": "arg => arg === null", "argument": nil}}})
-	if response["error"] != nil {
-		t.Fatalf("response=%#v", response)
-	}
-	if want := `(arg => arg === null)(null)`; fake.readExpression != want {
-		t.Fatalf("expression=%q want %q", fake.readExpression, want)
-	}
-}
-
-func TestReadOnlyExpressionLeavesNonFunctionsAlone(t *testing.T) {
-	for _, expression := range []string{"document.title", `'text => text'`, "functionality"} {
-		if got := readOnlyExpression(expression, nil); got != expression {
-			t.Errorf("readOnlyExpression(%q)=%q", expression, got)
+	call := func(tool string, arguments map[string]any) {
+		t.Helper()
+		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": arguments}})
+		if response["error"] != nil || response["result"].(map[string]any)["isError"] == true {
+			t.Fatalf("%s %v: response=%#v", tool, arguments, response)
 		}
 	}
+	hostile := map[string]any{"value": "safe\") ; document.body.remove(); //"}
+	call("browser_evaluate", map[string]any{"expression": "arg => arg.value", "argument": hostile})
+	call("browser_evaluate", map[string]any{"expression": "document.title"})
+	call("browser_evaluate_readonly", map[string]any{"expression": "arg => arg.value", "argument": hostile})
+	call("browser_evaluate_readonly", map[string]any{"expression": "arg => arg === null", "argument": nil})
+	call("browser_evaluate_readonly", map[string]any{"expression": "() => document.title"})
+	hostileJSON := `{"value":"safe\") ; document.body.remove(); //"}`
+	want := []fakeEvaluation{
+		{code: "arg => arg.value", argument: hostileJSON},
+		{code: "document.title"},
+		{readOnly: true, code: "arg => arg.value", argument: hostileJSON},
+		{readOnly: true, code: "arg => arg === null", argument: "null"},
+		{readOnly: true, code: "() => document.title"},
+	}
+	if !reflect.DeepEqual(fake.evaluations, want) {
+		t.Fatalf("evaluations = %#v\nwant %#v", fake.evaluations, want)
+	}
 }
 
-// An immediately-invoked function is already a VALUE: the head before its
-// arrow is `(()` or `((x)`, an unclosed group, not a parameter list. Wrapping
-// it in another call made "2 is not a function" out of `(()=>2)()` on every
-// engine (live, 2026-09-03).
-func TestReadOnlyExpressionLeavesInvokedFunctionsAlone(t *testing.T) {
-	for _, expression := range []string{
-		"(()=>2)()",
-		"((x)=>x)(5)",
-		"(async () => { return 1 })()",
-		"(a)(b => b)",
-	} {
-		if got := readOnlyExpression(expression, nil); got != expression {
-			t.Errorf("readOnlyExpression(%q)=%q, want it untouched", expression, got)
-		}
+// An agent can pass an argument only to a tool whose schema declares it: the
+// schemas forbid properties they do not list.
+func TestMCPEvaluateSchemasDeclareTheArgument(t *testing.T) {
+	server := NewMCPServer(&fakeController{}, true)
+	url := registerTestThread(t, server)
+	response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	declared := map[string]bool{}
+	for _, tool := range response["result"].(map[string]any)["tools"].([]any) {
+		definition := tool.(map[string]any)
+		schema := definition["inputSchema"].(map[string]any)
+		_, ok := schema["properties"].(map[string]any)["argument"]
+		declared[definition["name"].(string)] = ok
 	}
-	for expression, want := range map[string]string{
-		"(x, y) => x":          "((x, y) => x)()",
-		"async (x) => x":       "(async (x) => x)()",
-		"() => document.title": "(() => document.title)()",
-		"x => x":               "(x => x)()",
-	} {
-		if got := readOnlyExpression(expression, nil); got != want {
-			t.Errorf("readOnlyExpression(%q)=%q, want %q", expression, got, want)
+	if !declared["browser_evaluate"] || !declared["browser_evaluate_readonly"] {
+		t.Fatalf("argument declared = %v", declared)
+	}
+}
+
+// Agents read a tool's JSON as text, so markup in it stays as written, and a
+// long error is cut on a character boundary.
+func TestMCPToolTextReadsAsWritten(t *testing.T) {
+	fake := &fakeController{evaluated: map[string]any{"html": "<p>a & b</p>"}}
+	server := NewMCPServer(fake, true)
+	url := registerTestThread(t, server)
+	text := func() string {
+		t.Helper()
+		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "browser_evaluate", "arguments": map[string]any{"expression": "1"}}})
+		return response["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	}
+	if got := text(); got != `{"html":"<p>a & b</p>"}` {
+		t.Fatalf("text = %q", got)
+	}
+	fake.evaluateErr = errors.New("x" + strings.Repeat("é", 600))
+	got := text()
+	if len(got) > 1000 || !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) || !strings.HasPrefix(got, "xé") {
+		t.Fatalf("error text of %d bytes = %q", len(got), got)
+	}
+}
+
+// Each evaluate tool's note follows its JSON payload as a second entry.
+func TestMCPEvaluateCarriesTheNoteBesideThePayload(t *testing.T) {
+	fake := &fakeController{evaluateNote: "the note"}
+	server := NewMCPServer(fake, true)
+	url := registerTestThread(t, server)
+	for _, tool := range []string{"browser_evaluate", "browser_evaluate_readonly"} {
+		response := postRPC(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": map[string]any{"expression": "1"}}})
+		content := response["result"].(map[string]any)["content"].([]any)
+		if len(content) != 2 || content[0].(map[string]any)["text"] != "null" || content[1].(map[string]any)["text"] != "the note" {
+			t.Fatalf("%s content = %#v, want the payload and then the note", tool, content)
 		}
 	}
 }

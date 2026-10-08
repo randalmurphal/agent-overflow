@@ -472,29 +472,39 @@ func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byt
 	return data, nil
 }
 
-func (p *cdpPage) Evaluate(ctx context.Context, expression string) (any, error) {
-	var result any
-	awaitPromise := func(params *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
-		return params.WithAwaitPromise(true)
-	}
-	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &result, awaitPromise)); err != nil {
-		return nil, fmt.Errorf("browser: evaluate: %w", err)
-	}
-	return result, nil
-}
-
-func (p *cdpPage) EvaluateReadOnly(ctx context.Context, expression string) (json.RawMessage, error) {
-	remote, exception, err := cdpruntime.Evaluate(expression).WithReturnByValue(true).WithAwaitPromise(true).WithThrowOnSideEffect(true).Do(targetCommandContext(ctx))
+// Evaluate evaluates source with Runtime.evaluate, which Chrome exempts from
+// the page's script policy. With readOnly set, Chrome's side-effect check
+// refuses anything it cannot prove side-effect free before it happens; the
+// refusal escapes the runner's own catch, so the code cannot swallow it.
+func (p *cdpPage) Evaluate(ctx context.Context, source string, readOnly bool) (json.RawMessage, error) {
+	remote, exception, err := cdpruntime.Evaluate(source).WithReturnByValue(true).WithAwaitPromise(true).WithThrowOnSideEffect(readOnly).Do(targetCommandContext(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("browser: read-only evaluate: %w", err)
+		return nil, err
 	}
 	if exception != nil {
-		return nil, fmt.Errorf("browser: read-only evaluate rejected a possible side effect: %s", exception.Text)
+		return nil, cdpEvaluateException(exception, readOnly)
 	}
 	if remote == nil {
-		return nil, nil
+		return nil, errors.New("the engine returned no result")
 	}
-	return json.RawMessage(remote.Value), nil
+	return evaluationAnswer(remote.Value)
+}
+
+// cdpEvaluateException reports an exception that escaped the runner: the
+// source did not compile, or the side-effect check refused it. The
+// description's first line is the "Name: message" the WebKit engines report.
+func cdpEvaluateException(exception *cdpruntime.ExceptionDetails, readOnly bool) error {
+	message := exception.Text
+	if exception.Exception != nil && exception.Exception.Description != "" {
+		message, _, _ = strings.Cut(exception.Exception.Description, "\n")
+	}
+	if exception.Exception != nil && exception.Exception.ClassName == "SyntaxError" {
+		return &evaluateSyntaxError{message: message}
+	}
+	if readOnly && strings.HasPrefix(message, "EvalError: Possible side-effect") {
+		return errors.New("Chrome rejected a possible side effect: it refuses anything it cannot prove side-effect free, including some reads such as getElementById and creating an Error; read with querySelector, or use browser_evaluate")
+	}
+	return errors.New(message)
 }
 
 // ReadOnlyCaveat is empty: Chrome rejects the side effect itself, in the

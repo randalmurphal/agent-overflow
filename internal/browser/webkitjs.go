@@ -143,44 +143,25 @@ func webkitPressFunction(raw string) string {
 	return fmt.Sprintf(`function(){this.focus?.();const init=%s;const down=new KeyboardEvent("keydown",init);const proceed=this.dispatchEvent(down);if(proceed&&init.key.length===1&&!init.ctrlKey&&!init.metaKey){if(this.isContentEditable)this.textContent=(this.textContent||"")+init.key;else if("value" in this){const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this),"value")?.set,next=(this.value||"")+init.key;setter?setter.call(this,next):this.value=next}this.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:init.key}))}this.dispatchEvent(new KeyboardEvent("keyup",init));if(proceed&&init.key==="Enter"&&this.form&&typeof this.form.requestSubmit==="function")this.form.requestSubmit();}`, string(init))
 }
 
-// webkitExpressionBody turns the tool's expression into a function body. The
-// tool takes an EXPRESSION (`document.title`, `(async()=>{...})()`) — what
-// CDP's Runtime.evaluate is handed too — and WebKit awaits the returned value,
-// so a promise resolves without the caller asking for it.
-func webkitExpressionBody(expression string) string {
-	return "return (" + expression + ");"
-}
-
-// webkitStatementBody is the fallback for an expression that is really a
-// STATEMENT LIST (`const n = 1 + 1; n * 2`), which CDP's Runtime.evaluate
-// accepts and `return (...)` cannot parse. eval keeps CDP's completion-value
-// semantics — the last statement's value comes back — at the price that a
-// page whose CSP forbids 'unsafe-eval' refuses it, and then that refusal is
-// the answer. A top-level await only ever works in the expression form,
-// which is why that form is tried first.
-func webkitStatementBody(expression string) string {
-	return "return eval(" + jsonString(expression) + ");"
-}
-
-// webkitEvaluate runs one tool expression through a page's body evaluator:
-// the expression body first, and the statement body only when the expression
-// body failed to PARSE. Any other exception is the page's own answer and is
-// never retried. Both WebKit engines share this because both hand the body
-// to the same JavaScriptCore.
-func webkitEvaluate(ctx context.Context, eval func(context.Context, string) (json.RawMessage, error), expression string) (json.RawMessage, error) {
-	raw, err := eval(ctx, webkitExpressionBody(expression))
-	if err == nil || !webkitSyntaxError(err) {
-		return raw, err
+// webkitEvaluate evaluates an evaluation's source through a page's body
+// evaluator, which awaits the body's return value. Both WebKit engines share
+// it because both hand the body to the same JavaScriptCore, whose error for a
+// body that does not compile both glues report as its "SyntaxError: ..."
+// message. No other error is one: the runner catches what the code throws,
+// and the body awaits the runner under a catch with the runner's last answer.
+// Returning the runner's promise instead would leave adopting it, which reads
+// the page's Promise.prototype, outside any catch. WebKit's own completion
+// reads the body's promise the same way; when the page makes that throw,
+// WebKit fails the call with its own error.
+func webkitEvaluate(ctx context.Context, evalBody func(context.Context, string) (json.RawMessage, error), source string) (json.RawMessage, error) {
+	raw, err := evalBody(ctx, "try {\nreturn await "+source+";\n} catch (_) {\nreturn "+evaluateUndescribedAnswer+";\n}")
+	if err != nil {
+		if message := err.Error(); strings.HasPrefix(message, "SyntaxError") {
+			return nil, &evaluateSyntaxError{message: message}
+		}
+		return nil, err
 	}
-	return eval(ctx, webkitStatementBody(expression))
-}
-
-// webkitSyntaxError recognizes JavaScriptCore's parse failure by the error
-// NAME both engines surface verbatim: the GTK glue reports the JSC message and
-// the WKWebView glue reads WKJavaScriptExceptionMessage, and each spells a
-// parse failure "SyntaxError: ...".
-func webkitSyntaxError(err error) bool {
-	return strings.Contains(err.Error(), "SyntaxError")
+	return evaluationAnswer(raw)
 }
 
 // webkitSelectorClickScript is the `browser_click` tool's selector path.

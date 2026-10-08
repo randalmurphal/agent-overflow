@@ -3,6 +3,7 @@ package browser
 import (
 	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/threadmcp"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -51,9 +52,9 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		return
 	}
 	var result any
-	// note is an engine capability qualifier a tool's result carries beside its
-	// JSON payload — never instead of it, so the payload's shape is the same
-	// on every engine.
+	// note is a qualifier a tool's result carries beside its JSON payload, such
+	// as an engine capability caveat; never instead of it, so the payload's
+	// shape is the same on every engine.
 	var note string
 	switch call.Name {
 	case "browser_open":
@@ -236,12 +237,13 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_evaluate":
 		var a struct {
-			PageID     string `json:"page_id"`
-			Expression string `json:"expression"`
+			PageID     string          `json:"page_id"`
+			Expression string          `json:"expression"`
+			Argument   json.RawMessage `json:"argument"`
 		}
 		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
-			result, err = s.controller.Evaluate(ctx, access, a.PageID, a.Expression)
+			result, note, err = s.controller.Evaluate(ctx, access, a.PageID, a.Expression, a.Argument)
 		}
 	case "browser_evaluate_readonly":
 		var a struct {
@@ -257,9 +259,8 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			if err != nil {
 				break
 			}
-			expression := readOnlyExpression(a.Expression, a.Argument)
 			evalCtx, cancel := context.WithTimeout(ctx, timeout)
-			result, note, err = s.controller.EvaluateReadOnly(evalCtx, access, a.PageID, expression)
+			result, note, err = s.controller.EvaluateReadOnly(evalCtx, access, a.PageID, a.Expression, a.Argument)
 			cancel()
 		}
 	case "browser_clipboard":
@@ -297,88 +298,20 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 	writeToolJSON(w, req.ID, result, note)
 }
 
-func readOnlyExpression(expression string, argument json.RawMessage) string {
-	if len(argument) > 0 {
-		return "(" + expression + ")(" + string(argument) + ")"
-	}
-	if looksLikeJSFunction(expression) {
-		return "(" + expression + ")()"
-	}
-	return expression
-}
-
-func looksLikeJSFunction(expression string) bool {
-	trimmed := strings.TrimSpace(expression)
-	if hasJSFunctionPrefix(trimmed, "function") || hasJSFunctionPrefix(trimmed, "async function") {
-		return true
-	}
-	arrow := strings.Index(trimmed, "=>")
-	if arrow < 0 {
-		return false
-	}
-	head := strings.TrimSpace(trimmed[:arrow])
-	head = strings.TrimSpace(strings.TrimPrefix(head, "async "))
-	if strings.HasPrefix(head, "(") {
-		return parenthesizedParameterList(head)
-	}
-	if head == "" {
-		return false
-	}
-	for i, r := range head {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && r != '_' && r != '$' && (i == 0 || r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-// parenthesizedParameterList answers whether the text before an arrow is ONE
-// parenthesized group — `(x, y)` — rather than the opening of a call whose
-// `=>` belongs to a nested function. `(()` from `(()=>2)()` and `((x)` from
-// `((x)=>x)(5)` are the heads of IIFEs: wrapping those in another call turns
-// their RESULT into the callee ("2 is not a function", seen live on
-// 2026-09-03), and the caller already asked for the value.
-func parenthesizedParameterList(head string) bool {
-	if !strings.HasSuffix(head, ")") {
-		return false
-	}
-	depth := 0
-	for i := 0; i < len(head); i++ {
-		switch head[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 && i != len(head)-1 {
-				return false
-			}
-		}
-	}
-	return depth == 0
-}
-
-func hasJSFunctionPrefix(expression, keyword string) bool {
-	if !strings.HasPrefix(expression, keyword) || len(expression) == len(keyword) {
-		return false
-	}
-	switch expression[len(keyword)] {
-	case ' ', '(', '*':
-		return true
-	default:
-		return false
-	}
-}
-
-// writeToolJSON writes one tool result. A non-empty engine note becomes a
+// writeToolJSON writes one tool result. A non-empty note becomes a
 // SECOND content entry rather than a wrapper around the payload: the first
 // entry stays the exact JSON every caller already parses, on every engine.
 func writeToolJSON(w http.ResponseWriter, id json.RawMessage, value any, note string) {
-	data, err := json.Marshal(value)
-	if err != nil {
+	// Agents read the payload as text; markup in it reads as written, not as
+	// \u003c escapes.
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		writeToolError(w, id, err)
 		return
 	}
-	content := []map[string]any{{"type": "text", "text": string(data)}}
+	content := []map[string]any{{"type": "text", "text": strings.TrimSuffix(data.String(), "\n")}}
 	if note != "" {
 		content = append(content, map[string]any{"type": "text", "text": note})
 	}
@@ -388,10 +321,7 @@ func writeToolImage(w http.ResponseWriter, id json.RawMessage, data []byte) {
 	threadmcp.WriteResult(w, id, map[string]any{"content": []map[string]any{{"type": "image", "mimeType": "image/jpeg", "data": base64.StdEncoding.EncodeToString(data)}}})
 }
 func writeToolError(w http.ResponseWriter, id json.RawMessage, err error) {
-	message := strings.TrimSpace(err.Error())
-	if len(message) > 1000 {
-		message = message[:1000]
-	}
+	message := truncateUTF8(strings.TrimSpace(err.Error()), 1000)
 	threadmcp.WriteResult(w, id, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": message}}})
 }
 
@@ -480,8 +410,8 @@ func toolDefinitions() []map[string]any {
 		{"name": "browser_scroll", "description": "Scroll the window or a selected element by CSS pixels.", "inputSchema": object(map[string]any{"page_id": stringProp, "selector": stringProp, "x": map[string]any{"type": "number"}, "y": map[string]any{"type": "number"}}, "y")},
 		{"name": "browser_wait", "description": "Wait for duration, selector/locator state, URL glob, or commit/DOMContentLoaded/load/network-idle state.", "inputSchema": waitSchema},
 		{"name": "browser_history", "description": "Navigate back, forward, reload, or stop loading.", "inputSchema": object(map[string]any{"page_id": stringProp, "action": map[string]any{"type": "string", "enum": []string{"back", "forward", "reload", "stop"}}}, "action")},
-		{"name": "browser_evaluate_readonly", "description": "Evaluate a side-effect-free JavaScript expression or function with optional JSON argument in page scope and return a bounded JSON result; possible mutations are rejected by the engine where it can, and the result says so when they cannot be.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp, "argument": map[string]any{}, "timeout_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}}, "expression")},
-		{"name": "browser_evaluate", "description": "Evaluate JavaScript in the page and return a bounded JSON result. Prefer browser_evaluate_readonly for inspection.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp}, "expression")},
+		{"name": "browser_evaluate_readonly", "description": "Read the page without changing it, and return the result as JSON. Takes expression and argument as browser_evaluate does, but runs the code synchronously: it cannot await, and a promise result fails. Chromium rejects code it cannot prove free of side effects, including some reads such as getElementById and new Error; read with querySelector. WebKit cannot check, and its result carries a second entry saying so.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp, "argument": map[string]any{}, "timeout_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}}, "expression")},
+		{"name": "browser_evaluate", "description": "Run JavaScript in the page and return the result as JSON. expression is an expression, such as document.title, whose value is the result; or a function, such as (arg) => arg.id or async () => { ...; return x; }, called with argument, any JSON value. Other code runs as statements in a function body and gives a value only through return. await works, and a promise result is awaited. Each call is its own function scope with this as window: declarations do not persist, so assign to window to keep a value. Results read as JSON.stringify writes them: a property that is undefined, a function or a symbol is left out, such an array item reads as null, and an undefined result reads as null. Elements read as outerHTML, text nodes as their text, NodeList, Set and typed arrays as arrays, Map as [key, value] pairs, errors as \"Name: message\", BigInt as a digit string, and a cycle as \"[Circular]\". A result over 256000 bytes or 1000 levels deep fails; return less. A throw fails with \"Uncaught\" and its message. Prefer browser_evaluate_readonly for reading.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp, "argument": map[string]any{}}, "expression")},
 		{"name": "browser_clipboard", "description": "Read or write this managed tab's isolated clipboard as text or bounded MIME items; never touches the OS clipboard.", "inputSchema": object(map[string]any{"page_id": stringProp, "action": enumProp("read", "read_text", "write", "write_text"), "text": stringProp, "items": map[string]any{"type": "array", "maxItems": 100, "items": clipboardItem}}, "action")},
 		{"name": "browser_console_logs", "description": "Read the tab's bounded console/runtime log ring with level, substring, and result limits.", "inputSchema": object(map[string]any{"page_id": stringProp, "filter": stringProp, "levels": map[string]any{"type": "array", "items": enumProp("debug", "info", "log", "warn", "warning", "error")}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxConsoleEntries}})},
 		{"name": "browser_downloads", "description": "List downloads or wait for the next completed/canceled download after a sequence number. Returns the app-owned local path.", "inputSchema": object(map[string]any{"page_id": stringProp, "action": map[string]any{"type": "string", "enum": []string{"list", "wait"}}, "after": map[string]any{"type": "integer", "minimum": 0}, "timeout_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}}, "action")},

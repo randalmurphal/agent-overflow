@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"image"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -12,12 +13,6 @@ import (
 // The WebKit driver's JavaScript is where a tool silently changes meaning with
 // the engine, so every builder is asserted on the property that matters rather
 // than on its exact text.
-
-func TestWebKitExpressionBodyAwaitsTheValue(t *testing.T) {
-	if got := webkitExpressionBody("document.title"); got != "return (document.title);" {
-		t.Fatalf("expression body = %q", got)
-	}
-}
 
 func TestWebKitClickPlainUsesActivationBehaviour(t *testing.T) {
 	plain := webkitClickFunction(1, "", nil)
@@ -150,35 +145,45 @@ func TestWebKitPointerSpellsOutButtonSemantics(t *testing.T) {
 	}
 }
 
-// A statement list is what CDP's Runtime.evaluate accepts and `return (...)`
-// cannot parse, so the expression body is tried first and the eval body only
-// on a parse failure. A page exception that is not a parse failure is the
-// answer, never a retry.
-func TestWebKitEvaluateFallsBackToStatementsOnlyOnSyntaxErrors(t *testing.T) {
+// The body evaluator awaits what the body returns, so an evaluation's source
+// runs as one body, once, awaited under a catch, and its answer is read back
+// from the runner. Only JavaScriptCore's report that the body does not
+// compile is a syntax error.
+func TestWebKitEvaluateRunsTheSourceOnce(t *testing.T) {
 	var bodies []string
-	eval := func(_ context.Context, body string) (json.RawMessage, error) {
-		bodies = append(bodies, body)
-		if strings.HasPrefix(body, "return (") {
-			return nil, errors.New("SyntaxError: Unexpected token ';'")
+	answer := func(raw string, err error) func(context.Context, string) (json.RawMessage, error) {
+		return func(_ context.Context, body string) (json.RawMessage, error) {
+			bodies = append(bodies, body)
+			return json.RawMessage(raw), err
 		}
-		return json.RawMessage("4"), nil
 	}
-	raw, err := webkitEvaluate(context.Background(), eval, "const n = 1 + 1; n * 2")
-	if err != nil || string(raw) != "4" {
+	raw, err := webkitEvaluate(context.Background(), answer(`"{\"value\":[1]}"`, nil), "SOURCE")
+	if err != nil || string(raw) != "[1]" {
 		t.Fatalf("raw=%s err=%v", raw, err)
 	}
-	if len(bodies) != 2 || bodies[0] != "return (const n = 1 + 1; n * 2);" || bodies[1] != `return eval("const n = 1 + 1; n * 2");` {
-		t.Fatalf("bodies=%q", bodies)
+	if !reflect.DeepEqual(bodies, []string{"try {\nreturn await SOURCE;\n} catch (_) {\nreturn " + evaluateUndescribedAnswer + ";\n}"}) {
+		t.Fatalf("bodies = %q", bodies)
 	}
-
-	bodies = nil
-	pageError := errors.New("TypeError: x is not a function")
-	_, err = webkitEvaluate(context.Background(), func(context.Context, string) (json.RawMessage, error) {
-		bodies = append(bodies, "")
-		return nil, pageError
-	}, "x()")
-	if err != pageError || len(bodies) != 1 {
-		t.Fatalf("a page exception must not be retried: err=%v calls=%d", err, len(bodies))
+	if _, err := webkitEvaluate(context.Background(), answer(`"{\"error\":\"Uncaught TypeError: x\"}"`, nil), "SOURCE"); err == nil || err.Error() != "Uncaught TypeError: x" {
+		t.Fatalf("thrown error = %v", err)
+	}
+	gone := errors.New("browser: the page is gone")
+	if _, err := webkitEvaluate(context.Background(), answer("", gone), "SOURCE"); err != gone {
+		t.Fatalf("engine error = %v, want it unchanged", err)
+	}
+	if _, err := webkitEvaluate(context.Background(), answer("", nil), "SOURCE"); err == nil {
+		t.Fatal("an absent answer must be an error: the runner always answers")
+	}
+	var syntax *evaluateSyntaxError
+	_, err = webkitEvaluate(context.Background(), answer("", errors.New("SyntaxError: Unexpected token ')'")), "SOURCE")
+	if !errors.As(err, &syntax) || err.Error() != "SyntaxError: Unexpected token ')'" {
+		t.Fatalf("compile failure = %#v", err)
+	}
+	if _, err := webkitEvaluate(context.Background(), answer(`"{\"error\":\"Uncaught SyntaxError: bad\"}"`, nil), "SOURCE"); err == nil || errors.As(err, &syntax) {
+		t.Fatalf("a SyntaxError the code threw = %#v, want the code's answer", err)
+	}
+	if _, err := webkitEvaluate(context.Background(), answer("", errors.New("browser: SyntaxError lookalike")), "SOURCE"); errors.As(err, &syntax) {
+		t.Fatalf("an engine failure = %#v, want it unchanged", err)
 	}
 }
 

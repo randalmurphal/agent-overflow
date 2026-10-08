@@ -4,10 +4,12 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -161,7 +163,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 					t.Fatal("a popup shows the outside file")
 				}
 				for _, id := range smokePopups(ctx, t, manager, access, openerPage.ID) {
-					frames, err := manager.Evaluate(ctx, access, id, `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`)
+					frames, _, err := manager.Evaluate(ctx, access, id, `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`, nil)
 					if err != nil {
 						t.Fatalf("read popup %s subframes: %v", id, err)
 					}
@@ -197,7 +199,7 @@ func smokePopups(ctx context.Context, t *testing.T, manager *Manager, access Acc
 func smokePopupsShow(ctx context.Context, t *testing.T, manager *Manager, access Access, openerID, text string) bool {
 	t.Helper()
 	for _, id := range smokePopups(ctx, t, manager, access, openerID) {
-		value, err := manager.Evaluate(ctx, access, id, `document.body ? document.body.innerText : ""`)
+		value, _, err := manager.Evaluate(ctx, access, id, `document.body ? document.body.innerText : ""`, nil)
 		if err != nil {
 			t.Fatalf("read popup %s: %v", id, err)
 		}
@@ -228,4 +230,85 @@ func writeSmokeFile(t *testing.T, dir, name, content string) string {
 
 func smokeFileURL(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+}
+
+// TestNativeEngineRealEvaluateSemantics holds this engine to the evaluate
+// contract on a page whose script policy forbids eval, as AO's own UI does.
+func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-evaluate", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "evaluate.html", evaluateSemanticsPage), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	assertEvaluateSemantics(t, evaluateEngineWebKit,
+		func(code string, argument json.RawMessage) (any, string, error) {
+			return manager.Evaluate(ctx, access, page.ID, code, argument)
+		},
+		func(code string, argument json.RawMessage) (any, string, error) {
+			value, note, err := manager.EvaluateReadOnly(ctx, access, page.ID, code, argument)
+			if err == nil && !strings.HasPrefix(note, "Note: this browser engine cannot reject side effects") {
+				t.Errorf("read-only evaluate of %q carried the note %q, not the caveat: this engine has no side-effect check", code, note)
+			}
+			return value, note, err
+		})
+	t.Run("the native bridge carries JSON data or fails", func(t *testing.T) {
+		assertNativeEvalBridge(ctx, t, manager, access, page.ID)
+	})
+}
+
+// assertNativeEvalBridge holds the glue under every WebKit page operation to
+// its contract: a result crosses as JSON text, undefined as no result, and a
+// value with no JSON form fails rather than ending the app or reading as no
+// result. The evaluate tools never reach these cases, since their runner
+// returns a string.
+func assertNativeEvalBridge(ctx context.Context, t *testing.T, manager *Manager, access Access, pageID string) {
+	p, _, err := manager.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	bridge, ok := p.driver.(interface {
+		evalBody(context.Context, string) (json.RawMessage, error)
+	})
+	if !ok {
+		t.Fatalf("the page driver %T has no evalBody", p.driver)
+	}
+	for body, want := range map[string]string{
+		`return {a: [1, "x", null, true]};`: `{"a":[1,"x",null,true]}`,
+		`return "text";`:                    `"text"`,
+		`return undefined;`:                 ``,
+	} {
+		raw, err := bridge.evalBody(ctx, body)
+		if err != nil || string(raw) != want {
+			t.Errorf("evalBody(%q) = %q, %v; want %q", body, raw, err, want)
+		}
+	}
+	noJSON := []string{`return () => 1;`, `const o = {}; o.o = o; return o;`}
+	if runtime.GOOS == "darwin" {
+		// JSC's JSON.stringify writes NaN as null; NSJSONSerialization
+		// has no form for it.
+		noJSON = append(noJSON, `return NaN;`, `return {at: new Date(0)};`)
+	}
+	for _, body := range noJSON {
+		if raw, err := bridge.evalBody(ctx, body); err == nil {
+			t.Errorf("evalBody(%q) = %q, want an error", body, raw)
+		}
+	}
 }

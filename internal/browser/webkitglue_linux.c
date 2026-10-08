@@ -870,13 +870,25 @@ static void ao_eval_finished(GObject *object, GAsyncResult *result, gpointer dat
     aoWebKitEvalDone(call_id, NULL, message);
     return;
   }
-  if (value == NULL) {
+  if (value == NULL || jsc_value_is_undefined(value)) {
+    // An absent result, the same thing CDP reports for a void expression.
+    if (value != NULL) {
+      g_object_unref(value);
+    }
     aoWebKitEvalDone(call_id, NULL, NULL);
     return;
   }
-  // jsc_value_to_json renders undefined as NULL, which the Go side reads as an
-  // absent result — the same thing CDP reports for a void expression.
+  // jsc_value_to_json is JSON.stringify in the value's context. It answers
+  // NULL for a value with no JSON text, such as a function, and for one it
+  // throws on, such as a cycle. That is an error, not an absent result, and
+  // the throw is cleared so it does not stay pending on the page's context.
   char *json = jsc_value_to_json(value, 0);
+  if (json == NULL) {
+    jsc_context_clear_exception(jsc_value_get_context(value));
+    g_object_unref(value);
+    aoWebKitEvalDone(call_id, NULL, g_strdup("browser: result is not JSON-encodable"));
+    return;
+  }
   g_object_unref(value);
   aoWebKitEvalDone(call_id, json, NULL);
 }

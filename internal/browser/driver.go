@@ -174,13 +174,15 @@ type pageDriver interface {
 	Snapshot(ctx context.Context) (Snapshot, error)
 	// Screenshot captures the viewport, a clip, or the full page.
 	Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error)
-	// Evaluate runs an expression and awaits a promise result.
-	Evaluate(ctx context.Context, expression string) (any, error)
-	// EvaluateReadOnly runs an expression the engine rejects on side effects,
-	// returning the undecoded result so the Manager can bound it.
-	EvaluateReadOnly(ctx context.Context, expression string) (json.RawMessage, error)
-	// ReadOnlyCaveat is what this engine can actually promise about
-	// EvaluateReadOnly. Empty means the engine rejects side effects itself;
+	// Evaluate evaluates source, an expression evaluationSource built,
+	// awaits its value and returns the value's JSON text through
+	// evaluationAnswer: nil for undefined, or the error the code threw. A
+	// source that does not compile fails with *evaluateSyntaxError.
+	// readOnly asks the engine to reject side effects before they happen,
+	// where it can.
+	Evaluate(ctx context.Context, source string, readOnly bool) (json.RawMessage, error)
+	// ReadOnlyCaveat is what this engine can actually promise about a
+	// read-only Evaluate. Empty means the engine rejects side effects itself;
 	// a non-empty string is carried into the tool result verbatim, so an
 	// engine that can only be best-effort is never SILENTLY different. The
 	// Manager attaches the answer without learning which engine gave it.

@@ -297,27 +297,9 @@ func (p *wkPage) Snapshot(ctx context.Context) (Snapshot, error) {
 	return snapshot, nil
 }
 
-func (p *wkPage) Evaluate(ctx context.Context, expression string) (any, error) {
-	raw, err := webkitEvaluate(ctx, p.evalBody, expression)
-	if err != nil {
-		return nil, fmt.Errorf("browser: evaluate: %w", err)
-	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmt.Errorf("browser: evaluate: %w", err)
-	}
-	return value, nil
-}
-
-func (p *wkPage) EvaluateReadOnly(ctx context.Context, expression string) (json.RawMessage, error) {
-	raw, err := webkitEvaluate(ctx, p.evalBody, expression)
-	if err != nil {
-		return nil, fmt.Errorf("browser: read-only evaluate: %w", err)
-	}
-	return raw, nil
+// Evaluate has no side-effect check to ask for; ReadOnlyCaveat says so.
+func (p *wkPage) Evaluate(ctx context.Context, source string, _ bool) (json.RawMessage, error) {
+	return webkitEvaluate(ctx, p.evalBody, source)
 }
 
 func (p *wkPage) ResolveLocator(ctx context.Context, locator Locator, attribute string) ([]LocatorMatch, error) {
