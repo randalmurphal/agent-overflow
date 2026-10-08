@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/projectapp"
@@ -44,10 +45,18 @@ func (a *App) repoIdentity(ctx context.Context, path string) (gitops.RepoIdentit
 	return a.gitCore().ResolveRepository(ctx, path, identity), ctx.Err()
 }
 
+// projectIdentityRetryDelays spaces the retries of rows whose forge was
+// unavailable. The last delay repeats until every row resolves or the app
+// stops: one forge call per such row per interval.
+var projectIdentityRetryDelays = []time.Duration{15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute}
+
 // startProjectIdentityRefresh re-derives the repository identity of every
 // project row once per boot, after the first client's catalog reads, and
 // announces each row it moved so a client that already loaded its sidebar
-// converges without a refresh. Shutdown joins it before closing the store.
+// converges without a refresh. Rows whose forge was unavailable are retried
+// on a backoff, so a lookup made before the network or the CLI login was
+// ready does not stay failed until the next boot. Shutdown joins it before
+// closing the store.
 func (a *App) startProjectIdentityRefresh() {
 	a.projectIdentityWG.Add(1)
 	go func() {
@@ -56,13 +65,31 @@ func (a *App) startProjectIdentityRefresh() {
 		if err := a.awaitFirstReadsSettled(ctx); err != nil {
 			return
 		}
-		err := a.projectApplication().RefreshIdentity(ctx, func(row store.Project) {
+		persist := func(row store.Project) {
 			a.broadcastProjectRow(triage.ProjectActionFull, row)
-		})
+		}
+		retry, err := a.projectApplication().RefreshIdentity(ctx, persist)
+		for attempt := 0; err == nil && len(retry) > 0; attempt++ {
+			timer := time.NewTimer(a.projectIdentityRetryDelay(attempt))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			retry, err = a.projectApplication().RetryIdentity(ctx, retry, persist)
+		}
 		if err != nil && ctx.Err() == nil {
 			log.Printf("project identity refresh: %v", err)
 		}
 	}()
+}
+
+func (a *App) projectIdentityRetryDelay(attempt int) time.Duration {
+	if a.maintenance.identityRetry > 0 {
+		return a.maintenance.identityRetry
+	}
+	return projectIdentityRetryDelays[min(attempt, len(projectIdentityRetryDelays)-1)]
 }
 
 // ListProjects returns projects with a lightweight thread count per

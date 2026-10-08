@@ -2,7 +2,9 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,5 +249,74 @@ func TestRepositoryLookupStampSurvivesAdmissionAndSSHFailures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Only the forge or its CLI being unavailable is retryable: a later lookup
+// can clear it with no change to the checkout. The failure logs one redacted
+// line with the CLI's reason, never the response body.
+func TestRepositoryLookupMarksForgeUnavailabilityRetryableAndLogsWhy(t *testing.T) {
+	var logged strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "forge")
+	mockexec.Write(t, fake, "#!/bin/sh\nprintf '{\"message\":\"BODY\"}'\nprintf '\\nglab: Get \"https://user:SECRET@gitlab.com/api/v4/projects/a%%2Fb\": dial tcp: lookup gitlab.com: i/o timeout\\nsecond line\\n' >&2\nexit 1\n")
+	c := NewCore(WithIsolatedForgeCLIs(fake, nil))
+	input := RepoIdentity{Repository: true, RemoteURL: "https://gitlab.com/a/b"}
+	failed := c.ResolveRepository(context.Background(), dir, input)
+	if failed.LookupError == "" || !failed.LookupRetryable {
+		t.Fatalf("CLI failure: %+v, want a retryable error", failed)
+	}
+	if shared := c.ResolveRepository(context.Background(), dir, input); !shared.LookupRetryable {
+		t.Fatalf("cached failure lost retryability: %+v", shared)
+	}
+	line := logged.String()
+	if strings.Count(line, "\n") != 1 || !strings.Contains(line, "glab api on gitlab.com failed: exit status 1: glab: Get") ||
+		!strings.Contains(line, "lookup gitlab.com: i/o timeout") {
+		t.Fatalf("logged %q, want one line with the exit status and the first stderr line", line)
+	}
+	for _, leaked := range []string{"SECRET", "BODY", "second line"} {
+		if strings.Contains(line, leaked) {
+			t.Fatalf("logged %q, leaked %q", line, leaked)
+		}
+	}
+
+	logged.Reset()
+	mockexec.Write(t, fake, "#!/bin/sh\nprintf 'not json'\n")
+	invalid := c.ResolveRepository(context.Background(), dir, RepoIdentity{Repository: true, RemoteURL: "https://gitlab.com/a/c"})
+	if invalid.LookupError == "" || invalid.LookupRetryable {
+		t.Fatalf("invalid forge answer: %+v, want a non-retryable error", invalid)
+	}
+	unsupported := c.ResolveRepository(context.Background(), dir, RepoIdentity{Repository: true, RemoteURL: "https://unsupported.example/a/b"})
+	if unsupported.LookupError == "" || unsupported.LookupRetryable {
+		t.Fatalf("unsupported forge: %+v, want a non-retryable error", unsupported)
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("a forge that answered logged %q", logged.String())
+	}
+
+	// A CLI this computer cannot run is not retried until someone installs it.
+	missing := NewCore(WithIsolatedForgeCLIs("", nil)).ResolveRepository(context.Background(), dir, input)
+	if missing.LookupError == "" || missing.LookupRetryable {
+		t.Fatalf("missing CLI: %+v, want a non-retryable error", missing)
+	}
+	if !strings.Contains(logged.String(), "glab api on gitlab.com failed") {
+		t.Fatalf("missing CLI logged %q, want its failure", logged.String())
+	}
+}
+
+func TestLookupFailureDetailIsBounded(t *testing.T) {
+	t.Parallel()
+	detail := lookupFailureDetail(context.Background(), nil, commandResult{exitCode: 2, stderr: strings.Repeat("é", 1000)})
+	if got := len([]rune(detail)); got != lookupFailureDetailRunes+3 || !strings.HasPrefix(detail, "exit status 2: ") {
+		t.Fatalf("detail %d runes: %q", got, detail)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
+	defer cancel()
+	if detail := lookupFailureDetail(ctx, errors.New("ignored"), commandResult{}); detail != "timed out" {
+		t.Fatalf("timeout detail %q", detail)
 	}
 }

@@ -189,7 +189,7 @@ func TestRefreshIdentityRereadsEveryRowAndAnnouncesOnlyMoves(t *testing.T) {
 
 	fake.asked = nil
 	var announced []string
-	if err := service.RefreshIdentity(context.Background(), func(row store.Project) {
+	if _, err := service.RefreshIdentity(context.Background(), func(row store.Project) {
 		announced = append(announced, row.ID)
 	}); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
@@ -230,7 +230,7 @@ func TestRefreshIdentityKeepsTheLastGoodIdentityOnFailure(t *testing.T) {
 	}
 
 	fake.answers[path] = identityAnswer{err: errors.New("git rev-parse failed: boom")}
-	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+	if _, err := service.RefreshIdentity(context.Background(), nil); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
 	}
 	want := store.ProjectIdentity{RepositoryID: "github:github.com:4", IdentitySource: "ffff6666", Error: "git rev-parse failed: boom"}
@@ -239,7 +239,7 @@ func TestRefreshIdentityKeepsTheLastGoodIdentityOnFailure(t *testing.T) {
 	}
 
 	fake.answers[path] = repo("github:github.com:4", "ffff6666")
-	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+	if _, err := service.RefreshIdentity(context.Background(), nil); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
 	}
 	if got := mustGet(t, database, row.ID).IdentityError; got != "" {
@@ -259,7 +259,7 @@ func TestRefreshIdentityKeepsTheIdentityOfAMissingCheckout(t *testing.T) {
 	}
 
 	delete(fake.answers, path)
-	if err := service.RefreshIdentity(context.Background(), func(store.Project) {
+	if _, err := service.RefreshIdentity(context.Background(), func(store.Project) {
 		t.Fatal("a missing checkout announced a change")
 	}); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
@@ -281,7 +281,7 @@ func TestRefreshIdentityLeavesTheActivityOrderAlone(t *testing.T) {
 	}
 
 	fake.answers[path] = repo("github:github.com:5", "aaaa1111")
-	if err := service.RefreshIdentity(context.Background(), nil); err != nil {
+	if _, err := service.RefreshIdentity(context.Background(), nil); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
 	}
 	stored := mustGet(t, database, row.ID)
@@ -301,7 +301,7 @@ func TestRefreshIdentityStopsWhenItsContextEnds(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := service.RefreshIdentity(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, err := service.RefreshIdentity(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RefreshIdentity = %v, want context.Canceled", err)
 	}
 	if len(fake.asked) != 0 {
@@ -323,7 +323,7 @@ func TestRefreshIdentityDoesNotRecordAReadItsContextEnded(t *testing.T) {
 	fake.answers[path] = identityAnswer{err: errors.New("signal: killed")}
 	fake.during = cancel
 	var persisted []store.Project
-	if err := service.RefreshIdentity(ctx, func(row store.Project) { persisted = append(persisted, row) }); !errors.Is(err, context.Canceled) {
+	if _, err := service.RefreshIdentity(ctx, func(row store.Project) { persisted = append(persisted, row) }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RefreshIdentity = %v, want context.Canceled", err)
 	}
 	if len(persisted) != 0 {
@@ -339,7 +339,7 @@ func TestRefreshIdentityWithoutADeriverIsANoop(t *testing.T) {
 	if _, err := service.Create(mustDir(t, t.TempDir(), "workspace")); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := service.RefreshIdentity(context.Background(), func(store.Project) {
+	if _, err := service.RefreshIdentity(context.Background(), func(store.Project) {
 		t.Fatal("refresh announced a row with no identity deriver wired")
 	}); err != nil {
 		t.Fatalf("RefreshIdentity: %v", err)
@@ -348,7 +348,7 @@ func TestRefreshIdentityWithoutADeriverIsANoop(t *testing.T) {
 
 func TestRefreshIdentityWithoutAStoreErrors(t *testing.T) {
 	service := New(Deps{})
-	if err := service.RefreshIdentity(context.Background(), nil); err == nil {
+	if _, err := service.RefreshIdentity(context.Background(), nil); err == nil {
 		t.Fatal("RefreshIdentity with no store returned no error")
 	}
 }
@@ -417,5 +417,61 @@ func TestInspectFolderCancelsItsIdentityRead(t *testing.T) {
 	}})
 	if _, err := service.InspectFolder(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("inspection returned %v after cancellation", err)
+	}
+}
+
+// The pass returns only the rows whose forge was unavailable, and a retry
+// re-reads only those rows, skipping one deleted since.
+func TestRefreshIdentityReturnsUnavailableForgesAndRetryRereadsOnlyThose(t *testing.T) {
+	parent := t.TempDir()
+	verified := mustDir(t, parent, "verified")
+	unavailable := mustDir(t, parent, "unavailable")
+	invalid := mustDir(t, parent, "invalid")
+	unreadable := mustDir(t, parent, "unreadable")
+	deleted := mustDir(t, parent, "deleted")
+	down := identityAnswer{identity: gitops.RepoIdentity{Repository: true, IdentitySource: "aaaa", LookupError: "forge down", LookupRetryable: true}}
+	fake := &fakeIdentity{answers: map[string]identityAnswer{
+		verified:    repo("github:github.com:1", "bbbb"),
+		unavailable: down,
+		invalid:     {identity: gitops.RepoIdentity{Repository: true, IdentitySource: "cccc", LookupError: "no repository ID"}},
+		unreadable:  {err: errors.New("detected dubious ownership")},
+		deleted:     down,
+	}}
+	service, database := newIdentityService(t, fake)
+	rows := map[string]store.Project{}
+	for _, path := range []string{verified, unavailable, invalid, unreadable, deleted} {
+		row, err := service.Create(path)
+		if err != nil {
+			t.Fatalf("Create %s: %v", path, err)
+		}
+		rows[path] = row
+	}
+
+	retry, err := service.RefreshIdentity(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
+	}
+	if len(retry) != 2 || !(retry[0] == rows[unavailable].ID && retry[1] == rows[deleted].ID || retry[1] == rows[unavailable].ID && retry[0] == rows[deleted].ID) {
+		t.Fatalf("retry = %v, want exactly the rows whose forge was unavailable", retry)
+	}
+
+	if err := database.DeleteProject(rows[deleted].ID); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	fake.answers[unavailable] = repo("github:github.com:2", "aaaa")
+	fake.asked = nil
+	var announced []string
+	retry, err = service.RetryIdentity(context.Background(), retry, func(row store.Project) { announced = append(announced, row.ID) })
+	if err != nil {
+		t.Fatalf("RetryIdentity: %v", err)
+	}
+	if len(retry) != 0 || len(fake.asked) != 1 || fake.asked[0].path != unavailable {
+		t.Fatalf("retry = %v after reading %+v, want only the unavailable row read and resolved", retry, fake.asked)
+	}
+	if len(announced) != 1 || announced[0] != rows[unavailable].ID {
+		t.Fatalf("announced %v, want the resolved row", announced)
+	}
+	if got := identityOf(mustGet(t, database, rows[unavailable].ID)); got != (store.ProjectIdentity{RepositoryID: "github:github.com:2", IdentitySource: "aaaa"}) {
+		t.Fatalf("resolved identity = %+v", got)
 	}
 }

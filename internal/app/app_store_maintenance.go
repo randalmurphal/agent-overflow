@@ -60,6 +60,7 @@ type maintenanceTuning struct {
 	convertPoll        time.Duration
 	quietWindow        time.Duration
 	firstReadsFallback time.Duration
+	identityRetry      time.Duration
 }
 
 // orDuration returns override when it is set, otherwise fallback.

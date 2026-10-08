@@ -57,26 +57,34 @@ func New(deps Deps) *Service {
 // A path that is not a repository (any longer) keeps it too: a checkout
 // that is missing for a while, an unmounted volume say, is still the same
 // repository when it returns.
-func (s *Service) repoIdentity(ctx context.Context, path string, stored store.ProjectIdentity) (store.ProjectIdentity, bool) {
+func (s *Service) repoIdentity(ctx context.Context, path string, stored store.ProjectIdentity) (store.ProjectIdentity, identityRead) {
 	if s == nil || s.deps.Identity == nil {
-		return stored, true
+		return stored, identityRead{ok: true}
 	}
 	identity, err := s.deps.Identity(ctx, path)
 	switch {
 	case ctx.Err() != nil:
-		return stored, false
+		return stored, identityRead{}
 	case err != nil:
 		stored.Error = repoidentity.RedactText(err.Error())
-		return stored, true
+		return stored, identityRead{ok: true}
 	case !identity.Repository:
 		stored.Error = ""
-		return stored, true
+		return stored, identityRead{ok: true}
 	}
 	id := identity.RepositoryID
 	if id == "" && identity.LookupError != "" && identity.IdentitySource != "" && identity.IdentitySource == stored.IdentitySource {
 		id = stored.RepositoryID
 	}
-	return store.ProjectIdentity{RepositoryID: id, IdentitySource: identity.IdentitySource, Error: identity.LookupError}, true
+	read := identityRead{ok: true, retryable: identity.LookupError != "" && identity.LookupRetryable}
+	return store.ProjectIdentity{RepositoryID: id, IdentitySource: identity.IdentitySource, Error: identity.LookupError}, read
+}
+
+// identityRead is how a repoIdentity read ended. ok is false when ctx ended
+// it and nothing may be recorded. retryable marks an identity whose error is
+// the forge being unavailable, which a later read can clear.
+type identityRead struct {
+	ok, retryable bool
 }
 
 // projectIdentity is the identity stored on row.

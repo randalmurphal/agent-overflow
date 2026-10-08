@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/url"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 
 type repositoryLookupResult struct {
 	id, problem string
+	retryable   bool
 	until       time.Time
 }
 type repositoryLookups struct {
@@ -26,7 +30,9 @@ type repositoryLookups struct {
 
 // ResolveRepository enriches local Git coordinates using the owning computer's
 // forge login. Failures remain visible; the transient origin is discarded.
-// No response body or CLI stderr is copied into persistent diagnostics.
+// No response body or CLI stderr enters the returned identity, which is stored
+// and sent to paired clients. A failed forge call logs one redacted line on
+// this computer instead.
 func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoIdentity) RepoIdentity {
 	caller := ctx
 	raw := identity.RemoteURL
@@ -55,6 +61,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 		defer func() { <-c.repositoryLookupSlots }()
 	case <-ctx.Done():
 		identity.LookupError = "Repository identity lookup was cancelled or timed out."
+		identity.LookupRetryable = true
 		return identity
 	}
 	if forge == "" && isSSHRemote(raw) {
@@ -86,7 +93,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 		c.repositoryLookups.mu.Lock()
 		if hit, ok := c.repositoryLookups.cache[key]; ok && time.Now().Before(hit.until) {
 			c.repositoryLookups.mu.Unlock()
-			identity.RepositoryID, identity.LookupError = hit.id, hit.problem
+			identity.RepositoryID, identity.LookupError, identity.LookupRetryable = hit.id, hit.problem, hit.retryable
 			return identity
 		}
 		if pending := c.repositoryLookups.pending[key]; pending != nil {
@@ -94,6 +101,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 			select {
 			case <-ctx.Done():
 				identity.LookupError = "Repository identity lookup was cancelled or timed out."
+				identity.LookupRetryable = true
 				return identity
 			case <-pending:
 				continue
@@ -133,7 +141,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 		delete(c.repositoryLookups.pending, key)
 		close(pending)
 		c.repositoryLookups.mu.Unlock()
-		identity.RepositoryID, identity.LookupError = result.id, result.problem
+		identity.RepositoryID, identity.LookupError, identity.LookupRetryable = result.id, result.problem, result.retryable
 		return identity
 	}
 }
@@ -166,7 +174,14 @@ func (c *Core) lookupRepository(ctx context.Context, cwd, forge, host, project s
 		if ctx.Err() != nil {
 			problem = "Repository identity lookup timed out or was cancelled. Retry when the computer is available."
 		}
-		return repositoryLookupResult{problem: problem}
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			log.Printf("repository identity: %s api on %s failed: %s", binary, host, lookupFailureDetail(ctx, err, result))
+		}
+		// A CLI this computer cannot run stays missing until someone installs
+		// it; only a CLI that ran and failed is worth retrying.
+		_, unavailable := errors.AsType[*ForgeCLIUnavailableError](err)
+		missing := unavailable || errors.Is(err, exec.ErrNotFound)
+		return repositoryLookupResult{problem: problem, retryable: !missing}
 	}
 	var body struct {
 		ID json.Number `json:"id"`
@@ -179,6 +194,41 @@ func (c *Core) lookupRepository(ctx context.Context, cwd, forge, host, project s
 		return repositoryLookupResult{problem: "The forge returned no repository ID."}
 	}
 	return repositoryLookupResult{id: fmt.Sprintf("%s:%s:%d", forge, host, id)}
+}
+
+// lookupFailureDetailRunes bounds the CLI message a failed lookup logs.
+const lookupFailureDetailRunes = 300
+
+// lookupFailureDetail says why a forge lookup failed, for the local log only:
+// the timeout, the start failure, or the exit status with the first line of
+// stderr. Remote URLs are redacted and the response body is never included.
+func lookupFailureDetail(ctx context.Context, err error, result commandResult) string {
+	var detail string
+	switch {
+	case ctx.Err() != nil:
+		detail = "timed out"
+	case err != nil:
+		detail = err.Error()
+	default:
+		detail = fmt.Sprintf("exit status %d", result.exitCode)
+		if line := firstNonEmptyLine(result.stderr); line != "" {
+			detail += ": " + line
+		}
+	}
+	detail = repoidentity.RedactText(detail)
+	if runes := []rune(detail); len(runes) > lookupFailureDetailRunes {
+		detail = string(runes[:lookupFailureDetailRunes]) + "..."
+	}
+	return detail
+}
+
+func firstNonEmptyLine(text string) string {
+	for line := range strings.Lines(text) {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 var sshIdentityHost = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

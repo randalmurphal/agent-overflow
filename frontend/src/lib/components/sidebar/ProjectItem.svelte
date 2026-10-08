@@ -19,7 +19,7 @@
 
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { RenameProject } from '../../stores/bindings';
+  import { RefreshProjectIdentity, RenameProject } from '../../stores/bindings';
   import { getProjectLabel, projectMembers, updateProjectLocal } from '../../stores/projects.svelte';
   import {
     getProjectSortMode,
@@ -189,10 +189,26 @@
     onNewThread?.(project.project.id, { openInNewPane: true });
   }
 
-  // The reason as a toast, so a touch screen without hover can read it too.
-  function showIdentityProblem(e: MouseEvent): void {
+  let recheckingIdentity = $state(false);
+
+  // Rechecks each checkout that failed on its own computer, then shows any
+  // reason that remains as a toast, so a touch screen without hover can read
+  // it too.
+  async function recheckIdentity(e: MouseEvent): Promise<void> {
     e.stopPropagation();
-    addToast('warning', identityProblem);
+    if (recheckingIdentity) return;
+    recheckingIdentity = true;
+    try {
+      const failing = projectMembers(project.project.id).filter((row) => row.project.identityError);
+      const results = await Promise.allSettled(failing.map((row) => RefreshProjectIdentity(row.project.id)));
+      for (const result of results) {
+        if (result.status === 'fulfilled') updateProjectLocal(result.value);
+        else addToast('error', userFacingError(result.reason));
+      }
+      if (identityProblem) addToast('warning', identityProblem);
+    } finally {
+      recheckingIdentity = false;
+    }
   }
 
   function handleNewGroupClick(e: MouseEvent): void {
@@ -447,11 +463,13 @@
       {#if identityProblem}
         <button
           type="button"
-          onclick={showIdentityProblem}
+          onclick={recheckIdentity}
+          disabled={recheckingIdentity}
+          aria-busy={recheckingIdentity}
           title={identityProblem}
           aria-label={identityProblem}
           data-testid="project-item-identity-error"
-          class="compact:h-9 compact:w-9 shrink-0 flex h-5 w-5 items-center justify-center rounded text-warning hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="compact:h-9 compact:w-9 shrink-0 flex h-5 w-5 items-center justify-center rounded text-warning hover:bg-surface-2/40 cursor-pointer disabled:cursor-progress disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
           <Icon icon={TriangleAlert} size={12} strokeWidth={2} />
         </button>

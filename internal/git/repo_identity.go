@@ -17,8 +17,12 @@ type RepoIdentity struct {
 	RepositoryID   string
 	IdentitySource string
 	LookupError    string
-	Repository     bool
-	RemoteURL      string
+	// LookupRetryable marks a LookupError that came from the forge or its CLI
+	// being unavailable, which a later lookup can clear with no change to the
+	// checkout.
+	LookupRetryable bool
+	Repository      bool
+	RemoteURL       string
 }
 
 // ReadRepoIdentity reads the local origin without walking commit history.

@@ -23,8 +23,8 @@ func (s *Service) RefreshProject(ctx context.Context, id string) (Write, error) 
 	if err != nil {
 		return Write{}, err
 	}
-	identity, ok := s.repoIdentity(ctx, row.Path, projectIdentity(row))
-	if !ok {
+	identity, read := s.repoIdentity(ctx, row.Path, projectIdentity(row))
+	if !read.ok {
 		return Write{}, ctx.Err()
 	}
 	updated, changed, err := database.UpdateProjectIdentity(id, identity)

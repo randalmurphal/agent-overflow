@@ -16,6 +16,7 @@ import { collapseProject, resetSidebarForTest } from '../../stores/sidebar.svelt
 import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 
 function makeProject(id: string, name: string, path: string): Project {
@@ -148,25 +149,63 @@ describe('ProjectItem compact layout', () => {
 });
 
 describe('ProjectItem identity read failure', () => {
-  afterEach(() => resetToastsForTest());
+  afterEach(() => {
+    resetToastsForTest();
+    resetBindingMocks();
+  });
 
   it('flags the entry with git\'s reason and clears once the read succeeds', async () => {
     const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'detected dubious ownership' };
     addProjectLocal(failed);
     const { getByTestId, queryByTestId, getByRole } = renderItem(failed);
-    const toggle = () => getByRole('button', { name: /^(Expand|Collapse) Project$/ }).getAttribute('aria-label');
-    const before = toggle();
     const flag = getByTestId('project-item-identity-error');
     expect(flag.getAttribute('title')).toBe("Could not fully verify /work/web: detected dubious ownership");
-    // A tap shows the reason where hover cannot, without toggling the row.
-    await fireEvent.click(flag);
-    expect(getToasts().map((toast) => [toast.type, toast.message]))
-      .toEqual([['warning', "Could not fully verify /work/web: detected dubious ownership"]]);
-    expect(toggle()).toBe(before);
 
     updateProjectLocal({ ...failed, identityError: undefined });
     await tick();
     expect(queryByTestId('project-item-identity-error')).toBeNull();
+    expect(getByRole('button', { name: /^(Expand|Collapse) Project$/ })).toBeTruthy();
+  });
+
+  // A tap rechecks on the owning computer, then shows a reason that remains
+  // where hover cannot, without toggling the row.
+  it('rechecks on a tap and shows the reason that remains', async () => {
+    const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'detected dubious ownership' };
+    addProjectLocal(failed);
+    const refresh = setBindingMock('RefreshProjectIdentity', async () => failed);
+    const { getByTestId, getByRole } = renderItem(failed);
+    const toggle = () => getByRole('button', { name: /^(Expand|Collapse) Project$/ }).getAttribute('aria-label');
+    const before = toggle();
+    await fireEvent.click(getByTestId('project-item-identity-error'));
+    await vi.waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message]))
+      .toEqual([['warning', "Could not fully verify /work/web: detected dubious ownership"]]));
+    expect(refresh).toHaveBeenCalledWith('a');
+    expect(toggle()).toBe(before);
+  });
+
+  it('clears the flag without a toast when the recheck verifies', async () => {
+    const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'Could not verify repository identity with glab on gitlab.com.' };
+    addProjectLocal(failed);
+    let answer!: (row: Project) => void;
+    setBindingMock('RefreshProjectIdentity', () => new Promise<Project>((resolve) => { answer = resolve; }));
+    const { getByTestId, queryByTestId } = renderItem(failed);
+    const flag = getByTestId('project-item-identity-error');
+    await fireEvent.click(flag);
+    // One recheck at a time.
+    expect(flag.hasAttribute('disabled')).toBe(true);
+    answer({ ...failed, identityError: undefined, repositoryID: 'gitlab:gitlab.com:7' });
+    await vi.waitFor(() => expect(queryByTestId('project-item-identity-error')).toBeNull());
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('reports a recheck that could not run', async () => {
+    const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'detected dubious ownership' };
+    addProjectLocal(failed);
+    setBindingMock('RefreshProjectIdentity', async () => { throw new Error('computer unreachable'); });
+    const { getByTestId } = renderItem(failed);
+    await fireEvent.click(getByTestId('project-item-identity-error'));
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.type)).toEqual(['error', 'warning']));
+    expect(getToasts()[0].message).toBe('Computer unreachable.');
   });
 });
 

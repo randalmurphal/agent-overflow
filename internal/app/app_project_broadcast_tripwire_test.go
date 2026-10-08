@@ -34,6 +34,7 @@ var (
 		"Create",
 		"EnsureForWorkspace",
 		"RefreshIdentity",
+		"RetryIdentity",
 		"Rename",
 		"SetWorktreeSetup",
 		"Unarchive",

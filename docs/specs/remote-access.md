@@ -3059,8 +3059,14 @@ the last identity; an unsupported or absent forge origin cannot establish one.
 
 Creation, workspace registration and session import derive identity through
 `projectapp`. `RefreshIdentity` re-reads every row, archived included, once
-per boot after initial reads settle. Each changed row is announced as a
-`project:updated` full frame without changing `updated_at`. The machine
+per boot after initial reads settle. Rows whose forge lookup failed because
+the forge or its CLI was unavailable are re-read with `RetryIdentity` after
+15 s, 30 s, 1 min, 2 min and then every 5 min until they resolve or the app
+stops. Each changed row is announced as a `project:updated` full frame
+without changing `updated_at`. A failed forge call logs one line on its
+computer with the CLI's exit status and first stderr line, URLs redacted;
+the stored `identityError` carries no CLI output. Selecting a project's
+identity warning rechecks it through `RefreshProjectIdentity`. The machine
 picker also refreshes the source before validating a chosen destination.
 `CreateProjectCheckout` enforces equal verified IDs inside the API. Failed
 verification cannot be bypassed with a matching URL or commit. Plain
