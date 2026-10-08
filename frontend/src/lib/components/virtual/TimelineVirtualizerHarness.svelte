@@ -32,6 +32,9 @@
     viewportPx?: number;
     intrinsicViewportMaxHeight?: string;
     headerSize?: number;
+    /** Height of content after the rows inside the scroller, outside the
+     * engine's range (chat's "Load newer messages" footer). */
+    footerPx?: number;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
@@ -55,6 +58,7 @@
     viewportPx = 600,
     intrinsicViewportMaxHeight,
     headerSize = 0,
+    footerPx = 0,
     onscroll,
     onscrollend,
     onCompensation,
@@ -183,5 +187,8 @@
       </div>
     {/snippet}
   </TimelineVirtualizer>
+  {#if footerPx > 0}
+    <div data-testid="virtual-footer" style="height: {footerPx}px;"></div>
+  {/if}
 </div>
 </div>

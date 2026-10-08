@@ -14,6 +14,8 @@ const AGENT_SCOPE_TURN_KEY = 0;
 export interface AgentScopeView {
   /** The ThreadPane facade MessageTimeline mounts. */
   readonly pane: ThreadPane;
+  /** The scope this view was created for. */
+  readonly scopeItemId: string;
   /** The scope's loaded direct rows (what `pane.items` answers). */
   readonly items: Item[];
   /**
@@ -120,6 +122,7 @@ export function createAgentScopeView(
     detachScrollController: scroll.detach,
     get scrollToItemRequest() { return scroll.scrollToItemRequest; },
     requestScrollToItem: scroll.requestScrollToItem,
+    takeScrollToItemRequest: scroll.takeScrollToItemRequest,
     loadOlder: window.loadOlder,
     loadNewer: window.loadNewer,
     loadUntilItem: window.loadUntilItem,
@@ -307,6 +310,7 @@ export function createAgentScopeView(
 
   return {
     pane,
+    scopeItemId,
     get items() { return scopedItems; },
     get lifecycle() {
       return lifecycle;

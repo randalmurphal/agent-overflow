@@ -1196,9 +1196,8 @@ describe('viewport hold ownership', () => {
   });
 
   it('releaseOpenedLive with nothing releasable opens no transaction', () => {
-    // The transaction pauses the spring and burns a restore token — the
-    // counter thread-switch restores guard on — so a batch that changes
-    // nothing must not run one. The gate pre-filters too, but the property
+    // The transaction pauses the spring and ends any older hold's restore,
+    // so a batch that changes nothing must not run one. The gate pre-filters too, but the property
     // belongs to the API: entries can be swept between capture and release.
     const { runs, holds } = heldRegistry({ defaultCollapsed: true });
     const [run] = pass(runs, [['a']]);

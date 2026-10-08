@@ -685,10 +685,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // leak into the next thread.
     switchLoad.resetPipeline();
     timelineWindow.resetForFreshThread();
-    // See switchThread: both `timelineWindow`'s internal
-    // `pagingGeneration` and `scrollToItemRequest.nonce` stay
-    // monotonic for the pane's lifetime so no consumer observes a
-    // regressed counter.
+    // `timelineWindow`'s internal `pagingGeneration` stays monotonic for
+    // the pane's lifetime so no consumer observes a regressed counter. An
+    // untaken scroll-to-item request goes stale with the generation bump
+    // below.
     // Git status needs no reset: it is keyed by workspace in a shared
     // store, so clearing the pane's thread already re-points the view at
     // "no workspace".
@@ -922,11 +922,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       };
     },
     /**
-     * Scroll-to-item intent published by pane-level callers (search
-     * hits, plan sidebar clicks, tray rows). MessageTimeline reacts to
-     * nonce changes — the timeline compares the observed nonce against
-     * the current value and runs `scrollToItem(itemId)` when it
-     * advances. `itemId === ''` means "no request".
+     * Pending scroll-to-item intent published by pane-level callers
+     * (search hits). MessageTimeline takes it once it can act and runs
+     * `scrollToItem(itemId)`. Null when nothing is pending.
      */
     get scrollToItemRequest() {
       return paneScroll.scrollToItemRequest;
@@ -1078,6 +1076,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     requestScrollToItem: paneScroll.requestScrollToItem,
+    takeScrollToItemRequest: paneScroll.takeScrollToItemRequest,
 
     /**
      * Registered scroll controller for this pane. Read by surfaces that

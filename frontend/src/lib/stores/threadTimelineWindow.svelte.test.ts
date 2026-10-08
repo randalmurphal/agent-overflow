@@ -7,7 +7,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { createThreadPane } from './thread.svelte';
+import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
@@ -420,6 +420,97 @@ describe('threadTimelineWindow', () => {
       expect(fetched).toBe(0);
     });
 
+    it('loadUntilItem looks up a held row that lies outside the paging edges', async () => {
+      // The moved-outlier rule: a queued message confirmed after later
+      // output is held past a ceiling with newer history unloaded, so the
+      // timeline does not show it and a jump must load the span around it.
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'floor', turnIndex: 2, itemIndex: 2 }),
+          makeItem({ id: 'queued', turnIndex: 2, itemIndex: 3, kind: 'user_text', role: 'user' }),
+          makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 4 }),
+        ],
+        oldestTurnIndex: 2, newestTurnIndex: 2,
+        hasMoreOlder: true, hasMoreNewer: true,
+      }));
+      await pane.switchThread(makeThread());
+      const moved = makeItem({ id: 'queued', turnIndex: 2, itemIndex: 6, kind: 'user_text', role: 'user', updatedAt: 2 });
+      pane.applyProviderItemUpserts([moved]);
+      expect(pane.getItemById('queued')).toBeDefined();
+      expect(pane.newestLoadedCursor?.itemId).toBe('ceiling');
+      const lookup = setBindingMock('GetThreadItem', async () => moved);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'ceiling', turnIndex: 2, itemIndex: 4 }),
+          makeItem({ id: 'between', turnIndex: 2, itemIndex: 5 }),
+          moved,
+        ],
+        oldestTurnIndex: 2, newestTurnIndex: 2,
+        hasMoreOlder: true, hasMoreNewer: false,
+      }));
+
+      expect(await pane.loadUntilItem('queued')).toBe('loaded');
+      expect(lookup).toHaveBeenCalledOnce();
+      expect(pane.items.map((item) => item.id)).toEqual(['ceiling', 'between', 'queued']);
+      expect(pane.newestLoadedCursor?.itemId).toBe('queued');
+    });
+
+    it('loadUntilItem holds both paging edges while its lookup is in flight', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5, newestTurnIndex: 5,
+        hasMoreOlder: true, hasMoreNewer: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      let answer!: (item: Item | null) => void;
+      setBindingMock('GetThreadItem', () => new Promise((resolve) => { answer = resolve; }));
+      const older = setBindingMock('ListItemsBeforeCursor', async () => ({ items: [], hasMoreOlder: true }));
+      const newer = setBindingMock('ListItemsAfterCursor', async () => ({ items: [], hasMoreNewer: true }));
+
+      const jump = pane.loadUntilItem('gone');
+      expect(pane.loadingOlder).toBe(true);
+      expect(pane.loadingNewer).toBe(true);
+      await pane.loadOlder();
+      await pane.loadNewer();
+      expect(older).not.toHaveBeenCalled();
+      expect(newer).not.toHaveBeenCalled();
+      answer(null);
+      expect(await jump).toBe('missing');
+      expect(pane.loadingOlder).toBe(false);
+      expect(pane.loadingNewer).toBe(false);
+      await pane.loadOlder();
+      expect(older).toHaveBeenCalledOnce();
+    });
+
+    it('a jump to a row the window shows supersedes an earlier jump still loading', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5, newestTurnIndex: 5,
+        hasMoreOlder: true, hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      setBindingMock('GetThreadItem', async () => makeItem({ id: 'far', threadId: 't', turnIndex: 1 }));
+      let land!: (page: unknown) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => { land = resolve; }));
+
+      const earlier = pane.loadUntilItem('far');
+      await vi.waitFor(() => expect(land).toBeTypeOf('function'));
+      expect(await pane.loadUntilItem('here')).toBe('loaded');
+      land({
+        items: [makeItem({ id: 'far', threadId: 't', turnIndex: 1 })],
+        oldestTurnIndex: 1, newestTurnIndex: 1,
+        hasMoreOlder: false, hasMoreNewer: true,
+      });
+
+      expect(await earlier).toBe('superseded');
+      expect(pane.items.map((item) => item.id)).toEqual(['here']);
+      expect(pane.loadingOlder).toBe(false);
+      expect(pane.loadingNewer).toBe(false);
+    });
+
     it('loadUntilItem replaces the window to cover a below-floor item', async () => {
       const pane = createThreadPane();
       let sliceCalls = 0;
@@ -643,38 +734,37 @@ describe('threadTimelineWindow', () => {
       expect(pane.items.map((it) => it.id)).toEqual(['u-tail']);
     });
 
-    it('requestScrollToItem bumps the nonce observed by the timeline', () => {
+    it('holds one scroll-to-item request until a consumer takes it', () => {
       const pane = createThreadPane();
-      const first = pane.scrollToItemRequest.nonce;
+      expect(pane.scrollToItemRequest).toBeNull();
+      expect(pane.takeScrollToItemRequest()).toBeNull();
       pane.requestScrollToItem('a');
-      const second = pane.scrollToItemRequest.nonce;
-      expect(second).toBeGreaterThan(first);
-      expect(pane.scrollToItemRequest.itemId).toBe('a');
       pane.requestScrollToItem('b');
-      expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(second);
-      expect(pane.scrollToItemRequest.itemId).toBe('b');
+      expect(pane.scrollToItemRequest?.itemId).toBe('b');
+      expect(pane.takeScrollToItemRequest()).toBe('b');
+      // Taken once: a second consumer (a remounted timeline) gets nothing.
+      expect(pane.scrollToItemRequest).toBeNull();
+      expect(pane.takeScrollToItemRequest()).toBeNull();
     });
 
-    it('scrollToItemRequest nonce stays monotonic across switchThread', async () => {
-      // The timeline tracks `lastHandledScrollNonce` locally. If a pane
-      // reset the nonce to 0 on switch, a follow-up intent with nonce=1
-      // would compare against the lingering higher handled value and
-      // silently not dispatch. Keep the nonce monotonic.
+    it.each([
+      ['a switch to another thread', (pane: ThreadPane) => pane.switchThread(makeThread({ id: 'other' }))],
+      ['a forced reload of the same thread', (pane: ThreadPane) => pane.switchThread(pane.thread!)],
+      ['a clear', (pane: ThreadPane) => { pane.clear(); }],
+    ])('drops an untaken scroll-to-item request on %s', async (_label, change) => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
       }));
-      pane.requestScrollToItem('before-switch');
-      const beforeSwitch = pane.scrollToItemRequest.nonce;
-      expect(beforeSwitch).toBeGreaterThan(0);
-
       await pane.switchThread(makeThread({ id: 't' }));
-      expect(pane.scrollToItemRequest.nonce).toBe(beforeSwitch);
-
-      pane.requestScrollToItem('after-switch');
-      expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(beforeSwitch);
+      pane.requestScrollToItem('before');
+      await change(pane);
+      expect(pane.takeScrollToItemRequest()).toBeNull();
+      expect(pane.scrollToItemRequest).toBeNull();
+      pane.requestScrollToItem('after');
+      expect(pane.takeScrollToItemRequest()).toBe('after');
     });
 
     it('loadUntilItem loads the target turn when the pane has no floor yet', async () => {

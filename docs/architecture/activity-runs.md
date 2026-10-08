@@ -790,7 +790,11 @@ Inner position survives the virtualizer evicting the row: controller lifetime
 and position persistence are ONE effect, because the saved snapshot carries
 the controller's escape flag and splitting them would make the saved value
 depend on which teardown Svelte happened to run first. The snapshot is also
-written on every inner scroll, not only at teardown. A thread switch clears
+written on every inner scroll and on every position the run writes itself
+(`positionWritten`: a jump's placement, prepend compensation, the head-splice
+hold), not only at teardown: an evicted row's teardown reads a detached clip
+and refuses to save, so a jump archived only there would remount on the run's
+tail (`activityRunScroll.browser.test.ts`). A thread switch clears
 the registry synchronously with the data change, well before Svelte tears the
 row down.
 
@@ -940,10 +944,12 @@ Non-overlapping windows produce no shared row to hold, and that answer is
 ### Jumps resolve inside the run
 
 A search hit, review jump, target flash, or restore anchor whose item lives
-in a run resolves through `findTimelineNodeIndex` to the RUN's row, so
-`timelineRestore.svelte.ts` points the run at the item before scrolling the
-timeline, then re-resolves the index (expanding a run re-measures every row
-after it).
+in a run resolves to the RUN's row (`resolveVisibleTimelineNode` for jumps,
+`findTimelineNodeIndex` beneath it), so `timelineRestore.svelte.ts` points
+the run at the item before scrolling the timeline, then re-resolves the index
+(expanding a run re-measures every row after it). A run that cannot reveal
+the item is reported as a diagnostic, and the jump still lands on the run's
+row.
 
 `revealActivityRunItem` does the three things a jump needs as one call
 (expand the run, relocate the window around the target, leave a focus

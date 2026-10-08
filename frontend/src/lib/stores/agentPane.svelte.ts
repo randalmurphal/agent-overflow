@@ -29,9 +29,24 @@ function rootEntry(): AgentPaneBreadcrumbEntry {
   return { itemId: '', label: AGENT_SCOPE_ROOT_LABEL };
 }
 
+/** A pending jump to `itemId` in the transcript of scope `scopeItemId`. */
+export interface AgentItemRequest {
+  scopeItemId: string;
+  itemId: string;
+}
+
 export interface AgentPaneState {
-  readonly itemRequest: { itemId: string; nonce: number };
+  /** The pending jump, null when none. Any scope change drops it. */
+  readonly itemRequest: AgentItemRequest | null;
+  /** Scope to the end of `trail` and request a jump to `itemId` there. */
   openAtItem(trail: readonly AgentPaneBreadcrumbEntry[], itemId: string): void;
+  /**
+   * Take the pending jump for the view showing `scopeItemId`: clears it
+   * and returns its item id. Null, leaving it pending, when it was made
+   * for another scope, so a view the scope change has not replaced yet
+   * cannot take it.
+   */
+  takeItemRequest(scopeItemId: string): string | null;
   /** Thread this scope belongs to. Fixed for the state's lifetime. */
   readonly threadId: string;
   /**
@@ -90,14 +105,14 @@ function noteScopeChanged(): void {
 
 function createAgentPaneState(threadId: string): AgentPaneState {
   let scopeItemId = $state('');
-  let itemRequest = $state({ itemId: '', nonce: 0 });
+  let itemRequest = $state.raw<AgentItemRequest | null>(null);
   let breadcrumb: AgentPaneBreadcrumbEntry[] = $state([rootEntry()]);
 
   // Declared as functions rather than object-literal methods so the
   // cross-calls below (pushScope → popTo, setScope → reset) never depend on
   // `this` — a destructured `const { pushScope } = state` stays correct.
   function reset(): void {
-    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
+    itemRequest = null;
     if (scopeItemId === '' && breadcrumb.length === 1) return;
     scopeItemId = '';
     breadcrumb = [rootEntry()];
@@ -105,7 +120,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function setScope(itemId: string, label: string): void {
-    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
+    itemRequest = null;
     if (!itemId) {
       reset();
       return;
@@ -116,7 +131,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function popTo(index: number): void {
-    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
+    itemRequest = null;
     if (index < 0 || index >= breadcrumb.length) return;
     if (index === breadcrumb.length - 1) return;
     breadcrumb = breadcrumb.slice(0, index + 1);
@@ -125,7 +140,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function pushScope(itemId: string, label: string): void {
-    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
+    itemRequest = null;
     if (!itemId) return;
     if (itemId === scopeItemId) return;
     // Descending into a node already ON the trail is a pop, not a second
@@ -154,10 +169,17 @@ function createAgentPaneState(threadId: string): AgentPaneState {
     get itemRequest() { return itemRequest; },
     openAtItem(trail: readonly AgentPaneBreadcrumbEntry[], itemId: string) {
       if (!trail.length || trail.some(entry => !entry.itemId)) throw new Error('Agent ancestry must contain nonempty scopes');
+      if (!itemId) throw new Error('An agent jump needs an item');
       breadcrumb = [rootEntry(), ...trail];
       scopeItemId = trail[trail.length - 1].itemId;
-      itemRequest = { itemId, nonce: itemRequest.nonce + 1 };
+      itemRequest = { scopeItemId, itemId };
       noteScopeChanged();
+    },
+    takeItemRequest(scope: string): string | null {
+      const request = itemRequest;
+      if (!request || request.scopeItemId !== scope) return null;
+      itemRequest = null;
+      return request.itemId;
     },
     setScope,
     pushScope,

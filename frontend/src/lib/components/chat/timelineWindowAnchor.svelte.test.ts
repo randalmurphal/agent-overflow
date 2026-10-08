@@ -81,8 +81,8 @@ function makeHarness({
     getRevealedNodes: () => nodes,
     findTimelineNodeIndex: () => 0,
     saveScrollSnapshot,
-    nextRestoreToken: () => ++token,
-    isRestoreTokenCurrent: (t) => t === token,
+    beginHold: () => ++token,
+    isHoldCurrent: (t) => t === token,
   });
   return {
     anchor,
@@ -176,8 +176,8 @@ describe('visibleTimelineItemIds', () => {
       getRevealedNodes: () => nodes,
       findTimelineNodeIndex: () => 0,
       saveScrollSnapshot: vi.fn(),
-      nextRestoreToken: () => 1,
-      isRestoreTokenCurrent: () => true,
+      beginHold: () => 1,
+      isHoldCurrent: () => true,
     });
   }
 

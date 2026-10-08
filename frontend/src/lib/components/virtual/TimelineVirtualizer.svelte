@@ -1156,10 +1156,14 @@
     align: ScrollToIndexAlign;
     extraOffset: number;
     lastTarget: number;
-    /** Where the last pass's write left the viewport (clamped to the max
-     * scroll of that layout), shifted by every compensation delivered
-     * since. NaN until the first pass writes. */
+    /** Where the last pass's write left the viewport, read back from the
+     * scroller, shifted by every compensation delivered since. NaN until
+     * the first pass writes. */
     expectedPosition: number;
+    /** Whether the last write landed on its target. False when the
+     * browser clamped it because the DOM had not caught up with the
+     * engine's rows yet. */
+    reached: boolean;
     /** The destination row's size at the first pass that wrote against a
      * MEASURED destination; NaN until such a pass. Align-end only: it is
      * the baseline that lets convergence exclude the destination's own
@@ -1222,13 +1226,14 @@
       // the browser clamps scrollTop with no write from anyone — that is
       // the navigation's own ground shifting, not a takeover, and the
       // restore pass that follows is exactly the one that puts the
-      // anchored row back.
-      const maxScroll = Math.max(
-        0,
-        engine.getTotalSize() + renderHeaderSize - engine.getViewportSize(),
-      );
-      const expected = Math.min(pending.expectedPosition, maxScroll);
-      // Live DOM read, not engine.getScrollOffset(): the engine's offset
+      // anchored row back. The browser's range, not the engine's: the
+      // scroller can hold content after the rows (chat's "Load newer
+      // messages" footer), and the browser clamps against all of it.
+      const expected = Math.max(0, Math.min(
+        pending.expectedPosition,
+        scroller.scrollHeight - scroller.clientHeight,
+      ));
+      // Live DOM reads, not engine.getScrollOffset(): the engine's offset
       // lags its own write until the scroll event lands, and a stale
       // offset here would read the navigation's own write as a takeover.
       // Cold path — only runs while a navigation is pending.
@@ -1261,7 +1266,11 @@
       const growth = engine.sizeAt(pending.index) - pending.destinationSizeBaseline;
       if (growth > 0) target -= growth;
     }
-    if (target === pending.lastTarget) return;
+    // An unchanged target needs no write once the last one landed. One the
+    // browser clamped short is written again: a navigation issued in the
+    // same flush as a data change writes before the DOM holds the new rows,
+    // and the pass after that flush is the one that can reach the target.
+    if (target === pending.lastTarget && pending.reached) return;
     if (pending.passesLeft <= 0) {
       clearIndexScroll();
       return;
@@ -1278,13 +1287,18 @@
     ) {
       pending.destinationSizeBaseline = engine.sizeAt(pending.index);
     }
-    // The browser clamps a write past the end of the CURRENT layout; the
-    // engine's max is that same bound (spacer height IS totalSize, and
-    // viewport excludes the padding both sides share).
-    pending.expectedPosition = Math.min(
-      Math.max(0, target),
-      Math.max(0, engine.getTotalSize() + renderHeaderSize - engine.getViewportSize()),
-    );
+    // Where the write actually left the viewport. The browser clamps it to
+    // the layout it has, which can differ from the engine's: content after
+    // the rows, or rows the DOM does not hold yet. Setting scrollTop already
+    // laid out the scroller to clamp the write, so this read forces none.
+    const landed = scroller
+      ? scroller.scrollTop
+      : Math.min(
+          Math.max(0, target),
+          Math.max(0, engine.getTotalSize() + renderHeaderSize - engine.getViewportSize()),
+        );
+    pending.expectedPosition = landed;
+    pending.reached = Math.abs(landed - Math.max(0, target)) <= INDEX_SCROLL_TAKEOVER_TOLERANCE_PX;
   }
 
   export function scrollToIndex(
@@ -1304,6 +1318,7 @@
       extraOffset: opts.offset ?? 0,
       lastTarget: Number.NaN,
       expectedPosition: Number.NaN,
+      reached: false,
       destinationSizeBaseline: Number.NaN,
       passesLeft: INDEX_SCROLL_MAX_PASSES,
       settleTimer: undefined,

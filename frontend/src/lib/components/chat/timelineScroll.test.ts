@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
-import { groupItemsBySubagent } from '../../utils/subagentGrouping';
+import { groupItemsBySubagent, nodeContainsItem } from '../../utils/subagentGrouping';
+import { filterRedundantNotifications } from '../../utils/notificationFilter';
 import {
   autoLoadZonesDisjoint,
   bottomEdgeGeometry,
@@ -9,7 +10,7 @@ import {
   createAutoLoadGate,
   isWithinBottomTriggerZone,
   isWithinTopTriggerZone,
-  resolveVisibleTimelineNodeIndex,
+  resolveVisibleTimelineNode,
   type AutoLoadGateState,
   type TimelineGeometry,
   type TimelineTailGeometry,
@@ -80,8 +81,38 @@ describe('timelineScroll', () => {
     const items = [spawn, child];
     const nodes = groupItemsBySubagent(items);
 
-    expect(resolveVisibleTimelineNodeIndex(nodes, items, 'child-answer')).toBe(0);
-    expect(resolveVisibleTimelineNodeIndex(nodes, items, 'missing')).toBe(-1);
+    expect(resolveVisibleTimelineNode(nodes, items, 'child-answer')).toEqual({ index: 0, itemId: 'codex-agent' });
+    expect(resolveVisibleTimelineNode(nodes, items, 'missing')).toBeNull();
+  });
+
+  it('resolves a bell the notification filter hid to the row that hides it', () => {
+    const call = makeItem({
+      id: 'bash', kind: 'tool_call', toolName: 'Bash', status: 'completed',
+      meta: JSON.stringify({ task_id: 'T1' }),
+    });
+    const bell = makeItem({
+      id: 'bell', itemIndex: 1, kind: 'notification', summary: 'Background command completed',
+      meta: JSON.stringify({ task_id: 'T1' }),
+    });
+    const completion = makeItem({
+      id: 'done', itemIndex: 2, kind: 'tool_completion', toolName: 'Bash',
+      meta: JSON.stringify({ task_id: 'T1' }),
+    });
+    const items = [call, bell, completion];
+    const nodes = groupItemsBySubagent(filterRedundantNotifications(items));
+    expect(nodes.some((node) => nodeContainsItem(node, 'bell'))).toBe(false);
+
+    expect(resolveVisibleTimelineNode(nodes, items, 'bell')).toEqual({
+      index: nodes.findIndex((node) => nodeContainsItem(node, 'done')),
+      itemId: 'done',
+    });
+    // A cover that renders nowhere is skipped for the next one.
+    const withoutCompletion = nodes.filter((node) => !nodeContainsItem(node, 'done'));
+    expect(resolveVisibleTimelineNode(withoutCompletion, items, 'bell')).toEqual({
+      index: withoutCompletion.findIndex((node) => nodeContainsItem(node, 'bash')),
+      itemId: 'bash',
+    });
+    expect(resolveVisibleTimelineNode([], items, 'bell')).toBeNull();
   });
 
   it('captures an anchor at the current scroll offset', () => {

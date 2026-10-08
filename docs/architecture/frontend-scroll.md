@@ -479,11 +479,11 @@ call-site convention. It lives inside the registry's own mutators
 (`ThreadActivityRuns.setCollapsed` / `setAllCollapsed` /
 `releaseOpenedLive`), so a new caller cannot forget it and must not wrap a
 hold of its own. The one hold-free write is `expandForReveal`, reachable
-only through `revealActivityRunItem`, and the missing hold is load-bearing:
-`scrollToItem` guards its post-reveal resume on a restore token, and a hold
-issues one (`nextRestoreToken`). Held, the jump would abort at its own
-guard before scrolling anywhere. A bottom restore racing the jump's
-destination is the second reason. The verb can only expand, so the
+only through `revealActivityRunItem`: the jump owns the viewport, and a
+hold's bottom restore would write a position the jump replaces one flush
+later. Holds and navigations have separate lifetimes in the restore session
+(`timelineRestore.svelte.ts`): a hold never cancels a navigation, and a
+navigation ends every hold when it writes. The verb can only expand, so the
 hold-free path cannot be borrowed for a collapse. The releases are
 not reader-requested (the gate fires precisely because the reader is
 provably elsewhere), but they ride the same transaction: the runs they
@@ -532,7 +532,13 @@ the navigation. The pending navigation outlives the transaction by
 settle windows of real time, so it carries a takeover guard: a pass only
 continues while the viewport still sits where the navigation's own writes (and
 compensations delivered on its behalf, and the browser's clamp when the
-content under it shrinks) left it. Anything else moving the viewport (a
+content under it shrinks) left it. Each pass reads where its write landed
+back from the scroller and clamps expectations to the scroller's range, not
+the engine's: content after the rows (chat's "Load newer messages" footer)
+keeps a position the engine would call out of range. A write the browser
+clamped short, because the DOM did not hold the rows the engine planned yet,
+is written again on the next pass (regression: the "browser scroll range"
+tests in `timelineVirtualizer.browser.test.ts`). Anything else moving the viewport (a
 reader gesture, the spring's next glide) cancels it, because a stale
 absolute target re-fired over new motion is a visible yank (the
 release-then-glide "snaps mid-animation" bug; regression:
@@ -1608,17 +1614,47 @@ Full-thread search goes through the `MessageSearch` palette and the
 `SearchThreadMessages` binding. Browser find only sees mounted virtual
 rows and is not a complete search surface.
 
-A search hit calls `pane.requestScrollToItem(itemId)`. `MessageTimeline`
-loads older rows until the item is present, then scrolls through
-`listRef.scrollToIndex(index, { align: 'center' })`, an escaped,
-controller-routed write (the virtualizer performs it through
-`applyScrollTarget`).
+A hit goes through `navigateToThreadItem(pane, threadId, itemId)`
+(`stores/threadItemNavigation.ts`). A pane that shows another thread by then
+is left alone. A top-level row becomes the pane's scroll-to-item request. A
+subagent row never loads in a history window (windows hold top-level rows
+only), so the hit opens the agent pane at its launch trail with an item
+request bound to that scope (`openAtItem`).
 
-A hit inside a subagent transcript never appears in a history window
-(windows hold top-level rows only). `loadUntilItem` walks the parent
-chain to the launch root, slices the window around that root and retains
-only the target and that chain. The scroll resolves to the containing
-`SubagentGroup` card; expansion uses its own bounded digest window.
+Both requests are taken once. The pane's request carries the switch
+generation it was made under, and a switch, forced reload or clear drops it;
+`MessageTimeline` takes it (`takeScrollToItemRequest`) once the pane is not
+loading, so a remount cannot replay it. Only the view of the scope an agent
+request names can take it (`takeItemRequest`), and a scope change drops it.
+A settled scope with no rows ends the jump with the "no longer in this
+thread" notice.
+
+`scrollToItem` in `timelineRestore.svelte.ts` runs the jump:
+
+1. `loadUntilItem` claims the window. It supersedes every page in flight and
+   holds both paging edges for its lookup, so automatic paging and recovery
+   wait for it. A row the loaded window shows (`windowHolds`: held and inside
+   the paging edges) costs no backend call. A lookup a window cut superseded
+   is repeated while the jump still owns the viewport, at most
+   `JUMP_LOOKUP_ATTEMPTS` times.
+2. `resolveVisibleTimelineNode` finds the node that shows the row: its own,
+   the launch that folds it, or, for a background-command bell the
+   notification filter hides, the completion or call that covers it
+   (`notificationCoverIds`). A row inside an activity run expands and
+   re-windows the run (`revealActivityRunItem`). A row the reveal gate still
+   withholds lands on the reveal frontier.
+3. The write claims the navigation (`claimNavigation`), escapes bottom
+   follow, and centers the row with `listRef.scrollToIndex(index,
+   { align: 'center' })`.
+
+Navigations and viewport holds have separate tokens. A hold (a run
+collapse's bottom restore) never cancels a jump, and the jump's write ends
+every hold. A newer navigation, a switch, or reader input on the scroller
+(`noteReaderGesture`) ends a pending jump silently. Every jump ends with one
+outcome, traced as `timeline.jump`: `issued` and `withheld` land; `missing`
+tells the reader the row is gone; `failed` was already reported by the
+window; `unresolved` means a loaded row no node shows, which is a defect, so
+it toasts "Could not show that message" and reports a diagnostic.
 
 ## Discussion Mode
 

@@ -52,8 +52,8 @@ function fixture(over: {
     getScrollEl: () => viewport,
     getRevealedNodes: () => Array.from({ length: over.revealed ?? 0 }, () => ({})) as never[],
     getRestoredThreadId: () => null,
-    nextRestoreToken: () => 1,
-    isRestoreTokenCurrent: () => true,
+    beginNavigation: () => 1,
+    claimNavigation: () => true,
     saveScrollSnapshot: () => {},
   });
   return { paging, loadOlder, loadNewer, markEscaped };

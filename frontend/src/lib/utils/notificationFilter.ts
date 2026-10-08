@@ -50,6 +50,17 @@ function isCommandBell(item: Item): boolean {
   return item.kind === 'notification' && !isAgentRow(item);
 }
 
+/** A bell the filter may hide: a command's, outside a watch task. */
+function isHideableBell(item: Item): boolean {
+  return isCommandBell(item) && !isClaudeWatchTaskNotification(item);
+}
+
+/** A row that says a plain command ended, and so hides its bell. */
+function isCompletedCommandLifecycle(item: Item): boolean {
+  return (item.kind === 'tool_completion' || (item.kind === 'tool_call' && item.status === 'completed'))
+    && !isAgentRow(item);
+}
+
 export function filterRedundantNotifications(
   items: readonly Item[],
   rendersLifecycle: (item: Item) => boolean = () => true,
@@ -60,10 +71,7 @@ export function filterRedundantNotifications(
 
   const completedTaskIDs = new Set<string>();
   for (const it of items) {
-    const isCompletedLifecycle =
-      it.kind === 'tool_completion' ||
-      (it.kind === 'tool_call' && it.status === 'completed');
-    if (!isCompletedLifecycle || isAgentRow(it) || !rendersLifecycle(it)) continue;
+    if (!isCompletedCommandLifecycle(it) || !rendersLifecycle(it)) continue;
     const id = extractClaudeTaskID(it);
     if (id) completedTaskIDs.add(id);
   }
@@ -71,11 +79,32 @@ export function filterRedundantNotifications(
 
   const out: Item[] = [];
   for (const it of items) {
-    if (isCommandBell(it) && !isClaudeWatchTaskNotification(it)) {
+    if (isHideableBell(it)) {
       const id = extractClaudeTaskID(it);
       if (id && completedTaskIDs.has(id)) continue;
     }
     out.push(it);
   }
   return out;
+}
+
+/**
+ * The rows that can hide `itemId`'s bell: the completed lifecycle rows
+ * sharing its task id, completion siblings first, in item order. Empty for
+ * a row the filter never hides. Navigation to a hidden bell lands on the
+ * first of these that renders; which ones render is the projection's
+ * answer, so this applies no render predicate of its own.
+ */
+export function notificationCoverIds(items: readonly Item[], itemId: string): string[] {
+  const bell = items.find((it) => it.id === itemId);
+  if (!bell || !isHideableBell(bell)) return [];
+  const taskID = extractClaudeTaskID(bell);
+  if (!taskID) return [];
+  const completions: string[] = [];
+  const calls: string[] = [];
+  for (const it of items) {
+    if (!isCompletedCommandLifecycle(it) || extractClaudeTaskID(it) !== taskID) continue;
+    (it.kind === 'tool_completion' ? completions : calls).push(it.id);
+  }
+  return [...completions, ...calls];
 }

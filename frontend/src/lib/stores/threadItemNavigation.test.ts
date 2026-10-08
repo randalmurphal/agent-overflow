@@ -21,7 +21,7 @@ it('opens an unloaded nested search hit at the exact child, with ancestry and no
   setBindingMock('GetThreadItem', async (_thread: string, id: string) => source.find(item => item.id === id));
   const open = vi.spyOn(pane, 'openAgentPane').mockImplementation(() => {});
   const scroll = vi.spyOn(pane, 'requestScrollToItem');
-  await navigateToThreadItem(pane, 'match');
+  await navigateToThreadItem(pane, 't', 'match');
   expect(open).toHaveBeenCalledWith('inner', expect.any(String));
   const state = agentStateForPane(pane.paneId, 't');
   expect(state.breadcrumb.map(entry => entry.itemId)).toEqual(['', 'outer', 'inner']);
@@ -37,12 +37,26 @@ it('ignores a navigation response after switching threads', async () => {
   await pane.switchThread(makeThread({ id: 'before' }));
   let resolve!: (item: unknown) => void;
   setBindingMock('GetThreadItem', () => new Promise(done => { resolve = done; }));
-  const navigate = navigateToThreadItem(pane, 'late');
+  const navigate = navigateToThreadItem(pane, 'before', 'late');
   await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
   await pane.switchThread(makeThread({ id: 'after' }));
   resolve(makeItem({ id: 'late', threadId: 'before' }));
   await navigate;
-  expect(pane.scrollToItemRequest.itemId).toBe('');
+  expect(pane.scrollToItemRequest).toBeNull();
+  pane.clear();
+});
+
+it('leaves a pane that shows another thread than the hit\'s alone', async () => {
+  const pane = createThreadPane();
+  installPaneMocks([makeItem({ id: 'row', threadId: 'shown' })]);
+  await pane.switchThread(makeThread({ id: 'shown' }));
+  const read = vi.fn(async () => makeItem({ id: 'hit', threadId: 'searched' }));
+  setBindingMock('GetThreadItem', read);
+  const toastCount = getToasts().length;
+  await navigateToThreadItem(pane, 'searched', 'hit');
+  expect(pane.scrollToItemRequest).toBeNull();
+  expect(read).not.toHaveBeenCalled();
+  expect(getToasts()).toHaveLength(toastCount);
   pane.clear();
 });
 
@@ -54,12 +68,12 @@ it.each(['resolve', 'reject'] as const)('keeps the newer search selection when a
   let reject!: (error: Error) => void;
   setBindingMock('GetThreadItem', () => new Promise((done, fail) => { resolve = done; reject = fail; }));
   const toastCount = getToasts().length;
-  const first = navigateToThreadItem(pane, 'older');
-  await navigateToThreadItem(pane, 'newer');
+  const first = navigateToThreadItem(pane, 't', 'older');
+  await navigateToThreadItem(pane, 't', 'newer');
   if (outcome === 'resolve') resolve(makeItem({ id: 'older', threadId: 't' }));
   else reject(new Error('superseded lookup failed'));
   await first;
-  expect(pane.scrollToItemRequest.itemId).toBe('newer');
+  expect(pane.scrollToItemRequest?.itemId).toBe('newer');
   expect(getToasts()).toHaveLength(toastCount);
   pane.clear();
 });

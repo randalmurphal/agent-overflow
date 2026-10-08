@@ -390,9 +390,15 @@ export function withViewportBottomHeld(
   hold.call(controller, change, opts);
 }
 
+/**
+ * A pending explicit navigation to one row, taken once by the surface that
+ * performs it. `switchGeneration` binds it to the content it was made for:
+ * a switch, clear or forced reload makes it stale, and taking a stale
+ * request drops it.
+ */
 export interface ScrollToItemRequest {
   itemId: string;
-  nonce: number;
+  switchGeneration: number;
 }
 
 export function loadOlderResult(

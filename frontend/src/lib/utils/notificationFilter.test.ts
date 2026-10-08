@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterRedundantNotifications } from './notificationFilter';
+import { filterRedundantNotifications, notificationCoverIds } from './notificationFilter';
 import type { Item } from '../types/models';
 
 const BELL = 'Background command "sleep 1" completed (exit code 0)';
@@ -306,4 +306,41 @@ it('does not hide a notification behind a completion retained only as context', 
   const items = [completion, bell];
   expect(filterRedundantNotifications(items, item => item.id === 'bell')).toBe(items);
   expect(filterRedundantNotifications(items, () => true)).toEqual([completion]);
+});
+
+describe('notificationCoverIds', () => {
+  it('names the rows that hide a bell, completion siblings first', () => {
+    const items = [
+      mkItem({ id: 'launch', kind: 'tool_call', status: 'completed', meta: withTaskId('T1') }),
+      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T1') }),
+      mkItem({ id: 'completion', itemIndex: 2, kind: 'tool_completion', meta: withTaskId('T1') }),
+      mkItem({ id: 'other', itemIndex: 3, kind: 'tool_completion', meta: withTaskId('T2') }),
+    ];
+    expect(notificationCoverIds(items, 'notif')).toEqual(['completion', 'launch']);
+  });
+
+  it('names exactly the rows the filter hides a bell behind', () => {
+    const items = [
+      mkItem({ id: 'running', kind: 'tool_call', status: 'running', meta: withTaskId('T1') }),
+      mkItem({ id: 'agent', itemIndex: 1, kind: 'tool_completion', toolName: 'Agent', meta: withTaskId('T1') }),
+      mkItem({ id: 'notif', itemIndex: 2, kind: 'notification', summary: BELL, meta: withTaskId('T1') }),
+    ];
+    // Neither a running call nor an agent's row hides a bell, so neither covers it.
+    expect(ids(filterRedundantNotifications(items))).toContain('notif');
+    expect(notificationCoverIds(items, 'notif')).toEqual([]);
+  });
+
+  it('names nothing for a row the filter never hides', () => {
+    const items = [
+      mkItem({ id: 'completion', kind: 'tool_completion', meta: withTaskId('T1') }),
+      mkItem({ id: 'watch', itemIndex: 1, kind: 'notification', summary: BELL, meta: withWatchTask('T1') }),
+      mkItem({ id: 'agent-bell', itemIndex: 2, kind: 'notification', toolName: 'Agent', meta: withTaskId('T1') }),
+      mkItem({ id: 'untagged', itemIndex: 3, kind: 'notification', summary: BELL }),
+    ];
+    expect(notificationCoverIds(items, 'watch')).toEqual([]);
+    expect(notificationCoverIds(items, 'agent-bell')).toEqual([]);
+    expect(notificationCoverIds(items, 'untagged')).toEqual([]);
+    expect(notificationCoverIds(items, 'completion')).toEqual([]);
+    expect(notificationCoverIds(items, 'absent')).toEqual([]);
+  });
 });

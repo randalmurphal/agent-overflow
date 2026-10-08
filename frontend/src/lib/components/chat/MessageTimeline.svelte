@@ -41,7 +41,7 @@
   import TimelineNodeView from './TimelineNodeView.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
-  import { resolveVisibleTimelineNodeIndex } from './timelineScroll';
+  import { resolveVisibleTimelineNode } from './timelineScroll';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
   import { createTimelineRestore } from './timelineRestore.svelte';
   import { createTimelineSizePriors } from './timelineSizePriors.svelte';
@@ -411,8 +411,8 @@
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => revealedNodes,
     getRestoredThreadId: () => restore.restoredThreadId,
-    nextRestoreToken: () => restore.nextRestoreToken(),
-    isRestoreTokenCurrent: (token) => restore.isRestoreTokenCurrent(token),
+    beginNavigation: () => restore.beginNavigation(),
+    claimNavigation: (token) => restore.claimNavigation(token),
     saveScrollSnapshot: () => restore.saveScrollSnapshot(),
   });
 
@@ -424,8 +424,8 @@
     getRevealedNodes: () => revealedNodes,
     findTimelineNodeIndex,
     saveScrollSnapshot: () => restore.saveScrollSnapshot(),
-    nextRestoreToken: () => restore.nextRestoreToken(),
-    isRestoreTokenCurrent: (token) => restore.isRestoreTokenCurrent(token),
+    beginHold: () => restore.beginHold(),
+    isHoldCurrent: (token) => restore.isHoldCurrent(token),
   });
 
   const restore = createTimelineRestore({
@@ -436,7 +436,7 @@
     getRevealedNodes: () => revealedNodes,
     getGroupedNodes: () => rows.groupedNodes,
     windowVerified: () => !pane.historyWindowPending,
-    findTimelineNodeIndex,
+    resolveTimelineNode: (itemId, nodes) => resolveVisibleTimelineNode(nodes, pane.items, itemId),
     // The rate-bounded variant: this reaches the snapshot path, which
     // fires per scroll frame. The settle edge captures exactly; the final
     // edges (unmount here, switch-away through the controller adapter)
@@ -615,6 +615,7 @@
     // window's geometry cannot express direction (timelinePaging.ts).
     const onUserGesture = (): void => {
       paging.armGatesOnUserGesture();
+      restore.noteReaderGesture();
     };
     const onWheel = (event: WheelEvent): void => {
       onUserGesture();
@@ -772,7 +773,7 @@
   // `groupedNodes` into every call site.
 
   function findTimelineNodeIndex(itemId: string): number {
-    return resolveVisibleTimelineNodeIndex(revealedNodes, pane.items, itemId);
+    return resolveVisibleTimelineNode(revealedNodes, pane.items, itemId)?.index ?? -1;
   }
 
   // Quiet-work cadence: structural timeline changes (revision / reveal /
@@ -877,13 +878,13 @@
     restore.maybeRestoreAfterFlush();
   });
 
-  let lastHandledScrollNonce = 0;
+  // Take a pane's scroll-to-item request once the pane has installed its
+  // window: a switch still loading can replace the window the jump lands
+  // in. Taken once, so a remount cannot replay it.
   $effect(() => {
-    const req = pane.scrollToItemRequest;
-    if (req.nonce === 0) return;
-    if (req.nonce === lastHandledScrollNonce) return;
-    lastHandledScrollNonce = req.nonce;
-    void restore.scrollToItem(req.itemId);
+    if (!pane.scrollToItemRequest || pane.loading) return;
+    const itemId = untrack(() => pane.takeScrollToItemRequest());
+    if (itemId) void restore.scrollToItem(itemId);
   });
 
   onDestroy(() => {

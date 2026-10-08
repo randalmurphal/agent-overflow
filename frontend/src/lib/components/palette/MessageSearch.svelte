@@ -150,13 +150,13 @@
     });
     onClose();
     const targetPane = await openThreadFromNavigation(thread, pane);
-    // Scroll the timeline to the hit — pane.requestScrollToItem publishes
-    // a nonce the live MessageTimeline observes and handles by loading the
-    // item into the window and jumping via the virtualizer's scrollToIndex
-    // (an escaped, controller-routed write). Title-match hits have no
-    // itemId; those stop after the thread switch without further navigation.
+    // Scroll the timeline to the hit: the pane holds the request until its
+    // timeline can take it, then loads the item into the window and jumps
+    // through the virtualizer's scrollToIndex (an escaped, controller-routed
+    // write). Title-match hits have no itemId; those stop after the thread
+    // switch without further navigation.
     if (hit.matchType === 'item' && hit.itemId) {
-      await navigateToThreadItem(targetPane, hit.itemId);
+      await navigateToThreadItem(targetPane, hit.threadId, hit.itemId);
     }
   }
 

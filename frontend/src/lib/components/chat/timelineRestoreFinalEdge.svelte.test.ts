@@ -40,7 +40,7 @@ function makeHarness(threadId: string) {
     getRevealedNodes: () => [],
     getGroupedNodes: () => [],
     windowVerified: () => true,
-    findTimelineNodeIndex: () => -1,
+    resolveTimelineNode: () => null,
     persistSizePriors,
     persistSizePriorsExact,
     armWarmupWithReset: () => {},

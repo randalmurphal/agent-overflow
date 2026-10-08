@@ -107,8 +107,10 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     getRevealedNodes: () => nodes,
     getGroupedNodes: () => nodes,
     windowVerified: () => windowVerified,
-    findTimelineNodeIndex: (itemId) =>
-      nodes.findIndex((node) => (node as { item?: { id?: string } }).item?.id === itemId),
+    resolveTimelineNode: (itemId, list) => {
+      const index = list.findIndex((node) => (node as { item?: { id?: string } }).item?.id === itemId);
+      return index < 0 ? null : { index, itemId };
+    },
     persistSizePriors: () => {},
     persistSizePriorsExact: () => {},
     armWarmupWithReset,

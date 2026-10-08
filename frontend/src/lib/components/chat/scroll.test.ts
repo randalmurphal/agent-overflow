@@ -816,11 +816,9 @@ describe('scroll integration — scroll to item', () => {
   });
 
   it('a jump into a collapsed activity run expands it and lands (the hold-free reveal path)', async () => {
-    // `expandForReveal` must stay hold-free: `scrollToItem` guards its
-    // post-reveal resume on the restore token, and a viewport hold issues one
-    // (`nextRestoreToken` via `preserveViewportBottom`) — routed through
-    // `setCollapsed`, this jump would abort at its own guard without ever
-    // scrolling. See `ThreadActivityRuns.expandForReveal`.
+    // The jump expands through `expandForReveal`, which takes no viewport
+    // hold: a hold's bottom restore would write a position the jump replaces.
+    // See `ThreadActivityRuns.expandForReveal`.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'prose-before',
@@ -882,6 +880,138 @@ describe('scroll integration — scroll to item', () => {
     });
   });
 
+});
+
+describe('scroll integration — scroll-to-item requests', () => {
+  function runItems(extra: Parameters<typeof makeItem>[0][] = []) {
+    return [
+      makeItem({
+        id: 'prose-before', turnIndex: 0, itemIndex: 0, kind: 'assistant_text', role: 'assistant',
+        summary: 'before the run',
+      }),
+      ...[0, 1, 2].map((i) =>
+        makeItem({
+          id: `run-tool-${i}`, turnIndex: 1, itemIndex: i, kind: 'tool_call', role: 'assistant',
+          status: 'completed', toolName: 'Bash', summary: `Bash: step ${i}`,
+        }),
+      ),
+      ...extra.map((overrides) => makeItem(overrides)),
+      makeItem({
+        id: 'prose-after', turnIndex: 3, itemIndex: 0, kind: 'assistant_text', role: 'assistant',
+        summary: 'after the run',
+      }),
+    ];
+  }
+
+  it('a remounted timeline does not replay a request the first one ran', async () => {
+    const pane = await buildPane(undefined, [makeItem({ id: 'visible', turnIndex: 5, summary: 'visible' })]);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
+    const first = render(MessageTimeline, { props: { pane } });
+    pane.requestScrollToItem('visible');
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledTimes(1));
+    first.unmount();
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    expect(loadUntilItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds a request while the pane loads, then runs it', async () => {
+    const thread = makeThread({ id: 'reloading' });
+    const pane = await buildPane(thread, [makeItem({ id: 'visible', threadId: 'reloading', turnIndex: 5 })]);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    let finishSwitch!: () => void;
+    const switched = new Promise<void>((resolve) => { finishSwitch = resolve; });
+    setBindingMock('SwitchThread', async () => { await switched; return thread; });
+    const reload = pane.switchThread(thread);
+    await waitFor(() => expect(pane.loading).toBe(true));
+    pane.requestScrollToItem('visible');
+    await tick();
+    await tick();
+    expect(loadUntilItem).not.toHaveBeenCalled();
+    finishSwitch();
+    await reload;
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith('visible'));
+  });
+
+  it('a viewport hold during the lookup does not cancel the jump', async () => {
+    const pane = await buildPane(undefined, runItems());
+    let finishLookup!: (result: 'loaded') => void;
+    vi.spyOn(pane, 'loadUntilItem').mockImplementation(
+      () => new Promise((resolve) => { finishLookup = resolve; }),
+    );
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const runRow = container.querySelector<HTMLElement>('[data-testid="activity-run"]');
+    expect(runRow, 'the tool rows must group into a run').not.toBeNull();
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
+    pane.requestScrollToItem('prose-after');
+    await waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    // A reader-asked collapse holds the viewport bottom while the jump loads.
+    pane.activityRuns.setCollapsed(runRow!.dataset.runId!, true);
+    await tick();
+    finishLookup('loaded');
+    await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+  });
+
+  it('lands a hidden bell on the completion that hides it', async () => {
+    const { getToasts } = await import('../../stores/toast.svelte');
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'prose', turnIndex: 0, kind: 'assistant_text', role: 'assistant', summary: 'start' }),
+      makeItem({
+        id: 'bash', turnIndex: 1, kind: 'tool_call', toolName: 'Bash', status: 'completed',
+        summary: 'Bash: sleep 1', meta: JSON.stringify({ task_id: 'T1' }),
+      }),
+      makeItem({
+        id: 'bell', turnIndex: 2, kind: 'notification', role: 'system',
+        summary: 'Background command "sleep 1" completed (exit code 0)', meta: JSON.stringify({ task_id: 'T1' }),
+      }),
+      makeItem({
+        id: 'done', turnIndex: 3, kind: 'tool_completion', toolName: 'Bash', status: 'completed',
+        summary: 'done', meta: JSON.stringify({ task_id: 'T1' }),
+      }),
+      makeItem({ id: 'tail', turnIndex: 4, kind: 'assistant_text', role: 'assistant', summary: 'end' }),
+    ]);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
+    const toasts = getToasts().length;
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    expect(container.querySelector('[data-item-id="bell"]'), 'the filter hides the bell').toBeNull();
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
+    pane.requestScrollToItem('bell');
+    await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+    expect(getToasts().slice(toasts)).toEqual([]);
+  });
+
+  it('lands a hidden bell whose covering completion sits in a collapsed run', async () => {
+    const pane = await buildPane(undefined, runItems([
+      {
+        id: 'bell', turnIndex: 2, itemIndex: 0, kind: 'notification', role: 'system',
+        summary: 'Background command completed (exit code 0)', meta: JSON.stringify({ task_id: 'T1' }),
+      },
+    ]).map((item) => (item.id === 'run-tool-1' ? { ...item, meta: JSON.stringify({ task_id: 'T1' }) } : item)));
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const runRow = container.querySelector<HTMLElement>('[data-testid="activity-run"]');
+    expect(runRow, 'the tool rows must group into a run').not.toBeNull();
+    pane.activityRuns.setCollapsed(runRow!.dataset.runId!, true);
+    await tick();
+    expect(container.querySelector('[data-item-id="run-tool-1"]')).toBeNull();
+    expect(container.querySelector('[data-item-id="bell"]'), 'the filter hides the bell').toBeNull();
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
+    pane.requestScrollToItem('bell');
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-item-id="run-tool-1"]'),
+        'the jump must expand the run at the covering row',
+      ).not.toBeNull();
+      expect(escaped, 'the jump must land').toHaveBeenCalled();
+    });
+  });
 });
 
 describe('scroll integration — composer height + layout invariance', () => {

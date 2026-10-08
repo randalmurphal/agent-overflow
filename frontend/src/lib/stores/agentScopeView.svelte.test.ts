@@ -127,8 +127,9 @@ describe('independent agent timeline', () => {
     expect(full.pane.activityRuns).not.toBe(tray.pane.activityRuns);
     expect(full.pane.activityRuns).not.toBe(pane.activityRuns);
     full.pane.requestScrollToItem('think');
-    expect(tray.pane.scrollToItemRequest.itemId).toBe('');
-    expect(pane.scrollToItemRequest.itemId).toBe('');
+    expect(tray.pane.scrollToItemRequest).toBeNull();
+    expect(pane.scrollToItemRequest).toBeNull();
+    expect(full.pane.takeScrollToItemRequest()).toBe('think');
     full.pane.setUserMessageExpanded('prose', true);
     expect(pane.isUserMessageExpanded('prose')).toBe(false);
     full.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set(), groupKeys: new Set() });
@@ -627,20 +628,22 @@ describe('independent agent timeline', () => {
     expect(view.items.map(item => item.id)).toEqual(['current-tail']);
   });
 
-  it('does not undo a jump when recovery started during the target lookup', async () => {
+  it('defers recovery that starts during a jump lookup until the jump lands', async () => {
     const pane = await setup(); const view = await open(pane);
     let target!: (value: Item) => void;
     setBindingMock('GetThreadItem', () => new Promise<Item>(resolve => { target = resolve; }));
     const jump = view.pane.loadUntilItem('target');
-    let snapshot!: (value: unknown) => void;
-    setBindingMock('SyncThreadWindow', () => new Promise(resolve => { snapshot = resolve; }));
-    const refresh = view.pane.refreshFromBackend();
-    await vi.waitFor(() => expect(snapshot).toBeTypeOf('function'));
+    await vi.waitFor(() => expect(target).toBeTypeOf('function'));
+    const sync = vi.fn(async () => ({ status: 'stale', page: page([row('target', 50)], true, true) }));
+    setBindingMock('SyncThreadWindow', sync);
+    // The lookup holds the window, so this read stands down and reschedules.
+    await view.pane.refreshFromBackend();
+    expect(sync).not.toHaveBeenCalled();
     setBindingMock('ListThreadSliceAround', async () => page([row('target', 50)], true, true));
     target(row('target', 50));
     expect(await jump).toBe('loaded');
-    snapshot({ status: 'stale', page: page([row('child', 1)]) });
-    await refresh;
+    await vi.waitFor(() => expect(sync).toHaveBeenCalled());
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
     expect(view.items.map(item => item.id)).toEqual(['target']);
     expect(view.pane.hasMoreNewer).toBe(true);
   });

@@ -10,12 +10,15 @@ import { errString } from '../utils/errors';
 
 const requests = new WeakMap<ThreadPane, symbol>();
 
-/** Search navigation resolves the transcript before moving either viewport. */
-export async function navigateToThreadItem(pane: ThreadPane, itemId: string): Promise<void> {
+/**
+ * Search navigation resolves the transcript before moving either viewport.
+ * `threadId` is the thread the item belongs to: a pane showing another
+ * thread by now (the reader switched while it opened) is left alone.
+ */
+export async function navigateToThreadItem(pane: ThreadPane, threadId: string, itemId: string): Promise<void> {
   const request = Symbol();
   requests.set(pane, request);
-  const threadId = pane.threadId;
-  if (!threadId) { requests.delete(pane); return; }
+  if (!threadId || pane.threadId !== threadId) { requests.delete(pane); return; }
   const generation = pane.switchGeneration;
   const ownership = threadBackend(threadId);
   const current = () => requests.get(pane) === request

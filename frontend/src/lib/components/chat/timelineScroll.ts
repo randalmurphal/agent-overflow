@@ -1,5 +1,6 @@
 import { compareCursors, type TimelineCursorLike } from '../../stores/threadItems';
 import type { Item } from '../../types/models';
+import { notificationCoverIds } from '../../utils/notificationFilter';
 import {
   findTimelineNodeIndex,
   timelineNodeItemId,
@@ -104,15 +105,48 @@ export interface AutoLoadZoneThresholds {
  */
 const AUTO_LOAD_COOLDOWN_MS = 350;
 
-export function resolveVisibleTimelineNodeIndex(
-  nodes: TimelineNode[],
+/**
+ * Where a row lands in a node list. `itemId` is the row the node holds:
+ * the target itself, the agent launch whose card folds it, or the
+ * lifecycle row whose card replaces its hidden bell. A jump points an
+ * activity run at this id, never at a row the run does not hold.
+ */
+export interface ResolvedTimelineNode {
+  index: number;
+  itemId: string;
+}
+
+/**
+ * Resolve `itemId` to the node that shows it: the node holding it, else
+ * the launch that folds it (`visibleTimelineItemIdForItem`), else, for a
+ * bell the notification filter hid, the first of its covering rows that
+ * resolves (`notificationCoverIds`). Null when no node shows it.
+ */
+export function resolveVisibleTimelineNode(
+  nodes: readonly TimelineNode[],
   items: readonly Item[],
   itemId: string,
-): number {
+): ResolvedTimelineNode | null {
+  const own = resolveThroughAncestry(nodes, items, itemId);
+  if (own) return own;
+  for (const cover of notificationCoverIds(items, itemId)) {
+    const covered = resolveThroughAncestry(nodes, items, cover);
+    if (covered) return covered;
+  }
+  return null;
+}
+
+function resolveThroughAncestry(
+  nodes: readonly TimelineNode[],
+  items: readonly Item[],
+  itemId: string,
+): ResolvedTimelineNode | null {
   const direct = findTimelineNodeIndex(nodes, itemId);
-  if (direct >= 0) return direct;
+  if (direct >= 0) return { index: direct, itemId };
   const visibleItemId = visibleTimelineItemIdForItem(items, itemId);
-  return visibleItemId === itemId ? -1 : findTimelineNodeIndex(nodes, visibleItemId);
+  if (visibleItemId === itemId) return null;
+  const index = findTimelineNodeIndex(nodes, visibleItemId);
+  return index >= 0 ? { index, itemId: visibleItemId } : null;
 }
 
 export function captureTimelineAnchor(

@@ -53,8 +53,9 @@ export interface TimelinePagingOptions {
   getScrollEl(): HTMLDivElement | undefined;
   getRevealedNodes(): TimelineNode[];
   getRestoredThreadId(): string | null;
-  nextRestoreToken(): number;
-  isRestoreTokenCurrent(token: number): boolean;
+  /** The restore session's navigation lifetime (`TimelineRestore`). */
+  beginNavigation(): number;
+  claimNavigation(token: number): boolean;
   saveScrollSnapshot(): void;
 }
 
@@ -258,19 +259,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   async function handleLoadNewer(): Promise<void> {
     if (!options.getListRef()) return;
     await withGuardedDisarm(autoLoadNewerGate, async () => {
-      const myToken = options.nextRestoreToken();
+      const myToken = options.beginNavigation();
       const pane = options.getPane();
       const result = await pane.loadNewer();
       await tick();
       const currentListRef = options.getListRef();
-      if (
-        !options.isRestoreTokenCurrent(myToken)
-        || !currentListRef
-        || result.status !== 'loaded'
-      )
-        return;
+      if (!currentListRef || result.status !== 'loaded') return;
       const lastIndex = options.getRevealedNodes().length - 1;
-      if (lastIndex < 0) return;
+      if (lastIndex < 0 || !options.claimNavigation(myToken)) return;
       // Explicit navigation into the middle of history (more-newer may
       // remain below): escape bottom follow, then jump.
       options.stick.markEscaped();
@@ -298,11 +294,11 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   }
 
   async function jumpToLatest(): Promise<void> {
-    const myToken = options.nextRestoreToken();
+    const myToken = options.beginNavigation();
     const pane = options.getPane();
     const loaded = pane.hasMoreNewer ? await pane.loadRecentTail() : true;
     await tick();
-    if (!options.isRestoreTokenCurrent(myToken) || !loaded) return;
+    if (!loaded || !options.claimNavigation(myToken)) return;
     options.stick.forceStick({ reason: 'user' });
     options.saveScrollSnapshot();
   }

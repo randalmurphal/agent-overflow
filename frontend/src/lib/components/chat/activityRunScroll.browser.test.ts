@@ -426,6 +426,63 @@ describe('activity run — jump lands on the target', () => {
   });
 });
 
+describe('activity run — a jump keeps its target through a remount', () => {
+  // A historical run whose rows all fit its window, so the jump neither moves
+  // nor pins the window, and tall prose below it, so resting at the bottom
+  // evicts it. The remount is the virtualizer's to make at any time; an
+  // evicted row's teardown reads a detached clip, so the jump's position has
+  // to be archived when it is written.
+  const THREAD_ID = 'thread-run-jump-remount';
+  const RUN_LEN = 20;
+  const TARGET = 'a1';
+
+  function items(): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    for (let i = 0; i < RUN_LEN; i += 1) built.push(tool(`a${i}`, i + 1, THREAD_ID));
+    for (let i = 0; i < 20; i += 1) {
+      built.push(makeItem({
+        id: `r${i}`,
+        threadId: THREAD_ID,
+        itemIndex: RUN_LEN + 1 + i,
+        summary: `Reply ${i}, paragraph one: enough prose that the row takes real height.\n\n`
+          + 'Paragraph two keeps going so the scrollback exceeds the windowing buffers.\n\n'
+          + 'Paragraph three exists purely for altitude.',
+        createdAt: RUN_LEN + 1 + i,
+        updatedAt: RUN_LEN + 1 + i,
+      }));
+    }
+    return built;
+  }
+
+  const clipOf = (scrollEl: HTMLElement): HTMLElement | null =>
+    scrollEl.querySelector('[data-testid="activity-run-clip"]');
+
+  it('restores the jump\'s position, not the run\'s tail', async () => {
+    const { scrollEl, pane } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    await waitFor(() => clipOf(scrollEl) === null, 'run unmounted at the bottom');
+
+    pane.requestScrollToItem(TARGET);
+    await waitFor(() => {
+      const clip = clipOf(scrollEl);
+      return clip !== null && clip.querySelector(`[data-item-id="${TARGET}"]`) !== null
+        && isFullyVisible(clip, TARGET);
+    }, 'jump target visible inside the run');
+    const clip = clipOf(scrollEl)!;
+    // Vacuity: the run's tail does not show the target, so a remount that
+    // follows the tail loses it.
+    expect(clip.scrollHeight - clip.clientHeight - clip.scrollTop).toBeGreaterThan(100);
+
+    await userScrollTo(scrollEl, scrollEl.scrollHeight);
+    await waitFor(() => clipOf(scrollEl) === null, 'run evicted at the bottom');
+    await userScrollTo(scrollEl, 0);
+    await waitFor(() => clipOf(scrollEl) !== null, 'run remounts');
+    const remounted = clipOf(scrollEl)!;
+    expect(remounted).not.toBe(clip);
+    for (let i = 0; i < 10; i += 1) await raf();
+    expect(isFullyVisible(remounted, TARGET)).toBe(true);
+  });
+});
+
 describe('activity run — a toggle opens upward', () => {
   // A run with prose BELOW it, so there is content whose position a collapse
   // or expand could disturb. The whole question this suite asks is which side

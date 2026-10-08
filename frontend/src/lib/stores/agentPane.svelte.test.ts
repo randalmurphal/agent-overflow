@@ -163,6 +163,41 @@ describe('agent pane scope', () => {
     expect(agentScopeForPane('main', 'thread-1')).toBeNull();
   });
 
+  it('holds an item request for the scope it opened until that scope takes it', () => {
+    const state = agentStateForPane('main', 'thread-1');
+    state.openAtItem([{ itemId: 'launch-1', label: 'review' }, { itemId: 'launch-2', label: 'child' }], 'hit');
+
+    expect(state.scopeItemId).toBe('launch-2');
+    expect(labels('main')).toEqual(['main', 'review', 'child']);
+    expect(state.takeItemRequest('launch-1'), 'another scope cannot take it').toBeNull();
+    expect(state.itemRequest).toEqual({ scopeItemId: 'launch-2', itemId: 'hit' });
+    expect(state.takeItemRequest('launch-2')).toBe('hit');
+    expect(state.takeItemRequest('launch-2'), 'taken once').toBeNull();
+    expect(state.itemRequest).toBeNull();
+  });
+
+  it.each([
+    ['setScope', (state: ReturnType<typeof agentStateForPane>) => state.setScope('launch-9', 'other')],
+    ['pushScope', (state: ReturnType<typeof agentStateForPane>) => state.pushScope('launch-9', 'other')],
+    ['popTo', (state: ReturnType<typeof agentStateForPane>) => state.popTo(1)],
+    ['reset', (state: ReturnType<typeof agentStateForPane>) => state.reset()],
+  ])('drops a pending item request when %s moves the scope', (_name, move) => {
+    const state = agentStateForPane('main', 'thread-1');
+    state.openAtItem([{ itemId: 'launch-1', label: 'review' }, { itemId: 'launch-2', label: 'child' }], 'hit');
+    move(state);
+    expect(state.itemRequest).toBeNull();
+    expect(state.takeItemRequest('launch-2')).toBeNull();
+  });
+
+  it('refuses an item request without an item or a nonempty trail', () => {
+    const state = agentStateForPane('main', 'thread-1');
+    expect(() => state.openAtItem([{ itemId: 'launch-1', label: 'review' }], '')).toThrow();
+    expect(() => state.openAtItem([], 'hit')).toThrow();
+    expect(() => state.openAtItem([{ itemId: '', label: 'main' }], 'hit')).toThrow();
+    expect(state.itemRequest).toBeNull();
+    expect(state.scopeItemId).toBe('');
+  });
+
   it('seeds a persisted trail back onto a pane', () => {
     const state = seedAgentStateForPane('main', 'thread-1', {
       scopeItemId: 'launch-3',

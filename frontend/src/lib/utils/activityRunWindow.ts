@@ -160,12 +160,10 @@ export function revealActivityRunItem(
 ): boolean {
   const window = activityRunFocusWindow(run, itemId);
   if (!window) return false;
-  // `expandForReveal`, not `setCollapsed`: the jump that called this holds a
-  // restore token and aborts if the token moves before it resumes, and
-  // `setCollapsed`'s viewport-bottom hold issues one — going through it would
-  // cancel the jump at its own guard (see the verb's doc in
-  // threadActivityRuns.svelte.ts). The bottom restore fighting the jump's
-  // destination is the second reason.
+  // `expandForReveal`, not `setCollapsed`: the jump that called this owns
+  // the viewport, and `setCollapsed`'s viewport-bottom hold would restore a
+  // position the jump replaces (see the verb's doc in
+  // threadActivityRuns.svelte.ts).
   registry.expandForReveal(run.runId);
   // The anchor, not a whole window: a jump moves the window and never resizes
   // it, and asking for the size it already has would record that size as an

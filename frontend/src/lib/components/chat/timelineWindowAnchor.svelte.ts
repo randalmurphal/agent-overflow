@@ -46,8 +46,9 @@ export interface TimelineWindowAnchorOptions {
   getRevealedNodes(): TimelineNode[];
   findTimelineNodeIndex(itemId: string): number;
   saveScrollSnapshot(): void;
-  nextRestoreToken(): number;
-  isRestoreTokenCurrent(token: number): boolean;
+  /** The restore session's hold lifetime (`TimelineRestore`). */
+  beginHold(): number;
+  isHoldCurrent(token: number): boolean;
 }
 
 export interface TimelineWindowAnchor {
@@ -174,7 +175,7 @@ export function createTimelineWindowAnchor(
   ): Promise<void> {
     try {
       await tick();
-      if (!options.isRestoreTokenCurrent(token)) return;
+      if (!options.isHoldCurrent(token)) return;
       if (options.getPane().switchGeneration !== intent.switchGeneration) return;
 
       if (intent.holdingBottom) {
@@ -229,7 +230,7 @@ export function createTimelineWindowAnchor(
     // across the whole delta — which for a collapse-all is most of the
     // conversation, and the reader watches their own click scroll past them.
     const release = options.stick.pauseAutoScroll();
-    const token = options.nextRestoreToken();
+    const token = options.beginHold();
     try {
       change();
     } catch (err) {

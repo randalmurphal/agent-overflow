@@ -10,6 +10,7 @@
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
   import {
     codexSubagentLaunchInfo,
@@ -54,13 +55,22 @@
     untrack(() => current.start());
     return () => { current.dispose(); if (view === current) view = null; };
   });
-  let lastItemRequest = 0;
+  // A jump into this pane runs on the view of the scope it was made for:
+  // `takeItemRequest` refuses any other scope, so a view the scope change
+  // has not replaced yet cannot take it. A settled view with no rows mounts
+  // no timeline, so the jump ends here.
   $effect(() => {
     const current = view;
-    const request = agent?.itemRequest;
-    if (!current || current.pane.loading || !request?.itemId || request.nonce === lastItemRequest) return;
-    lastItemRequest = request.nonce;
-    untrack(() => current.pane.requestScrollToItem(request.itemId));
+    if (!agent?.itemRequest || !current || current.pane.loading) return;
+    untrack(() => {
+      const itemId = agent.takeItemRequest(current.scopeItemId);
+      if (!itemId || current.error) return;
+      if (current.items.length === 0) {
+        addToast('warning', 'Message is no longer in this thread');
+        return;
+      }
+      current.pane.requestScrollToItem(itemId);
+    });
   });
   let launch = $derived(view?.root);
   let scopedItems = $derived(view?.items ?? []);
@@ -195,9 +205,13 @@
       {/if}
       {#if view && (view.pane.loading || scopedItems.length > 0)}
         <div class="min-h-0 flex-1">
-          {#key scopeItemId}
-            <MessageTimeline pane={view.pane} />
-          {/key}
+          <!-- One timeline per view, keyed on the view rather than the scope:
+               the scope changes before the view effect replaces the view, so
+               a scope key would mount the new timeline on the outgoing view
+               and then switch it to the incoming one. -->
+          {#each [view] as current (current)}
+            <MessageTimeline pane={current.pane} />
+          {/each}
         </div>
       {:else if view && !view.error}
         <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">

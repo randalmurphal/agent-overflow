@@ -45,8 +45,15 @@ export interface ThreadPaneScroll {
   /** MessageTimeline calls this on mount. */
   attach(controller: PaneScrollController): void;
   detach(controller: PaneScrollController): void;
-  readonly scrollToItemRequest: ScrollToItemRequest;
+  /** The pending scroll-to-item request, null when none is pending. */
+  readonly scrollToItemRequest: ScrollToItemRequest | null;
   requestScrollToItem(itemID: string): void;
+  /**
+   * Clear the pending request and return its item id. Null when nothing
+   * is pending or the request is stale (the pane switched, cleared or
+   * reloaded since it was made).
+   */
+  takeScrollToItemRequest(): string | null;
   armStructuralSpring(): boolean;
   armInitialSliceWarmup(): boolean;
   armLiveContentAppendSpring(): void;
@@ -56,20 +63,12 @@ export function createThreadPaneScroll(
   options: ThreadPaneScrollOptions,
 ): ThreadPaneScroll {
   /**
-   * Nonce bumped when the pane wants the active MessageTimeline to scroll
-   * to a specific item. Scroll side effects are DOM operations that
-   * shouldn't live on the store, so the store publishes an intent and
-   * the timeline reads it reactively. Consumers compare the most
-   * recently observed nonce against `scrollToItemRequest.nonce` and
-   * react when it changes. `itemId` is the target id; an empty string
-   * means "no outstanding request". `behavior` and `flash` let the
-   * owner of the actual scroll container decide how visible the jump
-   * should be without exposing DOM methods through the pane.
+   * The scroll-to-item intent. Scroll side effects are DOM operations that
+   * do not live on the store, so the store holds the request and the
+   * timeline that can perform it takes it. Take-once: a remounted or
+   * second consumer cannot replay a request another one already ran.
    */
-  let scrollToItemRequest: ScrollToItemRequest = $state({
-    itemId: '',
-    nonce: 0,
-  });
+  let scrollToItemRequest: ScrollToItemRequest | null = $state.raw(null);
 
   /**
    * Live registration slot for the timeline's sticky-bottom controller.
@@ -260,19 +259,24 @@ export function createThreadPaneScroll(
       return scrollToItemRequest;
     },
     /**
-     * Publish a scroll-to-item intent for the MessageTimeline to pick
-     * up. Consumers call this instead of reaching into the timeline
-     * directly — keeps DOM operations inside the component that owns
-     * the scroll container, and lets the pane mediate window loading
-     * if the target isn't visible yet. The timeline handler is
-     * responsible for awaiting `loadUntilItem` before scrolling.
+     * Publish a scroll-to-item intent for the MessageTimeline to take.
+     * Consumers call this instead of reaching into the timeline directly,
+     * which keeps DOM operations inside the component that owns the scroll
+     * container and lets the pane load the target's window first. A newer
+     * request replaces an untaken one.
      */
     requestScrollToItem(itemID: string): void {
       if (!itemID) return;
       scrollToItemRequest = {
         itemId: itemID,
-        nonce: scrollToItemRequest.nonce + 1,
+        switchGeneration: options.getSwitchGeneration(),
       };
+    },
+    takeScrollToItemRequest(): string | null {
+      const request = scrollToItemRequest;
+      if (!request) return null;
+      scrollToItemRequest = null;
+      return request.switchGeneration === options.getSwitchGeneration() ? request.itemId : null;
     },
     armStructuralSpring,
     armInitialSliceWarmup,

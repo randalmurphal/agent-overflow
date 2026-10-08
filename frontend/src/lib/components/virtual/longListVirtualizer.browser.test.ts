@@ -133,6 +133,18 @@ describe('LongListVirtualizer', () => {
     expect(topRow(scrollEl)).toEqual({ id: 'r5', index: 5, into: 0 });
   });
 
+  it('lands a jump made in the same flush as the rows it targets', async () => {
+    // The inner write runs before the DOM holds the appended rows, so the
+    // browser clamps it to the old end; the next pass writes it again.
+    const { harness, scrollEl } = await mountHarness(makeRows(40));
+    harness.handle()!.scrollToIndex(39);
+    await settle(scrollEl);
+    harness.setRows([...makeRows(40), ...makeRows(30, 100, 100, 'new')]);
+    harness.handle()!.scrollToIndex(55);
+    await settle(scrollEl);
+    expect(topRow(scrollEl)).toEqual({ id: 'new15', index: 15, into: 0 });
+  });
+
   it('keeps the row being read in place when rows change around the held range', async () => {
     const { harness, scrollEl } = await mountHarness(makeRows(1000));
     harness.handle()!.scrollToIndex(500);

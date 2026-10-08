@@ -536,6 +536,11 @@
     } else {
       syncPosition(clip);
     }
+    // Archived as the reader's position is: an authored write's scroll event
+    // is skipped, and the teardown of an evicted row cannot read a detached
+    // clip, so a row remounted before the reader next scrolls would restore
+    // an older position, or follow the tail and lose a jump's target.
+    if (knownMetrics) saveInnerScroll(knownMetrics);
   }
 
   // One handler for everything the READER's position drives. Scroll events

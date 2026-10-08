@@ -19,8 +19,18 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import {
   __resetAgentPaneStateForTest,
+  agentStateForPane,
   openAgentCompanion,
 } from '../../stores/agentPane.svelte';
+import {
+  clearThreadScrollSnapshotsForTest,
+  getThreadScrollSnapshot,
+} from '../../utils/threadScrollSnapshots';
+import {
+  clearUiRenderTrace,
+  getUiRenderTraceRecords,
+  setUiRenderTraceEnabled,
+} from '../../utils/uiRenderTrace';
 import { makePanelContext, type PanelContext } from '../../stores/panelContext.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -701,4 +711,123 @@ describe('<AgentPane>', () => {
     expect(run.getAttribute('data-preserved')).toBe('yes');
   });
 
+  describe('item jumps', () => {
+    function twoAgents(): Item[] {
+      return [
+        launchItem(),
+        ...[1, 2, 3].map((i) =>
+          makeItem({ id: `a-${i}`, turnIndex: 1, itemIndex: i, threadId: THREAD_ID, parentId: 'launch-1', summary: `alpha ${i}` }),
+        ),
+        launchItem({ id: 'launch-2', turnIndex: 2, itemIndex: 0, summary: 'Agent: second' }),
+        ...[1, 2, 3].map((i) =>
+          makeItem({ id: `b-${i}`, turnIndex: 2, itemIndex: i, threadId: THREAD_ID, parentId: 'launch-2', summary: `beta ${i}` }),
+        ),
+      ];
+    }
+
+    function jumps() {
+      return getUiRenderTraceRecords()
+        .filter((record) => record.label === 'timeline.jump')
+        .map((record) => record.data);
+    }
+
+    beforeEach(() => {
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+      clearThreadScrollSnapshotsForTest();
+    });
+
+    afterEach(() => {
+      setUiRenderTraceEnabled(false);
+      clearUiRenderTrace();
+    });
+
+    it('lands a jump that opens the pane on its hit', async () => {
+      const { ctx } = await setup(twoAgents());
+      openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+      agentStateForPane('main', THREAD_ID).openAtItem([{ itemId: 'launch-1', label: 'Explore' }], 'a-2');
+      await renderAgent({ props: { ctx } });
+      await waitFor(() => expect(jumps()).toEqual([
+        expect.objectContaining({ itemId: 'a-2', outcome: 'issued', landedItemId: 'a-2' }),
+      ]));
+      expect(agentStateForPane('main', THREAD_ID).itemRequest).toBeNull();
+      expect(getToasts()).toEqual([]);
+    });
+
+    it('runs a jump into another agent on that agent’s view', async () => {
+      const { ctx } = await setup(twoAgents());
+      openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+      const rendered = await renderAgent({ props: { ctx } });
+      await waitFor(() => expect(rendered.getByTestId('agent-pane-timeline')).toHaveTextContent('alpha 3'));
+      agentStateForPane('main', THREAD_ID).openAtItem([{ itemId: 'launch-2', label: 'Second' }], 'b-2');
+      await waitFor(() => expect(jumps()).toEqual([
+        expect.objectContaining({ itemId: 'b-2', outcome: 'issued', landedItemId: 'b-2' }),
+      ]));
+      expect(rendered.getByTestId('agent-pane-timeline')).toHaveTextContent('beta 2');
+      expect(getToasts()).toEqual([]);
+    });
+
+    it('ends a jump into an agent with no rows with a notice', async () => {
+      const { ctx } = await setup([launchItem()]);
+      openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+      agentStateForPane('main', THREAD_ID).openAtItem([{ itemId: 'launch-1', label: 'Explore' }], 'gone');
+      const rendered = await renderAgent({ props: { ctx } });
+      await waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([
+        ['warning', 'Message is no longer in this thread'],
+      ]));
+      expect(rendered.getByTestId('agent-pane-empty')).toBeTruthy();
+      expect(agentStateForPane('main', THREAD_ID).itemRequest).toBeNull();
+    });
+
+    it('mounts a fresh timeline on the new agent’s view when the scope moves', async () => {
+      const { ctx } = await setup(twoAgents());
+      openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+      const rendered = await renderAgent({ props: { ctx } });
+      const timeline = rendered.getByTestId('agent-pane-timeline');
+      await waitFor(() => expect(timeline).toHaveTextContent('alpha 3'));
+      clearUiRenderTrace();
+      agentStateForPane('main', THREAD_ID).setScope('launch-2', 'Second');
+      await waitFor(() => expect(timeline).toHaveTextContent('beta 3'));
+      // One timeline per view: the outgoing view's timeline unmounts with
+      // it, and no timeline mounts on a view the scope has left or carries
+      // its state from one agent to the next.
+      const edges = getUiRenderTraceRecords()
+        .filter((record) => record.label === 'timeline.restore.effectPre')
+        .map((record) => {
+          const data = record.data as { edgeTransition: string; newThreadId: string | null };
+          return [data.edgeTransition, data.newThreadId];
+        });
+      expect(edges).toEqual([['unseen->thread', `main:${THREAD_ID}~agent:launch-2`]]);
+    });
+
+    it('saves an agent’s position from its own rows when the scope moves away', async () => {
+      const { ctx } = await setup(twoAgents());
+      openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+      const rendered = await renderAgent({ props: { ctx } });
+      const timeline = rendered.getByTestId('agent-pane-timeline');
+      await waitFor(() => expect(timeline).toHaveTextContent('alpha 3'));
+      const scroller = rendered.getByTestId('message-timeline-scroll');
+      let scrollTop = 350;
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 1000 });
+      Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 600 });
+      Object.defineProperty(scroller, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (next: number) => { scrollTop = next; },
+      });
+      await fireEvent.wheel(scroller, { deltaY: -10 });
+      await fireEvent.scroll(scroller);
+      // The save under test is the one the outgoing timeline makes as it
+      // unmounts, not the scroll handler's.
+      clearThreadScrollSnapshotsForTest();
+      agentStateForPane('main', THREAD_ID).setScope('launch-2', 'Second');
+      await waitFor(() => expect(timeline).toHaveTextContent('beta 3'));
+      const saved = getThreadScrollSnapshot(`main:${THREAD_ID}~agent:launch-1`);
+      expect(saved?.kind).toBe('anchor');
+      expect(saved?.kind === 'anchor' && saved.itemId).toMatch(/^(launch-1|a-\d)$/);
+      agentStateForPane('main', THREAD_ID).setScope('launch-1', 'Explore');
+      await waitFor(() => expect(timeline).toHaveTextContent('alpha 3'));
+      expect(timeline).not.toHaveTextContent('beta');
+    });
+  });
 });

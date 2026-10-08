@@ -273,20 +273,16 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * The write runs inside `withViewportBottomHeld` (the reader ASKED for this
    * height change, so the delta opens upward, instantly, over rows they are
    * already reading). Callers therefore must NOT wrap this in a hold of their
-   * own — nesting issues a second restore token for nothing. The one expand
+   * own — nesting issues a second hold token for nothing. The one expand
    * that owns its viewport instead is the jump's, `expandForReveal`.
    */
   setCollapsed(runId: string, collapsed: boolean): void;
   /**
    * Expand for a jump into the run — same write as
-   * `setCollapsed(runId, false)` but with NO viewport hold, and the absence
-   * is load-bearing, not a preference: `scrollToItem`
-   * (`timelineRestore.svelte.ts`) takes a restore token before revealing and
-   * aborts if the token has moved when it resumes, and a hold ISSUES a token
-   * (`nextRestoreToken`, via `preserveViewportBottom`) — so routing this
-   * through `setCollapsed` would cancel every jump into a collapsed run at
-   * its own guard. Even without that, a bottom restore would fight the
-   * viewport the jump is about to claim. Only `revealActivityRunItem`
+   * `setCollapsed(runId, false)` but with NO viewport hold: the jump
+   * (`scrollToItem`, `timelineRestore.svelte.ts`) owns the viewport, and a
+   * hold's bottom restore would write a position the jump replaces one
+   * flush later. Only `revealActivityRunItem`
    * (utils/activityRunWindow.ts) should call this — it is the one door for
    * jumps, and this verb can only expand, so the hold-free path cannot be
    * borrowed for a collapse.
@@ -341,7 +337,7 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * regression: appendAfterQuiet.browser.test.ts). The transaction only
    * opens when the batch actually collapses something: a batch with no
    * releasable id, or one whose releases change no geometry (defaults say
-   * expanded), pauses no spring and burns no restore token.
+   * expanded), pauses no spring and burns no hold token.
    */
   releaseOpenedLive(runIds: readonly string[]): void;
   /**
@@ -1774,8 +1770,8 @@ export function createThreadActivityRuns(
       // callers to) is what keeps "a batch with nothing to do never opens a
       // transaction" a property of the API. The transaction is not free even
       // when its change moves nothing: it pauses the spring for two frames
-      // and burns a restore token — the counter thread-switch restores guard
-      // on — so it must only run when pixels actually move.
+      // and ends any older hold's restore, so it must only run when pixels
+      // actually move.
       const releasable = runIds.filter((runId) => entries.get(runId)?.openedLive);
       if (releasable.length === 0) return;
       // No override check: a hold only exists while nobody has answered —

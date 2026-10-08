@@ -55,6 +55,7 @@ function mountHarness(
     bufferSize: number;
     renderAll: boolean;
     headerSize: number;
+    footerPx: number;
     intrinsicViewportMaxHeight: string;
     estimate: RowEstimate;
     onscroll: (offset: number) => void;
@@ -1203,6 +1204,63 @@ describe('scrollToIndex', () => {
     expect(
       Math.abs(row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
     ).toBeLessThanOrEqual(2);
+  });
+});
+
+function rowCenterInViewport(scrollEl: HTMLElement, id: string): number {
+  const row = rowEl(scrollEl, id);
+  if (!row) return Number.NaN;
+  const rect = row.getBoundingClientRect();
+  return (rect.top + rect.bottom) / 2 - scrollEl.getBoundingClientRect().top;
+}
+
+describe('scrollToIndex against the browser scroll range', () => {
+  it('content after the rows does not read a shrink under the navigation as a takeover', async () => {
+    // Chat renders "Load newer messages" inside the scroller after the rows,
+    // outside the engine's range. When the rows under a landed navigation
+    // shrink, the browser keeps the position as long as that content still
+    // covers it. The next pass must expect what the browser did, or it
+    // cancels the navigation and later growth above the destination carries
+    // the destination out of view.
+    const { harness, scrollEl } = mountHarness({ footerPx: 200, estimate: { at: () => ROW_PX } });
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+
+    handle.scrollToIndex(55, { align: 'center' });
+    await raf();
+    harness.resizeRow('row-58', 0);
+    harness.resizeRow('row-59', 0);
+    await raf();
+    await raf();
+    harness.resizeRow('row-54', ROW_PX + 500);
+    await waitForStableGeometry(scrollEl, 'index scroll settle');
+
+    const row = rowEl(scrollEl, 'row-55')!.getBoundingClientRect();
+    const viewport = scrollEl.getBoundingClientRect();
+    expect(row.top).toBeGreaterThanOrEqual(viewport.top);
+    expect(row.bottom).toBeLessThanOrEqual(viewport.top + VIEWPORT_PX);
+  });
+
+  it('retries a write the browser clamped before the DOM held the new rows', async () => {
+    // A navigation issued in the same flush as the data change writes
+    // before the spacer grows, so the browser clamps it to the old
+    // content's end. Exact estimates: no measurement pass follows, only
+    // the flush of the data change itself.
+    const { harness, scrollEl } = mountHarness({ estimate: { at: () => ROW_PX } });
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom');
+    const handle = harness.handle()!;
+
+    const appended = Array.from({ length: 20 }, (_, index) => ({
+      id: `new-${index}`,
+      heightPx: ROW_PX,
+      label: `New ${index}`,
+    }));
+    harness.setRows([...harness.getRows(), ...appended]);
+    handle.scrollToIndex(ROW_COUNT + 10, { align: 'center' });
+    await waitForStableGeometry(scrollEl, 'index scroll settle');
+
+    expect(Math.abs(rowCenterInViewport(scrollEl, 'new-10') - VIEWPORT_PX / 2)).toBeLessThanOrEqual(2);
   });
 });
 

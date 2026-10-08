@@ -1,12 +1,12 @@
 // Per-thread scroll-snapshot save/restore session for MessageTimeline.
 // Owns the restore-session bookkeeping (`restoredThreadId`, the
-// switch-edge state machine's `RestoreEdge`, `restoreToken`) that both
-// the switch-edge `$effect.pre` and the restore `$effect` in
-// MessageTimeline.svelte read and write, plus the snapshot
+// switch-edge state machine's `RestoreEdge`, the navigation and hold
+// tokens) that both the switch-edge `$effect.pre` and the restore
+// `$effect` in MessageTimeline.svelte read and write, plus the snapshot
 // save/restore/scroll-to-item flows that consume it. Modules
 // 2-4 (timelineSizePriors, timelinePaging, timelineWindowAnchor) read
-// the session through `restoredThreadId`/`nextRestoreToken`/
-// `isRestoreTokenCurrent` rather than owning their own copy.
+// the session through `restoredThreadId` and the token methods rather
+// than owning their own copy.
 //
 // `pane` can be swapped at runtime (see options.getPane), so nothing
 // here may capture a `ThreadPane` reference at construction time.
@@ -38,8 +38,10 @@ import {
   type ScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
 import { revealActivityRunItem } from '../../utils/activityRunWindow';
-import { captureTimelineAnchor } from './timelineScroll';
+import { captureTimelineAnchor, type ResolvedTimelineNode } from './timelineScroll';
 import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
+import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+import type { LoadUntilItemResult } from '../../stores/threadPaneShared';
 
 export interface TimelineRestoreOptions {
   getPane(): PaneSession & TimelineSource & TimelineWindow & ScrollHost;
@@ -49,7 +51,8 @@ export interface TimelineRestoreOptions {
   getRevealedNodes(): TimelineNode[];
   getGroupedNodes(): TimelineNode[];
   windowVerified(): boolean;
-  findTimelineNodeIndex(itemId: string): number;
+  /** The node of `nodes` that shows `itemId` (`resolveVisibleTimelineNode`). */
+  resolveTimelineNode(itemId: string, nodes: readonly TimelineNode[]): ResolvedTimelineNode | null;
   /**
    * Wired to module 2's `maybePersistSizePriorsInterim` — the RATE-BOUND
    * capture. This one rides the scroll cadence, which fires per frame.
@@ -98,11 +101,28 @@ function isSameRestoreEdge(a: RestoreEdge, b: RestoreEdge): boolean {
   return false;
 }
 
+/** How an explicit jump ended; see `scrollToItem`. */
+type JumpOutcome = 'issued' | 'withheld' | 'missing' | 'failed' | 'superseded' | 'cancelled' | 'unresolved';
+
+/** Lookups a jump repeats while window cuts keep superseding them. */
+const JUMP_LOOKUP_ATTEMPTS = 3;
+
 export interface TimelineRestore {
   /** Reactive — read in the restore `$effect` and the listRef-bind trace. */
   readonly restoredThreadId: string | null;
-  nextRestoreToken(): number;
-  isRestoreTokenCurrent(token: number): boolean;
+  /** Start a navigation: ends every older one. */
+  beginNavigation(): number;
+  /**
+   * Whether the navigation still owns the viewport. When it does, ends
+   * every hold, so call it last, right before the navigation's write.
+   */
+  claimNavigation(token: number): boolean;
+  /** Start a viewport hold: ends older holds, never a navigation. */
+  beginHold(): number;
+  isHoldCurrent(token: number): boolean;
+  /** Reader input on the scroller: an explicit jump still loading yields to it. */
+  noteReaderGesture(): void;
+  /** Teardown: ends every navigation and hold. */
   invalidateRestore(): void;
   saveScrollSnapshot(): void;
   handleSwitchEdgePre(nextThreadId: string | null, nextSwitchGeneration: number): void;
@@ -126,10 +146,25 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // reads it, and its only reader was the caller's own `$effect.pre`,
   // which the write then re-ran for nothing.
   let edge: RestoreEdge = { kind: 'unseen' };
-  // Token bumped on every external "interrupt" — thread switch, user
-  // scroll, programmatic scrollToItem — so async restore work can detect
-  // staleness and bail.
-  let restoreToken = 0;
+  // Two lifetimes, so housekeeping cannot cancel what the reader asked
+  // for. A navigation (switch edge, anchor restore, scrollToItem, jump to
+  // latest, manual load newer) takes `navigationToken`, and its async work
+  // resumes only while that is current. A viewport hold
+  // (`preserveViewportBottom`) takes `holdToken`. A newer hold ends an
+  // older one; a hold never ends a navigation. A navigation ends every
+  // hold when it claims the viewport for its write, so a hold that started
+  // during its awaits cannot move the viewport after it lands. The switch
+  // edge and teardown end both.
+  let navigationToken = 0;
+  let holdToken = 0;
+  // Bumped by reader input on the scroller. An explicit jump that is still
+  // loading its row yields to it rather than yank the reader afterwards.
+  let readerGestureEpoch = 0;
+
+  function endAll(): void {
+    navigationToken += 1;
+    holdToken += 1;
+  }
 
   // The restore/snapshot IDENTITY for this timeline surface. The base
   // pane's scrollStateKey IS its thread id; a scoped facade
@@ -243,7 +278,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     // (it never restored).
     if (previous.kind === 'thread') {
       restoredThreadId = null;
-      restoreToken += 1;
+      endAll();
     }
     options.resetAutoLoadGates();
 
@@ -357,7 +392,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       restoreToBottom();
       return;
     }
-    void restoreAnchor(threadId, snap, ++restoreToken);
+    void restoreAnchor(threadId, snap, beginNavigation());
   }
 
   // Bottom restore. Two cases:
@@ -479,12 +514,12 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     try {
       await tick();
       const pane = options.getPane();
-      if (token !== restoreToken || pane.scrollStateKey !== threadId) {
+      if (token !== navigationToken || pane.scrollStateKey !== threadId) {
         if (isUiRenderTraceEnabled()) {
           recordUiTrace('timeline.restore.anchor.bail', {
             threadId,
             token,
-            currentRestoreToken: restoreToken,
+            currentRestoreToken: navigationToken,
             currentPaneThreadId: pane.threadId,
             stage: 'after-tick',
           });
@@ -513,7 +548,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
           itemId: snap.itemId,
         });
       }
-      if (token !== restoreToken || options.getPane().scrollStateKey !== threadId) return;
+      if (token !== navigationToken || options.getPane().scrollStateKey !== threadId) return;
       if (loaded === 'superseded') return;
       if (loaded !== 'loaded') {
         // The snapshot's row is gone (or its load failed and said so):
@@ -523,8 +558,8 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       }
       await tick();
       const listRef = options.getListRef();
-      if (token !== restoreToken || options.getPane().scrollStateKey !== threadId || !listRef) return;
-      const idx = options.findTimelineNodeIndex(snap.itemId);
+      if (token !== navigationToken || options.getPane().scrollStateKey !== threadId || !listRef) return;
+      const idx = options.resolveTimelineNode(snap.itemId, options.getRevealedNodes())?.index ?? -1;
       const scrollEl = options.getScrollEl();
       if (isUiRenderTraceEnabled()) {
         recordUiTrace('timeline.restore.anchor.scrollToIndex', {
@@ -541,6 +576,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
         restoreToBottom();
         return;
       }
+      if (!claimNavigation(token)) return;
       // The anchor restore is a mid-thread position: escape bottom
       // follow (as any explicit navigation does), then jump. The write
       // itself is chokepoint-tagged via applyScrollTarget.
@@ -553,68 +589,157 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       // chip stays hidden and the controller keeps refusing non-restore
       // placements. The token guard is because a newer restore may
       // already have armed its own consent, which this one must not clear.
-      if (token === restoreToken) options.stick.clearRestoreConsent();
+      if (token === navigationToken) options.stick.clearRestoreConsent();
     }
   }
 
   // ============================================================
-  // Scroll-to-item (search hits, plan rows, tray rows)
+  // Scroll-to-item (search hits, nav rail)
   // ============================================================
 
   /**
-   * Returns whether the jump actually issued its scroll — false on every
-   * refusal path (no list, item gone, superseded by a newer navigation).
-   * The nav rail's landing flash keys on that answer, so a superseded
-   * jump cannot flash and cannot cancel the succeeding jump's flash.
+   * Returns whether the jump issued its scroll. The nav rail's landing
+   * flash keys on that answer, so a jump that did not issue cannot flash
+   * and cannot cancel a newer jump's flash.
+   *
+   * Every call ends in one outcome, traced as `timeline.jump`:
+   * - `issued` / `withheld`: the write went out, to the row or, for a row
+   *   the reveal gate still withholds, to the last revealed row.
+   * - `missing`: the row is gone from the thread (warning toast).
+   * - `failed`: the window load failed and has already reported it.
+   * - `superseded`: a newer navigation or a switch owns the viewport.
+   * - `cancelled`: the reader moved the scroller while the row loaded.
+   * - `unresolved`: the row loaded and nothing renders it (warning toast
+   *   and a diagnostic: a defect, never an expected state).
    */
   async function scrollToItem(id: string): Promise<boolean> {
-    const listRef = options.getListRef();
-    if (!listRef || !id) return false;
-    const myToken = ++restoreToken;
+    if (!id) return false;
+    const token = beginNavigation();
     const pane = options.getPane();
-    const loaded = await pane.loadUntilItem(id);
-    if (myToken !== restoreToken || !options.getListRef()) return false;
-    if (loaded === 'missing') addToast('warning', 'Message is no longer in this thread');
-    // `failed` has already been reported by the pane; `superseded` belongs
-    // to the newer navigation.
-    if (loaded !== 'loaded') return false;
+    const key = pane.scrollStateKey;
+    const generation = pane.switchGeneration;
+    const gestures = readerGestureEpoch;
+    // This navigation replaces the switch's restore, whose consent would
+    // otherwise stay armed past a restore this cut short.
+    options.stick.clearRestoreConsent();
+    const interruption = (): JumpOutcome | null => {
+      const current = options.getPane();
+      if (token !== navigationToken || current.scrollStateKey !== key
+        || current.switchGeneration !== generation) return 'superseded';
+      return gestures === readerGestureEpoch ? null : 'cancelled';
+    };
+
+    // A window cut or a reload of pending pages can supersede the lookup
+    // while this navigation still owns the viewport; only those retry.
+    let loaded: LoadUntilItemResult = 'superseded';
+    for (let attempt = 0; attempt < JUMP_LOOKUP_ATTEMPTS && loaded === 'superseded'; attempt++) {
+      loaded = await pane.loadUntilItem(id);
+      const interrupted = interruption();
+      if (interrupted) return finishJump(id, interrupted);
+    }
+    if (loaded === 'missing') {
+      addToast('warning', 'Message is no longer in this thread');
+      return finishJump(id, 'missing');
+    }
+    if (loaded === 'failed') return finishJump(id, 'failed');
+    if (loaded === 'superseded') return finishJump(id, 'unresolved', 'lookup-superseded');
+
     await tick();
-    if (myToken !== restoreToken || !options.getListRef()) return false;
-    let idx = options.findTimelineNodeIndex(id);
-    if (idx < 0) return false;
-    let targetNode = options.getRevealedNodes()[idx];
-    if (targetNode?.kind === 'activity_run') {
+    let interrupted = interruption();
+    if (interrupted) return finishJump(id, interrupted);
+    let target = locateJumpTarget(id);
+    const node = target && !target.withheld ? options.getRevealedNodes()[target.index] : undefined;
+    if (target && node?.kind === 'activity_run') {
       // The row is the RUN, and the target may be collapsed into its chip or
-      // outside its mount window — so the run is pointed at the item before
-      // the outer scroll, and the outer scroll then measures the height that
-      // produced. Its own row consumes the focus request once mounted, which
-      // is what makes the order here safe: the run need not be on screen yet.
-      revealActivityRunItem(pane.activityRuns, targetNode, id);
+      // outside its mount window, so the run is pointed at the item before
+      // the outer scroll, which then measures the height that produced. Its
+      // own row consumes the focus request once mounted, which is what makes
+      // the order here safe: the run need not be on screen yet.
+      if (!revealActivityRunItem(pane.activityRuns, node, target.itemId)) {
+        // The projected run does not hold the row the resolver found in it.
+        // The outer jump still lands on the run.
+        console.warn('Timeline jump could not reveal an activity run member');
+        reportFrontendDiagnostic('Timeline jump could not reveal an activity run member', 'stage=run-reveal');
+      }
       await tick();
-      if (myToken !== restoreToken || !options.getListRef()) return false;
+      interrupted = interruption();
+      if (interrupted) return finishJump(id, interrupted);
       // Expanding a chip re-measures every row after it, so the index is
       // re-resolved rather than reused.
-      idx = options.findTimelineNodeIndex(id);
-      if (idx < 0) return false;
-      targetNode = options.getRevealedNodes()[idx];
+      target = locateJumpTarget(id);
     }
+    const listRef = options.getListRef();
+    if (!target || !listRef) return finishJump(id, 'unresolved', target ? 'no-list' : 'no-node');
+    if (!claimNavigation(token)) return finishJump(id, 'superseded');
     // Explicit navigation: escape bottom follow, then jump (the write is
     // chokepoint-tagged via applyScrollTarget).
     options.stick.markEscaped();
-    options.getListRef()?.scrollToIndex(idx, { align: 'center' });
+    listRef.scrollToIndex(target.index, { align: 'center' });
+    return finishJump(id, target.withheld ? 'withheld' : 'issued', '', target);
+  }
+
+  /**
+   * The revealed node to land on. A row the reveal gate still withholds
+   * lands on the last revealed node, the frontier it reveals below.
+   */
+  function locateJumpTarget(id: string): (ResolvedTimelineNode & { withheld: boolean }) | null {
+    const revealed = options.getRevealedNodes();
+    const shown = options.resolveTimelineNode(id, revealed);
+    if (shown) return { ...shown, withheld: false };
+    if (revealed.length === 0 || !options.resolveTimelineNode(id, options.getGroupedNodes())) return null;
+    return { index: revealed.length - 1, itemId: id, withheld: true };
+  }
+
+  function finishJump(
+    id: string,
+    outcome: JumpOutcome,
+    stage = '',
+    target?: ResolvedTimelineNode,
+  ): boolean {
+    if (outcome === 'unresolved') {
+      addToast('warning', 'Could not show that message');
+      console.warn(`Timeline jump could not resolve a loaded row (stage=${stage})`);
+      reportFrontendDiagnostic('Timeline jump could not resolve a loaded row', `stage=${stage}`);
+    }
+    if (isUiRenderTraceEnabled()) {
+      const pane = options.getPane();
+      recordUiTrace('timeline.jump', {
+        paneId: pane.paneId,
+        threadId: pane.threadId,
+        itemId: id,
+        outcome,
+        stage: stage || null,
+        index: target?.index ?? null,
+        landedItemId: target?.itemId ?? null,
+      });
+    }
+    return outcome === 'issued' || outcome === 'withheld';
+  }
+
+  function beginNavigation(): number {
+    return ++navigationToken;
+  }
+
+  function claimNavigation(token: number): boolean {
+    if (token !== navigationToken) return false;
+    holdToken += 1;
     return true;
   }
 
-  function nextRestoreToken(): number {
-    return ++restoreToken;
+  function beginHold(): number {
+    return ++holdToken;
   }
 
-  function isRestoreTokenCurrent(token: number): boolean {
-    return token === restoreToken;
+  function isHoldCurrent(token: number): boolean {
+    return token === holdToken;
+  }
+
+  function noteReaderGesture(): void {
+    readerGestureEpoch += 1;
   }
 
   function invalidateRestore(): void {
-    restoreToken += 1;
+    endAll();
   }
 
   function saveSnapshotOnDestroy(): void {
@@ -631,8 +756,11 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     get restoredThreadId() {
       return restoredThreadId;
     },
-    nextRestoreToken,
-    isRestoreTokenCurrent,
+    beginNavigation,
+    claimNavigation,
+    beginHold,
+    isHoldCurrent,
+    noteReaderGesture,
     invalidateRestore,
     saveScrollSnapshot,
     handleSwitchEdgePre,

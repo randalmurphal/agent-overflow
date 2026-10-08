@@ -971,7 +971,7 @@ export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
  * responsible for paging back via pane.loadUntilItem if the item lives
  * outside the loaded window.
  */
-export function findTimelineNodeIndex(nodes: TimelineNode[], itemId: string): number {
+export function findTimelineNodeIndex(nodes: readonly TimelineNode[], itemId: string): number {
   return nodes.findIndex((node) => nodeContainsItem(node, itemId));
 }
 

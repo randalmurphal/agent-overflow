@@ -19,6 +19,7 @@ import {
   cursorsAfterItemUpserts,
   cursorIsValid,
   itemsForThread,
+  itemWithinLoadedWindow,
   mergeItemsById,
   mergeMissingItemsById,
   reconcileItemWindow,
@@ -933,20 +934,55 @@ export function createThreadTimelineWindow(
    *
    * The result names why the item is not scrollable, because the callers
    * answer differently: `missing` is the only outcome that means the row
-   * is gone from the thread; `superseded` means a newer switch or page
-   * owns the window now; `failed` has already been reported to the user
-   * here and is a defect or transport fault, never the row's absence.
+   * is gone from the thread; `superseded` means a switch, a newer
+   * navigation, or a cut of the window owns it now; `failed` has already
+   * been reported to the user here and is a defect or transport fault,
+   * never the row's absence.
+   *
+   * A navigation owns the window from its first call: it supersedes every
+   * page still in flight, an earlier navigation's slice included, so no
+   * older page lands over the row this one found. While its lookup is in
+   * flight it holds both paging edges, so automatic paging waits for it
+   * instead of superseding it.
    */
   async function loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
     const currentThread = options.getThread();
     if (!currentThread || !itemID) return 'missing';
-    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+    if (windowHolds(itemID)) {
+      ++pagingGeneration;
+      return 'loaded';
+    }
 
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = beginPageLoad();
     const superseded = (): boolean =>
       gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration;
+    loadingOlder = pageGen;
+    loadingNewer = pageGen;
+    try {
+      return await loadUntilItemClaimed(currentThread, itemID, superseded);
+    } finally {
+      if (loadingOlder === pageGen) loadingOlder = null;
+      if (loadingNewer === pageGen) loadingNewer = null;
+    }
+  }
+
+  /**
+   * Whether the timeline shows `itemID`: held in items and inside the
+   * paging edges. A held row outside them is an outlier the timeline
+   * leaves out (`itemsWithinLoadedWindow`).
+   */
+  function windowHolds(itemID: string): boolean {
+    const item = options.getItems().find((it) => it.id === itemID);
+    return !!item && itemWithinLoadedWindow(item, oldestLoadedCursor, newestLoadedCursor);
+  }
+
+  async function loadUntilItemClaimed(
+    currentThread: Thread,
+    itemID: string,
+    superseded: () => boolean,
+  ): Promise<LoadUntilItemResult> {
     let fetched: Item;
     try {
       fetched = (await GetThreadItem(currentThread.id, itemID)) as Item;
@@ -963,10 +999,10 @@ export function createThreadTimelineWindow(
     // shouldn't cross-pollute between panes.
     if (fetched.threadId !== currentThread.id) return 'missing';
 
-    // Race: another upsert or loadOlder might have pulled the item in
+    // Race: a live upsert might have pulled the item into the window
     // between our check and the backend round-trip. Re-check before
     // paging in a whole turn window we don't need.
-    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+    if (windowHolds(itemID)) return 'loaded';
 
     // Only rows of this window's scope can load here. A subagent child
     // lives in its agent's scoped surface (`navigateToThreadItem` opens it
@@ -981,11 +1017,10 @@ export function createThreadTimelineWindow(
     // through to the whole-window slice below.
     if (await options.activityRuns().loadUnshippedMember(fetched)) {
       if (superseded()) return 'superseded';
-      if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+      if (windowHolds(itemID)) return 'loaded';
     }
     if (superseded()) return 'superseded';
 
-    loadingOlder = pageGen;
     try {
       const paged = await ListThreadSliceAround(
         currentThread.id,
@@ -1008,10 +1043,8 @@ export function createThreadTimelineWindow(
       console.error('loadUntilItem ListThreadSliceAround failed:', err);
       addToast('error', 'Failed to load message');
       return 'failed';
-    } finally {
-      if (loadingOlder === pageGen) loadingOlder = null;
     }
-    if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
+    if (windowHolds(itemID)) return 'loaded';
     // The backend confirmed the row exists, then shipped a window that
     // does not hold it: a contract fault (an anchored slice that dropped
     // its anchor), not a deleted row.
