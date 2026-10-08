@@ -9,6 +9,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 import { makeItem } from '../../../test/helpers/chat';
 import type { Thread } from '../../types/models';
+import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
 
 beforeAll(installAnimateShim);
 
@@ -470,6 +471,37 @@ describe('<MessageSearch> — in-thread find', () => {
     await waitFor(() => expect(global).toHaveBeenCalled());
     // Even though the pane has a thread, global mode never hits the scoped path.
     expect(scoped).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Focus ----
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+describe('<MessageSearch> — focus', () => {
+  it.each(['global', 'thread'] as const)('opens %s search with the input focused', async (mode) => {
+    const pane = makePane();
+    const { getByTestId, rerender } = renderSearch({ open: false, pane, mode });
+    await rerender({ open: true, pane, onClose: vi.fn(), mode });
+    const input = getByTestId('message-search-input');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    // Still there once the open has painted: nothing claims focus a frame later.
+    await nextFrame();
+    await nextFrame();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('mod+/ toggles focus between the input and the list root', async () => {
+    const pane = makePane();
+    const { getByTestId } = renderSearch({ open: true, pane });
+    const input = getByTestId('message-search-input');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    window.dispatchEvent(new CustomEvent(PICKER_TOGGLE_INPUT_EVENT));
+    expect(document.activeElement).toBe(getByTestId('message-search'));
+    window.dispatchEvent(new CustomEvent(PICKER_TOGGLE_INPUT_EVENT));
+    expect(document.activeElement).toBe(input);
   });
 });
 

@@ -109,13 +109,13 @@
   $effect(() => {
     if (open) {
       // Reset state on each open so the sheet doesn't show yesterday's
-      // query. List root is focused by default so plain j/k navigates;
-      // mod+/ toggles focus to the search input.
+      // query. Modal's focus trap lands focus on the search input
+      // (`data-autofocus`) so the query can be typed at once; mod+/
+      // toggles focus to the list root, where plain j/k navigates.
       query = '';
       hits = [];
       error = null;
       activeIndex = 0;
-      requestAnimationFrame(() => listEl?.focus());
     }
   });
 
@@ -230,6 +230,7 @@
       <input
         bind:this={searchEl}
         bind:value={query}
+        data-autofocus
         type="text"
         placeholder={inputPlaceholder}
         aria-label={dialogTitle}

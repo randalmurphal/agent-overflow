@@ -1,6 +1,7 @@
 // Search hits land on their rows.
 //
-// Coverage: a global search hit far above another thread's loaded tail
+// Coverage: search opens with its input focused, so the query is typed
+// directly. A global search hit far above another thread's loaded tail
 // switches to that thread and centers the row, with "Load newer messages"
 // below it, and the row stays put while the window settles. A hit on a
 // background command's bell, which the notification filter hides behind
@@ -39,7 +40,9 @@ function fillerTurn(i: number): SeedTurn {
 
 async function searchAndOpen(page: Page, query: string): Promise<void> {
   await page.keyboard.press('ControlOrMeta+Shift+f');
-  await page.getByTestId('message-search-input').fill(query);
+  // The dialog opens with the input focused, so the query is typed directly.
+  await expect(page.getByTestId('message-search-input')).toBeFocused();
+  await page.keyboard.type(query);
   const hits = page.getByTestId('message-search-results').getByRole('button');
   await expect(hits).toHaveCount(1);
   await hits.click();

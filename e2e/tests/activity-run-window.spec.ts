@@ -363,7 +363,8 @@ test('a live run a jump left holding its head counts the members it gains until 
   const run = page.getByTestId('activity-run').last();
   await expect(run.getByTestId('activity-run-header-counts')).toContainText('60 Bash');
   await page.keyboard.press('ControlOrMeta+f');
-  await page.getByTestId('message-search-input').fill('live-run-0');
+  await expect(page.getByTestId('message-search-input')).toBeFocused();
+  await page.keyboard.type('live-run-0');
   const hits = page.getByTestId('message-search-results').getByRole('button');
   await expect(hits).toHaveCount(1);
   await hits.click();
