@@ -122,6 +122,15 @@ function signalCounts(value: unknown, path = '', depth = 0): SignalCounts {
   return total;
 }
 
+const AGGREGATE_REPORTS = /^FrameSequenceTracker/;
+
+/** The per-frame record a PipelineReporter begin event carries, if any. */
+function frameReport(event: TraceEvent): Record<string, unknown> | null {
+  if (event.name !== 'PipelineReporter') return null;
+  const report = (event.args as { frame_reporter?: unknown } | undefined)?.frame_reporter;
+  return report !== null && typeof report === 'object' ? report as Record<string, unknown> : null;
+}
+
 function inTraceWindow(event: TraceEvent, start: number, end: number): boolean {
   return typeof event.ts === 'number' && event.ts >= start && event.ts <= end;
 }
@@ -157,7 +166,17 @@ export function summarizeCompositorWindow(
   let checkerboardSignals = 0;
   let blankRenderPasses = 0;
   for (const event of window) {
-    const name = (event.name ?? '').toLowerCase();
+    // A sequence report aggregates every frame of its sequence, which can
+    // begin before the window; only per-frame records attribute content.
+    if (AGGREGATE_REPORTS.test(event.name ?? '')) continue;
+    const frame = frameReport(event);
+    if (frame) {
+      if (frame.checkerboarded_needs_raster === true || frame.checkerboarded_needs_record === true) {
+        checkerboardSignals += 1;
+      }
+      if (frame.has_missing_content === true) missingTileSignals += 1;
+      continue;
+    }
     const metrics = signalCounts(event.args);
     missingTileSignals += metrics.missing;
     checkerboardSignals += metrics.checkerboard;
