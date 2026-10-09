@@ -246,6 +246,10 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   'app.css|will-change declaration|will-change: scroll-position;',
   'app.css|transform declaration or keyframe|to { transform: rotate(360deg); }',
   'app.css|transform declaration or keyframe|to { transform: translateX(calc(-1 * var(--working-sprite-strip-w))); }',
+  // The disclosure chevron of a <details> in review prose: a static quarter
+  // turn on open, the same glyph CompactionDivider and
+  // TranscriptDisclosureHeader rotate with `rotate-90`. No animation.
+  'app.css|transform declaration or keyframe|.markdown-body.review-prose details[open] > summary::before {',
   'lib/components/chat/CompactionDivider.svelte|Tailwind transform utility|class:rotate-90={expanded}',
   'lib/components/chat/DiagramModal.svelte|Svelte transform style directive|style:transform={transform}',
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
