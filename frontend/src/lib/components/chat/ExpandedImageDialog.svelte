@@ -7,7 +7,6 @@
   import { focusTrap } from '../../utils/focusTrap';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     preview: ExpandedImagePreview;
@@ -116,7 +115,7 @@
         src={image.url}
         alt={image.filename}
         class="max-h-[86vh] max-w-[92vw] object-contain"
-        {...attachmentImageMenuTag(image)}
+        {...image.menuTag}
       />
       <div class="max-w-[92vw] truncate text-xs text-scrim-fg/78">
         {image.filename}{hasMultiple ? ` (${index + 1}/${preview.images.length})` : ''}

@@ -10,8 +10,10 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Attachment } from '../../types/attachment';
+import type { ImagePreviewItem } from '../../utils/attachmentPreview.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
+  attachmentImageMenuTag,
   canSaveMenuImage,
   copyMenuImage,
   saveMenuImage,
@@ -47,7 +49,21 @@ const file = {
   size: 2048,
   kind: 'file',
 };
+const second = { ...image, id: 'att-3', filename: 'two.png' };
 const REF = { kind: 'attachment', threadId: 'thread-1', attachmentId: 'att-1', filename: 'hero.png' };
+
+function lightboxItem(attachment: typeof image, url: string): ImagePreviewItem {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    url,
+    width: 0,
+    height: 0,
+    originalBytes: attachment.size,
+    menuTag: attachmentImageMenuTag(attachment),
+  };
+}
 
 function pane(): ThreadPane {
   return {
@@ -229,10 +245,7 @@ describe('<ImageMenuHost>', () => {
       const view = render(ExpandedImageDialog, {
         props: {
           preview: {
-            images: [
-              { ...image, url: 'blob:full-1' },
-              { ...image, id: 'att-3', filename: 'two.png', url: 'blob:full-3' },
-            ],
+            images: [lightboxItem(image, 'blob:thumb-1'), lightboxItem(second, 'blob:thumb-3')],
             index: 0,
           },
           onClose,
@@ -247,7 +260,7 @@ describe('<ImageMenuHost>', () => {
       return { onClose, dialog, picture };
     }
 
-    it('opens on the full-size image', async () => {
+    it('opens on the lightbox picture', async () => {
       const { picture } = await openLightbox();
       await rightClick(picture);
       expect(menu()).not.toBeNull();

@@ -164,11 +164,9 @@
     commandRanges.length > 0 ? commandSegments(visibleSummary, commandRanges) : [],
   );
 
-  async function expandAttachment(id: string): Promise<void> {
+  function expandAttachment(id: string): void {
     if (!onImageExpand) return;
-    // Always refetches full bytes; the per-pane attachment cache holds
-    // thumbnails, not full-size pixels, so there's no synchronous shortcut.
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
     if (expanded) onImageExpand(expanded);
   }
 

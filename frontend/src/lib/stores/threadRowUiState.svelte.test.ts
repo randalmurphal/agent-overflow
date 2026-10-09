@@ -504,18 +504,22 @@ describe('createThreadRowUiState', () => {
     const firstItemCache = rowUiState.attachmentCacheFor('item-a');
     firstItemCache.set('blob-preview', {
       id: 'blob-preview',
-      threadId: 'thread-1',
       filename: 'blob.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:preview-a',
     });
     firstItemCache.set('data-preview', {
       id: 'data-preview',
-      threadId: 'thread-1',
       filename: 'data.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'data:image/png;base64,abc',
     });
 
@@ -535,20 +539,24 @@ describe('createThreadRowUiState', () => {
     const staleCache = rowUiState.attachmentCacheFor('item-a');
     staleCache.set('before-clear', {
       id: 'before-clear',
-      threadId: 'thread-1',
       filename: 'before.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:before-clear',
     });
 
     rowUiState.clear();
     staleCache.set('after-clear', {
       id: 'after-clear',
-      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:after-clear',
     });
 
@@ -585,10 +593,12 @@ describe('createThreadRowUiState', () => {
     const staleCache = rowUiState.attachmentCacheFor(item.id);
     staleCache.set('before-dispose', {
       id: 'before-dispose',
-      threadId: 'thread-1',
       filename: 'before.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:before-dispose',
     });
 
@@ -611,10 +621,12 @@ describe('createThreadRowUiState', () => {
 
     staleCache.set('after-dispose', {
       id: 'after-dispose',
-      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:after-dispose',
     });
     expect(revoke).toHaveBeenCalledWith('blob:after-dispose');
@@ -864,18 +876,22 @@ describe('createThreadRowUiState', () => {
     const retainedAttachmentCache = rowUiState.attachmentCacheFor(retainedItem.id);
     oldAttachmentCache.set('old-attachment', {
       id: 'old-attachment',
-      threadId: 'thread-1',
       filename: 'old.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:old-attachment',
     });
     retainedAttachmentCache.set('retained-attachment', {
       id: 'retained-attachment',
-      threadId: 'thread-1',
       filename: 'retained.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:retained-attachment',
     });
     expect(rowUiState.debugStats()).toMatchObject({
@@ -915,10 +931,12 @@ describe('createThreadRowUiState', () => {
 
     retainedAttachmentCache.set('retained-after-prune', {
       id: 'retained-after-prune',
-      threadId: 'thread-1',
       filename: 'retained-after.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:retained-after-prune',
     });
     expect(retainedAttachmentCache.get('retained-after-prune')).toBeTruthy();
@@ -926,10 +944,12 @@ describe('createThreadRowUiState', () => {
 
     oldAttachmentCache.set('after-prune', {
       id: 'after-prune',
-      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
-      size: 1,
+      width: 0,
+      height: 0,
+      originalBytes: 1,
+      menuTag: {},
       url: 'blob:after-prune',
     });
     expect(revoke).toHaveBeenCalledWith('blob:after-prune');

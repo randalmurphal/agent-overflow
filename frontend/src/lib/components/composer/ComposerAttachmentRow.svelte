@@ -47,12 +47,9 @@
     { cache: untrack(() => cache) },
   );
 
-  async function expandAttachment(id: string): Promise<void> {
+  function expandAttachment(id: string): void {
     if (!onExpand) return;
-    // The composer row's preview cache holds thumbnails; the lightbox
-    // wants the original-resolution image. Always go through the
-    // load-full-size path.
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
     if (expanded) onExpand(expanded);
   }
 </script>

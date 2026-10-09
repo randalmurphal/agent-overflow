@@ -148,10 +148,14 @@ test('the menu opens over the lightbox, and neither Escape nor a row closes the 
   await harness.open(page);
   await sendImage(harness, page, 'Image lightbox', filename);
 
-  await sentImage(page, filename).click();
+  // The lightbox opens on the picture its tile already painted, so the
+  // tile's thumbnail is decoded before the click.
+  const tile = sentImage(page, filename);
+  await expect.poll(() => tile.getByRole('img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  await tile.click();
   const dialog = page.getByRole('dialog', { name: filename });
   const picture = dialog.getByRole('img', { name: filename });
-  await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
+  await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
   await picture.click({ button: 'right' });
   const menu = imageMenu(page);

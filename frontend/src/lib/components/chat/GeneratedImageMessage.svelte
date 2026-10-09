@@ -51,9 +51,9 @@
   // so the fallback label is not repeated under the picture.
   const caption = $derived(row?.prompt ?? '');
 
-  async function expand(id: string): Promise<void> {
+  function expand(id: string): void {
     if (!onImageExpand) return;
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
     if (expanded) onImageExpand(expanded);
   }
 </script>

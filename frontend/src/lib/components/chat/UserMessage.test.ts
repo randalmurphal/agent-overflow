@@ -19,6 +19,7 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
+import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
 describe('<UserMessage>', () => {
   beforeEach(() => {
@@ -594,19 +595,27 @@ describe('<UserMessage>', () => {
 
     const previewButton = getByLabelText('Preview hero.png');
     expect(getByText('#1')).toBeInTheDocument();
+    await waitFor(() => expect(previewButton.querySelector('img')).not.toBeNull());
+    const tileUrl = previewButton.querySelector('img')!.getAttribute('src');
+    expect(tileUrl).toMatch(/^(blob:|data:image\/png;base64,)/);
     await fireEvent.click(previewButton);
-    await waitFor(() => expect(onImageExpand).toHaveBeenCalledTimes(1));
+    expect(onImageExpand).toHaveBeenCalledTimes(1);
 
-    expect(onImageExpand.mock.calls[0]?.[0]).toMatchObject({
+    // The lightbox opens on what the tile already paints; the original is
+    // the dialog's to fetch.
+    const opened = onImageExpand.mock.calls[0]?.[0];
+    expect(opened).toMatchObject({
       images: [{
         id: 'att-1',
         filename: 'hero.png',
         mimeType: 'image/png',
-        size: 128,
+        url: tileUrl,
+        originalBytes: 128,
+        menuTag: attachmentImageMenuTag({ id: 'att-1', threadId: 'thread-1', filename: 'hero.png' }),
       }],
       index: 0,
     });
-    expect(onImageExpand.mock.calls[0]?.[0].images[0]?.url).toMatch(/^(blob:|data:image\/png;base64,)/);
+    expect(typeof opened.images[0].original).toBe('function');
   });
 
   it('renders a file attachment as an inert chip and numbers the images around it', async () => {

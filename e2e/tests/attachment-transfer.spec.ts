@@ -15,10 +15,9 @@
 //
 // WHAT IS REAL HERE. The drop is the shipped `handleDrop` on the shipped
 // `Composer.svelte`, so the upload is `uploadAttachmentBytes` as it
-// ships; the expand is the shipped `loadAttachmentFullSize`, so the
-// download is `fetchAttachmentBytes` and the `<img>` is painted from the
-// object URL it made. Nothing is stubbed on the frontend side of the
-// seam.
+// ships; the lightbox fetches its item's `original`, so the download is
+// `fetchAttachmentBytes` and the `<img>` is painted from an object URL
+// over that Blob. Nothing is stubbed on the frontend side of the seam.
 //
 // The fixture's shape is load-bearing twice over. It is 494 bytes, far
 // under `shouldCompressImage`'s threshold, so the composer hands the
