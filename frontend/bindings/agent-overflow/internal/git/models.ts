@@ -399,12 +399,18 @@ export class GitStatus {
 
 /**
  * PRDetail is the normalized PR/MR detail shape consumed by the review pane.
+ * 
+ * AuthorName, here and on ReviewVerdict and ReviewComment, is the forge
+ * display name beside the AuthorLogin username. It is empty when the forge
+ * does not report one (GitHub review verdicts, bots, users without a
+ * display name); clients then show the login.
  */
 export class PRDetail {
     "number": number;
     "title": string;
     "body": string;
     "authorLogin": string;
+    "authorName"?: string;
     "state": string;
     "draft": boolean;
     "headRefName": string;
@@ -485,18 +491,18 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField15_0 = $$createType9;
-        const $$createField16_0 = $$createType10;
-        const $$createField18_0 = $$createType12;
+        const $$createField16_0 = $$createType9;
+        const $$createField17_0 = $$createType10;
+        const $$createField19_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
-            $$parsedSource["latestReviews"] = $$createField15_0($$parsedSource["latestReviews"]);
+            $$parsedSource["latestReviews"] = $$createField16_0($$parsedSource["latestReviews"]);
         }
         if ("checks" in $$parsedSource) {
-            $$parsedSource["checks"] = $$createField16_0($$parsedSource["checks"]);
+            $$parsedSource["checks"] = $$createField17_0($$parsedSource["checks"]);
         }
         if ("diffRefs" in $$parsedSource) {
-            $$parsedSource["diffRefs"] = $$createField18_0($$parsedSource["diffRefs"]);
+            $$parsedSource["diffRefs"] = $$createField19_0($$parsedSource["diffRefs"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -579,6 +585,7 @@ export class PRReference {
 
 export class ReviewComment {
     "authorLogin": string;
+    "authorName"?: string;
     "body": string;
     "createdAt": string;
     "databaseID": number;
@@ -606,10 +613,10 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField4_0 = $$createType14;
+        const $$createField5_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
-            $$parsedSource["replyTo"] = $$createField4_0($$parsedSource["replyTo"]);
+            $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
         }
         return new ReviewComment($$parsedSource as Partial<ReviewComment>);
     }
@@ -741,6 +748,7 @@ export class ReviewThread {
 
 export class ReviewVerdict {
     "authorLogin": string;
+    "authorName"?: string;
     "state": string;
     "submittedAt": string;
     "body": string;

@@ -106,24 +106,38 @@ describe('<ReviewFileTree>', () => {
     const view = render(ReviewFileTree, {
       files: FILES,
       onSelectFile: () => {},
-      commentCounts: new Map([['docs/readme.md', 3]]),
+      commentCounts: new Map([['docs/readme.md', { total: 3, unresolved: 0 }]]),
     });
     const badge = view.getByTestId('review-tree-comment-count');
     expect(badge).toHaveTextContent('3');
     expect(badge.closest('[data-file-path]')?.getAttribute('data-file-path')).toBe('docs/readme.md');
+  });
+
+  it('tints the badge warning while a file has unresolved threads', () => {
+    const view = render(ReviewFileTree, {
+      files: FILES,
+      onSelectFile: () => {},
+      commentCounts: new Map([
+        ['docs/readme.md', { total: 3, unresolved: 2 }],
+        ['src/lib/app.ts', { total: 1, unresolved: 0 }],
+      ]),
+    });
+    const badges = view.getAllByTestId('review-tree-comment-count');
+    const open = badges.find((badge) => badge.closest('[data-file-path]')?.getAttribute('data-file-path') === 'docs/readme.md')!;
+    const quiet = badges.find((badge) => badge.closest('[data-file-path]')?.getAttribute('data-file-path') === 'src/lib/app.ts')!;
+    expect(open.classList.contains('text-warning')).toBe(true);
+    expect(open.getAttribute('title')).toBe('3 comments, 2 unresolved');
+    expect(quiet.classList.contains('text-warning')).toBe(false);
+    expect(quiet.getAttribute('title')).toBe('1 comment');
   });
 });
 
 // Rail width/resize moved from the tree to the ReviewRail shell.
 function renderRail() {
   return render(ReviewRail, {
-    tab: 'files' as const,
-    onTabChange: () => {},
     files: FILES,
     onSelectFile: () => {},
     commentCounts: new Map(),
-    commentGroups: [],
-    onSelectComment: () => {},
   });
 }
 

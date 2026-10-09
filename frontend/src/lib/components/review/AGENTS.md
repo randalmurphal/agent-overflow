@@ -30,6 +30,19 @@ PR stores; components own presentation and interaction.
   names a different line once the held range moves.
 - Preserve line identity across refreshes so open threads, selections, and
   measured rows do not move unnecessarily.
+- The PR overview (`ReviewOverview`: Description and Conversation) is the
+  diff list's first row (`kind: 'overview'`, key `REVIEW_OVERVIEW_ROW_KEY`),
+  measured like any row and unmounted when far below, so section open
+  state, section scroll offsets and the frozen feed live in the review
+  store. Reading anchors name it as path `''`. `ReviewDiffBody` reports the
+  row scrolling off (`onOverviewOffChange`); the title bar's peek buttons
+  return through `jumpToOverview`.
+- One state vocabulary per thread on every surface: classes from
+  `utils/reviewThreadStyle.ts`, author names, initials and tones from
+  `utils/reviewIdentity.ts` through `ReviewAvatar`. The Conversation card
+  and the diff row (`ReviewPRThreadRow`) render the same card.
+- A jump to a row inside a file lands under the sticky file bar: scroll it
+  with `offset: -REVIEW_FILE_HEADER_BAR_PX`.
 - Embedded forge HTML uses `ChatMarkdown`'s opt-in sanitized mode. Do not render
   arbitrary HTML or bypass URL transformation.
 - `ReviewPane` publishes `FORGE_ATTACHMENT_SOURCE_CONTEXT`

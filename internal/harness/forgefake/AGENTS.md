@@ -13,8 +13,8 @@ from a fixture a test seeds. The path is:
    the answer.
 3. `Engine.Handle` routes the call, answers from the seeded fixture and
    records it. `internal/harnessrpc` exposes `HarnessForgeSeed`,
-   `HarnessForgeInvocations` and the `harness:forge` event. `HarnessReset`
-   clears the fixture and the log.
+   `HarnessForgeInvocations`, `HarnessForgeOffline` and the `harness:forge`
+   event. `HarnessReset` clears the fixture, the log and the offline state.
 
 The engine lives in the harness process, not the binary, so seeding and
 inspection go through the harness wire with no fixture files.

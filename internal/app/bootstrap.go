@@ -43,13 +43,14 @@ type IsolationConfig struct {
 	// spawns, so an isolated boot never dials a listener outside the
 	// processes it was given.
 	ScanScopePIDs []int
-	// ThreadRequestPoll and TransferPendingRetry replace the agent thread
-	// request poll cadence and threadtransfer.PendingRetry, so an end-to-end
-	// test does not wait out a production interval it is not about. Zero
-	// keeps the product value; only a harness boot sets them
-	// (diagenv.HarnessTiming).
+	// ThreadRequestPoll, TransferPendingRetry and PRUpdateRetryBase replace
+	// the agent thread request poll cadence, threadtransfer.PendingRetry and
+	// the pull request poll's first retry delay, so an end-to-end test does
+	// not wait out a production interval it is not about. Zero keeps the
+	// product value; only a harness boot sets them (diagenv.HarnessTiming).
 	ThreadRequestPoll    time.Duration
 	TransferPendingRetry time.Duration
+	PRUpdateRetryBase    time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -69,6 +70,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
 	a.transferPendingRetry = config.TransferPendingRetry
+	a.prUpdates.retryBase = config.PRUpdateRetryBase
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

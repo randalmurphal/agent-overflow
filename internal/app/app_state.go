@@ -97,13 +97,14 @@ type appPRUpdateState struct {
 	// pump can be replaced under its key (a dead pump's successor), and a
 	// per-pump counter would restart at zero — letting the dead one's late
 	// frames outrank the replacement's fresh state.
-	mu       sync.Mutex
-	pumps    map[string]*prUpdatePump
-	handles  map[string]*prUpdateHandle
-	seq      uint64
-	wg       sync.WaitGroup
-	interval time.Duration
-	fetchFn  func(gitops.PRReference) (prUpdateSnapshot, error)
+	mu        sync.Mutex
+	pumps     map[string]*prUpdatePump
+	handles   map[string]*prUpdateHandle
+	seq       uint64
+	wg        sync.WaitGroup
+	interval  time.Duration
+	retryBase time.Duration
+	fetchFn   func(gitops.PRReference) (prUpdateSnapshot, error)
 }
 
 // appSessionImportState is the session-import concern

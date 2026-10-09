@@ -212,11 +212,11 @@
 <!-- `hoverRow` composes with the tint backgrounds via a pointer-inert
      ::before overlay — a hover bg class would just replace the add/del
      wash instead of layering on it. -->
-<!-- mx-2 + border-x: each file renders as an inset card slab on the
+<!-- Slab inset + border-x: each file renders as an inset card slab on the
      darker page background. Horizontal only — the exact-height contract
      allows no vertical borders here. -->
 <div
-  class="mx-2 border-x border-border-subtle bg-surface-1 font-mono text-xs text-fg"
+  class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 font-mono text-xs text-fg"
   style:line-height={lineHeight}
   data-testid="review-line-block"
   data-path={path}

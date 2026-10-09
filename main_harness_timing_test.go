@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update-retry=20ms,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond}
+	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdateRetry: 20 * time.Millisecond}
 	if got != want {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -61,6 +61,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`HarnessTiming:\s+timing,`,
 			`ThreadRequestPoll:\s+opts\.Timing\.ThreadPoll,`,
 			`TransferPendingRetry:\s+opts\.Timing\.TransferRetry,`,
+			`PRUpdateRetryBase:\s+opts\.Timing\.PRUpdateRetry,`,
 		},
 		"main.go": {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,

@@ -91,9 +91,12 @@ type Engine struct {
 	viewer   string
 	sshHosts map[string]string
 	repos    map[string]*Repo
-	log      []Invocation
-	seq      int
-	dropped  int
+	// offline answers every call as a forge the network cannot reach,
+	// the way gh and glab fail when DNS or the link is down.
+	offline bool
+	log     []Invocation
+	seq     int
+	dropped int
 }
 
 // New builds an empty engine. Every invocation against it answers "not
@@ -156,8 +159,33 @@ func (e *Engine) Reset() {
 	e.viewer = defaultViewer
 	clear(e.repos)
 	clear(e.sshHosts)
+	e.offline = false
 	e.log = nil
 	e.dropped = 0
+}
+
+// SetOffline makes the forge unreachable (or reachable again). While
+// offline every gh and glab invocation exits 1 with the CLI's own
+// connection failure on stderr and nothing on stdout, recorded under
+// route "offline"; ssh is answered as usual. Seeded state is kept, so a
+// forge that comes back answers what it answered before.
+func (e *Engine) SetOffline(offline bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.offline = offline
+}
+
+// offlineResponse is what a forge CLI prints when its host does not
+// resolve: gh names the API host, glab echoes the failed request.
+func offlineResponse(c *call) response {
+	var stderr string
+	switch c.cli {
+	case "glab":
+		stderr = "ERROR Get \"https://gitlab.com/api/v4/" + strings.Join(c.args, "/") + "\": dial tcp: lookup gitlab.com: i/o timeout\n"
+	default:
+		stderr = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n"
+	}
+	return response{route: "offline", stderr: stderr, exit: 1}
 }
 
 // Invocations returns the recorded invocations with Seq > since.
@@ -179,7 +207,12 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 	c := &call{cli: fc.CLI, args: slices.Clone(fc.Args), cwd: fc.Cwd, stdin: fc.Stdin}
 
 	e.mu.Lock()
-	resp := e.dispatch(c)
+	var resp response
+	if e.offline && c.cli != "ssh" {
+		resp = offlineResponse(c)
+	} else {
+		resp = e.dispatch(c)
+	}
 	if resp.unhandled != "" {
 		resp.stdout = nil
 		resp.stderr = fmt.Sprintf("ao-mockforge: unhandled %s invocation (%s): %s\n"+

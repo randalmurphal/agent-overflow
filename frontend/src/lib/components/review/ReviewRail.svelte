@@ -1,35 +1,21 @@
-<script module lang="ts">
-  export type ReviewRailTab = 'files' | 'comments';
-</script>
-
 <script lang="ts">
   import type { SvelteSet } from 'svelte/reactivity';
-  import ReviewCommentsList from './ReviewCommentsList.svelte';
   import ReviewFileTree from './ReviewFileTree.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
-  import type { ReviewVerdict } from '../../types/models';
   import type { DiffFileSummary } from '../../utils/patchStore';
-  import type { CommentFileGroup, CommentListItem } from '../../utils/reviewComments';
+  import type { CommentFileCounts } from '../../utils/reviewComments';
 
-  // The review pane's left rail: Files | Comments tabs over a shared
-  // resizable shell. Width is persisted (appStorage `reviewTreeWidth`,
-  // name kept for continuity); tab choice is session-local, owned by
-  // ReviewPane so the header tally can switch to the Comments tab.
+  // The review pane's left rail: the file tree in a resizable shell.
+  // Width is persisted (appStorage `reviewTreeWidth`). Comments are read
+  // in the overview's Conversation section and on the diff itself; the
+  // rail only counts them per file.
 
   interface Props {
-    tab: ReviewRailTab;
-    onTabChange: (tab: ReviewRailTab) => void;
     files: readonly DiffFileSummary[];
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
-    commentCounts: ReadonlyMap<string, number>;
-    commentGroups: readonly CommentFileGroup[];
-    /** Unresolved-thread count: the tab badge shows THIS (warning-tinted)
-     *  when nonzero, so triage state reads from the tab itself. */
-    openCommentCount?: number;
-    onSelectComment: (item: CommentListItem) => void;
-    /** PR-scope review summaries (verdict + body), shown atop the Comments tab. */
-    reviews?: readonly ReviewVerdict[];
+    /** Comments per file; the badge tints warning while any is unresolved. */
+    commentCounts: ReadonlyMap<string, CommentFileCounts>;
     /** Shared extension-filter state — see ReviewFileTree. */
     activeExtensions?: SvelteSet<string>;
     filterDiff?: boolean;
@@ -37,16 +23,10 @@
   }
 
   let {
-    tab,
-    onTabChange,
     files,
     activeFileIndex = -1,
     onSelectFile,
     commentCounts,
-    commentGroups,
-    openCommentCount = 0,
-    onSelectComment,
-    reviews = [],
     activeExtensions,
     filterDiff = false,
     onFilterDiffChange,
@@ -57,10 +37,6 @@
   const RAIL_DEFAULT_PX = 240;
 
   let railWidth = $state(readStoredRailWidth());
-
-  const commentCount = $derived(
-    commentGroups.reduce((sum, group) => sum + group.items.length, 0),
-  );
 
   function readStoredRailWidth(): number {
     const raw = Number(appStorageGet('reviewTreeWidth'));
@@ -95,12 +71,6 @@
     railWidth = RAIL_DEFAULT_PX;
     appStorageSet('reviewTreeWidth', String(railWidth));
   }
-
-  function tabClass(active: boolean): string {
-    return active
-      ? 'border-accent text-fg'
-      : 'border-transparent text-fg-muted hover:text-fg';
-  }
 </script>
 
 <div
@@ -108,47 +78,15 @@
   style:width="{railWidth}px"
   data-testid="review-rail"
 >
-  <div class="flex shrink-0 items-center gap-1 border-b border-border-subtle px-2" role="tablist" aria-label="Review rail">
-    <button
-      type="button"
-      role="tab"
-      aria-selected={tab === 'files'}
-      class="border-b-2 px-1.5 py-1.5 text-xs {tabClass(tab === 'files')}"
-      data-testid="review-rail-tab-files"
-      onclick={() => onTabChange('files')}
-    >
-      Files
-    </button>
-    <button
-      type="button"
-      role="tab"
-      aria-selected={tab === 'comments'}
-      class="flex items-center gap-1 border-b-2 px-1.5 py-1.5 text-xs {tabClass(tab === 'comments')}"
-      data-testid="review-rail-tab-comments"
-      onclick={() => onTabChange('comments')}
-    >
-      Comments
-      {#if openCommentCount > 0}
-        <span class="rounded-full bg-warning/12 px-1.5 text-[0.625rem] tabular-nums text-warning" data-testid="review-rail-open-count">{openCommentCount}</span>
-      {:else if commentCount > 0}
-        <span class="rounded-full bg-surface-2 px-1.5 text-[0.625rem] tabular-nums text-fg-muted">{commentCount}</span>
-      {/if}
-    </button>
-  </div>
-
-  {#if tab === 'files'}
-    <ReviewFileTree
-      {files}
-      {activeFileIndex}
-      {onSelectFile}
-      {commentCounts}
-      {activeExtensions}
-      {filterDiff}
-      {onFilterDiffChange}
-    />
-  {:else}
-    <ReviewCommentsList groups={commentGroups} {reviews} onSelect={onSelectComment} />
-  {/if}
+  <ReviewFileTree
+    {files}
+    {activeFileIndex}
+    {onSelectFile}
+    {commentCounts}
+    {activeExtensions}
+    {filterDiff}
+    {onFilterDiffChange}
+  />
 
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div

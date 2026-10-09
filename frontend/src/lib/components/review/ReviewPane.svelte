@@ -14,9 +14,10 @@
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
   import ReviewDraftEditor from './ReviewDraftEditor.svelte';
-  import ReviewPRHeader from './ReviewPRHeader.svelte';
+  import ReviewOverview from './ReviewOverview.svelte';
   import ReviewPRThreadRow from './ReviewPRThreadRow.svelte';
-  import ReviewRail, { type ReviewRailTab } from './ReviewRail.svelte';
+  import ReviewPRTitleBar from './ReviewPRTitleBar.svelte';
+  import ReviewRail from './ReviewRail.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
@@ -29,11 +30,7 @@
   import { getPane } from '../../stores/panes.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
-  import {
-    buildCommentGroups,
-    commentCountsByFile,
-    commentTally,
-  } from '../../utils/reviewComments';
+  import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
@@ -115,19 +112,11 @@
       ? (review.conflictView ? (review.conflicts?.paths.length ?? 0) : review.files.length)
       : 0,
   );
-  let railTab: ReviewRailTab = $state('files');
-  const commentGroups = $derived(
-    review
-      ? buildCommentGroups({
-          files: review.files,
-          prThreads: review.prThreads,
-          drafts: review.drafts,
-          orphanedDraftIds: review.orphanedDraftIds(),
-        })
-      : [],
+  const EMPTY_COUNTS: CommentCounts = { byFile: new Map(), tally: { unresolved: 0, drafts: 0, total: 0 } };
+  const commentCounts = $derived(
+    review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
   );
-  const commentCounts = $derived(commentCountsByFile(commentGroups));
-  const tally = $derived(commentTally(commentGroups));
+  const tally = $derived(commentCounts.tally);
   const tallyLabel = $derived.by(() => {
     const parts: string[] = [];
     if (tally.unresolved > 0) parts.push(`${tally.unresolved} unresolved`);
@@ -136,10 +125,15 @@
     return parts.join(' · ');
   });
 
-  function openCommentsTab(): void {
-    railTab = 'comments';
-    if (!treeVisible) toggleTree();
-  }
+  // The overview (Description + Conversation) is the diff list's first
+  // row in PR scope; it exists when there is anything to put in it.
+  const overviewShown = $derived(
+    review?.scope === 'pr' && review.prDetail !== null
+      && (review.prDetail.body !== '' || review.prThreads.length + review.prDetail.latestReviews.length > 0),
+  );
+  // True once the overview row has scrolled off the top: the title bar
+  // then shows peek buttons back to it.
+  let overviewOff = $state(false);
 
   onMount(() => {
     if (storedTreeVisible !== null) return;
@@ -390,16 +384,18 @@
             {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
           </span>
         {/if}
-        {#if tally.total > 0}
+        {#if tally.total > 0 && overviewShown}
           <button
             type="button"
             class="ml-2 rounded border border-border-subtle px-1.5 py-0.5 text-fg-muted hover:text-fg"
-            title="Open comments list"
+            title="Open the conversation"
             data-testid="review-comment-tally"
-            onclick={openCommentsTab}
+            onclick={() => review?.jumpToOverview('conversation')}
           >
             {tallyLabel}
           </button>
+        {:else if tally.total > 0}
+          <span class="ml-2 text-fg-muted" data-testid="review-comment-tally">{tallyLabel}</span>
         {/if}
       {/if}
     </div>
@@ -554,7 +550,7 @@
     {/if}
     {#if review.prUpdateError}
       <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
-        PR updates stopped: {review.prUpdateError}
+        Retrying: {review.prUpdateError}
       </div>
     {/if}
     {#if review.prStale}
@@ -564,7 +560,7 @@
       </div>
     {/if}
     {#if review.scope === 'pr' && review.prDetail}
-      <ReviewPRHeader
+      <ReviewPRTitleBar
         detail={review.prDetail}
         hasWorkspace={ctx.workspace !== null}
         onViewConflicts={() => { void review?.openConflictView(); }}
@@ -574,7 +570,7 @@
         onOpenCIJob={(stageName, job) => { void review?.openCIJobLog(stageName, job); }}
         onRefreshCI={() => { void review?.loadCIJobs(); }}
         {review}
-        canSendToAgent={ctx.threadId !== null}
+        {overviewOff}
       />
     {/if}
     {#if review.ciLogView}
@@ -648,22 +644,18 @@
       {/if}
     {:else if review.loading && review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
+    {:else if review.files.length === 0 && review.awaitingPRDetail}
+      <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the pull request…</div>
     {:else if review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
       <div class="flex min-h-0 flex-1">
         {#if treeVisible}
           <ReviewRail
-            tab={railTab}
-            onTabChange={(tab) => { railTab = tab; }}
             files={review.files}
             activeFileIndex={treeActiveFileIndex}
             onSelectFile={jumpToFile}
-            {commentCounts}
-            {commentGroups}
-            openCommentCount={tally.unresolved}
-            onSelectComment={(item) => review?.jumpToComment(item)}
-            reviews={review.scope === 'pr' ? (review.prDetail?.latestReviews ?? []) : []}
+            commentCounts={commentCounts.byFile}
             {activeExtensions}
             filterDiff={extensionsFilterDiff}
             onFilterDiffChange={(value) => { extensionsFilterDiff = value; }}
@@ -674,6 +666,11 @@
             No files match the type filter.
           </div>
         {:else}
+        {#snippet overviewRow()}
+          {#if review?.prDetail}
+            <ReviewOverview {review} detail={review.prDetail} canSendToAgent={ctx.threadId !== null} />
+          {/if}
+        {/snippet}
         <ReviewDiffBody
           subjectId={review.identity}
           spanOwner={review.rowId}
@@ -696,6 +693,8 @@
           jumpToRowKey={review.pendingJumpRowKey}
           onJumpRowConsumed={() => review?.consumePendingJumpRowKey()}
           onTopFileChange={(fileIndex) => { topFileIndex = fileIndex; }}
+          overview={overviewShown ? overviewRow : undefined}
+          onOverviewOffChange={(off) => { overviewOff = off; }}
         >
           {#snippet draftEditor(anchor)}
             <ReviewDraftEditor
@@ -738,7 +737,7 @@
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
                 : undefined}
               onJumpToConversation={review?.scope === 'pr' && review.prDetail
-                ? () => review?.openConversationAt(thread.id)
+                ? () => review?.jumpToConversationThread(thread.id)
                 : undefined}
             />
           {/snippet}

@@ -75,11 +75,17 @@ const (
 )
 
 // PRDetail is the normalized PR/MR detail shape consumed by the review pane.
+//
+// AuthorName, here and on ReviewVerdict and ReviewComment, is the forge
+// display name beside the AuthorLogin username. It is empty when the forge
+// does not report one (GitHub review verdicts, bots, users without a
+// display name); clients then show the login.
 type PRDetail struct {
 	Number         int             `json:"number"`
 	Title          string          `json:"title"`
 	Body           string          `json:"body"`
 	AuthorLogin    string          `json:"authorLogin"`
+	AuthorName     string          `json:"authorName,omitempty"`
 	State          string          `json:"state"`
 	Draft          bool            `json:"draft"`
 	HeadRefName    string          `json:"headRefName"`
@@ -105,6 +111,7 @@ type PRDiffRefs struct {
 
 type ReviewVerdict struct {
 	AuthorLogin string `json:"authorLogin"`
+	AuthorName  string `json:"authorName,omitempty"`
 	State       string `json:"state"`
 	SubmittedAt string `json:"submittedAt"`
 	Body        string `json:"body"`
@@ -152,6 +159,7 @@ type ReviewThread struct {
 
 type ReviewComment struct {
 	AuthorLogin string         `json:"authorLogin"`
+	AuthorName  string         `json:"authorName,omitempty"`
 	Body        string         `json:"body"`
 	CreatedAt   string         `json:"createdAt"`
 	DatabaseID  int64          `json:"databaseID"`

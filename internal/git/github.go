@@ -277,10 +277,8 @@ func parseGitHubPRDetail(stdout string) (PRDetail, error) {
 		MergeStateStatus  string            `json:"mergeStateStatus"`
 		ReviewDecision    string            `json:"reviewDecision"`
 		StatusCheckRollup []json.RawMessage `json:"statusCheckRollup"`
-		Author            struct {
-			Login string `json:"login"`
-		} `json:"author"`
-		Reviews []githubReviewRaw `json:"reviews"`
+		Author            githubActorRaw    `json:"author"`
+		Reviews           []githubReviewRaw `json:"reviews"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
 		return PRDetail{}, err
@@ -290,6 +288,7 @@ func parseGitHubPRDetail(stdout string) (PRDetail, error) {
 		Title:          raw.Title,
 		Body:           raw.Body,
 		AuthorLogin:    raw.Author.Login,
+		AuthorName:     raw.Author.Name,
 		State:          NormalizePRState(raw.State),
 		Draft:          raw.IsDraft,
 		HeadRefName:    raw.HeadRefName,
@@ -306,6 +305,9 @@ func parseGitHubPRDetail(stdout string) (PRDetail, error) {
 	}, nil
 }
 
+// githubReviewRaw is one `gh pr view --json reviews` entry. gh selects the
+// review author as {login} only, unlike the PR author, so verdicts carry no
+// display name.
 type githubReviewRaw struct {
 	Body        string `json:"body"`
 	SubmittedAt string `json:"submittedAt"`
@@ -519,14 +521,12 @@ func parseGitHubPRComments(stdout string) ([]ReviewThread, githubPageInfo, error
 					Comments struct {
 						PageInfo githubPageInfo `json:"pageInfo"`
 						Nodes    []struct {
-							ID          string `json:"id"`
-							DatabaseID  int64  `json:"databaseId"`
-							Body        string `json:"body"`
-							CreatedAt   string `json:"createdAt"`
-							IsMinimized bool   `json:"isMinimized"`
-							Author      struct {
-								Login string `json:"login"`
-							} `json:"author"`
+							ID          string         `json:"id"`
+							DatabaseID  int64          `json:"databaseId"`
+							Body        string         `json:"body"`
+							CreatedAt   string         `json:"createdAt"`
+							IsMinimized bool           `json:"isMinimized"`
+							Author      githubActorRaw `json:"author"`
 						} `json:"nodes"`
 					} `json:"comments"`
 				} `json:"pullRequest"`
@@ -546,6 +546,7 @@ func parseGitHubPRComments(stdout string) ([]ReviewThread, githubPageInfo, error
 			ID: node.ID,
 			Comments: []ReviewComment{{
 				AuthorLogin: node.Author.Login,
+				AuthorName:  node.Author.Name,
 				Body:        node.Body,
 				CreatedAt:   node.CreatedAt,
 				DatabaseID:  node.DatabaseID,
@@ -568,7 +569,7 @@ func githubPRCommentsQuery(owner, repo string, number int, after string) string 
         nodes {
           id
           databaseId
-          author { login }
+          author { login ... on User { name } }
           body
           createdAt
           isMinimized
@@ -577,6 +578,15 @@ func githubPRCommentsQuery(owner, repo string, number int, after string) string 
     }
   }
 }`, owner, repo, number, afterClause)
+}
+
+// githubActorRaw is a GraphQL Actor selected as
+// `author { login ... on User { name } }`, and gh's PR author, which gh
+// reports as {id, is_bot, login, name}. A Bot or Mannequin has no name key
+// and a User without a display name answers null or ""; all decode to "".
+type githubActorRaw struct {
+	Login string `json:"login"`
+	Name  string `json:"name"`
 }
 
 type githubPageInfo struct {
@@ -603,13 +613,11 @@ func parseGitHubReviewThreads(stdout string) ([]ReviewThread, githubPageInfo, er
 							SubjectType   string `json:"subjectType"`
 							Comments      struct {
 								Nodes []struct {
-									DatabaseID int64  `json:"databaseId"`
-									Body       string `json:"body"`
-									CreatedAt  string `json:"createdAt"`
-									Author     struct {
-										Login string `json:"login"`
-									} `json:"author"`
-									ReplyTo *struct {
+									DatabaseID int64          `json:"databaseId"`
+									Body       string         `json:"body"`
+									CreatedAt  string         `json:"createdAt"`
+									Author     githubActorRaw `json:"author"`
+									ReplyTo    *struct {
 										ID         string `json:"id"`
 										DatabaseID int64  `json:"databaseId"`
 									} `json:"replyTo"`
@@ -645,6 +653,7 @@ func parseGitHubReviewThreads(stdout string) ([]ReviewThread, githubPageInfo, er
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{
 				AuthorLogin: comment.Author.Login,
+				AuthorName:  comment.Author.Name,
 				Body:        comment.Body,
 				CreatedAt:   comment.CreatedAt,
 				DatabaseID:  comment.DatabaseID,
@@ -683,7 +692,7 @@ func githubReviewThreadsQuery(owner, repo string, number int, after string) stri
             nodes {
               id
               databaseId
-              author { login }
+              author { login ... on User { name } }
               body
               createdAt
               replyTo { id databaseId }

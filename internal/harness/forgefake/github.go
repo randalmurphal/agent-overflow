@@ -21,7 +21,7 @@ var githubPullFields = map[string]func(r *Repo, p *Pull) any{
 	"url":              func(r *Repo, p *Pull) any { return githubPullURL(r, p) },
 	"state":            func(_ *Repo, p *Pull) any { return strings.ToUpper(p.State) },
 	"isDraft":          func(_ *Repo, p *Pull) any { return p.Draft },
-	"author":           func(_ *Repo, p *Pull) any { return map[string]any{"login": p.Author} },
+	"author":           func(_ *Repo, p *Pull) any { return map[string]any{"login": p.Author, "name": p.AuthorName} },
 	"headRefName":      func(_ *Repo, p *Pull) any { return p.HeadRef },
 	"baseRefName":      func(_ *Repo, p *Pull) any { return p.BaseRef },
 	"headRefOid":       func(_ *Repo, p *Pull) any { return p.HeadSHA },
@@ -326,8 +326,8 @@ func ghAPIUser(e *Engine, c *call, _ []string) response {
 // whitespace collapsed, so a changed selection set is an unhandled query
 // rather than an answer missing the new field.
 const (
-	githubReviewThreadsQuery = `query { repository(owner: @OWNER, name: @NAME) { pullRequest(number: @NUMBER) { reviewThreads(first: 50@AFTER) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line startLine diffSide startDiffSide subjectType comments(first: 50) { nodes { id databaseId author { login } body createdAt replyTo { id databaseId } } } } } } } }`
-	githubPRCommentsQuery    = `query { repository(owner: @OWNER, name: @NAME) { pullRequest(number: @NUMBER) { comments(first: 50@AFTER) { pageInfo { hasNextPage endCursor } nodes { id databaseId author { login } body createdAt isMinimized } } } } }`
+	githubReviewThreadsQuery = `query { repository(owner: @OWNER, name: @NAME) { pullRequest(number: @NUMBER) { reviewThreads(first: 50@AFTER) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line startLine diffSide startDiffSide subjectType comments(first: 50) { nodes { id databaseId author { login ... on User { name } } body createdAt replyTo { id databaseId } } } } } } } }`
+	githubPRCommentsQuery    = `query { repository(owner: @OWNER, name: @NAME) { pullRequest(number: @NUMBER) { comments(first: 50@AFTER) { pageInfo { hasNextPage endCursor } nodes { id databaseId author { login ... on User { name } } body createdAt isMinimized } } } } }`
 	githubGraphQLPageSize    = 50
 )
 
@@ -411,7 +411,7 @@ func githubThreadNodes(p *Pull) []map[string]any {
 			comments = append(comments, map[string]any{
 				"id":         githubCommentNodeID("PRRC", comment.ID),
 				"databaseId": comment.ID,
-				"author":     map[string]any{"login": comment.Author},
+				"author":     githubGraphQLActor(comment),
 				"body":       comment.Body,
 				"createdAt":  comment.CreatedAt,
 				"replyTo":    replyTo,
@@ -450,13 +450,24 @@ func githubCommentNodes(p *Pull) []map[string]any {
 		out = append(out, map[string]any{
 			"id":          githubCommentNodeID("IC", comment.ID),
 			"databaseId":  comment.ID,
-			"author":      map[string]any{"login": comment.Author},
+			"author":      githubGraphQLActor(comment),
 			"body":        comment.Body,
 			"createdAt":   comment.CreatedAt,
 			"isMinimized": false,
 		})
 	}
 	return out
+}
+
+// githubGraphQLActor answers `author { login ... on User { name } }`. A
+// comment without a display name answers as a bot: the User fragment does
+// not apply, so there is no name key.
+func githubGraphQLActor(comment Comment) map[string]any {
+	actor := map[string]any{"login": comment.Author}
+	if comment.AuthorName != "" {
+		actor["name"] = comment.AuthorName
+	}
+	return actor
 }
 
 func githubCommentNodeID(prefix string, id int64) string {

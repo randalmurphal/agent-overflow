@@ -249,6 +249,9 @@ type harnessTiming struct {
 	// TransferRetry is how soon a pending outgoing conversation transfer
 	// asks again (app.IsolationConfig.TransferPendingRetry).
 	TransferRetry time.Duration
+	// PRUpdateRetry is the first retry delay after a pull request poll
+	// fails (app.IsolationConfig.PRUpdateRetryBase).
+	PRUpdateRetry time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -257,10 +260,11 @@ type harnessTiming struct {
 func parseHarnessTiming(value string) (harnessTiming, error) {
 	var timing harnessTiming
 	fields := map[string]*time.Duration{
-		"pairing-probe":  &timing.PairingProbe,
-		"watermark":      &timing.Watermark,
-		"thread-poll":    &timing.ThreadPoll,
-		"transfer-retry": &timing.TransferRetry,
+		"pairing-probe":   &timing.PairingProbe,
+		"watermark":       &timing.Watermark,
+		"thread-poll":     &timing.ThreadPoll,
+		"transfer-retry":  &timing.TransferRetry,
+		"pr-update-retry": &timing.PRUpdateRetry,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -353,6 +357,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		ScanScopePIDs:        opts.ScanScopePIDs,
 		ThreadRequestPoll:    opts.Timing.ThreadPoll,
 		TransferPendingRetry: opts.Timing.TransferRetry,
+		PRUpdateRetryBase:    opts.Timing.PRUpdateRetry,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

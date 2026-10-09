@@ -1,6 +1,15 @@
 <script lang="ts">
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import ReviewAvatar from './ReviewAvatar.svelte';
+  import ReviewIconButton from './ReviewIconButton.svelte';
   import type { DiffReviewComment } from '../../types/models';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+
+  // The reader's own draft comment on the diff surface: the same card
+  // shape as a PR thread, with an accent edge in place of a state edge
+  // (a draft has no forge state yet) and edit/delete in place of
+  // reply/resolve.
 
   interface Props {
     comment: DiffReviewComment;
@@ -75,62 +84,58 @@
 </script>
 
 <article
-  class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-[0.75rem]"
+  class="mx-2 my-1.5 grid grid-cols-[20px_minmax(0,1fr)] gap-x-2 text-[0.75rem]"
   data-testid="review-comment-thread"
 >
-  <div class="mb-1 flex items-center gap-2">
-    <span class="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-fg-muted">{commentLocation(comment)}</span>
-    {#if orphaned}
-      <span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted" title="Line no longer in diff">orphaned</span>
-    {/if}
-    {#if !editing}
-      <button
-        type="button"
-        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
-        onclick={startEdit}
-      >
-        Edit
-      </button>
-      <button
-        type="button"
-        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45"
-        disabled={busy}
-        onclick={() => { void deleteComment(); }}
-      >
-        Delete
-      </button>
-    {/if}
+  <div class="pt-1">
+    <ReviewAvatar login="you" name="You" initials="Y" size={20} />
   </div>
-  {#if quote}
-    <div class="mb-1 truncate border-l-2 border-border-subtle pl-2 font-mono text-[0.6875rem] text-fg-subtle">
-      {quote}
+  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {orphaned ? 'border-dashed border-border-strong' : 'border-accent/40 border-l-[3px] border-l-accent'}">
+    <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 {orphaned ? 'bg-surface-2/40' : 'bg-accent/6'}" title={commentLocation(comment)}>
+      <span class="shrink-0 font-semibold text-fg">You</span>
+      <span class="shrink-0 rounded-full bg-accent/12 px-1.5 py-px text-[0.625rem] text-accent">draft</span>
+      {#if orphaned}
+        <span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted" title="Line no longer in diff">orphaned</span>
+      {/if}
+      <span class="min-w-0 flex-1"></span>
+      {#if !editing}
+        <ReviewIconButton icon={Pencil} label="Edit" onclick={startEdit} />
+        <ReviewIconButton icon={Trash2} label="Delete" disabled={busy} onclick={() => { void deleteComment(); }} />
+      {/if}
     </div>
-  {/if}
-  {#if editing}
-    <textarea
-      bind:value={editBody}
-      rows="2"
-      class="w-full resize-none rounded border border-border-subtle bg-surface-1 px-2 py-1.5 text-[0.75rem] leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
-      onkeydown={onEditKeydown}
-    ></textarea>
-    <div class="mt-2 flex justify-end gap-2">
-      <button
-        type="button"
-        class="rounded px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2"
-        onclick={cancelEdit}
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
-        disabled={!canSave}
-        onclick={() => { void saveEdit(); }}
-      >
-        Save
-      </button>
+    <div class="px-3 py-2.5">
+      {#if quote}
+        <div class="mb-2 truncate border-l-2 border-border-subtle pl-2 font-mono text-[0.6875rem] text-fg-subtle">
+          {quote}
+        </div>
+      {/if}
+      {#if editing}
+        <textarea
+          bind:value={editBody}
+          rows="3"
+          class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
+          onkeydown={onEditKeydown}
+        ></textarea>
+        <div class="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            class="rounded-[var(--radius-control)] px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
+            onclick={cancelEdit}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="rounded-[var(--radius-control)] bg-accent px-2.5 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
+            disabled={!canSave}
+            onclick={() => { void saveEdit(); }}
+          >
+            Save
+          </button>
+        </div>
+      {:else}
+        <p class="whitespace-pre-wrap leading-relaxed text-fg">{comment.body}</p>
+      {/if}
     </div>
-  {:else}
-    <p class="whitespace-pre-wrap leading-relaxed text-fg">{comment.body}</p>
-  {/if}
+  </div>
 </article>

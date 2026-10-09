@@ -3,6 +3,7 @@ package git
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,7 +29,7 @@ func TestParseGitHubPRDetailFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseGitHubPRDetail: %v", err)
 	}
-	if detail.Number != 13780 || detail.Title == "" || detail.AuthorLogin != "niik" {
+	if detail.Number != 13780 || detail.Title == "" || detail.AuthorLogin != "niik" || detail.AuthorName != "Markus Olsson" {
 		t.Fatalf("detail basics = %+v", detail)
 	}
 	if detail.ReviewDecision != "APPROVED" {
@@ -42,6 +43,10 @@ func TestParseGitHubPRDetailFixture(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, review := range detail.LatestReviews {
+		// gh's reviews field reports the reviewer's login only.
+		if review.AuthorName != "" {
+			t.Fatalf("GitHub review verdict carries a name gh does not report: %+v", review)
+		}
 		if seen[review.AuthorLogin] {
 			t.Fatalf("duplicate latest review for %s", review.AuthorLogin)
 		}
@@ -129,8 +134,15 @@ func TestParseGitLabPRDetailAndApprovalsFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseGitLabPRDetail: %v", err)
 	}
-	if detail.Number != 241785 || detail.AuthorLogin != "hbakergitlab" {
+	if detail.Number != 241785 || detail.AuthorLogin != "hbakergitlab" || detail.AuthorName != "Hannah Baker" {
 		t.Fatalf("detail basics = %+v", detail)
+	}
+	approvers := map[string]string{}
+	for _, review := range detail.LatestReviews {
+		approvers[review.AuthorLogin] = review.AuthorName
+	}
+	if approvers["pshutsin"] != "Pavel Shutsin" || approvers["uokeadu"] != "Ugo Nnanna Okeadu" {
+		t.Fatalf("approval names = %v", approvers)
 	}
 	if detail.HeadSHA != "55cd21150717bf37ceee8c8c39292179801b3dfb" {
 		t.Fatalf("HeadSHA = %q", detail.HeadSHA)
@@ -156,8 +168,16 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 	if len(threads) == 0 {
 		t.Fatal("expected positioned GitLab threads")
 	}
-	var sawOutdated, sawFileLevel, sawReplyGroup, sawConversation bool
+	var sawOutdated, sawFileLevel, sawReplyGroup, sawConversation, sawAuthorName bool
 	for _, thread := range threads {
+		for _, comment := range thread.Comments {
+			if comment.AuthorLogin == "hbakergitlab" {
+				if comment.AuthorName != "Hannah Baker" {
+					t.Fatalf("note author name = %q, want Hannah Baker", comment.AuthorName)
+				}
+				sawAuthorName = true
+			}
+		}
 		if thread.IsOutdated {
 			sawOutdated = true
 		}
@@ -196,6 +216,9 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 	if !sawConversation {
 		t.Fatal("expected GitLab position-less conversation threads from fixture")
 	}
+	if !sawAuthorName {
+		t.Fatal("expected notes by hbakergitlab in fixture")
+	}
 }
 
 func TestParseGitHubPRCommentsSkipsMinimized(t *testing.T) {
@@ -231,6 +254,95 @@ func TestParseGitLabMergeableConflictFixture(t *testing.T) {
 	}
 	if detail.Mergeability != MergeabilityConflicts {
 		t.Fatalf("Mergeability = %q, want conflicts", detail.Mergeability)
+	}
+}
+
+// github-review-threads-named.json and github-pr-comments-named.json are
+// GitHub's answers (2026-10-09) to githubReviewThreadsQuery and
+// githubPRCommentsQuery for cli/cli#14519: a User carries `name`, a Bot
+// (copilot-pull-request-reviewer, github-actions) answers login only. A
+// User with no display name answers `"name": null`.
+const githubNullNameCommentsAnswer = `{"data":{"repository":{"pullRequest":{"comments":{
+  "pageInfo":{"hasNextPage":false,"endCursor":"c"},
+  "nodes":[{"id":"IC_1","databaseId":1,"author":{"login":"anon","name":null},"body":"unnamed","createdAt":"t","isMinimized":false}]}}}}}`
+
+func commentAuthors(threads []ReviewThread) [][2]string {
+	var out [][2]string
+	for _, thread := range threads {
+		for _, comment := range thread.Comments {
+			out = append(out, [2]string{comment.AuthorLogin, comment.AuthorName})
+		}
+	}
+	return out
+}
+
+func TestParseGitHubCommentAuthorNames(t *testing.T) {
+	t.Parallel()
+	bot := [2]string{"copilot-pull-request-reviewer", ""}
+	waldir := [2]string{"waldyrious", "Waldir Pimenta"}
+	kynan := [2]string{"BagToad", "Kynan Ware"}
+	want := [][2]string{bot, waldir, bot, waldir, bot, kynan, waldir, kynan, waldir, kynan, waldir, kynan, kynan, waldir, kynan, waldir}
+	threads, _, err := parseGitHubReviewThreads(readTestdata(t, "github-review-threads-named.json"))
+	if err != nil {
+		t.Fatalf("parseGitHubReviewThreads: %v", err)
+	}
+	if got := commentAuthors(threads); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("review thread authors = %v, want %v", got, want)
+	}
+
+	want = [][2]string{{"github-actions", ""}, waldir, {"williammartin", "William Martin"}, waldir, waldir}
+	threads, _, err = parseGitHubPRComments(readTestdata(t, "github-pr-comments-named.json"))
+	if err != nil {
+		t.Fatalf("parseGitHubPRComments: %v", err)
+	}
+	if got := commentAuthors(threads); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("conversation authors = %v, want %v", got, want)
+	}
+
+	threads, _, err = parseGitHubPRComments(githubNullNameCommentsAnswer)
+	if err != nil || fmt.Sprint(commentAuthors(threads)) != fmt.Sprint([][2]string{{"anon", ""}}) {
+		t.Fatalf("null name = %v, %v", commentAuthors(threads), err)
+	}
+
+	// Recorded answers that predate the name selection still parse, with no name.
+	for _, fixture := range []string{"github-review-threads.json", "github-pr-comments.json"} {
+		parse := parseGitHubReviewThreads
+		if fixture == "github-pr-comments.json" {
+			parse = parseGitHubPRComments
+		}
+		threads, _, err := parse(readTestdata(t, fixture))
+		if err != nil {
+			t.Fatalf("%s: %v", fixture, err)
+		}
+		authors := commentAuthors(threads)
+		if len(authors) == 0 {
+			t.Fatalf("%s: no comments", fixture)
+		}
+		for _, author := range authors {
+			if author[0] == "" || author[1] != "" {
+				t.Fatalf("%s: author = %q, want a login and no name", fixture, author)
+			}
+		}
+	}
+}
+
+func TestParseForgeAuthorWithoutName(t *testing.T) {
+	t.Parallel()
+	github, err := parseGitHubPRDetail(`{"number":1,"author":{"login":"app/dependabot","is_bot":true}}`)
+	if err != nil || github.AuthorLogin != "app/dependabot" || github.AuthorName != "" {
+		t.Fatalf("GitHub detail without name = %+v, %v", github, err)
+	}
+	approvals, err := parseGitLabApprovals(`{"approved_by":[{"user":{"username":"erin"},"approved_at":"t"}]}`)
+	if err != nil || len(approvals) != 1 || approvals[0].AuthorLogin != "erin" || approvals[0].AuthorName != "" {
+		t.Fatalf("GitLab approvals without name = %+v, %v", approvals, err)
+	}
+	gitlab, err := parseGitLabPRDetail(`{"iid":1,"author":{"username":"dave"}}`, approvals)
+	if err != nil || gitlab.AuthorLogin != "dave" || gitlab.AuthorName != "" {
+		t.Fatalf("GitLab detail without name = %+v, %v", gitlab, err)
+	}
+	threads, err := parseGitLabReviewThreads(`[{"id":"d1","notes":[{"id":1,"body":"b","author":{"username":"dave"}}]}]`, "")
+	if err != nil || fmt.Sprint(commentAuthors(threads)) != fmt.Sprint([][2]string{{"dave", ""}}) {
+		t.Fatalf("GitLab note without name = %+v, %v", threads, err)
 	}
 }
 

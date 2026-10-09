@@ -17,6 +17,7 @@ import {
 // production, prefix-summed estimates in tests).
 
 export interface ReadingAnchor {
+  /** Empty anchors the PR overview row above the first file. */
   path: string;
   /** 0 anchors the file header itself. */
   line: number;
@@ -95,9 +96,11 @@ export function captureReadingAnchor(
   if (built.rows.length === 0 || offset <= 0) return null;
   const rowIndex = geometry.findItemIndex(offset);
   const row = built.rows[rowIndex];
-  const file = row ? files[row.fileIndex] : undefined;
-  if (!row || !file || !geometry.holds(rowIndex)) return null;
+  if (!row || !geometry.holds(rowIndex)) return null;
   const rowTop = geometry.getItemOffset(rowIndex);
+  if (row.kind === 'overview') return { path: '', line: 0, side: 'new', delta: offset - rowTop };
+  const file = files[row.fileIndex];
+  if (!file) return null;
   let inner = 0;
   if (row.kind === 'line-block') {
     inner = Math.max(0, Math.min((row.splitCount ?? row.count) - 1, Math.floor((offset - rowTop) / REVIEW_LINE_HEIGHT_PX)));
@@ -166,6 +169,9 @@ export function resolveReadingAnchor(
   target: ReadingAnchor,
 ): ReadingPosition | null {
   if (built.rows.length === 0) return null;
+  if (target.path === '') {
+    return built.rows[0]?.kind === 'overview' ? { index: 0, offset: target.delta } : { index: 0, offset: 0 };
+  }
   let fileIndex = files.findIndex((file) => file.path === target.path);
   const fileSurvived = fileIndex >= 0;
   if (!fileSurvived) {

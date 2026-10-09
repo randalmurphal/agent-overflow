@@ -6,7 +6,7 @@ import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
-import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
+import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -187,7 +187,7 @@ describe('<ReviewPane>', () => {
     expect(toggle).toHaveAccessibleName('Collapse all files');
   });
 
-  it('surfaces comments in the rail tab, tree badges, and toolbar tally', async () => {
+  it('counts drafts in the tree badge and the toolbar tally', async () => {
     const draft: DiffReviewComment = {
       id: 'draft-1',
       threadId: 'thread-1',
@@ -208,24 +208,89 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-comment-tally')).toHaveTextContent('1 draft');
     });
+    // Workspace scope has no conversation to open, so the tally is text.
+    expect(view.getByTestId('review-comment-tally').tagName).toBe('SPAN');
 
-    // Files tab: the commented file carries a count badge.
-    expect(view.getByTestId('review-tree-comment-count')).toHaveTextContent('1');
-
-    // Tally opens the Comments tab; the draft is listed with its snippet.
-    await fireEvent.click(view.getByTestId('review-comment-tally'));
-    const items = view.getAllByTestId('review-comments-item');
-    expect(items).toHaveLength(1);
-    expect(items[0]).toHaveTextContent('You');
-    expect(items[0]).toHaveTextContent('needs a guard here');
-
-    // Clicking the item stages + consumes the row-key jump without errors.
-    await fireEvent.click(items[0]!);
-    expect(view.getByTestId('review-comments-list')).toBeInTheDocument();
-
-    // Tabs switch back to the file tree.
-    await fireEvent.click(view.getByTestId('review-rail-tab-files'));
+    // The commented file carries a count badge; a draft is not unresolved.
+    const badge = view.getByTestId('review-tree-comment-count');
+    expect(badge).toHaveTextContent('1');
+    expect(badge.classList.contains('text-warning')).toBe(false);
     expect(view.getByTestId('review-tree-search')).toBeInTheDocument();
+  });
+
+  it('PR scope renders the overview row and the tally opens its conversation', async () => {
+    const detail: PRDetail = {
+      number: 5,
+      title: 'Add feature',
+      body: 'Why this change exists.',
+      authorLogin: 'octocat',
+      state: 'open',
+      draft: false,
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      additions: 1,
+      deletions: 1,
+      changedFiles: 1,
+      viewerIsAuthor: false,
+      reviewDecision: '',
+      latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean',
+    };
+    const threads: ReviewThread[] = [{
+      id: 't-1',
+      path: 'src/app.ts',
+      line: 1,
+      side: 'right',
+      isResolvable: true,
+      isResolved: false,
+      isOutdated: false,
+      comments: [{ authorLogin: 'alice', authorName: 'Alice Doe', body: '**Guard this.** It can be null.', createdAt: '2026-01-01T00:00:00Z', databaseID: 1 }],
+    }];
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: 'github:owner/repo:5',
+      detail,
+      threads,
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setReviewDiffMock('OpenPRDiff', async () => patch());
+    setBindingMock('ListPRReviewThreads', async () => threads);
+
+    seedSourcePanePR();
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
+      expect(view.getByTestId('review-overview')).toBeInTheDocument();
+    });
+
+    // Both sections start folded; the tally is a button here that opens
+    // the conversation at the thread's card.
+    expect(view.getByTestId('review-pr-description').getAttribute('data-open')).toBe('false');
+    expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('false');
+    expect(view.queryByTestId('review-conversation-thread')).toBeNull();
+    const tally = view.getByTestId('review-comment-tally');
+    expect(tally.tagName).toBe('BUTTON');
+    expect(tally).toHaveTextContent('1 unresolved');
+    await fireEvent.click(tally);
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('true');
+    });
+    const card = view.getByTestId('review-conversation-thread');
+    expect(card.getAttribute('data-state')).toBe('unresolved');
+    expect(card).toHaveTextContent('Alice Doe');
+    expect(card).toHaveTextContent('@alice');
+    expect(view.getByTestId('review-conversation-open-count')).toHaveTextContent('1 unresolved');
+
+    // The file's badge tints for its unresolved thread.
+    expect(view.getByTestId('review-tree-comment-count').classList.contains('text-warning')).toBe(true);
   });
 
   it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {

@@ -105,7 +105,7 @@ func glabMR(e *Engine, c *call, m []string) response {
 		"target_branch":         p.BaseRef,
 		"sha":                   p.HeadSHA,
 		"web_url":               gitlabMRURL(r, p),
-		"author":                map[string]any{"username": p.Author},
+		"author":                gitlabUser(p.Author, p.AuthorName),
 		"changes_count":         strconv.Itoa(len(diffFiles(p.Diff))),
 		"has_conflicts":         p.Mergeable == "conflicts",
 		"detailed_merge_status": gitlabMergeStatus[p.Mergeable],
@@ -122,7 +122,7 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 	approved := []map[string]any{}
 	for _, review := range p.Reviews {
 		approved = append(approved, map[string]any{
-			"user":        map[string]any{"username": review.Author},
+			"user":        gitlabUser(review.Author, review.AuthorName),
 			"approved_at": review.SubmittedAt,
 		})
 	}
@@ -230,13 +230,18 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 	return out
 }
 
+// gitlabUser is GitLab's user summary, which always carries a name.
+func gitlabUser(username, name string) map[string]any {
+	return map[string]any{"username": username, "name": name}
+}
+
 func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	note := map[string]any{
 		"id":         comment.ID,
 		"body":       comment.Body,
 		"system":     false,
 		"created_at": comment.CreatedAt,
-		"author":     map[string]any{"username": comment.Author},
+		"author":     gitlabUser(comment.Author, comment.AuthorName),
 	}
 	for key, value := range extra {
 		note[key] = value

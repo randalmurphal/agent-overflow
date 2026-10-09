@@ -116,7 +116,11 @@ read/write APIs and per-PR-key polling.
   pane enters PR scope; the pump is refcounted per
   `forge:namespace/repo:number`, so N panes on one PR share one poll. Go
   polls ~45s, diffs snapshots, `a.emit`s only on change (addressed by that
-  same key); the last unsubscribe stops the pump. No background polling in
+  same key); the last unsubscribe stops the pump. A failing fetch, the
+  first one included, never fails the subscribe: the pump carries the
+  failure (a caller-safe summary with a log id) and retries on a doubling
+  delay from 5s up to the interval, and the pane loads its diff when the
+  recovery frame brings the first snapshot. No background polling in
   v1.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`

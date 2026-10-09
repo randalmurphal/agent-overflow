@@ -14,6 +14,7 @@ import {
   reviewRowEstimate,
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_HEIGHT_PX,
+  REVIEW_OVERVIEW_ESTIMATE_PX,
   type ReviewRowsResult,
 } from './reviewRows';
 
@@ -69,7 +70,7 @@ function draftAt(path: string, newLine: number): DiffReviewComment {
   };
 }
 
-function buildFor(files: ReviewFile[], drafts: DiffReviewComment[] = []): ReviewRowsResult {
+function buildFor(files: ReviewFile[], drafts: DiffReviewComment[] = [], overview = false): ReviewRowsResult {
   return buildReviewRows({
     files,
     viewMode: 'stacked',
@@ -78,6 +79,7 @@ function buildFor(files: ReviewFile[], drafts: DiffReviewComment[] = []): Review
     openEditors: [],
     prThreads: [],
     expandedPRThreadIds: new Set(),
+    overview,
   });
 }
 
@@ -232,5 +234,40 @@ describe('resolveReadingAnchor', () => {
     });
     const top = topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchorAt(12)), geometryOf(built));
     expect(top).toBe(0); // header row offset, no line delta
+  });
+});
+
+describe('reading anchor over the PR overview row', () => {
+  it('anchors a position inside the overview to the empty path with its pixel delta', () => {
+    const files = [fileFor('a.ts', 10)];
+    const built = buildFor(files, [], true);
+    const geometry = geometryOf(built);
+    const offset = 123;
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
+    expect(anchor).toEqual({ path: '', line: 0, side: 'new', delta: offset - geometry.getItemOffset(0) });
+    expect(topOf(resolveReadingAnchor(built, files, new BlockRowsCache(), anchor!), geometry)).toBe(offset);
+  });
+
+  it('resolves the empty path into the overview, or to the top when there is no overview', () => {
+    const files = [fileFor('a.ts', 10)];
+    const anchor: ReadingAnchor = { path: '', line: 0, side: 'new', delta: 42 };
+    expect(resolveReadingAnchor(buildFor(files, [], true), files, new BlockRowsCache(), anchor))
+      .toEqual({ index: 0, offset: 42 });
+    // Row 0 is a file header now: the delta measured inside the overview
+    // means nothing there, so the view goes to the top.
+    expect(resolveReadingAnchor(buildFor(files), files, new BlockRowsCache(), anchor))
+      .toEqual({ index: 0, offset: 0 });
+  });
+
+  it('still anchors file lines below the overview', () => {
+    const files = [fileFor('a.ts', 10)];
+    const built = buildFor(files, [], true);
+    const geometry = geometryOf(built);
+    const offset = REVIEW_OVERVIEW_ESTIMATE_PX + REVIEW_FILE_HEADER_PX + 3 * REVIEW_LINE_HEIGHT_PX + 7;
+    const anchor = captureReadingAnchor(built, files, new BlockRowsCache(), geometry, offset);
+    expect(anchor).toEqual({ path: 'a.ts', line: 4, side: 'new', delta: 7 });
+    // Overview, header, block: the line sits in row 2.
+    expect(resolveReadingAnchor(built, files, new BlockRowsCache(), anchor!))
+      .toEqual({ index: 2, offset: 3 * REVIEW_LINE_HEIGHT_PX + 7 });
   });
 });

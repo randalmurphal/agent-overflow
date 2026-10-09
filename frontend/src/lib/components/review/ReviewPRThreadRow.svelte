@@ -4,15 +4,32 @@
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Reply from '@lucide/svelte/icons/reply';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewThreadComments from './ReviewThreadComments.svelte';
-  import { commentSnippet } from '../../utils/reviewComments';
+  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import { commentSnippet, visibleBody } from '../../utils/reviewComments';
+  import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
+  import {
+    THREAD_CARD_CLASS,
+    THREAD_CHIP_CLASS,
+    THREAD_HEAD_CLASS,
+    reviewThreadState,
+    threadBodyClass,
+  } from '../../utils/reviewThreadStyle';
+  import { relativeTime } from '../../utils/format';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
 
-  // A PR review thread's strip on the diff surface. Unresolved threads
-  // carry a warning edge and render expanded (reviewRows collapses only
-  // resolved/outdated ones); settled threads fold to one line.
+  // A PR review thread on the diff surface: the same card as the
+  // Conversation feed (avatar, author, state edge and chip, actions), so
+  // a thread looks like itself wherever it is read. Collapsed, the
+  // header carries the first comment's lead sentence and the reply
+  // count; expanded, the body is the full first comment and its
+  // replies. Unresolved threads render expanded (reviewRows collapses
+  // only settled ones). The line is in the gutter directly above, so the
+  // header names no location; the tooltip does.
 
   interface Props {
     thread: ReviewThread;
@@ -34,8 +51,8 @@
     onSendToAgent?: () => Promise<void> | void;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
-    /** Opens the PR header's Conversation section at this thread; absent
-     *  when that section does not exist (no PR header on screen). */
+    /** Opens the overview's Conversation section at this thread; absent
+     *  when that section does not exist (no PR overview on screen). */
     onJumpToConversation?: () => void;
   }
 
@@ -63,90 +80,128 @@
   // svelte-ignore state_referenced_locally
   let replying = $state(body !== '');
 
-  const unresolved = $derived(thread.isResolvable && !thread.isResolved && !thread.isOutdated && !orphaned);
-  const summary = $derived(commentSnippet(thread.comments[0]?.body ?? ''));
+  const threadState = $derived(reviewThreadState(thread, orphaned));
+  const first = $derived(thread.comments[0]);
+  const firstBody = $derived(visibleBody(first?.body ?? ''));
+  const summary = $derived(commentSnippet(first?.body ?? ''));
+  const replyCount = $derived(Math.max(0, thread.comments.length - 1));
+  const firstTime = $derived.by(() => {
+    const ms = Date.parse(first?.createdAt ?? '');
+    return Number.isNaN(ms) ? '' : relativeTime(ms);
+  });
   const location = $derived(anchor.side === 'file'
     ? anchor.filePath
     : `${anchor.filePath}:${anchor.newLine || anchor.oldLine || ''}`);
-  // The file header sits directly above this row, so the full path is
-  // noise: show basename(:line), keep the full location as the tooltip.
-  const shortLocation = $derived.by(() => {
-    const slash = location.lastIndexOf('/');
-    return slash < 0 ? location : location.slice(slash + 1);
-  });
 </script>
 
 <article
-  class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-xs {unresolved ? 'border-l-2 border-l-warning' : ''}"
+  class="mx-2 my-1.5 grid grid-cols-[20px_minmax(0,1fr)] gap-x-2 text-xs"
   data-testid="review-pr-thread"
+  data-state={threadState}
 >
-  <div class="flex items-center gap-1.5">
-    <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left" onclick={onToggle} title={location}>
-      <span class="min-w-0 truncate font-mono text-[0.6875rem] text-fg-muted">{shortLocation}</span>
-      {#if unresolved}<span class="shrink-0 rounded-full bg-warning/12 px-1.5 py-px text-[0.625rem] text-warning">unresolved</span>{/if}
-      {#if thread.isResolved}<span class="shrink-0 rounded-full bg-success/12 px-1.5 py-px text-[0.625rem] text-success">resolved</span>{/if}
-      {#if thread.isOutdated || orphaned}<span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted">outdated</span>{/if}
-      <!-- Basis-0 so the summary only takes leftover width: with basis
-           auto its long text would absorb the row and crush the location
-           span to an ellipsis even when the summary itself truncates. -->
-      {#if collapsed}<span class="min-w-0 flex-1 truncate text-fg-subtle">{summary}</span>{/if}
-    </button>
-    <ReviewIconButton
-      icon={Reply}
-      label={replying ? 'Hide reply box' : 'Reply'}
-      testid="review-pr-thread-reply"
-      onclick={() => { replying = !replying; }}
-    />
-    {#if onResolve}
-      {@const resolve = onResolve}
-      <ReviewIconButton
-        icon={thread.isResolved ? RotateCcw : Check}
-        label={thread.isResolved ? 'Unresolve thread' : 'Resolve thread'}
-        spinning={resolving}
-        disabled={resolving}
-        testid="review-pr-thread-resolve"
-        onclick={() => resolve(!thread.isResolved)}
-      />
-    {/if}
-    {#if onSendToAgent}
-      {@const sendToAgent = onSendToAgent}
-      <ReviewIconButton
-        icon={Bot}
-        label="Send to agent"
-        disabled={isTurnActive}
-        disabledLabel="Agent turn is active"
-        testid="review-pr-thread-send-agent"
-        onclick={() => { void sendToAgent(); }}
-      />
-    {/if}
-    {#if onJumpToConversation}
-      {@const jump = onJumpToConversation}
-      <ReviewIconButton
-        icon={MessagesSquare}
-        label="Open in conversation"
-        testid="review-pr-thread-jump-conversation"
-        onclick={() => jump()}
-      />
-    {/if}
+  <div class="pt-1">
+    <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={20} />
   </div>
-
-  {#if resolveError}
-    <div class="mt-1 text-[0.6875rem] text-error">{resolveError}</div>
-  {/if}
-
-  {#if !collapsed || replying}
-    <div class="mt-2">
-      <ReviewThreadComments
-        {thread}
-        {body}
-        {error}
-        {sending}
-        {replying}
-        showComments={!collapsed}
-        {onBodyChange}
-        {onSendReply}
-        onCloseReply={() => { replying = false; }}
-      />
+  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}">
+    <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
+        aria-expanded={!collapsed}
+        title={location}
+        onclick={onToggle}
+      >
+        <span class="shrink-0 font-semibold text-fg">{first ? authorDisplayName(first) : ''}</span>
+        {#if first && isBotLogin(first.authorLogin)}
+          <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
+        {/if}
+        {#if threadState !== 'none'}
+          <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
+        {/if}
+        <!-- Basis-0 so the summary only takes leftover width: with basis
+             auto its long text would absorb the row and crush the chips. -->
+        {#if collapsed}
+          <span class="min-w-0 flex-1 basis-0 truncate text-fg-muted">{summary}</span>
+          {#if replyCount > 0}
+            <span class="shrink-0 text-fg-subtle">{replyCount} {replyCount === 1 ? 'reply' : 'replies'}</span>
+          {/if}
+        {:else}
+          {#if first?.authorName}
+            <span class="min-w-0 shrink truncate text-fg-subtle">@{first.authorLogin}</span>
+          {/if}
+          {#if firstTime}
+            <span class="shrink-0 text-fg-subtle">· {firstTime}</span>
+          {/if}
+          <span class="min-w-0 flex-1 basis-0"></span>
+        {/if}
+      </button>
+      <span class="flex shrink-0 items-center">
+        <ReviewIconButton
+          icon={Reply}
+          label={replying ? 'Hide reply box' : 'Reply'}
+          testid="review-pr-thread-reply"
+          onclick={() => { replying = !replying; }}
+        />
+        {#if onResolve}
+          {@const resolve = onResolve}
+          <ReviewIconButton
+            icon={thread.isResolved ? RotateCcw : Check}
+            label={thread.isResolved ? 'Unresolve thread' : 'Resolve thread'}
+            spinning={resolving}
+            disabled={resolving}
+            testid="review-pr-thread-resolve"
+            onclick={() => resolve(!thread.isResolved)}
+          />
+        {/if}
+        {#if onSendToAgent}
+          {@const sendToAgent = onSendToAgent}
+          <ReviewIconButton
+            icon={Bot}
+            label="Send to agent"
+            disabled={isTurnActive}
+            disabledLabel="Agent turn is active"
+            testid="review-pr-thread-send-agent"
+            onclick={() => { void sendToAgent(); }}
+          />
+        {/if}
+        {#if onJumpToConversation}
+          {@const jump = onJumpToConversation}
+          <ReviewIconButton
+            icon={MessagesSquare}
+            label="Open in conversation"
+            testid="review-pr-thread-jump-conversation"
+            onclick={() => jump()}
+          />
+        {/if}
+      </span>
     </div>
-  {/if}
+
+    <div class={threadBodyClass(threadState)}>
+      {#if !collapsed && firstBody !== ''}
+        <div class="px-3 py-2.5">
+          <ChatMarkdown source={firstBody} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
+        </div>
+      {/if}
+
+      {#if resolveError}
+        <div class="px-3 pb-2 text-[0.6875rem] text-error">{resolveError}</div>
+      {/if}
+
+      {#if (!collapsed && replyCount > 0) || replying}
+        <ReviewThreadComments
+          {thread}
+          skipFirst
+          avatarSize={18}
+          showComments={!collapsed && replyCount > 0}
+          {body}
+          {error}
+          {sending}
+          {replying}
+          {onBodyChange}
+          {onSendReply}
+          onCloseReply={() => { replying = false; }}
+        />
+      {/if}
+    </div>
+  </div>
 </article>

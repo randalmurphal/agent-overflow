@@ -53,9 +53,9 @@
     <div style:height="{REVIEW_FILE_GAP_PX}px" class="shrink-0">
       {#if !first}
         <!-- Closing cap: the PREVIOUS file's slab ends here, so the gap
-             band's top hosts its rounded bottom edge (mx-2 matches the
+             band's top hosts its rounded bottom edge (the slab inset matches the
              slab inset every row carries). -->
-        <div class="mx-2 h-2 rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
+        <div class="mx-[var(--review-slab-inset)] h-2 rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
       {/if}
     </div>
   {/if}
@@ -68,7 +68,7 @@
   <div
     class="box-border flex min-h-0 flex-1 items-center border-border bg-surface-2 {overlay
       ? 'border-y'
-      : 'mx-2 rounded-t-[var(--radius-control)] border-x border-t border-b border-b-border-subtle'}"
+      : 'mx-[var(--review-slab-inset)] rounded-t-[var(--radius-control)] border-x border-t border-b border-b-border-subtle'}"
   >
     <button
       type="button"

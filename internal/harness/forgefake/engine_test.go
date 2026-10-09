@@ -110,6 +110,8 @@ func TestSeedRejectsMalformedFixtures(t *testing.T) {
 		"duplicate pull":     `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x"},{"number":1,"title":"y"}]}]}`,
 		"line thread":        `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","threads":[{"path":"f","comments":[{"body":"b"}]}]}]}]}`,
 		"gitlab verdict":     `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"author":"a","state":"CHANGES_REQUESTED"}]}]}]}`,
+		"github review name": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","reviews":[{"author":"a","authorName":"A","state":"APPROVED"}]}]}]}`,
+		"name without login": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","comments":[{"authorName":"A","body":"b"}]}]}]}`,
 		"job status":         `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"green"}]}}]}]}`,
 		"gitlab upload key":  `{"repos":[{"forge":"gitlab","project":"g/r","attachments":[{"secret":"nothex","filename":"a.png","text":"x"}]}]}`,
 		"github upload key":  `{"repos":[{"forge":"github","project":"a/b","attachments":[{"secret":"0123456789abcdef0123456789abcdef","filename":"a","text":"x"}]}]}`,
@@ -439,5 +441,158 @@ func TestRepositorySSHConfigIsIsolatedAndRejectsConnections(t *testing.T) {
 		if answer.ExitCode == 0 || !strings.Contains(answer.Stderr, "unhandled") {
 			t.Fatalf("connection: %+v", answer)
 		}
+	}
+}
+
+// The app's GraphQL text after whitespace collapse (internal/git
+// githubReviewThreadsQuery and githubPRCommentsQuery).
+const (
+	appReviewThreadsQuery = `query { repository(owner: "acme", name: "widgets") { pullRequest(number: 7) { reviewThreads(first: 50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line startLine diffSide startDiffSide subjectType comments(first: 50) { nodes { id databaseId author { login ... on User { name } } body createdAt replyTo { id databaseId } } } } } } } }`
+	appPRCommentsQuery    = `query { repository(owner: "acme", name: "widgets") { pullRequest(number: 7) { comments(first: 50) { pageInfo { hasNextPage endCursor } nodes { id databaseId author { login ... on User { name } } body createdAt isMinimized } } } } }`
+)
+
+const namedFixture = `{"repos":[
+  {"forge":"github","project":"acme/widgets","pulls":[{"number":7,"title":"t","author":"rmurphy","authorName":"Randy Murphy",
+    "comments":[{"body":"by default"},{"author":"coderabbitai[bot]","body":"bot"}],
+    "threads":[{"path":"w.go","line":1,"comments":[{"author":"bob","authorName":"Bob Smith","body":"nit"}]}]}]},
+  {"forge":"gitlab","project":"grp/tool","pulls":[{"number":3,"title":"t","author":"dave","authorName":"Dave Jones",
+    "comments":[{"body":"note"}],
+    "reviews":[{"author":"erin","authorName":"Erin Lee","state":"APPROVED"}]}]}
+]}`
+
+type actorAnswer struct {
+	Login    string  `json:"login"`
+	Username string  `json:"username"`
+	Name     *string `json:"name"`
+}
+
+func (a actorAnswer) String() string {
+	if a.Name == nil {
+		return a.Login + a.Username + "/-"
+	}
+	return a.Login + a.Username + "/" + *a.Name
+}
+
+func TestAuthorDisplayNamesAnswerTheAppsQueries(t *testing.T) {
+	e := New(Options{})
+	if _, err := seedJSON(e, namedFixture); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	type connection struct {
+		Nodes []struct {
+			Author   actorAnswer `json:"author"`
+			Comments struct {
+				Nodes []struct {
+					Author actorAnswer `json:"author"`
+				} `json:"nodes"`
+			} `json:"comments"`
+		} `json:"nodes"`
+	}
+	type graphQLAnswer struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads connection `json:"reviewThreads"`
+					Comments      connection `json:"comments"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	threads := decode[graphQLAnswer](t, handle(e, "gh", "api", "graphql", "-f", "query="+appReviewThreadsQuery))
+	nodes := threads.Data.Repository.PullRequest.ReviewThreads.Nodes
+	if len(nodes) != 1 || len(nodes[0].Comments.Nodes) != 1 || nodes[0].Comments.Nodes[0].Author.String() != "bob/Bob Smith" {
+		t.Fatalf("review thread authors = %+v", nodes)
+	}
+	comments := decode[graphQLAnswer](t, handle(e, "gh", "api", "graphql", "-f", "query="+appPRCommentsQuery))
+	var got []string
+	for _, node := range comments.Data.Repository.PullRequest.Comments.Nodes {
+		got = append(got, node.Author.String())
+	}
+	// A defaulted comment carries the pull author's name; an unnamed one
+	// answers as a bot, with no name key.
+	if strings.Join(got, ",") != "rmurphy/Randy Murphy,coderabbitai[bot]/-" {
+		t.Fatalf("conversation authors = %v", got)
+	}
+
+	// The query before the display-name selection is not one the app makes.
+	stale := strings.ReplaceAll(appPRCommentsQuery, "author { login ... on User { name } }", "author { login }")
+	if result := handle(e, "gh", "api", "graphql", "-f", "query="+stale); result.ExitCode == 0 || !strings.Contains(result.Stderr, "unhandled") {
+		t.Fatalf("stale query answered: exit %d stderr %q", result.ExitCode, result.Stderr)
+	}
+
+	detail := decode[struct {
+		Author actorAnswer `json:"author"`
+	}](t, handle(e, "gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "author"))
+	if detail.Author.String() != "rmurphy/Randy Murphy" {
+		t.Fatalf("gh pr view author = %+v", detail.Author)
+	}
+
+	mr := decode[struct {
+		Author actorAnswer `json:"author"`
+	}](t, handle(e, "glab", "api", "projects/grp%2Ftool/merge_requests/3"))
+	if mr.Author.String() != "dave/Dave Jones" {
+		t.Fatalf("glab MR author = %+v", mr.Author)
+	}
+	approvals := decode[struct {
+		ApprovedBy []struct {
+			User actorAnswer `json:"user"`
+		} `json:"approved_by"`
+	}](t, handle(e, "glab", "api", "projects/grp%2Ftool/merge_requests/3/approvals"))
+	if len(approvals.ApprovedBy) != 1 || approvals.ApprovedBy[0].User.String() != "erin/Erin Lee" {
+		t.Fatalf("glab approvals = %+v", approvals)
+	}
+	discussions := decode[[]struct {
+		Notes []struct {
+			Author actorAnswer `json:"author"`
+		} `json:"notes"`
+	}](t, handle(e, "glab", "api", "projects/grp%2Ftool/merge_requests/3/discussions?per_page=50&page=1"))
+	if len(discussions) != 1 || len(discussions[0].Notes) != 1 || discussions[0].Notes[0].Author.String() != "dave/Dave Jones" {
+		t.Fatalf("glab note authors = %+v", discussions)
+	}
+}
+
+func TestOfflineAnswersEveryForgeCallAsUnreachableUntilBack(t *testing.T) {
+	e, _ := seeded(t, Options{})
+	view := []string{"pr", "view", "--repo", "acme/widgets", "7", "--json", "title"}
+	e.SetOffline(true)
+	for _, argv := range [][]string{
+		append([]string{"gh"}, view...),
+		{"glab", "api", "projects/grp%2Fsub%2Ftool/merge_requests/3"},
+	} {
+		result := handle(e, argv[0], argv[1:]...)
+		if result.ExitCode != 1 || len(result.Stdout) != 0 || strings.Contains(result.Stderr, "unhandled") {
+			t.Errorf("%q offline: exit %d stdout %q stderr %q, want the CLI's connection failure", argv, result.ExitCode, result.Stdout, result.Stderr)
+		}
+	}
+	if got := handle(e, "glab", "api", "projects/grp%2Fsub%2Ftool/merge_requests/3").Stderr; !strings.Contains(got, "lookup gitlab.com: i/o timeout") {
+		t.Errorf("glab offline stderr = %q", got)
+	}
+	if got := handle(e, "gh", view...).Stderr; !strings.Contains(got, "error connecting to api.github.com") {
+		t.Errorf("gh offline stderr = %q", got)
+	}
+	// ssh is the local client, not the forge.
+	if answer := handle(e, "ssh", "-G", "-o", "CanonicalizeHostname=no", "-o", "PermitLocalCommand=no", "-l", "alice", "example.com"); answer.ExitCode != 0 {
+		t.Errorf("ssh -G failed while the forge is offline: %s", answer.Stderr)
+	}
+	for _, inv := range e.Invocations(0).Invocations {
+		if inv.CLI == "ssh" {
+			continue
+		}
+		if inv.Unhandled || inv.Route != "offline" {
+			t.Errorf("%q recorded as %q unhandled=%v, want route offline", inv.Args, inv.Route, inv.Unhandled)
+		}
+	}
+	e.SetOffline(false)
+	if result := handle(e, "gh", view...); result.ExitCode != 0 {
+		t.Fatalf("the forge did not come back: exit %d %s", result.ExitCode, result.Stderr)
+	}
+	e.SetOffline(true)
+	e.Reset()
+	if _, err := seedJSON(e, testFixture); err != nil {
+		t.Fatal(err)
+	}
+	if result := handle(e, "gh", view...); result.ExitCode != 0 {
+		t.Fatalf("Reset left the forge offline: exit %d %s", result.ExitCode, result.Stderr)
 	}
 }

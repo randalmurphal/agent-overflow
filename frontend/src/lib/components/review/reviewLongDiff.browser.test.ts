@@ -7,7 +7,7 @@ import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
 import type { DiffReviewComment } from '../../types/models';
-import type { CommentAnchor } from '../../utils/reviewRows';
+import { REVIEW_FILE_HEADER_BAR_PX, type CommentAnchor } from '../../utils/reviewRows';
 import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
@@ -152,7 +152,9 @@ describe('a review diff past the held limit', () => {
     await settle(scrollEl);
     const thread = scrollEl.querySelector<HTMLElement>('[data-thread="far"]');
     expect(thread).not.toBeNull();
-    expect(thread!.getBoundingClientRect().top).toBe(scrollEl.getBoundingClientRect().top);
+    // The row lands below the sticky file bar, not under it.
+    expect(thread!.getBoundingClientRect().top).toBe(scrollEl.getBoundingClientRect().top + REVIEW_FILE_HEADER_BAR_PX);
+    expect(scrollEl.parentElement!.querySelector('[data-testid="review-sticky-header"]')).not.toBeNull();
     expect(thread!.parentElement!.className).toContain('bg-accent/15');
   });
 

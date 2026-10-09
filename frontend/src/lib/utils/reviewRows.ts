@@ -32,6 +32,11 @@ export const REVIEW_FILE_HEADER_PX = REVIEW_FILE_GAP_PX + REVIEW_FILE_HEADER_BAR
 export const REVIEW_SURFACE_END_PX = 8;
 export const REVIEW_LINE_BLOCK_MAX_LINES = 32;
 const REVIEW_COMMENT_ESTIMATE_PX = 120;
+// The PR overview row (title meta, Description, Conversation) before the
+// first file. Priors remember its measured height by key across reopens;
+// this is the first-render guess.
+export const REVIEW_OVERVIEW_ESTIMATE_PX = 480;
+export const REVIEW_OVERVIEW_ROW_KEY = 'overview';
 
 export interface CommentAnchor {
   filePath: string;
@@ -42,6 +47,9 @@ export interface CommentAnchor {
 }
 
 export type ReviewRow =
+  /** The PR overview before the first file (fileIndex -1): it scrolls
+   * with the diff and is measured like any other row. */
+  | { kind: 'overview'; fileIndex: -1 }
   | { kind: 'file-header'; fileIndex: number; path: string }
   | LineBlockRow
   | { kind: 'draft-editor'; fileIndex: number; anchor: CommentAnchor }
@@ -72,6 +80,8 @@ export interface ReviewRowsInput {
   openEditors: readonly CommentAnchor[];
   prThreads?: readonly ReviewThread[];
   expandedPRThreadIds?: ReadonlySet<string>;
+  /** Lead the list with the PR overview row. */
+  overview?: boolean;
 }
 
 export interface ReviewRowsResult {
@@ -104,6 +114,8 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
     rowKeys.push(key);
     fileOfRow.push(fileIndex);
   }
+
+  if (input.overview) push({ kind: 'overview', fileIndex: -1 }, REVIEW_OVERVIEW_ROW_KEY, -1);
 
   for (let fileIndex = 0; fileIndex < input.files.length; fileIndex += 1) {
     const file = input.files[fileIndex];
@@ -141,6 +153,7 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
       if (!row) return REVIEW_LINE_HEIGHT_PX;
       if (row.kind === 'file-header') return REVIEW_FILE_HEADER_PX;
       if (row.kind === 'surface-end') return REVIEW_SURFACE_END_PX;
+      if (row.kind === 'overview') return REVIEW_OVERVIEW_ESTIMATE_PX;
       // Split view renders side pairs, so the visual row count is
       // splitRows.length, not the stacked display-row count.
       if (row.kind === 'line-block') return (row.splitCount ?? row.count) * REVIEW_LINE_HEIGHT_PX;

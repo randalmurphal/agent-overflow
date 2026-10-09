@@ -110,7 +110,8 @@ import type { DiffGap } from '../utils/patchFiles';
 import { reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
-import type { CommentListItem } from '../utils/reviewComments';
+import type { ReviewSectionId } from './reviewSectionSizes.svelte';
+import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 
 export type ReviewScope = DiffReviewScope;
 
@@ -159,7 +160,8 @@ export interface ReviewPaneState {
    * the inline-diff affordance before setScope('edits'). */
   pendingEditItemID: string | null;
   pendingJumpFilePath: string | null;
-  /** Diff row key to jump to (comments-list click); consumed by the diff body. */
+  /** Diff row key to jump to (a card's file:line, the unresolved
+   * stepper, the title bar's peek controls); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
   readonly loading: boolean;
   readonly error: string | null;
@@ -182,6 +184,10 @@ export interface ReviewPaneState {
    * head against the head this pane loaded at, so a push seen by one pane
    * can never mark another pane's freshly-loaded diff stale. */
   readonly prStale: boolean;
+  /** PR scope with a held PR whose first snapshot has not arrived (the
+   * forge failed the first fetch; the poller is retrying). The diff loads
+   * on its own once it lands. */
+  readonly awaitingPRDetail: boolean;
   readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
   readonly conflicts: PRConflicts | null;
@@ -230,9 +236,6 @@ export interface ReviewPaneState {
   selectEdit(key: string | null): Promise<void>;
   reload(): Promise<void>;
   consumePendingJumpFilePath(): void;
-  /** Jump the diff body to a comment row: leaves conflict/CI-log views,
-   * expands the file (and the thread, for collapsed PR threads). */
-  jumpToComment(item: CommentListItem): void;
   consumePendingJumpRowKey(): void;
   openDraftEditor(anchor: CommentAnchor): void;
   closeDraftEditor(anchor: CommentAnchor): void;
@@ -266,16 +269,48 @@ export interface ReviewPaneState {
   /** Jump the diff body to a thread's row (conversation → diff). */
   jumpToDiffThread(thread: ReviewThread): void;
   // ------------------------------------------------------------------
-  // The PR header's Conversation section: one chronological feed (newest
-  // first) of thread cards, review verdicts, and commit pushes. Ordering
-  // is FROZEN while the section is open: remote updates never reorder or
-  // hide what the reader is looking at. Entries that arrive after the
-  // capture count into `conversationNewCount` and join only on reveal.
+  // The PR overview: the row above the first file holding the
+  // Description and Conversation sections. It scrolls with the diff and
+  // is unmounted while far below the viewport, so everything a reader
+  // would notice losing lives here: section open state, each section
+  // body's scroll offset, the unresolved stepper's cursor.
+  // ------------------------------------------------------------------
+  readonly descriptionOpen: boolean;
+  setDescriptionOpen(open: boolean): void;
+  /** A section body's scroll offset, restored when the row remounts. */
+  overviewSectionScrollTop(section: ReviewSectionId): number;
+  setOverviewSectionScrollTop(section: ReviewSectionId, px: number): void;
+  /** Scroll the diff body back to the overview, opening `section`. */
+  jumpToOverview(section?: ReviewSectionId): void;
+  /** Open the Conversation section at `prThreadId`'s card and bring the
+   * overview row back on screen: the one call every "open in conversation"
+   * affordance uses, so none can open the section where it cannot be seen. */
+  jumpToConversationThread(prThreadId: string): void;
+  /** Unresolved threads in feed order (newest first). */
+  readonly unresolvedThreads: readonly ReviewThread[];
+  /** The thread the unresolved stepper last landed on. */
+  readonly unresolvedCursor: string | null;
+  /** Step to the next/previous unresolved thread. With the overview on
+   * screen the conversation scrolls to its card; otherwise the diff jumps
+   * to its row (a thread outside the diff goes to its card either way). */
+  stepUnresolvedThread(direction: 1 | -1, inOverview: boolean): void;
+  // ------------------------------------------------------------------
+  // The Conversation section: one chronological feed (newest first) of
+  // thread cards, review verdicts, and commit pushes. Ordering is FROZEN
+  // from the first time the section renders it: remote updates never
+  // reorder or hide what the reader is looking at. Entries that arrive
+  // after the freeze count into `conversationNewCount` and join only on
+  // reveal.
   // ------------------------------------------------------------------
   readonly conversationOpen: boolean;
-  /** The whole feed — thread cards, verdicts, commit pushes — in the
-   * frozen chronological order (newest first). Empty while closed. */
+  /** The whole feed — thread cards, verdicts, commit pushes — newest
+   * first: the frozen order once captured, the live order before (the
+   * section freezes it on first render). Empty while closed. */
   readonly conversationFeed: readonly ConversationFeedItem[];
+  /** Whether the order is captured. */
+  readonly conversationFrozen: boolean;
+  /** Capture the current live order (the section's first render). */
+  freezeConversation(): void;
   /** Feed entries that arrived after the frozen order was captured. */
   readonly conversationNewCount: number;
   /** Thread the section should scroll to; consumed by the section. */
@@ -491,6 +526,9 @@ function createReviewPaneState(
   // still while the reader is in the section, whatever the poll pump
   // replaces underneath (see the interface comment).
   let conversationOpen = $state(false);
+  let descriptionOpen = $state(false);
+  const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
+  let unresolvedCursor: string | null = $state(null);
   let conversationOrder: readonly string[] = $state([]);
   let conversationDefaultExpanded: ReadonlySet<string> = $state(new Set<string>());
   const conversationExpandOverrides = new SvelteMap<string, boolean>();
@@ -615,9 +653,15 @@ function createReviewPaneState(
     out.sort((a, b) => b.timeMs - a.timeMs || a.item.id.localeCompare(b.item.id));
     return out;
   });
-  // The frozen order projected onto the live universe.
+  // The frozen order projected onto the live universe; the live order
+  // itself until the section has rendered once and frozen it.
   const conversationFeed = $derived.by<readonly ConversationFeedItem[]>(() => {
-    if (!conversationOpen || conversationOrder.length === 0) return EMPTY_CONVERSATION_FEED;
+    if (!conversationOpen) return EMPTY_CONVERSATION_FEED;
+    if (conversationOrder.length === 0) {
+      return conversationFeedSource.length === 0
+        ? EMPTY_CONVERSATION_FEED
+        : conversationFeedSource.map((entry) => entry.item);
+    }
     const byId = new Map(conversationFeedSource.map((entry) => [entry.item.id, entry.item]));
     const out: ConversationFeedItem[] = [];
     for (const id of conversationOrder) {
@@ -626,8 +670,17 @@ function createReviewPaneState(
     }
     return out;
   });
+  const unresolvedThreads = $derived.by<readonly ReviewThread[]>(() => {
+    const out: ReviewThread[] = [];
+    for (const entry of conversationFeedSource) {
+      if (entry.item.kind !== 'thread') continue;
+      const thread = entry.item.thread;
+      if (thread.isResolvable && !thread.isResolved && !thread.isOutdated) out.push(thread);
+    }
+    return out;
+  });
   const conversationNewCount = $derived.by(() => {
-    if (!conversationOpen) return 0;
+    if (!conversationOpen || conversationOrder.length === 0) return 0;
     const known = new Set(conversationOrder);
     let count = 0;
     for (const entry of conversationFeedSource) {
@@ -808,10 +861,20 @@ function createReviewPaneState(
   // load that came up empty and consumed by the watcher below the moment
   // the derived ref lands.
   let awaitingPRRef = $state(false);
+  // The same shape one step later: the PR is held but its poller has no
+  // snapshot yet (the forge failed the first fetch). The load that found
+  // no detail sets this; the watcher reloads the moment the pump's
+  // recovery frame lands.
+  let awaitingPRDetail = $state(false);
   const disposePRRefWatch = $effect.root(() => {
     $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
+      void reload();
+    });
+    $effect(() => {
+      if (!awaitingPRDetail || !prSnapshot?.detail) return;
+      awaitingPRDetail = false;
       void reload();
     });
   });
@@ -892,7 +955,7 @@ function createReviewPaneState(
       resetConflictView();
       closeCILogView();
       // The frozen ordering describes the previous scope's threads.
-      setConversationOpen(false);
+      resetConversationView();
     }
     if (scope === 'pr' && nextScope !== 'pr') releasePR();
     if (scopeChanged || nextBaseBranch !== baseBranch) retireDiffSubject();
@@ -1000,6 +1063,13 @@ function createReviewPaneState(
         const hold = holdPR(loadingPRRef);
         snapshot = hold ? await hold.ready() : null;
         if (seq !== loadSeq || disposed) return;
+        if (hold && !snapshot?.detail) {
+          // Held, but the poller has nothing yet: its failure banner says
+          // why, and the watcher above reloads when the snapshot lands.
+          awaitingPRDetail = true;
+          return;
+        }
+        awaitingPRDetail = false;
       } else if (scope !== 'pr') {
         // Scope can change mid-load (the selector stays enabled while a PR
         // loads); a pane that is no longer on a PR holds no reference.
@@ -1664,19 +1734,22 @@ function createReviewPaneState(
     conversationDefaultExpanded = expanded;
   }
 
+  // Forget the frozen view: a fresh visit is a fresh view, so the order
+  // and the reply-fold defaults recompute and the previous visit's manual
+  // choices go. The section's open state is the reader's and stays.
+  function resetConversationView(): void {
+    conversationOrder = [];
+    conversationDefaultExpanded = new Set<string>();
+    conversationExpandOverrides.clear();
+    pendingConversationThreadId = null;
+    unresolvedCursor = null;
+  }
+
   function setConversationOpen(open: boolean): void {
     if (open === conversationOpen) return;
     conversationOpen = open;
-    if (open) {
-      // A fresh visit is a fresh view: the order and the reply-fold
-      // defaults recompute and the previous visit's manual choices go.
-      conversationExpandOverrides.clear();
-      captureConversationOrder(false);
-    } else {
-      conversationOrder = [];
-      conversationDefaultExpanded = new Set<string>();
-      pendingConversationThreadId = null;
-    }
+    if (open) captureConversationOrder(false);
+    else resetConversationView();
   }
 
   function conversationThreadExpanded(prThreadId: string): boolean {
@@ -1686,10 +1759,56 @@ function createReviewPaneState(
   function openConversationAt(prThreadId: string): void {
     setConversationOpen(true);
     // The target may still be behind the "N new" chip (it just arrived on
-    // a poll); fold the arrivals in so the jump has somewhere to land.
+    // a poll), or the order may not be frozen yet; capture so the jump
+    // has somewhere to land.
     if (!conversationOrder.includes(`t:${prThreadId}`)) captureConversationOrder(true);
     if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
     pendingConversationThreadId = prThreadId;
+  }
+
+  // The overview row carries the sections; leave any replacement view
+  // first, the way every diff-surface jump does.
+  function jumpToOverview(section?: ReviewSectionId): void {
+    closeCILogView();
+    closeConflictView();
+    if (section === 'description') descriptionOpen = true;
+    if (section === 'conversation') setConversationOpen(true);
+    pendingJumpRowKey = REVIEW_OVERVIEW_ROW_KEY;
+  }
+
+  function jumpToConversationThread(prThreadId: string): void {
+    openConversationAt(prThreadId);
+    jumpToOverview('conversation');
+  }
+
+  function jumpToDiffThread(thread: ReviewThread): void {
+    if (!thread.path) return;
+    closeCILogView();
+    closeConflictView();
+    collapsedPaths.delete(thread.path);
+    expandedPRThreadIds.add(thread.id);
+    pendingJumpRowKey = `pt:${thread.id}`;
+  }
+
+  function stepUnresolvedThread(direction: 1 | -1, inOverview: boolean): void {
+    const list = unresolvedThreads;
+    if (list.length === 0) return;
+    const current = list.findIndex((thread) => thread.id === unresolvedCursor);
+    const index = current < 0
+      ? (direction > 0 ? 0 : list.length - 1)
+      : (current + direction + list.length) % list.length;
+    const thread = list[index];
+    unresolvedCursor = thread.id;
+    const inDiff = thread.path !== '' && files.some((file) => file.path === thread.path);
+    if (inOverview) {
+      openConversationAt(thread.id);
+      return;
+    }
+    if (!inDiff) {
+      jumpToConversationThread(thread.id);
+      return;
+    }
+    jumpToDiffThread(thread);
   }
 
   // The merged tree and every conflicted file's content belong to the PR
@@ -1931,6 +2050,7 @@ function createReviewPaneState(
       return patchScopeContext();
     },
     get prStale() { return prStale; },
+    get awaitingPRDetail() { return awaitingPRDetail; },
     get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },
     get conflicts() { return conflictsState.state; },
@@ -1969,22 +2089,6 @@ function createReviewPaneState(
     reload,
     consumePendingJumpFilePath(): void {
       pendingJumpFilePath = null;
-    },
-    jumpToComment(item: CommentListItem): void {
-      if (!item.inDiff) {
-        // No diff row to land on. A PR thread still has a conversation
-        // card; a draft on a file outside the diff has neither, and the
-        // rail expands it inline instead.
-        if (item.threadId) openConversationAt(item.threadId);
-        return;
-      }
-      // The comment rows live on the diff surface — leave any
-      // replacement view first.
-      closeCILogView();
-      closeConflictView();
-      collapsedPaths.delete(item.filePath);
-      if (item.threadId) expandedPRThreadIds.add(item.threadId);
-      pendingJumpRowKey = item.rowKey;
     },
     consumePendingJumpRowKey(): void {
       pendingJumpRowKey = null;
@@ -2043,17 +2147,27 @@ function createReviewPaneState(
     resolvingThread(prThreadId: string): boolean {
       return resolvingThreadIds.has(prThreadId);
     },
-    jumpToDiffThread(thread: ReviewThread): void {
-      if (!thread.path) return;
-      // Same choreography as jumpToComment: the row lives on the diff
-      // surface, so leave any replacement view first.
-      closeCILogView();
-      closeConflictView();
-      collapsedPaths.delete(thread.path);
-      expandedPRThreadIds.add(thread.id);
-      pendingJumpRowKey = `pt:${thread.id}`;
+    jumpToDiffThread,
+    get descriptionOpen() { return descriptionOpen; },
+    setDescriptionOpen(open: boolean): void {
+      descriptionOpen = open;
     },
+    overviewSectionScrollTop(section: ReviewSectionId): number {
+      return overviewScrollTops.get(section) ?? 0;
+    },
+    setOverviewSectionScrollTop(section: ReviewSectionId, px: number): void {
+      overviewScrollTops.set(section, px);
+    },
+    jumpToOverview,
+    jumpToConversationThread,
+    get unresolvedThreads() { return unresolvedThreads; },
+    get unresolvedCursor() { return unresolvedCursor; },
+    stepUnresolvedThread,
     setConversationOpen,
+    get conversationFrozen() { return conversationOrder.length > 0; },
+    freezeConversation(): void {
+      if (conversationOrder.length === 0) captureConversationOrder(false);
+    },
     revealNewConversationThreads(): void {
       captureConversationOrder(true);
     },

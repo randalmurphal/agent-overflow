@@ -1,55 +1,24 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
-import type { DiffFileSummary } from './patchStore';
 
-// Pure list model behind the review rail's Comments tab: every PR
-// review thread (file-anchored AND PR-level conversation) and local
-// draft in the current scope, grouped by file in diff order with the
-// conversation group first, actionable items (unresolved threads,
-// drafts) leading within each group. Each item carries the ROW KEY of
-// its diff row (`pt:<threadId>` / `t:<draftId>` — the same keys
-// buildReviewRows emits) so clicking a list entry can jump the diff
-// body straight to the row. A PR thread with no diff row opens the PR
-// header's Conversation section at its card instead; only a draft on a
-// file outside the diff — which has neither surface — expands inline.
+// Comment counts and comment text helpers for the review pane: the file
+// tree badges and the toolbar tally count every PR review thread
+// (file-anchored AND PR-level conversation) and local draft in the
+// current scope; the thread rows and cards read a comment's lead
+// sentence and its visible body from here.
 
 /** 'comment' = a non-resolvable thread (flat conversation comment) —
  * neutral, so it doesn't masquerade as "unresolved". */
 export type CommentItemState = 'unresolved' | 'resolved' | 'outdated' | 'draft' | 'comment';
 
-export interface CommentEntry {
-  author: string;
-  body: string;
+export interface CommentFileCounts {
+  total: number;
+  unresolved: number;
 }
 
-export interface CommentListItem {
-  /** Diff row key to jump to (matches buildReviewRows' rowKeys). */
-  rowKey: string;
-  kind: 'pr-thread' | 'draft';
-  /** PR thread id (for expanding the thread on jump); drafts: null. */
-  threadId: string | null;
-  /** Empty for PR-level conversation threads. */
-  filePath: string;
-  line: number | null;
-  author: string;
-  snippet: string;
-  state: CommentItemState;
-  orphaned: boolean;
-  /** False when there is no diff row to jump to (file outside the
-   * current diff, or a conversation thread) — threads route to the
-   * conversation section, stranded drafts expand inline. */
-  inDiff: boolean;
-  replies: number;
-  /** First comment's creation time (epoch ms); null when unparseable. */
-  createdAtMs: number | null;
-  /** Full bodies for the stranded-draft inline expansion. */
-  comments: readonly CommentEntry[];
-}
-
-export interface CommentFileGroup {
-  /** Empty for the PR-level conversation group. */
-  filePath: string;
-  inDiff: boolean;
-  items: CommentListItem[];
+export interface CommentCounts {
+  /** Per file path; `''` holds the PR-level conversation threads. */
+  byFile: ReadonlyMap<string, CommentFileCounts>;
+  tally: CommentTally;
 }
 
 export interface CommentTally {
@@ -125,12 +94,6 @@ export function visibleBody(body: string): string {
 
 /** Forge timestamps are ISO strings; unparseable input maps to null so
  * the row simply omits the time instead of showing "NaN ago". */
-function parseTimestampMs(iso: string | undefined): number | null {
-  if (!iso) return null;
-  const parsed = Date.parse(iso);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function threadState(thread: ReviewThread): CommentItemState {
   if (thread.isOutdated) return 'outdated';
   // Legacy payloads without the field are all resolvable diff threads.
@@ -139,106 +102,22 @@ function threadState(thread: ReviewThread): CommentItemState {
   return 'unresolved';
 }
 
-// Actionable first: unresolved threads and drafts, then settled ones.
-function stateRank(state: CommentItemState): number {
-  return state === 'unresolved' || state === 'draft' ? 0 : 1;
-}
-
-export function buildCommentGroups(input: {
-  files: readonly DiffFileSummary[];
+export function countReviewComments(input: {
   prThreads: readonly ReviewThread[];
   drafts: readonly DiffReviewComment[];
-  orphanedDraftIds: ReadonlySet<string>;
-}): CommentFileGroup[] {
-  const diffPaths = new Set(input.files.map((file) => file.path));
-  const itemsByPath = new Map<string, CommentListItem[]>();
-
-  function add(item: CommentListItem): void {
-    const bucket = itemsByPath.get(item.filePath) ?? [];
-    bucket.push(item);
-    itemsByPath.set(item.filePath, bucket);
+}): CommentCounts {
+  const byFile = new Map<string, CommentFileCounts>();
+  const tally: CommentTally = { unresolved: 0, drafts: 0, total: 0 };
+  function add(filePath: string, state: CommentItemState): void {
+    const counts = byFile.get(filePath) ?? { total: 0, unresolved: 0 };
+    counts.total += 1;
+    if (state === 'unresolved') counts.unresolved += 1;
+    byFile.set(filePath, counts);
+    tally.total += 1;
+    if (state === 'unresolved') tally.unresolved += 1;
+    if (state === 'draft') tally.drafts += 1;
   }
-
-  for (const thread of input.prThreads) {
-    const first = thread.comments[0];
-    add({
-      rowKey: `pt:${thread.id}`,
-      kind: 'pr-thread',
-      threadId: thread.id,
-      filePath: thread.path,
-      line: thread.line ?? null,
-      author: first?.authorLogin ?? '',
-      snippet: commentSnippet(first?.body ?? ''),
-      state: threadState(thread),
-      orphaned: thread.isOutdated,
-      inDiff: thread.path !== '' && diffPaths.has(thread.path),
-      replies: Math.max(0, thread.comments.length - 1),
-      createdAtMs: parseTimestampMs(first?.createdAt),
-      comments: thread.comments.map((comment) => ({ author: comment.authorLogin, body: comment.body })),
-    });
-  }
-
-  for (const draft of input.drafts) {
-    add({
-      rowKey: `t:${draft.id}`,
-      kind: 'draft',
-      threadId: null,
-      filePath: draft.filePath,
-      line: draft.side === 'file' ? null : (draft.newLine ?? draft.oldLine ?? null),
-      author: 'You',
-      snippet: commentSnippet(draft.body),
-      state: 'draft',
-      orphaned: input.orphanedDraftIds.has(draft.id),
-      inDiff: diffPaths.has(draft.filePath),
-      replies: 0,
-      createdAtMs: draft.createdAt > 0 ? draft.createdAt : null,
-      comments: [{ author: 'You', body: draft.body }],
-    });
-  }
-
-  for (const bucket of itemsByPath.values()) {
-    bucket.sort((a, b) =>
-      stateRank(a.state) - stateRank(b.state)
-      || (a.line ?? Number.MAX_SAFE_INTEGER) - (b.line ?? Number.MAX_SAFE_INTEGER)
-      || a.rowKey.localeCompare(b.rowKey));
-  }
-
-  // The PR-level conversation group leads, then diff-order groups, then
-  // comment-only paths (threads on files outside the current diff)
-  // alphabetically at the end.
-  const groups: CommentFileGroup[] = [];
-  const conversation = itemsByPath.get('');
-  if (conversation) {
-    groups.push({ filePath: '', inDiff: false, items: conversation });
-    itemsByPath.delete('');
-  }
-  for (const file of input.files) {
-    const items = itemsByPath.get(file.path);
-    if (items) {
-      groups.push({ filePath: file.path, inDiff: true, items });
-      itemsByPath.delete(file.path);
-    }
-  }
-  for (const filePath of [...itemsByPath.keys()].sort()) {
-    groups.push({ filePath, inDiff: false, items: itemsByPath.get(filePath)! });
-  }
-  return groups;
-}
-
-export function commentCountsByFile(groups: readonly CommentFileGroup[]): Map<string, number> {
-  return new Map(groups.map((group) => [group.filePath, group.items.length]));
-}
-
-export function commentTally(groups: readonly CommentFileGroup[]): CommentTally {
-  let unresolved = 0;
-  let drafts = 0;
-  let total = 0;
-  for (const group of groups) {
-    for (const item of group.items) {
-      total += 1;
-      if (item.state === 'unresolved') unresolved += 1;
-      if (item.state === 'draft') drafts += 1;
-    }
-  }
-  return { unresolved, drafts, total };
+  for (const thread of input.prThreads) add(thread.path, threadState(thread));
+  for (const draft of input.drafts) add(draft.filePath, 'draft');
+  return { byFile, tally };
 }

@@ -52,6 +52,9 @@ type Pull struct {
 	State  string `json:"state,omitempty"`
 	Draft  bool   `json:"draft,omitempty"`
 	Author string `json:"author,omitempty"`
+	// AuthorName is the author's display name. Empty answers as a user
+	// with no display name.
+	AuthorName string `json:"authorName,omitempty"`
 	// HeadRef and BaseRef default to "feature" and "main".
 	HeadRef string `json:"headRef,omitempty"`
 	BaseRef string `json:"baseRef,omitempty"`
@@ -80,10 +83,14 @@ type Pull struct {
 type Comment struct {
 	// ID is the numeric id (GitHub databaseId, GitLab note id).
 	// Generated when omitted.
-	ID        int64  `json:"id,omitempty"`
-	Author    string `json:"author,omitempty"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt,omitempty"`
+	ID int64 `json:"id,omitempty"`
+	// Author and AuthorName default to the pull's author. AuthorName
+	// needs an explicit Author; on GitHub an empty name answers as a bot,
+	// whose author carries no name.
+	Author     string `json:"author,omitempty"`
+	AuthorName string `json:"authorName,omitempty"`
+	Body       string `json:"body"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // Thread is one review thread.
@@ -105,6 +112,9 @@ type Thread struct {
 // Review is one submitted review verdict.
 type Review struct {
 	Author string `json:"author"`
+	// AuthorName is the approver's GitLab display name. GitHub's review
+	// list reports a login only, so a GitHub review refuses it.
+	AuthorName string `json:"authorName,omitempty"`
 	// State is GitHub's vocabulary: APPROVED, CHANGES_REQUESTED,
 	// COMMENTED.
 	State       string `json:"state"`
@@ -294,13 +304,13 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	p.BaseSHA = defaultString(p.BaseSHA, ids.sha())
 	p.StartSHA = defaultString(p.StartSHA, p.BaseSHA)
 	for i := range p.Comments {
-		if err := p.Comments[i].normalize(p.Author, ids); err != nil {
+		if err := p.Comments[i].normalize(p.Author, p.AuthorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}
 	}
 	for i := range p.Threads {
 		thread := &p.Threads[i]
-		if err := thread.normalize(forge, p.Author, ids); err != nil {
+		if err := thread.normalize(forge, p.Author, p.AuthorName, ids); err != nil {
 			return fmt.Errorf("threads[%d]: %w", i, err)
 		}
 	}
@@ -310,6 +320,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		if forge == "gitlab" && review.State != "APPROVED" {
 			return fmt.Errorf("reviews[%d]: GitLab has approvals only; state must be APPROVED", i)
+		}
+		if forge == "github" && review.AuthorName != "" {
+			return fmt.Errorf("reviews[%d]: gh reports a GitHub reviewer's login only; authorName is GitLab-only", i)
 		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)
@@ -322,16 +335,21 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	return nil
 }
 
-func (c *Comment) normalize(author string, ids *idSource) error {
+func (c *Comment) normalize(author, authorName string, ids *idSource) error {
 	if c.ID == 0 {
 		c.ID = ids.next()
 	}
-	c.Author = defaultString(c.Author, author)
+	if c.Author == "" {
+		if c.AuthorName != "" {
+			return errors.New("authorName needs author")
+		}
+		c.Author, c.AuthorName = author, authorName
+	}
 	c.CreatedAt = defaultString(c.CreatedAt, "2026-01-01T00:00:00Z")
 	return nil
 }
 
-func (t *Thread) normalize(forge, author string, ids *idSource) error {
+func (t *Thread) normalize(forge, author, authorName string, ids *idSource) error {
 	if t.Path == "" {
 		return errors.New("path is required")
 	}
@@ -360,7 +378,7 @@ func (t *Thread) normalize(forge, author string, ids *idSource) error {
 		}
 	}
 	for i := range t.Comments {
-		if err := t.Comments[i].normalize(author, ids); err != nil {
+		if err := t.Comments[i].normalize(author, authorName, ids); err != nil {
 			return fmt.Errorf("comments[%d]: %w", i, err)
 		}
 	}

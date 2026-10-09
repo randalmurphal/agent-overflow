@@ -424,7 +424,7 @@ describe('reviewPane store', () => {
     expect(state.collapsedPaths.has('src/large.ts')).toBe(true);
   });
 
-  it('jumpToComment expands the file and thread and stages the row-key jump', async () => {
+  it('jumpToDiffThread expands the file and thread and stages the row-key jump', async () => {
     const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
     setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
@@ -432,21 +432,7 @@ describe('reviewPane store', () => {
     await waitLoaded(state);
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
 
-    state.jumpToComment({
-      rowKey: 'pt:thread-9',
-      kind: 'pr-thread',
-      threadId: 'thread-9',
-      filePath: 'pnpm-lock.yaml',
-      line: 1,
-      author: 'alice',
-      snippet: 'hm',
-      state: 'unresolved',
-      orphaned: false,
-      inDiff: true,
-      replies: 0,
-      createdAtMs: null,
-      comments: [{ author: 'alice', body: 'hm' }],
-    });
+    state.jumpToDiffThread({ ...reviewThreadStub('thread-9'), path: 'pnpm-lock.yaml' });
 
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(false);
     expect(state.expandedPRThreadIds.has('thread-9')).toBe(true);
@@ -455,22 +441,8 @@ describe('reviewPane store', () => {
     state.consumePendingJumpRowKey();
     expect(state.pendingJumpRowKey).toBeNull();
 
-    // Items on files outside the diff have no row to jump to.
-    state.jumpToComment({
-      rowKey: 'pt:thread-10',
-      kind: 'pr-thread',
-      threadId: 'thread-10',
-      filePath: 'gone.ts',
-      line: null,
-      author: 'alice',
-      snippet: '',
-      state: 'unresolved',
-      orphaned: false,
-      inDiff: false,
-      replies: 0,
-      createdAtMs: null,
-      comments: [],
-    });
+    // A PR-level conversation thread has no row to jump to.
+    state.jumpToDiffThread({ ...reviewThreadStub('thread-10'), path: '' });
     expect(state.pendingJumpRowKey).toBeNull();
   });
 
@@ -2867,7 +2839,11 @@ describe('reviewPane store — conversation section and resolve', () => {
     });
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
+    // Closed by default; opening freezes the order in hand.
+    expect(state.conversationOpen).toBe(false);
+    expect(state.conversationFeed).toEqual([]);
     state.setConversationOpen(true);
+    expect(state.conversationFrozen).toBe(true);
     // Chronological, newest first; replies unfold by default only on the
     // unresolved thread.
     expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
@@ -2890,12 +2866,19 @@ describe('reviewPane store — conversation section and resolve', () => {
     // id) rather than jumping the whole feed.
     expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
 
-    // Closing forgets the frozen view; leaving pr scope closes it.
+    // Closing forgets the frozen view; an explicit reopen freezes what is
+    // in hand.
     state.setConversationOpen(false);
     expect(state.conversationFeed).toEqual([]);
+    expect(state.conversationFrozen).toBe(false);
     state.setConversationOpen(true);
+    expect(state.conversationFrozen).toBe(true);
+    expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
+    expect(state.conversationNewCount).toBe(0);
+    // Leaving pr scope drops the view but keeps the section open.
     await state.setScope('workspace');
-    expect(state.conversationOpen).toBe(false);
+    expect(state.conversationOpen).toBe(true);
+    expect(state.conversationFrozen).toBe(false);
   });
 
   it('interleaves verdicts and commit pushes chronologically, newest first', async () => {
@@ -2973,13 +2956,61 @@ describe('reviewPane store — conversation section and resolve', () => {
     state.consumePendingConversationThreadId();
     expect(state.pendingConversationThreadId).toBeNull();
 
-    // The rail routes a conversation thread's row here too.
-    state.jumpToComment({
-      rowKey: 'pt:t-1', kind: 'pr-thread', threadId: 't-1', filePath: '', line: null,
-      author: 'alice', snippet: '', state: 'resolved', orphaned: false, inDiff: false,
-      replies: 0, createdAtMs: null, comments: [],
+    // The title-bar stepper routes a thread outside the diff here too, and
+    // stages the jump back to the overview row.
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [resolved, convThread('t-2', { path: 'gone.ts' })],
+      headSHA: 'sha-a',
     });
+    state.stepUnresolvedThread(1, false);
+    expect(state.unresolvedCursor).toBe('t-2');
+    expect(state.pendingConversationThreadId).toBe('t-2');
+    expect(state.pendingJumpRowKey).toBe('overview');
+  });
+
+  it('jumpToConversationThread opens the card and brings the overview back', async () => {
+    const state = await statePRWithThreads([convThread('t-1', { isResolved: true })]);
+    state.setConversationOpen(false);
+    state.jumpToConversationThread('t-1');
+    expect(state.conversationOpen).toBe(true);
+    expect(state.conversationThreadExpanded('t-1')).toBe(true);
     expect(state.pendingConversationThreadId).toBe('t-1');
+    expect(state.pendingJumpRowKey).toBe('overview');
+  });
+
+  it('stepUnresolvedThread cycles open threads: diff rows from the title bar, cards from the overview', async () => {
+    const inDiff = convThread('t-in', { path: 'src/app.ts', line: 2 });
+    const outside = convThread('t-out', { path: 'gone.ts' });
+    const settled = convThread('t-done', { isResolved: true });
+    const state = await statePRWithThreads([settled, inDiff, outside]);
+    expect(state.unresolvedThreads.map((thread) => thread.id)).toEqual(['t-in', 't-out']);
+
+    // From the title bar: a thread on the diff jumps to its row.
+    state.stepUnresolvedThread(1, false);
+    expect(state.unresolvedCursor).toBe('t-in');
+    expect(state.pendingJumpRowKey).toBe('pt:t-in');
+    expect(state.expandedPRThreadIds.has('t-in')).toBe(true);
+    state.consumePendingJumpRowKey();
+
+    // Next: outside the diff, so its card in the overview.
+    state.stepUnresolvedThread(1, false);
+    expect(state.unresolvedCursor).toBe('t-out');
+    expect(state.pendingConversationThreadId).toBe('t-out');
+    expect(state.pendingJumpRowKey).toBe('overview');
+    state.consumePendingJumpRowKey();
+    state.consumePendingConversationThreadId();
+
+    // Wraps, and from the overview every step stays on the cards.
+    state.stepUnresolvedThread(1, true);
+    expect(state.unresolvedCursor).toBe('t-in');
+    expect(state.pendingConversationThreadId).toBe('t-in');
+    expect(state.pendingJumpRowKey).toBeNull();
+
+    // Backwards from the first wraps to the last.
+    state.stepUnresolvedThread(-1, true);
+    expect(state.unresolvedCursor).toBe('t-out');
   });
 
   it('resolves optimistically, outranks stale polls, and reverts on failure', async () => {
@@ -3250,5 +3281,46 @@ describe('reviewPane store — diffs past the memory budget', () => {
     expect(state.error).toBeNull();
     const expanded = app();
     expect(await expanded.body.whenResident(() => expanded.body.text(3))).toBe('@@ -1,11 +1,11 @@ function app()');
+  });
+});
+
+describe('reviewPane store — PR whose first fetch failed', () => {
+  it('waits for the poller instead of failing, and loads once the snapshot lands', async () => {
+    installPRMocks();
+    // The pump was created on a failing first fetch: a caller-safe failure
+    // and the wire's zero detail, which is no snapshot at all.
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: { ...prDetailStub(), number: 0, headSHA: '' },
+      threads: [],
+      headSHA: '',
+      error: 'failed to refresh pull request (id: abc)',
+      seq: 1,
+    }));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 2));
+
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await waitLoaded(state);
+
+    expect(state.awaitingPRDetail).toBe(true);
+    expect(state.error).toBeNull();
+    expect(state.prUpdateError).toContain('failed to refresh');
+    expect(state.prDetail).toBeNull();
+    expect(state.files).toEqual([]);
+    expect(diff).not.toHaveBeenCalled();
+
+    // The pump's recovery frame: the diff loads on its own.
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    await waitLoaded(state);
+    await vi.waitFor(() => {
+      expect(state.files.length).toBe(1);
+    });
+    expect(state.awaitingPRDetail).toBe(false);
+    expect(state.prUpdateError).toBeNull();
+    expect(state.prDetail?.number).toBe(5);
+    expect(diff).toHaveBeenCalledTimes(1);
   });
 });

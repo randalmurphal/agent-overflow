@@ -526,6 +526,32 @@ describe('prReviewStore — the join/push handoff', () => {
   // the error replayed over the join's stale snapshot and the observation
   // underneath it was never stated — and the pump emits only on CHANGE, so
   // nothing would restate it until the PR moved.
+  it('reads a failing first fetch as no snapshot, not a zero detail', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: KEY,
+      detail: { ...detailStub(), number: 0, headSHA: '' },
+      threads: [],
+      headSHA: '',
+      error: 'failed to refresh pull request (id: abc)',
+      seq: 1,
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+
+    const a = attachPR(KEY, { ref: REF });
+    const first = await a.ready();
+    expect(first.detail).toBeNull();
+    expect(first.headSHA).toBe('');
+    expect(a.error).toContain('failed to refresh');
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    expect(a.error).toBeNull();
+    expect(a.snapshot?.detail?.number).toBe(5);
+    a.release();
+    await flush();
+  });
+
   it('replays both a buffered snapshot and the error frame that followed it', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const land = gatedSubscribe({

@@ -347,7 +347,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded)
+	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded, "", "")
 	if err != nil {
 		t.Fatalf("createPRUpdatePump: %v", err)
 	}
@@ -1073,6 +1073,77 @@ func TestPRUpdateKeyMatchesTheFrontendSourceKey(t *testing.T) {
 	for _, tt := range cases {
 		if got := prUpdateKey(tt.pr); got != tt.want {
 			t.Fatalf("prUpdateKey(%+v) = %q, want %q", tt.pr, got, tt.want)
+		}
+	}
+}
+
+// TestSubscribePRUpdatesSurvivesAFailingFirstFetch pins boot-time
+// resilience: the first forge call for a PR failing (a DNS lookup timing
+// out before the resolver is up) must not fail the subscribe and leave the
+// pane with nothing that will ever retry. The pump is created carrying the
+// failure, retries on the fast schedule rather than the poll interval, and
+// the recovery frame brings the first snapshot.
+func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	app.prUpdates.interval = 2 * time.Second
+	app.prUpdates.retryBase = 5 * time.Millisecond
+	var failing atomic.Bool
+	failing.Store(true)
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+		if failing.Load() {
+			return prUpdateSnapshot{}, errors.New("glab: lookup gitlab.com: i/o timeout")
+		}
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
+	}
+	events := capturePRUpdates(t, app)
+
+	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("a failing first fetch failed the subscribe: %v", err)
+	}
+	defer func() {
+		_ = app.UnsubscribePRUpdates(context.Background(), sub.ID)
+		app.prUpdates.wg.Wait()
+	}()
+	if !strings.HasPrefix(sub.Error, "failed to refresh pull request (id: ") || sub.HeadSHA != "" || sub.Detail.Number != 0 {
+		t.Fatalf("subscribe result = %+v, want the caller-safe failure and no snapshot", sub)
+	}
+	if strings.Contains(sub.Error, "i/o timeout") {
+		t.Fatalf("raw forge stderr reached the wire: %q", sub.Error)
+	}
+	// Identical failures on the retries emit nothing.
+	expectNoPRUpdate(t, events, "repeated identical first failure")
+
+	// A joiner during the outage sees the same failure.
+	joined, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("join during outage: %v", err)
+	}
+	if joined.Error != sub.Error {
+		t.Fatalf("joined error = %q, want %q", joined.Error, sub.Error)
+	}
+
+	started := time.Now()
+	failing.Store(false)
+	recovered := awaitPRUpdate(t, events, "recovery emit")
+	if recovered.Error != "" || recovered.HeadSHA != "head-a" {
+		t.Fatalf("recovery event = %+v", recovered)
+	}
+	// The retry schedule, not the poll interval, brought the recovery.
+	if elapsed := time.Since(started); elapsed >= app.prUpdates.interval {
+		t.Fatalf("recovery took %v, want under the %v poll interval", elapsed, app.prUpdates.interval)
+	}
+	third, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("subscribe after recovery: %v", err)
+	}
+	if third.Error != "" || third.HeadSHA != "head-a" {
+		t.Fatalf("joiner after recovery = %+v", third)
+	}
+	for _, id := range []string{joined.ID, third.ID} {
+		if err := app.UnsubscribePRUpdates(context.Background(), id); err != nil {
+			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
 }

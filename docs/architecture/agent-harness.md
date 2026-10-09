@@ -1,3 +1,4 @@
+| `HarnessForgeOffline(offline)` | Make the fake forge unreachable or reachable again. While offline every `gh`/`glab` call exits 1 with the CLI's own connection failure (route `offline`); the seeded state waits for the forge to come back. `HarnessReset` brings it back. |
 # Agent Test Harness
 
 The harness boots the **real backend and the real SPA** headless, on an

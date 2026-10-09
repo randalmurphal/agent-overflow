@@ -9,6 +9,8 @@ import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
+  REVIEW_OVERVIEW_ESTIMATE_PX,
+  REVIEW_OVERVIEW_ROW_KEY,
   REVIEW_SURFACE_END_PX,
   BlockRowsCache,
   buildReviewRows,
@@ -461,6 +463,49 @@ describe('reviewRowEstimate', () => {
     expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'surface-end']);
     expect(estimate.at(0)).toBe(REVIEW_FILE_HEADER_PX);
     expect(estimate.isExact?.(0)).toBe(true);
+  });
+});
+
+describe('buildReviewRows overview row', () => {
+  function build(overview: boolean | undefined) {
+    return buildReviewRows({
+      files: parseReviewFiles(twoFilePatch()),
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [],
+      overview,
+    });
+  }
+
+  it('leads the list with the overview row, owned by no file', () => {
+    const result = build(true);
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1 });
+    expect(result.rowKeys[0]).toBe(REVIEW_OVERVIEW_ROW_KEY);
+    expect(REVIEW_OVERVIEW_ROW_KEY).toBe('overview');
+    expect(result.fileOfRow[0]).toBe(-1);
+    // Every file's rows shift down by one; the first header follows it.
+    expect(result.rows[1]).toEqual({ kind: 'file-header', fileIndex: 0, path: 'src/one.ts' });
+    expect(result.firstRowOfFile[0]).toBe(1);
+    expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
+  });
+
+  it('estimates the overview row as a measured guess, not an exact height', () => {
+    const result = build(true);
+    const estimate = reviewRowEstimate(result, false);
+    expect(estimate.at(0)).toBe(REVIEW_OVERVIEW_ESTIMATE_PX);
+    // Its content (description, conversation) varies, so it is measured.
+    expect(estimate.isExact?.(0)).toBe(false);
+    expect(estimate.at(1)).toBe(REVIEW_FILE_HEADER_PX);
+  });
+
+  it('starts with the first file header without the overview flag', () => {
+    for (const result of [build(undefined), build(false)]) {
+      expect(result.rows[0]).toEqual({ kind: 'file-header', fileIndex: 0, path: 'src/one.ts' });
+      expect(result.rowKeys[0]).toBe('h:src/one.ts');
+      expect(result.firstRowOfFile[0]).toBe(0);
+      expect(result.rows.some((row) => row.kind === 'overview')).toBe(false);
+    }
   });
 });
 

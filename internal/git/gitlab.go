@@ -240,23 +240,21 @@ func (f *gitlabForge) gitlabApprovals(cwd, project string, number int) ([]Review
 
 func parseGitLabPRDetail(stdout string, approvals []ReviewVerdict) (PRDetail, error) {
 	var raw struct {
-		IID                 int    `json:"iid"`
-		Title               string `json:"title"`
-		Description         string `json:"description"`
-		SourceBranch        string `json:"source_branch"`
-		TargetBranch        string `json:"target_branch"`
-		SHA                 string `json:"sha"`
-		WebURL              string `json:"web_url"`
-		State               string `json:"state"`
-		Draft               bool   `json:"draft"`
-		WorkInProgress      bool   `json:"work_in_progress"`
-		ChangesCount        string `json:"changes_count"`
-		HasConflicts        bool   `json:"has_conflicts"`
-		DetailedMergeStatus string `json:"detailed_merge_status"`
-		Author              struct {
-			Username string `json:"username"`
-		} `json:"author"`
-		DiffRefs struct {
+		IID                 int             `json:"iid"`
+		Title               string          `json:"title"`
+		Description         string          `json:"description"`
+		SourceBranch        string          `json:"source_branch"`
+		TargetBranch        string          `json:"target_branch"`
+		SHA                 string          `json:"sha"`
+		WebURL              string          `json:"web_url"`
+		State               string          `json:"state"`
+		Draft               bool            `json:"draft"`
+		WorkInProgress      bool            `json:"work_in_progress"`
+		ChangesCount        string          `json:"changes_count"`
+		HasConflicts        bool            `json:"has_conflicts"`
+		DetailedMergeStatus string          `json:"detailed_merge_status"`
+		Author              gitlabAuthorRaw `json:"author"`
+		DiffRefs            struct {
 			BaseSHA  string `json:"base_sha"`
 			HeadSHA  string `json:"head_sha"`
 			StartSHA string `json:"start_sha"`
@@ -278,6 +276,7 @@ func parseGitLabPRDetail(stdout string, approvals []ReviewVerdict) (PRDetail, er
 		Title:          raw.Title,
 		Body:           raw.Description,
 		AuthorLogin:    raw.Author.Username,
+		AuthorName:     raw.Author.Name,
 		State:          NormalizePRState(raw.State),
 		Draft:          raw.Draft || raw.WorkInProgress,
 		HeadRefName:    raw.SourceBranch,
@@ -319,10 +318,8 @@ func gitlabCheckSummary(pipeline *struct {
 func parseGitLabApprovals(stdout string) ([]ReviewVerdict, error) {
 	var raw struct {
 		ApprovedBy []struct {
-			ApprovedAt string `json:"approved_at"`
-			User       struct {
-				Username string `json:"username"`
-			} `json:"user"`
+			ApprovedAt string          `json:"approved_at"`
+			User       gitlabAuthorRaw `json:"user"`
 		} `json:"approved_by"`
 	}
 	if strings.TrimSpace(stdout) == "" {
@@ -338,6 +335,7 @@ func parseGitLabApprovals(stdout string) ([]ReviewVerdict, error) {
 		}
 		out = append(out, ReviewVerdict{
 			AuthorLogin: approval.User.Username,
+			AuthorName:  approval.User.Name,
 			State:       "APPROVED",
 			SubmittedAt: approval.ApprovedAt,
 		})
@@ -434,8 +432,11 @@ type gitlabNoteRaw struct {
 	Author     gitlabAuthorRaw    `json:"author"`
 }
 
+// gitlabAuthorRaw is GitLab's user summary: MR author, note author and
+// approval user all carry username and name.
 type gitlabAuthorRaw struct {
 	Username string `json:"username"`
+	Name     string `json:"name"`
 }
 
 type gitlabPositionRaw struct {
@@ -487,6 +488,7 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA st
 		}
 		comments = append(comments, ReviewComment{
 			AuthorLogin: note.Author.Username,
+			AuthorName:  note.Author.Name,
 			Body:        note.Body,
 			CreatedAt:   note.CreatedAt,
 			DatabaseID:  note.ID,

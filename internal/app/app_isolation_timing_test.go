@@ -17,7 +17,11 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	const poll = 300 * time.Millisecond
 	const retry = 40 * time.Millisecond
 	f := newRequestFixture(t)
-	ConfigureIsolation(f.app, IsolationConfig{ThreadRequestPoll: poll, TransferPendingRetry: retry})
+	const prRetry = 25 * time.Millisecond
+	ConfigureIsolation(f.app, IsolationConfig{ThreadRequestPoll: poll, TransferPendingRetry: retry, PRUpdateRetryBase: prRetry})
+	if got := f.app.prUpdateRetryBase(); got != prRetry {
+		t.Fatalf("pr update retry base = %s, want %s", got, prRetry)
+	}
 	computer := uuid.NewString()
 
 	open := f.seedRemoteRequest(t, computer)

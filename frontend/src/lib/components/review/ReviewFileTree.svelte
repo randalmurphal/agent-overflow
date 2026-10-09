@@ -9,6 +9,7 @@
   import Menu from '../primitives/Menu.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import type { CommentFileCounts } from '../../utils/reviewComments';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -29,7 +30,8 @@
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
     /** Per-file comment/draft counts for the badge pills. */
-    commentCounts?: ReadonlyMap<string, number>;
+    /** Comments per file; the badge tints warning while any is unresolved. */
+    commentCounts?: ReadonlyMap<string, CommentFileCounts>;
     /** Shared extension-filter set. ReviewPane owns it so the filter can
      * also apply to the diff body; standalone use falls back to a local
      * set (rail-only filtering). */
@@ -212,7 +214,8 @@
           </span>
         </button>
       {:else}
-        {@const commentCount = commentCounts?.get(node.path) ?? 0}
+        {@const commentCount = commentCounts?.get(node.path)?.total ?? 0}
+        {@const openCount = commentCounts?.get(node.path)?.unresolved ?? 0}
         <button
           type="button"
           class="flex h-7 w-full min-w-0 items-center pr-2 text-left text-xs hover:bg-surface-2/50 {isActive(node) ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:text-fg'}"
@@ -227,8 +230,9 @@
             <span class="min-w-0 flex-1 truncate {fileNameClass(node.fileKind)}">{node.name}</span>
             {#if commentCount > 0}
               <span
-                class="shrink-0 rounded-full bg-surface-2 px-1.5 text-[0.625rem] tabular-nums text-fg-muted"
-                title="{commentCount} comment{commentCount === 1 ? '' : 's'}"
+                class="shrink-0 rounded-full px-1.5 text-[0.625rem] tabular-nums {openCount > 0 ? 'bg-warning/12 text-warning' : 'bg-surface-2 text-fg-muted'}"
+                title="{commentCount} comment{commentCount === 1 ? '' : 's'}{openCount > 0 ? `, ${openCount} unresolved` : ''}"
+                data-open-count={openCount}
                 data-testid="review-tree-comment-count"
               >{commentCount}</span>
             {/if}

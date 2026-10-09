@@ -1068,6 +1068,65 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--text-primary);
 }
 
+/* Review slab inset: the page margin every review row carries (file
+   slabs, the overview sections, the sticky file bar). Wide enough to
+   rest the wheel on beside an expanded Conversation feed; the phone
+   shell keeps the width for content. Sites use
+   mx-/px-/left-[var(--review-slab-inset)]. */
+:root {
+  --review-slab-inset: 16px;
+}
+.layout-compact {
+  --review-slab-inset: 8px;
+}
+
+/* Review prose: PR bodies and review comments are written against
+   GitHub's and GitLab's rendering, where <details> is a bare disclosure
+   (CodeRabbit nests several per finding; boxed, they stack into boxes in
+   boxes) and bold is plain bold rather than a highlight color. */
+.markdown-body.review-prose details {
+  border: 0;
+  padding: 0;
+  background: none;
+  margin: 0.25rem 0 var(--markdown-block-gap);
+}
+.markdown-body.review-prose details[open] {
+  padding-bottom: 0;
+}
+.markdown-body.review-prose details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+  padding: 0;
+  font-weight: 600;
+}
+.markdown-body.review-prose details > summary::-webkit-details-marker {
+  display: none;
+}
+.markdown-body.review-prose details > summary::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.1s;
+}
+.markdown-body.review-prose details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.markdown-body.review-prose details[open] > summary {
+  margin-bottom: 0.375rem;
+}
+.markdown-body.review-prose details[open] > :not(summary) {
+  margin-left: 0.8125rem;
+}
+.markdown-body.review-prose strong {
+  color: inherit;
+}
+
 .markdown-body pre { position: relative; }
 /* Wrapper for the mounted <CopyButton> primitive. The button itself
    owns its visual chrome via Tailwind classes — this rule only handles

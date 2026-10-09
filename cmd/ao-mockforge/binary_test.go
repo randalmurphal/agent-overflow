@@ -96,7 +96,7 @@ func manyThreads(n int) []forgefake.Thread {
 func githubFixture() forgefake.Fixture {
 	threads := append([]forgefake.Thread{
 		{Path: "app.go", Line: intPtr(3), StartLine: intPtr(2), Resolved: true, Comments: []forgefake.Comment{
-			{Author: "bob", Body: "range"}, {Author: "alice", Body: "reply"},
+			{Author: "bob", AuthorName: "Bob Smith", Body: "range"}, {Author: "alice", Body: "reply"},
 		}},
 		{Path: "app.go", Side: "file", Comments: []forgefake.Comment{{Author: "bob", Body: "file level"}}},
 		{Path: "app.go", Line: intPtr(1), Side: "left", Outdated: true, Comments: []forgefake.Comment{{Author: "bob", Body: "old"}}},
@@ -107,7 +107,7 @@ func githubFixture() forgefake.Fixture {
 		Pulls: []forgefake.Pull{
 			{
 				Number: 7, Title: "Add widgets", Body: "![shot](https://github.com/user-attachments/assets/1a2b)",
-				Author: "alice", HeadRef: "feat/widgets", HeadSHA: strings.Repeat("a", 40), Diff: diff, Draft: true,
+				Author: "alice", AuthorName: "Alice Ng", HeadRef: "feat/widgets", HeadSHA: strings.Repeat("a", 40), Diff: diff, Draft: true,
 				Mergeable: "conflicts",
 				Comments:  manyComments(55, "conversation"),
 				Threads:   threads,
@@ -131,13 +131,13 @@ func gitlabFixture() forgefake.Fixture {
 		Attachments: []forgefake.Attachment{{Secret: "0123456789abcdef0123456789abcdef", Filename: "diagram one.svg", ContentType: "image/svg+xml", Text: "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"}},
 		Pulls: []forgefake.Pull{{
 			Number: 3, Title: "Fix tool", Body: "![d](/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg)",
-			Author: "dave", HeadRef: "fix", HeadSHA: strings.Repeat("c", 40), BaseSHA: strings.Repeat("d", 40), Diff: diff,
+			Author: "dave", AuthorName: "Dave Jones", HeadRef: "fix", HeadSHA: strings.Repeat("c", 40), BaseSHA: strings.Repeat("d", 40), Diff: diff,
 			Comments: manyComments(40, "note"),
 			Threads: append([]forgefake.Thread{
 				{Path: "app.go", Line: intPtr(3), StartLine: intPtr(2), Resolved: true, Comments: []forgefake.Comment{{Body: "range"}, {Body: "reply"}}},
 				{Path: "app.go", Line: intPtr(1), Side: "left", Outdated: true, Comments: []forgefake.Comment{{Body: "old side"}}},
 			}, manyThreads(20)...),
-			Reviews: []forgefake.Review{{Author: "erin", State: "APPROVED"}},
+			Reviews: []forgefake.Review{{Author: "erin", AuthorName: "Erin Lee", State: "APPROVED"}},
 			CI: &forgefake.Pipeline{ID: 777, Jobs: []forgefake.Job{
 				{ID: 11, Name: "build", Stage: "build", Status: "success", Log: "built"},
 				{ID: 12, Name: "test", Stage: "test", Status: "running", StartedAt: "2026-01-01T00:00:00Z"},
@@ -161,6 +161,10 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		detail.Checks.Total != 3 || detail.Checks.Success != 1 || detail.Checks.Failure != 1 || detail.Checks.Pending != 1 {
 		t.Fatalf("GetPRDetail = %+v", detail)
 	}
+	// gh reports the PR author's name; its review list carries logins only.
+	if detail.AuthorLogin != "alice" || detail.AuthorName != "Alice Ng" || detail.LatestReviews[0].AuthorName != "" {
+		t.Fatalf("GetPRDetail authors = %q/%q, review %+v", detail.AuthorLogin, detail.AuthorName, detail.LatestReviews[0])
+	}
 
 	threads, err := r.core.ListReviewThreads("", ref)
 	if err != nil {
@@ -175,6 +179,10 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	if !ranged.IsResolved || *ranged.Line != 3 || *ranged.StartLine != 2 || ranged.Side != "right" ||
 		len(ranged.Comments) != 2 || ranged.Comments[1].ReplyTo == nil || ranged.Comments[1].ReplyTo.DatabaseID != ranged.Comments[0].DatabaseID {
 		t.Fatalf("range thread = %+v", ranged)
+	}
+	if root, reply := ranged.Comments[0], ranged.Comments[1]; root.AuthorLogin != "bob" || root.AuthorName != "Bob Smith" ||
+		reply.AuthorLogin != "alice" || reply.AuthorName != "" {
+		t.Fatalf("range thread authors = %+v", ranged.Comments)
 	}
 	if file.Side != "file" || file.Line != nil {
 		t.Fatalf("file thread = %+v", file)
@@ -232,7 +240,8 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	if detail.Title != "Fix tool" || detail.AuthorLogin != "dave" || detail.State != "open" || detail.ChangedFiles != 1 ||
 		detail.URL != "https://gitlab.com/grp/sub/tool/-/merge_requests/3" || detail.ReviewDecision != "APPROVED" ||
 		len(detail.LatestReviews) != 1 || detail.LatestReviews[0].AuthorLogin != "erin" || detail.DiffRefs == nil ||
-		detail.DiffRefs.BaseSHA != strings.Repeat("d", 40) || detail.Checks.Total != 1 || detail.Checks.Pending != 1 {
+		detail.DiffRefs.BaseSHA != strings.Repeat("d", 40) || detail.Checks.Total != 1 || detail.Checks.Pending != 1 ||
+		detail.AuthorName != "Dave Jones" || detail.LatestReviews[0].AuthorName != "Erin Lee" {
 		t.Fatalf("GetPRDetail = %+v", detail)
 	}
 
@@ -245,7 +254,8 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("threads = %d, want 62", len(threads))
 	}
 	ranged, outdated := threads[0], threads[1]
-	if !ranged.IsResolved || !ranged.IsResolvable || *ranged.Line != 3 || *ranged.StartLine != 2 || ranged.Side != "right" || len(ranged.Comments) != 2 {
+	if !ranged.IsResolved || !ranged.IsResolvable || *ranged.Line != 3 || *ranged.StartLine != 2 || ranged.Side != "right" || len(ranged.Comments) != 2 ||
+		ranged.Comments[0].AuthorLogin != "dave" || ranged.Comments[0].AuthorName != "Dave Jones" {
 		t.Fatalf("range thread = %+v", ranged)
 	}
 	if !outdated.IsOutdated || outdated.Side != "left" || *outdated.Line != 1 {

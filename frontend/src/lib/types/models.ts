@@ -474,6 +474,7 @@ export interface PRDetail {
   title: string;
   body: string;
   authorLogin: string;
+  authorName?: string;
   state: string;
   draft: boolean;
   headRefName: string;
@@ -492,6 +493,7 @@ export interface PRDetail {
 
 export interface ReviewVerdict {
   authorLogin: string;
+  authorName?: string;
   state: string;
   submittedAt: string;
   body: string;
@@ -573,6 +575,7 @@ export interface ReviewThread {
 
 export interface ReviewComment {
   authorLogin: string;
+  authorName?: string;
   body: string;
   createdAt: string;
   databaseID: number;

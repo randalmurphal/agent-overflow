@@ -16,8 +16,31 @@ import { expect } from './fixtures.js';
 export interface ForgeComment {
   id?: number;
   author?: string;
+  authorName?: string;
   body: string;
   createdAt?: string;
+}
+
+/** A review thread anchored to the diff; `side` defaults to right. */
+export interface ForgeThread {
+  id?: string;
+  path: string;
+  line?: number;
+  startLine?: number;
+  side?: 'right' | 'left' | 'file';
+  resolved?: boolean;
+  outdated?: boolean;
+  comments: ForgeComment[];
+}
+
+/** A submitted verdict; on GitLab only APPROVED has a counterpart (an approval). */
+export interface ForgeReview {
+  author: string;
+  authorName?: string;
+  state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED';
+  body?: string;
+  submittedAt?: string;
+  commitSha?: string;
 }
 
 export interface ForgePull {
@@ -25,12 +48,18 @@ export interface ForgePull {
   title: string;
   body?: string;
   state?: 'open' | 'closed' | 'merged';
+  draft?: boolean;
+  author?: string;
+  authorName?: string;
   headRef?: string;
   baseRef?: string;
   headSha?: string;
   baseSha?: string;
   diff?: string;
+  /** PR-level conversation comments. */
   comments?: ForgeComment[];
+  threads?: ForgeThread[];
+  reviews?: ForgeReview[];
 }
 
 /** A GitHub attachment by `url`, or a GitLab upload by `secret` and `filename`. */
@@ -66,6 +95,11 @@ export interface ForgeInvocation {
 
 export async function seedForge(harness: HarnessApp, repos: ForgeRepo[]): Promise<void> {
   await harness.rpc('HarnessForgeSeed', { repos });
+}
+
+/** Take the fake forge off the network, or put it back. */
+export async function setForgeOffline(harness: HarnessApp, offline: boolean): Promise<void> {
+  await harness.rpc('HarnessForgeOffline', offline);
 }
 
 export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {

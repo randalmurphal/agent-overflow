@@ -23,6 +23,8 @@
     BlockRowsCache,
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
+    REVIEW_FILE_HEADER_BAR_PX,
+    REVIEW_OVERVIEW_ROW_KEY,
     REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
@@ -77,6 +79,13 @@
      * non-empty; absent, those rows render nothing. */
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean]>;
+    /** The PR overview (meta, Description, Conversation) as the list's
+     * first row, so it scrolls off with the diff. Absent on every other
+     * scope. */
+    overview?: Snippet;
+    /** Fires when the overview row leaves or re-enters the viewport top,
+     * for the title bar's peek controls. */
+    onOverviewOffChange?: (off: boolean) => void;
     onAddComment?: (anchor: CommentAnchor) => void;
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
@@ -113,6 +122,8 @@
     draftEditor,
     commentThread,
     prThread,
+    overview,
+    onOverviewOffChange,
     onAddComment,
     onExpandFold,
     onExpandGap,
@@ -126,7 +137,7 @@
   }: Props = $props();
 
   const built = $derived(
-    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds }),
+    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview !== undefined }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
   // The rows of the blocks this surface renders, for the files it shows.
@@ -190,6 +201,7 @@
   // ------------------------------------------------------------------
   let stickyFileIndex = $state(-1);
   let topFileIndex = $state(-1);
+  let overviewOff = false;
   // The overlay must stop short of the scroll container's scrollbar —
   // `inset-x-0` on the outer wrapper would paint over it. Classic
   // scrollbars report their width via offsetWidth − clientWidth;
@@ -202,6 +214,12 @@
     onTopFileChange?.(fileIndex);
   }
 
+  function setOverviewOff(off: boolean): void {
+    if (overviewOff === off) return;
+    overviewOff = off;
+    onOverviewOffChange?.(off);
+  }
+
   function updateSticky(offset: number): void {
     const el = scrollEl;
     if (el) scrollbarInset = el.offsetWidth - el.clientWidth;
@@ -209,9 +227,11 @@
     if (!ref || built.rows.length === 0) {
       stickyFileIndex = -1;
       setTopFileIndex(-1);
+      setOverviewOff(false);
       return;
     }
     const rowIndex = ref.findItemIndex(offset);
+    setOverviewOff(built.rows[0]?.kind === 'overview' && rowIndex > 0);
     const fileIndex = built.fileOfRow[rowIndex] ?? -1;
     setTopFileIndex(fileIndex);
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;
@@ -311,7 +331,13 @@
     untrack(() => {
       onJumpRowConsumed?.();
       if (rowIndex < 0) return;
-      ref.scrollToIndex(rowIndex);
+      // The overview is a destination, not a find: no flash, and it
+      // sits above every file so nothing overlays its top.
+      if (key === REVIEW_OVERVIEW_ROW_KEY) {
+        ref.scrollToIndex(rowIndex);
+        return;
+      }
+      ref.scrollToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
       flashRowKey = key;
       clearTimeout(flashTimer);
       flashTimer = setTimeout(() => { flashRowKey = null; }, 1600);
@@ -360,7 +386,7 @@
     for (let index = topRow + delta; index >= 0 && index < built.rows.length; index += delta) {
       const row = built.rows[index];
       if (row?.kind === 'draft-editor' || row?.kind === 'comment-thread' || row?.kind === 'pr-thread') {
-        listRef?.scrollToIndex(index);
+        listRef?.scrollToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
         return;
       }
     }
@@ -420,10 +446,10 @@
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
   {#if stickyFile}
-    <!-- left/right 8px match the row slabs' mx-2 inset. -->
+    <!-- left/right match the row slabs' inset (--review-slab-inset). -->
     <div
-      class="absolute left-2 top-0 z-10 shadow-sheet"
-      style:right="{scrollbarInset + 8}px"
+      class="absolute left-[var(--review-slab-inset)] top-0 z-10 shadow-sheet"
+      style:right="calc({scrollbarInset}px + var(--review-slab-inset))"
       data-testid="review-sticky-header"
     >
       <ReviewFileHeaderRow
@@ -461,7 +487,9 @@
         {#snippet children(row: ReviewRow)}
           {@const file = files[row.fileIndex]}
           {@const flashing = row === flashRow}
-          {#if !file}
+          {#if row.kind === 'overview'}
+            {@render overview?.()}
+          {:else if !file}
             <!-- Build/props raced; the next flush re-renders coherent rows. -->
           {:else if row.kind === 'file-header'}
             <ReviewFileHeaderRow
@@ -475,7 +503,7 @@
                  REVIEW_SURFACE_END_PX; box-border keeps the border
                  inside it). -->
             <div style:height="{REVIEW_SURFACE_END_PX}px">
-              <div class="mx-2 h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
+              <div class="mx-[var(--review-slab-inset)] h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
             </div>
           {:else if row.kind === 'line-block'}
             {@const materialized = blockRows.get(file, row)}
@@ -494,18 +522,18 @@
               {onExpandGap}
             />
           {:else if row.kind === 'draft-editor'}
-            <!-- mx-2 + border-x + bg-surface-1 keep the file slab
+            <!-- The slab inset + border-x + bg-surface-1 keep the file slab
                  continuous behind the inserted rows (the page behind is
                  darker surface-0). -->
-            <div class="mx-2 border-x border-border-subtle bg-surface-1">
+            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
               {@render draftEditor?.(row.anchor)}
             </div>
           {:else if row.kind === 'comment-thread'}
-            <div class="mx-2 border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render commentThread?.(row.threadKey, row.anchor)}
             </div>
           {:else}
-            <div class="mx-2 border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
             </div>
           {/if}

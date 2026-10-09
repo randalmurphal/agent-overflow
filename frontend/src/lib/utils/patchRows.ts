@@ -533,6 +533,16 @@ export function anchorLinesMatch(lines: AnchorLines, anchor: RowAnchor): boolean
  * passed the target and stopped improving.
  */
 export function nearestLineRow(file: ReviewFile, side: 'new' | 'old', line: number): number {
+  return lineRow(file, side, line, false);
+}
+
+/** The display row that carries exactly `line` on `side`, or -1: a thread
+ * on a line the diff does not show must not borrow a neighbour's code. */
+export function exactLineRow(file: ReviewFile, side: 'new' | 'old', line: number): number {
+  return lineRow(file, side, line, true);
+}
+
+function lineRow(file: ReviewFile, side: 'new' | 'old', line: number, exact: boolean): number {
   const walker = new RowWalker(file);
   let best = -1;
   let bestDist = Infinity;
@@ -547,7 +557,7 @@ export function nearestLineRow(file: ReviewFile, side: 'new' | 'old', line: numb
       bestDist = dist;
     }
     if (dist === 0) return best;
-    if (rowLine > line && bestDist < dist) return best;
+    if (rowLine > line && bestDist < dist) break;
   }
-  return best;
+  return exact && bestDist !== 0 ? -1 : best;
 }

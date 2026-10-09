@@ -42,3 +42,12 @@ func (h *Harness) HarnessForgeSeed(raw json.RawMessage) (forgefake.Fixture, erro
 func (h *Harness) HarnessForgeInvocations(since int) forgefake.InvocationLog {
 	return h.forge.Invocations(since)
 }
+
+// HarnessForgeOffline makes the fake forge unreachable (true) or reachable
+// again (false): while offline every gh and glab call fails the way the
+// real CLI does when the forge host does not resolve, and the seeded state
+// waits for the forge to come back. HarnessReset brings it back.
+func (h *Harness) HarnessForgeOffline(offline bool) error {
+	h.forge.SetOffline(offline)
+	return nil
+}

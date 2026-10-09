@@ -248,10 +248,13 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       // A load can finish while the window sits minimized; the fresh pump
       // must start paused like every other live one.
       if (documentHidden()) setPumpActive(backend, id, false);
+      // A pump created on a failing first fetch carries no snapshot yet:
+      // the wire shape is a zero PRDetail, which is no detail at all.
+      const detail = wireDetail(result.detail);
       const snapshot: PRSnapshot = {
-        detail: (result.detail ?? null) as PRDetail | null,
+        detail,
         threads: (result.threads ?? []) as ReviewThread[],
-        headSHA: String(result.headSHA ?? result.detail?.headSHA ?? ''),
+        headSHA: String(result.headSHA ?? detail?.headSHA ?? ''),
       };
       apply(snapshot);
       // The pump's ACTIVE failure. Identical failures are deduped backend
@@ -530,6 +533,12 @@ export function applyPRUpdatedEvent(event: PRUpdatedEvent, backend: BackendKey =
 //
 // An unstamped frame applies unguarded. That is transition safety only —
 // every frame the backend emits today carries a seq.
+/** The wire's PRDetail, or null when it is the zero value (no snapshot). */
+function wireDetail(detail: unknown): PRDetail | null {
+  const candidate = (detail ?? null) as PRDetail | null;
+  return candidate && Number(candidate.number) > 0 ? candidate : null;
+}
+
 function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
   const seq = typeof event.seq === 'number' ? event.seq : null;
   if (seq !== null) {
@@ -541,7 +550,7 @@ function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
     if (seq !== null) appliedSeqByKey.set(key, seq);
     return;
   }
-  const detail = (event.detail ?? null) as PRDetail | null;
+  const detail = wireDetail(event.detail);
   store.apply(key, {
     detail,
     threads: (event.threads ?? []) as ReviewThread[],

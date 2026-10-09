@@ -20,6 +20,13 @@ import (
 
 const defaultPRUpdateInterval = 45 * time.Second
 
+// defaultPRUpdateRetryBase is the first retry delay after a failed poll;
+// it doubles per failure up to the regular interval. A forge that was
+// unreachable for one call (DNS not up yet at boot, a dropped connection)
+// is usually back within seconds, and a pane should not wait out a whole
+// interval to find out.
+const defaultPRUpdateRetryBase = 5 * time.Second
+
 // maxPRUpdateHandles bounds the outstanding SubscribePRUpdates handles for
 // the whole app. Each distinct PR behind them costs a poll goroutine that
 // spawns gh/glab every tick, so an unbounded handle map is a
@@ -447,18 +454,22 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 	}
 	var start *prUpdatePump
 	if !joined {
-		// Fetched before the pump is registered so a failing forge call
-		// fails the subscribe outright instead of leaving a pump nobody
-		// can see the first result of.
+		// Fetched before the pump is registered so the first subscriber sees
+		// the first result. A failing forge call does not fail the
+		// subscribe: the pump is created carrying that failure (the result
+		// reports it, with no snapshot) and retries on the error schedule,
+		// so a forge that was unreachable for one call at boot recovers
+		// without anyone reloading by hand.
 		fetched, err := a.fetchPRUpdateSnapshot(pr)
+		var encoded []byte
+		var fetchErr, wireErr string
 		if err != nil {
+			fetchErr, wireErr = a.logPRUpdateFailure(prKey, err)
+			fetched = prUpdateSnapshot{}
+		} else if encoded, err = encodePRUpdateSnapshot(fetched); err != nil {
 			return PRUpdateSubscriptionResult{}, err
 		}
-		encoded, err := encodePRUpdateSnapshot(fetched)
-		if err != nil {
-			return PRUpdateSubscriptionResult{}, err
-		}
-		ref, start, err = a.createPRUpdatePump(pr, prKey, fetched, encoded)
+		ref, start, err = a.createPRUpdatePump(pr, prKey, fetched, encoded, fetchErr, wireErr)
 		if err != nil {
 			return PRUpdateSubscriptionResult{}, err
 		}
@@ -518,6 +529,7 @@ func (a *App) createPRUpdatePump(
 	prKey string,
 	snapshot prUpdateSnapshot,
 	encoded []byte,
+	fetchErr, wireErr string,
 ) (ref prUpdateReference, start *prUpdatePump, err error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
@@ -535,6 +547,8 @@ func (a *App) createPRUpdatePump(
 		wake:         make(chan struct{}, 1),
 		last:         encoded,
 		lastSnapshot: snapshot,
+		lastErr:      fetchErr,
+		lastWireErr:  wireErr,
 		seq:          a.nextPRUpdateSeqLocked(),
 	}
 	a.prUpdates.pumps[prKey] = pump
@@ -674,6 +688,25 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// a wake only triggers an immediate poll when a tick actually elapsed
 	// while paused; otherwise the regular ticker cadence resumes untouched.
 	missedTick := false
+	// A failing pump polls again on a doubling delay from the retry base up
+	// to the interval, starting with the failure it was created with; a
+	// healthy one rides the ticker alone.
+	var retry <-chan time.Time
+	var retryDelay time.Duration
+	scheduleRetry := func() {
+		if !a.prUpdatePumpFailing(pump) {
+			retry = nil
+			retryDelay = 0
+			return
+		}
+		if retryDelay == 0 {
+			retryDelay = min(a.prUpdateRetryBase(), interval)
+		} else {
+			retryDelay = min(retryDelay*2, interval)
+		}
+		retry = time.After(retryDelay)
+	}
+	scheduleRetry()
 	for {
 		select {
 		case <-pump.done:
@@ -685,6 +718,15 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 				continue
 			}
 			missedTick = false
+		case <-retry:
+			if pump.paused.Load() {
+				// Resume polls once; the retry curve restarts from there.
+				retry = nil
+				retryDelay = 0
+				missedTick = true
+				continue
+			}
+			missedTick = false
 		case <-ticker.C:
 			if pump.paused.Load() {
 				missedTick = true
@@ -693,6 +735,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			missedTick = false
 		}
 		event, changed := a.pollPRUpdate(pump)
+		scheduleRetry()
 		if !changed {
 			continue
 		}
@@ -760,9 +803,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 	// the server log, the same split internal/transport makes for RPC
 	// errors. The id is minted before the lock so the summary STORED for
 	// joiners and the one EMITTED here are the same string.
-	message := err.Error()
-	correlationID := uuid.NewString()
-	wireErr := prUpdateErrorMessage(correlationID)
+	message, correlationID, wireErr := mintPRUpdateFailure(err)
 	// Dedup BEFORE logging: a forge that is down fails identically every
 	// tick, and logging first turned one outage into a log line every 45s
 	// for as long as a pane stayed open.
@@ -795,6 +836,31 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 // wire: what went wrong, and the id to grep the server log for.
 func prUpdateErrorMessage(correlationID string) string {
 	return fmt.Sprintf("failed to refresh pull request (id: %s)", correlationID)
+}
+
+// mintPRUpdateFailure splits one fetch failure into the raw text (the dedup
+// key, server side only), the correlation id, and the caller-safe summary
+// that reaches the wire.
+func mintPRUpdateFailure(err error) (message, correlationID, wireErr string) {
+	correlationID = uuid.NewString()
+	return err.Error(), correlationID, prUpdateErrorMessage(correlationID)
+}
+
+// logPRUpdateFailure records a pump's first fetch failing: the raw text
+// goes to the server log under a correlation id, and the pair the pump is
+// created with comes back.
+func (a *App) logPRUpdateFailure(prKey string, err error) (message, wireErr string) {
+	message, correlationID, wireErr := mintPRUpdateFailure(err)
+	log.Printf("pr updates: first fetch failed for pr=%s (id: %s): %v", prKey, correlationID, err)
+	return message, wireErr
+}
+
+// prUpdatePumpFailing reports whether the pump's last observation was a
+// failure, which is what puts it on the retry schedule.
+func (a *App) prUpdatePumpFailing(pump *prUpdatePump) bool {
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
+	return pump.lastErr != ""
 }
 
 // unsubscribePRUpdates releases one caller's handle. The pump (and its
@@ -908,6 +974,13 @@ func (a *App) prUpdatePollInterval() time.Duration {
 		return a.prUpdates.interval
 	}
 	return defaultPRUpdateInterval
+}
+
+func (a *App) prUpdateRetryBase() time.Duration {
+	if a.prUpdates.retryBase > 0 {
+		return a.prUpdates.retryBase
+	}
+	return defaultPRUpdateRetryBase
 }
 
 func encodePRUpdateSnapshot(snapshot prUpdateSnapshot) ([]byte, error) {

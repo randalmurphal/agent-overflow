@@ -413,16 +413,22 @@ and anti-changes that live only here:
 - Icon buttons with hovertext, never text buttons, for thread actions
   (owner preference, stated for the comments overhaul; applies to new
   review chrome).
-- PR comments live in the header's collapsible Conversation section
-  beside Description, not a separate view or tab. The section is one
-  chronological feed (newest first) of thread cards, review verdicts and
-  commit pushes — mirror the forge's proven overview presentation, no
-  invented triage layouts (ruling 2026-09-04, superseding the
-  unresolved-first ordering). A top-level comment is NEVER truncated or
-  clamped; only settled threads' replies may fold. Reading is protected
-  from updates: ordering freezes while the section is open, arrivals
-  wait behind an "N new" chip, and a remote resolve never moves an open
-  card ("nothing worse than GitLab"). Both header sections are
+- PR comments live in the overview: Description (collapsed by default)
+  and Conversation (also collapsed by default, and capped short enough
+  that the diff stays visible under it), two collapsible sections that head
+  the diff list as its first row and scroll off with the diff; once off
+  screen the title bar offers peek buttons back to each. No Comments tab
+  or separate list (ruling 2026-10-08, superseding the fixed header and
+  the rail tab). The Conversation is one chronological feed (newest
+  first) of thread cards on a timeline rail, review verdicts and commit
+  pushes, mirroring the forge's overview; a card's edge and chip carry
+  its state (warning unresolved, success resolved, dashed outdated) and
+  the thread's row on the diff is the same card. A top-level comment is
+  NEVER truncated or clamped; only settled threads' replies may fold.
+  Reading is protected from updates: ordering freezes from the
+  section's first render, arrivals wait behind an "N new" chip, and a
+  remote resolve never moves an open card ("nothing worse than
+  GitLab"). Each section fits its content up to a cap and is
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 - Forge attachments referenced by PR/MR bodies and comments (images,
