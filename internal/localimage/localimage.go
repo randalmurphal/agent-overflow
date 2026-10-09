@@ -157,7 +157,8 @@ func (s *Service) Resolve(path, workspacePath string, maxWidth int) (Image, erro
 
 // Open serves one content id. An original is re-opened from disk and must
 // still be the version Resolve validated; a changed size or mtime is an
-// error, which the route answers 404, and the client resolves again.
+// error, which the route answers 404; the next Resolve of the path reads
+// the new version.
 func (s *Service) Open(contentID string) (Content, error) {
 	held, ok := s.cache.Get(contentID)
 	if !ok {
