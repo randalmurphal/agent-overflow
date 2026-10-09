@@ -31,7 +31,6 @@
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { draftSnapshotMatchesPersistedState } from '../../stores/composerDraftSnapshots';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import ComposerInputSurface from '../composer/ComposerInputSurface.svelte';
@@ -54,12 +53,11 @@
      * absorbed without moving what the reader is looking at.
      */
     onCancel: () => void;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     /** `inline` inside the message bubble; `sheet` in the composer's slot. */
     placement?: 'inline' | 'sheet';
   }
 
-  let { pane, session, onCancel, onImageExpand, placement = 'inline' }: Props = $props();
+  let { pane, session, onCancel, placement = 'inline' }: Props = $props();
   const sheet = $derived(placement === 'sheet');
 
   let surface: ComposerInputSurfaceHandle | undefined = $state(undefined);
@@ -237,7 +235,6 @@
     onSubmitEnter={submit}
     shouldDeleteAttachmentRecord={(id) => session.sessionUploadedIds.has(id)}
     {attachmentCache}
-    {onImageExpand}
   />
 
   <div class="flex items-center justify-end gap-2 px-4 pb-3">

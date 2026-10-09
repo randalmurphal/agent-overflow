@@ -8,14 +8,13 @@
   import {
     createAttachmentPreviews,
     type AttachmentPreviewCache,
-    type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
+  import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     attachments: Attachment[];
     onRemove: (id: string) => void;
-    onExpand?: (preview: ExpandedImagePreview) => void;
     dragActive?: boolean;
     /**
      * Blob-URL owner. Absent, this row owns them and revokes on destroy —
@@ -27,7 +26,7 @@
     cache?: AttachmentPreviewCache;
   }
 
-  let { attachments, onRemove, onExpand, dragActive = false, cache }: Props = $props();
+  let { attachments, onRemove, dragActive = false, cache }: Props = $props();
   // `#N` numbers IMAGES, matching the `[Image #N]` marker in the textarea —
   // a file carries no badge and no number, so the array index would label the
   // second image `#3` as soon as a file sat before it. Projected once rather
@@ -47,13 +46,9 @@
     { cache: untrack(() => cache) },
   );
 
-  async function expandAttachment(id: string): Promise<void> {
-    if (!onExpand) return;
-    // The composer row's preview cache holds thumbnails; the lightbox
-    // wants the original-resolution image. Always go through the
-    // load-full-size path.
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
-    if (expanded) onExpand(expanded);
+  function expandAttachment(id: string): void {
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
+    if (expanded) openImageLightbox(expanded);
   }
 </script>
 

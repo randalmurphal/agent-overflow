@@ -22,10 +22,8 @@
     RowUiRegistry,
     ScrollHost,
   } from '../../stores/threadPaneRoles';
-  import {
-    createAttachmentPreviews,
-    type ExpandedImagePreview,
-  } from '../../utils/attachmentPreview.svelte';
+  import { createAttachmentPreviews } from '../../utils/attachmentPreview.svelte';
+  import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import { generatedImageRow } from '../../utils/generatedImageMeta';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
   import { formatTimeOfDay } from '../../utils/format';
@@ -33,11 +31,9 @@
   let {
     pane,
     item,
-    onImageExpand,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
   } = $props();
 
   const row = $derived(generatedImageRow(item));
@@ -51,10 +47,9 @@
   // so the fallback label is not repeated under the picture.
   const caption = $derived(row?.prompt ?? '');
 
-  async function expand(id: string): Promise<void> {
-    if (!onImageExpand) return;
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
-    if (expanded) onImageExpand(expanded);
+  function expand(id: string): void {
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
+    if (expanded) openImageLightbox(expanded);
   }
 </script>
 

@@ -6,6 +6,7 @@ import {
   type AttachmentPreviewSource,
 } from './userMessageMeta';
 import { base64ToBytes } from './base64';
+import { attachmentImageMenuTag } from './imageMenuActions';
 import { imageAttachments } from '../types/attachment';
 
 export {
@@ -15,22 +16,28 @@ export {
 
 export interface ImagePreviewItem {
   id: string;
-  /** The thread that owns the attachment, for actions on its original bytes. */
-  threadId: string;
   filename: string;
   mimeType: string;
-  size: number;
+  /** What the lightbox paints first: the thumbnail or the timeline's derivative. '' when nothing is loaded yet. */
   url: string;
+  /** Original pixel size when known, else 0. */
+  width: number;
+  height: number;
+  /** The original's byte count, for the loading line; 0 when unknown. */
+  originalBytes: number;
+  /** Fetches the original bytes. Absent when `url` already is the original. */
+  original?: (signal: AbortSignal) => Promise<Blob>;
+  /** Attributes the image menu reads for this image (`utils/imageMenuActions.ts`). */
+  menuTag: Record<string, string>;
 }
 
 export interface ExpandedImagePreview {
   images: ImagePreviewItem[];
   index: number;
   /**
-   * Called by the lightbox host (ChatView) when the modal closes.
-   * Revokes any blob URLs created specifically for the modal's
-   * full-size images so they don't pin decoded bytes after the dialog
-   * is dismissed.
+   * Releases what the opener allocated for this lightbox lifetime. The
+   * lightbox store (`stores/imageLightbox.svelte.ts`) calls it once, when
+   * the preview is replaced or closed.
    */
   dispose?: () => void;
 }
@@ -40,52 +47,42 @@ export interface ExpandedImagePreview {
  * `GetAttachmentThumbnail` binding, which generates the thumb on first
  * request and caches the bytes on the attachments row in SQLite. The
  * returned `ImagePreviewItem.url` is a blob: URL of the thumbnail bytes,
- * NOT the full image. For the lightbox modal, call
- * `loadAttachmentFullSize` instead.
+ * NOT the full image; `original` fetches that.
  *
- * Still an RPC — base64 in a WS frame — while the full-size path below
- * moved to HTTP. A thumb is ~10-30 KB, which is not the large body the
- * move was about, and a grid rendering a dozen tiles would otherwise pay
- * a ticket round trip for each one.
+ * Still an RPC (base64 in a WS frame) while the original moved to HTTP.
+ * A thumb is ~10-30 KB, which is not the large body the move was about,
+ * and a grid rendering a dozen tiles would otherwise pay a ticket round
+ * trip for each one.
  */
 export async function loadAttachmentPreview(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
   const result = await GetAttachmentThumbnail(attachment.threadId, attachment.id);
-  return {
-    id: attachment.id,
-    threadId: attachment.threadId,
-    filename: attachment.filename,
-    mimeType: result.mimeType,
-    size: attachment.size,
-    url: imagePreviewUrl(result.mimeType, result.data),
-  };
+  return attachmentImageItem(
+    attachment,
+    imagePreviewUrl(result.mimeType, result.data),
+    result.mimeType,
+  );
 }
 
-/**
- * Loads the original-resolution image bytes for the lightbox modal.
- * Always refetches — the inline-display cache holds thumbnails, not
- * full-size pixels, and full bytes are too expensive to keep around
- * after the modal closes (blob URLs pin decoded image data).
- *
- * Callers are responsible for revoking the returned blob: URL when the
- * modal closes; `loadExpandedPreview` wires that up via
- * `ExpandedImagePreview.dispose`.
- *
- * The bytes arrive over HTTP, admitted by a single-use ticket, rather
- * than as base64 inside a WebSocket frame — which is what keeps opening
- * a 10 MiB screenshot from stalling the live event stream behind it.
- */
-export async function loadAttachmentFullSize(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
-  const blob = await fetchAttachmentBytes(attachment.threadId, attachment.id);
+/** One attachment image, painted from `url` until its original is fetched. */
+function attachmentImageItem(
+  attachment: AttachmentPreviewSource,
+  url: string,
+  mimeType: string,
+): ImagePreviewItem {
   return {
     id: attachment.id,
-    threadId: attachment.threadId,
     filename: attachment.filename,
-    // The response's own type, which the backend wrote from the verified
-    // content type on the stored row. Falling back to the row's copy
-    // keeps a caller that passed one from losing it.
-    mimeType: blob.type || attachment.mimeType,
-    size: attachment.size,
-    url: blobPreviewUrl(blob),
+    mimeType,
+    url,
+    // GetAttachmentThumbnail reports no pixel size, of the thumbnail or the
+    // original.
+    width: 0,
+    height: 0,
+    originalBytes: attachment.size,
+    // Over HTTP, admitted by a single-use ticket, so opening a 10 MiB
+    // screenshot does not stall the live event stream behind it.
+    original: () => fetchAttachmentBytes(attachment.threadId, attachment.id),
+    menuTag: attachmentImageMenuTag(attachment),
   };
 }
 
@@ -94,16 +91,6 @@ function imagePreviewUrl(mimeType: string, base64Data: string): string {
     return `data:${mimeType};base64,${base64Data}`;
   }
   return URL.createObjectURL(new Blob([base64ToBytes(base64Data)], { type: mimeType }));
-}
-
-/**
- * Wraps an already-fetched Blob. The base64 branch above has no
- * counterpart here: a response body is bytes to begin with, so there is
- * nothing to re-encode when createObjectURL is missing, and every
- * environment that can run fetch has it.
- */
-function blobPreviewUrl(blob: Blob): string {
-  return URL.createObjectURL(blob);
 }
 
 function revokePreview(preview: ImagePreviewItem | undefined): void {
@@ -252,39 +239,21 @@ export function createAttachmentPreviews(
     },
 
     /**
-     * Loads original-resolution images for the lightbox modal. Always
-     * refetches the full bytes (the inline cache holds thumbnails). The
-     * returned `dispose` revokes every full-size blob URL so the modal
-     * doesn't leak decoded image bytes after closing.
-     *
-     * Loads all images in the message in parallel — the modal supports
-     * arrow-key navigation between siblings, and a per-swipe load would
-     * pop visible flashes between images.
+     * The lightbox preview for the message's images, opened at `selectedId`,
+     * or null when that id is not one of them. Each item paints the
+     * thumbnail this factory already holds (`''` for one still loading)
+     * and fetches its original through `original`. Nothing is awaited and
+     * nothing is allocated, so there is no `dispose`: the thumbnails stay
+     * owned by this factory or its cache, and the lightbox owns the
+     * original URLs it creates.
      */
-    async loadExpandedPreview(selectedId: string): Promise<ExpandedImagePreview | null> {
+    loadExpandedPreview(selectedId: string): ExpandedImagePreview | null {
       // Siblings in the lightbox are the message's IMAGES; a file is not
       // one, and has no expand affordance to reach this from.
-      const attachments = imageAttachments(getAttachments());
-      const fullPreviews = await Promise.all(
-        attachments.map((attachment) =>
-          loadAttachmentFullSize(attachment).catch((err) => {
-            console.error('Failed to load full-size attachment:', err);
-            return null;
-          }),
-        ),
+      const images = imageAttachments(getAttachments()).map((attachment) =>
+        attachmentImageItem(attachment, previews[attachment.id]?.url ?? '', attachment.mimeType),
       );
-      const ordered = fullPreviews.filter(
-        (preview): preview is ImagePreviewItem => preview !== null,
-      );
-      const built = buildExpandedImagePreview(ordered, selectedId);
-      if (!built) {
-        for (const preview of ordered) revokePreview(preview);
-        return null;
-      }
-      built.dispose = () => {
-        for (const preview of ordered) revokePreview(preview);
-      };
-      return built;
+      return buildExpandedImagePreview(images, selectedId);
     },
   };
 }

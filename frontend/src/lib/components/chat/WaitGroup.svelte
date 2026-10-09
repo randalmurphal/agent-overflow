@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { timelineNodeKey, type TimelineNode, type WaitGroupNode } from '../../utils/subagentGrouping';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import type { UserMessageActions } from './userMessageActions';
@@ -13,14 +12,12 @@
   let {
     pane,
     group,
-    onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
     renderNode,
   }: {
     pane: ThreadPane;
     group: WaitGroupNode;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
     /** The timeline's node renderer: a waited Codex spawn's completion
@@ -45,7 +42,7 @@
        (and at a page boundary where the completion isn't loaded) it falls back to
        the carrier tool_call's "Waiting for N agents". Same TimelineLeaf instance
        across the swap — an in-place prop update, not a remount. -->
-  <TimelineLeaf {pane} item={group.completion ?? group.parent} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
+  <TimelineLeaf {pane} item={group.completion ?? group.parent} {userMessageActions} {codexSubagentReceiverLabels} />
   {#if group.children.length > 0}
     <!--
       `ml-[6.375rem]` lines the completion rail up with the parent
@@ -67,7 +64,7 @@
     <div class="ml-[6.375rem] max-h-[20rem] overflow-y-auto" data-testid="wait-group-children" use:nestedScroll>
       {#each visibleChildren as child (timelineNodeKey(child))}
         {#if child.kind === 'leaf'}
-          <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
+          <TimelineLeaf {pane} item={child.item} {userMessageActions} {codexSubagentReceiverLabels} />
         {:else}
           {@render renderNode(child, 1)}
         {/if}

@@ -161,9 +161,15 @@
     return () => observer.disconnect();
   });
 
+  // Records what the painted bytes decoded to when the opener did not know
+  // the original's size: the thumbnail's on open, then the original's when
+  // it lands, which resizes the box and refits.
   function handleLoad(event: Event): void {
     const img = event.currentTarget as HTMLImageElement;
-    if (!image || content || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+    if (!image || (image.width > 0 && image.height > 0)) return;
+    if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+    const known = decoded[image.id];
+    if (known?.width === img.naturalWidth && known?.height === img.naturalHeight) return;
     decoded = { ...decoded, [image.id]: { width: img.naturalWidth, height: img.naturalHeight } };
   }
 
@@ -232,7 +238,8 @@
   tabindex="-1"
   onkeydown={handleKeydown}
 >
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- The keys are on the dialog root above; the canvas is pointer-only. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
     bind:this={canvasEl}
     data-lightbox-canvas

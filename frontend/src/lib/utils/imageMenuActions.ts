@@ -5,9 +5,10 @@
 //
 //   attachment  A thread's image attachment. Every surface that paints one
 //               (the user message grid, the composer and editor thumbs, a
-//               generated image, the lightbox) spreads
-//               `attachmentImageMenuTag` onto the element that owns the
-//               picture. Both actions work on the ORIGINAL bytes from the
+//               generated image) spreads `attachmentImageMenuTag` onto the
+//               element that owns the picture; the lightbox spreads its
+//               item's `menuTag`, which `attachmentPreview.svelte.ts` builds
+//               with it. Both actions work on the ORIGINAL bytes from the
 //               download route, never the thumbnail a tile is painted from.
 //   forge       An image a PR/MR body or comment references, painted by
 //               `ForgeAttachmentHost` through `forgeImageMenuTag`. The tag

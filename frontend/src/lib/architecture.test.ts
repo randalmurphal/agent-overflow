@@ -251,7 +251,10 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   // TranscriptDisclosureHeader rotate with `rotate-90`. No animation.
   'app.css|transform declaration or keyframe|.markdown-body.review-prose details[open] > summary::before {',
   'lib/components/chat/CompactionDivider.svelte|Tailwind transform utility|class:rotate-90={expanded}',
-  'lib/components/chat/DiagramModal.svelte|Svelte transform style directive|style:transform={transform}',
+  // The pan and zoom of the two full-viewport viewers (utils/panZoom.svelte.ts):
+  // one transform on the content host, outside any scroller.
+  'lib/components/chat/DiagramModal.svelte|Svelte transform style directive|style:transform={view.transform}',
+  'lib/components/chat/ExpandedImageDialog.svelte|Svelte transform style directive|style:transform={view.transform}',
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
   'lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={tickStyleTransform(i)}',

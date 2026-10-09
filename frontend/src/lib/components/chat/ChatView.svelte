@@ -10,9 +10,7 @@
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
-  import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import {
@@ -66,7 +64,6 @@
   // the last timeline row beneath an unmeasured composer. The
   // ResizeObserver below refines this within one frame.
   let composerHeight = $state(120);
-  let expandedImagePreview: ExpandedImagePreview | null = $state(null);
   let forkingMessageItemId: string | null = $state(null);
   // Edit-and-resend. The whole flow — stages, the confirm gate, the
   // destructive RPC and every failure branch — lives in
@@ -399,22 +396,6 @@
     }
   });
 
-  function openImagePreview(preview: ExpandedImagePreview): void {
-    // If a previous preview is still open (rapid re-click on a different
-    // image before the dialog has closed), revoke its blob URLs before
-    // overwriting so we don't strand decoded bytes.
-    expandedImagePreview?.dispose?.();
-    expandedImagePreview = preview;
-  }
-
-  function closeImagePreview(): void {
-    // Revoke the full-size blob URLs created for this modal lifetime.
-    // The inline-grid thumbnails live in the per-pane cache and are
-    // unaffected.
-    expandedImagePreview?.dispose?.();
-    expandedImagePreview = null;
-  }
-
   async function forkFromUserMessage(item: Item): Promise<void> {
     const thread = pane.thread;
     if (!thread || forkingMessageItemId) return;
@@ -488,7 +469,6 @@
       <ProviderStatusBanner {pane} />
       <MessageTimeline
         {pane}
-        onImageExpand={openImagePreview}
         {userMessageActions}
         pendingCutAfter={editResend.pendingCutAfter}
       />
@@ -517,7 +497,6 @@
                 session={editSheetSession}
                 placement="sheet"
                 onCancel={editSheetSession.onCancel}
-                onImageExpand={openImagePreview}
               />
             </div>
           </div>
@@ -526,7 +505,6 @@
           <Composer
             {pane}
             {draft}
-            onImageExpand={openImagePreview}
             sendSuspended={editResend.stage === 'executing'}
           />
         </div>
@@ -567,9 +545,6 @@
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
-    {#if expandedImagePreview}
-      <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
-    {/if}
     <ConfirmDialog
       open={editResend.confirmOpen}
       title="Revert to this message?"

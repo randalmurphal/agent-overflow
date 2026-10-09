@@ -83,7 +83,6 @@
   import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
   import type { DiffReviewComment, Item, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
@@ -91,7 +90,6 @@
   interface Props {
     pane: ThreadPane;
     draft: ComposerDraftStore;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     /**
      * Refuse to send while a thread-level operation owns sending — the
      * edit-and-resend saga, which reverts and re-sends under one backend
@@ -103,7 +101,7 @@
     sendSuspended?: boolean;
   }
 
-  let { pane, draft, onImageExpand, sendSuspended = false }: Props = $props();
+  let { pane, draft, sendSuspended = false }: Props = $props();
 
   let surface: ComposerInputSurfaceHandle | undefined = $state(undefined);
   let composerRoot: HTMLDivElement | undefined = $state(undefined);
@@ -1078,7 +1076,6 @@
       {blockAttachment}
       uploadThreadId={threadIdForUpload}
       ensureUploadThreadId={ensureThreadIdForUpload}
-      {onImageExpand}
     />
 
     {#if !hasInteractivePrompt && preparingWorktree}

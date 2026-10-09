@@ -10,8 +10,8 @@
   import {
     createAttachmentPreviews,
     type AttachmentPreviewSource,
-    type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
+  import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
   import UserMessageEditor from './UserMessageEditor.svelte';
@@ -41,11 +41,10 @@
   interface Props {
     item: Item;
     pane?: ThreadPane;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     actions?: UserMessageActions;
   }
 
-  let { item, pane, onImageExpand, actions }: Props = $props();
+  let { item, pane, actions }: Props = $props();
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
@@ -164,12 +163,9 @@
     commandRanges.length > 0 ? commandSegments(visibleSummary, commandRanges) : [],
   );
 
-  async function expandAttachment(id: string): Promise<void> {
-    if (!onImageExpand) return;
-    // Always refetches full bytes; the per-pane attachment cache holds
-    // thumbnails, not full-size pixels, so there's no synchronous shortcut.
-    const expanded = await attachmentPreviews.loadExpandedPreview(id);
-    if (expanded) onImageExpand(expanded);
+  function expandAttachment(id: string): void {
+    const expanded = attachmentPreviews.loadExpandedPreview(id);
+    if (expanded) openImageLightbox(expanded);
   }
 
   // Display-only short time. Purely cosmetic — the authoritative
@@ -307,7 +303,6 @@
           {pane}
           session={editSession}
           onCancel={cancelEdit}
-          {onImageExpand}
         />
       {:else}
         {@render readOnlyBody()}

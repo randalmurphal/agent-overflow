@@ -6,7 +6,7 @@
 // `contextmenu`, as it does on a device.
 
 import { expect, test, type SeedResult } from './fixtures.js';
-import { PNG_BASE64, PNG_WIDTH } from './attachment-fixture.js';
+import { PNG_BASE64 } from './attachment-fixture.js';
 import { plainScenario } from './thread-tools-helpers.js';
 import { longPress } from './touch-helpers.js';
 
@@ -66,10 +66,14 @@ test('a long press on a sent image opens its menu and not the preview', async ({
 });
 
 test('inside the lightbox, a tap outside the menu dismisses only the menu', async ({ page }) => {
-  await page.getByTestId('user-message-attachments').getByLabel(`Preview ${FILENAME}`).tap();
+  // The lightbox opens on the picture its tile already painted, so the
+  // tile's thumbnail is decoded before the tap.
+  const tile = page.getByTestId('user-message-attachments').getByLabel(`Preview ${FILENAME}`);
+  await expect.poll(() => tile.getByRole('img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  await tile.tap();
   const dialog = page.getByRole('dialog', { name: FILENAME });
   const picture = dialog.getByRole('img', { name: FILENAME });
-  await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
+  await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
   const menu = page.getByRole('menu', { name: 'Image Actions' });
   await longPress(page, picture, menu);

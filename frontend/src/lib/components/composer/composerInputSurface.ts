@@ -15,10 +15,7 @@
 // action surface. A role for that would just re-describe `ThreadPane`.
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
-import type {
-  AttachmentPreviewCache,
-  ExpandedImagePreview,
-} from '../../utils/attachmentPreview.svelte';
+import type { AttachmentPreviewCache } from '../../utils/attachmentPreview.svelte';
 
 /** A textarea selection, as `setSelectionRange` takes it. */
 export interface ComposerInputSelection {
@@ -109,8 +106,6 @@ export interface ComposerInputSurfaceProps {
    * Defaults to `pane.ensureMaterializedThread()`.
    */
   ensureUploadThreadId?: () => Promise<string | null>;
-
-  onImageExpand?: (preview: ExpandedImagePreview) => void;
 }
 
 export interface ComposerInputSurfaceHandle {

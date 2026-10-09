@@ -8,7 +8,6 @@
   // recurses without any surface knowing the node kinds.
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { TimelineNode } from '../../utils/subagentGrouping';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import ActivityRun from './ActivityRun.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
@@ -21,7 +20,6 @@
     pane,
     node,
     depth,
-    onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
@@ -29,7 +27,6 @@
     node: TimelineNode;
     /** Nesting depth of this node in the timeline tree; top-level rows are 1. */
     depth: number;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
@@ -40,7 +37,6 @@
     {pane}
     node={child}
     depth={childDepth}
-    {onImageExpand}
     {userMessageActions}
     {codexSubagentReceiverLabels}
   />
@@ -51,7 +47,6 @@
     {pane}
     item={node.item}
     orphan={node.orphan === true}
-    {onImageExpand}
     {userMessageActions}
     {codexSubagentReceiverLabels}
   />
@@ -61,7 +56,6 @@
   <WaitGroup
     {pane}
     group={node}
-    {onImageExpand}
     {userMessageActions}
     {codexSubagentReceiverLabels}
     {renderNode}

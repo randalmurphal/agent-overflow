@@ -177,3 +177,37 @@ describe('ExpandedImageDialog', () => {
     expect(picture()!.getAttribute('data-image-menu-id')).toBe('a');
   });
 });
+
+describe('ExpandedImageDialog with an unknown original size', () => {
+  beforeEach(() => {
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:original');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 1000, 800));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sizes the box from the thumbnail, then from the original once it decodes', async () => {
+    const original = deferred();
+    const { picture } = open([item('a', { width: 0, height: 0, original: () => original.promise })]);
+    const img = picture()!;
+    expect(img.hasAttribute('width')).toBe(false);
+
+    Object.defineProperty(img, 'naturalWidth', { value: 256, configurable: true });
+    Object.defineProperty(img, 'naturalHeight', { value: 170, configurable: true });
+    await fireEvent.load(img);
+    expect(img.getAttribute('width')).toBe('256');
+    expect(img.getAttribute('height')).toBe('170');
+
+    original.resolve(new Blob([new Uint8Array(9)]));
+    await waitFor(() => expect(picture()!.hasAttribute('data-lightbox-original')).toBe(true));
+    const swapped = picture()!;
+    Object.defineProperty(swapped, 'naturalWidth', { value: 3000, configurable: true });
+    Object.defineProperty(swapped, 'naturalHeight', { value: 2000, configurable: true });
+    await fireEvent.load(swapped);
+    expect(swapped.getAttribute('width')).toBe('3000');
+    expect(swapped.getAttribute('height')).toBe('2000');
+  });
+});
