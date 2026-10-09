@@ -98,6 +98,61 @@ export function mockAttachmentDownload(handler?: DownloadHandler): MockedFn {
   );
 }
 
+/** What a `mockLocalImage` handler answers; every field has a default. */
+export interface LocalImageReply {
+  /** The bytes the route serves, as given. Defaults to a small PNG. */
+  blob?: Blob;
+  /** What GetLocalImage reports; defaults to the blob's type. */
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  /** Default to the served size and the blob's byte count. */
+  originalWidth?: number;
+  originalHeight?: number;
+  originalBytes?: number;
+  derived?: boolean;
+}
+
+export type LocalImageHandler = (
+  path: string,
+  workspacePath: string,
+  maxWidth: number,
+) => LocalImageReply | Promise<LocalImageReply>;
+
+/**
+ * Stubs `GetLocalImage` and answers the GET that spends its ticket.
+ *
+ * `handler` runs at the RPC, where the real method gates and validates the
+ * file, so a throw from it is the method's refusal (the reason a chip
+ * shows), not a refused transfer.
+ */
+export function mockLocalImage(handler: LocalImageHandler = () => ({})): MockedFn {
+  installTransferFetch();
+  return setBindingMock(
+    'GetLocalImage',
+    async (path: string, workspacePath: string, maxWidth: number) => {
+      const reply = await handler(path, workspacePath, maxWidth);
+      const blob = reply.blob ?? new Blob([TEST_PNG_BYTES], { type: 'image/png' });
+      const ticket = issueTicket(async () => new Response(blob, {
+        status: 200,
+        headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+      }));
+      const width = reply.width ?? 0;
+      const height = reply.height ?? 0;
+      return {
+        url: `/attachments/image/content-${ticket}?ticket=${ticket}`,
+        mimeType: reply.mimeType ?? (blob.type || 'image/png'),
+        width,
+        height,
+        originalWidth: reply.originalWidth ?? width,
+        originalHeight: reply.originalHeight ?? height,
+        originalBytes: reply.originalBytes ?? blob.size,
+        derived: reply.derived ?? false,
+      };
+    },
+  );
+}
+
 /**
  * Drops every outstanding ticket and restores the real fetch. Called from
  * the shared test setup, so a test that mocked a transfer cannot leave a
@@ -128,7 +183,9 @@ function installTransferFetch(): void {
   const passthrough = realFetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = requestURL(input);
-    if (!url.pathname.startsWith('/attachments/')) {
+    // A computer other than HOME is reached through this listener's
+    // `/backend/<id>/` relay (homeEndpoint.ts#backendTransferUrl).
+    if (!/^(?:\/backend\/[^/]+)?\/attachments\//.test(url.pathname)) {
       return passthrough(input, init);
     }
     const ticket = url.searchParams.get('ticket') ?? '';

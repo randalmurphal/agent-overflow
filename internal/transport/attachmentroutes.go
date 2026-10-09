@@ -230,6 +230,11 @@ type AttachmentTransfer interface {
 	// evicted or expired is an error, which the route answers 404. See
 	// forgeattachmentroutes.go.
 	OpenForgeAttachment(contentID string) (ForgeAttachmentContent, error)
+	// OpenLocalImage resolves one local image a bound method resolved,
+	// by the opaque content id its ticket names. An expired id, or an
+	// original whose file changed since, is an error the route answers
+	// 404. See localimageroutes.go.
+	OpenLocalImage(contentID string) (LocalImageContent, error)
 }
 
 // attachmentSubjectSeparator joins the fields of a ticket subject. NUL

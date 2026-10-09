@@ -1015,10 +1015,13 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
 /**
  * FetchForgeAttachment resolves one attachment reference found in a PR/MR
  * body or comment through the forge CLI (`gh api` / `glab api`), caches the
- * bytes, and mints the ticket that serves them.
+ * bytes, and mints the ticket that serves them. For an image, a positive
+ * maxWidth (device pixels) serves a derivative at the next ladder width when
+ * that is smaller than the original (attachment.Derive); 0 serves the
+ * original.
  */
-export function FetchForgeAttachment(pr: git$0.PRReference, href: string): $CancellablePromise<app$0.ForgeAttachment> {
-    return $Call.ByID(1594348919, pr, href).then(($result: any) => {
+export function FetchForgeAttachment(pr: git$0.PRReference, href: string, maxWidth: number): $CancellablePromise<app$0.ForgeAttachment> {
+    return $Call.ByID(1594348919, pr, href, maxWidth).then(($result: any) => {
         return $$createType29($result);
     });
 }
@@ -1527,18 +1530,19 @@ export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> 
 }
 
 /**
- * GetLocalImageData reads a local markdown image through the same path gate
- * used by editor links. It accepts existing regular files only, caps bytes at
- * attachment.DisplayImageMaxBytes, and sniffs the content for a format a
- * browser displays before returning it. The client pins the call to the
+ * GetLocalImage resolves a local markdown image through the editor-link
+ * path gate, validates it as an image a browser displays, and mints the
+ * ticket that serves it. maxWidth is the display width in device pixels the
+ * client wants it for: a positive value is served as a derivative at the
+ * next ladder width (attachment.DeriveWidths) when that is smaller than the
+ * file, and 0 serves the file itself. The client pins the call to the
  * thread's computer; `selected` is the route for a caller that names none.
  * 
- * Every failure reads `load local image: <reason>: <cause>`. The reason is
- * the short phrase the rendered chip shows beside the image's alt text and
- * the whole message is its tooltip (StreamdownImageHost.svelte).
+ * Every failure reads `load local image: <reason>: <cause>` (package
+ * localimage); the rendered chip shows the reason beside the alt text.
  */
-export function GetLocalImageData(path: string, workspacePath: string): $CancellablePromise<app$0.LocalImageData> {
-    return $Call.ByID(3247514443, path, workspacePath).then(($result: any) => {
+export function GetLocalImage(path: string, workspacePath: string, maxWidth: number): $CancellablePromise<app$0.LocalImage> {
+    return $Call.ByID(1709188995, path, workspacePath, maxWidth).then(($result: any) => {
         return $$createType56($result);
     });
 }
@@ -4546,6 +4550,16 @@ export function SaveForgeAttachment(pr: git$0.PRReference, href: string): $Cance
 }
 
 /**
+ * SaveLocalImage copies the original file a local markdown image names into
+ * the Downloads directory on this computer, never overwriting a file already
+ * there, and returns the path it wrote. The same gate and image checks as
+ * GetLocalImage apply, so it copies nothing a chat could not display.
+ */
+export function SaveLocalImage(path: string, workspacePath: string): $CancellablePromise<string> {
+    return $Call.ByID(1040176720, path, workspacePath);
+}
+
+/**
  * SavePRCIJobLog fetches the full job log and writes it under the
  * app-managed ci-logs directory, returning the absolute path. The path
  * is stable per (pr, job), so a re-save refreshes the same file.
@@ -6423,7 +6437,7 @@ const $$createType52 = settings$0.EditorSettings.createFrom;
 const $$createType53 = app$0.ErrorLogLines.createFrom;
 const $$createType54 = git$0.GitStatus.createFrom;
 const $$createType55 = keybindings$0.LoadResult.createFrom;
-const $$createType56 = app$0.LocalImageData.createFrom;
+const $$createType56 = app$0.LocalImage.createFrom;
 const $$createType57 = mcpstatus$0.ServerStatus.createFrom;
 const $$createType58 = provider$0.ModelCatalog.createFrom;
 const $$createType59 = nativenetwork$0.Config.createFrom;

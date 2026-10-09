@@ -1,13 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { mockLocalImage } from '../../test/mocks/attachmentTransfer';
 import { getPinnedBackend } from '../transport/backends';
 import { acquireLocalImage, localImageFailureReason } from './localImageCache';
 import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
-
-function reply(overrides: Record<string, unknown> = {}) {
-  // "png" as bytes; the backend has already sniffed and validated them.
-  return { data: 'cG5n', mimeType: 'image/png', width: 640, height: 480, ...overrides };
-}
 
 describe('the local image cache', () => {
   beforeEach(() => {
@@ -21,19 +17,23 @@ describe('the local image cache', () => {
     vi.restoreAllMocks();
   });
 
-  it("reads the bytes once, from the thread's computer, for two mounts of the same image", async () => {
+  it("asks the thread's computer once for the file itself, then spends the ticket there, for two mounts", async () => {
     const pins: Array<string | null> = [];
-    const rpc = setBindingMock('GetLocalImageData', async () => {
+    const rpc = mockLocalImage(() => {
       pins.push(getPinnedBackend());
-      return reply();
+      // Untyped on the wire, so the Blob's type can only come from the RPC.
+      return { blob: new Blob(['png']), mimeType: 'image/png', width: 640, height: 480 };
     });
+    const fetched = vi.spyOn(globalThis, 'fetch');
     const a = acquireLocalImage('gpu', '/workspace/shot.png', '/workspace');
     const b = acquireLocalImage('gpu', '/workspace/shot.png', '/workspace');
     const image = await a.value;
     expect(await b.value).toBe(image);
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc).toHaveBeenCalledWith('/workspace/shot.png', '/workspace');
+    expect(rpc).toHaveBeenCalledWith('/workspace/shot.png', '/workspace', 0);
     expect(pins).toEqual(['gpu']);
+    expect(fetched).toHaveBeenCalledTimes(1);
+    expect(String(fetched.mock.calls[0]![0])).toMatch(/^\/backend\/gpu\/attachments\/image\/[\w-]+\?ticket=/);
     expect(image).toMatchObject({ url: 'blob:3', mimeType: 'image/png', width: 640, height: 480 });
     expect(await image.blob.text()).toBe('png');
     expect(image.blob.type).toBe('image/png');
@@ -41,8 +41,18 @@ describe('the local image cache', () => {
     b.release();
   });
 
+  it("carries the backend's description of what it served", async () => {
+    mockLocalImage(() => ({
+      width: 320, height: 240, originalWidth: 641, originalHeight: 480, originalBytes: 5217, derived: true,
+    }));
+    const image = await acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value;
+    expect(image).toMatchObject({
+      width: 320, height: 240, originalWidth: 641, originalHeight: 480, originalBytes: 5217, derived: true,
+    });
+  });
+
   it('keys by computer and workspace: the same path elsewhere is another file', async () => {
-    const rpc = setBindingMock('GetLocalImageData', async () => reply());
+    const rpc = mockLocalImage();
     await acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value;
     await acquireLocalImage('laptop', '/workspace/shot.png', '/workspace').value;
     await acquireLocalImage('gpu', '/workspace/shot.png', '/other').value;
@@ -50,20 +60,30 @@ describe('the local image cache', () => {
   });
 
   it('serves SVG as a data URL, never a same-origin blob URL', async () => {
-    setBindingMock('GetLocalImageData', async () =>
-      reply({ data: 'PHN2Zy8+', mimeType: 'image/svg+xml', width: 0, height: 0 }),
-    );
+    mockLocalImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }) }));
     const image = await acquireLocalImage('gpu', '/workspace/d.svg', '/workspace').value;
     expect(image.url).toBe('data:image/svg+xml;base64,PHN2Zy8+');
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
   it('does not memoize a failure', async () => {
-    const rpc = setBindingMock('GetLocalImageData', async () => {
+    const rpc = mockLocalImage(() => {
       throw new Error('load local image: file not found: /workspace/shot.png: no such file');
     });
     await expect(acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value).rejects.toThrow('not found');
     await expect(acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value).rejects.toThrow('not found');
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a refused transfer, so a mount after it resolves again', async () => {
+    mockLocalImage();
+    const rpc = setBindingMock('GetLocalImage', async () => ({
+      url: '/attachments/image/gone?ticket=never-minted',
+      mimeType: 'image/png', width: 0, height: 0, originalWidth: 0, originalHeight: 0, originalBytes: 3, derived: false,
+    }));
+    const failed = acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value;
+    await expect(failed).rejects.toThrow('Could not load image: this transfer is no longer available. Try again.');
+    await expect(acquireLocalImage('gpu', '/workspace/shot.png', '/workspace').value).rejects.toThrow('no longer available');
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 });

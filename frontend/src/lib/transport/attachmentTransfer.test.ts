@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { fetchAttachmentBytes, uploadAttachmentBytes } from './attachmentTransfer';
+import { fetchAttachmentBytes, fetchTicketedBytes, uploadAttachmentBytes } from './attachmentTransfer';
+import { HOME_BACKEND } from './backendKey';
 import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
 
 import { __resetEntityIndexForTest, noteThread, threadBackend } from './entityIndex';
@@ -166,6 +167,24 @@ describe('fetchAttachmentBytes', () => {
 
     await expect(fetchAttachmentBytes('thr-1', 'att-1'))
       .rejects.toThrow(/Could not load image/);
+  });
+});
+
+describe('fetchTicketedBytes', () => {
+  it('hands the caller\'s signal to the request, so an abort stops the transfer', async () => {
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) return Promise.reject(new Error('the request carried no signal'));
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    }) as typeof globalThis.fetch;
+    const controller = new AbortController();
+
+    const pending = fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toBe(controller.signal.reason);
   });
 });
 

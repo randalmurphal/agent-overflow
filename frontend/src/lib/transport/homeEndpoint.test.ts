@@ -211,13 +211,14 @@ describe('attachment transfer boundaries', () => {
     expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
 
-  // The three shapes the routes mint, stated so the admitted set is a list
-  // rather than whatever the pattern happens to allow. The forge shape is
-  // the newest and is the one a future tightening would break silently.
+  // The four shapes the routes mint, stated so the admitted set is a list
+  // rather than whatever the pattern happens to allow. The forge and image
+  // shapes are the ones a future tightening would break silently.
   it.each([
     '/attachments/upload?ticket=x',
     '/attachments/thread-1/att-2?ticket=x',
     '/attachments/forge/Ab9_-x?ticket=x',
+    '/attachments/image/Ab9_-x?ticket=x',
   ])('carries a minted transfer path onto the backend relay: %s', (path) => {
     expect(backendTransferUrl(path, 'gpu')).toBe(`/backend/gpu${path}`);
   });
@@ -226,7 +227,10 @@ describe('attachment transfer boundaries', () => {
     '/attachments/forge?ticket=x',
     '/attachments/forge/a/b?ticket=x',
     '/attachments/forge/bad.id?ticket=x',
-  ])('rejects a forge transfer path outside the route shape: %s', (path) => {
+    '/attachments/image?ticket=x',
+    '/attachments/image/a/b?ticket=x',
+    '/attachments/image/bad.id?ticket=x',
+  ])('rejects a forge or image transfer path outside the route shape: %s', (path) => {
     expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
 });

@@ -2032,16 +2032,33 @@ export class ForgeAttachment {
      * Kind is "image", "video", "audio" or "file".
      */
     "kind": string;
+
+    /**
+     * SizeBytes is the original attachment's byte count, whichever bytes
+     * URL serves.
+     */
     "sizeBytes": number;
     "filename": string;
 
     /**
-     * Width and Height are an image's declared pixel size when Go could
-     * read its header, so the client reserves the box before the bytes
-     * decode; zero when unknown (svg, ico, avif) and for every other kind.
+     * Width and Height are the served image's pixel size, so the client
+     * reserves the box before the bytes decode; zero when unknown (svg,
+     * ico, avif) and for every other kind.
      */
     "width": number;
     "height": number;
+
+    /**
+     * OriginalWidth and OriginalHeight are the original image's pixel
+     * size, zero when unknown.
+     */
+    "originalWidth": number;
+    "originalHeight": number;
+
+    /**
+     * Derived is false when URL serves the attachment's own bytes.
+     */
+    "derived": boolean;
 
     /** Creates a new ForgeAttachment instance. */
     constructor($$source: Partial<ForgeAttachment> = {}) {
@@ -2065,6 +2082,15 @@ export class ForgeAttachment {
         }
         if (!("height" in $$source)) {
             this["height"] = 0;
+        }
+        if (!("originalWidth" in $$source)) {
+            this["originalWidth"] = 0;
+        }
+        if (!("originalHeight" in $$source)) {
+            this["originalHeight"] = 0;
+        }
+        if (!("derived" in $$source)) {
+            this["derived"] = false;
         }
 
         Object.assign(this, $$source);
@@ -2988,26 +3014,41 @@ export class LiveStateTodoStep {
 }
 
 /**
- * LocalImageData is the validated byte payload for a local image referenced
- * by rendered markdown. The frontend turns it into a blob URL rather than
- * handing a model-authored file URI to the webview.
+ * LocalImage is what GetLocalImage answers for an image rendered markdown
+ * references by path: a single-use URL for its bytes and the sizes a client
+ * needs to reserve its box and choose a tier.
  */
-export class LocalImageData {
-    "data": string;
+export class LocalImage {
+    /**
+     * URL is the relative, single-use, ticketed URL the client fetches the
+     * bytes from (internal/transport/localimageroutes.go).
+     */
+    "url": string;
     "mimeType": string;
 
     /**
-     * Width and Height are the declared pixel size when Go could read the
-     * header, so the client reserves the box before the bytes decode; zero
-     * when unknown (svg, ico, avif).
+     * Width and Height are the served pixel size; 0 when unknown.
      */
     "width": number;
     "height": number;
 
-    /** Creates a new LocalImageData instance. */
-    constructor($$source: Partial<LocalImageData> = {}) {
-        if (!("data" in $$source)) {
-            this["data"] = "";
+    /**
+     * OriginalWidth and OriginalHeight are the file's pixel size; 0 when
+     * Go cannot read its header (svg, ico, avif).
+     */
+    "originalWidth": number;
+    "originalHeight": number;
+    "originalBytes": number;
+
+    /**
+     * Derived is false when the served bytes are the file itself.
+     */
+    "derived": boolean;
+
+    /** Creates a new LocalImage instance. */
+    constructor($$source: Partial<LocalImage> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
         }
         if (!("mimeType" in $$source)) {
             this["mimeType"] = "";
@@ -3018,16 +3059,28 @@ export class LocalImageData {
         if (!("height" in $$source)) {
             this["height"] = 0;
         }
+        if (!("originalWidth" in $$source)) {
+            this["originalWidth"] = 0;
+        }
+        if (!("originalHeight" in $$source)) {
+            this["originalHeight"] = 0;
+        }
+        if (!("originalBytes" in $$source)) {
+            this["originalBytes"] = 0;
+        }
+        if (!("derived" in $$source)) {
+            this["derived"] = false;
+        }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new LocalImageData instance from a string or object.
+     * Creates a new LocalImage instance from a string or object.
      */
-    static createFrom($$source: any = {}): LocalImageData {
+    static createFrom($$source: any = {}): LocalImage {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new LocalImageData($$parsedSource as Partial<LocalImageData>);
+        return new LocalImage($$parsedSource as Partial<LocalImage>);
     }
 }
 

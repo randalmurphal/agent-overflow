@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/contentcache"
+	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
 )
@@ -87,7 +90,7 @@ func TestFetchForgeAttachmentRoundTripsOverHTTP(t *testing.T) {
 	stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
 	app, base := forgeAttachmentApp(t)
 
-	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref())
+	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
 	if err != nil {
 		t.Fatalf("FetchForgeAttachment: %v", err)
 	}
@@ -129,11 +132,11 @@ func TestFetchForgeAttachmentReusesTheCachedBytes(t *testing.T) {
 	counter := stubGlab(t, "cat "+shellQuote(writeTempFile(t, realPNGBytes(t)))+"\n")
 	app, _ := forgeAttachmentApp(t)
 
-	first, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref())
+	first, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
-	second, err := app.FetchForgeAttachment(testGitLabPR, "  "+testUploadHref()+"\n")
+	second, err := app.FetchForgeAttachment(testGitLabPR, "  "+testUploadHref()+"\n", 0)
 	if err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
@@ -152,7 +155,7 @@ func TestFetchForgeAttachmentReusesTheCachedBytes(t *testing.T) {
 	// upload secret is scoped to its project.
 	other := testGitLabPR
 	other.Number = 13
-	if _, err := app.FetchForgeAttachment(other, testUploadHref()); err != nil {
+	if _, err := app.FetchForgeAttachment(other, testUploadHref(), 0); err != nil {
 		t.Fatalf("other-PR fetch: %v", err)
 	}
 	if runs := runCount(t, counter); runs != 2 {
@@ -166,12 +169,12 @@ func TestFetchForgeAttachmentRefusesBeforeSpawning(t *testing.T) {
 	counter := stubGlab(t, "printf 'x'\n")
 	app, _ := forgeAttachmentApp(t)
 
-	if _, err := app.FetchForgeAttachment(testGitLabPR, "https://example.com/logo.png"); err == nil {
+	if _, err := app.FetchForgeAttachment(testGitLabPR, "https://example.com/logo.png", 0); err == nil {
 		t.Fatal("FetchForgeAttachment accepted a href that is not a forge upload")
 	}
 	bad := testGitLabPR
 	bad.Number = 0
-	if _, err := app.FetchForgeAttachment(bad, testUploadHref()); err == nil {
+	if _, err := app.FetchForgeAttachment(bad, testUploadHref(), 0); err == nil {
 		t.Fatal("FetchForgeAttachment accepted a PR number of zero")
 	}
 	if runs := runCount(t, counter); runs != 0 {
@@ -182,7 +185,7 @@ func TestFetchForgeAttachmentRefusesBeforeSpawning(t *testing.T) {
 func TestFetchForgeAttachmentNeedsATransport(t *testing.T) {
 	stubGlab(t, "cat "+shellQuote(writeTempFile(t, realPNGBytes(t)))+"\n")
 	app := &App{configDir: t.TempDir()}
-	_, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref())
+	_, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
 	if err == nil || !strings.Contains(err.Error(), "transport is not serving") {
 		t.Fatalf("error = %v, want a transport-not-serving refusal", err)
 	}
@@ -192,7 +195,7 @@ func TestFetchForgeAttachmentStopsWhenShuttingDown(t *testing.T) {
 	stubGlab(t, "printf 'x'\n")
 	app, _ := forgeAttachmentApp(t)
 	app.shuttingDown.Store(true)
-	if _, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref()); err != ErrShuttingDown {
+	if _, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0); err != ErrShuttingDown {
 		t.Fatalf("error = %v, want ErrShuttingDown", err)
 	}
 	if _, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref()); err != ErrShuttingDown {
@@ -259,6 +262,107 @@ func TestSaveForgeAttachmentFallsBackToTheAppDirectory(t *testing.T) {
 	}
 	if want := filepath.Join(app.configDir, "downloads", "hero.png"); path != want {
 		t.Fatalf("saved to %q, want %q", path, want)
+	}
+}
+
+// A positive maxWidth serves an image derivative held beside the original:
+// sized for the tier, described with the original's size and bytes, made
+// once per tier, and never what a save writes.
+func TestFetchForgeAttachmentServesADerivedTier(t *testing.T) {
+	payload := sizedPNG(t, 641, 480)
+	counter := stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	t.Setenv("HOME", t.TempDir())
+	app, base := forgeAttachmentApp(t)
+
+	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 300)
+	if err != nil {
+		t.Fatalf("FetchForgeAttachment: %v", err)
+	}
+	want := ForgeAttachment{
+		URL: got.URL, MimeType: "image/png", Kind: "image", SizeBytes: int64(len(payload)), Filename: "hero.png",
+		Width: 320, Height: 240, OriginalWidth: 641, OriginalHeight: 480, Derived: true,
+	}
+	if got != want {
+		t.Fatalf("FetchForgeAttachment = %+v, want %+v", got, want)
+	}
+	resp, body := getBytes(t, base, got.URL)
+	cfg, err := png.DecodeConfig(bytes.NewReader(body))
+	if resp.StatusCode != http.StatusOK || err != nil || cfg.Width != 320 || cfg.Height != 240 {
+		t.Fatalf("served %d %v %dx%d, want a 320x240 png", resp.StatusCode, err, cfg.Width, cfg.Height)
+	}
+
+	again, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	if err != nil {
+		t.Fatalf("second FetchForgeAttachment: %v", err)
+	}
+	original, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
+	if err != nil {
+		t.Fatalf("original FetchForgeAttachment: %v", err)
+	}
+	if !again.Derived || again.Width != 320 || original.Derived || original.Width != 641 || original.Height != 480 {
+		t.Fatalf("second = %+v, original = %+v", again, original)
+	}
+	if runs := runCount(t, counter); runs != 1 {
+		t.Fatalf("glab ran %d times for one attachment at two widths", runs)
+	}
+	resp, body = getBytes(t, base, original.URL)
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, payload) {
+		t.Fatalf("the original URL served %d with %d bytes, want the attachment", resp.StatusCode, len(body))
+	}
+	saved, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref())
+	if err != nil {
+		t.Fatalf("SaveForgeAttachment: %v", err)
+	}
+	if data, err := os.ReadFile(saved); err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("saved %d bytes (%v), want the original %d", len(data), err, len(payload))
+	}
+
+	// A held derivative is answered without decoding the original again:
+	// with the cached original's bytes no longer an image, the tier still
+	// answers.
+	held, ok := app.forgeAttachments().Lookup(forgeattach.CacheKey(testGitLabPR.Forge, testGitLabPR.Project(), testGitLabPR.Number, testUploadHref()))
+	if !ok {
+		t.Fatal("the original is not cached")
+	}
+	clear(held.Value.Data[:8])
+	if again, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320); err != nil || !again.Derived || again.Width != 320 {
+		t.Fatalf("held tier = %+v, %v; want the derivative answered from the cache", again, err)
+	}
+}
+
+// A derivative is keyed by its original's content id, so once the original
+// expires and the forge serves different bytes, the tier is derived from the
+// new bytes instead of answering a derivative of the old ones.
+func TestForgeAttachmentDerivativeFollowsARefetchedOriginal(t *testing.T) {
+	source := writeTempFile(t, sizedPNG(t, 641, 480))
+	stubGlab(t, "cat "+shellQuote(source)+"\n")
+	app, _ := forgeAttachmentApp(t)
+	now := time.Unix(1_700_000_000, 0)
+	app.forgeAttachOnce.Do(func() {
+		app.forgeAttachCache = contentcache.New(contentcache.Config[forgeattach.Attachment]{
+			MaxBytes: forgeattach.DefaultCacheBytes,
+			TTL:      time.Minute,
+			Size:     func(a forgeattach.Attachment) int64 { return int64(len(a.Data)) },
+			Now:      func() time.Time { return now },
+		})
+	})
+
+	if _, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0); err != nil {
+		t.Fatalf("original: %v", err)
+	}
+	now = now.Add(50 * time.Second)
+	first, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	if err != nil || first.Height != 240 {
+		t.Fatalf("first tier = %+v, %v; want 320x240", first, err)
+	}
+	// The original expires; the derivative, stored later, is still live.
+	now = now.Add(20 * time.Second)
+	if err := os.WriteFile(source, sizedPNG(t, 641, 641), 0o600); err != nil {
+		t.Fatalf("change the forge's bytes: %v", err)
+	}
+	second, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	if err != nil || !second.Derived || second.Width != 320 || second.Height != 320 || second.OriginalHeight != 641 {
+		t.Fatalf("tier after a re-fetch = %+v, %v; want 320x320 from the new 641x641 bytes", second, err)
 	}
 }
 

@@ -2,6 +2,9 @@ package attachment
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/gif"
@@ -238,8 +241,8 @@ func TestThumbnailRejectsDecodeBomb(t *testing.T) {
 	// inside Decode would attempt a ~40 GB allocation and OOM the
 	// process. With the pre-check, we reject before allocation.
 	bomb := pngWithDeclaredDimensions(t, 100_000, 100_000)
-	if err := ValidateImageDimensions(bomb); err == nil {
-		t.Fatal("expected decode-bomb pre-check to reject 100k×100k declared image")
+	if _, _, err := generateThumbnail(bomb, "image/png"); !errors.Is(err, ErrPixelBudget) {
+		t.Fatalf("generateThumbnail(bomb) = %v, want the pixel-budget refusal before any decode", err)
 	}
 }
 
@@ -270,9 +273,12 @@ func pngWithDeclaredDimensions(t *testing.T, width, height int) []byte {
 	out[ihdrWidthOffset+5] = byte(height >> 16)
 	out[ihdrWidthOffset+6] = byte(height >> 8)
 	out[ihdrWidthOffset+7] = byte(height)
-	// We deliberately do NOT recompute the CRC. image.DecodeConfig
-	// reads the IHDR and accepts it without validating the chunk CRC,
-	// which is exactly the attack surface ValidateImageDimensions protects.
+	// The decoder verifies the chunk CRC (over type and data) before it
+	// reports the size, so the patched chunk needs a matching one for the
+	// refusal to come from the pixel budget rather than the checksum.
+	const ihdrDataLen = 13
+	crc := crc32.ChecksumIEEE(out[ihdrWidthOffset-4 : ihdrWidthOffset+ihdrDataLen])
+	binary.BigEndian.PutUint32(out[ihdrWidthOffset+ihdrDataLen:], crc)
 	return out
 }
 
@@ -318,6 +324,43 @@ func TestThumbnailDedupesConcurrentSameID(t *testing.T) {
 		if !bytes.Equal(first, results[i]) {
 			t.Fatalf("Thumbnail #%d returned %d bytes, want %d (race on cache write?)", i, len(results[i]), len(first))
 		}
+	}
+}
+
+// The derivative pipeline shares decode, scale and encode with thumbnails;
+// this pins what a thumbnail is regardless: the 256px box, PNG for png and
+// gif sources, and JPEG at quality 70 for everything else.
+func TestThumbnailKeepsItsBoxFormatAndQuality(t *testing.T) {
+	cases := []struct {
+		name          string
+		src           []byte
+		mime          string
+		wantMIME      string
+		width, height int
+	}{
+		{"png", encodeAs(t, "png", gradient(600, 300, false)), "image/png", "image/png", 256, 128},
+		{"gif", encodeAs(t, "gif", gradient(300, 600, false)), "image/gif", "image/png", 128, 256},
+		{"jpeg", encodeAs(t, "jpeg", gradient(800, 600, false)), "image/jpeg", "image/jpeg", 256, 192},
+		{"lossy webp", fixture(t, "yellow_rose.lossy.webp"), "image/webp", "image/jpeg", 256, 192},
+		{"lossless webp", fixture(t, "tux.lossless.webp"), "image/webp", "image/jpeg", 250, 256},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, mime, err := generateThumbnail(tc.src, tc.mime)
+			if err != nil {
+				t.Fatalf("generateThumbnail: %v", err)
+			}
+			cfg, format, err := image.DecodeConfig(bytes.NewReader(out))
+			if err != nil {
+				t.Fatalf("decode thumbnail: %v", err)
+			}
+			if mime != tc.wantMIME || "image/"+format != tc.wantMIME || cfg.Width != tc.width || cfg.Height != tc.height {
+				t.Fatalf("thumbnail = %s (%s) %dx%d, want %s %dx%d", mime, format, cfg.Width, cfg.Height, tc.wantMIME, tc.width, tc.height)
+			}
+			if mime == "image/jpeg" {
+				requireJPEGQuality(t, out, 70)
+			}
+		})
 	}
 }
 

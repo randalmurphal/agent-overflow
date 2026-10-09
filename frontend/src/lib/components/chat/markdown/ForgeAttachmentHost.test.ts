@@ -38,6 +38,10 @@ function attachment(value: Partial<ResolvedForgeAttachment>): ResolvedForgeAttac
     blob: new Blob(),
     width: 0,
     height: 0,
+    originalWidth: 0,
+    originalHeight: 0,
+    originalBytes: 1024,
+    derived: false,
     ...value,
   };
 }
@@ -135,7 +139,7 @@ describe('<ForgeAttachmentHost>', () => {
     }));
     const { container } = render(ForgeAttachmentHost, { props: { token: token(hrefFor()) } });
     expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull();
-    settle({ url: 'blob:x', mimeType: 'image/png', kind: 'image', sizeBytes: 1, filename: 'a.png', blob: new Blob(), width: 0, height: 0 });
+    settle(attachment({ url: 'blob:x', sizeBytes: 1, filename: 'a.png' }));
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
   });
 

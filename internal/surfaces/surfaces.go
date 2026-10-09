@@ -908,7 +908,10 @@ var Routes = []Route{
 			"leaves is narrowed by KIND, decided from the payload's " +
 			"signature rather than from its extension or the forge's own " +
 			"header: an image, video or audio body goes out under the " +
-			"type its bytes proved, and EVERYTHING else goes out as " +
+			"type its bytes proved (an image possibly as a display-size " +
+			"derivative held under its own id, and an SVG also with an " +
+			"attachment disposition, because it is markup that can run " +
+			"script), and EVERYTHING else goes out as " +
 			"application/octet-stream with an attachment disposition, so " +
 			"a PDF or an HTML document a comment linked can never render " +
 			"at the SPA origin. nosniff and Cache-Control: no-store as " +
@@ -929,6 +932,46 @@ var Routes = []Route{
 			"credential to check, no work done, 204 with the allow " +
 			"headers for the one admitted origin and the listener's " +
 			"ordinary 404 for anybody else.",
+	},
+	{
+		Pattern:    "GET /attachments/image/{contentID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One local image rendered markdown references by path, " +
+			"streamed. These used to ride base64 inside a single RPC " +
+			"answer, the cost the attachment download route exists to " +
+			"remove, and could not be served smaller than the file. The " +
+			"backend that owns the thread gates the path through the " +
+			"editor-link gate, proves by signature that the bytes are an " +
+			"image a browser displays, and holds either the file's " +
+			"identity (path, size, modification time) or a display-size " +
+			"derivative under an opaque cache id; the files:read call " +
+			"that did that mints the ticket. Admission is the same " +
+			"single-use, subject-bound ticket its siblings use, from a " +
+			"book of its own so no other route's ticket is spendable " +
+			"here; the path is compared against the subject, and an id " +
+			"the bounded cache expired, or an original whose file changed " +
+			"since it was resolved, answers the same 404 a spent ticket " +
+			"does. Nothing but an image reaches the route, under the type " +
+			"its bytes proved. An SVG also carries an attachment " +
+			"disposition: it is markup that can run script, and a " +
+			"navigation to this URL must download it rather than render " +
+			"it at the SPA origin. nosniff and Cache-Control: no-store " +
+			"as on every ticketed transfer. Not Origin-guarded and not " +
+			"rate limited, for the reasons argued on the download row.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/image/{contentID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The local-image route's preflight, for the reason its " +
+			"siblings have one: that route is registered method-qualified, " +
+			"and the mux answers an unmatched method with 405, which a " +
+			"browser reads as a refused preflight. No credential to check, " +
+			"no work done, 204 with the allow headers for the one admitted " +
+			"origin and the listener's ordinary 404 for anybody else.",
 	},
 	{
 		Pattern:    "OPTIONS /attachments/upload",
@@ -1199,7 +1242,7 @@ var Routes = []Route{
 		Credential: CredPageSession,
 		Posture:    PostureProxied,
 		Why: "Attachment bodies, in both directions, for a page this stub " +
-			"serves. One subtree pattern covers both upstream byte routes, " +
+			"serves. One subtree pattern covers every upstream byte route, " +
 			"because this hop does not read the URL — the path names the " +
 			"attachment and the query carries the ticket, both minted by the " +
 			"upstream for the upstream, and rewriting either would only be a " +

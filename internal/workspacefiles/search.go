@@ -1,5 +1,6 @@
 // Package workspacefiles finds files inside a workspace for @-mention
-// completion. For git repositories we defer to `git ls-files` so ignore rules
+// completion and reads one workspace file an agent may be mutating
+// (read.go). For git repositories we defer to `git ls-files` so ignore rules
 // are honoured (both the user's .gitignore and gh exclude-standard chains);
 // outside a git repo we fall back to a plain filesystem walk. A short TTL
 // cache keeps the popover responsive.

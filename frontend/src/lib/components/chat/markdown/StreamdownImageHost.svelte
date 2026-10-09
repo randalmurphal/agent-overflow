@@ -2,7 +2,7 @@
   // The one image renderer for chat markdown. Four sources:
   //
   //   - A local image the parse claimed (`agent-overflow:image?nonce=…`,
-  //     utils/pathLinkExtension.ts): fetched through GetLocalImageData on
+  //     utils/pathLinkExtension.ts): fetched through GetLocalImage on
   //     `backend`, the thread's computer, and shared by every mount of the
   //     same bytes (utils/localImageCache.ts). A remount paints from the
   //     cache in the same frame, with the file's pixel size as the <img>

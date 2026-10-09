@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import StreamdownImageHost from './StreamdownImageHost.svelte';
-import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import { mockLocalImage, type LocalImageReply } from '../../../../test/mocks/attachmentTransfer';
 import { getPinnedBackend } from '../../../transport/backends';
 import { buildLocalImageHref } from '../../../utils/pathLinkExtension';
 import { buildForgeAttachmentHref } from '../../../utils/forgeAttachments';
@@ -15,8 +15,8 @@ function mountImage(href: string, backend = 'gpu') {
   return render(StreamdownImageHost, { props: { token: imageToken(href), src: href, backend } });
 }
 
-function pngReply(overrides: Record<string, unknown> = {}) {
-  return { data: 'iVBORw0KGgo=', mimeType: 'image/png', width: 400, height: 300, ...overrides };
+function pngReply(overrides: LocalImageReply = {}): LocalImageReply {
+  return { mimeType: 'image/png', width: 400, height: 300, ...overrides };
 }
 
 describe('<StreamdownImageHost>', () => {
@@ -32,7 +32,7 @@ describe('<StreamdownImageHost>', () => {
 
   it("loads a guarded local image from the thread's computer and reserves its box", async () => {
     let pinned: string | null = null;
-    const getLocalImage = setBindingMock('GetLocalImageData', async () => {
+    const getLocalImage = mockLocalImage(() => {
       pinned = getPinnedBackend();
       return pngReply();
     });
@@ -43,7 +43,7 @@ describe('<StreamdownImageHost>', () => {
     await waitFor(() => {
       expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:local-image');
     });
-    expect(getLocalImage).toHaveBeenCalledWith('/workspace/diagram.png', '/workspace');
+    expect(getLocalImage).toHaveBeenCalledWith('/workspace/diagram.png', '/workspace', 0);
     expect(pinned).toBe('gpu');
     const img = container.querySelector('img')!;
     expect(img.getAttribute('width')).toBe('400');
@@ -54,7 +54,7 @@ describe('<StreamdownImageHost>', () => {
   });
 
   it('paints a second mount of the same bytes in the same frame, with no second fetch', async () => {
-    const getLocalImage = setBindingMock('GetLocalImageData', async () => pngReply());
+    const getLocalImage = mockLocalImage(() => pngReply());
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const first = mountImage(href);
     await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
@@ -77,7 +77,7 @@ describe('<StreamdownImageHost>', () => {
   });
 
   it('keys the bytes by computer, so the same path on another machine is its own fetch', async () => {
-    const getLocalImage = setBindingMock('GetLocalImageData', async () => pngReply());
+    const getLocalImage = mockLocalImage(() => pngReply());
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const gpu = mountImage(href, 'gpu');
     await waitFor(() => expect(gpu.container.querySelector('img')).not.toBeNull());
@@ -87,9 +87,7 @@ describe('<StreamdownImageHost>', () => {
   });
 
   it('remembers the size an <img> decoded when the backend could not read the header', async () => {
-    setBindingMock('GetLocalImageData', async () =>
-      pngReply({ data: 'PHN2Zy8+', mimeType: 'image/svg+xml', width: 0, height: 0 }),
-    );
+    mockLocalImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }), width: 0, height: 0 }));
     const href = buildLocalImageHref('/workspace/diagram.svg', '/workspace');
     const first = mountImage(href);
     await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
@@ -107,7 +105,7 @@ describe('<StreamdownImageHost>', () => {
   });
 
   it('names the reason in the chip and keeps the whole message as its tooltip', async () => {
-    setBindingMock('GetLocalImageData', async () => {
+    mockLocalImage(() => {
       throw new Error(
         'load local image: file not found: /workspace/diagram.png: open /workspace/diagram.png: no such file or directory',
       );

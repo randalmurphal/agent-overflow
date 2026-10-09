@@ -50,8 +50,9 @@ Images accept `http(s)`, `data:image/`, the nonce-prefixed local image
 scheme, and the nonce-prefixed forge-attachment scheme; a path-shaped
 src on a surface with a workspace is rewritten to the local image scheme
 during parsing and the bytes come from the thread's machine over the
-transport (`GetLocalImageData`, route `selected`, `files:read`), so a
-paired browser sees them too. A forge attachment referenced by PR/MR
+transport (`GetLocalImage`, route `selected`, `files:read`, then the
+ticketed `GET /attachments/image/{contentID}`), so a paired browser sees
+them too. A forge attachment referenced by PR/MR
 content (a GitLab `/uploads/<hex>/` path, a GitHub user-attachment URL,
 an `<img>` or `<video>` src, including one inside an HTML wrapper the
 sanitizer handles, where the element is emitted without its `src` and

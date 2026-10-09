@@ -1305,7 +1305,7 @@ func TestHandleWS_PairedTicketFailureIsTransient(t *testing.T) {
 }
 
 // TestAttachmentPrefixCoversTheTransportRoutes is the drift guard between
-// this stub's ONE subtree pattern and the three literal patterns the
+// this stub's ONE subtree pattern and the literal patterns the
 // backend registers. The surfaces gate reads registrations out of the source, so
 // the stub cannot register transport.AttachmentDownloadPath directly and
 // the two spellings have to be held together by a test instead.
@@ -1314,6 +1314,7 @@ func TestAttachmentPrefixCoversTheTransportRoutes(t *testing.T) {
 		transport.AttachmentDownloadPath,
 		transport.AttachmentUploadPath,
 		transport.ForgeAttachmentDownloadPath,
+		transport.LocalImageDownloadPath,
 	} {
 		path := pattern
 		if space := strings.IndexByte(pattern, ' '); space >= 0 {

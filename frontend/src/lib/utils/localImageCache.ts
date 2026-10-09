@@ -4,15 +4,16 @@
 // away and back (mediaBlobCache.ts owns retention, the byte budget and
 // revocation).
 //
-// The bytes come from the thread's computer through GetLocalImageData,
-// pinned by the caller. A path names a different file on every machine,
-// so the computer is part of the key and the route is never left to the
-// focused pane.
+// The bytes come from the thread's computer: GetLocalImage, pinned by the
+// caller, validates the file and mints a single-use ticket, and the bytes
+// cross on the ticketed byte route rather than inside an RPC frame. A path
+// names a different file on every machine, so the computer is part of the
+// key and the route is never left to the focused pane.
 
-import { GetLocalImageData } from '../stores/bindings';
+import { GetLocalImage } from '../stores/bindings';
+import { fetchTicketedBytes } from '../transport/attachmentTransfer';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
-import { base64ToBytes } from './base64';
 import {
   acquireMediaBlob,
   objectOrDataUrl,
@@ -21,7 +22,14 @@ import {
   type MediaHandle,
 } from './mediaBlobCache';
 
-export interface LocalImage extends MediaBytes, ImageSize {}
+export interface LocalImage extends MediaBytes, ImageSize {
+  /** The file's pixel size; 0 when the backend cannot read its header. */
+  originalWidth: number;
+  originalHeight: number;
+  originalBytes: number;
+  /** False when the bytes are the file itself. */
+  derived: boolean;
+}
 
 export type LocalImageHandle = MediaHandle<LocalImage>;
 
@@ -55,14 +63,19 @@ async function loadLocalImage(
   path: string,
   workspacePath: string,
 ): Promise<LocalImage> {
-  const result = await withBackendTarget(backend, () => GetLocalImageData(path, workspacePath));
-  const blob = new Blob([base64ToBytes(result.data)], { type: result.mimeType });
+  const result = await withBackendTarget(backend, () => GetLocalImage(path, workspacePath, 0));
+  const bytes = await fetchTicketedBytes(backend, result.url);
+  const blob = new Blob([bytes], { type: result.mimeType });
   return {
     url: await objectOrDataUrl(blob, result.mimeType),
     mimeType: result.mimeType,
     blob,
     width: result.width,
     height: result.height,
+    originalWidth: result.originalWidth,
+    originalHeight: result.originalHeight,
+    originalBytes: result.originalBytes,
+    derived: result.derived,
   };
 }
 
@@ -71,7 +84,7 @@ const MAX_REASON_LENGTH = 48;
 
 /**
  * The short phrase a failure chip shows beside the image's alt text: the
- * reason GetLocalImageData names between its prefix and the cause
+ * reason GetLocalImage names between its prefix and the cause
  * (`load local image: file not found: /path`), or the first clause of any
  * other message (a transport refusal, a scope error), bounded so the chip
  * stays a chip. The whole message belongs in the chip's tooltip.

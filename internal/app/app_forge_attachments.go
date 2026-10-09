@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
@@ -21,24 +23,39 @@ type ForgeAttachment struct {
 	URL      string `json:"url"`
 	MimeType string `json:"mimeType"`
 	// Kind is "image", "video", "audio" or "file".
-	Kind      string `json:"kind"`
+	Kind string `json:"kind"`
+	// SizeBytes is the original attachment's byte count, whichever bytes
+	// URL serves.
 	SizeBytes int64  `json:"sizeBytes"`
 	Filename  string `json:"filename"`
-	// Width and Height are an image's declared pixel size when Go could
-	// read its header, so the client reserves the box before the bytes
-	// decode; zero when unknown (svg, ico, avif) and for every other kind.
+	// Width and Height are the served image's pixel size, so the client
+	// reserves the box before the bytes decode; zero when unknown (svg,
+	// ico, avif) and for every other kind.
 	Width  int `json:"width"`
 	Height int `json:"height"`
+	// OriginalWidth and OriginalHeight are the original image's pixel
+	// size, zero when unknown.
+	OriginalWidth  int `json:"originalWidth"`
+	OriginalHeight int `json:"originalHeight"`
+	// Derived is false when URL serves the attachment's own bytes.
+	Derived bool `json:"derived"`
 }
 
 // FetchForgeAttachment resolves one attachment reference found in a PR/MR
 // body or comment through the forge CLI (`gh api` / `glab api`), caches the
-// bytes, and mints the ticket that serves them.
+// bytes, and mints the ticket that serves them. For an image, a positive
+// maxWidth (device pixels) serves a derivative at the next ladder width when
+// that is smaller than the original (attachment.Derive); 0 serves the
+// original.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string) (ForgeAttachment, error) {
-	entry, err := a.resolveForgeAttachment(pr, href)
+func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string, maxWidth int) (ForgeAttachment, error) {
+	original, err := a.resolveForgeAttachment(pr, href)
+	if err != nil {
+		return ForgeAttachment{}, err
+	}
+	served, err := a.forgeAttachmentAt(original, maxWidth)
 	if err != nil {
 		return ForgeAttachment{}, err
 	}
@@ -46,19 +63,54 @@ func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string) (ForgeAtt
 	if server == nil {
 		return ForgeAttachment{}, errors.New("forge attachment: transport is not serving")
 	}
-	url, err := server.MintForgeAttachmentTicket(entry.ID)
+	url, err := server.MintForgeAttachmentTicket(served.ID)
 	if err != nil {
 		return ForgeAttachment{}, err
 	}
 	return ForgeAttachment{
-		URL:       url,
-		MimeType:  entry.MimeType,
-		Kind:      entry.Kind,
-		SizeBytes: int64(len(entry.Data)),
-		Filename:  entry.Filename,
-		Width:     entry.Width,
-		Height:    entry.Height,
+		URL:            url,
+		MimeType:       served.Value.MimeType,
+		Kind:           served.Value.Kind,
+		SizeBytes:      int64(len(original.Value.Data)),
+		Filename:       original.Value.Filename,
+		Width:          served.Value.Width,
+		Height:         served.Value.Height,
+		OriginalWidth:  original.Value.Width,
+		OriginalHeight: original.Value.Height,
+		Derived:        served.ID != original.ID,
 	}, nil
+}
+
+// forgeAttachmentAt answers the entry that serves an attachment at maxWidth:
+// the original, or an image derivative held in the same cache. The
+// derivative's key carries the original's content id, so a re-fetched
+// original can never pair with a derivative made from earlier bytes.
+func (a *App) forgeAttachmentAt(original forgeattach.Entry, maxWidth int) (forgeattach.Entry, error) {
+	tier := attachment.DeriveTier(maxWidth)
+	if original.Value.Kind != forgeattach.KindImage || tier == 0 {
+		return original, nil
+	}
+	cache := a.forgeAttachments()
+	identity := original.Key + "\x00" + original.ID
+	key := identity + "\x00" + strconv.Itoa(tier)
+	if held, ok := cache.Lookup(key); ok {
+		return held, nil
+	}
+	derived, err := attachment.Derive(identity, original.Value.Data, original.Value.MimeType, maxWidth)
+	if err != nil {
+		return forgeattach.Entry{}, fmt.Errorf("forge attachment: %w", err)
+	}
+	if !derived.Derived {
+		return original, nil
+	}
+	return cache.Put(key, forgeattach.Attachment{
+		Data:     derived.Data,
+		MimeType: derived.MimeType,
+		Kind:     forgeattach.KindImage,
+		Filename: original.Value.Filename,
+		Width:    derived.Width,
+		Height:   derived.Height,
+	})
 }
 
 // SaveForgeAttachment fetches one attachment the same way and writes it to
@@ -71,7 +123,7 @@ func (a *App) SaveForgeAttachment(pr gitops.PRReference, href string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return a.saveDownload(entry.Filename, entry.MimeType, entry.Data)
+	return a.saveDownload(entry.Value.Filename, entry.Value.MimeType, entry.Value.Data)
 }
 
 // resolveForgeAttachment is the one fetch path both bound methods use.
@@ -99,8 +151,7 @@ func (a *App) resolveForgeAttachment(pr gitops.PRReference, href string) (forgea
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}
-	return cache.Put(forgeattach.Entry{
-		Key:      key,
+	return cache.Put(key, forgeattach.Attachment{
 		Data:     data,
 		MimeType: classified.MimeType,
 		Kind:     classified.Kind,
@@ -131,11 +182,11 @@ func (t attachmentTransfer) OpenForgeAttachment(contentID string) (transport.For
 		return transport.ForgeAttachmentContent{}, fmt.Errorf("forge attachment %q is no longer cached", contentID)
 	}
 	return transport.ForgeAttachmentContent{
-		MimeType: entry.MimeType,
-		Kind:     entry.Kind,
-		Filename: entry.Filename,
+		MimeType: entry.Value.MimeType,
+		Kind:     entry.Value.Kind,
+		Filename: entry.Value.Filename,
 		ModTime:  entry.StoredAt,
-		Content:  nopCloserReader{bytes.NewReader(entry.Data)},
+		Content:  nopCloserReader{bytes.NewReader(entry.Value.Data)},
 	}, nil
 }
 

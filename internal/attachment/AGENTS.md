@@ -26,5 +26,8 @@ lexical containment; they do not resolve arbitrary symlinks. The attachment
 root therefore remains private and under exclusive application ownership.
 `CopyToThread` streams accepted bytes and preserves the settled kind.
 
-Thumbnail decoding retains the dimension guard, same-ID singleflight, global
-concurrency bound, and SQLite cache.
+Thumbnails (`thumbnail.go`) and display derivatives (`derive.go`) share one
+decode, resample and encode pipeline (`imagecodec.go`): the header's pixel
+budget before any decode, a per-source singleflight, and a global decode
+memory budget weighted by each job's estimated bytes. Thumbnails persist in
+SQLite; derivatives are returned to the caller, which owns their cache.

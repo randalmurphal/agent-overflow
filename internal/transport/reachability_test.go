@@ -49,7 +49,7 @@ var workspaceContentMethods = map[string]Scope{
 	"HighlightPatchWithContext":    ScopeFilesRead,
 	"SearchWorkspaceFiles":         ScopeFilesRead,
 	"BrowseDirectory":              ScopeFilesRead,
-	"GetLocalImageData":            ScopeFilesRead,
+	"GetLocalImage":                ScopeFilesRead,
 	"ListDiffReviewComments":       ScopeThreadsRead,
 	"MintAttachmentDownloadTicket": ScopeThreadsRead,
 	"GetAttachmentThumbnail":       ScopeThreadsRead,

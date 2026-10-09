@@ -119,7 +119,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1581952506: 'home', // GetErrorLogLines
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
-	3247514443: 'selected', // GetLocalImageData
+	1709188995: 'selected', // GetLocalImage
 	4139359668: 'home', // GetMcpServerStatus
 	3176695009: 'workspace', // GetMergeConflictFile
 	1632984917: 'selected', // GetModelsForProvider
@@ -342,6 +342,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2182723789: 'thread', // SaveAttachment
 	3025273299: 'thread', // SaveDraft
 	2960563266: 'selected', // SaveForgeAttachment
+	1040176720: 'selected', // SaveLocalImage
 	1537914193: 'selected', // SavePRCIJobLog
 	3576148797: 'thread', // SavePayloadToFile
 	1414650511: 'thread', // SearchThreadItems

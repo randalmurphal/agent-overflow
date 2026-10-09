@@ -121,39 +121,23 @@ func (s *Server) handleForgeAttachmentDownload(w http.ResponseWriter, r *http.Re
 		http.NotFound(w, r)
 		return
 	}
-	defer content.Content.Close()
-
-	// Sized from the payload rather than taking the floor: a 100 MiB
-	// video at the window's minimum sustained rate needs far longer than
-	// five minutes, and cutting it would read as the backend dying.
-	window := AttachmentTransferWindow
-	if size, seekErr := content.Content.Seek(0, io.SeekEnd); seekErr == nil {
-		if _, seekErr = content.Content.Seek(0, io.SeekStart); seekErr == nil {
-			window = AttachmentTransferWindowFor(size)
+	defer closeTransferContent(content.Content, "forge attachment", contentID)
+	s.serveTransferContent(w, r, content.Content, content.ModTime, func(h http.Header) {
+		switch content.Kind {
+		case "image", "video", "audio":
+			h.Set("Content-Type", content.MimeType)
+			if content.MimeType == svgMIME {
+				h.Set("Content-Disposition", attachmentDisposition(content.Filename))
+			}
+		default:
+			// NEVER the payload's own type. This is the SPA origin, and the
+			// only safe answer for bytes nothing painted is an opaque
+			// download: a text/html or image/svg+xml here would be a
+			// document executing where the bundle's code runs.
+			h.Set("Content-Type", "application/octet-stream")
+			h.Set("Content-Disposition", attachmentDisposition(content.Filename))
 		}
-	}
-	extendTransferDeadline(w, window)
-
-	h := w.Header()
-	WriteSecurityHeaders(h, s.csp)
-	// The URL carried a single-use credential; a shared cache holding
-	// the response would hold the attachment past the one request
-	// authorized to read it.
-	h.Set("Cache-Control", "no-store")
-	switch content.Kind {
-	case "image", "video", "audio":
-		h.Set("Content-Type", content.MimeType)
-	default:
-		// NEVER the payload's own type. This is the SPA origin, and the
-		// only safe answer for bytes nothing painted is an opaque
-		// download — a text/html or image/svg+xml here would be a
-		// document executing where the bundle's code runs.
-		h.Set("Content-Type", "application/octet-stream")
-		h.Set("Content-Disposition", attachmentDisposition(content.Filename))
-	}
-	// The empty name is deliberate: ServeContent uses it only to guess a
-	// content type, which is already set.
-	http.ServeContent(w, r, "", content.ModTime, content.Content)
+	})
 }
 
 // attachmentDisposition builds the save-as header for a `file` payload.
