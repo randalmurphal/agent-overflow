@@ -55,7 +55,7 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   const detail = err instanceof TransportError ? err.detail : undefined;
   if (detail) {
     // A reviewed message is shown whole; internal prose reads from the
-    // innermost cause, which an off-host caller does not receive.
+    // innermost cause.
     if (UNREVIEWED_CODES.has((err as TransportError).code)) {
       raw = detail.chain.at(-1) ?? 'The backend could not complete this request';
     }

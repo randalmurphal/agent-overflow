@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureError, capturedErrorText, resetErrorReportsForTest } from './errorReports.svelte';
 import { TransportError } from '../transport/wsClient';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { __resetScopesForTest, setCarriedSessionScopes, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { getPinnedBackend } from '../transport/backends';
 
 function backendError(chain: string[], backend = ''): TransportError {
   return new TransportError('method_error', 'failed', {
@@ -39,16 +40,25 @@ describe('captureError', () => {
     expect(text).toContain('- app: 1.2.3');
   });
 
-  it('does not read a log this page\'s backend never wrote', async () => {
+  it('reads the log from the backend that answered, with its grant', async () => {
     setBindingMock('Version', async () => '1.2.3');
-    const read = setBindingMock('GetErrorLogLines', async () => ({ lines: [], found: false }));
-    const offHost = captureError(backendError([]));
-    const otherComputer = captureError(backendError(['fork: copy session'], 'b-office'));
+    const targets: (string | null)[] = [];
+    const read = setBindingMock('GetErrorLogLines', async () => {
+      targets.push(getPinnedBackend());
+      return { lines: ['office: failed (id: rKVz)'], found: true };
+    });
+    setCarriedSessionScopes('b-office', ['threads:operate']);
+    setCarriedSessionScopes('b-viewer', ['threads:read']);
+
+    const office = captureError(backendError(['fork: copy session'], 'b-office'));
+    const viewer = captureError(backendError(['fork: copy session'], 'b-viewer'));
     const clientSide = captureError(new Error('disk full'));
     await settle();
-    expect(read).not.toHaveBeenCalled();
-    expect(capturedErrorText(offHost)).toContain("on the backend's computer, under ref rKVz");
-    expect(capturedErrorText(otherComputer)).toContain("on the backend's computer, under ref rKVz");
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(targets).toEqual(['b-office']);
+    expect(capturedErrorText(office)).toContain('office: failed (id: rKVz)');
+    expect(capturedErrorText(viewer)).toContain("on the backend's computer, under ref rKVz");
     expect(capturedErrorText(clientSide)).not.toContain('Backend log');
   });
 

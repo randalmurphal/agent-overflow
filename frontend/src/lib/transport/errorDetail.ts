@@ -11,10 +11,7 @@ export interface ErrorDetail {
   method: string;
   /** When the backend recorded the failure, in Unix milliseconds. */
   at: number;
-  /**
-   * The error's wrap layers, outermost first. Only a caller on the
-   * backend's own machine receives it; empty otherwise.
-   */
+  /** The error's wrap layers, outermost first; empty when none were sent. */
   chain: string[];
   /** The attached backend that answered, stamped by the client. */
   backend: BackendKey;

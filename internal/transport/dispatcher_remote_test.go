@@ -44,7 +44,7 @@ func TestInvokeRefusesRemoteOnlyMethodsWithoutRemoteAccess(t *testing.T) {
 		t.Fatalf("resolve Version: %+v", fe)
 	}
 
-	_, fe = d.InvokeForOrigin(context.Background(), remote, nil, true)
+	_, fe = d.Invoke(context.Background(), remote, nil)
 	if buildvariant.RemoteAccess {
 		if fe != nil {
 			t.Fatalf("standard build refused AddBackend: %+v", fe)
@@ -54,7 +54,7 @@ func TestInvokeRefusesRemoteOnlyMethodsWithoutRemoteAccess(t *testing.T) {
 			t.Fatalf("AddBackend answered %+v, want the remote-access refusal", fe)
 		}
 	}
-	if _, fe := d.InvokeForOrigin(context.Background(), ordinary, nil, true); fe != nil {
+	if _, fe := d.Invoke(context.Background(), ordinary, nil); fe != nil {
 		t.Fatalf("Version refused: %+v", fe)
 	}
 	wantCalls := 2

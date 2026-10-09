@@ -5,7 +5,6 @@
 
 import { TransportError } from '../transport/wsClient';
 import type { ErrorDetail } from '../transport/errorDetail';
-import { HOME_BACKEND } from '../transport/backendKey';
 import { userFacingError } from './userFacingError';
 
 export interface ErrorReport {
@@ -74,16 +73,6 @@ function saysAlready(text: string, sentence: string): boolean {
 /** The layers a surface lists under Details. */
 export function errorLayers(report: ErrorReport): readonly string[] {
   return report.detail && report.detail.chain.length > 0 ? report.detail.chain : report.chain;
-}
-
-/**
- * Whether the backend's log lines for this failure can be read from here:
- * only a caller on the backend's own machine receives the chain, and the
- * log read is answered by this page's own backend.
- */
-export function errorHasBackendLog(report: ErrorReport): boolean {
-  return report.detail !== undefined && report.detail.chain.length > 0
-    && report.detail.backend === HOME_BACKEND;
 }
 
 function causeChain(err: unknown): string[] {

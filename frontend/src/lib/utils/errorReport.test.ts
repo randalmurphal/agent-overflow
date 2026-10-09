@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TransportError } from '../transport/wsClient';
 import {
-  errorHasBackendLog,
   errorHasDetails,
   errorLayers,
   errorReport,
@@ -22,17 +21,10 @@ function backendError(chain: string[], backend = ''): TransportError {
 }
 
 describe('errorReport', () => {
-  it('lists the backend chain and reads the log only from the page\'s own backend', () => {
-    const local = errorReport(backendError(CHAIN), { context: 'Could not undo the message' });
-    expect(errorLayers(local)).toEqual(CHAIN);
-    expect(errorHasBackendLog(local)).toBe(true);
-    expect(errorHasDetails(local)).toBe(true);
-
-    // Another attached computer: the log read would be answered by HOME,
-    // which never logged this ref.
-    expect(errorHasBackendLog(errorReport(backendError(CHAIN, 'b-office')))).toBe(false);
-    // An off-host caller receives no chain, so it has no log to read.
-    expect(errorHasBackendLog(errorReport(backendError([])))).toBe(false);
+  it('lists the backend chain', () => {
+    const report = errorReport(backendError(CHAIN), { context: 'Could not undo the message' });
+    expect(errorLayers(report)).toEqual(CHAIN);
+    expect(errorHasDetails(report)).toBe(true);
   });
 
   it('falls back to the cause chain of a client error', () => {

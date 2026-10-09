@@ -135,7 +135,7 @@ func TestInterruptTurn_ConfirmationArrivesOverTheWire(t *testing.T) {
 		t.Fatal("missing method InterruptTurn")
 	}
 	params := []json.RawMessage{json.RawMessage(strconv.Quote(f.thread.ID)), json.RawMessage(`["agent"]`)}
-	if _, frame := dispatcher.InvokeForOrigin(context.Background(), method, params, false); frame != nil {
+	if _, frame := dispatcher.Invoke(context.Background(), method, params); frame != nil {
 		t.Fatalf("confirmed Stop over the wire: frame %+v", frame)
 	}
 	if n := f.interrupts(t); n != 1 {

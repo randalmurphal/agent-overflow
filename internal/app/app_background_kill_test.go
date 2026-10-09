@@ -574,7 +574,7 @@ func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 			params[i] = raw
 		}
 		for _, loopback := range []bool{false, true} {
-			_, frame := dispatcher.InvokeForOrigin(context.Background(), method, params, loopback)
+			_, frame := dispatcher.Invoke(context.Background(), method, params)
 			if frame == nil || frame.Code != transport.ErrCodeBackgroundAgentsRunning {
 				t.Fatalf("%s %s loopback=%v: frame %+v, want %s", name, params[len(params)-1], loopback, frame, transport.ErrCodeBackgroundAgentsRunning)
 			}

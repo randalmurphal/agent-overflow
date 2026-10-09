@@ -28,7 +28,7 @@ func TestDispatcherMissingRowsRemainApplicationStateOnEveryOrigin(t *testing.T) 
 				if failure != nil {
 					t.Fatal(failure)
 				}
-				_, failure = dispatcher.InvokeForOrigin(context.Background(), method, nil, local)
+				_, failure = dispatcher.Invoke(context.Background(), method, nil)
 				if failure == nil || failure.Code != ErrCodeNotFound || failure.Message != "The requested item no longer exists." {
 					t.Fatalf("missing-row verdict: %+v", failure)
 				}

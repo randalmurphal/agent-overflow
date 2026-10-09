@@ -528,11 +528,10 @@ type FrameError struct {
 	// scopes.go's set, `host` included (which no session can hold, and
 	// which the message says so about).
 	//
-	// A field rather than prose to parse, for the reason Code is one: a
-	// method error's TEXT does not survive the wire for a non-loopback
-	// caller, and this is exactly what such a caller must branch on to
-	// explain a disabled surface rather than showing a dead control
-	// (docs/specs/remote-access.md §5 "Frontend capability model").
+	// A field rather than prose to parse, for the reason Code is one: it
+	// is what a client branches on to explain a disabled surface rather
+	// than showing a dead control (docs/specs/remote-access.md §5
+	// "Frontend capability model").
 	Scope string `json:"scope,omitempty"`
 	// Transfer locates recoverable ownership state without parsing prose.
 	// Present only for thread_moved / thread_transfer_pending.
@@ -553,8 +552,7 @@ type FrameError struct {
 
 // ErrorDetail identifies one failure for the person who saw it. Ref
 // matches the backend log line that holds the full error, `(id: <ref>)`.
-// Chain is the error's wrap layers, outermost first (errorsx.Chain); it
-// carries internal prose, so only a loopback caller receives it.
+// Chain is the error's wrap layers, outermost first (errorsx.Chain).
 type ErrorDetail struct {
 	Ref    string   `json:"ref"`
 	Method string   `json:"method"`
@@ -627,8 +625,7 @@ const (
 // apart is exactly the mistake that would ship.
 //
 // The message stays generic. It is the code and the reason that carry
-// meaning across the wire, and prose is redacted for non-loopback callers
-// anyway (§ Credentials and refusal shapes in AGENTS.md).
+// meaning across the wire (§ Credentials and refusal shapes in AGENTS.md).
 //
 // A refusal the backend cannot attribute to a session at all is NOT this:
 // that is answered before the request reaches a method, with the
@@ -643,8 +640,8 @@ func AuthFailure(reasonCode string) *FrameError {
 
 // ErrTemporarilyUnavailable marks a method failure as transient at the RPC
 // boundary. Methods wrap this sentinel together with their concrete cause;
-// the dispatcher preserves the usual loopback/LAN message-redaction policy
-// while exposing the stable code clients need to offer a truthful retry.
+// the dispatcher answers with the stable code clients need to offer a
+// truthful retry beside the method's own message.
 var ErrTemporarilyUnavailable = errors.New("temporarily unavailable")
 
 // ErrAlreadyHandled marks a decision another caller already made. It exists

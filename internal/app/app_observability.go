@@ -135,9 +135,12 @@ type ErrorLogLines struct {
 }
 
 // GetErrorLogLines returns the retained backend log lines that end at the
-// failure recorded under ref (transport.ErrorDetail.Ref).
+// failure recorded under ref (transport.ErrorDetail.Ref). The lines cover
+// whatever the backend did, so the read takes the scope that already lets a
+// session run an agent on this machine. The frontend pins the call to the
+// backend that answered the failed call.
 //
-//ao:scope host
+//ao:scope threads:operate
 //ao:route home
 func (a *App) GetErrorLogLines(ref string) (ErrorLogLines, error) {
 	ref = strings.TrimSpace(ref)

@@ -27,7 +27,7 @@ func TestTransferRefusalReachesRemoteClientWithoutInternalDetails(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, frame := d.InvokeForOrigin(context.Background(), methods[0], nil, false)
+		_, frame := d.Invoke(context.Background(), methods[0], nil)
 		code := ErrCodeThreadTransferPending
 		if moved {
 			code = ErrCodeThreadMoved

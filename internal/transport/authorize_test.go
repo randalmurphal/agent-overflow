@@ -45,8 +45,8 @@ func TestAuthorizeSessionMethodRefusesAnUngrantedScopeAndNamesIt(t *testing.T) {
 	if fe.Code != ErrCodeScopeRequired {
 		t.Errorf("code = %q, want %q", fe.Code, ErrCodeScopeRequired)
 	}
-	// The NAME is the actionable half and rides a field, because a method
-	// error's prose does not survive the wire for a non-loopback caller.
+	// The NAME is the actionable half and rides a field the client reads
+	// without parsing prose.
 	if fe.Scope != string(ScopeThreadsOperate) {
 		t.Errorf("scope = %q, want %q", fe.Scope, ScopeThreadsOperate)
 	}
@@ -395,9 +395,9 @@ func TestScopeGateRefusesOverTheWire(t *testing.T) {
 	}
 }
 
-// An in-method refusal must NOT go through the correlation-id redaction a
-// non-loopback caller gets for ordinary errors: the message is the answer.
-func TestArgumentRefusalSurvivesRedaction(t *testing.T) {
+// An in-method refusal answers as a scope refusal, not a method failure:
+// the scope and message are the answer.
+func TestArgumentRefusalAnswersAsAScopeRefusal(t *testing.T) {
 	d := NewDispatcher()
 	if _, err := d.Register(&scopeGateStub{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
 		t.Fatalf("register: %v", err)
@@ -407,7 +407,7 @@ func TestArgumentRefusalSurvivesRedaction(t *testing.T) {
 		t.Fatalf("resolve: %#v", fe)
 	}
 	params := []json.RawMessage{json.RawMessage(`"t1"`), json.RawMessage(`"full-access"`)}
-	_, frameErr := d.InvokeForOrigin(context.Background(), method, params, false)
+	_, frameErr := d.Invoke(context.Background(), method, params)
 	if frameErr == nil {
 		t.Fatal("the argument recheck did not refuse")
 	}
@@ -415,7 +415,7 @@ func TestArgumentRefusalSurvivesRedaction(t *testing.T) {
 		t.Fatalf("refusal = %#v, want scope_required naming threads:autonomy", frameErr)
 	}
 	if strings.Contains(frameErr.Message, "method failed") {
-		t.Fatalf("the refusal was redacted to %q", frameErr.Message)
+		t.Fatalf("the refusal answered as a method failure: %q", frameErr.Message)
 	}
 }
 

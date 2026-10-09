@@ -234,11 +234,7 @@ func TestIntegration_FiveRPCsRoundTripAcrossWire(t *testing.T) {
 	}
 
 	// 2. Error return surfacing: receiver's error reaches the wire as
-	//    ErrCodeMethodError. The integration fixture connects via
-	//    127.0.0.1, so the dispatcher treats the caller as loopback —
-	//    the methodErr.Error() text comes through directly. LAN peers
-	//    get the redacted "method failed (id: ...)" envelope (covered
-	//    by the conn-level tests against a non-loopback dialler).
+	//    ErrCodeMethodError with the method's own text.
 	resp = callRPC(t, conn, "MaybeFail", true)
 	if resp.Error == nil {
 		t.Fatalf("MaybeFail(true) expected error frame, got result %s", string(resp.Result))
@@ -247,7 +243,7 @@ func TestIntegration_FiveRPCsRoundTripAcrossWire(t *testing.T) {
 		t.Fatalf("MaybeFail error code = %s, want %s", resp.Error.Code, ErrCodeMethodError)
 	}
 	if resp.Error.Message != "integrationStub unhappy" {
-		t.Fatalf("MaybeFail loopback caller should see receiver text, got %q", resp.Error.Message)
+		t.Fatalf("MaybeFail caller should see receiver text, got %q", resp.Error.Message)
 	}
 	// Happy path of the same method.
 	resp = callRPC(t, conn, "MaybeFail", false)

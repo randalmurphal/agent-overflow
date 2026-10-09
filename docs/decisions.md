@@ -359,6 +359,11 @@ and anti-changes that live only here:
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
+- Error detail is not redacted by origin (2026-10-08). A paired session that
+  may call a method receives its full error text and wrap chain, and a
+  session granted `threads:operate` may read the backend log lines behind a
+  failure: that grant already lets it run an agent on the machine. Panic
+  values stay in the log. `docs/architecture/transport.md#rpc-failures`.
 - Agent thread tools are admitted in every runtime mode on both providers
   with no per-call prompt (`docs/specs/agent-thread-tools.md`, Availability
   and permissions). `ao-browser-tools` and `ao-remote-tools` stay denied in

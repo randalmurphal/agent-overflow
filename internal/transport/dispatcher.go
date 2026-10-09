@@ -296,7 +296,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 	return method, nil
 }
 
-// InvokeForOrigin unmarshals params, calls the method, and returns the
+// Invoke unmarshals params, calls the method, and returns the
 // JSON-serialised result. The error return distinguishes:
 //
 //   - ErrCodeMethodNotFound: caller used the wrong ID/name (handled by ResolveForOrigin).
@@ -305,18 +305,10 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 //   - ErrCodeTemporarilyUnavailable: the method hit a retryable deadline.
 //   - ErrCodeInternal:       reflection panicked or marshaling failed.
 //
-// Wire messages for ErrCodeMethodError and ErrCodeInternal are
-// deliberately generic — full prose (file paths, internal state, panic
-// details) is logged server-side. A LAN-attached caller can probe the
-// wire shape but cannot harvest project-internal strings.
-//
-// `isLoopback` is the per-connection loopback flag, required rather than
-// defaulted, and it drives error exposure: a loopback peer is the same
-// machine as the backend, so leaking a method-returned error string adds
-// no information beyond what the server-side log already contains, while
-// a LAN peer must continue to see the redacted "method failed (id: <cid>)"
-// envelope.
-func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, isLoopback bool) (result json.RawMessage, frameErr *FrameError) {
+// Every caller is an authenticated session that may call m, so a failure
+// answers with the method's own error text and wrap chain on every origin.
+// Panic values stay in the log; their frame carries only the reference.
+func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMessage) (result json.RawMessage, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
 			cid := newCorrelationID()
@@ -325,7 +317,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 			frameErr = &FrameError{
 				Code:    ErrCodeInternal,
 				Message: "internal error",
-				Detail:  methodErrorDetail(m, cid, nil, false),
+				Detail:  methodErrorDetail(m, cid, nil),
 			}
 		}
 	}()
@@ -342,7 +334,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 		return nil, fe
 	}
 
-	args, fe := d.buildArgs(ctx, m, params, isLoopback)
+	args, fe := d.buildArgs(ctx, m, params)
 	if fe != nil {
 		return nil, fe
 	}
@@ -356,7 +348,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 	} else {
 		results = m.fn.Call(args)
 	}
-	return d.processResults(m, results, isLoopback)
+	return d.processResults(m, results)
 }
 
 // buildArgs decodes the json-encoded params array into reflect.Values
@@ -364,7 +356,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 // context.Context, the dispatcher's ctx is injected and parameter
 // indexing on the wire stays zero-based — i.e. the wire never sees the
 // ctx slot.
-func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.RawMessage, exposeErrors bool) ([]reflect.Value, *FrameError) {
+func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.RawMessage) ([]reflect.Value, *FrameError) {
 	expectedParams := len(m.inputTypes)
 	if m.NeedsContext {
 		expectedParams--
@@ -410,7 +402,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 				ptr := reflect.New(elemType)
 				if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
 					return nil, loggedFailure(m, ErrCodeBadParams, fmt.Sprintf("bad parameter %d", wireIdx),
-						fmt.Sprintf("%s param %d (variadic)", m.FQN, wireIdx), err, exposeErrors)
+						fmt.Sprintf("%s param %d (variadic)", m.FQN, wireIdx), err)
 				}
 				slice = reflect.Append(slice, ptr.Elem())
 			}
@@ -421,7 +413,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 		ptr := reflect.New(declType)
 		if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
 			return nil, loggedFailure(m, ErrCodeBadParams, fmt.Sprintf("bad parameter %d", wireIdx),
-				fmt.Sprintf("%s param %d", m.FQN, wireIdx), err, exposeErrors)
+				fmt.Sprintf("%s param %d", m.FQN, wireIdx), err)
 		}
 		args = append(args, ptr.Elem())
 		wireIdx++
@@ -448,7 +440,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // random ID and return a generic "method failed (id: <id>)" message so
 // users can grep server logs for the full prose without surfacing it on
 // the wire.
-func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeErrors bool) (json.RawMessage, *FrameError) {
+func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.RawMessage, *FrameError) {
 	if m.hasError {
 		errResult := results[len(results)-1]
 		if !errResult.IsNil() {
@@ -469,16 +461,13 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				// The method refused on its ARGUMENTS rather than failing
 				// (authorize.go): a runtime mode the session may not select,
 				// a host-tier settings key. Its message names the scope and
-				// is the whole answer, so it goes out verbatim on every
-				// origin — the redaction below exists for internal prose,
-				// and a remote caller told "method failed" here would be
-				// told nothing it could act on.
+				// is the whole answer, so it goes out verbatim.
 				return nil, frame
 			}
 			if code, message, ok := errorsx.PublicDetails(methodErr); ok {
 				cid := newCorrelationID()
 				log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
-				frame := &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, methodErr, exposeErrors)}
+				frame := &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, methodErr)}
 				// The refused stop names what it would have killed. A tiny
 				// interface for the same reason as the transfer ref above.
 				var agents interface{ RefusedBackgroundAgents() json.RawMessage }
@@ -494,18 +483,9 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 			}
 			cid := newCorrelationID()
 			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
-			message := fmt.Sprintf("method failed (id: %s)", cid)
-			if exposeErrors {
-				// Loopback caller — same machine as the backend, so the
-				// method error text leaks no information that isn't
-				// already in the server log. Send it through so the
-				// frontend can surface it inline (toast text, dev
-				// console) without users having to grep `make dev`
-				// output for the cid.
-				message = methodErr.Error()
-			}
+			message := methodErr.Error()
 			code := ErrCodeMethodError
-			detail := methodErrorDetail(m, cid, methodErr, exposeErrors)
+			detail := methodErrorDetail(m, cid, methodErr)
 			switch {
 			case errors.Is(methodErr, ErrTemporarilyUnavailable):
 				code = ErrCodeTemporarilyUnavailable
@@ -527,7 +507,7 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 	case 1:
 		buf, err := json.Marshal(results[0].Interface())
 		if err != nil {
-			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal result", err, exposeErrors)
+			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal result", err)
 		}
 		return buf, nil
 	default:
@@ -537,7 +517,7 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 		}
 		buf, err := json.Marshal(out)
 		if err != nil {
-			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal multi-result", err, exposeErrors)
+			return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": marshal multi-result", err)
 		}
 		return buf, nil
 	}
@@ -545,17 +525,17 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 
 // loggedFailure logs err under a new correlation ID, prefixed by what
 // failed, and answers code and message with that ID as the detail.
-func loggedFailure(m *Method, code, message, what string, err error, expose bool) *FrameError {
+func loggedFailure(m *Method, code, message, what string, err error) *FrameError {
 	cid := newCorrelationID()
 	log.Printf("transport: %s (id: %s): %v", what, cid, err)
-	return &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, err, expose)}
+	return &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, err)}
 }
 
 // methodErrorDetail is the diagnostic record of m's failure logged under
-// cid. The wrap chain is internal prose, sent only when expose is set.
-func methodErrorDetail(m *Method, cid string, err error, expose bool) *ErrorDetail {
+// cid, with err's wrap chain when there is an error to describe.
+func methodErrorDetail(m *Method, cid string, err error) *ErrorDetail {
 	detail := &ErrorDetail{Ref: cid, Method: m.Name, At: time.Now().UnixMilli()}
-	if expose && err != nil {
+	if err != nil {
 		detail.Chain = errorsx.Chain(err)
 	}
 	return detail

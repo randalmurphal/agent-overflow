@@ -215,18 +215,20 @@ The harness can hold a boot before `App.Start` for tests
 
 A failed call answers with `FrameError`: a `code`, a `message`, and, for any
 failure the backend logged, `detail` (`ErrorDetail`). `detail.ref` matches the
-backend log line `(id: <ref>)` that holds the full error, and `detail.method`
-and `detail.at` name the call and its time. A loopback caller also receives
-`detail.chain`, the error's wrap layers outermost first (`errorsx.Chain`); an
-off-host caller receives only the reference, under the same redaction as
-`message`. `already_handled` carries no detail.
+backend log line `(id: <ref>)` that holds the full error, `detail.method` and
+`detail.at` name the call and its time, and `detail.chain` lists the error's
+wrap layers outermost first (`errorsx.Chain`). Every caller is an
+authenticated session that was allowed to make the call, so the message and
+chain are the method's own on every origin. A panic's value stays in the log;
+its frame carries only the reference. `already_handled` carries no detail.
 
 The backend retains its recent log lines in memory (`logging.Output`).
-`GetErrorLogLines` (host scope) returns the lines leading up to a reference
-until they age out. The frontend reads them when it captures the error, so an
-error toast or pane banner can show the chain and copy a report with the log
-(`frontend/src/lib/stores/errorReports.svelte.ts`). The read is made only for
-an error from the page's own backend, because the call is answered by HOME.
+`GetErrorLogLines` (scope `threads:operate`, the grant that already lets a
+session run an agent on that machine) returns the lines leading up to a
+reference until they age out. The frontend reads them from the backend that
+answered the failed call when it captures the error, so an error toast or pane
+banner can show the chain and copy a report with the log
+(`frontend/src/lib/stores/errorReports.svelte.ts`).
 
 ## HTTP RPC and additional receivers
 

@@ -12,24 +12,10 @@ import (
 	"testing"
 )
 
-// resolveLoopback and invokeRemote stand in for the deleted
-// Dispatcher.Resolve / Dispatcher.Invoke convenience wrappers. Those two
-// defaulted the isLoopback argument in OPPOSITE directions — Resolve
-// assumed loopback (so a host-tooling receiver never refused), Invoke
-// assumed a remote peer (so method-error text stayed redacted) — which
-// is a trap on an authorization-relevant flag. No production path ever called either:
-// conn.go and httprpc.go both pass their known origin to
-// ResolveForOrigin / InvokeForOrigin. The shims keep each default
-// visible at the one place that relies on it: resolution in these tests
-// is pure method lookup, and invocation here is what pins the redacted
-// LAN-peer error envelope. Tests that care about the other origin call
-// the ForOrigin methods directly.
+// resolveLoopback is pure method lookup for tests that do not exercise the
+// host-tooling refusal (ResolveForOrigin with a remote peer).
 func resolveLoopback(d *Dispatcher, id uint32, name string) (*Method, *FrameError) {
 	return d.ResolveForOrigin(id, name, true)
-}
-
-func invokeRemote(d *Dispatcher, ctx context.Context, m *Method, params []json.RawMessage) (json.RawMessage, *FrameError) {
-	return d.InvokeForOrigin(ctx, m, params, false)
 }
 
 // fakeApp gives the dispatcher a representative method surface — at
@@ -79,7 +65,7 @@ func (a *fakeApp) Save(payload string) error {
 }
 
 // Transient returns a retryable method error so the dispatcher can pin the
-// stable code independently of its origin-sensitive message redaction.
+// stable code beside its message.
 func (a *fakeApp) Transient() error {
 	a.record("Transient")
 	return fmt.Errorf("%w: read deadline exceeded", ErrTemporarilyUnavailable)
@@ -251,7 +237,7 @@ func TestDispatcher_Resolve_BothMissing(t *testing.T) {
 func TestDispatcher_Invoke_SimpleCall(t *testing.T) {
 	d, app := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Greet")
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"world"`)})
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"world"`)})
 	if fe != nil {
 		t.Fatalf("invoke: %v", fe)
 	}
@@ -269,7 +255,7 @@ func TestDispatcher_Invoke_SimpleCall(t *testing.T) {
 func TestDispatcher_Invoke_SliceParam(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Lines")
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`["a","b","c"]`)})
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`["a","b","c"]`)})
 	if fe != nil {
 		t.Fatalf("invoke: %v", fe)
 	}
@@ -282,12 +268,12 @@ func TestDispatcher_Invoke_BadParams(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Greet")
 	// Wrong arity.
-	_, fe := invokeRemote(d, context.Background(), m, nil)
+	_, fe := d.Invoke(context.Background(), m, nil)
 	if fe == nil || fe.Code != ErrCodeBadParams {
 		t.Fatalf("expected bad_params for missing arg, got %v", fe)
 	}
 	// Wrong type.
-	_, fe = invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`123`)})
+	_, fe = d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`123`)})
 	if fe == nil || fe.Code != ErrCodeBadParams {
 		t.Fatalf("expected bad_params for type mismatch, got %v", fe)
 	}
@@ -296,7 +282,7 @@ func TestDispatcher_Invoke_BadParams(t *testing.T) {
 func TestDispatcher_Invoke_BadParams_DoesNotLeakInternals(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Greet")
-	_, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`123`)})
+	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`123`)})
 	if fe == nil {
 		t.Fatalf("expected bad_params")
 	}
@@ -313,7 +299,7 @@ func TestDispatcher_Invoke_TooManyParams(t *testing.T) {
 	for i := range huge {
 		huge[i] = json.RawMessage(`"x"`)
 	}
-	_, fe := invokeRemote(d, context.Background(), m, huge)
+	_, fe := d.Invoke(context.Background(), m, huge)
 	if fe == nil || fe.Code != ErrCodeBadParams {
 		t.Fatalf("expected bad_params for oversized params, got %v", fe)
 	}
@@ -322,29 +308,22 @@ func TestDispatcher_Invoke_TooManyParams(t *testing.T) {
 func TestDispatcher_Invoke_MethodReturnsError(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Save")
-	_, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)})
+	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)})
 	if fe == nil {
 		t.Fatalf("expected error frame")
 	}
 	if fe.Code != ErrCodeMethodError {
 		t.Fatalf("expected method_error code (distinguishes method-returned err from panic), got %s", fe.Code)
 	}
-	// Method-returned errors are redacted on the wire and correlated
-	// to a server-side log entry via a short ID. The original prose
-	// stays out of the wire payload so a method that wraps a path /
-	// secret error doesn't leak it to a LAN-attached caller.
-	if strings.Contains(fe.Message, "save refused") {
-		t.Fatalf("method-returned error text leaked to wire: %q", fe.Message)
-	}
-	if !strings.HasPrefix(fe.Message, "method failed (id: ") {
-		t.Fatalf("expected redacted message, got %q", fe.Message)
+	if fe.Message != "save refused" {
+		t.Fatalf("method error text = %q, want the method's own error", fe.Message)
 	}
 }
 
 func TestDispatcher_Invoke_MethodNoErrorReturn(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Save")
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"ok"`)})
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"ok"`)})
 	if fe != nil {
 		t.Fatalf("invoke: %v", fe)
 	}
@@ -353,24 +332,16 @@ func TestDispatcher_Invoke_MethodNoErrorReturn(t *testing.T) {
 	}
 }
 
-func TestDispatcher_Invoke_TemporarilyUnavailablePreservesCodeAndRedaction(t *testing.T) {
+func TestDispatcher_Invoke_TemporarilyUnavailablePreservesCodeAndProse(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Transient")
 
-	_, remoteErr := d.InvokeForOrigin(context.Background(), m, nil, false)
-	if remoteErr == nil || remoteErr.Code != ErrCodeTemporarilyUnavailable {
-		t.Fatalf("remote transient error = %+v, want code %q", remoteErr, ErrCodeTemporarilyUnavailable)
+	_, fe := d.Invoke(context.Background(), m, nil)
+	if fe == nil || fe.Code != ErrCodeTemporarilyUnavailable {
+		t.Fatalf("transient error = %+v, want code %q", fe, ErrCodeTemporarilyUnavailable)
 	}
-	if strings.Contains(remoteErr.Message, "read deadline exceeded") {
-		t.Fatalf("remote transient error leaked method prose: %q", remoteErr.Message)
-	}
-
-	_, loopbackErr := d.InvokeForOrigin(context.Background(), m, nil, true)
-	if loopbackErr == nil || loopbackErr.Code != ErrCodeTemporarilyUnavailable {
-		t.Fatalf("loopback transient error = %+v, want code %q", loopbackErr, ErrCodeTemporarilyUnavailable)
-	}
-	if !strings.Contains(loopbackErr.Message, "read deadline exceeded") {
-		t.Fatalf("loopback transient error hid actionable prose: %q", loopbackErr.Message)
+	if !strings.Contains(fe.Message, "read deadline exceeded") {
+		t.Fatalf("transient error hid actionable prose: %q", fe.Message)
 	}
 }
 
@@ -378,7 +349,7 @@ func TestDispatcher_Invoke_TwoReturnsWithError(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Maybe")
 
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`true`)})
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`true`)})
 	if fe != nil {
 		t.Fatal(fe.Message)
 	}
@@ -386,106 +357,30 @@ func TestDispatcher_Invoke_TwoReturnsWithError(t *testing.T) {
 		t.Fatalf("unexpected: %s", string(result))
 	}
 
-	_, fe = invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`false`)})
+	_, fe = d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`false`)})
 	if fe == nil {
 		t.Fatalf("expected error path")
 	}
 	if fe.Code != ErrCodeMethodError {
 		t.Fatalf("expected method_error code, got %s", fe.Code)
 	}
-	// Same redaction guarantee as TestDispatcher_Invoke_MethodReturnsError:
-	// method prose stays out of the wire frame; only a correlation id
-	// surfaces.
-	if strings.Contains(fe.Message, "intentionally unhappy") {
-		t.Fatalf("method-returned error text leaked to wire: %q", fe.Message)
-	}
-	if !strings.HasPrefix(fe.Message, "method failed (id: ") {
-		t.Fatalf("expected redacted message, got %q", fe.Message)
-	}
-}
-
-// TestDispatcher_Invoke_MethodErrorDoesNotLeakInternals pins the
-// info-disclosure guard from a different angle: an error string that
-// would obviously embarrass us on the wire (filesystem path) MUST be
-// redacted before the FrameError leaves Invoke.
-func TestDispatcher_Invoke_MethodErrorDoesNotLeakInternals(t *testing.T) {
-	d := NewDispatcher()
-	app := &leakyApp{}
-	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	m, _ := resolveLoopback(d, 0, "LeakPath")
-	_, fe := invokeRemote(d, context.Background(), m, nil)
-	if fe == nil {
-		t.Fatalf("expected error frame")
-	}
-	if fe.Code != ErrCodeMethodError {
-		t.Fatalf("expected method_error, got %s", fe.Code)
-	}
-	if strings.Contains(fe.Message, "/Users/user/secret") {
-		t.Fatalf("filesystem path leaked to wire: %q", fe.Message)
-	}
-	if strings.Contains(fe.Message, "file not found") {
-		t.Fatalf("internal error string leaked to wire: %q", fe.Message)
-	}
-}
-
-// TestDispatcher_InvokeForOrigin_LoopbackExposesError pins the dual
-// of the redaction guarantee: a loopback peer (i.e. the same machine,
-// the embedded webview or the user's own dev tab) gets the full
-// methodErr.Error() text on the wire so the frontend can show a
-// useful toast / dev-console message without users having to grep
-// `make dev` output for the cid. The cost-benefit: loopback already
-// has access to everything in the process; exposing the wire error
-// adds no leak.
-func TestDispatcher_InvokeForOrigin_LoopbackExposesError(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
-	m, _ := resolveLoopback(d, 0, "Save")
-	_, fe := d.InvokeForOrigin(context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)}, true)
-	if fe == nil {
-		t.Fatalf("expected error frame")
-	}
-	if fe.Code != ErrCodeMethodError {
-		t.Fatalf("expected method_error, got %s", fe.Code)
-	}
-	// fakeApp.Save("fail") returns errors.New("save refused"). Loopback
-	// callers see that text directly — no redaction.
-	if fe.Message != "save refused" {
-		t.Fatalf("loopback caller should see method error text, got %q", fe.Message)
+	if !strings.Contains(fe.Message, "intentionally unhappy") {
+		t.Fatalf("method error text = %q, want the method's own error", fe.Message)
 	}
 }
 
 // TestDispatcher_Invoke_MethodErrorIncludesCorrelationID pins the
-// "users can grep logs" half of the redaction contract: every method-
-// error frame surfaces an opaque ID the operator can correlate against
-// the full server-side log entry.
+// reference every method-error frame carries for its server log entry.
 func TestDispatcher_Invoke_MethodErrorIncludesCorrelationID(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Save")
-	_, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)})
-	if fe == nil {
-		t.Fatalf("expected error frame")
+	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)})
+	if fe == nil || fe.Detail == nil {
+		t.Fatalf("expected an error frame with a detail, got %+v", fe)
 	}
-	// Format: "method failed (id: <11 base64url chars>)". Match
-	// loosely on the suffix shape so future log-format tweaks don't
-	// have to touch this test.
-	pat := regexp.MustCompile(`^method failed \(id: [A-Za-z0-9_-]{4,}\)$`)
-	if !pat.MatchString(fe.Message) {
-		t.Fatalf("error message %q did not match expected redacted shape", fe.Message)
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,}$`).MatchString(fe.Detail.Ref) {
+		t.Fatalf("detail ref %q is not a correlation id", fe.Detail.Ref)
 	}
-}
-
-// leakyApp is a focused stub for the redaction guard. Defined here
-// rather than on fakeApp so the assertion is unambiguous about which
-// receiver method is being exercised, and so tests for fakeApp's
-// existing methods don't have to grow new branches.
-type leakyApp struct{}
-
-// LeakPath returns an error whose .Error() string contains a real-
-// shaped filesystem path. The redaction layer must keep the path out
-// of the wire frame.
-func (l *leakyApp) LeakPath() error {
-	return errors.New("/Users/user/secret/path: file not found")
 }
 
 func TestDispatcher_Invoke_ContextInjection(t *testing.T) {
@@ -495,7 +390,7 @@ func TestDispatcher_Invoke_ContextInjection(t *testing.T) {
 		t.Fatalf("WithCtx should be flagged NeedsContext")
 	}
 	ctx := context.WithValue(context.Background(), testKey{}, "yes")
-	result, fe := invokeRemote(d, ctx, m, []json.RawMessage{json.RawMessage(`"label"`)})
+	result, fe := d.Invoke(ctx, m, []json.RawMessage{json.RawMessage(`"label"`)})
 	if fe != nil {
 		t.Fatal(fe.Message)
 	}
@@ -510,7 +405,7 @@ func TestDispatcher_Invoke_VariadicCollects(t *testing.T) {
 	if !m.IsVariadic {
 		t.Fatalf("Variadic should be flagged IsVariadic")
 	}
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{
 		json.RawMessage(`"head"`),
 		json.RawMessage(`"a"`),
 		json.RawMessage(`"b"`),
@@ -524,7 +419,7 @@ func TestDispatcher_Invoke_VariadicCollects(t *testing.T) {
 	}
 
 	// Variadic with zero trailing params is also valid.
-	result, fe = invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"head"`)})
+	result, fe = d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"head"`)})
 	if fe != nil {
 		t.Fatal(fe.Message)
 	}
@@ -539,7 +434,7 @@ func TestDispatcher_Invoke_VariadicCollects(t *testing.T) {
 func TestDispatcher_Invoke_VariadicWrongElementType(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Variadic")
-	_, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{
+	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{
 		json.RawMessage(`"head"`),
 		json.RawMessage(`123`), // expected string
 	})
@@ -551,7 +446,7 @@ func TestDispatcher_Invoke_VariadicWrongElementType(t *testing.T) {
 func TestDispatcher_Invoke_MultiReturnNoError(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "MultiReturn")
-	result, fe := invokeRemote(d, context.Background(), m, []json.RawMessage{json.RawMessage(`"hello"`)})
+	result, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"hello"`)})
 	if fe != nil {
 		t.Fatal(fe.Message)
 	}
@@ -564,7 +459,7 @@ func TestDispatcher_Invoke_MultiReturnNoError(t *testing.T) {
 func TestDispatcher_Invoke_PanicRecover(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Boom")
-	_, fe := invokeRemote(d, context.Background(), m, nil)
+	_, fe := d.Invoke(context.Background(), m, nil)
 	if fe == nil {
 		t.Fatalf("expected error frame on panic")
 	}
@@ -752,7 +647,7 @@ func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) 
 	}
 	method, _ := resolveLoopback(d, 0, "Fail")
 	for _, local := range []bool{false, true} {
-		_, frame := d.InvokeForOrigin(context.Background(), method, nil, local)
+		_, frame := d.Invoke(context.Background(), method, nil)
 		if frame == nil || frame.Code != "remote_capacity" || frame.Message != "All command slots are busy. Wait and retry." {
 			t.Fatalf("origin %v: %+v", local, frame)
 		}
@@ -787,7 +682,7 @@ func TestDispatcherBackgroundAgentRefusalCarriesTheAgentsOnEveryOrigin(t *testin
 		}
 		method, _ := resolveLoopback(d, 0, "Fail")
 		for _, local := range []bool{false, true} {
-			_, frame := d.InvokeForOrigin(context.Background(), method, nil, local)
+			_, frame := d.Invoke(context.Background(), method, nil)
 			if frame == nil || frame.Code != tc.code || frame.Message != "Confirm to stop it." {
 				t.Fatalf("%s origin %v: %+v", tc.code, local, frame)
 			}

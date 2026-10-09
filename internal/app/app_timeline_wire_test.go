@@ -40,7 +40,7 @@ func TestTimelinePagingPreservesLegacyWireAndSelectsScopedRows(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		result, failure := dispatcher.InvokeForOrigin(context.Background(), method, params, true)
+		result, failure := dispatcher.Invoke(context.Background(), method, params)
 		if failure != nil {
 			t.Fatalf("%s: %+v", name, failure)
 		}

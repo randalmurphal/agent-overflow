@@ -44,9 +44,10 @@ are the explicit exception because their bytes and policy belong to the
 development server.
 
 Browser-facing credential failures use the documented non-disclosing HTTP
-shape. RPC authorization failures use the wire error envelope. Do not expose
-internal errors, paths, or panic text; log full details with a correlation ID
-and return it as `ErrorDetail.ref` (see
+shape. RPC authorization failures use the wire error envelope. A method
+failure answers with its own error text and wrap chain on every origin; a
+panic's value stays in the log. Log each failure with a correlation ID and
+return it as `ErrorDetail.ref` (see
 [RPC failures](../../docs/architecture/transport.md#rpc-failures)).
 Classify missing durable rows as `not_found`, distinct from
 `method_not_found`.

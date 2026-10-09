@@ -113,7 +113,7 @@ func (s *Server) invokeScoped(r *http.Request, scope CallerScope, frame ClientFr
 	// isLoopback is true by construction (non-loopback peers were refused
 	// above), so the CLI receives the method's real error text — it is the
 	// only diagnostic a headless caller has.
-	result, frameErr := s.cfg.Dispatcher.InvokeForOrigin(ctx, method, frame.Params, true)
+	result, frameErr := s.cfg.Dispatcher.Invoke(ctx, method, frame.Params)
 	if frameErr != nil {
 		response.Error = frameErr
 		return response

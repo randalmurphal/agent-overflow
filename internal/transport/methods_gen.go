@@ -150,7 +150,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate", Route: "thread"},                                              // main.App.GetDraft
 	{Name: "GetEditDiffContextLines", ID: 949275134, Scope: "files:read", Route: "thread"},                                    // main.App.GetEditDiffContextLines
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "selected"},                                    // main.App.GetEditorSettings
-	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "host", Route: "home"},                                                  // main.App.GetErrorLogLines
+	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                       // main.App.GetErrorLogLines
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                          // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                           // main.App.GetKeybindings
 	{Name: "GetLocalImageData", ID: 3247514443, Scope: "files:read", Route: "selected"},                                       // main.App.GetLocalImageData

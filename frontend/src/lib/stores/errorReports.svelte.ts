@@ -6,7 +6,6 @@
 
 import { GetErrorLogLines, Version } from './bindings';
 import {
-  errorHasBackendLog,
   errorReport,
   errorReportText,
   type ErrorReport,
@@ -17,12 +16,18 @@ import { userFacingError } from '../utils/userFacingError';
 import { devicePlatform } from '../utils/deviceLabel';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { withBackendTarget } from '../transport/backends';
+import type { ErrorDetail } from '../transport/errorDetail';
 
 export interface CapturedError {
   readonly report: ErrorReport;
   /** Unset while the log read is in flight, and when there is no log to read. */
   readonly backendLog: ErrorReportEnvironment['backendLog'];
+  /** Whether the log read is still in flight. */
+  readonly backendLogPending: boolean;
 }
+
+type BackendLog = NonNullable<ErrorReportEnvironment['backendLog']>;
 
 let appVersion = '';
 let versionRequested = false;
@@ -41,9 +46,14 @@ async function requestAppVersion(): Promise<void> {
   }
 }
 
-async function readBackendLog(ref: string): Promise<NonNullable<ErrorReportEnvironment['backendLog']>> {
+// The log of the backend that answered the failed call, read from that
+// backend. Its lines cover whatever the backend did, so a session reads
+// them only with the grant that already lets it run an agent there.
+async function readBackendLog(detail: ErrorDetail): Promise<BackendLog | undefined> {
   try {
-    const result = await GetErrorLogLines(ref);
+    if (detail.backend === HOME_BACKEND) await pageGrantsResolved();
+    if (!hasScope('threads:operate', detail.backend)) return undefined;
+    const result = await withBackendTarget(detail.backend, () => GetErrorLogLines(detail.ref));
     return { lines: result.lines ?? [], found: result.found };
   } catch (err) {
     return { unavailable: `could not be read (${userFacingError(err)})` };
@@ -52,13 +62,17 @@ async function readBackendLog(ref: string): Promise<NonNullable<ErrorReportEnvir
 
 export function captureError(err: unknown, ctx: ErrorReportContext = {}): CapturedError {
   const report = errorReport(err, ctx);
-  const captured = $state<{ report: ErrorReport; backendLog: ErrorReportEnvironment['backendLog'] }>({
+  const captured = $state<{ report: ErrorReport; backendLog: ErrorReportEnvironment['backendLog']; backendLogPending: boolean }>({
     report,
     backendLog: undefined,
+    backendLogPending: report.detail !== undefined,
   });
   void requestAppVersion();
-  if (report.detail && errorHasBackendLog(report)) {
-    void readBackendLog(report.detail.ref).then((log) => { captured.backendLog = log; });
+  if (report.detail) {
+    void readBackendLog(report.detail).then((log) => {
+      captured.backendLog = log;
+      captured.backendLogPending = false;
+    });
   }
   return captured;
 }
@@ -66,9 +80,7 @@ export function captureError(err: unknown, ctx: ErrorReportContext = {}): Captur
 /** The captured error as text to paste into an agent. */
 export function capturedErrorText(captured: CapturedError): string {
   const backendLog = captured.backendLog
-    ?? (captured.report.detail && errorHasBackendLog(captured.report)
-      ? { unavailable: 'still being read when this was copied' }
-      : undefined);
+    ?? (captured.backendLogPending ? { unavailable: 'still being read when this was copied' } : undefined);
   return errorReportText(captured.report, {
     appVersion: appVersion || undefined,
     platform: devicePlatform() || undefined,

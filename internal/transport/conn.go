@@ -858,7 +858,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	}
 	ctx = WithCallerProof(ctx, proof)
 
-	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.profile.isLoopback)
+	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
 		// A method can refuse its own proof while the connection remains

@@ -49,10 +49,8 @@ func TestReasonIsOmittedOnEveryOtherError(t *testing.T) {
 	}
 }
 
-// TestAuthFailureMessageCarriesNothingSpecific — the message is redacted
-// for non-loopback callers, so a refusal that put its meaning there would
-// be readable on the desktop and blank everywhere else. The code and the
-// reason are what travel.
+// TestAuthFailureMessageCarriesNothingSpecific — every credential refusal
+// reads the same; the code and the reason are what a client acts on.
 func TestAuthFailureMessageCarriesNothingSpecific(t *testing.T) {
 	for _, reason := range []string{"revoked_session", "expired_session", "key_mismatch"} {
 		if got := AuthFailure(reason).Message; got != "not authorized" {
