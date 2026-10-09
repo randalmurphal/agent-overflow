@@ -28,6 +28,10 @@ type Entry struct {
 	MimeType string
 	Kind     string
 	Filename string
+	// Width and Height are the declared pixel size of an image whose
+	// header Go can read (Classification); zero when unknown.
+	Width  int
+	Height int
 	// StoredAt is set by Put and backs the route's Last-Modified.
 	StoredAt time.Time
 }

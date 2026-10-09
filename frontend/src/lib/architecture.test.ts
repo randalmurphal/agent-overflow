@@ -739,4 +739,34 @@ describe('architecture', () => {
       + ' same file so its body can be checked.',
     );
   });
+
+  // A workspace lets the parser claim `![x](/abs/path.png)`, and the bytes
+  // are read from the THREAD's computer (StreamdownImageHost's `backend`,
+  // from ChatMarkdown's `threadId`). A call site that names a workspace
+  // without the thread would read every such image from the page's own
+  // backend, which on a paired browser is the wrong machine.
+  it('names the thread beside every workspace a ChatMarkdown is given', () => {
+    const offenders = new Map<string, string[]>();
+    let withWorkspace = 0;
+    for (const file of scannedSources(/\.svelte$/)) {
+      const text = readFileSync(file, 'utf8');
+      const findings: string[] = [];
+      for (const match of text.matchAll(/<ChatMarkdown\b[^>]*?(?:\/>|>)/gs)) {
+        const tag = match[0];
+        if (!/\bworkspacePath\b/.test(tag)) continue;
+        withWorkspace += 1;
+        if (/\bthreadId\b/.test(tag)) continue;
+        const line = text.slice(0, match.index).split('\n').length;
+        findings.push(`line ${line}: <ChatMarkdown> passes workspacePath without threadId`);
+      }
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(withWorkspace, 'the scan found no workspace-bearing ChatMarkdown; it would pass vacuously').toBeGreaterThan(5);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Pass threadId (the item or pane thread the markdown belongs to) beside workspacePath.',
+    );
+  });
 });

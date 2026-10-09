@@ -1585,9 +1585,12 @@ scrollHeight dips, zero scrollTop reversals, identical unmount batches,
 clean bottom landings). See
 [`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) §3.
 Async-short remount content is bridged at the content layer (streamdown
-mermaid/math rendered-height caches, the attachment blob cache), and
-`remountReturn.browser.test.ts` pins the outcomes. Two pieces survive the
-deletion:
+mermaid/math rendered-height caches; the media blob cache behind forge
+attachments and local images, whose settled bytes and pixel size a remount
+reads synchronously so the `<img>` box is reserved in the frame it mounts),
+and `remountReturn.browser.test.ts` and
+`e2e/tests/local-image-pane-stability.spec.ts` pin the outcomes. Two pieces
+survive the deletion:
 
 - The scroll surface width signal: the **content-box** width, observed
   asynchronously through `observeScrollSurfaceContentWidth`

@@ -1,72 +1,146 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import StreamdownImageHost from './StreamdownImageHost.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import { getPinnedBackend } from '../../../transport/backends';
 import { buildLocalImageHref } from '../../../utils/pathLinkExtension';
 import { buildForgeAttachmentHref } from '../../../utils/forgeAttachments';
+import { __resetMediaBlobCacheForTest } from '../../../utils/mediaBlobCache';
 
 function imageToken(href: string, text = 'diagram') {
   return { type: 'image' as const, raw: `![${text}](${href})`, href, title: null, text, tokens: [] };
 }
 
+function mountImage(href: string, backend = 'gpu') {
+  return render(StreamdownImageHost, { props: { token: imageToken(href), src: href, backend } });
+}
+
+function pngReply(overrides: Record<string, unknown> = {}) {
+  return { data: 'iVBORw0KGgo=', mimeType: 'image/png', width: 400, height: 300, ...overrides };
+}
+
 describe('<StreamdownImageHost>', () => {
-  it('loads a guarded local image through the backend and revokes its blob URL', async () => {
-    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-image');
-    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const getLocalImage = setBindingMock('GetLocalImageData', async () => ({
-      data: 'iVBORw0KGgo=',
-      mimeType: 'image/png',
-    }));
-    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
-    const { container, unmount } = render(StreamdownImageHost, {
-      props: { token: imageToken(href), src: href },
+  beforeEach(() => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-image');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    __resetMediaBlobCacheForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("loads a guarded local image from the thread's computer and reserves its box", async () => {
+    let pinned: string | null = null;
+    const getLocalImage = setBindingMock('GetLocalImageData', async () => {
+      pinned = getPinnedBackend();
+      return pngReply();
     });
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
+    const { container } = mountImage(href);
+    expect(container.querySelector('[data-streamdown-image-loading]')).not.toBeNull();
 
     await waitFor(() => {
       expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:local-image');
     });
     expect(getLocalImage).toHaveBeenCalledWith('/workspace/diagram.png', '/workspace');
-    expect(createObjectURL).toHaveBeenCalledTimes(1);
-
-    unmount();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:local-image');
+    expect(pinned).toBe('gpu');
+    const img = container.querySelector('img')!;
+    expect(img.getAttribute('width')).toBe('400');
+    expect(img.getAttribute('height')).toBe('300');
+    // In-memory bytes are never lazy: the box is painted the frame it mounts.
+    expect(img.hasAttribute('loading')).toBe(false);
+    expect(container.querySelector('[data-streamdown-image-loading]')).toBeNull();
   });
 
-  it('surfaces backend failures in the markdown body', async () => {
-    setBindingMock('GetLocalImageData', async () => {
-      throw new Error('file is not a supported image');
-    });
+  it('paints a second mount of the same bytes in the same frame, with no second fetch', async () => {
+    const getLocalImage = setBindingMock('GetLocalImageData', async () => pngReply());
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
+    const first = mountImage(href);
+    await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
+
+    // The side chat forked from this thread, or the row remounting after a
+    // scroll away and back: no placeholder frame, no RPC.
+    const second = mountImage(href);
+    expect(second.container.querySelector('[data-streamdown-image-loading]')).toBeNull();
+    expect(second.container.querySelector('img')?.getAttribute('src')).toBe('blob:local-image');
+    expect(second.container.querySelector('img')?.getAttribute('width')).toBe('400');
+    expect(getLocalImage).toHaveBeenCalledTimes(1);
+
+    // Unmounting one holder leaves the URL live for the other; the cache
+    // revokes when the entry is evicted or dropped.
+    first.unmount();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    second.unmount();
+    __resetMediaBlobCacheForTest();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:local-image');
+  });
+
+  it('keys the bytes by computer, so the same path on another machine is its own fetch', async () => {
+    const getLocalImage = setBindingMock('GetLocalImageData', async () => pngReply());
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
+    const gpu = mountImage(href, 'gpu');
+    await waitFor(() => expect(gpu.container.querySelector('img')).not.toBeNull());
+    const laptop = mountImage(href, 'laptop');
+    await waitFor(() => expect(laptop.container.querySelector('img')).not.toBeNull());
+    expect(getLocalImage).toHaveBeenCalledTimes(2);
+  });
+
+  it('remembers the size an <img> decoded when the backend could not read the header', async () => {
+    setBindingMock('GetLocalImageData', async () =>
+      pngReply({ data: 'PHN2Zy8+', mimeType: 'image/svg+xml', width: 0, height: 0 }),
+    );
     const href = buildLocalImageHref('/workspace/diagram.svg', '/workspace');
-    const { container } = render(StreamdownImageHost, {
-      props: { token: imageToken(href), src: href },
+    const first = mountImage(href);
+    await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
+    const img = first.container.querySelector('img')!;
+    expect(img.getAttribute('src')?.startsWith('data:image/svg+xml;base64,')).toBe(true);
+    expect(img.hasAttribute('width')).toBe(false);
+
+    Object.defineProperty(img, 'naturalWidth', { value: 120 });
+    Object.defineProperty(img, 'naturalHeight', { value: 80 });
+    img.dispatchEvent(new Event('load'));
+
+    const second = mountImage(href);
+    expect(second.container.querySelector('img')?.getAttribute('width')).toBe('120');
+    expect(second.container.querySelector('img')?.getAttribute('height')).toBe('80');
+  });
+
+  it('names the reason in the chip and keeps the whole message as its tooltip', async () => {
+    setBindingMock('GetLocalImageData', async () => {
+      throw new Error(
+        'load local image: file not found: /workspace/diagram.png: open /workspace/diagram.png: no such file or directory',
+      );
     });
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
+    const { container } = mountImage(href);
 
     await waitFor(() => {
       expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
     });
-    expect(container.textContent).toContain('[Image unavailable: diagram]');
+    expect(container.textContent).toContain('[Image unavailable: diagram (file not found)]');
     expect(container.querySelector('[data-streamdown-image-error]')?.getAttribute('title')).toContain(
-      'not a supported image',
+      'no such file or directory',
     );
+    expect(container.querySelector('[data-streamdown-image-loading]')).toBeNull();
   });
 
-  it('renders an approved http or data:image src directly', async () => {
+  it('renders an approved http or data:image src directly, lazy only for http', async () => {
     for (const src of ['https://example.test/x.png', 'data:image/png;base64,iVBORw0KGgo=']) {
-      const { container, unmount } = render(StreamdownImageHost, {
-        props: { token: imageToken(src), src },
-      });
+      const { container, unmount } = mountImage(src);
       await waitFor(() => {
         expect(container.querySelector('img')?.getAttribute('src')).toBe(src);
       });
+      expect(container.querySelector('img')?.getAttribute('loading')).toBe(
+        src.startsWith('https:') ? 'lazy' : null,
+      );
       unmount();
     }
   });
 
   it('reports a decode failure instead of leaving a blank gap', async () => {
     const src = 'https://example.test/not-really.png';
-    const { container } = render(StreamdownImageHost, {
-      props: { token: imageToken(src), src },
-    });
+    const { container } = mountImage(src);
     await waitFor(() => {
       expect(container.querySelector('img')).not.toBeNull();
     });
@@ -77,6 +151,7 @@ describe('<StreamdownImageHost>', () => {
       expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
     });
     expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('(cannot decode)');
     expect(container.querySelector('[data-streamdown-image-error]')?.getAttribute('title')).toContain('decode');
   });
 
@@ -92,7 +167,7 @@ describe('<StreamdownImageHost>', () => {
       webBase: '',
     });
     const { container } = render(StreamdownImageHost, {
-      props: { token: imageToken(href, 'shot'), src: href },
+      props: { token: imageToken(href, 'shot'), src: href, backend: 'gpu' },
     });
     await waitFor(() => {
       expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull();
@@ -102,9 +177,7 @@ describe('<StreamdownImageHost>', () => {
 
   it('names a scheme it will not paint rather than dropping the image', async () => {
     const src = 'mailto:someone@example.test';
-    const { container } = render(StreamdownImageHost, {
-      props: { token: imageToken(src), src },
-    });
+    const { container } = mountImage(src);
     await waitFor(() => {
       expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
     });

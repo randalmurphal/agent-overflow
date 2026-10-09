@@ -28,7 +28,7 @@
   {#each questions as question, index (index)}
     {@const record = resource?.current?.find(q => q.index === index)}
     <div class="mb-2">
-      <ChatMarkdown source={question.title} {workspacePath} />
+      <ChatMarkdown source={question.title} threadId={item.threadId} {workspacePath} />
       {#if question.options?.length}<ul class="mt-1 list-inside list-disc text-xs text-fg-muted">{#each question.options as option, i (i)}<li>{option}</li>{/each}</ul>{/if}
       {#if record?.answer}<p class="mt-1 text-sm text-fg">Answer: {record.answer}</p>{/if}
       <div class="mt-1 text-xs text-fg-muted">{record?.state === 'delivered' ? 'Answer delivered' : record?.state === 'submitted' ? 'Answer submitted' : record?.state === 'restored' ? 'Answer restored to composer' : record?.state === 'unanswered' ? 'Awaiting your answer' : record?.state === 'dismissed' ? 'Dismissed' : 'Historical question'}</div>

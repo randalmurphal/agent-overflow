@@ -28,6 +28,7 @@ import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // An explicit or selected computer never falls back: removal rejects the
 // call, including a late response, so another machine cannot inherit it.
 
+import { untrack } from 'svelte';
 import { resolveTransport, type EventOrigin } from './handle';
 import {
   requireEntityBackend,
@@ -228,39 +229,17 @@ function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
 // Call.ByID / Call.ByName route through the resolved transport handle.
 // Generated bindings hit ByID exclusively; hand-written code paths (none
 // today) can use ByName.
+//
+// Both doors dispatch UNTRACKED. Routing reads reactive state (the entity
+// index, the focused pane's thread, the selected computer), and a call is
+// an action, not a reactive read: an `$effect` or `$derived` that issues
+// one must re-run on the state it names, never because another pane took
+// focus or a thread row was replaced. Before this, every image host's
+// fetch effect was subscribed to the focused pane through this door and
+// refetched on each focus change.
 export const Call = {
   ByID(methodId: number, ...args: unknown[]): CancellablePromise<unknown> {
-    // Drained FIRST, before anything can await: a pinned target is armed
-    // for one synchronous dispatch and must not survive into the next.
-    const pinned = takePinnedBackend();
-    let verify: ThreadMetadataRead | undefined;
-    try {
-      const target = pinned ?? resolveRoute(methodId, args);
-      // An `all` route with one computer attached is that computer's call;
-      // the fan-out takes the shortcut itself, so this door has no
-      // client-count branch and never bypasses an explicit target just
-      // because its computer was removed meanwhile.
-      if (target === null) {
-        return wrap(callEveryBackend(methodId, args, (result, backendId) => {
-          noteRowsFromCall(methodId, safeRepositoryMetadata(result), backendId);
-        }).then(safeRepositoryMetadata));
-      }
-      // One lookup: the handle is the entry's identity for the removed
-      // check below, and a missing target is `resolveTransport`'s refusal.
-      const transport = backendById(target)?.handle ?? resolveTransport(target);
-      verify = captureThreadMetadataRead(methodId, target);
-      return wrap(transport.callByID(methodId, args).then((result) => {
-        if (backendById(target)?.handle !== transport) throw removedDuringCall();
-        result = safeRepositoryMetadata(result);
-        verify?.verify(result);
-        // Index returned entities before the caller can issue its next RPC.
-        noteRowsFromCall(methodId, result, target);
-        return result;
-      }).finally(() => verify?.release()));
-    } catch (error) {
-      verify?.release();
-      return wrap(Promise.reject(error));
-    }
+    return untrack(() => dispatchByID(methodId, args));
   },
   // ByName has no id to look up, so it takes the route every unclassified
   // call takes: the page's own backend. A PINNED target still wins, and
@@ -274,18 +253,56 @@ export const Call = {
   // second name→route table beside the generated one; the pin is the
   // stopgap a hand-declared wrapper uses until its method is generated.
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
-    const pinned = takePinnedBackend();
-    const target = pinned ?? HOME_BACKEND;
-    try {
-      const transport = backendById(target)?.handle ?? resolveTransport(target);
-      return wrap(transport.callByName(method, args).then((result) => {
-        if (backendById(target)?.handle !== transport) throw removedDuringCall();
-        return safeRepositoryMetadata(result);
-      }));
-    }
-    catch (error) { return wrap(Promise.reject(error)); }
+    return untrack(() => dispatchByName(method, args));
   },
 };
+
+function dispatchByID(methodId: number, args: unknown[]): CancellablePromise<unknown> {
+  // Drained FIRST, before anything can await: a pinned target is armed
+  // for one synchronous dispatch and must not survive into the next.
+  const pinned = takePinnedBackend();
+  let verify: ThreadMetadataRead | undefined;
+  try {
+    const target = pinned ?? resolveRoute(methodId, args);
+    // An `all` route with one computer attached is that computer's call;
+    // the fan-out takes the shortcut itself, so this door has no
+    // client-count branch and never bypasses an explicit target just
+    // because its computer was removed meanwhile.
+    if (target === null) {
+      return wrap(callEveryBackend(methodId, args, (result, backendId) => {
+        noteRowsFromCall(methodId, safeRepositoryMetadata(result), backendId);
+      }).then(safeRepositoryMetadata));
+    }
+    // One lookup: the handle is the entry's identity for the removed
+    // check below, and a missing target is `resolveTransport`'s refusal.
+    const transport = backendById(target)?.handle ?? resolveTransport(target);
+    verify = captureThreadMetadataRead(methodId, target);
+    return wrap(transport.callByID(methodId, args).then((result) => {
+      if (backendById(target)?.handle !== transport) throw removedDuringCall();
+      result = safeRepositoryMetadata(result);
+      verify?.verify(result);
+      // Index returned entities before the caller can issue its next RPC.
+      noteRowsFromCall(methodId, result, target);
+      return result;
+    }).finally(() => verify?.release()));
+  } catch (error) {
+    verify?.release();
+    return wrap(Promise.reject(error));
+  }
+}
+
+function dispatchByName(method: string, args: unknown[]): CancellablePromise<unknown> {
+  const pinned = takePinnedBackend();
+  const target = pinned ?? HOME_BACKEND;
+  try {
+    const transport = backendById(target)?.handle ?? resolveTransport(target);
+    return wrap(transport.callByName(method, args).then((result) => {
+      if (backendById(target)?.handle !== transport) throw removedDuringCall();
+      return safeRepositoryMetadata(result);
+    }));
+  }
+  catch (error) { return wrap(Promise.reject(error)); }
+}
 
 // Create.* are identity-like factories the binding generator emits.
 // The real Wails runtime uses these to build typed payload converters

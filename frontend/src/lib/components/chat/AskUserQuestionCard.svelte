@@ -221,6 +221,7 @@
               <div class="text-xs text-fg" data-testid="ask-user-question-prompt">
                 <ChatMarkdown
                   source={q.question}
+                  threadId={item.threadId}
                   workspacePath={paneWorkspacePath(pane)}
                   {pathRefs}
                 />
@@ -258,6 +259,7 @@
                           >
                             <ChatMarkdown
                               source={option.preview}
+                              threadId={item.threadId}
                               workspacePath={paneWorkspacePath(pane)}
                               {pathRefs}
                               class="text-[0.6875rem]"

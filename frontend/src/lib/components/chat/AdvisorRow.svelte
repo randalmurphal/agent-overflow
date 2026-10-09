@@ -181,6 +181,6 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
 
 {#snippet advisorBodyContent({ data, testId }: { data: string; testId: string })}
   <div class="px-3 py-2 text-[0.75rem] leading-relaxed text-fg-muted" data-testid={testId}>
-    <ChatMarkdown source={data} workspacePath={paneWorkspacePath(pane)} {pathRefs} />
+    <ChatMarkdown source={data} threadId={item.threadId} workspacePath={paneWorkspacePath(pane)} {pathRefs} />
   </div>
 {/snippet}

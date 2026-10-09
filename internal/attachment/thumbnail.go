@@ -207,19 +207,31 @@ func generateThumbnail(src []byte, srcMIME string) ([]byte, string, error) {
 	}
 }
 
-// ValidateImageDimensions rejects corrupt images and sources whose declared
-// dimensions exceed the decode budget. It runs before browser delivery or a
-// full Go decode, so a tiny file with hostile dimensions cannot force either
-// process to allocate a multi-gigabyte pixel buffer.
-func ValidateImageDimensions(src []byte) error {
+// ErrPixelBudget marks an image whose declared dimensions exceed the decode
+// budget. Callers that name the refusal to a person match it with errors.Is.
+var ErrPixelBudget = errors.New("image exceeds the pixel budget")
+
+// ImageDimensions reads the declared width and height of an image header
+// and rejects corrupt images and sources whose dimensions exceed the decode
+// budget. It runs before browser delivery or a full Go decode, so a tiny
+// file with hostile dimensions cannot force either process to allocate a
+// multi-gigabyte pixel buffer.
+func ImageDimensions(src []byte) (width, height int, err error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(src))
 	if err != nil {
-		return fmt.Errorf("decode image config: %w", err)
+		return 0, 0, fmt.Errorf("decode image config: %w", err)
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > int64(thumbPixelBudget) {
-		return fmt.Errorf("image dimensions %dx%d exceed pixel budget %d", cfg.Width, cfg.Height, thumbPixelBudget)
+		return 0, 0, fmt.Errorf("%w: %dx%d exceeds %d pixels", ErrPixelBudget, cfg.Width, cfg.Height, thumbPixelBudget)
 	}
-	return nil
+	return cfg.Width, cfg.Height, nil
+}
+
+// ValidateImageDimensions is ImageDimensions for callers that only need the
+// budget check.
+func ValidateImageDimensions(src []byte) error {
+	_, _, err := ImageDimensions(src)
+	return err
 }
 
 // scaleToBox returns the largest (w, h) <= (max, max) that preserves the

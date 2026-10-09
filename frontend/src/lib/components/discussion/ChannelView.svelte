@@ -355,6 +355,7 @@
           {/if}
           {#each messages as msg (msg.id || msg.sequence)}
             <ChannelMessageCard
+              threadId={pane.threadId ?? ''}
               workspacePath={paneWorkspacePath(pane)}
               accentClass={messageAccentClass(msg)}
               badgeClass={roleBadgeClass(msg)}
@@ -367,6 +368,7 @@
           {/each}
           {#if showLiveTail && liveTail}
             <ChannelMessageCard
+              threadId={pane.threadId ?? ''}
               workspacePath={paneWorkspacePath(pane)}
               accentClass="border-border-subtle bg-card/30"
               badgeClass="bg-surface-2/40 text-fg-muted border-border-subtle"

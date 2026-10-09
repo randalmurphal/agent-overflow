@@ -24,6 +24,11 @@ type ForgeAttachment struct {
 	Kind      string `json:"kind"`
 	SizeBytes int64  `json:"sizeBytes"`
 	Filename  string `json:"filename"`
+	// Width and Height are an image's declared pixel size when Go could
+	// read its header, so the client reserves the box before the bytes
+	// decode; zero when unknown (svg, ico, avif) and for every other kind.
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // FetchForgeAttachment resolves one attachment reference found in a PR/MR
@@ -51,6 +56,8 @@ func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string) (ForgeAtt
 		Kind:      entry.Kind,
 		SizeBytes: int64(len(entry.Data)),
 		Filename:  entry.Filename,
+		Width:     entry.Width,
+		Height:    entry.Height,
 	}, nil
 }
 
@@ -88,16 +95,18 @@ func (a *App) resolveForgeAttachment(pr gitops.PRReference, href string) (forgea
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}
-	mimeType, kind, err := forgeattach.Classify(data, filename)
+	classified, err := forgeattach.Classify(data, filename)
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}
 	return cache.Put(forgeattach.Entry{
 		Key:      key,
 		Data:     data,
-		MimeType: mimeType,
-		Kind:     kind,
+		MimeType: classified.MimeType,
+		Kind:     classified.Kind,
 		Filename: filename,
+		Width:    classified.Width,
+		Height:   classified.Height,
 	})
 }
 

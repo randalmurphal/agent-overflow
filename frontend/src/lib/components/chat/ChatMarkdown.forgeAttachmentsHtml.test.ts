@@ -5,7 +5,7 @@ import { tick } from 'svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
 import ImageMenuHost from './ImageMenuHost.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __resetForgeAttachmentCacheForTest } from '../../utils/forgeAttachmentCache';
+import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
 // Forge media a PR template writes INSIDE an HTML wrapper. There is no
@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetForgeAttachmentCacheForTest();
+  __resetMediaBlobCacheForTest();
   resetBindingMocks();
   vi.restoreAllMocks();
 });

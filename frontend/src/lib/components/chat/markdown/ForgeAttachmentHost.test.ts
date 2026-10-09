@@ -28,18 +28,32 @@ function token(href: string, text = '') {
   return { type: 'image' as const, raw: '', href, title: null, text, tokens: [] };
 }
 
+function attachment(value: Partial<ResolvedForgeAttachment>): ResolvedForgeAttachment {
+  return {
+    url: 'blob:forge-1',
+    mimeType: 'image/png',
+    kind: 'image',
+    sizeBytes: 1024,
+    filename: 'shot.png',
+    blob: new Blob(),
+    width: 0,
+    height: 0,
+    ...value,
+  };
+}
+
 function resolves(value: Partial<ResolvedForgeAttachment>): void {
   acquire.mockImplementation(() => ({
-    value: Promise.resolve({
-      url: 'blob:forge-1',
-      mimeType: 'image/png',
-      kind: 'image',
-      sizeBytes: 1024,
-      filename: 'shot.png',
-      ...value,
-    } as ResolvedForgeAttachment),
+    settled: undefined,
+    value: Promise.resolve(attachment(value)),
     release,
   }));
+}
+
+/** The cache had the bytes already: the handle answers in the same frame. */
+function settled(value: Partial<ResolvedForgeAttachment>): void {
+  const resolved = attachment(value);
+  acquire.mockImplementation(() => ({ settled: resolved, value: Promise.resolve(resolved), release }));
 }
 
 describe('<ForgeAttachmentHost>', () => {
@@ -62,11 +76,22 @@ describe('<ForgeAttachmentHost>', () => {
     expect(img.getAttribute('src')).toBe('blob:forge-1');
     expect(img.getAttribute('alt')).toBe('a shot');
     expect(img.getAttribute('data-markdown-image-src')).toBe(`/uploads/${HEX}/shot.png`);
-    expect(img.getAttribute('loading')).toBe('lazy');
+    // In-memory bytes are never lazy: the box is painted the frame it mounts.
+    expect(img.hasAttribute('loading')).toBe(false);
     expect(acquire).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/shot.png`);
 
     unmount();
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('paints a cached attachment in the same frame it mounts, at its declared size', () => {
+    settled({ width: 640, height: 480 });
+    const { container } = render(ForgeAttachmentHost, { props: { token: token(hrefFor()) } });
+    expect(container.querySelector('[data-forge-attachment-loading]')).toBeNull();
+    const img = container.querySelector('img')!;
+    expect(img.getAttribute('src')).toBe('blob:forge-1');
+    expect(img.getAttribute('width')).toBe('640');
+    expect(img.getAttribute('height')).toBe('480');
   });
 
   it('renders a player for video and a player for audio, by what the bytes were', async () => {

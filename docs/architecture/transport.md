@@ -261,7 +261,11 @@ Every exported bound method has:
 
 Scope determines whether the caller may invoke a method. Route tells a
 multi-backend client which connection should carry it. The server receiving the
-frame does not forward it to another backend.
+frame does not forward it to another backend. The client resolves a route
+untracked (`Call.ByID` in `frontend/src/lib/transport/runtime.ts`): routing
+reads reactive state (the entity index, the focused pane's thread, the
+selected computer), and a call issued inside an `$effect` or `$derived` must
+not subscribe it to that state.
 
 `thread` and `project` routes are inferred from first parameters named
 `threadID` and `projectID`. `workspace` is inferred from a first

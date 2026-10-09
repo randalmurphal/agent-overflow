@@ -110,6 +110,7 @@
       capped={cappedBody}
       loading={expansion.loading}
       error={expansion.error}
+      threadId={item.threadId}
       workspacePath={paneWorkspacePath(pane)}
       {pathRefs}
     />

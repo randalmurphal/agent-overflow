@@ -70,7 +70,7 @@
     {#if !collapsed}
       {#if active}
         <div class="my-2 max-h-64 overflow-y-auto" data-testid="async-question-body">
-          <ChatMarkdown source={active.title} {workspacePath} />
+          <ChatMarkdown source={active.title} {threadId} {workspacePath} />
           <div class="mt-2 flex flex-col gap-1">
             {#each active.options ?? [] as option, i (i)}
               <UserInputOptionButton label={option} description="" optionIndex={i} selected={answer === option} focused={focusedOption === i} {disabled} tabIndex={0} onSelect={() => change(option)} onFocus={() => focusedOption = i} />

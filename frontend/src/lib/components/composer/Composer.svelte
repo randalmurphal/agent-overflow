@@ -1056,6 +1056,7 @@
           onResolve={resolveUserInput}
           onResolved={handlePromptResolved}
           onError={handlePromptError}
+          threadId={pane.threadId}
           workspacePath={paneWorkspacePath(pane)}
         />
       {/key}

@@ -44,19 +44,21 @@ func DetectDisplayImageMIME(data []byte) (string, error) {
 	return "", errors.New("attachment: payload is not an image a browser displays")
 }
 
-// ValidateDisplayImage bounds the decode a browser will perform. Formats Go
-// can read the header of get the pixel budget check; formats it cannot
-// (svg, ico, avif) are accepted on the byte cap alone, which the caller has
-// already applied.
-func ValidateDisplayImage(data []byte, mime string) error {
+// ValidateDisplayImage bounds the decode a browser will perform and returns
+// the declared pixel size the check read. Formats Go can read the header of
+// get the pixel budget check; formats it cannot (svg, ico, avif) are
+// accepted on the byte cap alone, which the caller has already applied, and
+// report a zero size.
+func ValidateDisplayImage(data []byte, mime string) (width, height int, err error) {
 	switch mime {
 	case "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon", "image/avif":
-		return nil
+		return 0, 0, nil
 	}
-	if err := ValidateImageDimensions(data); err != nil {
-		return fmt.Errorf("%s: %w", mime, err)
+	width, height, err = ImageDimensions(data)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: %w", mime, err)
 	}
-	return nil
+	return width, height, nil
 }
 
 func looksLikeSVG(data []byte) bool {

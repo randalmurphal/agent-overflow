@@ -252,7 +252,7 @@
             view.highlighted ? 'bg-accent/5' : '',
           ].join(' ')}
         >
-          <ChatMarkdown source={block.markdown} {workspacePath} {pathRefs} class="select-text" />
+          <ChatMarkdown source={block.markdown} {threadId} {workspacePath} {pathRefs} class="select-text" />
         </div>
         {#if view.anchoredComments.length > 0}
           <div class="mt-2 space-y-2 pl-3">

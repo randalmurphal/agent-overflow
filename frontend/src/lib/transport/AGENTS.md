@@ -29,9 +29,11 @@ fail. An ownership move invalidates the old computer's reads and cached thread
 state.
 
 `withBackendTarget` pins a synchronous generated call. Capture and reapply the
-same target for each later RPC after an `await`. Transport errors that report a
-thread move are navigation evidence only; they do not authorize attaching a
-computer or replaying the operation elsewhere.
+same target for each later RPC after an `await`. Dispatch resolves its route
+untracked: a binding call inside an effect never subscribes the effect to
+routing state, so an effect re-runs only on the state it reads itself.
+Transport errors that report a thread move are navigation evidence only; they
+do not authorize attaching a computer or replaying the operation elsewhere.
 
 ## WebSocket lifecycle and replay
 

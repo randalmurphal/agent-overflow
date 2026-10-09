@@ -9,9 +9,11 @@
   } from './markdown/streamingAssistantLiteralOwner';
 
   let {
+    threadId = '',
     workspacePath = '',
     pathRefs = [],
   }: {
+    threadId?: string;
     workspacePath?: string;
     pathRefs?: PathRef[];
   } = $props();
@@ -103,6 +105,7 @@
   <ChatMarkdown
     source={baselineSource}
     streaming
+    {threadId}
     {workspacePath}
     {pathRefs}
   />
@@ -112,6 +115,7 @@
     <ChatMarkdown
       source={directSource}
       streaming
+      {threadId}
       {workspacePath}
       {pathRefs}
     />

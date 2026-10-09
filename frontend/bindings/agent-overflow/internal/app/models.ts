@@ -2035,6 +2035,14 @@ export class ForgeAttachment {
     "sizeBytes": number;
     "filename": string;
 
+    /**
+     * Width and Height are an image's declared pixel size when Go could
+     * read its header, so the client reserves the box before the bytes
+     * decode; zero when unknown (svg, ico, avif) and for every other kind.
+     */
+    "width": number;
+    "height": number;
+
     /** Creates a new ForgeAttachment instance. */
     constructor($$source: Partial<ForgeAttachment> = {}) {
         if (!("url" in $$source)) {
@@ -2051,6 +2059,12 @@ export class ForgeAttachment {
         }
         if (!("filename" in $$source)) {
             this["filename"] = "";
+        }
+        if (!("width" in $$source)) {
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            this["height"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -2982,6 +2996,14 @@ export class LocalImageData {
     "data": string;
     "mimeType": string;
 
+    /**
+     * Width and Height are the declared pixel size when Go could read the
+     * header, so the client reserves the box before the bytes decode; zero
+     * when unknown (svg, ico, avif).
+     */
+    "width": number;
+    "height": number;
+
     /** Creates a new LocalImageData instance. */
     constructor($$source: Partial<LocalImageData> = {}) {
         if (!("data" in $$source)) {
@@ -2989,6 +3011,12 @@ export class LocalImageData {
         }
         if (!("mimeType" in $$source)) {
             this["mimeType"] = "";
+        }
+        if (!("width" in $$source)) {
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            this["height"] = 0;
         }
 
         Object.assign(this, $$source);

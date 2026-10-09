@@ -55,15 +55,15 @@ func TestDownloadExtensionsCoverTheClassifiers(t *testing.T) {
 		"webm": append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 64)...),
 	}
 	for name, data := range samples {
-		mimeType, kind, err := forgeattach.Classify(data, "")
+		classified, err := forgeattach.Classify(data, "")
 		if err != nil {
 			t.Fatalf("%s: Classify: %v", name, err)
 		}
-		if kind == forgeattach.KindFile {
-			t.Fatalf("%s: classified as a file (%s); the sample no longer exercises a media type", name, mimeType)
+		if classified.Kind == forgeattach.KindFile {
+			t.Fatalf("%s: classified as a file (%s); the sample no longer exercises a media type", name, classified.MimeType)
 		}
-		if _, ok := downloadExtensions[mimeType]; !ok {
-			t.Errorf("%s: Classify answered %q, which has no download extension", name, mimeType)
+		if _, ok := downloadExtensions[classified.MimeType]; !ok {
+			t.Errorf("%s: Classify answered %q, which has no download extension", name, classified.MimeType)
 		}
 	}
 }

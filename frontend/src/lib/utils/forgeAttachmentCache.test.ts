@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
-import {
-  __resetForgeAttachmentCacheForTest,
-  acquireForgeAttachment,
-} from './forgeAttachmentCache';
+import { acquireForgeAttachment } from './forgeAttachmentCache';
+import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
 import type { PRRef } from './prReference';
 
 const responses: Response[] = [];
@@ -36,6 +34,8 @@ function attachment(overrides: Record<string, unknown> = {}) {
     kind: 'image',
     sizeBytes: 12,
     filename: 'shot.png',
+    width: 0,
+    height: 0,
     ...overrides,
   };
 }
@@ -49,7 +49,7 @@ describe('the forge attachment cache', () => {
   });
 
   afterEach(() => {
-    __resetForgeAttachmentCacheForTest();
+    __resetMediaBlobCacheForTest();
     resetBindingMocks();
     vi.restoreAllMocks();
   });
@@ -143,48 +143,11 @@ describe('the forge attachment cache', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('counts an SVG data URL against the byte budget beside its bytes', async () => {
-    // 30 MiB each by the meta, plus a 4 MiB data URL each: two fit the
-    // 64 MiB budget only if the data URL is not counted.
-    const rpc = setBindingMock('FetchForgeAttachment', async () =>
-      attachment({ mimeType: 'image/svg+xml', filename: 'big.svg', sizeBytes: 30 * 1024 * 1024 }),
-    );
-    const body = `<svg>${'x'.repeat(3 * 1024 * 1024)}</svg>`;
-    stageBody(body);
-    stageBody(body);
-    stageBody(body);
-
-    const first = acquireForgeAttachment('gpu', PR, `${HREF}?a`);
-    await first.value;
-    first.release();
-    const second = acquireForgeAttachment('gpu', PR, `${HREF}?b`);
-    await second.value;
-    second.release();
-    // The first was evicted, so asking again fetches again.
-    await acquireForgeAttachment('gpu', PR, `${HREF}?a`).value;
-    expect(rpc).toHaveBeenCalledTimes(3);
-  });
-
-  it('revokes an evicted entry, and never one a mount still displays', async () => {
-    setBindingMock('FetchForgeAttachment', async () =>
-      // One entry per call, each claiming half the byte budget so the third
-      // forces eviction.
-      attachment({ url: `/attachments/forge/t${fetchCalls.length}?ticket=a`, sizeBytes: 40 * 1024 * 1024 }),
-    );
-    stageBody('a');
-    stageBody('b');
-    stageBody('c');
-
-    const held = acquireForgeAttachment('gpu', PR, `${HREF}?1`);
-    const heldUrl = (await held.value).url;
-    const dropped = acquireForgeAttachment('gpu', PR, `${HREF}?2`);
-    const droppedUrl = (await dropped.value).url;
-    dropped.release();
-
-    await acquireForgeAttachment('gpu', PR, `${HREF}?3`).value;
-
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith(droppedUrl);
-    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(heldUrl);
-    held.release();
+  it('carries the declared pixel size through, so a host reserves the box before the decode', async () => {
+    setBindingMock('FetchForgeAttachment', async () => attachment({ width: 640, height: 480 }));
+    stageBody('bytes');
+    const resolved = await acquireForgeAttachment('gpu', PR, HREF).value;
+    expect(resolved.width).toBe(640);
+    expect(resolved.height).toBe(480);
   });
 });

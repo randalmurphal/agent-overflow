@@ -2,6 +2,7 @@ package editor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,11 @@ import (
 
 	"agent-overflow/internal/appimage"
 )
+
+// ErrNotRegularFile marks a target that exists but is not a regular file
+// (a directory, socket or device). A caller naming the refusal to a person
+// matches it with errors.Is; a missing target wraps the os error instead.
+var ErrNotRegularFile = errors.New("not a regular file")
 
 // fastExitWindow caps how long Open waits for the spawned editor to
 // exit before deciding the launch was successful. A graphical editor
@@ -198,7 +204,7 @@ func resolveAgainstWorkspace(target, workspacePath string) (string, error) {
 		if info.Mode().IsRegular() {
 			return target, nil
 		}
-		return "", fmt.Errorf("editor: open: %q is not a regular file; links open files only (a folder open can execute workspace config)", target)
+		return "", fmt.Errorf("editor: open: %q is %w; links open files only (a folder open can execute workspace config)", target, ErrNotRegularFile)
 	}
 	if insideWorkspace(target, workspacePath) {
 		// New-file flow: a not-yet-existing target inside the workspace
@@ -207,7 +213,7 @@ func resolveAgainstWorkspace(target, workspacePath string) (string, error) {
 		// surfaces its own error if the path truly can't be opened.
 		return target, nil
 	}
-	return "", fmt.Errorf("editor: open: %q is outside the workspace and does not exist: %v", target, statErr)
+	return "", fmt.Errorf("editor: open: %q is outside the workspace and does not exist: %w", target, statErr)
 }
 
 // insideWorkspace reports whether target resolves under workspacePath.

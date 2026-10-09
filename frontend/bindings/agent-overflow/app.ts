@@ -1530,8 +1530,12 @@ export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> 
  * GetLocalImageData reads a local markdown image through the same path gate
  * used by editor links. It accepts existing regular files only, caps bytes at
  * attachment.DisplayImageMaxBytes, and sniffs the content for a format a
- * browser displays before returning it. Routed `selected` so a page reading
- * a thread on another computer fetches the image from that computer.
+ * browser displays before returning it. The client pins the call to the
+ * thread's computer; `selected` is the route for a caller that names none.
+ * 
+ * Every failure reads `load local image: <reason>: <cause>`. The reason is
+ * the short phrase the rendered chip shows beside the image's alt text and
+ * the whole message is its tooltip (StreamdownImageHost.svelte).
  */
 export function GetLocalImageData(path: string, workspacePath: string): $CancellablePromise<app$0.LocalImageData> {
     return $Call.ByID(3247514443, path, workspacePath).then(($result: any) => {

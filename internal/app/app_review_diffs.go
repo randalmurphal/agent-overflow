@@ -506,6 +506,13 @@ func readWorkspaceFile(path string, maxBytes int64) (string, error) {
 	return string(data), err
 }
 
+// Sentinels a caller matches with errors.Is to name a refusal to a person;
+// the os errors (fs.ErrNotExist, fs.ErrPermission) pass through unwrapped.
+var (
+	errNotRegularFile = errors.New("not a regular file")
+	errFileTooLarge   = errors.New("file is too large")
+)
+
 func readWorkspaceFileBytes(path string, maxBytes int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -517,7 +524,7 @@ func readWorkspaceFileBytes(path string, maxBytes int64) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
+		return nil, errNotRegularFile
 	}
 	if maxBytes <= 0 {
 		data, err := io.ReadAll(f)
@@ -527,7 +534,7 @@ func readWorkspaceFileBytes(path string, maxBytes int64) ([]byte, error) {
 		return data, nil
 	}
 	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("%w: exceeds %d bytes", errFileTooLarge, maxBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {

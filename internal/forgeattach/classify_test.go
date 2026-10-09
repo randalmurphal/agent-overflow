@@ -12,12 +12,15 @@ import (
 )
 
 func TestClassifyImage(t *testing.T) {
-	mimeType, kind, err := Classify(tinyPNG(t), "whatever-the-reference-said")
+	classified, err := Classify(tinyPNG(t), "whatever-the-reference-said")
 	if err != nil {
 		t.Fatalf("Classify returned error: %v", err)
 	}
-	if mimeType != "image/png" || kind != KindImage {
-		t.Fatalf("Classify = (%q, %q), want (image/png, image)", mimeType, kind)
+	if classified.MimeType != "image/png" || classified.Kind != KindImage {
+		t.Fatalf("Classify = (%q, %q), want (image/png, image)", classified.MimeType, classified.Kind)
+	}
+	if classified.Width != 2 || classified.Height != 2 {
+		t.Fatalf("Classify size = %dx%d, want 2x2", classified.Width, classified.Height)
 	}
 }
 
@@ -26,7 +29,7 @@ func TestClassifyImage(t *testing.T) {
 // so it has to fail the call rather than fall through to a download the
 // caller would then render anyway.
 func TestClassifyRefusesADecodeBomb(t *testing.T) {
-	if _, _, err := Classify(hugePNGHeader(), "bomb.png"); err == nil {
+	if _, err := Classify(hugePNGHeader(), "bomb.png"); err == nil {
 		t.Fatal("Classify accepted a PNG declaring 60000x60000 pixels")
 	}
 }
@@ -55,12 +58,15 @@ func TestClassifyMedia(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mimeType, kind, err := Classify(tc.data, tc.filename)
+			classified, err := Classify(tc.data, tc.filename)
 			if err != nil {
 				t.Fatalf("Classify returned error: %v", err)
 			}
-			if mimeType != tc.mimeType || kind != tc.kind {
-				t.Fatalf("Classify = (%q, %q), want (%q, %q)", mimeType, kind, tc.mimeType, tc.kind)
+			if classified.MimeType != tc.mimeType || classified.Kind != tc.kind {
+				t.Fatalf("Classify = (%q, %q), want (%q, %q)", classified.MimeType, classified.Kind, tc.mimeType, tc.kind)
+			}
+			if classified.Width != 0 || classified.Height != 0 {
+				t.Fatalf("Classify size = %dx%d, want none for media", classified.Width, classified.Height)
 			}
 		})
 	}
@@ -72,30 +78,30 @@ func TestClassifyMedia(t *testing.T) {
 // the route serves every KindFile as application/octet-stream.
 func TestClassifyFallsBackToTheExtension(t *testing.T) {
 	pdf := append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte{0}, 64)...)
-	mimeType, kind, err := Classify(pdf, "report.pdf")
+	classified, err := Classify(pdf, "report.pdf")
 	if err != nil {
 		t.Fatalf("Classify returned error: %v", err)
 	}
-	if kind != KindFile {
-		t.Fatalf("kind = %q, want file", kind)
+	if classified.Kind != KindFile {
+		t.Fatalf("kind = %q, want file", classified.Kind)
 	}
-	if !strings.HasPrefix(mimeType, "application/pdf") {
-		t.Fatalf("mime = %q, want application/pdf", mimeType)
+	if !strings.HasPrefix(classified.MimeType, "application/pdf") {
+		t.Fatalf("mime = %q, want application/pdf", classified.MimeType)
 	}
 
 	// A GitHub asset reference carries no extension at all, and nothing
 	// may be invented for it.
-	mimeType, kind, err = Classify([]byte("\x00\x01\x02 not a known container"), "1f0c2c2e-1111")
+	classified, err = Classify([]byte("\x00\x01\x02 not a known container"), "1f0c2c2e-1111")
 	if err != nil {
 		t.Fatalf("Classify returned error: %v", err)
 	}
-	if kind != KindFile || mimeType != "application/octet-stream" {
-		t.Fatalf("Classify = (%q, %q), want (application/octet-stream, file)", mimeType, kind)
+	if classified.Kind != KindFile || classified.MimeType != "application/octet-stream" {
+		t.Fatalf("Classify = (%q, %q), want (application/octet-stream, file)", classified.MimeType, classified.Kind)
 	}
 }
 
 func TestClassifyRefusesAnEmptyBody(t *testing.T) {
-	if _, _, err := Classify(nil, "a.png"); err == nil {
+	if _, err := Classify(nil, "a.png"); err == nil {
 		t.Fatal("Classify accepted an empty body")
 	}
 }

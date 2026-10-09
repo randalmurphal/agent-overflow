@@ -8,6 +8,9 @@
     capped?: boolean;
     loading?: boolean;
     error?: string | null;
+    /** The thread the plan belongs to: names the computer a local image in
+     *  the plan is read from. */
+    threadId: string;
     /** Absolute base directory for resolving relative file paths the
      *  linkifier finds in the plan markdown. */
     workspacePath?: string;
@@ -21,6 +24,7 @@
     capped = false,
     loading = false,
     error = null,
+    threadId,
     workspacePath = '',
     pathRefs = [],
   }: Props = $props();
@@ -37,7 +41,7 @@
     aria-busy={loading ? 'true' : undefined}
     use:nestedScroll
   >
-    <ChatMarkdown source={markdown} {workspacePath} {pathRefs} />
+    <ChatMarkdown source={markdown} {threadId} {workspacePath} {pathRefs} />
     {#if error}
       <p class="mt-2 text-xs text-error" role="alert">
         Failed to load full plan.

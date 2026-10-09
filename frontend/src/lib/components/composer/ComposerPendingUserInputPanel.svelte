@@ -33,6 +33,9 @@
     onResolve: (response: UserInputResponse) => Promise<void>;
     onResolved: () => void;
     onError: (message: string, err?: unknown) => void;
+    /** The thread the question belongs to: names the computer a local image
+     *  in an option preview is read from. */
+    threadId: string;
     /** Absolute base directory for resolving relative file paths the
      *  linkifier finds in option previews. */
     workspacePath?: string;
@@ -55,6 +58,7 @@
     onResolve,
     onResolved,
     onError,
+    threadId,
     workspacePath = '',
     collapsed = false,
     ungranted = false,
@@ -475,7 +479,7 @@
               data-active={active ? 'true' : 'false'}
             >
               {#if option.preview?.trim()}
-                <ChatMarkdown source={option.preview} {workspacePath} class="text-xs" />
+                <ChatMarkdown source={option.preview} {threadId} {workspacePath} class="text-xs" />
               {:else}
                 <p class="text-xs text-fg-muted italic">No preview for this option.</p>
               {/if}

@@ -90,7 +90,9 @@ let activePaneId: (() => string | null) | null = null;
  * The backend a `selected` call goes to. See the order at the top.
  *
  * Reactive when read from a `$derived`, so 7c's picker renders from the
- * same answer routing uses.
+ * same answer routing uses. Routing itself reads it untracked
+ * (transport/runtime.ts `Call`): a call issued inside an effect never
+ * subscribes that effect to the focused pane.
  */
 export function selectedBackend(): BackendKey {
   const thread = focusedThread?.() ?? null;

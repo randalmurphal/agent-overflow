@@ -60,6 +60,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -91,6 +92,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -114,6 +116,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve,
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -137,6 +140,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve,
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -162,6 +166,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve,
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -185,6 +190,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve,
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -208,6 +214,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
     };
     const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
 
@@ -229,6 +236,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
     };
     const { rerender } = render(ComposerPendingUserInputPanel, { props });
 
@@ -264,6 +272,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -296,6 +305,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
         workspacePath: '/workspace',
       },
     });
@@ -319,6 +329,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -353,6 +364,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -386,6 +398,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -423,6 +436,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -469,6 +483,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -493,6 +508,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
       collapsed: false,
     };
     const { getByTestId, queryByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
@@ -535,6 +551,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
     };
     const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
 
@@ -566,6 +583,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -589,6 +607,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
         onResolve: vi.fn(),
         onResolved: vi.fn(),
         onError: vi.fn(),
+        threadId: 'thread-1',
       },
     });
 
@@ -613,6 +632,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve: vi.fn(),
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
       collapsed: false,
     };
     const { getByTestId, getByText, queryByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
@@ -653,6 +673,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
     };
     const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
 
@@ -683,6 +704,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
       collapsed: false,
     };
     const { getByTestId, getByText, rerender } = render(ComposerPendingUserInputPanel, { props });
@@ -707,6 +729,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       onResolve,
       onResolved: vi.fn(),
       onError: vi.fn(),
+      threadId: 'thread-1',
       collapsed: false,
     };
     const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });

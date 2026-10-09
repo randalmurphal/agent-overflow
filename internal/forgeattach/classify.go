@@ -59,34 +59,45 @@ var isoAudioBrands = map[string]string{
 // serves every file under application/octet-stream — so a text or svg
 // type here can never become something an engine parses at the SPA
 // origin.
-func Classify(data []byte, filename string) (mimeType, kind string, err error) {
+func Classify(data []byte, filename string) (Classification, error) {
 	if len(data) == 0 {
-		return "", "", errors.New("attachment body is empty")
+		return Classification{}, errors.New("attachment body is empty")
 	}
 	if detected, imageErr := attachment.DetectDisplayImageMIME(data); imageErr == nil {
 		// A payload that IS an image but decodes to an unreasonable
 		// number of pixels is an error rather than a download: it would
 		// be handed to the same <img> a safe one is, and the failure has
 		// to reach the person who clicked rather than the renderer.
-		if err := attachment.ValidateDisplayImage(data, detected); err != nil {
-			return "", "", err
+		width, height, err := attachment.ValidateDisplayImage(data, detected)
+		if err != nil {
+			return Classification{}, err
 		}
-		return detected, KindImage, nil
+		return Classification{MimeType: detected, Kind: KindImage, Width: width, Height: height}, nil
 	}
 	if brands, ok := isoBrands(data); ok {
 		for _, brand := range brands {
 			if mimeType, ok := isoVideoBrands[brand]; ok {
-				return mimeType, KindVideo, nil
+				return Classification{MimeType: mimeType, Kind: KindVideo}, nil
 			}
 			if mimeType, ok := isoAudioBrands[brand]; ok {
-				return mimeType, KindAudio, nil
+				return Classification{MimeType: mimeType, Kind: KindAudio}, nil
 			}
 		}
 	}
 	if mimeType, kind, ok := sniffContainer(data); ok {
-		return mimeType, kind, nil
+		return Classification{MimeType: mimeType, Kind: kind}, nil
 	}
-	return fileMIME(filename), KindFile, nil
+	return Classification{MimeType: fileMIME(filename), Kind: KindFile}, nil
+}
+
+// Classification is what Classify learned from the bytes. Width and Height
+// are the declared pixel size of an image whose header Go can read, and
+// zero for every other kind and for svg, ico and avif.
+type Classification struct {
+	MimeType string
+	Kind     string
+	Width    int
+	Height   int
 }
 
 // sniffContainer covers the non-ISO media containers, leaning on the

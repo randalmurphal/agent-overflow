@@ -10,6 +10,7 @@
   import type { PathRef } from '../../types/models';
 
   let {
+    threadId,
     workspacePath,
     accentClass,
     badgeClass,
@@ -20,6 +21,9 @@
     pathRefs = [],
     streaming = false,
   }: {
+    /** The discussion thread: names the computer a local image in a
+     *  message is read from. */
+    threadId: string;
     workspacePath: string;
     /** Card border/background classes — human/agent/system/live-tail
      * each get a distinct treatment (see ChannelView's `messageAccentClass`). */
@@ -53,6 +57,7 @@
   </div>
   <ChatMarkdown
     source={content}
+    {threadId}
     {workspacePath}
     {pathRefs}
     {streaming}

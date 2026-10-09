@@ -2,6 +2,9 @@ package attachment
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"strings"
@@ -55,13 +58,47 @@ func TestDetectDisplayImageMIME(t *testing.T) {
 	}
 }
 
+func TestValidateDisplayImageReportsTheDeclaredSize(t *testing.T) {
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 6, 4))); err != nil {
+		t.Fatal(err)
+	}
+	width, height, err := ValidateDisplayImage(pngBuf.Bytes(), "image/png")
+	if err != nil {
+		t.Fatalf("png: %v", err)
+	}
+	if width != 6 || height != 4 {
+		t.Fatalf("size = %dx%d, want 6x4", width, height)
+	}
+}
+
 func TestValidateDisplayImageSkipsFormatsGoCannotDecode(t *testing.T) {
-	if err := ValidateDisplayImage([]byte("<svg></svg>"), "image/svg+xml"); err != nil {
+	width, height, err := ValidateDisplayImage([]byte("<svg></svg>"), "image/svg+xml")
+	if err != nil {
 		t.Fatalf("svg: %v", err)
 	}
-	// A PNG header declaring an absurd size trips the pixel budget.
-	huge := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01\x00\x00\x00\x01\x00\x00\x08\x06\x00\x00\x00")
-	if err := ValidateDisplayImage(huge, "image/png"); err == nil || !strings.Contains(err.Error(), "image/png") {
-		t.Fatalf("oversized png: err = %v, want pixel budget error naming the format", err)
+	if width != 0 || height != 0 {
+		t.Fatalf("svg size = %dx%d, want unknown (0x0)", width, height)
 	}
+	// A PNG header declaring an absurd size trips the pixel budget.
+	_, _, err = ValidateDisplayImage(hugePNGHeader(), "image/png")
+	if err == nil || !strings.Contains(err.Error(), "image/png") || !errors.Is(err, ErrPixelBudget) {
+		t.Fatalf("oversized png: err = %v, want ErrPixelBudget naming the format", err)
+	}
+}
+
+// hugePNGHeader is a well-formed PNG signature and IHDR declaring
+// 60000x60000 pixels, with the CRC the decoder verifies before it reads
+// the size.
+func hugePNGHeader() []byte {
+	ihdr := make([]byte, 0, 25)
+	ihdr = append(ihdr, 'I', 'H', 'D', 'R')
+	ihdr = binary.BigEndian.AppendUint32(ihdr, 60000)
+	ihdr = binary.BigEndian.AppendUint32(ihdr, 60000)
+	ihdr = append(ihdr, 8, 6, 0, 0, 0)
+
+	out := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(ihdr)-4))
+	out = append(out, ihdr...)
+	return binary.BigEndian.AppendUint32(out, crc32.ChecksumIEEE(ihdr))
 }

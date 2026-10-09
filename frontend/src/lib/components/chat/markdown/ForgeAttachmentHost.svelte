@@ -30,10 +30,14 @@
     acquireForgeAttachment,
     type ResolvedForgeAttachment,
   } from '../../../utils/forgeAttachmentCache';
+  import { rememberDecodedSize } from '../../../utils/mediaBlobCache';
 
   let { token }: { token: Tokens.Image } = $props();
 
-  const parsed = $derived(parseForgeAttachmentHref(token.href));
+  // Keyed on the href STRING: a re-lexed token with the same href is the
+  // same attachment, and must not restart the fetch.
+  const href = $derived(token.href);
+  const parsed = $derived(parseForgeAttachmentHref(href));
   const name = $derived(
     parsed ? forgeAttachmentName(parsed.pr.forge, parsed.href) || 'attachment' : 'attachment',
   );
@@ -43,13 +47,16 @@
       : null,
   );
 
-  let resolved = $state<ResolvedForgeAttachment | null>(null);
+  // Raw: the value is the cache's own object, shared by every mount, and
+  // `rememberDecodedSize` writes the decoded size INTO it for the next
+  // mount. A deep $state proxy would keep that write to itself.
+  let resolved = $state.raw<ResolvedForgeAttachment | null>(null);
   let error = $state('');
   let loading = $state(false);
   let decodeFailed = $state(false);
 
   $effect(() => {
-    const target = parsed;
+    const target = parseForgeAttachmentHref(href);
     if (!target) {
       resolved = null;
       error = '';
@@ -57,23 +64,29 @@
       return;
     }
     let disposed = false;
-    resolved = null;
     error = '';
     decodeFailed = false;
-    loading = true;
     const handle = acquireForgeAttachment(target.backend, target.pr, target.href);
-    void handle.value
-      .then((value) => {
-        if (disposed) return;
-        resolved = value;
-      })
-      .catch((cause: unknown) => {
-        if (disposed) return;
-        error = errString(cause);
-      })
-      .finally(() => {
-        if (!disposed) loading = false;
-      });
+    if (handle.settled) {
+      // Painted in this same frame: no placeholder, no height change.
+      resolved = handle.settled;
+      loading = false;
+    } else {
+      resolved = null;
+      loading = true;
+      void handle.value
+        .then((value) => {
+          if (disposed) return;
+          resolved = value;
+        })
+        .catch((cause: unknown) => {
+          if (disposed) return;
+          error = errString(cause);
+        })
+        .finally(() => {
+          if (!disposed) loading = false;
+        });
+    }
     return () => {
       disposed = true;
       // The cache owns the object URL and revokes it when the entry is
@@ -84,6 +97,12 @@
   });
 
   const alt = $derived(token.text || name);
+  const width = $derived(resolved && resolved.width > 0 ? resolved.width : undefined);
+  const height = $derived(resolved && resolved.height > 0 ? resolved.height : undefined);
+
+  function handleLoad(event: Event): void {
+    if (resolved) rememberDecodedSize(resolved, event.currentTarget as HTMLImageElement);
+  }
 
   function handleDecodeError(): void {
     decodeFailed = true;
@@ -123,14 +142,19 @@
   </span>
 {:else if resolved.kind === 'image'}
   <span data-streamdown-image class="group relative my-4 mx-auto block w-fit max-w-full">
+    <!-- In-memory bytes decode without a fetch, so lazy loading would only
+         defer the paint of a row the virtualizer has already decided to
+         show; the size attributes reserve the box before the decode. -->
     <img
       class="max-w-full rounded-lg"
       src={resolved.url}
       {alt}
       title={browserUrl ?? undefined}
-      loading="lazy"
+      {width}
+      {height}
       data-markdown-image-src={parsed?.href}
-      {...forgeImageMenuTag(token.href)}
+      {...forgeImageMenuTag(href)}
+      onload={handleLoad}
       onerror={handleDecodeError}
     />
   </span>

@@ -157,6 +157,7 @@
       <ChatMarkdown
         source={outputText}
         streaming={false}
+        threadId={item.threadId}
         workspacePath={paneWorkspacePath(pane)}
         {pathRefs}
       />

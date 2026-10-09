@@ -535,7 +535,7 @@
       {token.text ?? token.raw}
     {/snippet}
     {#snippet image({ token, src })}
-      <StreamdownImageHost {token} {src} />
+      <StreamdownImageHost {token} {src} backend={threadMachine(threadId, null)} />
     {/snippet}
   </Streamdown>
 {/snippet}
