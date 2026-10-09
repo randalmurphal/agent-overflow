@@ -3,7 +3,7 @@ import { render, waitFor } from '@testing-library/svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
 import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockLocalImage } from '../../../test/mocks/attachmentTransfer';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
@@ -326,10 +326,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
   });
 
   it('loads a local file image through the guarded backend image path', async () => {
-    setBindingMock('GetLocalImageData', async () => ({
-      data: 'iVBORw0KGgo=',
-      mimeType: 'image/png',
-    }));
+    mockLocalImage();
     const { container } = render(ChatMarkdown, {
       props: {
         source: '![diagram](file:///repo/docs/diagram.png)',
@@ -373,7 +370,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // surface with a workspace the src is a LOCAL PATH and loads through the
     // guarded backend read; the transport server is never asked for it.
     const calls: string[] = [];
-    setBindingMock('GetLocalImageData', async (path: string) => {
+    mockLocalImage((path: string) => {
       calls.push(path);
       throw new Error('load local image: read: no such file');
     });
@@ -397,10 +394,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // `![baseline](/tmp/shots/baseline.png)` is how an agent shows a
     // screenshot. The bytes come over the transport from the thread's
     // machine, so a page without `host` (a paired browser) still sees it.
-    setBindingMock('GetLocalImageData', async () => ({
-      data: 'iVBORw0KGgo=',
-      mimeType: 'image/png',
-    }));
+    mockLocalImage();
     await pairWithScopes(OBSERVE_SCOPES);
     const { container } = render(ChatMarkdown, {
       props: {

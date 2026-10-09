@@ -62,6 +62,7 @@ async function mountPanel(): Promise<HTMLElement> {
     target: host,
     props: {
       request: previewRequest(),
+      threadId: 'thread-1',
       customAnswer: '',
       submitSignal: 0,
       setCustomAnswerText: vi.fn(),

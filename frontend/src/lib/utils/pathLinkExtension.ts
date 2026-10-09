@@ -488,7 +488,7 @@ function markdownLocalResourceToken(
   const fileTarget = parseLocalFileHref(token.href, workspacePath);
   if (token.type === 'image') {
     // Every path shape, in every mode: the image host fetches the bytes
-    // from the thread's machine (GetLocalImageData), so a page with no
+    // from the thread's machine (GetLocalImage), so a page with no
     // host desktop still shows what the agent showed.
     const path = fileTarget?.path ?? pathShapedImageSrc(token.href, workspacePath);
     if (path === null) return token as GenericImageToken;

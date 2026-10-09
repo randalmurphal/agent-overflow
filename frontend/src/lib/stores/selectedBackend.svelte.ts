@@ -2,9 +2,9 @@
 //
 // Most RPCs resolve their backend from an entity they already name — a
 // thread id, a project id, a workflow item (transport/entityIndex.ts). The
-// 38 `selected` methods name none: a creation has no id yet, and several
+// `selected` methods name none: a creation has no id yet, and several
 // take a WORKSPACE PATH (UpdateThreadBranch, GetWorkspaceActivity,
-// GetLocalImageData, StartTerminal), which is not an entity at all because
+// GetLocalImage, StartTerminal), which is not an entity at all because
 // the same path names a different checkout on every machine.
 //
 // So the answer is the machine the person is LOOKING AT, in this order:

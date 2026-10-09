@@ -154,19 +154,20 @@ export function backendUrl(path: string, backend: BackendKey = HOME_BACKEND): st
 /**
  * Ticket-bearing attachment URLs stay on the computer that minted them.
  *
- * Three route shapes are admitted, and nothing else: `/attachments/upload`,
- * `/attachments/<thread>/<attachment>` for a message attachment, and
+ * Four route shapes are admitted, and nothing else: `/attachments/upload`,
+ * `/attachments/<thread>/<attachment>` for a message attachment,
  * `/attachments/forge/<id>` for a forge attachment the backend fetched with
- * the user's forge CLI. The forge shape matches the same two-segment arm as
- * a message attachment; it is named here so the admitted set is a stated
- * list rather than a coincidence of the pattern.
+ * the user's forge CLI, and `/attachments/image/<id>` for a local image a
+ * markdown body references by path. The forge and image shapes match the
+ * same two-segment arm as a message attachment; they are named here so the
+ * admitted set is a stated list rather than a coincidence of the pattern.
  */
 export function backendTransferUrl(path: string, backend: BackendKey = HOME_BACKEND): string {
   const parsed = new URL(path, 'https://attachment.invalid');
   if (!path.startsWith('/attachments/') || path.includes('\\')
     || parsed.origin !== 'https://attachment.invalid' || parsed.hash
     || parsed.pathname !== path.split('?')[0]
-    || !/^\/attachments\/(?:upload|(?:forge|[a-zA-Z0-9_-]+)\/[a-zA-Z0-9_-]+)$/.test(parsed.pathname)) {
+    || !/^\/attachments\/(?:upload|(?:forge|image|[a-zA-Z0-9_-]+)\/[a-zA-Z0-9_-]+)$/.test(parsed.pathname)) {
     throw new Error('Invalid attachment transfer URL.');
   }
   if (backend === HOME_BACKEND || storedBackendEndpoint(backend) !== '') return backendUrl(path, backend);

@@ -26,8 +26,15 @@ export type ForgeAttachmentKind = 'image' | 'video' | 'audio' | 'file';
 
 export interface ResolvedForgeAttachment extends MediaBytes, ImageSize {
   kind: ForgeAttachmentKind;
+  /** The original attachment's byte count, whichever bytes `blob` holds. */
   sizeBytes: number;
   filename: string;
+  /** The original image's pixel size; 0 when unknown and for other kinds. */
+  originalWidth: number;
+  originalHeight: number;
+  originalBytes: number;
+  /** False when `blob` is the attachment's own bytes. */
+  derived: boolean;
 }
 
 export type ForgeAttachmentHandle = MediaHandle<ResolvedForgeAttachment>;
@@ -65,12 +72,12 @@ async function loadForgeAttachment(
   href: string,
 ): Promise<ResolvedForgeAttachment> {
   const wire = prReferenceWire(pr);
-  let meta = await withBackendTarget(backend, () => FetchForgeAttachment(wire, href));
+  let meta = await withBackendTarget(backend, () => FetchForgeAttachment(wire, href, 0));
   let blob = await fetchTicketedBytes(backend, meta.url);
   if (blob === null) {
     // Spent ticket, or the backend's byte cache evicted the entry. Mint once
     // more; a second 404 is a real failure and surfaces as one.
-    meta = await withBackendTarget(backend, () => FetchForgeAttachment(wire, href));
+    meta = await withBackendTarget(backend, () => FetchForgeAttachment(wire, href, 0));
     blob = await fetchTicketedBytes(backend, meta.url);
     if (blob === null) {
       throw new Error('This attachment transfer is no longer available. Try again.');
@@ -90,6 +97,10 @@ async function loadForgeAttachment(
     blob: typed,
     width: meta.width,
     height: meta.height,
+    originalWidth: meta.originalWidth,
+    originalHeight: meta.originalHeight,
+    originalBytes: meta.sizeBytes || blob.size,
+    derived: meta.derived,
   };
 }
 

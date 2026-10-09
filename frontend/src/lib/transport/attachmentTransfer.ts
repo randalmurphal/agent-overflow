@@ -26,6 +26,7 @@ import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket } from '../sto
 import { backendCredentials, backendTransferUrl } from './homeEndpoint';
 import { requireEntityBackend, withBackendTarget } from './backends';
 import { resolveThreadBackend } from './entityIndex';
+import type { BackendKey } from './backendKey';
 import type { Attachment } from '../types/attachment';
 
 /**
@@ -78,7 +79,16 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
 export async function fetchAttachmentBytes(threadId: string, attachmentId: string): Promise<Blob> {
   const backend = requireEntityBackend(resolveThreadBackend(threadId));
   const url = await withBackendTarget(backend, () => MintAttachmentDownloadTicket(threadId, attachmentId));
-  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend) });
+  return fetchTicketedBytes(backend, url);
+}
+
+/**
+ * Spends one ticketed download URL that `backend` minted and returns the
+ * body. The ticket is single use, so the URL is fetched here once and never
+ * handed to an element that might request it again.
+ */
+export async function fetchTicketedBytes(backend: BackendKey, url: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend), signal });
   if (!response.ok) {
     throw new Error(await transferFailure(response, 'Could not load image'));
   }

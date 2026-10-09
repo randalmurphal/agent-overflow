@@ -36,6 +36,9 @@ function attachment(overrides: Record<string, unknown> = {}) {
     filename: 'shot.png',
     width: 0,
     height: 0,
+    originalWidth: 0,
+    originalHeight: 0,
+    derived: false,
     ...overrides,
   };
 }
@@ -149,5 +152,17 @@ describe('the forge attachment cache', () => {
     const resolved = await acquireForgeAttachment('gpu', PR, HREF).value;
     expect(resolved.width).toBe(640);
     expect(resolved.height).toBe(480);
+  });
+
+  it('asks for the original and carries what the backend said it served', async () => {
+    const rpc = setBindingMock('FetchForgeAttachment', async () => attachment({
+      width: 320, height: 240, originalWidth: 641, originalHeight: 480, sizeBytes: 5217, derived: true,
+    }));
+    stageBody('bytes');
+    const resolved = await acquireForgeAttachment('gpu', PR, HREF).value;
+    expect(rpc).toHaveBeenCalledWith(expect.anything(), HREF, 0);
+    expect(resolved).toMatchObject({
+      width: 320, height: 240, originalWidth: 641, originalHeight: 480, sizeBytes: 5217, originalBytes: 5217, derived: true,
+    });
   });
 });
