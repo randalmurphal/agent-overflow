@@ -52,12 +52,12 @@ func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string) (ForgeAtt
 	}
 	return ForgeAttachment{
 		URL:       url,
-		MimeType:  entry.MimeType,
-		Kind:      entry.Kind,
-		SizeBytes: int64(len(entry.Data)),
-		Filename:  entry.Filename,
-		Width:     entry.Width,
-		Height:    entry.Height,
+		MimeType:  entry.Value.MimeType,
+		Kind:      entry.Value.Kind,
+		SizeBytes: int64(len(entry.Value.Data)),
+		Filename:  entry.Value.Filename,
+		Width:     entry.Value.Width,
+		Height:    entry.Value.Height,
 	}, nil
 }
 
@@ -71,7 +71,7 @@ func (a *App) SaveForgeAttachment(pr gitops.PRReference, href string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return a.saveDownload(entry.Filename, entry.MimeType, entry.Data)
+	return a.saveDownload(entry.Value.Filename, entry.Value.MimeType, entry.Value.Data)
 }
 
 // resolveForgeAttachment is the one fetch path both bound methods use.
@@ -99,8 +99,7 @@ func (a *App) resolveForgeAttachment(pr gitops.PRReference, href string) (forgea
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}
-	return cache.Put(forgeattach.Entry{
-		Key:      key,
+	return cache.Put(key, forgeattach.Attachment{
 		Data:     data,
 		MimeType: classified.MimeType,
 		Kind:     classified.Kind,
@@ -131,11 +130,11 @@ func (t attachmentTransfer) OpenForgeAttachment(contentID string) (transport.For
 		return transport.ForgeAttachmentContent{}, fmt.Errorf("forge attachment %q is no longer cached", contentID)
 	}
 	return transport.ForgeAttachmentContent{
-		MimeType: entry.MimeType,
-		Kind:     entry.Kind,
-		Filename: entry.Filename,
+		MimeType: entry.Value.MimeType,
+		Kind:     entry.Value.Kind,
+		Filename: entry.Value.Filename,
 		ModTime:  entry.StoredAt,
-		Content:  nopCloserReader{bytes.NewReader(entry.Data)},
+		Content:  nopCloserReader{bytes.NewReader(entry.Value.Data)},
 	}, nil
 }
 
