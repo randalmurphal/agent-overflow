@@ -11,7 +11,7 @@ function reply(overrides: Record<string, unknown> = {}) {
 
 describe('the local image cache', () => {
   beforeEach(() => {
-    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob) => `blob:${blob.size}`);
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => `blob:${blob instanceof Blob ? blob.size : 0}`);
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
   });
 
