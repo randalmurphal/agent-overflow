@@ -18,21 +18,18 @@
   import UserMessage from './UserMessage.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { generatedImageRow } from '../../utils/generatedImageMeta';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
 
   let {
     pane,
     item,
     orphan = false,
-    onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
     pane: ThreadPane;
     item: Item;
     orphan?: boolean;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
@@ -96,7 +93,6 @@
     <UserMessage
       {pane}
       item={displayItem}
-      {onImageExpand}
       actions={userMessageActions}
     />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
@@ -129,7 +125,7 @@
   {:else if displayItem.kind === 'compaction'}
     <CompactionDivider {pane} item={displayItem} />
   {:else if isGeneratedImage}
-    <GeneratedImageMessage {pane} item={displayItem} {onImageExpand} />
+    <GeneratedImageMessage {pane} item={displayItem} />
   {:else if displayItem.kind === 'assistant_text' && Array.isArray(parseJsonObject(displayItem.meta)?.questions)}
     <RenderBoundary label="Agent questions" testId="async-question-card-error"><AsyncQuestionCard item={displayItem} workspacePath={pane.thread?.worktreePath || pane.thread?.workspacePath || ''} /></RenderBoundary>
   {:else}

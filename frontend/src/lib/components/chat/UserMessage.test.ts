@@ -20,6 +20,7 @@ import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../..
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
+import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 
 describe('<UserMessage>', () => {
   beforeEach(() => {
@@ -37,6 +38,7 @@ describe('<UserMessage>', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     resetThreadStatuses();
+    closeImageLightbox();
     delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
@@ -569,11 +571,11 @@ describe('<UserMessage>', () => {
     expect(queryByLabelText('Edit message and resend from here')).toBeNull();
   });
 
+  // No pane and no host callback: the agent pane and the digest render rows
+  // this way, and their images open the same app lightbox.
   it('renders image attachments from item metadata and expands them', async () => {
-    const onImageExpand = vi.fn();
     const { getByLabelText, getByText } = render(UserMessage, {
       props: {
-        onImageExpand,
         item: makeItem({
           kind: 'user_text',
           role: 'user',
@@ -598,12 +600,12 @@ describe('<UserMessage>', () => {
     await waitFor(() => expect(previewButton.querySelector('img')).not.toBeNull());
     const tileUrl = previewButton.querySelector('img')!.getAttribute('src');
     expect(tileUrl).toMatch(/^(blob:|data:image\/png;base64,)/);
+    expect(imageLightbox()).toBeNull();
     await fireEvent.click(previewButton);
-    expect(onImageExpand).toHaveBeenCalledTimes(1);
 
     // The lightbox opens on what the tile already paints; the original is
     // the dialog's to fetch.
-    const opened = onImageExpand.mock.calls[0]?.[0];
+    const opened = imageLightbox()!;
     expect(opened).toMatchObject({
       images: [{
         id: 'att-1',

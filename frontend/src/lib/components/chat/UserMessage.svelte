@@ -10,8 +10,8 @@
   import {
     createAttachmentPreviews,
     type AttachmentPreviewSource,
-    type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
+  import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
   import UserMessageEditor from './UserMessageEditor.svelte';
@@ -41,11 +41,10 @@
   interface Props {
     item: Item;
     pane?: ThreadPane;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     actions?: UserMessageActions;
   }
 
-  let { item, pane, onImageExpand, actions }: Props = $props();
+  let { item, pane, actions }: Props = $props();
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
@@ -165,9 +164,8 @@
   );
 
   function expandAttachment(id: string): void {
-    if (!onImageExpand) return;
     const expanded = attachmentPreviews.loadExpandedPreview(id);
-    if (expanded) onImageExpand(expanded);
+    if (expanded) openImageLightbox(expanded);
   }
 
   // Display-only short time. Purely cosmetic — the authoritative
@@ -305,7 +303,6 @@
           {pane}
           session={editSession}
           onCancel={cancelEdit}
-          {onImageExpand}
         />
       {:else}
         {@render readOnlyBody()}

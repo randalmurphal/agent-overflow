@@ -39,7 +39,6 @@
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import TimelineNodeView from './TimelineNodeView.svelte';
-  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import { resolveVisibleTimelineNode } from './timelineScroll';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
@@ -122,12 +121,10 @@
 
   let {
     pane,
-    onImageExpand,
     userMessageActions,
     pendingCutAfter = null,
   }: {
     pane: ThreadPane;
-    onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     /**
      * Display position of a revert that is actually in flight. Every row
@@ -1122,7 +1119,6 @@
                     {pane}
                     {node}
                     depth={1}
-                    {onImageExpand}
                     {userMessageActions}
                     codexSubagentReceiverLabels={rows.codexReceiverLabels}
                   />

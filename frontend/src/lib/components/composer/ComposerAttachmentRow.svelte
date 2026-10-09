@@ -8,14 +8,13 @@
   import {
     createAttachmentPreviews,
     type AttachmentPreviewCache,
-    type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
+  import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     attachments: Attachment[];
     onRemove: (id: string) => void;
-    onExpand?: (preview: ExpandedImagePreview) => void;
     dragActive?: boolean;
     /**
      * Blob-URL owner. Absent, this row owns them and revokes on destroy —
@@ -27,7 +26,7 @@
     cache?: AttachmentPreviewCache;
   }
 
-  let { attachments, onRemove, onExpand, dragActive = false, cache }: Props = $props();
+  let { attachments, onRemove, dragActive = false, cache }: Props = $props();
   // `#N` numbers IMAGES, matching the `[Image #N]` marker in the textarea —
   // a file carries no badge and no number, so the array index would label the
   // second image `#3` as soon as a file sat before it. Projected once rather
@@ -48,9 +47,8 @@
   );
 
   function expandAttachment(id: string): void {
-    if (!onExpand) return;
     const expanded = attachmentPreviews.loadExpandedPreview(id);
-    if (expanded) onExpand(expanded);
+    if (expanded) openImageLightbox(expanded);
   }
 </script>
 

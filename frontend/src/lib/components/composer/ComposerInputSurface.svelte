@@ -44,7 +44,6 @@
     attachmentCache,
     uploadThreadId,
     ensureUploadThreadId,
-    onImageExpand,
   }: ComposerInputSurfaceProps = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
@@ -362,7 +361,6 @@
   <ComposerAttachmentRow
     attachments={draft.attachments}
     onRemove={imagePlaceholders.removeAttachmentFromComposer}
-    onExpand={onImageExpand}
     dragActive={uploads.dragActive}
     cache={attachmentCache}
   />

@@ -6,6 +6,8 @@ import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import GeneratedImageMessage from './GeneratedImageMessage.svelte';
 import type { Item } from '../../types/models';
+import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
+import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
 const attachment = {
   id: 'att-1',
@@ -45,6 +47,7 @@ describe('<GeneratedImageMessage>', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    closeImageLightbox();
   });
 
   it('renders the picture through the ordinary attachment preview path', async () => {
@@ -89,19 +92,23 @@ describe('<GeneratedImageMessage>', () => {
     expect(error.querySelector('img')).toBeNull();
   });
 
-  it('opens the lightbox through the pane-owned preview loader', async () => {
-    const onImageExpand = vi.fn();
+  it('opens the app lightbox on the picture it painted', async () => {
     const { getByRole } = render(GeneratedImageMessage, {
-      props: { pane: makePane(), item: generatedItem(), onImageExpand },
+      props: { pane: makePane(), item: generatedItem() },
     });
+    const tile = getByRole('button', { name: 'Preview render.png' });
+    await waitFor(() => expect(tile.querySelector('img')).not.toBeNull());
 
-    await fireEvent.click(getByRole('button', { name: 'Preview render.png' }));
-    await waitFor(() => {
-      expect(onImageExpand).toHaveBeenCalledTimes(1);
-    });
-    expect(onImageExpand.mock.calls[0][0]).toMatchObject({
+    await fireEvent.click(tile);
+    expect(imageLightbox()).toMatchObject({
       index: 0,
-      images: [expect.objectContaining({ id: 'att-1', mimeType: 'image/png' })],
+      images: [{
+        id: 'att-1',
+        mimeType: 'image/png',
+        url: tile.querySelector('img')!.getAttribute('src'),
+        originalBytes: 4096,
+        menuTag: attachmentImageMenuTag(attachment),
+      }],
     });
   });
 

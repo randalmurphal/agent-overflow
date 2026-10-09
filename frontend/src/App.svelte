@@ -111,6 +111,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
   import ImageMenuHost from './lib/components/chat/ImageMenuHost.svelte';
+  import ExpandedImageDialog from './lib/components/chat/ExpandedImageDialog.svelte';
+  import { closeImageLightbox, imageLightbox } from './lib/stores/imageLightbox.svelte';
   import FootnotePopoverHost from './lib/components/chat/FootnotePopoverHost.svelte';
   import ExternalLinkContextHost from './lib/components/shared/ExternalLinkContextHost.svelte';
   import {
@@ -205,6 +207,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   );
   let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
   let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
+  let lightbox = $derived(imageLightbox());
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
@@ -722,3 +725,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <ImageMenuHost />
 <FootnotePopoverHost />
 <ExternalLinkContextHost />
+<!-- The one image lightbox; any image opens it through stores/imageLightbox. -->
+{#if lightbox}
+  <ExpandedImageDialog preview={lightbox} onClose={closeImageLightbox} />
+{/if}

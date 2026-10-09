@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
+import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 import type { Attachment } from '../../types/attachment';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
@@ -34,10 +35,31 @@ function makeFile(id: string, filename = `${id}.pdf`, size = 2048): Attachment {
 describe('<ComposerAttachmentRow>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    // Inline grid loads thumbnails; lightbox modal reloads full-size on click.
-    // Stub both so any test path produces a usable preview.
+    // Inline grid loads thumbnails; a lightbox item's `original` fetches the
+    // bytes. Stub both so any test path produces a usable preview.
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     mockAttachmentDownload();
+  });
+
+  afterEach(() => {
+    closeImageLightbox();
+  });
+
+  it('opens the app lightbox on a thumbnail, among the row images only', async () => {
+    const { getByLabelText } = render(ComposerAttachmentRow, {
+      props: {
+        attachments: [makeAttachment('a1', 'hero.png'), makeFile('f1'), makeAttachment('a2', 'two.png')],
+        onRemove: vi.fn(),
+      },
+    });
+    const previewButton = getByLabelText('Preview two.png');
+    await waitFor(() => expect(previewButton.querySelector('img')).not.toBeNull());
+
+    await fireEvent.click(previewButton);
+    const opened = imageLightbox();
+    expect(opened?.index).toBe(1);
+    expect(opened?.images.map((image) => image.id)).toEqual(['a1', 'a2']);
+    expect(opened?.images[1].url).toBe(previewButton.querySelector('img')!.getAttribute('src'));
   });
 
   it('renders nothing when empty and not dragging', () => {
