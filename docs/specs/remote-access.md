@@ -3390,9 +3390,24 @@ frame.**
   404 a spent ticket does. Response type is narrowed by kind: image,
   video and audio go out under the signature-derived type, every other
   payload as `application/octet-stream` with an attachment disposition,
-  so nothing a comment linked can render at the SPA origin.
-  `SaveForgeAttachment` writes the same bytes to the host's Downloads
-  directory instead.
+  so nothing a comment linked can render at the SPA origin. An SVG
+  image also carries an attachment disposition, because it is a
+  document that can run script. A positive `maxWidth` serves an image
+  as a display-size derivative (`attachment.Derive`, held in the same
+  LRU under the original's id and the tier). `SaveForgeAttachment`
+  writes the original bytes to the host's Downloads directory instead.
+
+  Local images rendered markdown references by path ride it too:
+  `GET /attachments/image/{contentID}`
+  (`internal/transport/localimageroutes.go`), a fourth ticket book with
+  the same TTL and cap. `GetLocalImage` (files:read, route `selected`)
+  gates the path, validates the bytes as a displayable image, and holds
+  either the file's identity (path, size, mtime) or a display-size
+  derivative in a bounded LRU (`internal/localimage`, 192 MiB, 30 min).
+  An original is re-opened per request and answers 404 when its size or
+  mtime changed since it was resolved. The response carries the sniffed
+  image type, and an SVG an attachment disposition. `SaveLocalImage`
+  copies the original file to the host's Downloads directory.
 
 **Initial wire budgets** — starting targets, revised by measurement,
 never by feel; a harness scenario counts actual bytes on the wire and

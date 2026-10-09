@@ -619,6 +619,10 @@ type Server struct {
 	// ticket minted for a forge cache entry admit different things, and
 	// one book would mean a subject minted for either decoding at both.
 	forgeAttachmentTickets *ticketBook
+	// localImageTickets is a fourth, for the same reason: a resolved
+	// local image's content id is not a forge cache id or a thread
+	// attachment, and no ticket minted for one may decode at another.
+	localImageTickets *ticketBook
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -688,6 +692,7 @@ func New(cfg Config) (*Server, error) {
 		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		localImageTickets:         newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 
 		bindTCP: listenTCPSharing,
 	}
@@ -1076,6 +1081,11 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(ForgeAttachmentDownloadPath, withShellCORS(http.MethodGet,
 		s.loopbackHostGuard(s.handleForgeAttachmentDownload)))
 	mux.HandleFunc(ForgeAttachmentDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	// The local-image read, same admission, same subtree, and the same
+	// literal-segment precedence over the download route.
+	mux.HandleFunc(LocalImageDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleLocalImageDownload)))
+	mux.HandleFunc(LocalImageDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no

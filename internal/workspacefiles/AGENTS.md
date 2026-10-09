@@ -13,3 +13,6 @@ follow directory symlinks to extend coverage. Surface root and enumeration
 errors that invalidate the index.
 
 Transport and frontend filtering belong to callers.
+
+`read.go` is the one bounded reader for a single workspace file (review
+diffs, local images): every check runs on the open descriptor.

@@ -69,7 +69,7 @@ export {
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,
-    LocalImageData,
+    LocalImage,
     MCPAuthInitResult,
     ManagedProviderAccount,
     NewThreadDefaultsUpdate,

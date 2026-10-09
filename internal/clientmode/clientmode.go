@@ -442,9 +442,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.carrier.CarryUpgrade(w, r)
 }
 
-// attachmentPrefix is the subtree both of the upstream's attachment byte
-// routes live under, and the only pattern this stub needs for them: the
-// two thread-attachment routes and the forge-media read.
+// attachmentPrefix is the subtree every one of the upstream's attachment
+// byte routes lives under, and the only pattern this stub needs for them:
+// the two thread-attachment routes, the forge-media read and the local
+// image read.
 //
 // A literal rather than a slice of the transport's own constants, because
 // the surfaces gate reads registrations out of the source and a selector

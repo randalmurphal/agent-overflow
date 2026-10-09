@@ -25,6 +25,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/localimage"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/network"
@@ -304,6 +305,11 @@ type App struct {
 	// never opens a review pane allocates nothing.
 	forgeAttachOnce  sync.Once
 	forgeAttachCache *forgeattach.Cache
+	// localImageService resolves markdown-referenced image files and holds
+	// them for the same byte route family (app_local_images.go). Lazy for
+	// the reason forgeAttachCache is.
+	localImageOnce    sync.Once
+	localImageService *localimage.Service
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)

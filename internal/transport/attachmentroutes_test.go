@@ -96,6 +96,29 @@ func (s *stubTransfer) OpenForgeAttachment(contentID string) (ForgeAttachmentCon
 	}, nil
 }
 
+// OpenLocalImage answers the local-image half of the seam.
+func (s *stubTransfer) OpenLocalImage(contentID string) (LocalImageContent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opened = append(s.opened, "image/"+contentID)
+	if s.openErr != nil {
+		return LocalImageContent{}, s.openErr
+	}
+	mime := s.mime
+	if mime == "" {
+		mime = "image/png"
+	}
+	modTime := s.modTime
+	if modTime.IsZero() {
+		modTime = time.Unix(1_700_000_000, 0)
+	}
+	return LocalImageContent{
+		MimeType: mime,
+		ModTime:  modTime,
+		Content:  nopSeekCloser{bytes.NewReader(s.content)},
+	}, nil
+}
+
 func (s *stubTransfer) StoreAttachment(req AttachmentUpload) (json.RawMessage, error) {
 	// Drain OUTSIDE the lock: the route's cap is enforced during this
 	// read, and holding a mutex across it would say something untrue

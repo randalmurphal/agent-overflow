@@ -153,7 +153,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                       // main.App.GetErrorLogLines
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                          // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                           // main.App.GetKeybindings
-	{Name: "GetLocalImageData", ID: 3247514443, Scope: "files:read", Route: "selected"},                                       // main.App.GetLocalImageData
+	{Name: "GetLocalImage", ID: 1709188995, Scope: "files:read", Route: "selected"},                                           // main.App.GetLocalImage
 	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write", Route: "home"},                                      // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate", Route: "workspace"},                                  // main.App.GetMergeConflictFile
 	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate", Route: "selected"},                               // main.App.GetModelsForProvider
@@ -376,6 +376,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SaveAttachment", ID: 2182723789, Scope: "attachments:write", Route: "thread"},                                     // main.App.SaveAttachment
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                            // main.App.SaveDraft
 	{Name: "SaveForgeAttachment", ID: 2960563266, Scope: "git:operate", Route: "selected"},                                    // main.App.SaveForgeAttachment
+	{Name: "SaveLocalImage", ID: 1040176720, Scope: "files:read", Route: "selected"},                                          // main.App.SaveLocalImage
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected"},                                         // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host", Route: "thread"},                                               // main.App.SavePayloadToFile
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread"},                                       // main.App.SearchThreadItems

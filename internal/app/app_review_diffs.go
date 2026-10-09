@@ -2,18 +2,15 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/workspacefiles"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -495,55 +492,11 @@ func capContent(action, path, content string, maxBytes int64) (string, bool, err
 }
 
 // readWorkspaceFile reads a workspace file that a coding agent may be
-// mutating concurrently. All checks run on the open descriptor —
-// O_NONBLOCK keeps the open itself from hanging if the path is a FIFO,
-// fstat classifies what was actually opened (a pre-open stat could
-// pass a file that is swapped before the read), and the bounded read
-// caps allocation even when the file grows after the fstat. maxBytes
-// <= 0 means unbounded (the type check still applies).
+// mutating concurrently (workspacefiles.ReadRegular). maxBytes <= 0 means
+// unbounded; the regular-file check still applies.
 func readWorkspaceFile(path string, maxBytes int64) (string, error) {
-	data, err := readWorkspaceFileBytes(path, maxBytes)
+	data, err := workspacefiles.ReadRegular(path, maxBytes)
 	return string(data), err
-}
-
-// Sentinels a caller matches with errors.Is to name a refusal to a person;
-// the os errors (fs.ErrNotExist, fs.ErrPermission) pass through unwrapped.
-var (
-	errNotRegularFile = errors.New("not a regular file")
-	errFileTooLarge   = errors.New("file is too large")
-)
-
-func readWorkspaceFileBytes(path string, maxBytes int64) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errNotRegularFile
-	}
-	if maxBytes <= 0 {
-		data, err := io.ReadAll(f)
-		if err != nil {
-			return nil, err
-		}
-		return data, nil
-	}
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%w: exceeds %d bytes", errFileTooLarge, maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("exceeds %d bytes", maxBytes)
-	}
-	return data, nil
 }
 
 // splitContentLines splits file content into lines the way diff line
