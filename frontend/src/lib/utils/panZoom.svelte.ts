@@ -70,7 +70,9 @@ export class PanZoom {
   /** Centers `content` in the canvas at the largest scale that shows all of it. */
   fit(content: ContentSize): void {
     const rect = this.canvasRect();
-    if (!rect || content.width <= 0 || content.height <= 0) return;
+    // A canvas with no size yet (hidden, or measured before layout) has no
+    // fit; the next fit, from the resize observer, will.
+    if (!rect || rect.width <= 0 || rect.height <= 0 || content.width <= 0 || content.height <= 0) return;
     const scale = Math.min(
       rect.width / content.width,
       rect.height / content.height,
@@ -83,7 +85,7 @@ export class PanZoom {
   /** The scale `fit()` would choose now; NaN when the canvas is unknown. */
   fitScale(content: ContentSize): number {
     const rect = this.canvasRect();
-    if (!rect || content.width <= 0 || content.height <= 0) return NaN;
+    if (!rect || rect.width <= 0 || rect.height <= 0 || content.width <= 0 || content.height <= 0) return NaN;
     return Math.min(rect.width / content.width, rect.height / content.height, this.options.fitMaxScale);
   }
 

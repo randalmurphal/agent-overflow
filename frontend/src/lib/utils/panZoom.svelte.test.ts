@@ -72,6 +72,12 @@ describe('PanZoom fit', () => {
     sized.fit({ width: 0, height: 10 });
     expect(sized.scale).toBe(1);
     expect(Number.isNaN(sized.fitScale({ width: 0, height: 10 }))).toBe(true);
+    // A canvas that has not been laid out yet must not fit to a zero scale.
+    const flat = canvas();
+    flat.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
+    const unlaid = viewer(flat);
+    unlaid.fit({ width: 10, height: 10 });
+    expect(unlaid.scale).toBe(1);
   });
 });
 
