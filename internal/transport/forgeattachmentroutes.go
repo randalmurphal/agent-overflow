@@ -132,7 +132,7 @@ func (s *Server) handleForgeAttachmentDownload(w http.ResponseWriter, r *http.Re
 		default:
 			// NEVER the payload's own type. This is the SPA origin, and the
 			// only safe answer for bytes nothing painted is an opaque
-			// download — a text/html or image/svg+xml here would be a
+			// download: a text/html or image/svg+xml here would be a
 			// document executing where the bundle's code runs.
 			h.Set("Content-Type", "application/octet-stream")
 			h.Set("Content-Disposition", attachmentDisposition(content.Filename))
