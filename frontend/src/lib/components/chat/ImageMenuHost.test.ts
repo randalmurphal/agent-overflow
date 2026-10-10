@@ -329,7 +329,10 @@ describe('<ImageMenuHost>', () => {
       expect(canSaveMenuImage).toHaveBeenCalledWith(LOCAL);
     });
 
-    it('opens on the image the timeline paints and on its lightbox picture', async () => {
+    // HOME is the empty key: the attribute is present and empty, which the
+    // spread must write and the tag must read back as a computer.
+    it.each([['gpu'], ['']])('opens on the image the timeline paints and on its lightbox picture (backend %j)', async (backend) => {
+      const expected = { ...LOCAL, backend };
       vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-image');
       vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
       mockLocalImage(() => ({ mimeType: 'image/png', width: 400, height: 300 }));
@@ -338,7 +341,7 @@ describe('<ImageMenuHost>', () => {
         props: {
           token: { type: 'image', raw: `![diagram](${SOURCE})`, href: LOCAL_HREF, title: null, text: 'diagram', tokens: [] },
           src: LOCAL_HREF,
-          backend: 'gpu',
+          backend,
         },
       });
       __reportImageBoxForTest(800);
@@ -348,7 +351,7 @@ describe('<ImageMenuHost>', () => {
       await rightClick(painted);
       expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
       item('Copy Path').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(copyLocalImagePath).toHaveBeenCalledWith(LOCAL);
+      expect(copyLocalImagePath).toHaveBeenCalledWith(expected);
       await tick();
 
       await fireEvent.click(painted);
@@ -358,7 +361,7 @@ describe('<ImageMenuHost>', () => {
       await rightClick(view.getByRole('img', { name: 'diagram.png' }));
       expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
       item('Copy Markdown').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      expect(copyLocalImageMarkdown).toHaveBeenCalledWith(LOCAL);
+      expect(copyLocalImageMarkdown).toHaveBeenCalledWith(expected);
     });
   });
 
