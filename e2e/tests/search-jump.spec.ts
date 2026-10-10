@@ -12,6 +12,7 @@
 // gone. Unit coverage of the jump session: timelineRestoreJump.svelte.test.ts.
 import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
+import { waitForWebFonts } from '../src/scroll.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -201,6 +202,7 @@ test.describe('agent transcripts', () => {
     await scroller.hover();
     await page.mouse.wheel(0, -2500);
     await page.mouse.wheel(0, -1337);
+    await waitForWebFonts(page);
     await settled(scroller);
     const left = await readingPosition(scroller);
     expect(left).not.toBeNull();

@@ -8,7 +8,7 @@ import {
 import { gzipSync } from 'node:zlib';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
-import { waitForScrollSettle } from '../src/scroll.js';
+import { waitForScrollSettle, waitForWebFonts } from '../src/scroll.js';
 
 const THREAD_TITLE = 'Delayed history presentation';
 const SEEDED_TURNS = 260;
@@ -223,6 +223,7 @@ async function runCollision(
     // settling after scrollTop first reaches zero. The collision starts only
     // after that reader gesture is genuinely over; otherwise its residual
     // motion is (correctly) indistinguishable from anchor drift.
+    await waitForWebFonts(page);
     await waitForScrollSettle(page.getByTestId('message-timeline-scroll'));
     const spinner = button.locator('.animate-spin');
     await expect(spinner).toBeVisible();
