@@ -10,6 +10,7 @@ import (
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 )
 
 // headlessProfile is one canonical workspace's Chromium: its own process,
@@ -68,7 +69,7 @@ func (b *launchedBrowser) close() error {
 // some site data only on the way out: cookies are committed in batches every
 // thirty seconds, so a kill alone loses a login made just before the profile
 // closed. The connection ends first, so nothing the exit reports reaches
-// dispatchEvent. An ephemeral profile's directory is removed next, so its
+// the event handlers. An ephemeral profile's directory is removed next, so its
 // Chromium is only killed.
 func (p *headlessProfile) closeBrowser(b *launchedBrowser) error {
 	if p.ephemeralRoot == "" && b.process != nil {
@@ -100,8 +101,8 @@ func (p *headlessProfile) NewPage(_ context.Context, hooks pageHooks) (pageDrive
 	return driver, nil
 }
 
-// AttachPage adopts a page Chromium opened by itself — a popup, reported by
-// dispatchEvent and already bound to this profile. Unlike the launcher-hosted
+// AttachPage adopts a page Chromium opened by itself: a popup, reported by
+// its target events and already bound to this profile. Unlike the launcher-hosted
 // engine, this one CAN report popups, because CDP surfaces every target.
 func (p *headlessProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
 	browserCtx, ok := p.browser()
@@ -140,7 +141,9 @@ func (p *headlessProfile) CancelDownload(id string) {
 	if !ok {
 		return
 	}
-	_ = cdpbrowser.CancelDownload(id).Do(browserCommandContext(browserCtx))
+	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
+		p.engine.logf("browser: profile %s: cancel download %s: %v", p.handle, id, err)
+	}
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser
@@ -275,8 +278,10 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	// NoModifyURL: the DevTools line is already the browser websocket URL.
 	// chromedp's default would resolve its host again, or query
 	// /json/version for a URL without a /devtools/browser/ path.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
+		p.engine.logf("browser: chromedp: "+format, args...)
+	}))
 	launched := &launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: allocCancel, process: process}
 
 	// chromedp bounds the handshake with nothing but the dial's own
@@ -295,11 +300,10 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	return launched, nil
 }
 
-// connect dials the launched browser with this profile's event listener,
+// connect dials the launched browser with this profile's event handlers,
 // pins its downloads and installs the workspace's navigation policy.
 func (p *headlessProfile) connect(browserCtx context.Context) error {
-	listen := func(ev any) { p.dispatchEvent(browserCtx, ev) }
-	if err := dialCDPBrowser(browserCtx, listen, p.engine.logf); err != nil {
+	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(browserCtx) }); err != nil {
 		return p.launchFailed(err)
 	}
 	// Downloads land ONLY in the AO artifact directory, never the operator's
@@ -308,17 +312,16 @@ func (p *headlessProfile) connect(browserCtx context.Context) error {
 	// the handle downloadProgress carries and the name downloads.go renames
 	// from. Events are what make Browser.downloadWillBegin/downloadProgress
 	// arrive at all.
-	if err := cdpbrowser.SetDownloadBehavior(cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName).
-		WithDownloadPath(p.downloadDir).
-		WithEventsEnabled(true).
-		Do(browserCommandContext(browserCtx)); err != nil {
+	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.SetDownloadBehavior, cdpbrowser.SetDownloadBehaviorParams{
+		Behavior: cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, DownloadPath: p.downloadDir, EventsEnabled: new(true),
+	}); err != nil {
 		return fmt.Errorf("browser: pin downloads to %s: %w", p.downloadDir, err)
 	}
 	// Chromium runs a popup before the Manager can adopt it, and a
 	// noopener popup's renderer cannot be held for AttachPage, so the
 	// policy is enabled browser-wide as well as on each page. A page's
 	// requests pass both.
-	if err := fetch.Enable().WithPatterns(navigationPolicyPatterns).Do(browserCommandContext(browserCtx)); err != nil {
+	if _, err := chromedp.CallBrowser(browserCtx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
 		return fmt.Errorf("browser: install the workspace navigation policy: %w", err)
 	}
 	return nil
@@ -441,62 +444,176 @@ func (p *headlessProfile) closeTarget(handle string) {
 		return
 	}
 	p.engine.unbindPage(handle)
-	if err := target.CloseTarget(target.ID(handle)).Do(browserCommandContext(browserCtx)); err != nil {
+	if _, err := chromedp.CallBrowser(browserCtx, target.CloseTarget, target.CloseTargetParams{TargetID: target.ID(handle)}); err != nil {
 		p.engine.logf("browser: close discarded page %s: %v", handle, err)
 	}
 }
 
-// dispatchEvent translates the CDP stream of the browser connected on
-// browserCtx into the seam's vocabulary, and answers the requests the
-// workspace's navigation policy paused on it.
+// subscribe connects the CDP events of the browser connected on browserCtx
+// to the seam, and answers the requests the workspace's navigation policy
+// paused on it.
 //
-// A page's handle IS its CDP target id here — there is no second identity to
-// re-key onto, unlike the launcher-hosted engine — so the engine's whole
+// A page's handle IS its CDP target id here (there is no second identity to
+// re-key onto, unlike the launcher-hosted engine), so the engine's whole
 // bookkeeping is which profile owns which target. A target this engine never
 // bound is dropped rather than reported under a handle nobody owns.
-func (p *headlessProfile) dispatchEvent(browserCtx context.Context, ev any) {
-	if cdpDownloadEvent(ev, p.engine.events, p.CancelDownload) {
+func (p *headlessProfile) subscribe(browserCtx context.Context) error {
+	logf := p.engine.logf
+	if err := newDownloadTracker(p.engine.events, p.CancelDownload).subscribe(browserCtx, logf); err != nil {
+		return err
+	}
+	session := chromedp.FromContext(browserCtx).Browser
+	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
+		answerPausedRequest(browserCtx, session, event, p.allow)
+	}); err != nil {
+		return err
+	}
+	targets := newHeadlessTargets(p)
+	if err := onBrowserEvent(browserCtx, target.TargetCreated, logf, targets.created); err != nil {
+		return err
+	}
+	if err := onBrowserEvent(browserCtx, target.TargetInfoChanged, logf, targets.infoChanged); err != nil {
+		return err
+	}
+	return onBrowserEvent(browserCtx, target.TargetDestroyed, logf, targets.destroyed)
+}
+
+// headlessTargets handles the target events of one browser connection.
+//
+// targetCreated, targetInfoChanged and targetDestroyed arrive on three
+// subscriptions, so a target id is in one of these states: known (created
+// handled, destroyed not), gone (destroyed handled, whether or not created
+// was), or info held (an info change handled before created: the newest is
+// kept in heldInfo). A created for a gone target neither binds nor reports
+// it: a popup is never reported after it is gone. A created that finds held
+// info reports the popup with that newer info, or delivers it as an info
+// change for a page the Manager created and bound. An info change for a gone
+// target is dropped.
+//
+// known holds every target the browser has, popup or not. The browser's
+// live targets bound it, and it goes with the connection. gone is kept to
+// absorb a gone target's late created and info changes, and it and heldInfo
+// are bounded by orderSlack.
+//
+// Binding and unbinding happen under mu, so a popup cannot be bound after
+// the destroyed handler has looked for it. PageInfoChanged is delivered
+// outside mu but under deliver, taken before mu is released, so the Manager
+// sees info changes in the order mu handled them: a held info delivered by
+// created is never overtaken by a newer change handled after it.
+type headlessTargets struct {
+	profile *headlessProfile
+
+	mu       sync.Mutex
+	known    map[target.ID]struct{}
+	gone     *boundedMap[target.ID, struct{}]
+	heldInfo *boundedMap[target.ID, *target.Info]
+
+	deliver sync.Mutex
+}
+
+func newHeadlessTargets(p *headlessProfile) *headlessTargets {
+	return &headlessTargets{
+		profile:  p,
+		known:    make(map[target.ID]struct{}),
+		gone:     newBoundedMap[target.ID, struct{}](orderSlack),
+		heldInfo: newBoundedMap[target.ID, *target.Info](orderSlack),
+	}
+}
+
+func (h *headlessTargets) created(event target.EventTargetCreated) {
+	info := event.TargetInfo
+	if info == nil {
 		return
 	}
-	switch event := ev.(type) {
-	case *fetch.EventRequestPaused:
-		answerPausedRequest(browserCtx, browserCommandContext, event, p.allow)
-	case *target.EventTargetCreated:
-		info := event.TargetInfo
-		// An opener is what makes a target a POPUP: every page the Manager
-		// asked for is created without one, and the workers, iframes and
-		// service workers Chromium also reports are not pages at all.
-		if info == nil || info.Type != "page" || info.OpenerID == "" {
-			return
-		}
-		p.engine.bindPage(string(info.TargetID), p)
-		// Off the CDP listener goroutine, as the WebKit engines report
-		// popups. chromedp runs browser listeners inline on the goroutine
-		// that reads this browser's connection, under its listeners mutex,
-		// and the Manager adopts a popup through AttachPage, whose CDP
-		// replies that goroutine delivers. Inline, it would wait on itself.
-		go p.engine.events.PopupOpened(enginePopup{
-			Profile: p.handle, Opener: string(info.OpenerID), Handle: string(info.TargetID),
-			URL: info.URL, Title: info.Title,
-		})
-	case *target.EventTargetInfoChanged:
-		info := event.TargetInfo
-		if info == nil || info.Type != "page" {
-			return
-		}
-		if _, known := p.engine.profileForPage(string(info.TargetID)); !known {
-			return
-		}
-		p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title)
-	case *target.EventTargetDestroyed:
-		handle := string(event.TargetID)
-		if !p.engine.unbindPage(handle) {
-			return
-		}
-		// Off the CDP listener goroutine for the same reason as the popup
-		// above, and as the hosted engine retires a page: PageClosed is the
-		// Manager's page teardown, which on the workspace's last page
-		// disposes this profile and blocks until Chromium is reaped.
-		go p.engine.events.PageClosed(handle)
+	h.mu.Lock()
+	if _, gone := h.gone.get(info.TargetID); gone {
+		h.mu.Unlock()
+		return
 	}
+	h.known[info.TargetID] = struct{}{}
+	url, title := info.URL, info.Title
+	newer, held := h.heldInfo.take(info.TargetID)
+	if held {
+		url, title = newer.URL, newer.Title
+	}
+	p := h.profile
+	handle := string(info.TargetID)
+	// An opener is what makes a target a POPUP: every page the Manager
+	// asked for is created without one, and the workers, iframes and
+	// service workers Chromium also reports are not pages at all.
+	if info.Type != "page" || info.OpenerID == "" {
+		// A page the Manager created is bound before its events arrive, so
+		// an info change held for it is delivered now.
+		if _, bound := p.engine.profileForPage(handle); !held || !bound {
+			h.mu.Unlock()
+			return
+		}
+		h.deliver.Lock()
+		h.mu.Unlock()
+		defer h.deliver.Unlock()
+		p.engine.events.PageInfoChanged(handle, url, title)
+		return
+	}
+	defer h.mu.Unlock()
+	p.engine.bindPage(handle, p)
+	// On its own goroutine, as the WebKit engines report popups: the
+	// Manager adopts a popup through AttachPage, a CDP round trip that must
+	// not hold the target events queued behind it.
+	go p.engine.events.PopupOpened(enginePopup{
+		Profile: p.handle, Opener: string(info.OpenerID), Handle: string(info.TargetID),
+		URL: url, Title: title,
+	})
+}
+
+func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
+	info := event.TargetInfo
+	if info == nil || info.Type != "page" {
+		return
+	}
+	h.mu.Lock()
+	_, known := h.known[info.TargetID]
+	if !known {
+		if _, gone := h.gone.get(info.TargetID); !gone {
+			h.heldInfo.put(info.TargetID, info)
+		}
+		h.mu.Unlock()
+		return
+	}
+	p := h.profile
+	if _, bound := p.engine.profileForPage(string(info.TargetID)); !bound {
+		h.mu.Unlock()
+		return
+	}
+	h.deliver.Lock()
+	h.mu.Unlock()
+	defer h.deliver.Unlock()
+	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title)
+}
+
+func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
+	h.mu.Lock()
+	delete(h.known, event.TargetID)
+	h.heldInfo.delete(event.TargetID)
+	h.gone.put(event.TargetID, struct{}{})
+	// A page the Manager created is bound before its created event may be
+	// handled, so the unbind does not depend on the state above.
+	p := h.profile
+	handle := string(event.TargetID)
+	bound := p.engine.unbindPage(handle)
+	h.mu.Unlock()
+	if !bound {
+		return
+	}
+	// On its own goroutine for the same reason as the popup above, and as
+	// the hosted engine retires a page: PageClosed is the Manager's page
+	// teardown, which on the workspace's last page disposes this profile and
+	// blocks until Chromium is reaped.
+	go p.engine.events.PageClosed(handle)
+}
+
+// retained reports how many target ids the handler keeps.
+func (h *headlessTargets) retained() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.known) + h.gone.len() + h.heldInfo.len()
 }

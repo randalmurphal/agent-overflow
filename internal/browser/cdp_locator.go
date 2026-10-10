@@ -3,10 +3,10 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -18,18 +18,21 @@ func (p *cdpPage) ResolveLocator(ctx context.Context, locator Locator, attribute
 		return nil, err
 	}
 	fn := locatorResolverFunction(locator, attribute)
-	obj, err := dom.ResolveNode().WithNodeID(root.NodeID).Do(targetCommandContext(ctx))
+	obj, err := resolveNodeObject(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve frame root: %w", err)
 	}
-	defer func() { _ = cdpruntime.ReleaseObject(obj.ObjectID).Do(targetCommandContext(ctx)) }()
-	remote, exception, err := cdpruntime.CallFunctionOn(fn).WithObjectID(obj.ObjectID).WithReturnByValue(true).WithAwaitPromise(true).Do(targetCommandContext(ctx))
+	defer releaseObject(ctx, obj)
+	result, err := chromedp.Call(ctx, cdpruntime.CallFunctionOn, cdpruntime.CallFunctionOnParams{
+		FunctionDeclaration: fn, ObjectID: obj.ObjectID, ReturnByValue: new(true), AwaitPromise: new(true),
+	})
 	if err != nil {
 		return nil, err
 	}
-	if exception != nil {
-		return nil, fmt.Errorf("%s", exception.Text)
+	if result.ExceptionDetails != nil {
+		return nil, fmt.Errorf("%s", result.ExceptionDetails.Text)
 	}
+	remote := result.Result
 	var matches []LocatorMatch
 	if remote == nil || len(remote.Value) == 0 {
 		return nil, fmt.Errorf("locator returned no result")
@@ -51,8 +54,8 @@ func (p *cdpPage) ReadNode(ctx context.Context, match LocatorMatch, locator Loca
 	if err != nil {
 		return nil, err
 	}
-	var nodes []*cdp.Node
-	if err := chromedp.Run(ctx, chromedp.Nodes(match.Selector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(root))); err != nil || len(nodes) != 1 {
+	nodes, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll(match.Selector), chromedp.AtLeast(0), chromedp.FromNode(root)))
+	if err != nil || len(nodes) != 1 {
 		return nil, fmt.Errorf("browser: locator became stale")
 	}
 	fn, err := nodeReadFunction(kind, argument)
@@ -67,8 +70,8 @@ func (p *cdpPage) ActOnNode(ctx context.Context, match LocatorMatch, locator Loc
 	if err != nil {
 		return err
 	}
-	var nodes []*cdp.Node
-	if err := chromedp.Run(ctx, chromedp.Nodes(match.Selector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(root))); err != nil {
+	nodes, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll(match.Selector), chromedp.AtLeast(0), chromedp.FromNode(root)))
+	if err != nil {
 		return fmt.Errorf("browser: resolve action target: %w", err)
 	}
 	if len(nodes) != 1 {
@@ -84,15 +87,15 @@ func (p *cdpPage) ActOnNode(ctx context.Context, match LocatorMatch, locator Loc
 		if act.Clicks == 2 {
 			mouseOpts = append(mouseOpts, chromedp.ClickCount(2))
 		}
-		return chromedp.Run(ctx, chromedp.MouseClickNode(node, mouseOpts...))
+		return chromedp.Do(ctx, chromedp.MouseClickNode(node, mouseOpts...))
 	case "type":
-		return chromedp.Run(ctx, chromedp.KeyEventNode(node, act.Value))
+		return chromedp.Do(ctx, chromedp.KeyEventNode(node, act.Value))
 	case "press":
 		key, modifiers := browserKey(act.Value)
 		if key == "" {
 			return fmt.Errorf("browser: key is required")
 		}
-		return chromedp.Run(ctx, chromedp.KeyEventNode(node, key, browserKeyOptions(act.Value, modifiers)...))
+		return chromedp.Do(ctx, chromedp.KeyEventNode(node, key, browserKeyOptions(act.Value, modifiers)...))
 	case "fill":
 		return callElementFunction(ctx, node, nodeFillFunction(act.Value))
 	case "select_option":
@@ -107,16 +110,16 @@ func (p *cdpPage) ScrollNode(ctx context.Context, ref nodeReference, x, y float6
 	if err != nil {
 		return err
 	}
-	var nodes []*cdp.Node
-	if err := chromedp.Run(ctx, chromedp.Nodes(ref.Selector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(root))); err != nil || len(nodes) != 1 {
+	nodes, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll(ref.Selector), chromedp.AtLeast(0), chromedp.FromNode(root)))
+	if err != nil || len(nodes) != 1 {
 		return fmt.Errorf("browser: node_id is stale")
 	}
 	return callElementFunction(ctx, nodes[0], nodeScrollFunction(x, y))
 }
 
-func locatorFrameRoot(ctx context.Context, frames []string) (*cdp.Node, error) {
-	var roots []*cdp.Node
-	if err := chromedp.Run(ctx, chromedp.Nodes("html", &roots, chromedp.ByQueryAll, chromedp.AtLeast(0))); err != nil || len(roots) != 1 {
+func locatorFrameRoot(ctx context.Context, frames []string) (*chromedp.Node, error) {
+	roots, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll("html"), chromedp.AtLeast(0)))
+	if err != nil || len(roots) != 1 {
 		if err == nil {
 			err = fmt.Errorf("document root unavailable")
 		}
@@ -128,15 +131,15 @@ func locatorFrameRoot(ctx context.Context, frames []string) (*cdp.Node, error) {
 		if selector == "" {
 			return nil, fmt.Errorf("browser: empty frame selector")
 		}
-		var frameNodes []*cdp.Node
-		if err := chromedp.Run(ctx, chromedp.Nodes(selector, &frameNodes, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(root))); err != nil {
+		frameNodes, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll(selector), chromedp.AtLeast(0), chromedp.FromNode(root)))
+		if err != nil {
 			return nil, err
 		}
 		if len(frameNodes) != 1 {
 			return nil, fmt.Errorf("browser: frame selector %q resolved to %d elements", selector, len(frameNodes))
 		}
-		var frameRoots []*cdp.Node
-		if err := chromedp.Run(ctx, chromedp.Nodes("html", &frameRoots, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(frameNodes[0]))); err != nil {
+		frameRoots, err := chromedp.Run(ctx, chromedp.Nodes(chromedp.CSSAll("html"), chromedp.AtLeast(0), chromedp.FromNode(frameNodes[0])))
+		if err != nil {
 			return nil, err
 		}
 		if len(frameRoots) != 1 {
@@ -147,24 +150,27 @@ func locatorFrameRoot(ctx context.Context, frames []string) (*cdp.Node, error) {
 	return root, nil
 }
 
-func callElementFunction(ctx context.Context, node *cdp.Node, fn string) error {
+func callElementFunction(ctx context.Context, node *chromedp.Node, fn string) error {
 	_, err := callElementFunctionValue(ctx, node, fn)
 	return err
 }
 
-func callElementFunctionValue(ctx context.Context, node *cdp.Node, fn string) (any, error) {
-	obj, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(targetCommandContext(ctx))
+func callElementFunctionValue(ctx context.Context, node *chromedp.Node, fn string) (any, error) {
+	obj, err := resolveNodeObject(ctx, node)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cdpruntime.ReleaseObject(obj.ObjectID).Do(targetCommandContext(ctx)) }()
-	remote, exception, err := cdpruntime.CallFunctionOn(fn).WithObjectID(obj.ObjectID).WithReturnByValue(true).WithUserGesture(true).Do(targetCommandContext(ctx))
+	defer releaseObject(ctx, obj)
+	result, err := chromedp.Call(ctx, cdpruntime.CallFunctionOn, cdpruntime.CallFunctionOnParams{
+		FunctionDeclaration: fn, ObjectID: obj.ObjectID, ReturnByValue: new(true), UserGesture: new(true),
+	})
 	if err != nil {
 		return nil, err
 	}
-	if exception != nil {
-		return nil, fmt.Errorf("browser: element action: %s", exception.Text)
+	if result.ExceptionDetails != nil {
+		return nil, fmt.Errorf("browser: element action: %s", result.ExceptionDetails.Text)
 	}
+	remote := result.Result
 	if remote == nil || len(remote.Value) == 0 {
 		return nil, nil
 	}
@@ -176,4 +182,23 @@ func callElementFunctionValue(ctx context.Context, node *cdp.Node, fn string) (a
 		return nil, err
 	}
 	return value, nil
+}
+
+// resolveNodeObject resolves a node to the JavaScript object a function is
+// called on.
+func resolveNodeObject(ctx context.Context, node *chromedp.Node) (*cdpruntime.RemoteObject, error) {
+	resolved, err := chromedp.Call(ctx, dom.ResolveNode, dom.ResolveNodeParams{NodeID: node.NodeID})
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Object == nil {
+		return nil, errors.New("the engine resolved the node to no object")
+	}
+	return resolved.Object, nil
+}
+
+// releaseObject frees an object resolveNodeObject made. The page frees it
+// with its document anyway, so a failure costs only memory until then.
+func releaseObject(ctx context.Context, obj *cdpruntime.RemoteObject) {
+	_, _ = chromedp.Call(ctx, cdpruntime.ReleaseObject, cdpruntime.ReleaseObjectParams{ObjectID: obj.ObjectID})
 }

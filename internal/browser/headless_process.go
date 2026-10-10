@@ -15,7 +15,7 @@ import (
 
 	"github.com/chromedp/cdproto"
 	cdpbrowser "github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 
 	"agent-overflow/internal/procutil"
 )
@@ -25,8 +25,8 @@ import (
 // that reads its combined stdout and stderr for its whole life.
 //
 // The engine starts Chromium itself rather than through chromedp's
-// ExecAllocator. That allocator reads the output from exec's StdoutPipe
-// while a second goroutine calls Wait, and Wait closes a StdoutPipe as soon
+// ExecAllocator. In its websocket mode that allocator reads the output from
+// exec's StdoutPipe while a second goroutine calls Wait, and Wait closes a StdoutPipe as soon
 // as the process exits, so a browser that prints why it refused to start
 // and exits at once can lose the reason. Here the output is a pipe this
 // type creates: Wait leaves a caller-supplied *os.File open, so reaping and
@@ -208,7 +208,7 @@ func (c *chromiumProcess) close(timeout time.Duration) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := chromedp.DialContext(ctx, c.wsURL)
+	conn, err := remote.DialContext(ctx, c.wsURL)
 	if err != nil {
 		return fmt.Errorf("connect to its DevTools endpoint: %w", err)
 	}

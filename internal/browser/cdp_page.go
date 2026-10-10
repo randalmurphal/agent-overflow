@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
-	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
@@ -22,20 +22,16 @@ import (
 )
 
 // cdpPage drives one Chrome target. It owns the CDP bookkeeping the tools need
-// — the frame set download events are routed by, the in-flight request set the
-// network-idle wait reads — and nothing about ownership, limits, or AO state.
+// (the frame set download events are routed by, the in-flight request set the
+// network-idle wait reads) and nothing about ownership, limits, or AO state.
 type cdpPage struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	handle string
 	hooks  pageHooks
 
-	frameMu sync.RWMutex
-	frames  map[cdp.FrameID]struct{}
-
-	networkMu   sync.Mutex
-	requests    map[network.RequestID]struct{}
-	lastNetwork time.Time
+	frames  *frameTracker
+	network *networkTracker
 
 	// The device-metrics override is one value with two owners: the
 	// Manager sets the viewport (SetViewport, under the page lock) and the
@@ -50,7 +46,7 @@ type cdpPage struct {
 }
 
 func startCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
-	if err := chromedp.Run(pageCtx); err != nil {
+	if err := chromedp.Do(pageCtx); err != nil {
 		pageCancel()
 		// A dead controller is the usual reason a target never attaches, and
 		// its own error is what makes the failure diagnosable.
@@ -58,9 +54,9 @@ func startCDPPage(controller, pageCtx context.Context, pageCancel context.Cancel
 	}
 	p := &cdpPage{
 		ctx: pageCtx, cancel: pageCancel, hooks: hooks,
-		handle:   string(chromedp.FromContext(pageCtx).Target.TargetID),
-		frames:   make(map[cdp.FrameID]struct{}),
-		requests: make(map[network.RequestID]struct{}), lastNetwork: time.Now(),
+		handle:  string(chromedp.FromContext(pageCtx).Target.TargetID),
+		frames:  newFrameTracker(),
+		network: newNetworkTracker(time.Now()),
 	}
 	if err := p.installHandlers(); err != nil {
 		pageCancel()
@@ -69,103 +65,36 @@ func startCDPPage(controller, pageCtx context.Context, pageCancel context.Cancel
 	return p, nil
 }
 
-// browserCommandContext and targetCommandContext re-address a CDP command at
-// the browser-wide or the target-wide executor. They live beside the page
-// driver because the page driver is the only place a CDP command is issued
-// from now that the managed-Chrome engine is gone; the hosted engine reuses
-// them for the browser-level commands it sends through the relay.
-func browserCommandContext(ctx context.Context) context.Context {
-	chromedpContext := chromedp.FromContext(ctx)
-	if chromedpContext == nil || chromedpContext.Browser == nil {
-		return ctx
-	}
-	return cdp.WithExecutor(ctx, chromedpContext.Browser)
-}
-
-func targetCommandContext(ctx context.Context) context.Context {
-	chromedpContext := chromedp.FromContext(ctx)
-	if chromedpContext == nil || chromedpContext.Target == nil {
-		return ctx
-	}
-	return cdp.WithExecutor(ctx, chromedpContext.Target)
-}
-
-// dialCDPBrowser establishes the browser-level CDP connection on browserCtx
-// WITHOUT creating any target, and enables target discovery.
+// dialCDPBrowser connects the browser-level CDP session on browserCtx
+// WITHOUT creating any target, has subscribe register the browser events the
+// engine reads, and then enables target discovery.
 //
 // Shared by every CDP engine (the launcher-hosted one and the headless
 // Chromium one), because both want the same two properties and neither can
-// get them from chromedp.Run. It is chromedp's own initContextBrowser
-// through the exported surface — FromContext, one Allocator.Allocate,
-// publish the Browser on the context so every later Run (all of them
-// WithTargetID) finds the shared connection — followed by the
-// Target.setDiscoverTargets(true) chromedp's skipped first-context path
-// would have sent.
+// get them from chromedp.Do, which attaches a target.
 //
-// Not creating a target is load-bearing on both engines. Run against a
-// target-less context issues Target.createTarget, which WebView2 refuses
-// with `-32000 no browser is open` (a WebView2 target exists only as a
-// launcher-created controller, 2026-08-31) and which real Chromium answers
-// with a throwaway tab nobody owns — a whole renderer process per profile,
-// paid for forever. Discovery is what feeds listen the target lifecycle
-// events both engines re-key into the seam's vocabulary.
+// Not creating a target is load-bearing on both engines. A target-less Do
+// issues Target.createTarget, which WebView2 refuses with `-32000 no browser
+// is open` (a WebView2 target exists only as a launcher-created controller,
+// 2026-08-31) and which real Chromium answers with a throwaway tab nobody
+// owns: a whole renderer process per profile, paid for forever. Discovery is
+// what feeds the target lifecycle events both engines re-key into the seam's
+// vocabulary.
 //
-// listen receives every browser-level event. It is registered here, after
-// the browser exists and before discovery is enabled, so it sees every
-// target discovery reports, a popup opened during the handshake included.
-// chromedp.ListenBrowser called before the dial would store the listener
-// where only chromedp.Run's own allocation reads it, and this dial bypasses
-// Run, so that listener would never be called.
-func dialCDPBrowser(browserCtx context.Context, listen func(ev any), logf func(string, ...any)) error {
-	c := chromedp.FromContext(browserCtx)
-	if c == nil || c.Allocator == nil {
+// subscribe's first chromedp.BrowserEvents is what connects the browser. It
+// sends no command, and it connects through chromedp's own path, which is
+// also what cancels browserCtx when the connection is lost. Every
+// subscription exists before discovery is enabled, so it sees every target
+// discovery reports, a popup opened during the handshake included.
+func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
+	if chromedp.FromContext(browserCtx) == nil {
 		return errors.New("not a chromedp context")
 	}
-	browser, err := c.Allocator.Allocate(browserCtx, chromedp.WithBrowserErrorf(func(format string, args ...any) {
-		logf("browser: chromedp: "+format, args...)
-	}))
-	if err != nil {
+	if err := subscribe(); err != nil {
 		return err
 	}
-	c.Browser = browser
-	chromedp.ListenBrowser(browserCtx, listen)
-	return target.SetDiscoverTargets(true).Do(cdp.WithExecutor(browserCtx, browser))
-}
-
-// cdpDownloadEvent translates the two browser-level download events into the
-// seam's vocabulary, reporting whether it recognised the event. A download
-// the Manager refuses is cancelled through cancel, on its own goroutine
-// because the cancel is a CDP round trip the listener goroutine would have
-// to deliver.
-//
-// Shared for the same reason as the dial: downloads are a browser-level CDP
-// fact with no engine-specific identity in them — the GUID IS the handle on
-// both engines — so a second copy could only drift. Frames, targets and
-// page ids are the caller's business, which is why nothing here re-keys.
-func cdpDownloadEvent(ev any, events engineEvents, cancel func(id string)) bool {
-	switch event := ev.(type) {
-	case *cdpbrowser.EventDownloadWillBegin:
-		if !events.DownloadStarted(downloadStart{
-			Frame: string(event.FrameID), ID: event.GUID,
-			URL: event.URL, SuggestedName: event.SuggestedFilename,
-		}) {
-			go cancel(event.GUID)
-		}
-		return true
-	case *cdpbrowser.EventDownloadProgress:
-		state := downloadInProgress
-		switch event.State {
-		case cdpbrowser.DownloadProgressStateCompleted:
-			state = downloadCompleted
-		case cdpbrowser.DownloadProgressStateCanceled:
-			state = downloadCanceled
-		}
-		events.DownloadProgress(downloadProgress{
-			ID: event.GUID, Received: event.ReceivedBytes, State: state, FilePath: event.FilePath,
-		})
-		return true
-	}
-	return false
+	_, err := chromedp.CallBrowser(browserCtx, target.SetDiscoverTargets, target.SetDiscoverTargetsParams{Discover: true})
+	return err
 }
 
 func (p *cdpPage) Lifetime() context.Context { return p.ctx }
@@ -179,71 +108,72 @@ func (p *cdpPage) OwnsFrame(frame string) bool {
 	if frame == p.handle {
 		return true
 	}
-	p.frameMu.RLock()
-	defer p.frameMu.RUnlock()
-	_, ok := p.frames[cdp.FrameID(frame)]
-	return ok
+	return p.frames.owns(cdp.FrameID(frame))
 }
 
+// installHandlers subscribes to the page's events before enabling the
+// domains that send them, so none is lost.
 func (p *cdpPage) installHandlers() error {
-	chromedp.ListenTarget(p.ctx, func(ev any) {
-		switch event := ev.(type) {
-		case *page.EventJavascriptDialogOpening:
-			accept := event.Type == page.DialogTypeBeforeunload
-			go func() {
-				ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-				defer cancel()
-				_ = page.HandleJavaScriptDialog(accept).Do(targetCommandContext(ctx))
-			}()
-		case *fetch.EventRequestPaused:
-			answerPausedRequest(p.ctx, targetCommandContext, event, p.hooks.Allow)
-		case *page.EventFrameAttached:
-			p.frameMu.Lock()
-			p.frames[event.FrameID] = struct{}{}
-			p.frameMu.Unlock()
-		case *page.EventFrameNavigated:
-			if event.Frame != nil {
-				p.frameMu.Lock()
-				p.frames[event.Frame.ID] = struct{}{}
-				p.frameMu.Unlock()
-			}
-		case *page.EventFrameDetached:
-			p.frameMu.Lock()
-			delete(p.frames, event.FrameID)
-			p.frameMu.Unlock()
-		case *cdpruntime.EventConsoleAPICalled:
-			p.hooks.Console(consoleAPIEntry(event, p.hooks.PageURL()))
-		case *cdplog.EventEntryAdded:
-			if entry, ok := logEntry(event); ok {
-				p.hooks.Console(entry)
-			}
-		case *network.EventRequestWillBeSent:
-			p.networkMu.Lock()
-			p.requests[event.RequestID] = struct{}{}
-			p.lastNetwork = time.Now()
-			p.networkMu.Unlock()
-		case *network.EventLoadingFinished:
-			p.networkMu.Lock()
-			delete(p.requests, event.RequestID)
-			p.lastNetwork = time.Now()
-			p.networkMu.Unlock()
-		case *network.EventLoadingFailed:
-			p.networkMu.Lock()
-			delete(p.requests, event.RequestID)
-			p.lastNetwork = time.Now()
-			p.networkMu.Unlock()
+	ctx, logf := p.ctx, log.Printf
+	session := chromedp.FromContext(ctx).Target
+	onTargetEvent(ctx, page.JavascriptDialogOpening, logf, func(event page.EventJavascriptDialogOpening) {
+		accept := event.Type == page.DialogTypeBeforeunload
+		answerCtx, cancel := operationContext(context.Background(), ctx, 3*time.Second)
+		defer cancel()
+		if _, err := cdp.Call(answerCtx, session, page.HandleJavaScriptDialog, page.HandleJavaScriptDialogParams{Accept: accept}); err != nil && ctx.Err() == nil {
+			logf("browser: answer a %s dialog: %v", event.Type, err)
 		}
 	})
-	if err := fetch.Enable().WithPatterns(navigationPolicyPatterns).Do(targetCommandContext(p.ctx)); err != nil {
+	onTargetEvent(ctx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
+		answerPausedRequest(ctx, session, event, p.hooks.Allow)
+	})
+	onTargetEvent(ctx, page.FrameAttached, logf, func(event page.EventFrameAttached) {
+		p.frames.attached(event.FrameID)
+	})
+	onTargetEvent(ctx, page.FrameNavigated, logf, func(event page.EventFrameNavigated) {
+		if event.Frame != nil {
+			p.frames.navigated(event.Frame.ID)
+		}
+	})
+	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {
+		p.frames.detached(event.FrameID)
+	})
+	// chromedp.Console is the one ordered join of several event methods that
+	// chromedp offers: console API calls and browser log entries reach the
+	// log in the order the page wrote them.
+	messages := chromedp.Console(ctx)
+	go func() {
+		for message, err := range messages {
+			if err != nil {
+				if ctx.Err() == nil {
+					logf("browser: console events stopped: %v", err)
+				}
+				return
+			}
+			if entry, ok := consoleEntry(message, p.hooks.PageURL); ok {
+				p.hooks.Console(entry)
+			}
+		}
+	}()
+	onTargetEvent(ctx, network.RequestWillBeSent, logf, func(event network.EventRequestWillBeSent) {
+		p.network.started(event.RequestID, event.RedirectResponse != nil, time.Now())
+	})
+	onTargetEvent(ctx, network.LoadingFinished, logf, func(event network.EventLoadingFinished) {
+		p.network.ended(event.RequestID, time.Now())
+	})
+	onTargetEvent(ctx, network.LoadingFailed, logf, func(event network.EventLoadingFailed) {
+		p.network.ended(event.RequestID, time.Now())
+	})
+	if _, err := chromedp.Call(ctx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
 		return fmt.Errorf("browser: install navigation policy: %w", err)
 	}
-	if err := cdplog.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+	if _, err := chromedp.Call(ctx, cdplog.Enable, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: enable console log capture: %w", err)
 	}
-	if err := cdpruntime.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+	if _, err := chromedp.Call(ctx, cdpruntime.Enable, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: enable runtime capture: %w", err)
 	}
-	if err := network.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+	if _, err := chromedp.Call(ctx, network.Enable, network.EnableParams{}); err != nil {
 		return fmt.Errorf("browser: enable network lifecycle: %w", err)
 	}
 	return nil
@@ -259,11 +189,10 @@ var navigationPolicyPatterns = []*fetch.RequestPattern{
 }
 
 // answerPausedRequest continues a request the navigation policy paused when
-// allow permits its URL and fails it otherwise. address directs the answer
-// at the session that paused it. The answer is a CDP round trip that the
-// listener goroutine delivering the event would have to read, so it runs on
-// its own goroutine, bounded by lifetime.
-func answerPausedRequest(lifetime context.Context, address func(context.Context) context.Context, event *fetch.EventRequestPaused, allow func(url string) bool) {
+// allow permits its URL and fails it otherwise. session is the one that
+// paused it. The answer runs on its own goroutine, bounded by lifetime, so a
+// slow check or round trip does not hold the requests paused behind it.
+func answerPausedRequest(lifetime context.Context, session cdp.Session, event fetch.EventRequestPaused, allow func(url string) bool) {
 	if event.Request == nil {
 		return
 	}
@@ -271,19 +200,47 @@ func answerPausedRequest(lifetime context.Context, address func(context.Context)
 	go func() {
 		ctx, cancel := operationContext(context.Background(), lifetime, 5*time.Second)
 		defer cancel()
+		var err error
 		if allow(rawURL) {
-			_ = fetch.ContinueRequest(requestID).Do(address(ctx))
+			_, err = cdp.Call(ctx, session, fetch.ContinueRequest, fetch.ContinueRequestParams{RequestID: requestID})
 		} else {
-			_ = fetch.FailRequest(requestID, network.ErrorReasonBlockedByClient).Do(address(ctx))
+			_, err = cdp.Call(ctx, session, fetch.FailRequest, fetch.FailRequestParams{RequestID: requestID, ErrorReason: network.ErrorReasonBlockedByClient})
+		}
+		// A page or browser that has gone needs no answer. Any other refusal
+		// leaves the request paused, which the page sees as a load that never
+		// finishes, so it is logged.
+		if err != nil && lifetime.Err() == nil {
+			log.Printf("browser: answer paused request %s: %v", requestID, err)
 		}
 	}()
 }
 
-// consoleAPIEntry decodes a Runtime.consoleAPICalled event. Chrome does not
-// attribute the entry to a URL, so the page's last known one is used.
-func consoleAPIEntry(event *cdpruntime.EventConsoleAPICalled, pageURL string) ConsoleLog {
-	parts := make([]string, 0, len(event.Args))
-	for _, arg := range event.Args {
+// consoleEntry converts one message of chromedp.Console. Uncaught exceptions
+// were never part of the console log, so they are skipped. A console API
+// call carries no URL of its own, so the page's last known one is used.
+func consoleEntry(message chromedp.ConsoleMessage, pageURL func() string) (ConsoleLog, bool) {
+	if message.IsException() {
+		return ConsoleLog{}, false
+	}
+	timestamp := message.Time.UTC()
+	if message.Time.IsZero() || message.Time.Unix() == 0 {
+		timestamp = time.Now().UTC()
+	}
+	if message.Source != "" {
+		// A browser log entry: only those carry a source. Console reports
+		// the log level verbose as debug, which the log has always shown as
+		// log.
+		level := string(message.Type)
+		if message.Type == chromedp.ConsoleDebug {
+			level = "log"
+		}
+		return ConsoleLog{
+			Level: normalizeConsoleLevel(level), Message: message.Text,
+			Timestamp: timestamp.Format(time.RFC3339Nano), URL: message.URL,
+		}, true
+	}
+	parts := make([]string, 0, len(message.Args))
+	for _, arg := range message.Args {
 		if arg == nil {
 			continue
 		}
@@ -296,49 +253,34 @@ func consoleAPIEntry(event *cdpruntime.EventConsoleAPICalled, pageURL string) Co
 			parts = append(parts, string(arg.Type))
 		}
 	}
-	timestamp := time.Now().UTC()
-	if event.Timestamp != nil {
-		timestamp = time.Time(*event.Timestamp).UTC()
-	}
 	return ConsoleLog{
-		Level: normalizeConsoleLevel(string(event.Type)), Message: strings.Join(parts, " "),
-		Timestamp: timestamp.Format(time.RFC3339Nano), URL: pageURL,
-	}
-}
-
-// logEntry decodes a Log.entryAdded event. An entry-less event is not a log.
-func logEntry(event *cdplog.EventEntryAdded) (ConsoleLog, bool) {
-	if event.Entry == nil {
-		return ConsoleLog{}, false
-	}
-	timestamp := time.Now().UTC()
-	if event.Entry.Timestamp != nil {
-		timestamp = time.Time(*event.Entry.Timestamp).UTC()
-	}
-	return ConsoleLog{
-		Level: normalizeConsoleLevel(string(event.Entry.Level)), Message: event.Entry.Text,
-		Timestamp: timestamp.Format(time.RFC3339Nano), URL: event.Entry.URL,
+		Level: normalizeConsoleLevel(string(message.Type)), Message: strings.Join(parts, " "),
+		Timestamp: timestamp.Format(time.RFC3339Nano), URL: pageURL(),
 	}, true
 }
 
 func (p *cdpPage) Info(ctx context.Context) (string, string, error) {
-	var location, title string
-	if err := chromedp.Run(ctx, chromedp.Location(&location), chromedp.Title(&title)); err != nil {
+	location, err := chromedp.Run(ctx, chromedp.Location())
+	if err != nil {
+		return "", "", fmt.Errorf("browser: read page state: %w", err)
+	}
+	title, err := chromedp.Run(ctx, chromedp.Title())
+	if err != nil {
 		return "", "", fmt.Errorf("browser: read page state: %w", err)
 	}
 	return location, title, nil
 }
 
 func (p *cdpPage) HistoryState(ctx context.Context) (bool, bool, error) {
-	current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(ctx))
+	history, err := chromedp.Call(ctx, page.GetNavigationHistory, cdp.Empty{})
 	if err != nil {
 		return false, false, fmt.Errorf("browser: read history state: %w", err)
 	}
-	return current > 0, int(current)+1 < len(entries), nil
+	return history.CurrentIndex > 0, int(history.CurrentIndex)+1 < len(history.Entries), nil
 }
 
 func (p *cdpPage) Navigate(ctx context.Context, url string) error {
-	if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(url)); err != nil {
 		return fmt.Errorf("browser: navigate: %w", err)
 	}
 	return nil
@@ -348,27 +290,27 @@ func (p *cdpPage) History(ctx context.Context, action string) error {
 	var runErr error
 	switch action {
 	case "back":
-		current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(ctx))
+		history, err := chromedp.Call(ctx, page.GetNavigationHistory, cdp.Empty{})
 		if err != nil {
 			return fmt.Errorf("browser: history back: %w", err)
 		}
-		if current <= 0 {
+		if history.CurrentIndex <= 0 {
 			return fmt.Errorf("browser: no previous history entry")
 		}
-		runErr = page.NavigateToHistoryEntry(entries[current-1].ID).Do(targetCommandContext(ctx))
+		_, runErr = chromedp.Call(ctx, page.NavigateToHistoryEntry, page.NavigateToHistoryEntryParams{EntryID: history.Entries[history.CurrentIndex-1].ID})
 	case "forward":
-		current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(ctx))
+		history, err := chromedp.Call(ctx, page.GetNavigationHistory, cdp.Empty{})
 		if err != nil {
 			return fmt.Errorf("browser: history forward: %w", err)
 		}
-		if int(current)+1 >= len(entries) {
+		if int(history.CurrentIndex)+1 >= len(history.Entries) {
 			return fmt.Errorf("browser: no forward history entry")
 		}
-		runErr = page.NavigateToHistoryEntry(entries[current+1].ID).Do(targetCommandContext(ctx))
+		_, runErr = chromedp.Call(ctx, page.NavigateToHistoryEntry, page.NavigateToHistoryEntryParams{EntryID: history.Entries[history.CurrentIndex+1].ID})
 	case "reload":
-		runErr = page.Reload().Do(targetCommandContext(ctx))
+		_, runErr = chromedp.Call(ctx, page.Reload, page.ReloadParams{})
 	case "stop":
-		runErr = page.StopLoading().Do(targetCommandContext(ctx))
+		_, runErr = chromedp.Call(ctx, page.StopLoading, cdp.Empty{})
 	}
 	if runErr != nil {
 		return fmt.Errorf("browser: history %s: %w", action, runErr)
@@ -377,37 +319,37 @@ func (p *cdpPage) History(ctx context.Context, action string) error {
 }
 
 func (p *cdpPage) PageStatus(ctx context.Context) (pageStatus, error) {
-	var probe struct{ URL, Ready string }
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`({url:location.href,ready:document.readyState})`, &probe)); err != nil {
+	probe, err := chromedp.Run(ctx, chromedp.Evaluate[struct{ URL, Ready string }](`({url:location.href,ready:document.readyState})`))
+	if err != nil {
 		return pageStatus{}, err
 	}
-	p.networkMu.Lock()
-	idle := len(p.requests) == 0 && time.Since(p.lastNetwork) >= 500*time.Millisecond
-	p.networkMu.Unlock()
+	idle := p.network.idle(time.Now(), 500*time.Millisecond)
 	return pageStatus{URL: probe.URL, Ready: probe.Ready, NetworkIdle: idle}, nil
 }
 
 func (p *cdpPage) NavigationMark(ctx context.Context) (navigationMark, error) {
 	var mark navigationMark
-	if err := chromedp.Run(ctx, chromedp.Location(&mark.URL)); err != nil {
+	location, err := chromedp.Run(ctx, chromedp.Location())
+	if err != nil {
 		return mark, err
 	}
-	if tree, err := page.GetFrameTree().Do(targetCommandContext(ctx)); err == nil && tree != nil && tree.Frame != nil {
-		mark.Loader = string(tree.Frame.LoaderID)
+	mark.URL = location
+	if tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{}); err == nil && tree.FrameTree != nil && tree.FrameTree.Frame != nil {
+		mark.Loader = string(tree.FrameTree.Frame.LoaderID)
 	}
 	return mark, nil
 }
 
 func (p *cdpPage) Snapshot(ctx context.Context) (Snapshot, error) {
-	var snapshot Snapshot
-	if err := chromedp.Run(ctx, chromedp.Evaluate(snapshotExpression(), &snapshot)); err != nil {
+	snapshot, err := chromedp.Run(ctx, chromedp.Evaluate[Snapshot](snapshotExpression()))
+	if err != nil {
 		return Snapshot{}, fmt.Errorf("browser: snapshot: %w", err)
 	}
 	return snapshot, nil
 }
 
 func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {
-	params := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(85).WithFromSurface(true)
+	params := page.CaptureScreenshotParams{Format: page.CaptureScreenshotFormatJpeg, Quality: new(int64(85)), FromSurface: new(true)}
 	ratio, err := p.devicePixelRatio(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("browser: screenshot metrics: %w", err)
@@ -423,30 +365,27 @@ func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byt
 	// The plain viewport capture is the clip at the current scroll offset
 	// under the page's own layout, and the other two put the scroll back.
 	imageScale := 1 / ratio
-	var view struct{ X, Y, Width, Height float64 }
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`({x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight})`, &view)); err != nil {
+	view, err := chromedp.Run(ctx, chromedp.Evaluate[struct{ X, Y, Width, Height float64 }](`({x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight})`))
+	if err != nil {
 		return nil, fmt.Errorf("browser: screenshot metrics: %w", err)
 	}
 	restoreScroll := false
 	if opts.Clip != nil {
 		clip := opts.Clip
 		restoreScroll = true
-		params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: imageScale})
+		params.CaptureBeyondViewport = new(true)
+		params.Clip = &page.Viewport{X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: imageScale}
 	} else if !opts.FullPage {
 		if view.Width > 0 && view.Height > 0 {
-			params = params.WithClip(&page.Viewport{X: view.X, Y: view.Y, Width: view.Width, Height: view.Height, Scale: imageScale})
+			params.Clip = &page.Viewport{X: view.X, Y: view.Y, Width: view.Width, Height: view.Height, Scale: imageScale}
 		}
 	} else {
 		restoreScroll = true
-		_, _, contentSize, _, _, cssContentSize, metricsErr := page.GetLayoutMetrics().Do(targetCommandContext(ctx))
+		metrics, metricsErr := chromedp.Call(ctx, page.GetLayoutMetrics, cdp.Empty{})
 		if metricsErr != nil {
 			return nil, fmt.Errorf("browser: screenshot metrics: %w", metricsErr)
 		}
-		size := cssContentSize
-		if size == nil {
-			size = contentSize
-		}
-		if size != nil {
+		if size := metrics.CSSContentSize; size != nil {
 			height := size.Height
 			width := size.Width
 			if height > maxFullScreenshotHeight {
@@ -455,21 +394,21 @@ func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byt
 			if width > maxFullScreenshotWidth {
 				width = maxFullScreenshotWidth
 			}
-			params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: 0, Y: 0, Width: width, Height: height, Scale: imageScale})
+			params.CaptureBeyondViewport = new(true)
+			params.Clip = &page.Viewport{X: 0, Y: 0, Width: width, Height: height, Scale: imageScale}
 		}
 	}
-	data, err := params.Do(targetCommandContext(ctx))
+	capture, err := chromedp.Call(ctx, page.CaptureScreenshot, params)
 	if err != nil {
 		return nil, fmt.Errorf("browser: screenshot: %w", err)
 	}
 	if restoreScroll {
 		restore := fmt.Sprintf(`(() => { if (window.scrollX !== %f || window.scrollY !== %f) window.scrollTo({left: %f, top: %f, behavior: "instant"}); return true; })()`, view.X, view.Y, view.X, view.Y)
-		var ok bool
-		if err := chromedp.Run(ctx, chromedp.Evaluate(restore, &ok)); err != nil {
+		if _, err := chromedp.Run(ctx, chromedp.Evaluate[bool](restore)); err != nil {
 			return nil, fmt.Errorf("browser: screenshot: restore scroll: %w", err)
 		}
 	}
-	return data, nil
+	return capture.Data, nil
 }
 
 // Evaluate evaluates source with Runtime.evaluate, which Chrome exempts from
@@ -477,17 +416,19 @@ func (p *cdpPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byt
 // refuses anything it cannot prove side-effect free before it happens; the
 // refusal escapes the runner's own catch, so the code cannot swallow it.
 func (p *cdpPage) Evaluate(ctx context.Context, source string, readOnly bool) (json.RawMessage, error) {
-	remote, exception, err := cdpruntime.Evaluate(source).WithReturnByValue(true).WithAwaitPromise(true).WithThrowOnSideEffect(readOnly).Do(targetCommandContext(ctx))
+	result, err := chromedp.Call(ctx, cdpruntime.Evaluate, cdpruntime.EvaluateParams{
+		Expression: source, ReturnByValue: new(true), AwaitPromise: new(true), ThrowOnSideEffect: new(readOnly),
+	})
 	if err != nil {
 		return nil, err
 	}
-	if exception != nil {
-		return nil, cdpEvaluateException(exception, readOnly)
+	if result.ExceptionDetails != nil {
+		return nil, cdpEvaluateException(result.ExceptionDetails, readOnly)
 	}
-	if remote == nil {
+	if result.Result == nil {
 		return nil, errors.New("the engine returned no result")
 	}
-	return evaluationAnswer(remote.Value)
+	return evaluationAnswer(json.RawMessage(result.Result.Value))
 }
 
 // cdpEvaluateException reports an exception that escaped the runner: the
@@ -549,7 +490,9 @@ func (p *cdpPage) applyMetricsLocked(ctx context.Context) error {
 	if scale <= 0 {
 		scale = 1
 	}
-	err := emulation.SetDeviceMetricsOverride(int64(p.viewportW), int64(p.viewportH), 0, false).WithScale(scale).Do(targetCommandContext(ctx))
+	_, err := chromedp.Call(ctx, emulation.SetDeviceMetricsOverride, emulation.SetDeviceMetricsOverrideParams{
+		Width: int64(p.viewportW), Height: int64(p.viewportH), DeviceScaleFactor: 0, Mobile: false, Scale: scale,
+	})
 	p.metricsSent = err == nil
 	return err
 }
@@ -558,8 +501,8 @@ func (p *cdpPage) applyMetricsLocked(ctx context.Context) error {
 // device scale factor, which every capture divides out so an image pixel
 // is a CSS pixel on any display.
 func (p *cdpPage) devicePixelRatio(ctx context.Context) (float64, error) {
-	var ratio float64
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`window.devicePixelRatio`, &ratio)); err != nil {
+	ratio, err := chromedp.Run(ctx, chromedp.Evaluate[float64](`window.devicePixelRatio`))
+	if err != nil {
 		return 0, err
 	}
 	if ratio <= 0 {

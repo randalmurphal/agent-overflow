@@ -10,8 +10,9 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/DerekStride/tree-sitter-sql v0.0.0-20260222203909-851e9cb257ba
 	github.com/airbus-cert/tree-sitter-powershell v0.26.6-0.20260710083446-e7bd348c49fd
-	github.com/chromedp/cdproto v0.0.0-20260922220944-a19bff23514f
-	github.com/chromedp/chromedp v0.16.0
+	github.com/chromedp/cdproto v0.157.9
+	github.com/chromedp/chromedp v0.20.1
+	github.com/chromedp/chromedp/remote v0.2.0
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
@@ -129,7 +130,6 @@ require (
 	github.com/charmbracelet/x/exp/slice v0.0.0-20260122224438-b01af16209d9 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20260122224438-b01af16209d9 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect

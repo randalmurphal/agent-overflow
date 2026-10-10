@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -16,21 +15,27 @@ import (
 )
 
 func (p *cdpPage) AssetInventory(ctx context.Context) (pageAssets, error) {
-	var raw pageAssets
-	if err := chromedp.Run(ctx, chromedp.Evaluate(assetInventoryExpression(), &raw)); err != nil {
+	raw, err := chromedp.Run(ctx, chromedp.Evaluate[pageAssets](assetInventoryExpression()))
+	if err != nil {
 		return pageAssets{}, fmt.Errorf("browser: list page assets: %w", err)
 	}
 	return raw, nil
 }
 
 func (p *cdpPage) AssetFetcher(ctx context.Context) (assetFetcher, error) {
-	frameTree, err := page.GetFrameTree().Do(targetCommandContext(ctx))
+	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
 	if err != nil {
 		return nil, err
 	}
-	frameID := frameTree.Frame.ID
+	if tree.FrameTree == nil || tree.FrameTree.Frame == nil {
+		return nil, errors.New("browser: the page reported no main frame")
+	}
+	frameID := tree.FrameTree.Frame.ID
 	return func(url string) (assetStream, error) {
-		result, loadErr := network.LoadNetworkResource(url, &network.LoadNetworkResourceOptions{DisableCache: false, IncludeCredentials: true}).WithFrameID(frameID).Do(targetCommandContext(ctx))
+		loaded, loadErr := chromedp.Call(ctx, network.LoadNetworkResource, network.LoadNetworkResourceParams{
+			FrameID: frameID, URL: url, Options: &network.LoadNetworkResourceOptions{DisableCache: false, IncludeCredentials: true},
+		})
+		result := loaded.Resource
 		if loadErr != nil || result == nil || !result.Success || result.Stream == "" {
 			reason := "load failed"
 			if loadErr != nil {
@@ -44,7 +49,7 @@ func (p *cdpPage) AssetFetcher(ctx context.Context) (assetFetcher, error) {
 			Copy: func(out io.Writer, perFile, remaining int64) (int64, error) {
 				return readCDPStream(ctx, result.Stream, out, perFile, remaining)
 			},
-			Close: func() { _ = cdpio.Close(result.Stream).Do(targetCommandContext(ctx)) },
+			Close: func() { _, _ = chromedp.Call(ctx, cdpio.Close, cdpio.CloseParams{Handle: result.Stream}) },
 		}
 		for key, value := range result.Headers {
 			if strings.EqualFold(key, "content-type") {
@@ -59,18 +64,12 @@ func (p *cdpPage) AssetFetcher(ctx context.Context) (assetFetcher, error) {
 func readCDPStream(ctx context.Context, handle cdpio.StreamHandle, out io.Writer, perFile, remaining int64) (int64, error) {
 	var written int64
 	for {
-		var read cdpio.ReadReturns
-		err := cdp.Execute(targetCommandContext(ctx), cdpio.CommandRead, cdpio.Read(handle).WithSize(1<<20), &read)
+		// io.ReadResult decodes base64 data itself.
+		read, err := chromedp.Call(ctx, cdpio.Read, cdpio.ReadParams{Handle: handle, Size: 1 << 20})
 		if err != nil {
 			return written, err
 		}
-		chunk := []byte(read.Data)
-		if read.Base64encoded {
-			chunk, err = base64.StdEncoding.DecodeString(read.Data)
-			if err != nil {
-				return written, err
-			}
-		}
+		chunk := read.Data
 		if int64(len(chunk))+written > perFile || int64(len(chunk))+written > remaining {
 			return written, fmt.Errorf("browser: asset exceeds bundle size limit")
 		}

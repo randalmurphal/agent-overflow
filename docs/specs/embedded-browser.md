@@ -167,7 +167,7 @@ design.
   stream, the launcher opens `127.0.0.1:<cdp-port>` locally and pipes
   bytes.
 - The backend exposes the tunnel as a local loopback listener inside
-  WSL; chromedp's `NewRemoteAllocator` connects to it. `/json`
+  WSL; chromedp's `remote.NewAllocator` connects to it. `/json`
   responses get their `webSocketDebuggerUrl` host rewritten to the
   tunnel listener.
 - The tunnel accepts only connections from the backend process's own

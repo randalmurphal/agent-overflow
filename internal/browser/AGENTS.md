@@ -50,6 +50,11 @@ headless engine starts one Chromium process per profile with an isolated user
 data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
 
+chromedp delivers each event method on its own subscription, so handlers run in
+no fixed order across methods. State fed by several methods must settle the
+same way under any interleaving and bound what it keeps for unmatched events
+(`cdp_events.go`).
+
 All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
 `wkDo`. Do not call either while holding a lock reachable from a native
 callback. Native callbacks carry integer IDs, never Go pointers. Keep shared
@@ -86,8 +91,8 @@ stores to clear themselves. A platform-specific silent no-op is incorrect.
 
 Unit tests use `fake_engine.go` and fake CDP endpoints. They must not start or
 download a browser. Keep `ManagerOptions.FakeEngine` as the default for test
-boots. Real Chromium launch compatibility is covered only by the documented
-`AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate. Real WebKitGTK and WKWebView
+boots. Real Chromium launch and CDP page operations are covered only by the
+documented `AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate. Real WebKitGTK and WKWebView
 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1` manual gate
 (`native_engine_smoke_test.go`), which opens a window and needs a display.
 
