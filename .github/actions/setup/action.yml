@@ -31,22 +31,10 @@ inputs:
   cache-name:
     description: Name of the Go build cache slot, usually the job name; jobs with different build tags keep separate caches.
     default: default
-  free-disk:
-    description: Remove preinstalled SDKs the job does not use (Android, .NET, the CodeQL bundle) so a heavy build keeps headroom on the runner disk, and report free space.
-    default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Free runner disk
-      if: inputs.free-disk == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        df -h / | tail -1
-        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
-        df -h / | tail -1
-
     - name: Install GTK and WebKitGTK headers
       if: inputs.gtk == 'true'
       shell: bash

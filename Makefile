@@ -152,9 +152,13 @@ GO_TEST_FLAGS ?=
 netns-tool:
 	go build -o bin/ao-netns ./cmd/ao-netns
 
+# GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
+# for CI shards that run the heavy packages on their own runners.
+GO_TEST_EXCLUDE ?=
 go-test: netns-tool
 	@set -e; \
 	packages=$$(go list $(GO_TEST_PKGS)); \
+	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	go mod download; \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages

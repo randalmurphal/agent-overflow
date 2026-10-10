@@ -87,9 +87,10 @@ of the real-provider smoke tests.
 `.github/workflows/ci.yml` runs on every pull request and push to `main`.
 Each job calls a Make target, so the local command is the same check:
 `fmt-check`, `go-vet`, `go-build` plus `provider-smoke-compile` (Linux and
-macOS), `go-lint`, `go-vuln`, `bindings-check`, `frontend-lint`, `go-test`,
-the Vitest unit and browser projects under `bin/ao-netns`, and `make e2e` in
-four Playwright shards with two workers each (`E2E_ARGS`, `AO_E2E_WORKERS`).
+macOS), `go-lint`, `go-vuln`, `bindings-check`, `frontend-lint`, `go-test` in three shards by
+package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the Vitest unit and
+browser projects under `bin/ao-netns`, and `make e2e` in six Playwright
+shards with two workers each (`E2E_ARGS`, `AO_E2E_WORKERS`).
 `.github/actions/setup` owns the toolchain pins, caches and the runner
 preparation the network namespace needs. `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
