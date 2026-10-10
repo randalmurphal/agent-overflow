@@ -60,28 +60,34 @@ export async function loadAttachmentPreview(attachment: AttachmentPreviewSource)
     attachment,
     imagePreviewUrl(result.mimeType, result.data),
     result.mimeType,
+    result.width,
+    result.height,
   );
 }
 
-/** One attachment image, painted from `url` until its original is fetched. */
+/**
+ * One attachment image, painted from `url` until its original is fetched.
+ * `width` and `height` are the original's, as GetAttachmentThumbnail reads
+ * them from its header, so the lightbox opens at the box the original fills.
+ */
 function attachmentImageItem(
   attachment: AttachmentPreviewSource,
   url: string,
   mimeType: string,
+  width: number,
+  height: number,
 ): ImagePreviewItem {
   return {
     id: attachment.id,
     filename: attachment.filename,
     mimeType,
     url,
-    // GetAttachmentThumbnail reports no pixel size, of the thumbnail or the
-    // original.
-    width: 0,
-    height: 0,
+    width,
+    height,
     originalBytes: attachment.size,
     // Over HTTP, admitted by a single-use ticket, so opening a 10 MiB
     // screenshot does not stall the live event stream behind it.
-    original: () => fetchAttachmentBytes(attachment.threadId, attachment.id),
+    original: (signal) => fetchAttachmentBytes(attachment.threadId, attachment.id, signal),
     menuTag: attachmentImageMenuTag(attachment),
   };
 }
@@ -250,9 +256,10 @@ export function createAttachmentPreviews(
     loadExpandedPreview(selectedId: string): ExpandedImagePreview | null {
       // Siblings in the lightbox are the message's IMAGES; a file is not
       // one, and has no expand affordance to reach this from.
-      const images = imageAttachments(getAttachments()).map((attachment) =>
-        attachmentImageItem(attachment, previews[attachment.id]?.url ?? '', attachment.mimeType),
-      );
+      const images = imageAttachments(getAttachments()).map((attachment) => {
+        const loaded = previews[attachment.id];
+        return attachmentImageItem(attachment, loaded?.url ?? '', attachment.mimeType, loaded?.width ?? 0, loaded?.height ?? 0);
+      });
       return buildExpandedImagePreview(images, selectedId);
     },
   };

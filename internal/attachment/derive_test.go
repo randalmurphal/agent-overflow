@@ -2,12 +2,15 @@ package attachment
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"os"
 	"reflect"
 	"sync"
@@ -425,19 +428,121 @@ func TestDecodeMemoryBoundsConcurrentJobs(t *testing.T) {
 	})
 }
 
-// A job costlier than the whole budget takes all of it and runs alone,
-// rather than waiting forever for room that can never exist.
-func TestDecodeMemoryAdmitsAJobLargerThanTheBudget(t *testing.T) {
+// A job costlier than the whole budget is refused rather than left waiting
+// forever for room that can never exist. In a bubble, so a wait that never
+// ends fails as a deadlock instead of hanging the run.
+func TestDecodeMemoryRefusesAJobLargerThanTheBudget(t *testing.T) {
 	src := encodeAs(t, "png", gradient(641, 480, false))
 	synctest.Test(t, func(t *testing.T) {
 		replaceDecodeBudget(t, 1000)
-		var held int64
-		replaceDecodeAcquired(t, func(int64) { held = decodeMemoryHeld.Load() })
-		if _, err := Derive("too-big", src, "image/png", 320); err != nil {
-			t.Fatalf("Derive: %v", err)
+		var acquired atomic.Int32
+		replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+		if _, err := Derive("too-big", src, "image/png", 320); !errors.Is(err, ErrPixelBudget) {
+			t.Fatalf("Derive = %v, want the budget refusal", err)
 		}
-		if held != 1000 {
-			t.Fatalf("held %d, want the whole 1000-byte budget", held)
+		if acquired.Load() != 0 || decodeMemoryHeld.Load() != 0 {
+			t.Fatal("a refused job acquired budget")
 		}
 	})
+}
+
+// The cap and the pixel budget together keep every derivation inside the
+// decode budget, so no admissible job is ever refused. The bound is
+// computed from the constants (imagecodec.go derives it), and the real
+// admission predicate and estimate are checked over every source width up
+// to 64 times each tier, at the tallest 16-bit source both limits admit.
+func TestEveryAdmissibleDerivationFitsTheDecodeBudget(t *testing.T) {
+	maxTier := DeriveWidths[len(DeriveWidths)-1]
+	// tier x source height for any admitted derivative.
+	scratchRows := math.Sqrt(float64(deriveMaxPixels+maxTier/2) * float64(thumbPixelBudget))
+	bound := 8*float64(thumbPixelBudget) + 32*scratchRows + 8*float64(deriveMaxPixels)
+	if bound >= float64(decodeMemoryBudget) {
+		t.Fatalf("the largest admissible derivation can need %.0f MiB, over the %d MiB budget", bound/(1<<20), decodeMemoryBudget>>20)
+	}
+
+	var worst int64
+	for _, tier := range DeriveWidths {
+		rows := deriveMaxPixels / tier
+		for width := tier + 1; width <= 64*tier; width++ {
+			// The tallest height whose derivative rounds to at most rows,
+			// then no taller than the pixel budget allows at this width.
+			height := ((rows+1)*width - width/2 - 1) / tier
+			height = min(height, thumbPixelBudget/width)
+			if height < 1 {
+				break
+			}
+			if !withinDerivedPixels(width, height, tier) {
+				t.Fatalf("%dx%d at %d: the tallest admissible height is not admitted", width, height, tier)
+			}
+			cfg := image.Config{ColorModel: color.NRGBA64Model, Width: width, Height: height}
+			cost := resampleCost(cfg, tier, scaledHeight(width, height, tier))
+			if cost > decodeMemoryBudget {
+				t.Fatalf("%dx%d at the %d tier needs %d MiB, over the %d MiB budget", width, height, tier, cost>>20, decodeMemoryBudget>>20)
+			}
+			worst = max(worst, cost)
+		}
+	}
+	t.Logf("largest admissible derivation: %d MiB of %d MiB (bound %.0f MiB)", worst>>20, decodeMemoryBudget>>20, bound/(1<<20))
+}
+
+// A derivative over the pixel cap is never made: the source is answered
+// before any budget is acquired. The boundary itself is admitted.
+func TestDeriveServesTheOriginalOverThePixelCap(t *testing.T) {
+	var acquired atomic.Int32
+	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+	square := pngWithDeclaredDimensions(t, 3000, 3000) // 2880x2880 at the 2880 tier
+	got, err := Derive("cap/square", square, "image/png", 2880)
+	if err != nil || got.Derived || &got.Data[0] != &square[0] || got.Width != 3000 || got.Height != 3000 {
+		t.Fatalf("Derive = (derived %v, %dx%d, %v), want the 3000x3000 source", got.Derived, got.Width, got.Height, err)
+	}
+	if acquired.Load() != 0 {
+		t.Fatal("a derivation over the cap reached the decode")
+	}
+	// 2880x2160 is inside the cap, so this one is attempted (and, with no
+	// pixel data behind the header, answers the source).
+	if _, err := Derive("cap/four-three", pngWithDeclaredDimensions(t, 3000, 2250), "image/png", 2880); err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	if acquired.Load() != 1 {
+		t.Fatal("a derivation inside the cap was not attempted")
+	}
+}
+
+// corruptPixels replaces a PNG's image data with bytes no inflater accepts,
+// under a correct checksum, so the header reads and the decode fails on the
+// pixels themselves.
+func corruptPixels(t *testing.T, src []byte) []byte {
+	t.Helper()
+	out := bytes.Clone(src)
+	for pos := 8; pos+12 <= len(out); {
+		size := int(binary.BigEndian.Uint32(out[pos:]))
+		kind := string(out[pos+4 : pos+8])
+		data := out[pos+8 : pos+8+size]
+		if kind == "IDAT" {
+			for i := range data {
+				data[i] = 0xFF
+			}
+			binary.BigEndian.PutUint32(out[pos+8+size:], crc32.ChecksumIEEE(out[pos+4:pos+8+size]))
+			return out
+		}
+		pos += 12 + size
+	}
+	t.Fatal("no IDAT chunk")
+	return nil
+}
+
+// Bytes Go cannot decode behind a valid header reach the browser as they are,
+// as they did before derivatives existed, instead of failing the request.
+func TestDeriveServesTheOriginalWhenThePixelsDoNotDecode(t *testing.T) {
+	src := corruptPixels(t, encodeAs(t, "png", gradient(641, 480, false)))
+	if _, err := decodeImage(src); err == nil {
+		t.Fatal("the fixture decodes")
+	}
+	got, err := Derive("corrupt", src, "image/png", 320)
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	if got.Derived || &got.Data[0] != &src[0] || got.MimeType != "image/png" || got.Width != 641 || got.Height != 480 {
+		t.Fatalf("Derive = (derived %v, %s, %dx%d), want the 641x480 source", got.Derived, got.MimeType, got.Width, got.Height)
+	}
 }

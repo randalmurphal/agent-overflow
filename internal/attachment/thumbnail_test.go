@@ -10,9 +10,12 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"math"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 )
 
 // realPNG returns a 64x32 PNG with a recognisable color so the thumb decoder
@@ -145,6 +148,38 @@ func TestThumbnailRejectsCrossThreadID(t *testing.T) {
 	}
 }
 
+// The original's size comes from its header; a header that no longer reads
+// is a missing size, not a failure, and ownership holds as for bytes.
+func TestOriginalSizeReadsTheStoredHeader(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "thread-a")
+	seedThread(t, meta, "thread-b")
+	record, err := uploadBytes(attStore, "thread-a", "shot.png", "image/png", realPNG(t), 1)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if w, h, err := attStore.OriginalSize("thread-a", record.ID); err != nil || w != 64 || h != 32 {
+		t.Fatalf("OriginalSize = %dx%d, %v; want 64x32", w, h, err)
+	}
+	if _, _, err := attStore.OriginalSize("thread-b", record.ID); err == nil {
+		t.Fatal("OriginalSize answered another thread's attachment")
+	}
+	if _, _, err := attStore.OriginalSize("thread-a", "no-such-id"); err == nil {
+		t.Fatal("OriginalSize answered a missing attachment")
+	}
+
+	_, path, _, err := attStore.Get(record.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("no longer an image"), 0o600); err != nil {
+		t.Fatalf("damage the file: %v", err)
+	}
+	if w, h, err := attStore.OriginalSize("thread-a", record.ID); err != nil || w != 0 || h != 0 {
+		t.Fatalf("OriginalSize(damaged) = %dx%d, %v; want 0x0 and no error", w, h, err)
+	}
+}
+
 func TestThumbnailMissingAttachment(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "thread-x")
@@ -244,6 +279,36 @@ func TestThumbnailRejectsDecodeBomb(t *testing.T) {
 	if _, _, err := generateThumbnail(bomb, "image/png"); !errors.Is(err, ErrPixelBudget) {
 		t.Fatalf("generateThumbnail(bomb) = %v, want the pixel-budget refusal before any decode", err)
 	}
+}
+
+// A thumbnail of any source up to 256 times taller than wide fits the decode
+// budget: checked from the constants and over every width to 16384 at the
+// tallest and the squarest 16-bit source the pixel budget admits.
+func TestEveryThumbnailShortOfASliverFitsTheDecodeBudget(t *testing.T) {
+	bound := 8*float64(thumbPixelBudget) + 32*thumbMaxDim*math.Sqrt(thumbPixelBudget) + 8*thumbMaxDim*thumbMaxDim
+	if bound >= float64(decodeMemoryBudget) {
+		t.Fatalf("a thumbnail can need %.0f MiB, over the %d MiB budget", bound/(1<<20), decodeMemoryBudget>>20)
+	}
+	for width := 1; width <= 16384; width++ {
+		for _, height := range []int{min(thumbPixelBudget/width, thumbMaxDim*width), min(thumbPixelBudget/width, width)} {
+			tw, th := scaleToBox(width, height, thumbMaxDim)
+			cost := resampleCost(image.Config{ColorModel: color.NRGBA64Model, Width: width, Height: height}, tw, th)
+			if cost > decodeMemoryBudget {
+				t.Fatalf("a %dx%d thumbnail needs %d MiB, over the %d MiB budget", width, height, cost>>20, decodeMemoryBudget>>20)
+			}
+		}
+	}
+}
+
+// A sliver tall enough that its one-pixel-wide resample alone outgrows the
+// budget is refused before anything is decoded, not left waiting forever.
+func TestThumbnailRefusesASliverOverTheDecodeBudget(t *testing.T) {
+	sliver := pngWithDeclaredDimensions(t, 1, 40_000_000)
+	synctest.Test(t, func(t *testing.T) {
+		if _, _, err := generateThumbnail(sliver, "image/png"); !errors.Is(err, ErrPixelBudget) {
+			t.Fatalf("generateThumbnail(1x40M) = %v, want the decode budget refusal", err)
+		}
+	})
 }
 
 // pngWithDeclaredDimensions returns the minimum PNG byte sequence that has a

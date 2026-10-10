@@ -3,6 +3,7 @@ package attachment
 import (
 	"fmt"
 	"image"
+	"log"
 	"os"
 
 	"agent-overflow/internal/store"
@@ -107,6 +108,38 @@ func (s *Store) Thumbnail(threadID, attachmentID string) ([]byte, string, error)
 	}
 	out := v.(genResult)
 	return out.data, out.mime, nil
+}
+
+// OriginalSize reads the pixel size of an image attachment's stored original
+// from its header, without decoding the pixels, so a client can reserve the
+// full-size box before the bytes arrive. A header that does not read (or
+// declares more than the pixel budget) answers 0, 0: the size is a layout
+// hint, and its absence is not a failure. Ownership and kind are checked as
+// for every byte accessor.
+func (s *Store) OriginalSize(threadID, attachmentID string) (width, height int, err error) {
+	record, absolutePath, err := s.resolveThreadAttachment(threadID, attachmentID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if record.Kind != store.AttachmentKindImage {
+		return 0, 0, fmt.Errorf("%w: %q is a %s attachment", ErrNotAnImage, attachmentID, record.Kind)
+	}
+	file, err := os.Open(absolutePath)
+	if err != nil {
+		return 0, 0, nil
+	}
+	defer func() {
+		// The header was already read; a failed close changes nothing the
+		// caller receives.
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("attachment: close %s: %v", absolutePath, closeErr)
+		}
+	}()
+	cfg, err := imageConfigFrom(file)
+	if err != nil {
+		return 0, 0, nil
+	}
+	return cfg.Width, cfg.Height, nil
 }
 
 // generateThumbnail decodes, scales and encodes one thumbnail under the

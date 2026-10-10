@@ -61,6 +61,32 @@ export function setReviewDiffMock(
   });
 }
 
+/** GetAttachmentThumbnail's wire shape (app.AttachmentThumbnail). */
+export interface AttachmentThumbnailReply {
+  data: string;
+  mimeType: string;
+  /** The original image's pixel size; 0 when its header does not read. */
+  width: number;
+  height: number;
+}
+
+/**
+ * Mocks GetAttachmentThumbnail with the whole wire shape. `impl` answers the
+ * fields a test cares about; the rest default to a PNG thumbnail of an
+ * original whose size is unknown.
+ */
+export function setAttachmentThumbnailMock(
+  impl: (threadId: string, attachmentId: string) => Partial<AttachmentThumbnailReply> | Promise<Partial<AttachmentThumbnailReply>> = () => ({}),
+): MockedFn {
+  return setBindingMock('GetAttachmentThumbnail', async (threadId: string, attachmentId: string): Promise<AttachmentThumbnailReply> => ({
+    data: 'iVBORw0KGgo=',
+    mimeType: 'image/png',
+    width: 0,
+    height: 0,
+    ...(await impl(threadId, attachmentId)),
+  }));
+}
+
 /**
  * Direct read for assertions (call counts, args).
  */

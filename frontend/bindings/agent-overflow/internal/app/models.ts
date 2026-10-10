@@ -473,6 +473,14 @@ export class AttachmentThumbnail {
     "data": string;
     "mimeType": string;
 
+    /**
+     * Width and Height are the ORIGINAL image's pixel size, read from its
+     * header, so the full-size view opens at its final box; 0 when the
+     * header does not read.
+     */
+    "width": number;
+    "height": number;
+
     /** Creates a new AttachmentThumbnail instance. */
     constructor($$source: Partial<AttachmentThumbnail> = {}) {
         if (!("data" in $$source)) {
@@ -480,6 +488,12 @@ export class AttachmentThumbnail {
         }
         if (!("mimeType" in $$source)) {
             this["mimeType"] = "";
+        }
+        if (!("width" in $$source)) {
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            this["height"] = 0;
         }
 
         Object.assign(this, $$source);
