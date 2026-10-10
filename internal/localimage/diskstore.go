@@ -214,7 +214,7 @@ func (s *diskStore) put(key diskKey, mime string, data []byte) (string, error) {
 	if charge > s.maxBytes {
 		return "", errLargerThanBound
 	}
-	temp, err := os.CreateTemp(s.dir, tempPrefix+"*")
+	temp, err := s.createTemp()
 	if err != nil {
 		return "", err
 	}
@@ -374,4 +374,39 @@ func storedExtension(ext string) bool {
 		}
 	}
 	return false
+}
+
+// createTemp opens the file a derivative is written to before its rename.
+// A directory that is gone is made again: a user clears the cache by
+// deleting it, which must not leave every later derivative in memory for
+// the rest of the process.
+func (s *diskStore) createTemp() (*os.File, error) {
+	temp, err := os.CreateTemp(s.dir, tempPrefix+"*")
+	if !errors.Is(err, fs.ErrNotExist) {
+		return temp, err
+	}
+	if err := s.recreate(); err != nil {
+		return nil, err
+	}
+	return os.CreateTemp(s.dir, tempPrefix+"*")
+}
+
+// recreate makes the directory when it no longer exists and empties the
+// index with it: nothing the index named survived the deletion. Under the
+// lock so a put that got there first is not reset after its rename.
+func (s *diskStore) recreate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := os.Stat(s.dir); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(s.dir, appdirs.PrivateDirPerm); err != nil {
+		return err
+	}
+	s.order.Init()
+	clear(s.index)
+	s.total = 0
+	return nil
 }

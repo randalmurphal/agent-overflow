@@ -497,3 +497,46 @@ func TestConcurrentResolvesStoreOneFile(t *testing.T) {
 	_, served := readAll(t, s, ids[0])
 	assertPNG(t, served, 320, 240)
 }
+
+// A cache directory deleted while the service runs (a user clearing it) is
+// made again by the next store, with the index emptied: nothing it named
+// survived. Derivatives keep landing on disk rather than in memory for the
+// rest of the process, and nothing is logged.
+func TestADeletedCacheDirectoryIsRecreated(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "images")
+	workspace := t.TempDir()
+	payload := pngBytes(t, 641, 480)
+	a := writeFile(t, workspace, "a.png", payload)
+	b := writeFile(t, workspace, "b.png", payload)
+	s, derivations, logs := countingService(dir, DiskCacheBytes)
+
+	first := resolve(t, s, a, workspace)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove the cache directory: %v", err)
+	}
+	stored := resolve(t, s, b, workspace)
+	content, served := readAll(t, s, stored.ContentID)
+	if _, isFile := content.Content.(*os.File); !isFile {
+		t.Fatalf("after the delete a derivative is served from %T, want a file in the recreated directory", content.Content)
+	}
+	assertPNG(t, served, 320, 240)
+	if names := dirNames(t, dir); len(names) != 1 {
+		t.Fatalf("the recreated directory holds %v, want the one derivative", names)
+	}
+	if held, want := s.disk.bytes(), derivativeCharge(t, payload); held != want {
+		t.Fatalf("cache charges %d bytes, want %d: the deleted file still counts", held, want)
+	}
+	// The memory entry for a names a file that is gone: the next resolve
+	// derives and stores it again instead of answering the dead id.
+	again := resolve(t, s, a, workspace)
+	if again.ContentID == first.ContentID || derivations.Load() != 3 {
+		t.Fatalf("resolving a after the delete: same id %v, derivations %d; want a new derivation", again.ContentID == first.ContentID, derivations.Load())
+	}
+	if names := dirNames(t, dir); len(names) != 2 {
+		t.Fatalf("directory holds %v, want both derivatives", names)
+	}
+	if lines := logs.snapshot(); len(lines) != 0 {
+		t.Fatalf("a deleted directory logged %q, want nothing", lines)
+	}
+}
