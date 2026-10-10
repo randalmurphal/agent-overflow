@@ -45,6 +45,26 @@ export function isHigherImageTier(candidate: number, current: number): boolean {
   return candidate === 0 || candidate > current;
 }
 
+// Elements markdown and sanitized HTML render inline. An inline box has no
+// content width of its own (a ResizeObserver reports it as 0x0), so an
+// image inside a link or emphasis is bounded by the block around it.
+const INLINE_TAGS = new Set([
+  'A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DEL', 'DFN', 'EM', 'I', 'INS', 'KBD',
+  'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRIKE', 'STRONG', 'SUB', 'SUP', 'TT', 'U', 'VAR',
+]);
+
+/**
+ * The element whose content box bounds an image hosted at `element`: the
+ * nearest ancestor that is not an inline element, usually the paragraph.
+ * The image's own wrapper is `w-fit`, so its width follows the image
+ * rather than the space the image may fill. A DOM walk, not a layout read.
+ */
+export function imageBoxContainer(element: Element): Element | null {
+  let current = element.parentElement;
+  while (current && INLINE_TAGS.has(current.tagName)) current = current.parentElement;
+  return current;
+}
+
 type BoxCallback = (cssWidth: number) => void;
 
 interface ObservedBox {

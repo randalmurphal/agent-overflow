@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IMAGE_TIER_MEMO_MAX_ENTRIES,
   IMAGE_TIER_WIDTHS,
+  imageBoxContainer,
   __resetImageTiersForTest,
   imageTierFor,
   isHigherImageTier,
@@ -222,6 +223,20 @@ describe('the shared box observer', () => {
     expect(queries.every((query) => query.listeners.size === 0)).toBe(true);
     observeImageBox(document.createElement('p'), () => {});
     expect(liveQuery()).toBeDefined();
+  });
+});
+
+describe('the container an image is measured by', () => {
+  it('is the nearest block around the host, past links, emphasis and wrapper spans', () => {
+    const paragraph = document.createElement('p');
+    paragraph.innerHTML = '<a href="x"><em><span class="contents"><span id="host"></span></span></em></a>';
+    expect(imageBoxContainer(paragraph.querySelector('#host')!)).toBe(paragraph);
+
+    const cell = document.createElement('td');
+    cell.innerHTML = '<span id="host"></span>';
+    expect(imageBoxContainer(cell.querySelector('#host')!)).toBe(cell);
+
+    expect(imageBoxContainer(document.createElement('span'))).toBeNull();
   });
 });
 

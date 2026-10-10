@@ -4,6 +4,7 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { mockLocalImage } from '../../../test/mocks/attachmentTransfer';
+import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
@@ -22,6 +23,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
   afterEach(() => {
     setPageGrantsFromBootstrap(false);
     resetToLocalPage();
+    __resetImageTiersForTest();
   });
 
   it('renders an agent-overflow:open anchor when the path is on the allowlist', async () => {
@@ -336,6 +338,8 @@ describe('<ChatMarkdown> path-link rendering', () => {
     });
 
     await waitFor(() => {
+      // happy-dom lays nothing out: report the paragraph's width.
+      __reportImageBoxForTest(800);
       expect(container.querySelector('img[alt="diagram"]')).not.toBeNull();
     });
     expect(container.querySelector('[data-streamdown-image-blocked]')).toBeNull();
@@ -383,6 +387,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     });
 
     await waitFor(() => {
+      __reportImageBoxForTest(800);
       expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
     });
 
@@ -405,6 +410,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     });
 
     await waitFor(() => {
+      __reportImageBoxForTest(800);
       expect(container.querySelectorAll('img')).toHaveLength(3);
     });
     expect(container.querySelector('[data-streamdown-image-blocked]')).toBeNull();

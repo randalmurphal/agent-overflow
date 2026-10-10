@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import EmbeddedHtmlHost from './EmbeddedHtmlHost.svelte';
 import { MEDIA_CLAIM_ATTR } from '../../../markdown';
+import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../../utils/imageTiers';
 import {
   buildForgeAttachmentHref,
   type ForgeAttachmentSource,
@@ -10,7 +11,8 @@ import {
 // The bytes never arrive: a mounted host is the claim this file is about.
 const acquired: string[] = [];
 const released: string[] = [];
-vi.mock('../../../utils/forgeAttachmentCache', () => ({
+vi.mock('../../../utils/forgeAttachmentCache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../utils/forgeAttachmentCache')>()),
   acquireForgeAttachment: (_backend: string, _pr: unknown, href: string) => {
     acquired.push(href);
     return {
@@ -41,7 +43,14 @@ const marked = (name: string, alt = 'a shot') =>
 beforeEach(() => {
   acquired.length = 0;
   released.length = 0;
+  __resetImageTiersForTest();
 });
+
+// happy-dom lays nothing out: report the paragraph's width so each host
+// makes its first request.
+function measure(): void {
+  __reportImageBoxForTest(800);
+}
 
 describe('EmbeddedHtmlHost', () => {
   it('swaps a claimed marker for a live attachment host', async () => {
@@ -58,7 +67,8 @@ describe('EmbeddedHtmlHost', () => {
     expect(container.querySelector(`[${MEDIA_CLAIM_ATTR}]`)).toBeNull();
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('p[align="center"]')).not.toBeNull();
-    expect(acquired).toEqual([`/uploads/${HEX}/shot.png`]);
+    measure();
+    await waitFor(() => expect(acquired).toEqual([`/uploads/${HEX}/shot.png`]));
   });
 
   it('releases every host it mounted when it is destroyed', async () => {
@@ -72,6 +82,8 @@ describe('EmbeddedHtmlHost', () => {
     await waitFor(() => {
       expect(container.querySelectorAll('[data-forge-attachment-loading]')).toHaveLength(2);
     });
+    measure();
+    await waitFor(() => expect(acquired).toHaveLength(2));
     expect(released).toEqual([]);
 
     unmount();
@@ -87,10 +99,13 @@ describe('EmbeddedHtmlHost', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull();
     });
+    measure();
+    await waitFor(() => expect(acquired).toEqual([`/uploads/${HEX}/one.png`]));
 
     await rerender({ token, content: marked('two.png') });
 
     await waitFor(() => {
+      measure();
       expect(acquired).toEqual([`/uploads/${HEX}/one.png`, `/uploads/${HEX}/two.png`]);
     });
     await waitFor(() => expect(released).toEqual([`/uploads/${HEX}/one.png`]));
