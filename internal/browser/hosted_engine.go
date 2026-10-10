@@ -19,6 +19,7 @@ import (
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 	"github.com/google/uuid"
 )
 
@@ -442,7 +443,9 @@ func (e *hostedEngine) cancelDownload(id string) {
 	if !ok {
 		return
 	}
-	_ = cdpbrowser.CancelDownload(id).Do(browserCommandContext(browserCtx))
+	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
+		e.logf("browser: cancel download %s: %v", id, err)
+	}
 }
 
 func (p *hostedProfile) Dispose(context.Context) error {
@@ -535,25 +538,24 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// NoModifyURL: the URL was already rewritten onto the relay listener,
 	// and chromedp's own /json/version probe would re-read the Windows-side
 	// address and dial it.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
-	// The error logger rides the Allocate call in dialCDPBrowser, not a
-	// NewContext option: chromedp.WithErrorf lands in an unexported field
-	// only Run's own allocation path reads, and this dial bypasses Run.
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	// The dial must NOT go through chromedp.Run, because WebView2 answers
-	// its Target.createTarget with `-32000 no browser is open` — a WebView2
+	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
+		e.logf("browser: chromedp: "+format, args...)
+	}))
+	// The dial must NOT go through chromedp.Do, because WebView2 answers
+	// its Target.createTarget with `-32000 no browser is open`: a WebView2
 	// target exists only as a launcher-created controller (the spike's
 	// "WebView2 has no /json/new"). dialCDPBrowser (cdp_page.go) is that
 	// target-less dial, shared with the headless engine, and it is also the
-	// only sender of the target discovery the targetDestroyed backstop in
-	// dispatchEvent reads.
+	// only sender of the target discovery the targetDestroyed backstop
+	// reads.
 	//
 	// chromedp bounds none of this: a launcher that never answers would park
 	// the dial forever. So the wait is ours, on attachCtx, and a timeout
 	// tears the connection down rather than leaving a half-built browser
 	// behind.
 	attached := make(chan error, 1)
-	go func() { attached <- dialCDPBrowser(browserCtx, e.dispatchEvent, e.logf) }()
+	go func() { attached <- dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx) }) }()
 	select {
 	case err := <-attached:
 		if err != nil {
@@ -581,38 +583,42 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 	return e.browserCtx, true
 }
 
-// dispatchEvent translates the browser-level CDP stream into the seam's
-// vocabulary. Target ids are the engine's private business, so every event
-// is re-keyed onto the page id the Manager knows; an event for a target
-// this engine did not create is dropped rather than reported under a
-// handle nobody owns.
+// subscribe connects the browser-level CDP events of browserCtx to the seam.
+// Target ids are the engine's private business, so every event is re-keyed
+// onto the page id the Manager knows; an event for a target this engine did
+// not create is dropped rather than reported under a handle nobody owns.
 //
 // Lifecycle is the launcher's to report (`closed` / `process-failed`), and
 // targetDestroyed is the backstop for a controller that dies without one.
 // Popups are not wired: the launcher does not surface WebView2's
 // NewWindowRequested, so no page can be created behind the Manager's back.
-func (e *hostedEngine) dispatchEvent(ev any) {
-	// Downloads carry no engine identity — the GUID is the handle on every
-	// CDP engine — so they are translated by the shared helper.
-	if cdpDownloadEvent(ev, e.events, e.cancelDownload) {
+func (e *hostedEngine) subscribe(browserCtx context.Context) error {
+	// Downloads carry no engine identity (the GUID is the handle on every
+	// CDP engine), so the shared tracker translates them.
+	if err := newDownloadTracker(e.events, e.cancelDownload).subscribe(browserCtx, e.logf); err != nil {
+		return err
+	}
+	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
+		return err
+	}
+	return onBrowserEvent(browserCtx, target.TargetInfoChanged, e.logf, e.targetInfoChanged)
+}
+
+func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
+	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
+		// On its own goroutine, as both CDP engines report a closed page:
+		// retirePage ends in the Manager's teardown, which must not hold
+		// the target events queued behind it.
+		go e.retirePage(pageID)
+	}
+}
+
+func (e *hostedEngine) targetInfoChanged(event target.EventTargetInfoChanged) {
+	if event.TargetInfo == nil || event.TargetInfo.Type != "page" {
 		return
 	}
-	switch event := ev.(type) {
-	case *target.EventTargetDestroyed:
-		if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-			// Off the CDP listener goroutine, which is the rule both CDP
-			// engines follow and headless_profile.go's dispatchEvent spells
-			// out: retirePage ends in the Manager's teardown, and that
-			// teardown waits on this same browser connection.
-			go e.retirePage(pageID)
-		}
-	case *target.EventTargetInfoChanged:
-		if event.TargetInfo == nil || event.TargetInfo.Type != "page" {
-			return
-		}
-		if pageID, ok := e.pageForTarget(string(event.TargetInfo.TargetID)); ok {
-			e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title)
-		}
+	if pageID, ok := e.pageForTarget(string(event.TargetInfo.TargetID)); ok {
+		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title)
 	}
 }
 
@@ -666,8 +672,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 //
 // PageClosed is called inline here because every SYNCHRONOUS caller is the
 // launcher's report path, which is an RPC goroutine of its own. The one
-// caller that is a CDP listener goroutine starts this on a goroutine
-// instead, and must (dispatchEvent above).
+// caller that reads CDP events starts this on a goroutine instead
+// (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
 	targetID, known := e.targetByPage[pageID]

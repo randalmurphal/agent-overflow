@@ -404,7 +404,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	})
 	engine.bind("page1", "TARGET-1")
 
-	engine.dispatchEvent(&target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
 	if len(infos) != 1 || infos[0] != "page1 https://example.test/ Example" {
@@ -412,14 +412,14 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	}
 	// A target this engine never created is dropped rather than reported
 	// under a handle the Manager does not own.
-	engine.dispatchEvent(&target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
 	if len(infos) != 1 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
-	engine.dispatchEvent(&target.EventTargetDestroyed{TargetID: "TARGET-1"})
+	engine.targetDestroyed(target.EventTargetDestroyed{TargetID: "TARGET-1"})
 	select {
 	case handle := <-closed:
 		if handle != "page1" {
@@ -840,13 +840,13 @@ func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
 	}
 }
 
-// The regression this pins: chromedp.Run on a target-less remote context
+// The regression this pins: chromedp.Do on a target-less remote context
 // issues Target.createTarget, which Chrome quietly answers with a
 // throwaway tab and WebView2 refuses with `-32000 no browser is open` —
 // a WebView2 target exists only as a launcher-created controller, so the
 // browser-level dial must never create one (2026-08-31, the first live
 // pane attach). It must instead enable target discovery, which is the
-// only thing that feeds dispatchEvent's targetDestroyed backstop.
+// only thing that feeds the engine's targetDestroyed backstop.
 func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T) {
 	wsURL, methods := fakeCDPBrowser(t)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: wsURL}, engineEvents{})
@@ -872,7 +872,7 @@ func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T)
 }
 
 // The browser connection's events reach the Manager only through the
-// listener the dial registers: a page's title and its target's destruction
+// subscriptions the dial makes: a page's title and its target's destruction
 // arrive on that connection and nowhere else.
 func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)

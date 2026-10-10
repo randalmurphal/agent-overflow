@@ -441,7 +441,7 @@ func TestHeadlessProfileDisposeStopsTheBrowserAndHonoursPersistence(t *testing.T
 			if err != nil {
 				t.Fatalf("launch: %v", err)
 			}
-			// The profile's listener runs on browserCtx, so a context that
+			// The profile's event handlers run on browserCtx, so a context that
 			// has ended when Browser.close arrives is one nothing the exit
 			// reports can reach.
 			var listening atomic.Bool
@@ -632,15 +632,15 @@ func popupCreated(handle, opener string) map[string]any {
 	}}}
 }
 
-// Popups reach the Manager only through the browser-level listener, and the
-// Manager adopts one with CDP commands on the same connection. The listener
-// is registered before discovery is enabled, so a popup announced during the
-// handshake is reported, and the report runs off the goroutine that reads
-// the connection, so adopting a popup does not wait on itself.
+// Popups reach the Manager only through the browser-level event handlers,
+// and the Manager adopts one with CDP commands on the same connection. The
+// subscriptions are made before discovery is enabled, so a popup announced
+// during the handshake is reported, and adopting a popup does not wait on
+// the handler that reported it.
 //
 // The handshake popup is announced once, before the reply, as Chromium
-// reports the targets that exist when discovery is enabled. A listener
-// registered after that reply never hears of it.
+// reports the targets that exist when discovery is enabled. A subscription
+// made after that reply never hears of it.
 func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	var handshake sync.Once
 	browser := writeAnnouncingFakeChromium(t, "chromium", func(call fakeCDPCall) []map[string]any {
@@ -1349,10 +1349,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	}
 	for _, features := range []string{"", "noopener"} {
 		open := fmt.Sprintf(`window.open(%q, "_blank", %q); 1`, "file://"+secret, features)
-		if err := chromedp.Run(opCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			_, _, err := cdpruntime.Evaluate(open).WithUserGesture(true).Do(ctx)
-			return err
-		})); err != nil {
+		if _, err := chromedp.Call(opCtx, cdpruntime.Evaluate, cdpruntime.EvaluateParams{Expression: open, UserGesture: new(true)}); err != nil {
 			t.Fatalf("open a popup with features %q: %v", features, err)
 		}
 		var popup enginePopup
@@ -1396,11 +1393,10 @@ func setRealCookie(t *testing.T, profile *headlessProfile) *network.Cookie {
 		t.Fatalf("new page: %v", err)
 	}
 	cookie := &network.Cookie{Name: "ao-smoke", Value: strconv.FormatInt(time.Now().UnixNano(), 36)}
-	expires := cdp.TimeSinceEpoch(time.Now().Add(time.Hour))
-	if err := chromedp.Run(page.(*cdpPage).ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return network.SetCookie(cookie.Name, cookie.Value).
-			WithDomain("ao-smoke.test").WithPath("/").WithExpires(&expires).Do(ctx)
-	})); err != nil {
+	expires := cdp.TimeSinceEpoch(time.Now().Add(time.Hour).Unix())
+	if _, err := chromedp.Call(page.(*cdpPage).ctx, network.SetCookie, network.SetCookieParams{
+		Name: cookie.Name, Value: cookie.Value, Domain: "ao-smoke.test", Path: "/", Expires: expires,
+	}); err != nil {
 		t.Fatalf("set a cookie: %v", err)
 	}
 	process := profile.currentProcess()
@@ -1422,7 +1418,8 @@ func readRealCookie(t *testing.T, profile *headlessProfile, name string) string 
 	if err != nil {
 		t.Fatalf("relaunch: %v", err)
 	}
-	cookies, err := storage.GetCookies().Do(browserCommandContext(browserCtx))
+	result, err := chromedp.CallBrowser(browserCtx, storage.GetCookies, storage.GetCookiesParams{})
+	cookies := result.Cookies
 	if err != nil {
 		t.Fatalf("read cookies: %v", err)
 	}
