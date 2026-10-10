@@ -18,24 +18,10 @@ concurrency:
 # (docs/architecture/development.md, Continuous integration). The composite
 # action in .github/actions/setup owns toolchain pins and caches.
 jobs:
-  format-and-vet:
-    name: gofmt and go vet
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          go: "true"
-          gtk: "true"
-          node: "true"
-          frontend-dist: "true"
-          cache-name: vet
-      - run: make fmt-check
-      - run: make go-vet
-
-  build:
-    name: Go build (every variant)
+  # The Linux Go checks share one job: each needs the same toolchain, GTK
+  # headers and frontend bundle, which cost more than the checks themselves.
+  go-checks:
+    name: gofmt, go vet, go build and bindings
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -46,10 +32,15 @@ jobs:
           gtk: "true"
           node: "true"
           frontend-dist: "true"
-          cache-name: build
+          cache-name: checks
+      - run: make fmt-check
+      - run: make go-vet
       - run: make go-build
       - name: Compile the provider smoke tests
         run: make provider-smoke-compile
+      - name: Install the Wails CLI
+        run: go install tool
+      - run: make bindings-check
 
   build-macos:
     name: Go build (macOS)
@@ -65,9 +56,8 @@ jobs:
           cache-name: build-macos
       - run: make go-build
 
-  lint-go:
-    name: golangci-lint (new issues)
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+  go-lint:
+    name: golangci-lint (new issues) and govulncheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -80,42 +70,14 @@ jobs:
           frontend-dist: "true"
           cache-name: lint
       - name: Resolve the change under test
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci-change.sh "$RUNNER_TEMP/change"
-      - run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
-
-  vulnerabilities:
-    name: govulncheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          go: "true"
-          gtk: "true"
-          node: "true"
-          frontend-dist: "true"
-          cache-name: vuln
+      - name: golangci-lint on the change
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
       - run: make go-vuln
-
-  bindings:
-    name: Generated bindings are committed
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          go: "true"
-          gtk: "true"
-          node: "true"
-          frontend-dist: "true"
-          cache-name: bindings
-      - name: Install the Wails CLI
-        run: go install tool
-      - run: make bindings-check
 
   frontend:
     name: svelte-check, build and oxlint
@@ -184,9 +146,19 @@ jobs:
         run: bin/ao-netns node --test scripts/release-candidate.test.mjs
 
   vitest:
-    name: Vitest (unit and browser)
+    name: Vitest (${{ matrix.project }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: unit
+            script: test
+            browsers: ""
+          - project: browser
+            script: test:browser
+            browsers: chromium
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -194,25 +166,22 @@ jobs:
           go: "true"
           node: "true"
           frontend-deps: "true"
-          browsers: chromium
+          browsers: ${{ matrix.browsers }}
           netns: "true"
           cache-name: netns
       - run: make netns-tool
-      - name: Unit projects
+      - name: Run the ${{ matrix.project }} project
         working-directory: frontend
-        run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm test
-      - name: Browser project
-        working-directory: frontend
-        run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm run test:browser
+        run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm run ${{ matrix.script }}
 
   e2e:
-    name: Playwright harness suite (shard ${{ matrix.shard }} of 6)
+    name: Playwright harness suite (shard ${{ matrix.shard }} of 8)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -225,7 +194,7 @@ jobs:
           browsers: chromium webkit
           netns: "true"
           cache-name: harness
-      - run: make e2e E2E_ARGS="--shard=${{ matrix.shard }}/6"
+      - run: make e2e E2E_ARGS="--shard=${{ matrix.shard }}/8"
         env:
           AO_E2E_WORKERS: "2"
       - name: Upload failure traces and the report

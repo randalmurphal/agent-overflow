@@ -35,7 +35,11 @@ type watcher struct {
 	label    string
 	dir      string
 	debounce time.Duration
-	emit     func()
+	// after starts one debounce wait. It is time.After in production;
+	// tests replace it before start so a burst's window stays open until
+	// they release it.
+	after func(time.Duration) <-chan time.Time
+	emit  func()
 	// relevantName answers whether one BASE NAME in dir is content this
 	// app reads. The dir check is the core's (see relevantInDir); the
 	// predicate never sees a path.
@@ -90,6 +94,22 @@ func newWatcher(
 	relevantName func(name string) bool,
 	emit func(),
 ) (*watcher, error) {
+	result, err := openWatcher(label, dir, debounce, relevantName, emit)
+	if err != nil {
+		return nil, err
+	}
+	result.start()
+	return result, nil
+}
+
+// openWatcher arms a watch over dir without starting its goroutine, so a
+// test can replace fields the loop reads before start.
+func openWatcher(
+	label, dir string,
+	debounce time.Duration,
+	relevantName func(name string) bool,
+	emit func(),
+) (*watcher, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("%s: dir is required", label)
 	}
@@ -114,7 +134,7 @@ func newWatcher(
 		return nil, fmt.Errorf("%s: create watcher: %w", label, err)
 	}
 	result := &watcher{
-		label: label, dir: filepath.Clean(dir), debounce: debounce,
+		label: label, dir: filepath.Clean(dir), debounce: debounce, after: time.After,
 		emit: emit, relevantName: relevantName, watcher: fsWatcher,
 		done: make(chan struct{}), suppressed: make(map[string]time.Time), now: time.Now,
 	}
@@ -123,9 +143,13 @@ func newWatcher(
 	if err := fsWatcher.Add(result.dir); err != nil {
 		return nil, errors.Join(fmt.Errorf("%s: watch %s: %w", label, result.dir, err), fsWatcher.Close())
 	}
-	result.waitGroup.Add(1)
-	go result.loop()
 	return result, nil
+}
+
+// start runs the event loop. Call it once, after openWatcher.
+func (w *watcher) start() {
+	w.waitGroup.Add(1)
+	go w.loop()
 }
 
 // suppress marks path as written by this process, so the event it
@@ -244,27 +268,12 @@ func (w *watcher) Close() error {
 
 func (w *watcher) loop() {
 	defer w.waitGroup.Done()
-	var timer *time.Timer
+	// timerChannel is the pending debounce wait. Each queued event replaces
+	// it, so only the wait started by the last event of a burst can emit; an
+	// abandoned wait's channel is never read again.
 	var timerChannel <-chan time.Time
-	defer func() {
-		if timer != nil {
-			timer.Stop()
-		}
-	}()
 	queueEmit := func() {
-		if timer == nil {
-			timer = time.NewTimer(w.debounce)
-			timerChannel = timer.C
-			return
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(w.debounce)
-		timerChannel = timer.C
+		timerChannel = w.after(w.debounce)
 	}
 
 	for {

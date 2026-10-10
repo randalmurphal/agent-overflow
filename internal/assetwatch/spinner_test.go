@@ -30,57 +30,42 @@ func waitForSpinnerChanged(t *testing.T, emitted <-chan struct{}) {
 	}
 }
 
-func expectNoSpinnerChange(t *testing.T, emitted <-chan struct{}, why string) {
-	t.Helper()
-	select {
-	case <-emitted:
-		t.Fatalf("%s emitted a spinner-changed event", why)
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
 func TestSpinnerWatcherDebouncesWritesAndIgnoresNonSpriteFiles(t *testing.T) {
-	_, dir, emitted := newTestSpinnerWatcher(t)
+	observed := startObservedWatcher(t, "spinner watcher", spinnerFileRelevant)
 
 	// A sprite lands as two files; the pair plus a rewrite must collapse
 	// into one refetch, not three.
-	strip := filepath.Join(dir, "robo-papers.png")
-	if err := os.WriteFile(strip, []byte("png"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "robo-papers.json"), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(strip, []byte("png2"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForSpinnerChanged(t, emitted)
-	expectNoSpinnerChange(t, emitted, "a write burst")
+	observed.write(t, "robo-papers.png", "png")
+	observed.write(t, "robo-papers.json", "{}")
+	observed.write(t, "robo-papers.png", "png2")
+	observed.expectQueued(t, 0, 2, "a write burst")
+	observed.releaseOneEmit(t, "a write burst")
 
 	// The generated reference is rewritten by the backend at boot and read
 	// by nobody at runtime; a stray file is not a sprite half; a
 	// subdirectory holds nothing this app reads. None may wake the
 	// frontend.
+	armed := observed.clock.armedCount()
 	for _, name := range []string{spinner.ReferenceFileName, "notes.txt", "source.gif"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		observed.write(t, name, "x")
 	}
-	nested := filepath.Join(dir, "sources")
+	nested := filepath.Join(observed.core.dir, "sources")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(nested, "old.png"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	expectNoSpinnerChange(t, emitted, "non-sprite files")
+	observed.expectIgnored(t, armed, "non-sprite files")
 
 	// Removing a strip changes what the picker offers, so it must reach
 	// the UI.
-	if err := os.Remove(strip); err != nil {
+	armed = observed.clock.armedCount()
+	if err := os.Remove(filepath.Join(observed.core.dir, "robo-papers.png")); err != nil {
 		t.Fatal(err)
 	}
-	waitForSpinnerChanged(t, emitted)
+	observed.expectQueued(t, armed, 1, "a strip removal")
+	observed.releaseOneEmit(t, "a strip removal")
 }
 
 // Removing the watched directory kills the inotify watch silently: no
