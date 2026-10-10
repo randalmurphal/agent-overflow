@@ -50,7 +50,7 @@
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/svelte": "5.4.2",
     "@tsconfig/svelte": "5.0.8",
-    "@types/node": "24.19.0",
+    "@types/node": "26.6.4",
     "@vitest/browser-playwright": "5.0.2",
     "@vitest/ui": "5.0.2",
     "fake-indexeddb": "6.2.5",
