@@ -141,11 +141,16 @@ go-build:
 # private LAN, no route off it; internal/netisolate), so a test that binds
 # every interface or dials out reaches nothing beyond the namespace in any
 # WSL networking mode. `go test` itself runs under bin/ao-netns rather than
-# through `-exec`, which would disable the test cache; `go mod download`
-# fetches anything missing on the host network first.
+# through `-exec`, which would disable the test cache. go-prefetch fetches,
+# on the host network first, what the named packages and their tests import
+# plus the module's tools, since a test may run `go tool wails3`. The CI
+# toolchain image carries that set rather than the whole module graph, and
+# can lag go.mod, so a bare `go mod download` here would reach the proxy
+# from every job and a narrower prefetch would strand a tool in the namespace.
 # Narrow a run with GO_TEST_PKGS and GO_TEST_FLAGS:
 #   make go-test GO_TEST_PKGS=./internal/shellenv GO_TEST_FLAGS='-run TestSync -count=1'
 NETNS := $(CURDIR)/bin/ao-netns
+go-prefetch = go list -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 
@@ -160,19 +165,21 @@ go-test: netns-tool
 	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	go mod download; \
+	$(call go-prefetch,$$packages); \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
-# same way here. go-lint builds golangci-lint from source at the pinned
-# version so it is compiled with this repo's Go toolchain (a release binary
-# built with an older Go refuses a newer go.mod); the build is cached after
-# the first run. GO_LINT_FLAGS carries extra flags, such as
-# --new-from-rev=origin/main for the new-issues gate.
+# same way here. go-lint runs golangci-lint at the pinned version through
+# `go run`, so it is compiled with this repo's Go toolchain (a release
+# binary built with an older Go refuses a newer go.mod); the build is cached
+# after the first run. GOLANGCI_LINT names a prebuilt binary instead, which
+# the CI toolchain image carries at the same pin. GO_LINT_FLAGS carries
+# extra flags, such as --new-from-patch for the new-issues gate.
 GOLANGCI_LINT_VERSION := v2.14.0
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_LINT_FLAGS ?=
 go-lint:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout 20m $(GO_LINT_FLAGS) ./...
+	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)
@@ -229,9 +236,10 @@ frontend-lint: $(FRONTEND_DEPS)
 # idle WSL host (2026-08-25); before it, root alone hit 1800s. The
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
+RACE_PKGS := ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
 test-race: netns-tool
-	go mod download
-	$(NETNS) go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
+	$(call go-prefetch,$(RACE_PKGS))
+	$(NETNS) go test -race -timeout 1800s $(RACE_PKGS)
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no
@@ -276,7 +284,7 @@ provider-smoke-revert:
 service-artifact-smoke: netns-tool
 	@test -n "$(AO_SERVICE_SMOKE_BASELINE)" -a -n "$(AO_SERVICE_SMOKE_CANDIDATE)" || \
 		{ echo 'Set AO_SERVICE_SMOKE_BASELINE and AO_SERVICE_SMOKE_CANDIDATE to absolute artifact paths.'; exit 1; }
-	go mod download
+	$(call go-prefetch,./internal/supervise)
 	AO_SERVICE_SMOKE_BASELINE="$(AO_SERVICE_SMOKE_BASELINE)" AO_SERVICE_SMOKE_CANDIDATE="$(AO_SERVICE_SMOKE_CANDIDATE)" \
 		$(NETNS) go test ./internal/supervise -run TestProductionServiceArtifact -v -count=1 -timeout 4m
 
@@ -307,7 +315,7 @@ service-artifact-smoke: netns-tool
 # reading a provider home. Either variable may be set on its own. See
 # internal/app/importcorpussmoke_test.go.
 import-corpus-smoke: netns-tool
-	go mod download
+	$(call go-prefetch,./internal/app)
 	AO_IMPORT_CORPUS_CLAUDE="$(AO_IMPORT_CORPUS_CLAUDE)" AO_IMPORT_CORPUS_CODEX="$(AO_IMPORT_CORPUS_CODEX)" \
 		$(NETNS) go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m ./internal/app
 

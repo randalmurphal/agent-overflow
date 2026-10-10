@@ -434,115 +434,121 @@ function midLoopScenario(name: string, source: MidLoopSource, targetId: string):
 
 interface ListedItem { id: string; kind: string; summary?: string; meta?: string }
 
-for (const source of ['composer', 'agent'] as const) {
-  test(`timeline stays painted when ${source === 'agent' ? 'an agent reply' : 'a composer message'} is consumed mid-loop during a trailing reveal`, async ({ harness, page }) => {
-    test.setTimeout(300_000);
-    const callerTitle = `Mid-loop caller (${source})`;
-    const repo = { commits: [{ message: 'init', files: { 'README.md': '# fixture\n' } }] };
-    const history = Array.from({ length: 6 }, (_, i) => ({
-      userText: `History question ${i}`,
-      items: [
-        { kind: 'thinking', summary: `thinking about ${i}` },
-        ...Array.from({ length: 4 }, (_u, k) => ({ kind: 'tool_call', toolName: 'Bash', summary: `history call ${i} ${k}` })),
-        { kind: 'assistant_text', summary: `History answer ${i}: a paragraph of prose that takes a few lines so the row has real height on screen.` },
-      ],
-    }));
-    const projects: unknown[] = [{ name: `mid-loop-caller-${source}`, repo, threads: [{ title: callerTitle, provider: 'claude', turns: history }] }];
-    if (source === 'agent') {
-      projects.push({
-        name: 'mid-loop-target',
-        repo,
-        threads: [{ title: 'Mid-loop target', provider: 'claude', turns: [{ userText: 'set the stage', items: [{ kind: 'assistant_text', summary: 'Ready.' }] }] }],
-      });
-    }
-    const seed = await harness.rpc('HarnessSeed', { projects }) as SeedResult;
-    const caller = seed.projects[0].threadIds[0];
-    const callerPath = seed.projects[0].path;
-    const targetId = source === 'agent' ? seed.projects[1].threadIds[0] : '';
-    const targetPath = source === 'agent' ? seed.projects[1].path : '';
-
-    await setScenario(harness, callerPath, midLoopScenario(`mid-loop-${source}`, source, targetId) as Record<string, unknown>);
-    if (source === 'agent') {
-      await setScenario(harness, targetPath, threadToolsScenario({
-        name: 'mid-loop-target',
-        provider: 'claude',
-        afterTurns: 'silent',
-        turns: [{
-          steps: [
-            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
-            { gate: 'hold-reply' },
-            { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' } } },
-          ],
-          text: 'Answered the caller.',
-        }],
+// Each variant streams MID_LOOP_BLOCKS activity blocks at the pace the
+// reveal trails, so one takes close to two minutes. Parallel mode lets a
+// worker take each variant instead of one worker running both in turn.
+test.describe('mid-loop consumption', () => {
+  test.describe.configure({ mode: 'parallel' });
+  for (const source of ['composer', 'agent'] as const) {
+    test(`timeline stays painted when ${source === 'agent' ? 'an agent reply' : 'a composer message'} is consumed mid-loop during a trailing reveal`, async ({ harness, page }) => {
+      test.setTimeout(300_000);
+      const callerTitle = `Mid-loop caller (${source})`;
+      const repo = { commits: [{ message: 'init', files: { 'README.md': '# fixture\n' } }] };
+      const history = Array.from({ length: 6 }, (_, i) => ({
+        userText: `History question ${i}`,
+        items: [
+          { kind: 'thinking', summary: `thinking about ${i}` },
+          ...Array.from({ length: 4 }, (_u, k) => ({ kind: 'tool_call', toolName: 'Bash', summary: `history call ${i} ${k}` })),
+          { kind: 'assistant_text', summary: `History answer ${i}: a paragraph of prose that takes a few lines so the row has real height on screen.` },
+        ],
       }));
-    }
-
-    await harness.open(page);
-    await page.getByTestId('thread-row').getByText(callerTitle, { exact: true }).click();
-    await expect(page.getByText('History answer 5', { exact: false })).toBeVisible();
-    const input = page.getByLabel('Message Input');
-    await input.fill('Run the long investigation.');
-    await page.getByRole('button', { name: 'Send message', exact: true }).click();
-    await installSampler(page);
-
-    // The reservation: the consumed message's quiet row, before it moves to
-    // where the drain consumes it.
-    const consumedRows = async () => (await harness.rpc('ListItems', caller, true) as ListedItem[]).filter((item) =>
-      item.kind === 'user_text' && (source === 'agent'
-        ? (item.meta ?? '').includes('thread-wake:')
-        : (item.summary ?? '').includes(MID_LOOP_QUEUED)));
-    let callerMock: string;
-    if (source === 'agent') {
-      const target = await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
-        'harness:mock',
-        (ev) => ev.cwd === targetPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-reply',
-        240_000,
-      );
-      await advanceGate(harness, target.mockId, 'hold-reply');
-      await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
-      callerMock = (await awaitGate(harness, 'reserved', callerPath)).mockId;
-    } else {
-      callerMock = (await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
-        'harness:mock',
-        (ev) => ev.cwd === callerPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'queued',
-        240_000,
-      )).mockId;
-      await input.fill(MID_LOOP_QUEUED);
-      await input.press('Enter');
-      await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
-      await advance(harness, callerMock, 'queued');
-      await awaitGate(harness, 'reserved', callerPath);
-    }
-    await advance(harness, callerMock, 'reserved');
-
-    // The drain consumed the message into the running turn, not a turn of
-    // its own.
-    await harness.waitForEvent('harness:mock', (ev: any) =>
-      ev.mockId === callerMock && ev.report.kind === 'user_input' && ev.report.detail === 'midLoop', 30_000);
-    // A blank timeline never shows these rows. The blank check reports
-    // first, so a failed wait here only adds what it waited for.
-    const shown = async (text: string, timeout: number): Promise<unknown> => {
-      try {
-        await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout });
-        await timelineSettled(page, 12);
-        return undefined;
-      } catch (error) {
-        return error;
+      const projects: unknown[] = [{ name: `mid-loop-caller-${source}`, repo, threads: [{ title: callerTitle, provider: 'claude', turns: history }] }];
+      if (source === 'agent') {
+        projects.push({
+          name: 'mid-loop-target',
+          repo,
+          threads: [{ title: 'Mid-loop target', provider: 'claude', turns: [{ userText: 'set the stage', items: [{ kind: 'assistant_text', summary: 'Ready.' }] }] }],
+        });
       }
-    };
-    await awaitGate(harness, 'finish', callerPath);
-    let notShown = await shown('Continuing after the compaction.', 30_000);
-    await advance(harness, callerMock, 'finish');
-    await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
-    notShown ??= await shown('All done after the compaction.', 20_000);
-    // A blank that persists into the settled state runs past the limit.
-    await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+      const seed = await harness.rpc('HarnessSeed', { projects }) as SeedResult;
+      const caller = seed.projects[0].threadIds[0];
+      const callerPath = seed.projects[0].path;
+      const targetId = source === 'agent' ? seed.projects[1].threadIds[0] : '';
+      const targetPath = source === 'agent' ? seed.projects[1].path : '';
 
-    const samples = await collectSamples(page);
-    const blank = longestBlankRun(samples);
-    expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
-    if (notShown) throw notShown;
-    expect((await consumedRows()).length).toBe(1);
-  });
-}
+      await setScenario(harness, callerPath, midLoopScenario(`mid-loop-${source}`, source, targetId) as Record<string, unknown>);
+      if (source === 'agent') {
+        await setScenario(harness, targetPath, threadToolsScenario({
+          name: 'mid-loop-target',
+          provider: 'claude',
+          afterTurns: 'silent',
+          turns: [{
+            steps: [
+              { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+              { gate: 'hold-reply' },
+              { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' } } },
+            ],
+            text: 'Answered the caller.',
+          }],
+        }));
+      }
+
+      await harness.open(page);
+      await page.getByTestId('thread-row').getByText(callerTitle, { exact: true }).click();
+      await expect(page.getByText('History answer 5', { exact: false })).toBeVisible();
+      const input = page.getByLabel('Message Input');
+      await input.fill('Run the long investigation.');
+      await page.getByRole('button', { name: 'Send message', exact: true }).click();
+      await installSampler(page);
+
+      // The reservation: the consumed message's quiet row, before it moves to
+      // where the drain consumes it.
+      const consumedRows = async () => (await harness.rpc('ListItems', caller, true) as ListedItem[]).filter((item) =>
+        item.kind === 'user_text' && (source === 'agent'
+          ? (item.meta ?? '').includes('thread-wake:')
+          : (item.summary ?? '').includes(MID_LOOP_QUEUED)));
+      let callerMock: string;
+      if (source === 'agent') {
+        const target = await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
+          'harness:mock',
+          (ev) => ev.cwd === targetPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-reply',
+          240_000,
+        );
+        await advanceGate(harness, target.mockId, 'hold-reply');
+        await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
+        callerMock = (await awaitGate(harness, 'reserved', callerPath)).mockId;
+      } else {
+        callerMock = (await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
+          'harness:mock',
+          (ev) => ev.cwd === callerPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'queued',
+          240_000,
+        )).mockId;
+        await input.fill(MID_LOOP_QUEUED);
+        await input.press('Enter');
+        await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
+        await advance(harness, callerMock, 'queued');
+        await awaitGate(harness, 'reserved', callerPath);
+      }
+      await advance(harness, callerMock, 'reserved');
+
+      // The drain consumed the message into the running turn, not a turn of
+      // its own.
+      await harness.waitForEvent('harness:mock', (ev: any) =>
+        ev.mockId === callerMock && ev.report.kind === 'user_input' && ev.report.detail === 'midLoop', 30_000);
+      // A blank timeline never shows these rows. The blank check reports
+      // first, so a failed wait here only adds what it waited for.
+      const shown = async (text: string, timeout: number): Promise<unknown> => {
+        try {
+          await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout });
+          await timelineSettled(page, 12);
+          return undefined;
+        } catch (error) {
+          return error;
+        }
+      };
+      await awaitGate(harness, 'finish', callerPath);
+      let notShown = await shown('Continuing after the compaction.', 30_000);
+      await advance(harness, callerMock, 'finish');
+      await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
+      notShown ??= await shown('All done after the compaction.', 20_000);
+      // A blank that persists into the settled state runs past the limit.
+      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+
+      const samples = await collectSamples(page);
+      const blank = longestBlankRun(samples);
+      expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
+      if (notShown) throw notShown;
+      expect((await consumedRows()).length).toBe(1);
+    });
+  }
+});

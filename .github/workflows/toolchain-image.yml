@@ -1,0 +1,48 @@
+name: Toolchain image
+
+# Publishes ghcr.io/<repo>/ci-toolchain, the image the Linux CI jobs run
+# in (ci/Dockerfile). A push to main that touches a pin or a manifest
+# rebuilds it so the tag those pins name exists before the next pull
+# request needs it; the weekly build refreshes the base image, the module
+# cache and the package store under the same tag.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ci/**
+      - .github/workflows/toolchain-image.yml
+      - .github/actions/toolchain-image/**
+      - go.mod
+      - go.sum
+      - Makefile
+      - frontend/package.json
+      - frontend/pnpm-lock.yaml
+      - e2e/package.json
+      - e2e/pnpm-lock.yaml
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: toolchain-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolchain-image
+        id: image
+        with:
+          push: "true"
+          rebuild: "true"
+          token: ${{ github.token }}
+      - run: echo "Published ${{ steps.image.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"

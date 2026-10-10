@@ -1,0 +1,114 @@
+name: Resolve the CI toolchain image
+description: >-
+  Names the toolchain image for the current pins (ci/toolchain-inputs.sh
+  plus ci/Dockerfile), builds and publishes it when the registry lacks it
+  and the token may push, and otherwise falls back to the newest main image
+  so a job never waits on a publish it cannot perform.
+
+inputs:
+  push:
+    description: Publish the image when it is missing or when rebuild is true. Needs packages write permission.
+    default: "false"
+  rebuild:
+    description: Build and publish even when the tag exists, refreshing the warm layers, and move the main tag.
+    default: "false"
+  token:
+    description: Token for ghcr.io.
+    required: true
+
+outputs:
+  image:
+    description: Fully qualified image reference for the jobs to run in.
+    value: ${{ steps.resolve.outputs.image }}
+  tag:
+    description: The tag the current pins name.
+    value: ${{ steps.name.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Name the image for the current pins
+      id: name
+      shell: bash
+      run: |
+        set -euo pipefail
+        inputs=$(ci/toolchain-inputs.sh)
+        tag=$(printf '%s\n' "$inputs" | cat - ci/Dockerfile | sha256sum | cut -c1-16)
+        repository=ghcr.io/${GITHUB_REPOSITORY,,}/ci-toolchain
+        printf '%s\n' "$inputs"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "repository=$repository" >> "$GITHUB_OUTPUT"
+        {
+          echo 'args<<EOF'
+          printf '%s\n' "$inputs"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Log in to ghcr.io
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+      run: printf '%s' "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+    - name: Check the registry
+      id: check
+      shell: bash
+      env:
+        IMAGE: ${{ steps.name.outputs.repository }}:${{ steps.name.outputs.tag }}
+      run: |
+        set -euo pipefail
+        if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE is published."
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE is not published."
+        fi
+
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      if: inputs.push == 'true' && (inputs.rebuild == 'true' || steps.check.outputs.exists != 'true')
+
+    # Layers are zstd so a job spends less of its pull decompressing. The
+    # registry cache keeps the stages a build did not change; a rebuild
+    # refreshes everything and re-resolves the base image.
+    - name: Build and publish
+      if: inputs.push == 'true' && (inputs.rebuild == 'true' || steps.check.outputs.exists != 'true')
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: ci/Dockerfile
+        build-args: ${{ steps.name.outputs.args }}
+        tags: |
+          ${{ steps.name.outputs.repository }}:${{ steps.name.outputs.tag }}
+          ${{ steps.name.outputs.repository }}:main
+        outputs: type=image,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
+        cache-from: type=registry,ref=${{ steps.name.outputs.repository }}:buildcache
+        cache-to: type=registry,ref=${{ steps.name.outputs.repository }}:buildcache,mode=max,compression=zstd
+        no-cache: ${{ inputs.rebuild }}
+        pull: ${{ inputs.rebuild }}
+        provenance: false
+
+    - name: Resolve the image the jobs run in
+      id: resolve
+      shell: bash
+      env:
+        REPOSITORY: ${{ steps.name.outputs.repository }}
+        TAG: ${{ steps.name.outputs.tag }}
+        EXISTS: ${{ steps.check.outputs.exists }}
+        PUSH: ${{ inputs.push }}
+      run: |
+        set -euo pipefail
+        if [[ "$EXISTS" == "true" || "$PUSH" == "true" ]]; then
+          echo "image=$REPOSITORY:$TAG" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # The pins changed in a change whose token cannot publish (a fork or
+        # Dependabot). The newest main image carries the jobs; the setup
+        # action installs whatever differs. A push to main publishes the
+        # tag these pins name.
+        if ! docker manifest inspect "$REPOSITORY:main" > /dev/null 2>&1; then
+          echo "::error::No toolchain image is published for these pins ($TAG) and no main image exists to fall back to. Run the Toolchain image workflow."
+          exit 1
+        fi
+        echo "::warning::Toolchain image $REPOSITORY:$TAG is not published and this run cannot publish it; running on $REPOSITORY:main."
+        echo "image=$REPOSITORY:main" >> "$GITHUB_OUTPUT"
