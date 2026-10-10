@@ -5,7 +5,8 @@
   //     utils/pathLinkExtension.ts): fetched through GetLocalImage on
   //     `backend`, the thread's computer, at the display tier its box needs,
   //     and painted by `MarkdownImage`, which owns the tier, the box, the
-  //     loading and failure chips and the lightbox. Nothing model-authored
+  //     loading and failure chips and the lightbox. It carries the local
+  //     image menu (utils/imageMenuActions.ts). Nothing model-authored
   //     reaches the webview as a file URI.
   //   - A forge-hosted attachment the parse claimed
   //     (`agent-overflow:forge?nonce=…`, utils/forgeAttachments.ts): fetched
@@ -21,6 +22,7 @@
   // failure, so a corrupt or mislabeled file never leaves a blank gap.
   import type { Tokens } from '../../../markdown';
   import type { BackendKey } from '../../../transport/backendKey';
+  import { localImageMenuTag } from '../../../utils/imageMenuActions';
   import { localMarkdownImageSource } from '../../../utils/markdownImageSource';
   import { parseLocalImageHref } from '../../../utils/pathLinkExtension';
   import { parseForgeAttachmentHref } from '../../../utils/forgeAttachments';
@@ -43,7 +45,9 @@
   const href = $derived(token.href);
   const forge = $derived(parseForgeAttachmentHref(href) !== null);
   const local = $derived(forge ? null : parseLocalImageHref(href));
-  const source = $derived(local ? localMarkdownImageSource(backend, local, {}) : null);
+  const source = $derived(
+    local ? localMarkdownImageSource(backend, local, localImageMenuTag({ backend, href, alt: token.text })) : null,
+  );
 
   let directSrc = $state('');
   let error = $state('');

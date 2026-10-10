@@ -1,7 +1,7 @@
 // Copy and save for the images the image menu (`ImageMenuHost.svelte`)
 // opens on, and the DOM tags that let that one delegated menu find them.
 //
-// Two kinds of image carry the menu:
+// Three kinds of image carry the menu:
 //
 //   attachment  A thread's image attachment. Every surface that paints one
 //               (the user message grid, the composer and editor thumbs, a
@@ -19,11 +19,19 @@
 //               already holds when they are not a display-size derivative;
 //               save is the forge attachment activation
 //               (`openForgeAttachment`).
+//   local       An image an agent wrote as a path, painted by
+//               `StreamdownImageHost` through `localImageMenuTag`. The tag
+//               carries the nonce-gated href the parse built and the
+//               computer the file is read from; `taggedMenuImage` accepts
+//               the href only through `parseLocalImageHref`. Copy and save
+//               work on the file itself, never the timeline's display-size
+//               derivative, and Copy Path and Copy Markdown give back the
+//               reference as the agent wrote it.
 //
 // The host reads a tag back with `taggedMenuImage`, so the attribute names
 // live here only.
 
-import { SaveAttachment } from '../stores/bindings';
+import { SaveAttachment, SaveLocalImage } from '../stores/bindings';
 import type { BackendKey } from '../transport/backendKey';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
@@ -31,6 +39,7 @@ import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import { downloadBlob } from './blobDownload';
+import { copyToClipboard } from './clipboard';
 import { errString } from './errors';
 import { fileSaveAction, savedFileMessage, type FileSaveAction } from './fileSaveAction';
 import { openForgeAttachment } from './forgeAttachmentActions';
@@ -40,17 +49,34 @@ import {
   parseForgeAttachmentHref,
   type ParsedForgeAttachmentHref,
 } from './forgeAttachments';
+import { fetchLocalImageOriginal } from './localImageCache';
+import { pathBasename } from './pathDisplay';
+import { parseLocalImageHref } from './pathLinkExtension';
 import { asPng, writePngToClipboard } from './pngClipboard';
+
+export type LocalMenuImage = {
+  kind: 'local';
+  /** The computer the file is read from: the thread's. */
+  backend: BackendKey;
+  path: string;
+  workspacePath: string;
+  /** The reference as the agent wrote it; '' when the parse kept none. */
+  sourceHref: string;
+  alt: string;
+};
 
 export type ImageMenuTarget =
   | { kind: 'attachment'; threadId: string; attachmentId: string; filename: string }
-  | { kind: 'forge'; attachment: ParsedForgeAttachmentHref };
+  | { kind: 'forge'; attachment: ParsedForgeAttachmentHref }
+  | LocalMenuImage;
 
 const KIND = 'data-image-menu';
 const THREAD = 'data-image-menu-thread';
 const ID = 'data-image-menu-id';
 const FILENAME = 'data-image-menu-filename';
-const FORGE_HREF = 'data-image-menu-href';
+const HREF = 'data-image-menu-href';
+const BACKEND = 'data-image-menu-backend';
+const ALT = 'data-image-menu-alt';
 
 /** Attributes marking an element as one thread image attachment. */
 export function attachmentImageMenuTag(attachment: {
@@ -68,7 +94,20 @@ export function attachmentImageMenuTag(attachment: {
 
 /** Attributes marking an element as one forge image, by its app href. */
 export function forgeImageMenuTag(href: string): Record<string, string> {
-  return { [KIND]: 'forge', [FORGE_HREF]: href };
+  return { [KIND]: 'forge', [HREF]: href };
+}
+
+/**
+ * Attributes marking an element as one local image: the app href the parse
+ * built (`buildLocalImageHref`), the computer it is read from and its alt
+ * text.
+ */
+export function localImageMenuTag(image: {
+  backend: BackendKey;
+  href: string;
+  alt: string;
+}): Record<string, string> {
+  return { [KIND]: 'local', [BACKEND]: image.backend, [HREF]: image.href, [ALT]: image.alt };
 }
 
 /** The image `target` belongs to, or null. */
@@ -80,8 +119,25 @@ export function taggedMenuImage(
   if (!element) return null;
   const kind = element.getAttribute(KIND);
   if (kind === 'forge') {
-    const attachment = parseForgeAttachmentHref(element.getAttribute(FORGE_HREF));
+    const attachment = parseForgeAttachmentHref(element.getAttribute(HREF));
     return attachment ? { element, target: { kind: 'forge', attachment } } : null;
+  }
+  if (kind === 'local') {
+    const local = parseLocalImageHref(element.getAttribute(HREF));
+    // HOME is the empty key, so only an absent attribute is no computer.
+    const backend = element.getAttribute(BACKEND);
+    if (!local || backend === null) return null;
+    return {
+      element,
+      target: {
+        kind: 'local',
+        backend,
+        path: local.path,
+        workspacePath: local.workspacePath,
+        sourceHref: local.sourceHref,
+        alt: element.getAttribute(ALT) ?? '',
+      },
+    };
   }
   if (kind !== 'attachment') return null;
   const attachmentId = element.getAttribute(ID) ?? '';
@@ -107,8 +163,41 @@ export function taggedMenuImage(
 export function copyMenuImage(target: ImageMenuTarget): Promise<void> {
   const original = target.kind === 'forge'
     ? () => heldForgeImage(target.attachment)
-    : () => fetchAttachmentBytes(target.threadId, target.attachmentId);
+    : target.kind === 'local'
+      ? () => fetchLocalImageOriginal(target.backend, target.path, target.workspacePath)
+      : () => fetchAttachmentBytes(target.threadId, target.attachmentId);
   return writePngToClipboard(async () => asPng(await original()), 'Could not copy the image');
+}
+
+/** The reference Copy Path puts on the clipboard: as the agent wrote it. */
+export function localImagePathText(image: LocalMenuImage): string {
+  return image.sourceHref || image.path;
+}
+
+/** The image reference Copy Markdown puts on the clipboard. */
+export function localImageMarkdownText(image: LocalMenuImage): string {
+  return `![${image.alt}](${localImagePathText(image)})`;
+}
+
+/**
+ * Copy Path and Copy Markdown. The clipboard write is reached before
+ * anything is awaited, inside the click; the outcome is a toast, and a
+ * refused write is recorded by `copyToClipboard`.
+ */
+export function copyLocalImagePath(image: LocalMenuImage): Promise<void> {
+  return copyText(localImagePathText(image), 'Path');
+}
+
+export function copyLocalImageMarkdown(image: LocalMenuImage): Promise<void> {
+  return copyText(localImageMarkdownText(image), 'Markdown');
+}
+
+async function copyText(text: string, what: 'Path' | 'Markdown'): Promise<void> {
+  if (await copyToClipboard(text)) {
+    addToast('success', `${what} copied`);
+  } else {
+    addToast('error', `Could not copy the ${what.toLowerCase()}`);
+  }
 }
 
 // The forge image's original bytes: the ones the page painted it from when
@@ -139,6 +228,9 @@ function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: Fil
     );
     return { backend: attachment.backend, action: fileSaveAction(attachment.backend, browserUrl) };
   }
+  if (target.kind === 'local') {
+    return { backend: target.backend, action: fileSaveAction(target.backend, null) };
+  }
   let backend: BackendKey;
   try {
     backend = requireEntityBackend(resolveThreadBackend(target.threadId));
@@ -152,17 +244,24 @@ function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: Fil
  * Whether this page may carry out Save. A file written on the owning
  * computer needs the scope that computer's save RPC requires
  * (`SaveAttachment` is attachments:write, `SaveForgeAttachment` is
- * git:operate); a browser download reads bytes this page can already read,
- * and opening the forge's own page needs no grant. An owner this page
- * cannot resolve answers true, so the click reports the real error.
+ * git:operate, `SaveLocalImage` is files:read); a browser download reads
+ * bytes this page can already read, and opening the forge's own page needs
+ * no grant. An owner this page cannot resolve answers true, so the click
+ * reports the real error.
  */
 export function canSaveMenuImage(target: ImageMenuTarget): boolean {
   const decided = saveAction(target);
   if (!decided) return true;
   const { backend, action } = decided;
   if (action === 'download' || action === 'open-externally') return true;
-  return hasScope(target.kind === 'forge' ? 'git:operate' : 'attachments:write', backend);
+  return hasScope(SAVE_SCOPE[target.kind], backend);
 }
+
+const SAVE_SCOPE = {
+  attachment: 'attachments:write',
+  forge: 'git:operate',
+  local: 'files:read',
+} as const;
 
 /**
  * The Save row's label. Where Save opens the image's page on the forge
@@ -179,15 +278,19 @@ export function saveMenuImageLabel(target: ImageMenuTarget): string {
 /**
  * Save the image where this page's user will find it. A forge image goes
  * through the forge attachment activation, which the file chip and link
- * clicks share. A thread attachment follows `fileSaveAction` with no browser
- * URL: written into the owning computer's Downloads folder by the backend
- * (this desktop, or a webview or phone that cannot run a browser download),
- * or an ordinary browser download. The outcome, success or failure, is a
- * toast.
+ * clicks share. A thread attachment or a local image follows
+ * `fileSaveAction` with no browser URL: written into the owning computer's
+ * Downloads folder by the backend (this desktop, or a webview or phone that
+ * cannot run a browser download), or an ordinary browser download of the
+ * original. The outcome, success or failure, is a toast.
  */
 export async function saveMenuImage(target: ImageMenuTarget): Promise<void> {
   if (target.kind === 'forge') {
     await openForgeAttachment(target.attachment);
+    return;
+  }
+  if (target.kind === 'local') {
+    await saveLocalImage(target);
     return;
   }
   try {
@@ -200,6 +303,24 @@ export async function saveMenuImage(target: ImageMenuTarget): Promise<void> {
     }
     const blob = await fetchAttachmentBytes(target.threadId, target.attachmentId);
     downloadBlob(blob, downloadName(target.filename, blob.type));
+  } catch (err) {
+    addErrorToast(errString(err), err);
+  }
+}
+
+// A local image's owning computer is the thread's: SaveLocalImage copies
+// the file into its Downloads, or a connected browser downloads the file's
+// own bytes under its own name.
+async function saveLocalImage(image: LocalMenuImage): Promise<void> {
+  try {
+    const action = fileSaveAction(image.backend, null);
+    if (action === 'save-here' || action === 'save-there') {
+      const path = await withBackendTarget(image.backend, () => SaveLocalImage(image.path, image.workspacePath));
+      addToast('success', savedFileMessage(action, image.backend, path));
+      return;
+    }
+    const blob = await fetchLocalImageOriginal(image.backend, image.path, image.workspacePath);
+    downloadBlob(blob, downloadName(pathBasename(image.path), blob.type));
   } catch (err) {
     addErrorToast(errString(err), err);
   }

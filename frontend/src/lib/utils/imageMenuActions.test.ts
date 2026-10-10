@@ -3,22 +3,28 @@ import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import {
   attachmentImageMenuTag,
   canSaveMenuImage,
+  copyLocalImageMarkdown,
+  copyLocalImagePath,
   copyMenuImage,
   downloadName,
   forgeImageMenuTag,
+  localImageMenuTag,
   saveMenuImage,
   saveMenuImageLabel,
   taggedMenuImage,
   type ImageMenuTarget,
+  type LocalMenuImage,
 } from './imageMenuActions';
 import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttachments';
 import type { ResolvedForgeAttachment } from './forgeAttachmentCache';
+import { buildLocalImageHref } from './pathLinkExtension';
+import { getPinnedBackend } from '../transport/backends';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { mockAttachmentDownload } from '../../test/mocks/attachmentTransfer';
+import { mockAttachmentDownload, mockLocalImage } from '../../test/mocks/attachmentTransfer';
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
-const scopes = vi.hoisted(() => ({ host: false, write: true, git: true }));
+const scopes = vi.hoisted(() => ({ host: false, write: true, git: true, files: true }));
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
 const toasts = vi.hoisted(() => [] as Array<[string, string]>);
@@ -39,7 +45,9 @@ vi.mock('../transport/scopes', async (importOriginal) => ({
       ? scopes.host
       : scope === 'attachments:write'
         ? scopes.write
-        : scope === 'git:operate' && scopes.git,
+        : scope === 'files:read'
+          ? scopes.files
+          : scope === 'git:operate' && scopes.git,
 }));
 vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./forgeAttachmentCache')>()),
@@ -422,5 +430,263 @@ describe('forge images', () => {
     expect(canSaveMenuImage(FORGE)).toBe(true);
     // A thread attachment has no forge page: its save is always a save.
     expect(saveMenuImageLabel(REF)).toBe('Save Image');
+  });
+});
+
+describe('local images', () => {
+  const originalClipboard = navigator.clipboard;
+  const SOURCE = 'docs/shot one.png';
+  const LOCAL_HREF = buildLocalImageHref('/repo/docs/shot one.png', '/repo', SOURCE);
+  const LOCAL: LocalMenuImage = {
+    kind: 'local',
+    backend: 'gpu',
+    path: '/repo/docs/shot one.png',
+    workspacePath: '/repo',
+    sourceHref: SOURCE,
+    alt: 'the diagram',
+  };
+
+  function tagged(tag: Record<string, string>): HTMLElement {
+    const host = document.createElement('span');
+    for (const [name, value] of Object.entries(tag)) host.setAttribute(name, value);
+    host.appendChild(document.createElement('img'));
+    return host;
+  }
+
+  beforeEach(() => {
+    nativeShell.value = false;
+    webviewHosted.value = false;
+    scopes.host = false;
+    scopes.files = true;
+    toasts.length = 0;
+    toastErrors.length = 0;
+    resetBindingMocks();
+  });
+  afterEach(() => {
+    setClipboard(originalClipboard);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    resetBindingMocks();
+    document.body.innerHTML = '';
+  });
+
+  describe('the tag', () => {
+    it('round-trips the href the parse built, the computer and the alt text', () => {
+      const host = tagged(localImageMenuTag({ backend: 'gpu', href: LOCAL_HREF, alt: 'the diagram' }));
+      expect(taggedMenuImage(host.firstElementChild)).toEqual({ element: host, target: LOCAL });
+    });
+
+    it('keeps HOME, whose key is empty, and a reference the parse kept no source for', () => {
+      const href = buildLocalImageHref('/repo/a.png', '/repo');
+      const host = tagged(localImageMenuTag({ backend: '', href, alt: '' }));
+      expect(taggedMenuImage(host)?.target).toEqual({
+        kind: 'local',
+        backend: '',
+        path: '/repo/a.png',
+        workspacePath: '/repo',
+        sourceHref: '',
+        alt: '',
+      });
+    });
+
+    it('refuses a tag with no computer, and an href this page did not mint', () => {
+      const { 'data-image-menu-backend': _backend, ...withoutBackend } = localImageMenuTag({
+        backend: 'gpu',
+        href: LOCAL_HREF,
+        alt: 'x',
+      });
+      expect(taggedMenuImage(tagged(withoutBackend))).toBeNull();
+      const forged = LOCAL_HREF.replace(/nonce=[^&]+/, 'nonce=not-this-page');
+      expect(taggedMenuImage(tagged(localImageMenuTag({ backend: 'gpu', href: forged, alt: 'x' })))).toBeNull();
+    });
+  });
+
+  describe('Copy Image', () => {
+    it("copies the file's original from the thread's computer, not a derivative", async () => {
+      const pins: Array<string | null> = [];
+      const rpc = mockLocalImage(() => {
+        pins.push(getPinnedBackend());
+        return { blob: new Blob(['full-size'], { type: 'image/png' }) };
+      });
+      const written: Blob[] = [];
+      const write = vi.fn(async (items: ClipboardItem[]) => {
+        written.push(await items[0].getType('image/png'));
+      });
+      setClipboard({ write });
+
+      const copy = copyMenuImage(LOCAL);
+      // Reached before the RPC, inside the click's task.
+      expect(write).toHaveBeenCalledTimes(1);
+      await copy;
+
+      expect(rpc).toHaveBeenCalledWith('/repo/docs/shot one.png', '/repo', 0);
+      expect(pins).toEqual(['gpu']);
+      expect(written).toHaveLength(1);
+      expect(await written[0].text()).toBe('full-size');
+    });
+
+    it('names a refused read as the cause', async () => {
+      mockLocalImage(() => {
+        throw new Error('local image: outside the workspace');
+      });
+      setClipboard({
+        write: async (items: ClipboardItem[]) => {
+          await items[0].getType('image/png');
+        },
+      });
+      await expect(copyMenuImage(LOCAL)).rejects.toThrow(
+        'Could not copy the image: local image: outside the workspace',
+      );
+    });
+  });
+
+  describe('Copy Path and Copy Markdown', () => {
+    function clipboardText(): ReturnType<typeof vi.fn> {
+      const writeText = vi.fn(async (_text: string) => {});
+      setClipboard({ writeText });
+      return writeText;
+    }
+
+    it('copy the reference as the agent wrote it, and confirm', async () => {
+      const writeText = clipboardText();
+
+      const path = copyLocalImagePath(LOCAL);
+      // Reached before anything is awaited, inside the click's task.
+      expect(writeText).toHaveBeenCalledWith('docs/shot one.png');
+      await path;
+      const markdown = copyLocalImageMarkdown(LOCAL);
+      expect(writeText).toHaveBeenLastCalledWith('![the diagram](docs/shot one.png)');
+      await markdown;
+
+      expect(toasts).toEqual([
+        ['success', 'Path copied'],
+        ['success', 'Markdown copied'],
+      ]);
+    });
+
+    it('fall back to the resolved path when the parse kept no reference', async () => {
+      const writeText = clipboardText();
+      const bare = { ...LOCAL, sourceHref: '' };
+      await copyLocalImagePath(bare);
+      await copyLocalImageMarkdown(bare);
+      expect(writeText.mock.calls).toEqual([
+        ['/repo/docs/shot one.png'],
+        ['![the diagram](/repo/docs/shot one.png)'],
+      ]);
+    });
+
+    it('report a refused write as an error toast, not a success', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      setClipboard({
+        writeText: async () => {
+          throw new DOMException('Document is not focused.', 'NotAllowedError');
+        },
+      });
+      await copyLocalImagePath(LOCAL);
+      await copyLocalImageMarkdown(LOCAL);
+      expect(toasts).toEqual([
+        ['error', 'Could not copy the path'],
+        ['error', 'Could not copy the markdown'],
+      ]);
+    });
+  });
+
+  describe('Save Image', () => {
+    it("has the thread's computer copy the file into Downloads when this page is on it", async () => {
+      scopes.host = true;
+      const pins: Array<string | null> = [];
+      const save = setBindingMock('SaveLocalImage', async () => {
+        pins.push(getPinnedBackend());
+        return '/home/u/Downloads/shot one.png';
+      });
+      await saveMenuImage(LOCAL);
+      expect(save).toHaveBeenCalledWith('/repo/docs/shot one.png', '/repo');
+      expect(pins).toEqual(['gpu']);
+      expect(toasts).toEqual([['success', 'Saved to /home/u/Downloads/shot one.png']]);
+    });
+
+    it('writes it on that computer, and says so, from a webview or the phone', async () => {
+      for (const shell of ['webview', 'phone'] as const) {
+        toasts.length = 0;
+        webviewHosted.value = shell === 'webview';
+        nativeShell.value = shell === 'phone';
+        const save = setBindingMock('SaveLocalImage', async () => '/home/u/Downloads/shot one.png');
+        const read = mockLocalImage();
+        await saveMenuImage(LOCAL);
+        expect(save).toHaveBeenCalledWith('/repo/docs/shot one.png', '/repo');
+        expect(read).not.toHaveBeenCalled();
+        expect(toasts).toHaveLength(1);
+        expect(toasts[0][0]).toBe('success');
+        expect(toasts[0][1]).toMatch(/^Saved on .+: \/home\/u\/Downloads\/shot one\.png$/);
+      }
+    });
+
+    it("downloads the file's original under its own name in a connected browser", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      const read = mockLocalImage(() => ({ blob: new Blob(['full-size'], { type: 'image/png' }) }));
+      const save = setBindingMock('SaveLocalImage', async () => '/unused');
+      const created: Blob[] = [];
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+        created.push(blob as Blob);
+        return 'blob:download-local';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      const clicks: Array<[string, string]> = [];
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        clicks.push([this.getAttribute('href') ?? '', this.getAttribute('download') ?? '']);
+      });
+
+      await saveMenuImage(LOCAL);
+      await saveMenuImage({ ...LOCAL, path: '/repo/docs/shot' });
+
+      expect(save).not.toHaveBeenCalled();
+      expect(read.mock.calls).toEqual([
+        ['/repo/docs/shot one.png', '/repo', 0],
+        ['/repo/docs/shot', '/repo', 0],
+      ]);
+      expect(await created[0].text()).toBe('full-size');
+      // The name is the file's own, given the extension its bytes call for.
+      expect(clicks).toEqual([
+        ['blob:download-local', 'shot one.png'],
+        ['blob:download-local', 'shot.png'],
+      ]);
+      expect(toasts).toEqual([]);
+    });
+
+    it('surfaces a refused save and a failed download', async () => {
+      scopes.host = true;
+      setBindingMock('SaveLocalImage', async () => {
+        throw new Error('local image: not found');
+      });
+      await saveMenuImage(LOCAL);
+      scopes.host = false;
+      mockLocalImage(() => {
+        throw new Error('local image: not found');
+      });
+      await saveMenuImage(LOCAL);
+      expect(toasts).toEqual([
+        ['error', 'local image: not found'],
+        ['error', 'local image: not found'],
+      ]);
+      expect(toastErrors).toEqual([expect.any(Error), expect.any(Error)]);
+    });
+
+    it('needs files:read only where the owning computer writes the file', () => {
+      scopes.files = false;
+      // Connected browser: a download reads through the route the timeline does.
+      expect(canSaveMenuImage(LOCAL)).toBe(true);
+      // On the owning computer: SaveLocalImage, which is files:read.
+      scopes.host = true;
+      expect(canSaveMenuImage(LOCAL)).toBe(false);
+      scopes.files = true;
+      expect(canSaveMenuImage(LOCAL)).toBe(true);
+    });
+
+    it('is always labelled Save Image: a local file has no page to open instead', () => {
+      expect(saveMenuImageLabel(LOCAL)).toBe('Save Image');
+      nativeShell.value = true;
+      expect(saveMenuImageLabel(LOCAL)).toBe('Save Image');
+    });
   });
 });
