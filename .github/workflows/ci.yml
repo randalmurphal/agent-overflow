@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job calls a Make target so a local run is the same check
+# (docs/architecture/development.md, Continuous integration). The composite
+# action in .github/actions/setup owns toolchain pins and caches.
+jobs:
+  format-and-vet:
+    name: gofmt and go vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: vet
+      - run: make fmt-check
+      - run: make go-vet
+
+  build:
+    name: Go build (every variant)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: build
+      - run: make go-build
+      - name: Compile the provider smoke tests
+        run: make provider-smoke-compile
+
+  build-macos:
+    name: Go build (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: build-macos
+      - run: make go-build
+
+  lint-go:
+    name: golangci-lint (new issues)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: lint
+      - name: Resolve the change under test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci-change.sh "$RUNNER_TEMP/change"
+      - run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
+
+  vulnerabilities:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: vuln
+      - run: make go-vuln
+
+  bindings:
+    name: Generated bindings are committed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: bindings
+      - name: Install the Wails CLI
+        run: go install tool
+      - run: make bindings-check
+
+  frontend:
+    name: svelte-check, build and oxlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          node: "true"
+          frontend-deps: "true"
+      - run: pnpm --dir frontend run check
+      - run: pnpm --dir frontend run build
+      - name: Resolve the change under test
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci-change.sh "$RUNNER_TEMP/change"
+      - name: oxlint the changed frontend files
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # Only the files a change touches are gated, with warnings denied,
+          # until the warning backlog is cleared; then the whole tree is.
+          files=$(grep -E '^frontend/(src|scripts)/.*\.(ts|js|mjs|cjs|svelte)$' "$RUNNER_TEMP/change/files" | sed 's|^frontend/||' || true)
+          if [[ -z "$files" ]]; then
+            echo "No frontend sources changed."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          make frontend-lint OXLINT_FLAGS="--deny-warnings $files"
+
+  go-test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          netns: "true"
+          cache-name: test
+      - run: make go-test
+      - name: Release candidate script tests
+        run: bin/ao-netns node --test scripts/release-candidate.test.mjs
+
+  vitest:
+    name: Vitest (unit and browser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          node: "true"
+          frontend-deps: "true"
+          browsers: chromium
+          netns: "true"
+          cache-name: netns
+      - run: make netns-tool
+      - name: Unit projects
+        working-directory: frontend
+        run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm test
+      - name: Browser project
+        working-directory: frontend
+        run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm run test:browser
+
+  e2e:
+    name: Playwright harness suite (shard ${{ matrix.shard }} of 4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-deps: "true"
+          e2e-deps: "true"
+          browsers: chromium webkit
+          netns: "true"
+          cache-name: harness
+      - run: make e2e E2E_ARGS="--shard=${{ matrix.shard }}/4"
+        env:
+          AO_E2E_WORKERS: "2"
+      - name: Upload failure traces and the report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-shard-${{ matrix.shard }}
+          path: |
+            e2e/test-results
+            e2e/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

@@ -82,6 +82,26 @@ The system-Chromium launch test is also manual, through
 nothing. `make verify` is the hermetic release check, including compilation
 of the real-provider smoke tests.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`.
+Each job calls a Make target, so the local command is the same check:
+`fmt-check`, `go-vet`, `go-build` plus `provider-smoke-compile` (Linux and
+macOS), `go-lint`, `go-vuln`, `bindings-check`, `frontend-lint`, `go-test`,
+the Vitest unit and browser projects under `bin/ao-netns`, and `make e2e` in
+four Playwright shards with two workers each (`E2E_ARGS`, `AO_E2E_WORKERS`).
+`.github/actions/setup` owns the toolchain pins, caches and the runner
+preparation the network namespace needs. `codeql.yml` scans Go and
+TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
+`dependency-review-action` checks pull request dependency changes.
+
+The two lint jobs gate new issues only: `scripts/ci-change.sh` reads the
+change from the GitHub API and `go-lint` runs with `--new-from-patch`, while
+`frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
+widen to the whole tree once the existing backlog is cleared
+(`make go-lint` and `make frontend-lint` show it). Branch protection
+requiring these checks is a repository setting, not part of the tree.
+
 ## Releases
 
 Use [release candidates](release-candidates.md) for producing, testing and

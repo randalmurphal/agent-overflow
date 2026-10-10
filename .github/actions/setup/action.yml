@@ -1,0 +1,133 @@
+name: Set up toolchains
+description: >-
+  Installs the toolchains a CI job needs, with caches. Every input is opt-in
+  so a job pays only for what it runs. Pins live here once.
+
+inputs:
+  go:
+    description: Install Go (version from go.mod) with the module cache and a per-job build cache.
+    default: "false"
+  gtk:
+    description: Install the GTK4 and WebKitGTK headers the cgo webview needs.
+    default: "false"
+  node:
+    description: Install pnpm and Node with the pnpm store cache.
+    default: "false"
+  frontend-deps:
+    description: Install frontend dependencies (frontend/).
+    default: "false"
+  frontend-dist:
+    description: Build frontend/dist, which the Go root package embeds; Go builds, vet and tests need it.
+    default: "false"
+  e2e-deps:
+    description: Install e2e dependencies (e2e/).
+    default: "false"
+  browsers:
+    description: Playwright browsers to install, space separated (chromium, webkit), with OS dependencies. Empty installs none.
+    default: ""
+  netns:
+    description: Allow the isolated test network namespace (unprivileged user namespaces, dummy link type).
+    default: "false"
+  cache-name:
+    description: Name of the Go build cache slot, usually the job name; jobs with different build tags keep separate caches.
+    default: default
+
+runs:
+  using: composite
+  steps:
+    - name: Install GTK and WebKitGTK headers
+      if: inputs.gtk == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends gcc pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
+
+    - name: Allow the isolated test network namespace
+      if: inputs.netns == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Ubuntu 24.04 refuses unprivileged user namespaces through AppArmor
+        # (internal/netisolate names the sysctl). The dummy link type is a
+        # module, and module autoload is refused from a user namespace.
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        sudo modprobe dummy
+
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      if: inputs.go == 'true'
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - name: Restore the Go module cache
+      if: inputs.go == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/go/pkg/mod
+        key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          go-mod-${{ runner.os }}-
+
+    - name: Restore the Go build cache
+      if: inputs.go == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/go-build
+        key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+          go-build-${{ inputs.cache-name }}-${{ runner.os }}-
+
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      if: inputs.node == 'true'
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      if: inputs.node == 'true'
+      with:
+        node-version-file: frontend/package.json
+        cache: pnpm
+        cache-dependency-path: |
+          frontend/pnpm-lock.yaml
+          e2e/pnpm-lock.yaml
+
+    - name: Install frontend dependencies
+      if: inputs.frontend-deps == 'true' || inputs.frontend-dist == 'true'
+      shell: bash
+      run: pnpm --dir frontend install --frozen-lockfile
+
+    - name: Build the frontend bundle
+      if: inputs.frontend-dist == 'true'
+      shell: bash
+      run: pnpm --dir frontend run build
+
+    - name: Install e2e dependencies
+      if: inputs.e2e-deps == 'true'
+      shell: bash
+      run: pnpm --dir e2e install --frozen-lockfile
+
+    - name: Restore Playwright browsers
+      if: inputs.browsers != ''
+      id: browsers
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-${{ inputs.browsers }}-${{ hashFiles('e2e/pnpm-lock.yaml', 'frontend/pnpm-lock.yaml') }}
+
+    - name: Install Playwright browsers
+      if: inputs.browsers != ''
+      shell: bash
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+        CACHED: ${{ steps.browsers.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        # The frontend and e2e lockfiles pin the same Playwright; the e2e
+        # package owns the CLI here. OS libraries are not cached.
+        dir=e2e
+        if [[ ! -d e2e/node_modules ]]; then dir=frontend; fi
+        if [[ "$CACHED" == "true" ]]; then
+          pnpm --dir "$dir" exec playwright install-deps $BROWSERS
+        else
+          pnpm --dir "$dir" exec playwright install --with-deps $BROWSERS
+        fi

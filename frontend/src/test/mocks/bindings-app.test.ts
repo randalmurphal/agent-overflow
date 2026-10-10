@@ -21,6 +21,7 @@ import * as mockBindings from './bindings-app';
 const mockMachinery = new Set([
   'setBindingMock',
   'setReviewDiffMock',
+  'setAttachmentThumbnailMock',
   'getBindingMock',
   'resetBindingMocks',
   '__bindingMocksInternal',

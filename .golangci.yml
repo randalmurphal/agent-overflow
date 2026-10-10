@@ -1,0 +1,14 @@
+# golangci-lint configuration (v2 schema). `make go-lint` runs it; CI gates
+# new issues only (--new-from-patch) until the existing backlog is cleared,
+# then the gate widens to the whole tree. The default linter set is on:
+# errcheck, govet, ineffassign, staticcheck and unused. No findings are
+# excluded here: an unchecked Close in this repo is a real finding under
+# its cleanup rule, not noise.
+version: "2"
+
+run:
+  timeout: 20m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
