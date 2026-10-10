@@ -5,6 +5,7 @@ import { tick } from 'svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
 import ImageMenuHost from './ImageMenuHost.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
 import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
@@ -60,9 +61,16 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetMediaBlobCacheForTest();
+  __resetImageTiersForTest();
   resetBindingMocks();
   vi.restoreAllMocks();
 });
+
+// happy-dom lays nothing out: report every observed container's width so
+// each host makes its first request.
+function measure(): void {
+  __reportImageBoxForTest(800);
+}
 
 // `streaming` selects the render path: false renders one settled
 // `.md-committed` instance the compact static serializer tries first, true
@@ -84,6 +92,7 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     });
 
     await waitFor(() => {
+      measure();
       expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull();
     });
     const image = container.querySelector('img')!;
@@ -107,6 +116,7 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     });
 
     await waitFor(() => {
+      measure();
       expect(container.querySelector(`${root} td img[src^="blob:"]`)).not.toBeNull();
     });
     expect(rpc).toHaveBeenCalledTimes(1);
@@ -126,6 +136,7 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     });
 
     await waitFor(() => {
+      measure();
       expect(container.querySelector('details img[src^="blob:"]')).not.toBeNull();
     });
     expect(container.querySelector('summary')?.textContent).toContain('Screenshots');
@@ -143,6 +154,7 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     });
 
     await waitFor(() => {
+      measure();
       expect(container.querySelector(`${root} video[src^="blob:"]`)).not.toBeNull();
     });
     expect(container.textContent).not.toContain('<video>');
@@ -162,6 +174,7 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     });
 
     await waitFor(() => {
+      measure();
       expect(container.querySelectorAll('img[src^="blob:"]')).toHaveLength(3);
     });
     expect(rpc).toHaveBeenCalledTimes(2);
@@ -227,7 +240,10 @@ describe.each(paths)('the image menu on forge media, on %s', (_name, streaming, 
     const { container } = render(ForgeAttachmentChatHarness, {
       props: { source, forgeSource: GITHUB, streaming },
     });
-    await waitFor(() => expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull());
+    await waitFor(() => {
+      measure();
+      expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull();
+    });
     await rightClick(container.querySelector(`${root} img[src^="blob:"]`)!);
     expect(imageMenu()).not.toBeNull();
   });
@@ -242,7 +258,10 @@ describe.each(paths)('the image menu on forge media, on %s', (_name, streaming, 
         streaming,
       },
     });
-    await waitFor(() => expect(container.querySelector(`${root} video[src^="blob:"]`)).not.toBeNull());
+    await waitFor(() => {
+      measure();
+      expect(container.querySelector(`${root} video[src^="blob:"]`)).not.toBeNull();
+    });
     await rightClick(container.querySelector(`${root} video`)!);
     expect(imageMenu()).toBeNull();
   });

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { fetchAttachmentBytes, fetchTicketedBytes, uploadAttachmentBytes } from './attachmentTransfer';
+import {
+  TransferUnavailableError,
+  fetchAttachmentBytes,
+  fetchTicketedBytes,
+  uploadAttachmentBytes,
+} from './attachmentTransfer';
 import { HOME_BACKEND } from './backendKey';
 import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
 
@@ -185,6 +190,19 @@ describe('fetchTicketedBytes', () => {
     controller.abort();
 
     await expect(pending).rejects.toBe(controller.signal.reason);
+  });
+
+  it('names a spent ticket as TransferUnavailableError and any other refusal as a plain Error', async () => {
+    answerWith(() => new Response('404 page not found', { status: 404 }));
+    const spent = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t').catch((err: unknown) => err);
+    expect(spent).toBeInstanceOf(TransferUnavailableError);
+    expect((spent as Error).message).toBe('Could not load image: this transfer is no longer available. Try again.');
+
+    answerWith(() => new Response('attachment is larger than 100 MiB', { status: 413 }));
+    const refused = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t').catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(Error);
+    expect(refused).not.toBeInstanceOf(TransferUnavailableError);
+    expect((refused as Error).message).toBe('Could not load image: the file is larger than this backend accepts.');
   });
 });
 

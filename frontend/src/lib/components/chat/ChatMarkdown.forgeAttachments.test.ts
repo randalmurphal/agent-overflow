@@ -13,7 +13,8 @@ import type { Extension } from '../../markdown';
 
 // The bytes never arrive here: the host stays in its loading state, which is
 // what these cases assert about. A mount is the claim, not a picture.
-vi.mock('../../utils/forgeAttachmentCache', () => ({
+vi.mock('../../utils/forgeAttachmentCache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/forgeAttachmentCache')>()),
   acquireForgeAttachment: () => ({ value: new Promise(() => {}), release: () => {} }),
 }));
 

@@ -1586,10 +1586,10 @@ clean bottom landings). See
 [`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) §3.
 Async-short remount content is bridged at the content layer (streamdown
 mermaid/math rendered-height caches; the media blob cache behind forge
-attachments and local images, whose settled bytes and pixel size a remount
-reads synchronously so the `<img>` box is reserved in the frame it mounts;
-that box is the original's pixel size whichever display-density variant is
-painted, so a tier swap after a pane resize changes pixels, never height),
+attachments and local images, whose settled bytes at the image's last
+display tier (`utils/imageTiers.ts`) a remount reads synchronously; the
+`<img>` carries the original's pixel size whichever tier is painted, so its
+box is reserved in the frame it mounts and a sharper tier never changes it),
 and `remountReturn.browser.test.ts` and
 `e2e/tests/local-image-pane-stability.spec.ts` pin the outcomes. Two pieces
 survive the deletion:

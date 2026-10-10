@@ -1,25 +1,34 @@
 // The image menu host: which elements raise it (every attachment image
-// surface, never a file chip), what its rows call, and how it behaves over
-// the lightbox, which must survive every way the menu closes.
+// surface, never a file chip, and a local image an agent wrote as a path),
+// what its rows call, and how it behaves over the lightbox, which must
+// survive every way the menu closes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
+import { mockAttachmentDownload, mockLocalImage } from '../../../test/mocks/attachmentTransfer';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ImagePreviewItem } from '../../utils/attachmentPreview.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 import {
   attachmentImageMenuTag,
   canSaveMenuImage,
+  copyLocalImageMarkdown,
+  copyLocalImagePath,
   copyMenuImage,
+  localImageMenuTag,
   saveMenuImage,
   saveMenuImageLabel,
 } from '../../utils/imageMenuActions';
+import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
+import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { buildLocalImageHref } from '../../utils/pathLinkExtension';
 import ImageMenuHost from './ImageMenuHost.svelte';
+import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
 import UserMessage from './UserMessage.svelte';
 import GeneratedImageMessage from './GeneratedImageMessage.svelte';
 import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -28,6 +37,8 @@ import ComposerAttachmentRow from '../composer/ComposerAttachmentRow.svelte';
 vi.mock('../../utils/imageMenuActions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/imageMenuActions')>()),
   copyMenuImage: vi.fn(async () => {}),
+  copyLocalImagePath: vi.fn(async () => {}),
+  copyLocalImageMarkdown: vi.fn(async () => {}),
   saveMenuImage: vi.fn(async () => {}),
   canSaveMenuImage: vi.fn(() => true),
   saveMenuImageLabel: vi.fn(() => 'Save Image'),
@@ -97,6 +108,10 @@ async function rightClick(target: Element): Promise<MouseEvent> {
   return event;
 }
 
+function rows(): string[] {
+  return Array.from(document.querySelectorAll('[role="menuitem"]')).map((el) => el.textContent?.trim() ?? '');
+}
+
 function toastMessages(): string[] {
   return getToasts().map((t) => `${t.type}: ${t.message}`);
 }
@@ -107,6 +122,8 @@ describe('<ImageMenuHost>', () => {
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     mockAttachmentDownload();
     vi.mocked(copyMenuImage).mockReset().mockResolvedValue(undefined);
+    vi.mocked(copyLocalImagePath).mockReset().mockResolvedValue(undefined);
+    vi.mocked(copyLocalImageMarkdown).mockReset().mockResolvedValue(undefined);
     vi.mocked(saveMenuImage).mockReset().mockResolvedValue(undefined);
     vi.mocked(canSaveMenuImage).mockReset().mockReturnValue(true);
     vi.mocked(saveMenuImageLabel).mockReset().mockReturnValue('Save Image');
@@ -235,6 +252,116 @@ describe('<ImageMenuHost>', () => {
       expect(save.getAttribute('title')).toBe('Not granted to this device');
       await fireEvent.click(save);
       expect(saveMenuImage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('on a local image', () => {
+    const SOURCE = 'docs/diagram.png';
+    const LOCAL_HREF = buildLocalImageHref('/repo/docs/diagram.png', '/repo', SOURCE);
+    const LOCAL = {
+      kind: 'local',
+      backend: 'gpu',
+      path: '/repo/docs/diagram.png',
+      workspacePath: '/repo',
+      sourceHref: SOURCE,
+      alt: 'diagram',
+    };
+
+    function openOnTagged(): void {
+      const host = document.createElement('span');
+      for (const [name, value] of Object.entries(localImageMenuTag({ backend: 'gpu', href: LOCAL_HREF, alt: 'diagram' }))) {
+        host.setAttribute(name, value);
+      }
+      const img = document.createElement('img');
+      host.appendChild(img);
+      document.body.appendChild(host);
+    }
+
+    afterEach(() => {
+      closeImageLightbox();
+      __resetMediaBlobCacheForTest();
+      __resetImageTiersForTest();
+      vi.restoreAllMocks();
+    });
+
+    it('offers Copy Path and Copy Markdown between Copy Image and Save Image; an attachment does not', async () => {
+      render(ImageMenuHost);
+      openOnTagged();
+      await rightClick(document.querySelector('img')!);
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
+      await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      expect(menu()).toBeNull();
+
+      const { getByLabelText } = render(ComposerAttachmentRow, {
+        props: { attachments: [asRow(image)], onRemove: vi.fn() },
+      });
+      await rightClick(getByLabelText('Preview hero.png'));
+      expect(rows()).toEqual(['Copy Image', 'Save Image']);
+    });
+
+    it('Copy Path and Copy Markdown reach the clipboard path synchronously with the click, and close', async () => {
+      render(ImageMenuHost);
+      openOnTagged();
+      await rightClick(document.querySelector('img')!);
+      item('Copy Path').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyLocalImagePath).toHaveBeenCalledWith(LOCAL);
+      await tick();
+      expect(menu()).toBeNull();
+
+      await rightClick(document.querySelector('img')!);
+      item('Copy Markdown').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyLocalImageMarkdown).toHaveBeenCalledWith(LOCAL);
+      await tick();
+      expect(menu()).toBeNull();
+      expect(copyMenuImage).not.toHaveBeenCalled();
+      expect(saveMenuImage).not.toHaveBeenCalled();
+    });
+
+    it('Copy Image and Save Image hand the local image to their actions', async () => {
+      render(ImageMenuHost);
+      openOnTagged();
+      await rightClick(document.querySelector('img')!);
+      item('Copy Image').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyMenuImage).toHaveBeenCalledWith(LOCAL);
+      await rightClick(document.querySelector('img')!);
+      await fireEvent.click(item('Save Image'));
+      expect(saveMenuImage).toHaveBeenCalledWith(LOCAL);
+      expect(canSaveMenuImage).toHaveBeenCalledWith(LOCAL);
+    });
+
+    // HOME is the empty key: the attribute is present and empty, which the
+    // spread must write and the tag must read back as a computer.
+    it.each([['gpu'], ['']])('opens on the image the timeline paints and on its lightbox picture (backend %j)', async (backend) => {
+      const expected = { ...LOCAL, backend };
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-image');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      mockLocalImage(() => ({ mimeType: 'image/png', width: 400, height: 300 }));
+      render(ImageMenuHost);
+      const { container } = render(StreamdownImageHost, {
+        props: {
+          token: { type: 'image', raw: `![diagram](${SOURCE})`, href: LOCAL_HREF, title: null, text: 'diagram', tokens: [] },
+          src: LOCAL_HREF,
+          backend,
+        },
+      });
+      __reportImageBoxForTest(800);
+      await waitFor(() => expect(container.querySelector('img[src="blob:local-image"]')).not.toBeNull());
+      const painted = container.querySelector('img')!;
+
+      await rightClick(painted);
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
+      item('Copy Path').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyLocalImagePath).toHaveBeenCalledWith(expected);
+      await tick();
+
+      await fireEvent.click(painted);
+      const preview = imageLightbox();
+      expect(preview).not.toBeNull();
+      const view = render(ExpandedImageDialog, { props: { preview: preview!, onClose: vi.fn() } });
+      await rightClick(view.getByRole('img', { name: 'diagram.png' }));
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
+      item('Copy Markdown').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyLocalImageMarkdown).toHaveBeenCalledWith(expected);
     });
   });
 

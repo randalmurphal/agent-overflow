@@ -5,16 +5,26 @@
   // GitHub attachment URL is how the forge spells BOTH a video and a
   // picture), so the kind is not known until the backend has sniffed the
   // bytes. This host is where that decision lands: picture, player, audio
-  // element, or — for `file` — a chip that downloads rather than rendering
+  // element, or, for `file`, a chip that downloads rather than rendering
   // anything.
+  //
+  // The first fetch is also the image's first display tier
+  // (utils/imageTiers.ts), so an image is fetched once, not once for its
+  // kind and again for its size: the tier the page last asked for this
+  // attachment, or else the one the loading chip's container measures. A
+  // picture is then handed to `MarkdownImage` at that tier, which this host
+  // still holds, so it paints in the frame it mounts; later tiers are
+  // MarkdownImage's. This host's claim on the first tier lasts as long as
+  // it is mounted, so after an upgrade one smaller variant stays retained.
   //
   // The URL is never the ticketed one. A ticket is spent by the first
   // request that presents it and a browser issues range requests for media,
   // so the whole body is read once into a Blob (`forgeAttachmentCache.ts`)
-  // and what reaches the element is an object URL — or, for SVG, a data URL,
+  // and what reaches the element is an object URL, or, for SVG, a data URL,
   // because a blob URL shares this page's origin and a navigated-to SVG
   // would run its script there.
   import Paperclip from '@lucide/svelte/icons/paperclip';
+  import { untrack } from 'svelte';
   import type { Tokens } from '../../../markdown';
   import Icon from '../../primitives/Icon.svelte';
   import { formatAttachmentSize } from '../../../types/attachment';
@@ -28,9 +38,18 @@
   import { forgeImageMenuTag } from '../../../utils/imageMenuActions';
   import {
     acquireForgeAttachment,
+    forgeAttachmentCacheKey,
     type ResolvedForgeAttachment,
   } from '../../../utils/forgeAttachmentCache';
-  import { rememberDecodedSize } from '../../../utils/mediaBlobCache';
+  import {
+    imageBoxContainer,
+    imageTierFor,
+    lastImageTier,
+    observeImageBox,
+    rememberImageTier,
+  } from '../../../utils/imageTiers';
+  import { forgeMarkdownImageSource } from '../../../utils/markdownImageSource';
+  import MarkdownImage from './MarkdownImage.svelte';
 
   let { token }: { token: Tokens.Image } = $props();
 
@@ -46,27 +65,45 @@
       ? browserUrlForForgeAttachment(parsed.pr.forge, parsed.href, parsed.webBase, parsed.pr)
       : null,
   );
+  const cacheKey = $derived(parsed ? forgeAttachmentCacheKey(parsed.backend, parsed.pr, parsed.href) : '');
+  const imageSource = $derived(parsed ? forgeMarkdownImageSource(parsed, forgeImageMenuTag(href)) : null);
+
+  // The tier the page last asked for this attachment at, read once per
+  // attachment; else the first width the loading chip's container reports.
+  const rememberedTier = $derived(cacheKey ? lastImageTier(cacheKey) : undefined);
+  let measuredTier = $state<number | null>(null);
+  const tier = $derived(rememberedTier ?? measuredTier);
 
   // Raw: the value is the cache's own object, shared by every mount, and
   // `rememberDecodedSize` writes the decoded size INTO it for the next
   // mount. A deep $state proxy would keep that write to itself.
   let resolved = $state.raw<ResolvedForgeAttachment | null>(null);
+  let resolvedTier = $state(0);
   let error = $state('');
   let loading = $state(false);
   let decodeFailed = $state(false);
 
   $effect(() => {
-    const target = parseForgeAttachmentHref(href);
+    const target = parsed;
+    const at = tier;
     if (!target) {
       resolved = null;
       error = '';
       loading = false;
       return;
     }
-    let disposed = false;
     error = '';
     decodeFailed = false;
-    const handle = acquireForgeAttachment(target.backend, target.pr, target.href);
+    if (at === null) {
+      // Unmeasured: the loading chip reports its container's width first.
+      resolved = null;
+      loading = true;
+      return;
+    }
+    let disposed = false;
+    rememberImageTier(forgeAttachmentCacheKey(target.backend, target.pr, target.href), at);
+    resolvedTier = at;
+    const handle = acquireForgeAttachment(target.backend, target.pr, target.href, at);
     if (handle.settled) {
       // Painted in this same frame: no placeholder, no height change.
       resolved = handle.settled;
@@ -96,13 +133,18 @@
     };
   });
 
-  const alt = $derived(token.text || name);
-  const width = $derived(resolved && resolved.width > 0 ? resolved.width : undefined);
-  const height = $derived(resolved && resolved.height > 0 ? resolved.height : undefined);
-
-  function handleLoad(event: Event): void {
-    if (resolved) rememberDecodedSize(resolved, event.currentTarget as HTMLImageElement);
+  function measureFirst(element: HTMLElement): (() => void) | void {
+    const container = imageBoxContainer(element);
+    if (!container) return;
+    return untrack(() =>
+      observeImageBox(container, (cssWidth) => {
+        if (measuredTier !== null || !(cssWidth > 0)) return;
+        measuredTier = imageTierFor(cssWidth, globalThis.devicePixelRatio || 1);
+      }),
+    );
   }
+
+  const alt = $derived(token.text || name);
 
   function handleDecodeError(): void {
     decodeFailed = true;
@@ -137,27 +179,19 @@
   <span
     data-forge-attachment-loading
     class="inline-block rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg-hint"
+    {@attach measureFirst}
   >
     Loading {name}…
   </span>
-{:else if resolved.kind === 'image'}
-  <span data-streamdown-image class="group relative my-4 mx-auto block w-fit max-w-full">
-    <!-- In-memory bytes decode without a fetch, so lazy loading would only
-         defer the paint of a row the virtualizer has already decided to
-         show; the size attributes reserve the box before the decode. -->
-    <img
-      class="max-w-full rounded-lg"
-      src={resolved.url}
-      {alt}
-      title={browserUrl ?? undefined}
-      {width}
-      {height}
-      data-markdown-image-src={parsed?.href}
-      {...forgeImageMenuTag(href)}
-      onload={handleLoad}
-      onerror={handleDecodeError}
-    />
-  </span>
+{:else if resolved.kind === 'image' && imageSource}
+  <MarkdownImage
+    source={imageSource}
+    {alt}
+    title={browserUrl ?? undefined}
+    markdownImageSrc={parsed?.href}
+    initialTier={resolvedTier}
+    ondecodeerror={handleDecodeError}
+  />
 {:else if resolved.kind === 'video'}
   <span data-forge-attachment-video class="my-4 mx-auto block w-fit max-w-full">
     <!-- svelte-ignore a11y_media_has_caption -->

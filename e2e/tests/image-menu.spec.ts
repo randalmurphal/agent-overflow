@@ -12,21 +12,25 @@
 // delegated hosts' precedence under a trusted right-click: a link opens the
 // link menu, an image only the image menu. A Codex generated image, imported
 // from the isolated provider home through the real triage path, carries the
-// same menu.
+// same menu. So does an image an agent wrote as a workspace path, which
+// adds Copy Path and Copy Markdown: the clipboard and the downloads
+// directory get the file itself, not the display-size derivative the
+// timeline paints it from.
 //
 // Forge images (PR/MR bodies and comments) carry the same menu in the review
 // pane; forge-image-menu.spec.ts covers them against the fake forge CLI.
 
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
-import { PNG_BASE64, PNG_BYTES, PNG_HEIGHT, PNG_WIDTH } from './attachment-fixture.js';
+import { PNG_BASE64, PNG_BYTES, PNG_HEIGHT, PNG_WIDTH, solidPng } from './attachment-fixture.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
 import { confirmOnHost, redeemOnScreen, type PairingInvite } from './offhost-helpers.js';
-import { plainScenario } from './thread-tools-helpers.js';
+import { plainScenario, setScenario } from './thread-tools-helpers.js';
 
 async function seedThread(harness: HarnessApp, title: string): Promise<string> {
   await harness.rpc('HarnessSetScenario', {
@@ -91,6 +95,17 @@ function sentImage(page: Page, filename: string) {
 
 function imageMenu(page: Page) {
   return page.getByRole('menu', { name: 'Image Actions' });
+}
+
+/** The PNG the clipboard holds, decoded to its pixel size. */
+async function clipboardPngSize(page: Page): Promise<{ width: number; height: number }> {
+  return page.evaluate(async () => {
+    const items = await navigator.clipboard.read();
+    const bitmap = await createImageBitmap(await items[0].getType('image/png'));
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return size;
+  });
 }
 
 /** Whether the topmost element at `locator`'s centre is inside `locator`. */
@@ -309,13 +324,87 @@ test('a Codex generated image opens the image menu and copies its original bytes
 
   await imageMenu(page).getByRole('menuitem', { name: 'Copy Image' }).click();
   await expect(page.getByTestId('toast').filter({ hasText: 'Image copied' })).toBeVisible();
-  const held = await page.evaluate(async () => {
-    const items = await navigator.clipboard.read();
-    const png = await items[0].getType('image/png');
-    const bitmap = await createImageBitmap(png);
-    const size = { width: bitmap.width, height: bitmap.height };
-    bitmap.close();
-    return size;
+  expect(await clipboardPngSize(page)).toEqual({ width: PNG_WIDTH, height: PNG_HEIGHT });
+});
+
+test('a local image an agent wrote offers its path and markdown, and copies and saves the file, not the derivative it paints', async ({
+  harness,
+  page,
+}) => {
+  // Wider than any column at this viewport, so the timeline paints a
+  // derivative and only the file itself is this wide.
+  const width = 1600;
+  const height = 400;
+  const title = 'Local image menu';
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'image-menu-local',
+        repo: {},
+        threads: [{ title, provider: 'claude', turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
   });
-  expect(held).toEqual({ width: PNG_WIDTH, height: PNG_HEIGHT });
+  const workspace = seed.projects[0].path;
+  // Unique: the downloads directory outlives the per-test reset.
+  const name = `wide-${randomBytes(4).toString('hex')}.png`;
+  const reference = `shots/${name}`;
+  const bytes = solidPng(width, height, [40, 80, 160]);
+  await mkdir(path.join(workspace, 'shots'), { recursive: true });
+  await writeFile(path.join(workspace, reference), bytes);
+  await setScenario(
+    harness,
+    workspace,
+    plainScenario({ name: 'image-menu-local', provider: 'claude', texts: [`The wide shot:\n\n![wide shot](${reference})\n`] }),
+  );
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(harness.url).origin,
+  });
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: title }).click();
+  await page.getByLabel('Message Input').fill('show me');
+  const completed = harness.waitForEvent('provider:turn_completed');
+  await page.getByTestId('composer-send').click();
+  await completed;
+
+  const painted = page.locator('img[data-markdown-image-src]');
+  await expect.poll(() => painted.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
+  expect(await painted.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeLessThan(width);
+
+  const menu = imageMenu(page);
+  await painted.click({ button: 'right' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
+  await expect(page.getByRole('menu')).toHaveCount(1);
+
+  // The reference as the agent wrote it, not the resolved path.
+  await menu.getByRole('menuitem', { name: 'Copy Path' }).click();
+  await expect(page.getByTestId('toast').filter({ hasText: 'Path copied' })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(reference);
+
+  await painted.click({ button: 'right' });
+  await menu.getByRole('menuitem', { name: 'Copy Markdown' }).click();
+  await expect(page.getByTestId('toast').filter({ hasText: 'Markdown copied' })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`![wide shot](${reference})`);
+
+  await painted.click({ button: 'right' });
+  await menu.getByRole('menuitem', { name: 'Copy Image' }).click();
+  await expect(page.getByTestId('toast').filter({ hasText: 'Image copied' })).toBeVisible();
+  expect(await clipboardPngSize(page)).toEqual({ width, height });
+
+  // Save on the owner's screen: the backend copies the file into this
+  // isolated boot's downloads directory under its own name.
+  await painted.click({ button: 'right' });
+  await menu.getByRole('menuitem', { name: 'Save Image' }).click();
+  const saved = path.join(harness.bootstrap.dataDir, 'downloads', name);
+  await expect(page.getByTestId('toast').filter({ hasText: `Saved to ${saved}` })).toBeVisible();
+  expect(await readFile(saved)).toEqual(bytes);
+
+  // The lightbox opened from the image carries the same menu.
+  await painted.click();
+  const dialog = page.getByRole('dialog', { name });
+  await dialog.getByRole('img', { name }).click({ button: 'right' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(dialog).toBeVisible();
 });

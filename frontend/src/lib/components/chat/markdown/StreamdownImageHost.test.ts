@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import StreamdownImageHost from './StreamdownImageHost.svelte';
+import { closeImageLightbox, imageLightbox } from '../../../stores/imageLightbox.svelte';
+import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../../utils/imageTiers';
+import { localImageCacheKey } from '../../../utils/localImageCache';
 import { mockLocalImage, type LocalImageReply } from '../../../../test/mocks/attachmentTransfer';
 import { getPinnedBackend } from '../../../transport/backends';
 import { buildLocalImageHref } from '../../../utils/pathLinkExtension';
@@ -26,7 +29,9 @@ describe('<StreamdownImageHost>', () => {
   });
 
   afterEach(() => {
+    closeImageLightbox();
     __resetMediaBlobCacheForTest();
+    __resetImageTiersForTest();
     vi.restoreAllMocks();
   });
 
@@ -39,11 +44,14 @@ describe('<StreamdownImageHost>', () => {
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const { container } = mountImage(href);
     expect(container.querySelector('[data-streamdown-image-loading]')).not.toBeNull();
+    // Nothing is asked for until the paragraph's width says which tier.
+    expect(getLocalImage).not.toHaveBeenCalled();
+    __reportImageBoxForTest(800);
 
     await waitFor(() => {
       expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:local-image');
     });
-    expect(getLocalImage).toHaveBeenCalledWith('/workspace/diagram.png', '/workspace', 0);
+    expect(getLocalImage).toHaveBeenCalledWith('/workspace/diagram.png', '/workspace', 1080);
     expect(pinned).toBe('gpu');
     const img = container.querySelector('img')!;
     expect(img.getAttribute('width')).toBe('400');
@@ -57,10 +65,11 @@ describe('<StreamdownImageHost>', () => {
     const getLocalImage = mockLocalImage(() => pngReply());
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const first = mountImage(href);
+    __reportImageBoxForTest(800);
     await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
 
     // The side chat forked from this thread, or the row remounting after a
-    // scroll away and back: no placeholder frame, no RPC.
+    // scroll away and back: no placeholder frame, no RPC, no measurement.
     const second = mountImage(href);
     expect(second.container.querySelector('[data-streamdown-image-loading]')).toBeNull();
     expect(second.container.querySelector('img')?.getAttribute('src')).toBe('blob:local-image');
@@ -80,8 +89,10 @@ describe('<StreamdownImageHost>', () => {
     const getLocalImage = mockLocalImage(() => pngReply());
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const gpu = mountImage(href, 'gpu');
+    __reportImageBoxForTest(800);
     await waitFor(() => expect(gpu.container.querySelector('img')).not.toBeNull());
     const laptop = mountImage(href, 'laptop');
+    __reportImageBoxForTest(800);
     await waitFor(() => expect(laptop.container.querySelector('img')).not.toBeNull());
     expect(getLocalImage).toHaveBeenCalledTimes(2);
   });
@@ -90,6 +101,7 @@ describe('<StreamdownImageHost>', () => {
     mockLocalImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }), width: 0, height: 0 }));
     const href = buildLocalImageHref('/workspace/diagram.svg', '/workspace');
     const first = mountImage(href);
+    __reportImageBoxForTest(800);
     await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
     const img = first.container.querySelector('img')!;
     expect(img.getAttribute('src')?.startsWith('data:image/svg+xml;base64,')).toBe(true);
@@ -112,6 +124,7 @@ describe('<StreamdownImageHost>', () => {
     });
     const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const { container } = mountImage(href);
+    __reportImageBoxForTest(800);
 
     await waitFor(() => {
       expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
@@ -121,6 +134,33 @@ describe('<StreamdownImageHost>', () => {
       'no such file or directory',
     );
     expect(container.querySelector('[data-streamdown-image-loading]')).toBeNull();
+  });
+
+  it('opens the lightbox on the painted tier and fetches the file itself behind it', async () => {
+    const getLocalImage = mockLocalImage((_path, _workspace, maxWidth) =>
+      maxWidth === 0
+        ? { blob: new Blob(['full'], { type: 'image/png' }), width: 4000, height: 3000 }
+        : { width: maxWidth, height: maxWidth * 0.75, originalWidth: 4000, originalHeight: 3000, originalBytes: 77, derived: true },
+    );
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
+    const { container } = mountImage(href);
+    __reportImageBoxForTest(800);
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
+    expect(container.querySelector('img')?.getAttribute('width')).toBe('4000');
+
+    await fireEvent.click(container.querySelector('img')!);
+    const item = imageLightbox()?.images[0];
+    expect(item).toMatchObject({
+      id: localImageCacheKey('gpu', '/workspace/diagram.png', '/workspace'),
+      filename: 'diagram.png',
+      url: 'blob:local-image',
+      width: 4000,
+      height: 3000,
+      originalBytes: 77,
+    });
+    const original = await item!.original!(new AbortController().signal);
+    expect(await original.text()).toBe('full');
+    expect(getLocalImage.mock.calls.map((call) => call[2])).toEqual([1080, 0]);
   });
 
   it('renders an approved http or data:image src directly, lazy only for http', async () => {

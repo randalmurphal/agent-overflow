@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
    * Right-click (long-press on the phone) menu for images: Copy Image and
-   * Save Image, on a thread's image attachments and on forge images in PR
-   * and MR bodies and comments (`utils/imageMenuActions.ts`).
+   * Save Image, on a thread's image attachments, on forge images in PR and
+   * MR bodies and comments, and on images an agent wrote as a local path,
+   * which add Copy Path and Copy Markdown (`utils/imageMenuActions.ts`).
    *
    * Mounted once from `App.svelte`, built like `DiagramInteractionHost`:
    * one delegated `contextmenu` listener on `document` finds an element
@@ -24,6 +25,8 @@
   import { errString } from '../../utils/errors';
   import {
     canSaveMenuImage,
+    copyLocalImageMarkdown,
+    copyLocalImagePath,
     copyMenuImage,
     saveMenuImage,
     saveMenuImageLabel,
@@ -99,6 +102,20 @@
     close();
   }
 
+  // The clipboard write is reached before the first await, inside the
+  // click; the outcome is reported by the action.
+  function copyPath(): void {
+    if (menu?.target.kind !== 'local') return;
+    void copyLocalImagePath(menu.target);
+    close();
+  }
+
+  function copyMarkdown(): void {
+    if (menu?.target.kind !== 'local') return;
+    void copyLocalImageMarkdown(menu.target);
+    close();
+  }
+
   function saveImage(): void {
     if (!menu) return;
     const { target } = menu;
@@ -169,6 +186,10 @@
     minWidthClass="min-w-[168px]"
   >
     <MenuItem label="Copy Image" onSelect={copyImage} />
+    {#if menu.target.kind === 'local'}
+      <MenuItem label="Copy Path" onSelect={copyPath} />
+      <MenuItem label="Copy Markdown" onSelect={copyMarkdown} />
+    {/if}
     <MenuItem
       label={saveLabel}
       disabled={!saveGranted}
