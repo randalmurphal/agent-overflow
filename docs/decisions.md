@@ -458,6 +458,21 @@ and anti-changes that live only here:
   `internal/externalurl`); path-shaped image srcs load from the thread's
   machine on every surface with a workspace, including paired browsers.
   Do not reintroduce an http(s)-only allowlist.
+- Images in chat (local paths and forge attachments): the timeline paints a
+  derivative at the display's own density (the box width times the device
+  pixel ratio, rounded up to a fixed width ladder), never upscaled, lossless
+  PNG for lossless sources and JPEG only for sources that were already
+  lossy, so a screenshot loses nothing visible. The `<img>` box is the
+  original's pixel size whichever bytes are painted, so a resize or the
+  original's arrival never moves a row. A click opens the one app-level
+  lightbox on what the timeline shows and loads the original behind a
+  visible "Loading full size (N MB)" line, with wheel, drag, pinch, keys
+  and a double-click between fit and 1:1; the same lightbox serves message
+  attachments, which open on their thumbnail. A right-click (long press on
+  compact) offers Copy Image (always the original bytes), Copy Path and
+  Copy Markdown (the text the agent wrote) and Save Image (the owning
+  computer's Downloads, or a browser download). Bytes cross on the
+  ticketed byte routes, never inside a WebSocket frame.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
 - Wide blocks pan inside their own box on every layout: markdown tables,
