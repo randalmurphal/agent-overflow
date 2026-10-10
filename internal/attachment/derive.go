@@ -19,13 +19,13 @@ var DeriveWidths = []int{320, 480, 720, 1080, 1440, 2160, 2880, 3840, 5120}
 // full size, not a preview tile.
 const deriveJPEGQuality = 90
 
-// deriveMaxPixels caps a derivative's pixel count, about 2508x2508. Above it
-// the source is served and the browser downsamples it. The cap is what
-// keeps the largest derivation inside the decode memory budget: the
-// resampler's scratch grows with tier x source height, and this cap with the
-// source pixel budget bounds that product (imagecodec.go has the numbers).
-// It admits a 16:9 derivative up to the 2880 tier and a 4:3 one at 2880x2160.
-const deriveMaxPixels = 6 << 20
+// deriveMaxPixels caps a derivative's pixel count at 4096x4096, which bounds
+// what a client decodes, what one derivative holds in a caller's byte cache
+// and what it costs to encode. It admits the 5120 tier up to 16:10
+// (5120x3200) and the 3840 tier at every landscape aspect and square (up to
+// 3840x4369). A taller derivative steps down the ladder, and a source over
+// the cap is derived rather than served (derivedTier).
+const deriveMaxPixels = 16 << 20
 
 // deriveGroup dedupes concurrent derivations of the same source and tier, so
 // two panes asking for one width decode once.
@@ -60,19 +60,25 @@ func DeriveTier(maxWidth int) int {
 
 // Derive answers a display-density version of one image at the tier that
 // serves maxWidth (DeriveTier), or the source itself when no derivative is
-// smaller or one would lose something:
+// worth making or one would lose something:
 //
 //   - svg, ico and avif, which Go cannot decode;
 //   - an animated GIF, whose derivative would silently drop the animation;
-//   - a source no wider than the tier;
-//   - a derivative over deriveMaxPixels;
+//   - a source within deriveMaxPixels that is not worth deriving at the tier
+//     (worthDeriving), which includes one no wider than the tier;
+//   - a source over deriveMaxPixels that no tier up to that one shrinks
+//     within it;
 //   - a source whose header reads but whose pixel data Go cannot decode,
 //     which a browser's decoder may still show.
 //
-// A derivative is exactly the tier wide with the height rounded to keep the
-// aspect ratio. PNG, GIF, BMP and TIFF sources derive to PNG (lossless, so
-// a screenshot's text stays sharp); JPEG to JPEG; WebP to JPEG when it
-// decoded as lossy YCbCr and to PNG when it was lossless or carries alpha.
+// A source over deriveMaxPixels is otherwise never served, since the cap
+// bounds what a client decodes: it is derived even where worthDeriving
+// would serve it, at the largest tier whose derivative is within the cap
+// (derivedTier). A derivative is exactly its tier wide, which Width reports,
+// with the height rounded to keep the aspect ratio. PNG, GIF, BMP and TIFF
+// sources derive to PNG (lossless, so a screenshot's text stays sharp); JPEG
+// to JPEG; WebP to JPEG when it decoded as lossy YCbCr and to PNG when it
+// was lossless or carries alpha.
 //
 // key names the source for deduplication: concurrent calls with the same key
 // and tier share one derivation, so it must change whenever the bytes do.
@@ -88,8 +94,8 @@ func Derive(key string, src []byte, mime string, maxWidth int) (Derived, error) 
 		return Derived{}, fmt.Errorf("%s: %w", mime, err)
 	}
 	original.Width, original.Height = cfg.Width, cfg.Height
-	tier := DeriveTier(maxWidth)
-	if tier == 0 || cfg.Width <= tier || !withinDerivedPixels(cfg.Width, cfg.Height, tier) {
+	tier := derivedTier(cfg.Width, cfg.Height, DeriveTier(maxWidth))
+	if tier == 0 {
 		return original, nil
 	}
 	if mime == "image/gif" && gifIsAnimated(src) {
@@ -106,6 +112,45 @@ func Derive(key string, src []byte, mime string, maxWidth int) (Derived, error) 
 		return original, nil
 	}
 	return derived, nil
+}
+
+// derivedTier is the tier a width x height source is derived at when tier
+// is asked for, or 0 to serve the source.
+//
+// A source within deriveMaxPixels is derived at the asked tier when it is
+// worth deriving there, and is served otherwise. Its derivative is then
+// within the cap as well, being narrower than the source and no taller.
+//
+// A source over the cap is not served while a derivative can be made: the
+// cap bounds what a client decodes, and the two-thirds rule, which weighs a
+// derivative against serving the source, yields to it. Such a source is
+// derived at the largest tier up to the asked one that is narrower than the
+// source and whose derivative is within the cap.
+func derivedTier(width, height, tier int) int {
+	if tier == 0 {
+		return 0
+	}
+	if int64(width)*int64(height) <= deriveMaxPixels {
+		if worthDeriving(width, tier) {
+			return tier
+		}
+		return 0
+	}
+	for i := len(DeriveWidths) - 1; i >= 0; i-- {
+		if t := DeriveWidths[i]; t <= tier && t < width && withinDerivedPixels(width, height, t) {
+			return t
+		}
+	}
+	return 0
+}
+
+// worthDeriving reports whether a tier is under two thirds of a source's
+// width. Closer than that, a derivative costs a full decode, resample and
+// encode for little: at 84% of the width (a 2560 source at the 2160 tier) it
+// saves 29% of the pixels, and Go's PNG encoder often writes more bytes than
+// an optimized source.
+func worthDeriving(width, tier int) bool {
+	return int64(width)*2 > int64(tier)*3
 }
 
 // withinDerivedPixels reports whether the tier's derivative of a width x
@@ -136,9 +181,9 @@ func deriveAt(src []byte, mime string, cfg image.Config, tier int) (Derived, err
 		return Derived{}, nil
 	}
 	bounds := img.Bounds()
-	// A GIF's first frame can be narrower than its logical screen, which
-	// is what the header reported.
-	if bounds.Dx() <= tier {
+	// A GIF's first frame can be smaller than its logical screen, which is
+	// what the header reported, so the decoded size picks the tier again.
+	if tier = derivedTier(bounds.Dx(), bounds.Dy(), tier); tier == 0 {
 		return Derived{}, nil
 	}
 	width, height := tier, scaledHeight(bounds.Dx(), bounds.Dy(), tier)

@@ -94,7 +94,8 @@ func TestResolveServesTheFileItself(t *testing.T) {
 func TestResolveServesATierDerivative(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
-	payload := pngBytes(t, 641, 480)
+	// Over one and a half times the 480 tier, so both tiers derive.
+	payload := pngBytes(t, 721, 540)
 	path := writeFile(t, workspace, "shot.png", payload)
 	s := newTestService(t)
 
@@ -103,8 +104,8 @@ func TestResolveServesATierDerivative(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if !got.Derived || got.Width != 320 || got.Height != 240 || got.MimeType != "image/png" ||
-		got.OriginalWidth != 641 || got.OriginalHeight != 480 || got.OriginalBytes != int64(len(payload)) {
-		t.Fatalf("Resolve = %+v, want a 320x240 png derivative of the 641x480 file", got)
+		got.OriginalWidth != 721 || got.OriginalHeight != 540 || got.OriginalBytes != int64(len(payload)) {
+		t.Fatalf("Resolve = %+v, want a 320x240 png derivative of the 721x540 file", got)
 	}
 	content, data := readAll(t, s, got.ContentID)
 	cfg, err := png.DecodeConfig(bytes.NewReader(data))
@@ -126,6 +127,51 @@ func TestResolveServesATierDerivative(t *testing.T) {
 	}
 	if wider.Width != 480 || wider.ContentID == got.ContentID || original.Derived || original.ContentID == got.ContentID {
 		t.Fatalf("tiers share entries: 320 %q, 480 %+v, original %+v", got.ContentID, wider, original)
+	}
+}
+
+// A file over the derivative pixel cap whose asked tier's derivative is over
+// it too is served at the next tier down, under the cache key of the tier
+// asked for: asking again answers the same entry without deriving again.
+func TestResolveStepsDownOverThePixelCap(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	// 16.9 MP; 480x35027 is over the cap, 320x23351 is not.
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 481, 35100))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	path := writeFile(t, workspace, "tall.png", buf.Bytes())
+	s := New()
+
+	got, err := s.Resolve(path, workspace, 400)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !got.Derived || got.Width != 320 || got.Height != 23351 || got.OriginalWidth != 481 || got.OriginalHeight != 35100 {
+		t.Fatalf("Resolve = %+v, want a 320x23351 derivative of the 481x35100 file", got)
+	}
+	_, data := readAll(t, s, got.ContentID)
+	if cfg, err := png.DecodeConfig(bytes.NewReader(data)); err != nil || cfg.Width != 320 || cfg.Height != 23351 {
+		t.Fatalf("served %v %dx%d, want a 320x23351 png", err, cfg.Width, cfg.Height)
+	}
+	// The same tier answers the held entry. The bytes behind the same size
+	// and mtime are no longer an image, so a second derivation would fail.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), buf.Len()), 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore mtime: %v", err)
+	}
+	for _, maxWidth := range []int{400, 480} {
+		again, err := s.Resolve(path, workspace, maxWidth)
+		if err != nil || again != got {
+			t.Fatalf("Resolve at %d = %+v, %v; want the held %+v", maxWidth, again, err, got)
+		}
 	}
 }
 

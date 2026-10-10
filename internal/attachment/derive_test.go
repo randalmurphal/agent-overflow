@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
-	"math"
 	"os"
 	"reflect"
 	"sync"
@@ -23,10 +23,11 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// The three WebP fixtures are copied from golang.org/x/image/testdata
+// The WebP fixtures are copied from golang.org/x/image/testdata
 // (BSD-3-Clause, The Go Authors): tux.lossless.webp (386x395, VP8L),
-// yellow_rose.lossy.webp (400x301, VP8) and
-// yellow_rose.lossy-with-alpha.webp (400x301, VP8X with ALPH).
+// yellow_rose.lossy.webp (400x301, VP8),
+// blue-purple-pink-large.lossless.webp (600x400, VP8L) and
+// blue-purple-pink-large.normal-filter.lossy.webp (600x400, VP8).
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile("testdata/" + name)
@@ -34,6 +35,36 @@ func fixture(t *testing.T, name string) []byte {
 		t.Fatalf("read fixture: %v", err)
 	}
 	return data
+}
+
+// withWebPAlpha wraps a simple lossy WebP's VP8 chunk in a VP8X container
+// with an uncompressed ALPH chunk, so it decodes as NYCbCrA.
+func withWebPAlpha(t *testing.T, lossy []byte, width, height int) []byte {
+	t.Helper()
+	if string(lossy[0:4]) != "RIFF" || string(lossy[8:12]) != "WEBP" || string(lossy[12:16]) != "VP8 " {
+		t.Fatal("not a simple lossy WebP")
+	}
+	chunk := func(fourCC string, data []byte) []byte {
+		out := binary.LittleEndian.AppendUint32([]byte(fourCC), uint32(len(data)))
+		out = append(out, data...)
+		if len(data)%2 == 1 {
+			out = append(out, 0)
+		}
+		return out
+	}
+	const alphaFlag = 1 << 4
+	vp8x := []byte{alphaFlag, 0, 0, 0,
+		byte(width - 1), byte((width - 1) >> 8), byte((width - 1) >> 16),
+		byte(height - 1), byte((height - 1) >> 8), byte((height - 1) >> 16)}
+	alpha := make([]byte, 1+width*height) // no filter, no compression
+	for i := range width * height {
+		alpha[1+i] = uint8(i % 251)
+	}
+	body := []byte("WEBP")
+	body = append(body, chunk("VP8X", vp8x)...)
+	body = append(body, chunk("ALPH", alpha)...)
+	body = append(body, lossy[12:]...)
+	return append(binary.LittleEndian.AppendUint32([]byte("RIFF"), uint32(len(body))), body...)
 }
 
 func gradient(width, height int, translucent bool) *image.NRGBA {
@@ -148,6 +179,7 @@ func TestDeriveTierRoundsUpToTheLadder(t *testing.T) {
 }
 
 func TestDeriveOutputPerSourceFamily(t *testing.T) {
+	lossyWebP := fixture(t, "blue-purple-pink-large.normal-filter.lossy.webp")
 	cases := []struct {
 		name       string
 		src        []byte
@@ -162,10 +194,10 @@ func TestDeriveOutputPerSourceFamily(t *testing.T) {
 		{"static gif", encodeAs(t, "gif", gradient(641, 480, false)), "image/gif", "image/png", 240, 0},
 		{"bmp", encodeAs(t, "bmp", gradient(641, 480, false)), "image/bmp", "image/png", 240, 0},
 		{"tiff", encodeAs(t, "tiff", gradient(641, 480, false)), "image/tiff", "image/png", 240, 0},
-		// 395*320/386 = 327.5 rounds to 327; 301*320/400 = 240.8 to 241.
-		{"lossless webp", fixture(t, "tux.lossless.webp"), "image/webp", "image/png", 327, 0},
-		{"lossy webp", fixture(t, "yellow_rose.lossy.webp"), "image/webp", "image/jpeg", 241, 90},
-		{"lossy webp with alpha", fixture(t, "yellow_rose.lossy-with-alpha.webp"), "image/webp", "image/png", 241, 0},
+		// 400*320/600 = 213.3 rounds to 213.
+		{"lossless webp", fixture(t, "blue-purple-pink-large.lossless.webp"), "image/webp", "image/png", 213, 0},
+		{"lossy webp", lossyWebP, "image/webp", "image/jpeg", 213, 90},
+		{"lossy webp with alpha", withWebPAlpha(t, lossyWebP, 600, 400), "image/webp", "image/png", 213, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,6 +259,8 @@ func TestDeriveServesTheOriginal(t *testing.T) {
 		{"no width asked", png641, "image/png", 0, 641, 480},
 		{"wider than the ladder", png641, "image/png", 5121, 641, 480},
 		{"no wider than the tier", png400, "image/png", 401, 400, 300},
+		// 641 is under one and a half times the 480 tier.
+		{"not worth deriving", png641, "image/png", 400, 641, 480},
 		{"svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="9"/>`), "image/svg+xml", 320, 0, 0},
 		{"ico", []byte("\x00\x00\x01\x00not decoded"), "image/x-icon", 320, 0, 0},
 		{"avif", []byte("\x00\x00\x00\x1cftypavifnot decoded"), "image/avif", 320, 0, 0},
@@ -322,7 +356,8 @@ func replaceDecodeBudget(t *testing.T, limit int64) {
 
 // Two panes asking for the same tier of the same image decode it once.
 func TestDeriveDedupesConcurrentCallsForOneTier(t *testing.T) {
-	src := encodeAs(t, "png", gradient(641, 480, false))
+	// Over one and a half times the 480 tier, so that tier derives too.
+	src := encodeAs(t, "png", gradient(721, 540, false))
 	synctest.Test(t, func(t *testing.T) {
 		gate := make(chan struct{})
 		var decodes atomic.Int32
@@ -376,9 +411,9 @@ func TestDeriveHoldsItsEstimatedMemory(t *testing.T) {
 	if _, err := Derive("estimate", src, "image/png", 320); err != nil {
 		t.Fatalf("Derive: %v", err)
 	}
-	// 641x480 decoded at 4 B/px, a 320x480 float scratch, and the 320x240
+	// 641x480 decoded at 4 B/px, the resampler's scratch, and the 320x240
 	// destination plus its encoding.
-	want := int64(641*480*4 + 320*480*32 + 2*320*240*4)
+	want := int64(641*480*4) + resampleScratchBytes(320, 240, 641, 480) + 2*320*240*4
 	if resampleCost(cfg, 320, 240) != want || held != want {
 		t.Fatalf("held %d bytes while decoding, want %d", held, want)
 	}
@@ -446,65 +481,196 @@ func TestDecodeMemoryRefusesAJobLargerThanTheBudget(t *testing.T) {
 	})
 }
 
-// The cap and the pixel budget together keep every derivation inside the
-// decode budget, so no admissible job is ever refused. The bound is
-// computed from the constants (imagecodec.go derives it), and the real
-// admission predicate and estimate are checked over every source width up
-// to 64 times each tier, at the tallest 16-bit source both limits admit.
-func TestEveryAdmissibleDerivationFitsTheDecodeBudget(t *testing.T) {
-	maxTier := DeriveWidths[len(DeriveWidths)-1]
-	// tier x source height for any admitted derivative.
-	scratchRows := math.Sqrt(float64(deriveMaxPixels+maxTier/2) * float64(thumbPixelBudget))
-	bound := 8*float64(thumbPixelBudget) + 32*scratchRows + 8*float64(deriveMaxPixels)
-	if bound >= float64(decodeMemoryBudget) {
-		t.Fatalf("the largest admissible derivation can need %.0f MiB, over the %d MiB budget", bound/(1<<20), decodeMemoryBudget>>20)
-	}
+// widestThatFits is the source width up to which every thumbnail and
+// derivation fits the decode budget (imagecodec.go).
+const widestThatFits = 9_500_000
 
+// nextWidth steps a budget sweep through every width below dense and in
+// 0.5% steps above it.
+func nextWidth(width, dense int) int {
+	if width < dense {
+		return width + 1
+	}
+	return width + width/200
+}
+
+// Every derivation the tier rules admit fits the decode budget when its
+// source is at most widestThatFits wide, so none of those is refused. The
+// estimate is checked at the tallest 16-bit source the cap and the pixel
+// budget admit at each tier, over every width to twice the tier and in
+// steps from there to widestThatFits; one of ordinary width is within the
+// 530 MiB imagecodec.go states.
+func TestEveryAdmissibleDerivationFitsTheDecodeBudget(t *testing.T) {
 	var worst int64
+	var worstShape string
 	for _, tier := range DeriveWidths {
 		rows := deriveMaxPixels / tier
-		for width := tier + 1; width <= 64*tier; width++ {
+		for width := tier + 1; width <= widestThatFits; width = nextWidth(width, 2*tier) {
 			// The tallest height whose derivative rounds to at most rows,
 			// then no taller than the pixel budget allows at this width.
 			height := ((rows+1)*width - width/2 - 1) / tier
 			height = min(height, thumbPixelBudget/width)
-			if height < 1 {
-				break
+			got := derivedTier(width, height, tier)
+			if got == 0 && !worthDeriving(width, tier) && int64(width)*int64(height) <= deriveMaxPixels {
+				continue // served by the two-thirds rule
 			}
-			if !withinDerivedPixels(width, height, tier) {
-				t.Fatalf("%dx%d at %d: the tallest admissible height is not admitted", width, height, tier)
+			if got != tier {
+				t.Fatalf("%dx%d asked at %d derives at %d: the tallest admissible height is not admitted", width, height, tier, got)
 			}
 			cfg := image.Config{ColorModel: color.NRGBA64Model, Width: width, Height: height}
 			cost := resampleCost(cfg, tier, scaledHeight(width, height, tier))
 			if cost > decodeMemoryBudget {
 				t.Fatalf("%dx%d at the %d tier needs %d MiB, over the %d MiB budget", width, height, tier, cost>>20, decodeMemoryBudget>>20)
 			}
-			worst = max(worst, cost)
+			if width <= 1<<16 && cost > worst {
+				worst, worstShape = cost, fmt.Sprintf("%dx%d at %d", width, height, tier)
+			}
 		}
 	}
-	t.Logf("largest admissible derivation: %d MiB of %d MiB (bound %.0f MiB)", worst>>20, decodeMemoryBudget>>20, bound/(1<<20))
+	if worst > 540<<20 {
+		t.Fatalf("%s needs %d MiB, more than the about 530 MiB imagecodec.go states", worstShape, worst>>20)
+	}
+	t.Logf("largest derivation of a source to 65536 wide: %s, %d MiB of %d MiB", worstShape, worst>>20, decodeMemoryBudget>>20)
 }
 
-// A derivative over the pixel cap is never made: the source is answered
-// before any budget is acquired. The boundary itself is admitted.
-func TestDeriveServesTheOriginalOverThePixelCap(t *testing.T) {
+// A source wider than widestThatFits and a few rows tall can need more than
+// the whole budget for the resampler's column table. It is refused before
+// anything is decoded, not left waiting for room that cannot exist.
+func TestDeriveRefusesASourceTooWideForTheDecodeBudget(t *testing.T) {
 	var acquired atomic.Int32
 	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
-	square := pngWithDeclaredDimensions(t, 3000, 3000) // 2880x2880 at the 2880 tier
-	got, err := Derive("cap/square", square, "image/png", 2880)
-	if err != nil || got.Derived || &got.Data[0] != &square[0] || got.Width != 3000 || got.Height != 3000 {
-		t.Fatalf("Derive = (derived %v, %dx%d, %v), want the 3000x3000 source", got.Derived, got.Width, got.Height, err)
-	}
+	wide := pngWithDeclaredDimensions(t, 13_000_000, 4)
+	synctest.Test(t, func(t *testing.T) {
+		if _, err := Derive("too-wide", wide, "image/png", 320); !errors.Is(err, ErrPixelBudget) {
+			t.Fatalf("Derive(13000000x4) = %v, want the decode budget refusal", err)
+		}
+	})
 	if acquired.Load() != 0 {
-		t.Fatal("a derivation over the cap reached the decode")
+		t.Fatal("a refused job reached the decode")
 	}
-	// 2880x2160 is inside the cap, so this one is attempted (and, with no
-	// pixel data behind the header, answers the source).
-	if _, err := Derive("cap/four-three", pngWithDeclaredDimensions(t, 3000, 2250), "image/png", 2880); err != nil {
+}
+
+func TestDerivedTier(t *testing.T) {
+	cases := []struct {
+		name                 string
+		width, height, asked int
+		want                 int
+	}{
+		{"nothing asked", 3000, 2000, 0, 0},
+		// Sources within the cap: the two-thirds rule.
+		{"a phone screenshot under the top tier", 1290, 2796, 5120, 0},
+		{"84% of the width", 2560, 1440, 2160, 0},
+		{"two thirds of the width", 3240, 2000, 2160, 0},
+		{"just under two thirds", 3241, 2000, 2160, 2160},
+		{"a wide source within two thirds of the top tier", 6000, 600, 5120, 0},
+		// Sources over the cap: the largest tier within it.
+		{"within two thirds of the top tier", 6000, 4000, 5120, 3840},
+		{"16:10 at the cap", 8000, 5000, 5120, 5120},
+		{"4:3 over the cap at the top tier", 8000, 6000, 5120, 3840},
+		{"3:4 over the cap at 3840", 6000, 8000, 3840, 2880},
+		{"3:4 over the cap at two tiers", 6000, 8000, 5120, 2880},
+		{"a tall screenshot under the top tier", 1290, 15000, 5120, 1080},
+		{"no tier within the cap", 500, 90000, 480, 0},
+		{"narrower than every tier", 300, 60000, 5120, 0},
+	}
+	for _, tc := range cases {
+		if got := derivedTier(tc.width, tc.height, tc.asked); got != tc.want {
+			t.Errorf("%s: derivedTier(%d, %d, %d) = %d, want %d", tc.name, tc.width, tc.height, tc.asked, got, tc.want)
+		}
+	}
+}
+
+// The two-thirds rule through Derive: a source exactly one and a half times
+// the tier is answered as it is, one pixel wider is derived.
+func TestDeriveOnlyUnderTwoThirdsOfTheWidth(t *testing.T) {
+	var acquired atomic.Int32
+	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+	at := pngWithDeclaredDimensions(t, 3240, 2000)
+	got, err := Derive("two-thirds/at", at, "image/png", 2160)
+	if err != nil || got.Derived || &got.Data[0] != &at[0] || acquired.Load() != 0 {
+		t.Fatalf("Derive(3240 wide at 2160) = (derived %v, %v, %d decodes), want the source undecoded", got.Derived, err, acquired.Load())
+	}
+	// With no pixel data behind the header the attempt answers the source.
+	if _, err := Derive("two-thirds/over", pngWithDeclaredDimensions(t, 3241, 2000), "image/png", 2160); err != nil {
 		t.Fatalf("Derive: %v", err)
 	}
 	if acquired.Load() != 1 {
-		t.Fatal("a derivation inside the cap was not attempted")
+		t.Fatal("a source over one and a half times the tier was not derived")
+	}
+}
+
+// A derivative over the pixel cap at the asked tier steps down the ladder
+// instead of answering the larger source, and a source over the cap is
+// derived even within two thirds of the tier. A source within the cap keeps
+// the two-thirds rule, and one no tier fits is answered; both before any
+// budget is acquired.
+func TestDeriveStepsDownOverThePixelCap(t *testing.T) {
+	cases := []struct {
+		name          string
+		width, height int
+		maxWidth      int
+		tier          int // 0: the source, undecoded
+	}{
+		// 3840x5120 is over the cap; 2880x3840 is not.
+		{"tall", 6000, 8000, 3840, 2880},
+		// 24 MP is over the cap, and 5120x3413 is too.
+		{"over the cap within two thirds", 6000, 4000, 5120, 3840},
+		{"within the cap within two thirds", 6000, 600, 5120, 0},
+		// 320x57600 is over the cap, and there is no lower tier.
+		{"no tier fits", 500, 90000, 300, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var costs []int64
+			replaceDecodeAcquired(t, func(cost int64) { costs = append(costs, cost) })
+			src := pngWithDeclaredDimensions(t, tc.width, tc.height)
+			cfg, err := imageConfig(src)
+			if err != nil {
+				t.Fatalf("imageConfig: %v", err)
+			}
+			// With no pixel data behind the header a derivation's decode
+			// fails and the source is answered; the budget it acquired
+			// names its tier.
+			got, err := Derive("cap/"+tc.name, src, "image/png", tc.maxWidth)
+			if err != nil || got.Derived || &got.Data[0] != &src[0] {
+				t.Fatalf("Derive = (derived %v, %v), want the source", got.Derived, err)
+			}
+			var want []int64
+			if tc.tier != 0 {
+				want = []int64{resampleCost(cfg, tc.tier, scaledHeight(tc.width, tc.height, tc.tier))}
+			}
+			if !reflect.DeepEqual(costs, want) {
+				t.Fatalf("acquired %v, want %v (tier %d)", costs, want, tc.tier)
+			}
+		})
+	}
+}
+
+// A GIF's first frame can be smaller than the logical screen its header
+// declares, so the decoded frame chooses the tier again: a frame not worth
+// deriving is answered as the source, and a frame that is derives at its
+// own aspect.
+func TestDeriveChoosesTheTierFromTheDecodedFrame(t *testing.T) {
+	gifWithFrame := func(frameWidth int) []byte {
+		frame := image.NewPaletted(image.Rect(0, 0, frameWidth, 100), color.Palette{color.Black, color.White})
+		var buf bytes.Buffer
+		anim := &gif.GIF{Image: []*image.Paletted{frame}, Delay: []int{0}, Config: image.Config{Width: 1000, Height: 100}}
+		if err := gif.EncodeAll(&buf, anim); err != nil {
+			t.Fatalf("encode gif: %v", err)
+		}
+		return buf.Bytes()
+	}
+	var acquired atomic.Int32
+	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+
+	narrow := gifWithFrame(400)
+	got, err := Derive("frame/narrow", narrow, "image/gif", 320)
+	if err != nil || got.Derived || &got.Data[0] != &narrow[0] || got.Width != 1000 || acquired.Load() != 1 {
+		t.Fatalf("Derive = (derived %v, %dx%d, %v, %d decodes), want the 1000x100 source after one decode", got.Derived, got.Width, got.Height, err, acquired.Load())
+	}
+	got, err = Derive("frame/wide", gifWithFrame(600), "image/gif", 320)
+	if err != nil || !got.Derived || got.Width != 320 || got.Height != 53 {
+		t.Fatalf("Derive = (derived %v, %dx%d, %v), want 320x53 from the 600x100 frame", got.Derived, got.Width, got.Height, err)
 	}
 }
 

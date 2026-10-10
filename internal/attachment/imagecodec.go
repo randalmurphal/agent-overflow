@@ -12,7 +12,6 @@ import (
 	"io"
 	"sync/atomic"
 
-	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register webp decoder for image.Decode
 	"golang.org/x/sync/semaphore"
 )
@@ -29,26 +28,22 @@ import (
 const thumbPixelBudget = 50 * 1024 * 1024
 
 // decodeMemoryBudget bounds the transient memory all concurrent decode +
-// resample + encode jobs hold together. A count of jobs cannot bound it:
-// draw.CatmullRom.Scale allocates a [4]float64 scratch of destination width
-// times SOURCE height, so one 8K screenshot derived to the 2880 tier holds
-// ~400 MB of scratch on top of its decoded pixels, while a thumbnail of the
-// same image holds ~35 MB. Each job therefore acquires its estimated cost
-// (resampleCost). 1 GiB lets several thumbnails of the largest image the
-// pixel budget admits run at once, and makes a large derivation wait for
-// room instead of stacking on others.
+// resample + encode jobs hold together. A count of jobs cannot bound it: a
+// 16-bit source at the pixel budget decodes to 400 MiB, a screenshot to tens.
+// Each job therefore acquires its estimated cost (resampleCost). 1 GiB holds
+// two thumbnails of the largest image the pixel budget admits, or one
+// derivation of it beside one thumbnail, or many jobs on screenshots, and
+// makes another wait for room instead of stacking on them.
 //
-// Every admissible job fits by construction. The worst derivation is a
-// 16-bit source at the pixel budget (400 MiB decoded) whose derivative is
-// at deriveMaxPixels: tier x source height is then at most
-// sqrt((deriveMaxPixels + 2560) x thumbPixelBudget), about 17.3 Mi, so
-// 554 MiB of scratch, plus 48 MiB of destination and encoding: about
-// 1002 MiB. A thumbnail's scratch is at most 256 x sqrt(thumbPixelBudget)
-// x 32 bytes, about 57 MiB, unless the source is over 256 times taller than
-// wide, where the box floors its width at one pixel and the scratch is the
-// source height x 32 bytes. acquireDecodeMemory refuses an estimate above
-// the budget, so only such a sliver, over 22 million pixels tall, is
-// refused instead of waiting for room that cannot exist.
+// Every job on a source up to 9.5 million pixels wide fits. The worst
+// derivation is a 16-bit source at the pixel budget (400 MiB) whose
+// derivative is at deriveMaxPixels (64 MiB, and an encoded copy no larger),
+// plus the resampler's scratch of a few hundred bytes per source column
+// (resample.go): about 530 MiB. A thumbnail of it holds the source plus a
+// few MiB. The scratch follows the source width rather than its pixel
+// count, so a wider source, at most 5 rows tall under the pixel budget, can
+// exceed the budget; acquireDecodeMemory refuses it rather than wait for
+// room that cannot exist.
 const decodeMemoryBudget int64 = 1 << 30
 
 var (
@@ -84,11 +79,11 @@ func acquireDecodeMemory(cost int64) (release func(), err error) {
 }
 
 // resampleCost estimates the peak bytes one job holds: the decoded source,
-// the kernel scaler's scratch (dstW × srcH × [4]float64), the destination
-// pixels and an encoded copy no larger than them.
+// the resampler's scratch (resampleScratchBytes), the destination pixels and
+// an encoded copy no larger than them.
 func resampleCost(cfg image.Config, dstW, dstH int) int64 {
 	source := int64(cfg.Width) * int64(cfg.Height) * decodedBytesPerPixel(cfg.ColorModel)
-	scratch := int64(dstW) * int64(cfg.Height) * 32
+	scratch := resampleScratchBytes(dstW, dstH, cfg.Width, cfg.Height)
 	destination := int64(dstW) * int64(dstH) * 4
 	return source + scratch + 2*destination
 }
@@ -154,13 +149,6 @@ func decodeImage(src []byte) (image.Image, error) {
 		return nil, fmt.Errorf("invalid image dimensions %dx%d", bounds.Dx(), bounds.Dy())
 	}
 	return img, nil
-}
-
-// resample scales src to fill dst. CatmullRom: high-quality cubic
-// resampling. ApproxBiLinear would be faster but looks soft on UI
-// screenshots; Catmull's slight sharpening keeps text legible.
-func resample(dst draw.Image, src image.Image) {
-	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
 }
 
 // encodePNG uses DefaultCompression: BestCompression's full filter scan

@@ -10,10 +10,10 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
-	"math"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 )
@@ -281,16 +281,13 @@ func TestThumbnailRejectsDecodeBomb(t *testing.T) {
 	}
 }
 
-// A thumbnail of any source up to 256 times taller than wide fits the decode
-// budget: checked from the constants and over every width to 16384 at the
-// tallest and the squarest 16-bit source the pixel budget admits.
-func TestEveryThumbnailShortOfASliverFitsTheDecodeBudget(t *testing.T) {
-	bound := 8*float64(thumbPixelBudget) + 32*thumbMaxDim*math.Sqrt(thumbPixelBudget) + 8*thumbMaxDim*thumbMaxDim
-	if bound >= float64(decodeMemoryBudget) {
-		t.Fatalf("a thumbnail can need %.0f MiB, over the %d MiB budget", bound/(1<<20), decodeMemoryBudget>>20)
-	}
-	for width := 1; width <= 16384; width++ {
-		for _, height := range []int{min(thumbPixelBudget/width, thumbMaxDim*width), min(thumbPixelBudget/width, width)} {
+// Every thumbnail of a source up to widestThatFits wide fits the decode
+// budget, however tall: checked over every width to 16384 at the tallest
+// and the squarest 16-bit source the pixel budget admits, and in steps
+// from there.
+func TestEveryThumbnailFitsTheDecodeBudget(t *testing.T) {
+	for width := 1; width <= widestThatFits; width = nextWidth(width, 16384) {
+		for _, height := range []int{thumbPixelBudget / width, min(thumbPixelBudget/width, width)} {
 			tw, th := scaleToBox(width, height, thumbMaxDim)
 			cost := resampleCost(image.Config{ColorModel: color.NRGBA64Model, Width: width, Height: height}, tw, th)
 			if cost > decodeMemoryBudget {
@@ -300,15 +297,33 @@ func TestEveryThumbnailShortOfASliverFitsTheDecodeBudget(t *testing.T) {
 	}
 }
 
-// A sliver tall enough that its one-pixel-wide resample alone outgrows the
-// budget is refused before anything is decoded, not left waiting forever.
-func TestThumbnailRefusesASliverOverTheDecodeBudget(t *testing.T) {
-	sliver := pngWithDeclaredDimensions(t, 1, 40_000_000)
+// A one-pixel-wide sliver takes its budget and reaches the decode: the
+// resampler holds the rows its kernel spans, not the source's 40 million.
+// Its pixels do not decode, so the failure is the decoder's.
+func TestThumbnailOfATallSliverReachesTheDecode(t *testing.T) {
+	sliver := corruptPixels(t, pngWithDeclaredDimensions(t, 1, 40_000_000))
+	var acquired atomic.Int32
+	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+	_, _, err := generateThumbnail(sliver, "image/png")
+	if err == nil || errors.Is(err, ErrPixelBudget) || acquired.Load() != 1 {
+		t.Fatalf("generateThumbnail(1x40M) = %v after %d decodes, want a decode error after one", err, acquired.Load())
+	}
+}
+
+// A source too wide for the budget (TestDeriveRefusesASourceTooWideForTheDecodeBudget)
+// is refused for a thumbnail too, before anything is decoded.
+func TestThumbnailRefusesASourceTooWideForTheDecodeBudget(t *testing.T) {
+	var acquired atomic.Int32
+	replaceDecodeAcquired(t, func(int64) { acquired.Add(1) })
+	wide := pngWithDeclaredDimensions(t, 13_000_000, 4)
 	synctest.Test(t, func(t *testing.T) {
-		if _, _, err := generateThumbnail(sliver, "image/png"); !errors.Is(err, ErrPixelBudget) {
-			t.Fatalf("generateThumbnail(1x40M) = %v, want the decode budget refusal", err)
+		if _, _, err := generateThumbnail(wide, "image/png"); !errors.Is(err, ErrPixelBudget) {
+			t.Fatalf("generateThumbnail(13000000x4) = %v, want the decode budget refusal", err)
 		}
 	})
+	if acquired.Load() != 0 {
+		t.Fatal("a refused job reached the decode")
+	}
 }
 
 // pngWithDeclaredDimensions returns the minimum PNG byte sequence that has a
