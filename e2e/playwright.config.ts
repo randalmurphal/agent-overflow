@@ -4,7 +4,21 @@ import { defineConfig, devices } from '@playwright/test';
 // tests/fixtures.ts); tests within a worker share it and reset state
 // between tests. Workers scale horizontally — each gets its own
 // process, data dir, and port — but stay conservative by default so a
-// laptop run doesn't spawn a fleet of webviews.
+// laptop run doesn't spawn a fleet of webviews. AO_E2E_WORKERS sets the
+// count explicitly: CI shards the suite across runners and runs two
+// workers on each (.github/workflows/ci.yml).
+function workerCount(): number {
+  const explicit = process.env.AO_E2E_WORKERS;
+  if (explicit === undefined || explicit === '') {
+    return process.env.CI ? 1 : 2;
+  }
+  const count = Number(explicit);
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`AO_E2E_WORKERS must be a positive integer, got ${JSON.stringify(explicit)}`);
+  }
+  return count;
+}
+
 export default defineConfig({
   testDir: './tests',
   // Operator-run investigation drivers (`*.manual.spec.ts`) are never part of
@@ -15,7 +29,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
-  workers: process.env.CI ? 1 : 2,
+  workers: workerCount(),
   retries: 0,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {

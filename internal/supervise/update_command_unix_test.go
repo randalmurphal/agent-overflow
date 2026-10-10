@@ -186,8 +186,8 @@ func TestSnapshotCommandReportsTheSchemaItBacksUp(t *testing.T) {
 	t.Run("refused for space", func(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
-		withFreeBytes(t, func(string) (uint64, error) { return 1, nil })
 		cmd := r.command("u1")
+		cmd.FreeBytes = freeSpace(1)
 		cmd.SchemaVersion = schemaUnderTheLock(r, 118, nil)
 		if result := cmd.Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeRefused || result.Schema != 118 {
 			t.Fatalf("result = %+v, want refused with schema 118", result)
@@ -226,8 +226,9 @@ func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 	t.Run("no space", func(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
-		withFreeBytes(t, func(string) (uint64, error) { return 1, nil })
-		result := r.command("u1").Snapshot(context.Background(), nil)
+		cmd := r.command("u1")
+		cmd.FreeBytes = freeSpace(1)
+		result := cmd.Snapshot(context.Background(), nil)
 		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least") {
 			t.Fatalf("result = %+v", result)
 		}
@@ -275,12 +276,12 @@ func TestSpaceCommandAnswersWithoutTheLock(t *testing.T) {
 		t.Fatalf("no database = %+v, want the snapshot step to refuse it", result)
 	}
 	writeFile(t, r.db, strings.Repeat("x", 4000))
-	withFreeBytes(t, func(string) (uint64, error) { return SnapshotSpaceNeeded(4000) - 1, nil })
+	cmd.FreeBytes = freeSpace(SnapshotSpaceNeeded(4000) - 1)
 	result := cmd.Space(nil)
 	if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least 1 MB") {
 		t.Fatalf("short disk = %+v", result)
 	}
-	withFreeBytes(t, func(string) (uint64, error) { return SnapshotSpaceNeeded(4000), nil })
+	cmd.FreeBytes = freeSpace(SnapshotSpaceNeeded(4000))
 	host := uint64(1)
 	if result := cmd.Space(&host); result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, hostDiskDescription) {
 		t.Fatalf("short host drive = %+v", result)

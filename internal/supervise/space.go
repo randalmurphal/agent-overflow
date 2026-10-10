@@ -50,9 +50,6 @@ func (e *InsufficientSpaceError) Error() string {
 // hostDiskDescription names the bound SnapshotOptions.HostAvailable carries.
 const hostDiskDescription = "the Windows drive that holds the WSL distribution"
 
-// freeBytes is FreeBytes, a seam for tests.
-var freeBytes = FreeBytes
-
 // SnapshotPlan is what TakeSnapshot will copy for an update, and so the
 // free space the update needs: the live triple, after the leftover snapshot
 // it clears first.
@@ -83,13 +80,17 @@ func PlanSnapshot(layout Layout, dataDir string) (plan SnapshotPlan, found bool,
 
 // Check refuses the plan when the data directory's filesystem, or the host
 // bound when one is given, has no room for it. The shortfall it reports
-// counts what clearing the leftover frees.
-func (p SnapshotPlan) Check(dataDir string, hostAvailable *uint64) error {
+// counts what clearing the leftover frees. freeBytes reads the data
+// directory's free space; nil means FreeBytes.
+func (p SnapshotPlan) Check(dataDir string, hostAvailable *uint64, freeBytes func(string) (uint64, error)) error {
 	need := SnapshotSpaceNeeded(p.DatabaseBytes)
 	if p.Reclaimable >= need {
 		return nil
 	}
 	need -= p.Reclaimable
+	if freeBytes == nil {
+		freeBytes = FreeBytes
+	}
 	available, err := freeBytes(dataDir)
 	if err != nil {
 		return fmt.Errorf("supervise: read the free space of %s: %w", dataDir, err)

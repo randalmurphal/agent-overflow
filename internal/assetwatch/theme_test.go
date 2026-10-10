@@ -40,39 +40,39 @@ func expectNoThemeChange(t *testing.T, emitted <-chan struct{}, why string) {
 }
 
 func TestThemeWatcherDebouncesWritesAndIgnoresNonThemeFiles(t *testing.T) {
-	_, dir, emitted := newTestThemeWatcher(t)
+	observed := startObservedWatcher(t, "theme watcher", themeFileRelevant)
 
-	themeFile := filepath.Join(dir, "tokyo-night.json")
+	// The first write alone is a CREATE then a WRITE, which the kernel never
+	// merges, so the burst queues the debounce more than once.
 	for index := range 3 {
-		if err := os.WriteFile(themeFile, []byte{byte('a' + index)}, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		observed.write(t, "tokyo-night.json", string(rune('a'+index)))
 	}
-	waitForThemeChanged(t, emitted)
-	expectNoThemeChange(t, emitted, "a write burst")
+	observed.expectQueued(t, 0, 2, "a write burst")
+	observed.releaseOneEmit(t, "a write burst")
 
 	// The generated reference artifacts are rewritten by the backend at
 	// boot and read by nobody at runtime; a subdirectory holds nothing
 	// this app reads. Neither may wake the frontend.
+	armed := observed.clock.armedCount()
 	for _, name := range []string{theme.SchemaFileName, theme.TokensFileName, "notes.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		observed.write(t, name, "x")
 	}
-	nested := filepath.Join(dir, "backup")
+	nested := filepath.Join(observed.core.dir, "backup")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(nested, "old.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	expectNoThemeChange(t, emitted, "non-theme files")
+	observed.expectIgnored(t, armed, "non-theme files")
 
 	// Removing a theme changes what resolves, so it must reach the UI.
-	if err := os.Remove(themeFile); err != nil {
+	armed = observed.clock.armedCount()
+	if err := os.Remove(filepath.Join(observed.core.dir, "tokyo-night.json")); err != nil {
 		t.Fatal(err)
 	}
-	waitForThemeChanged(t, emitted)
+	observed.expectQueued(t, armed, 1, "a theme removal")
+	observed.releaseOneEmit(t, "a theme removal")
 }
 
 func TestThemeWatcherIgnoresItsOwnAtomicAppearanceWrite(t *testing.T) {

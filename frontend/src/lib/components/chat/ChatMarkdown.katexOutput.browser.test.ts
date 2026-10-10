@@ -1,7 +1,25 @@
-import { render, waitFor } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import ChatMarkdown from './ChatMarkdown.svelte';
+import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
+
+// Math.svelte imports KaTeX on mount and renders no KaTeX output until the
+// module arrives. Under a loaded run that import takes most of a second, so a
+// polling budget is a race. Streamdown reports settled through this context
+// once every registered async resource, the KaTeX import included, has
+// finished, which is the completion the assertions below depend on.
+function renderSettled(source: string) {
+  let markSettled!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    markSettled = resolve;
+  });
+  const view = render(ChatMarkdown, {
+    props: { source, pathRefs: [] },
+    context: new Map([[CHAT_MARKDOWN_SETTLED_CONTEXT, () => markSettled()]]),
+  });
+  return { view, settled };
+}
 
 // The happy-dom math suites all `vi.mock('katex')`, so nothing in the repo
 // pinned the DOM KaTeX actually produces. That gap let the 0.16 -> 0.18
@@ -13,17 +31,12 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 // someone's chat window.
 describe('KaTeX rendered output', () => {
   it('typesets block math into prefixed KaTeX structure with real geometry', async () => {
-    const view = render(ChatMarkdown, {
-      props: { source: '$$\n\\frac{a}{b} = \\sqrt{x}\n$$', pathRefs: [] },
-    });
+    const { view, settled } = renderSettled('$$\n\\frac{a}{b} = \\sqrt{x}\n$$');
+    await settled;
 
-    const root = await waitFor(() => {
-      const found = view.container.querySelector<HTMLElement>('.katex-display');
-      expect(found).not.toBeNull();
-      return found!;
-    });
-
-    const katex = root.querySelector<HTMLElement>(':scope > .katex');
+    const root = view.container.querySelector<HTMLElement>('.katex-display');
+    expect(root).not.toBeNull();
+    const katex = root!.querySelector<HTMLElement>(':scope > .katex');
     expect(katex).not.toBeNull();
     // 0.18 prefixes: `.katex-html`, `.katex-base`, `.katex-strut`. Their
     // 0.16 spellings were `.katex-html` (already prefixed), `.base` and
@@ -47,20 +60,15 @@ describe('KaTeX rendered output', () => {
   });
 
   it('typesets inline math without the display wrapper', async () => {
-    const view = render(ChatMarkdown, {
-      props: { source: 'mass is $E = mc^2$ today', pathRefs: [] },
-    });
+    const { view, settled } = renderSettled('mass is $E = mc^2$ today');
+    await settled;
 
-    const katex = await waitFor(() => {
-      const found = view.container.querySelector<HTMLElement>('.katex');
-      expect(found).not.toBeNull();
-      return found!;
-    });
-
+    const katex = view.container.querySelector<HTMLElement>('.katex');
+    expect(katex).not.toBeNull();
     expect(view.container.querySelector('.katex-display')).toBeNull();
-    expect(katex.querySelector('.katex-base')).not.toBeNull();
-    expect(katex.textContent).toContain('E');
-    expect(katex.getBoundingClientRect().width).toBeGreaterThan(0);
+    expect(katex!.querySelector('.katex-base')).not.toBeNull();
+    expect(katex!.textContent).toContain('E');
+    expect(katex!.getBoundingClientRect().width).toBeGreaterThan(0);
 
     view.unmount();
   });

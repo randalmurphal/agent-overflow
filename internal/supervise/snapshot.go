@@ -86,6 +86,19 @@ type SnapshotOptions struct {
 	// disk it lives on: inside WSL, the Windows drive that holds the
 	// distribution's virtual disk. nil means no such bound.
 	HostAvailable *uint64
+	// FreeBytes reads the data directory's free space. nil means FreeBytes.
+	FreeBytes func(path string) (uint64, error)
+	// CloneFile clones a file copy-on-write, as copyFile describes. nil
+	// means the platform's clone.
+	CloneFile func(in *os.File, destination string) (bool, error)
+}
+
+// RestoreOptions tunes RestoreSnapshot.
+type RestoreOptions struct {
+	// Progress, when set, receives copy progress.
+	Progress CopyProgress
+	// CloneFile is as for SnapshotOptions.
+	CloneFile func(in *os.File, destination string) (bool, error)
 }
 
 const snapshotManifest = "snapshot.json"
@@ -117,7 +130,7 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 		// failed update rather than one it cannot undo.
 		return Snapshot{}, fmt.Errorf("%w in %s", errNoDatabase, dataDir)
 	}
-	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.HostAvailable); err != nil {
+	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.HostAvailable, opts.FreeBytes); err != nil {
 		return Snapshot{}, err
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -130,7 +143,7 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 			continue
 		}
 		source := filepath.Join(dataDir, before.Name)
-		if err := copyFile(source, filepath.Join(dir, before.Name), func(n int64) {
+		if err := copyFile(source, filepath.Join(dir, before.Name), opts.CloneFile, func(n int64) {
 			if opts.Progress != nil {
 				opts.Progress(copied+n, total)
 			}
@@ -390,7 +403,7 @@ func ReadRestoreMarker(layout Layout) (RestoreMarker, bool, error) {
 //
 // It needs no free space beyond what the live files held, because they are
 // removed before the copy.
-func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.Time, progress CopyProgress) error {
+func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.Time, opts RestoreOptions) error {
 	// The manifest is read BEFORE the marker is written, and the order is the
 	// whole point of this check. A marker says "the database under this path
 	// is half a restore", and every later boot finishes what it names before
@@ -412,7 +425,7 @@ func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.T
 	if err := atomicfile.WriteJSON(layout.MarkerPath(), marker); err != nil {
 		return fmt.Errorf("supervise: write restore marker: %w", err)
 	}
-	if err := applyRestore(layout, dataDir, progress); err != nil {
+	if err := applyRestore(layout, dataDir, opts); err != nil {
 		return err
 	}
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -431,7 +444,7 @@ func ResumeRestore(layout Layout, progress CopyProgress) (RestoreMarker, bool, e
 	if err != nil || !found {
 		return marker, false, err
 	}
-	if err := applyRestore(layout, marker.DataDir, progress); err != nil {
+	if err := applyRestore(layout, marker.DataDir, RestoreOptions{Progress: progress}); err != nil {
 		return marker, true, err
 	}
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -445,7 +458,7 @@ func ResumeRestore(layout Layout, progress CopyProgress) (RestoreMarker, bool, e
 
 // applyRestore is the copy itself: remove the live triple, put back exactly
 // what the manifest recorded.
-func applyRestore(layout Layout, dataDir string, progress CopyProgress) error {
+func applyRestore(layout Layout, dataDir string, opts RestoreOptions) error {
 	if dataDir == "" {
 		return errors.New("supervise: the restore names no data directory")
 	}
@@ -481,9 +494,9 @@ func applyRestore(layout Layout, dataDir string, progress CopyProgress) error {
 	}
 	copied := int64(0)
 	for _, name := range snapshot.Files {
-		if err := copyFile(filepath.Join(dir, name), filepath.Join(dataDir, name), func(n int64) {
-			if progress != nil {
-				progress(copied+n, total)
+		if err := copyFile(filepath.Join(dir, name), filepath.Join(dataDir, name), opts.CloneFile, func(n int64) {
+			if opts.Progress != nil {
+				opts.Progress(copied+n, total)
 			}
 		}); err != nil {
 			return err
@@ -525,14 +538,14 @@ const (
 // copy_file_range does the work in few calls.
 const copyChunk = 8 << 20
 
-// cloneFile is the platform's copy-on-write clone, a seam for tests. It
-// reports false with a nil error when the filesystem cannot clone, which
-// sends the caller to an ordinary copy.
-var cloneFile = platformCloneFile
-
-// copyFile clones or copies one file and fsyncs the destination. progress
-// receives the bytes of THIS file copied so far.
-func copyFile(source, destination string, progress func(int64)) error {
+// copyFile clones or copies one file and fsyncs the destination. clone is
+// the copy-on-write clone, nil for the platform's; it reports false with a
+// nil error when the filesystem cannot clone, which sends copyFile to an
+// ordinary copy. progress receives the bytes of THIS file copied so far.
+func copyFile(source, destination string, clone func(*os.File, string) (bool, error), progress func(int64)) error {
+	if clone == nil {
+		clone = platformCloneFile
+	}
 	in, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("supervise: open %s: %w", source, err)
@@ -542,7 +555,7 @@ func copyFile(source, destination string, progress func(int64)) error {
 	if err != nil {
 		return fmt.Errorf("supervise: stat %s: %w", source, err)
 	}
-	cloned, err := cloneFile(in, destination)
+	cloned, err := clone(in, destination)
 	if err != nil {
 		return fmt.Errorf("supervise: clone %s -> %s: %w", source, destination, err)
 	}

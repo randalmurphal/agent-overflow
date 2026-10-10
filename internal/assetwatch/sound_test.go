@@ -40,43 +40,37 @@ func expectNoSoundChange(t *testing.T, emitted <-chan struct{}, why string) {
 }
 
 func TestSoundWatcherDebouncesWritesAndIgnoresNonCueFiles(t *testing.T) {
-	_, dir, emitted := newTestSoundWatcher(t)
+	observed := startObservedWatcher(t, "sound watcher", soundFileRelevant)
 
-	cue := filepath.Join(dir, "desk-bell.wav")
-	if err := os.WriteFile(cue, []byte("wav"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "ping.wav"), []byte("wav"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cue, []byte("wav2"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForSoundChanged(t, emitted)
-	expectNoSoundChange(t, emitted, "a write burst")
+	observed.write(t, "desk-bell.wav", "wav")
+	observed.write(t, "ping.wav", "wav")
+	observed.write(t, "desk-bell.wav", "wav2")
+	observed.expectQueued(t, 0, 2, "a write burst")
+	observed.releaseOneEmit(t, "a write burst")
 
 	// The seeded reference, a source file the user kept beside their cue,
 	// and a subdirectory all hold nothing this app plays.
+	armed := observed.clock.armedCount()
 	for _, name := range []string{soundlib.ReferenceFileName, "original.mp3", "notes.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		observed.write(t, name, "x")
 	}
-	nested := filepath.Join(dir, "sources")
+	nested := filepath.Join(observed.core.dir, "sources")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(nested, "old.wav"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	expectNoSoundChange(t, emitted, "non-cue files")
+	observed.expectIgnored(t, armed, "non-cue files")
 
 	// Removing a cue changes what the pickers offer, so it must reach the
-	// UI — an event whose chosen cue just disappeared falls back.
-	if err := os.Remove(cue); err != nil {
+	// UI: an event whose chosen cue just disappeared falls back.
+	armed = observed.clock.armedCount()
+	if err := os.Remove(filepath.Join(observed.core.dir, "desk-bell.wav")); err != nil {
 		t.Fatal(err)
 	}
-	waitForSoundChanged(t, emitted)
+	observed.expectQueued(t, armed, 1, "a cue removal")
+	observed.releaseOneEmit(t, "a cue removal")
 }
 
 // PutSoundFile and DeleteSoundFile write this directory themselves. Their

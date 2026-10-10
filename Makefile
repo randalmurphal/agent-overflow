@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,6 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -151,12 +152,58 @@ GO_TEST_FLAGS ?=
 netns-tool:
 	go build -o bin/ao-netns ./cmd/ao-netns
 
+# GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
+# for CI shards that run the heavy packages on their own runners.
+GO_TEST_EXCLUDE ?=
 go-test: netns-tool
 	@set -e; \
 	packages=$$(go list $(GO_TEST_PKGS)); \
+	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	go mod download; \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
+
+# Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
+# same way here. go-lint builds golangci-lint from source at the pinned
+# version so it is compiled with this repo's Go toolchain (a release binary
+# built with an older Go refuses a newer go.mod); the build is cached after
+# the first run. GO_LINT_FLAGS carries extra flags, such as
+# --new-from-rev=origin/main for the new-issues gate.
+GOLANGCI_LINT_VERSION := v2.14.0
+GO_LINT_FLAGS ?=
+go-lint:
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout 20m $(GO_LINT_FLAGS) ./...
+
+go-vet:
+	go vet $(GO_PACKAGE_ROOTS)
+	go vet -tags nogui $(GO_PACKAGE_ROOTS)
+	go vet -tags noremote $(GO_PACKAGE_ROOTS)
+
+# gofmt -l prints nothing when every tracked Go file is formatted.
+fmt-check:
+	@unformatted=$$(git ls-files -- '*.go' | while IFS= read -r f; do [ -f "$$f" ] && printf '%s\n' "$$f"; done | xargs gofmt -l); \
+	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+
+# govulncheck reports known vulnerabilities reachable from this module.
+GOVULNCHECK_VERSION := latest
+go-vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+# bindings-check regenerates the Wails bindings and the methodgen tables the
+# way the release build does and fails when the committed copies differ.
+# Generation writes into the tree, so run it on a clean checkout or after
+# committing: an unrelated local edit to the generated files fails it.
+bindings-check:
+	wails3 generate bindings -f '-tags production' -clean=true -ts
+	$(MAKE) methodgen
+	git diff --exit-code --stat -- frontend/bindings internal/transport/methods_gen.go frontend/src/lib/transport/methodRoutes.ts
+
+# frontend-lint runs oxlint over the frontend (frontend/.oxlintrc.json).
+# OXLINT_FLAGS carries extra flags; CI lints only the files a change touched
+# with --deny-warnings until the warning backlog is cleared.
+OXLINT_FLAGS ?=
+frontend-lint: $(FRONTEND_DEPS)
+	cd frontend && pnpm exec oxlint $(OXLINT_FLAGS)
 
 # test-race exercises the concurrency-sensitive packages under -race.
 # Scoped to packages with non-trivial goroutine wiring rather than the
@@ -579,10 +626,12 @@ endif
 
 # e2e runs the Playwright harness suite (e2e/) against a fresh
 # harness-build. Browser downloads are versioned and cached by Playwright.
+# E2E_ARGS passes through to `playwright test` (CI: --shard=N/M).
+E2E_ARGS ?=
 e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	cd e2e && pnpm exec playwright install chromium webkit
-	bin/ao-harness-e2e $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
+	bin/ao-harness-e2e $(E2E_ARGS) $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
 
 # The Android shell (mobile/). Builds the ordinary production SPA,
 # syncs it into the native project, and assembles the debug APK. See

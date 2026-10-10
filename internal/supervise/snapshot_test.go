@@ -60,7 +60,7 @@ func TestSnapshotRoundTripsTheWholeTriple(t *testing.T) {
 	// A trial writes, and leaves the WAL and shm in a state of its own.
 	writeDatabase(t, dataDir, "after")
 
-	if err := RestoreSnapshot(layout, dataDir, "u1", "the trial crashed", time.Unix(0, 0), nil); err != nil {
+	if err := RestoreSnapshot(layout, dataDir, "u1", "the trial crashed", time.Unix(0, 0), RestoreOptions{}); err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
 	}
 	for _, name := range DatabaseFiles() {
@@ -89,7 +89,7 @@ func TestRestoreRemovesFilesTheSnapshotDidNotHave(t *testing.T) {
 	}
 	writeDatabase(t, dataDir, "trial")
 
-	if err := RestoreSnapshot(layout, dataDir, "u1", "budget", time.Unix(0, 0), nil); err != nil {
+	if err := RestoreSnapshot(layout, dataDir, "u1", "budget", time.Unix(0, 0), RestoreOptions{}); err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
 	}
 	if got := readFile(t, filepath.Join(dataDir, "agent-overflow.db")); got != "clean" {
@@ -205,7 +205,7 @@ func TestRestoreLeavesNoMarkerWhenThereIsNothingToRestore(t *testing.T) {
 	}
 	writeDatabase(t, dataDir, "live")
 
-	err = RestoreSnapshot(layout, dataDir, "upd-1", "the trial crashed", time.Unix(0, 0), nil)
+	err = RestoreSnapshot(layout, dataDir, "upd-1", "the trial crashed", time.Unix(0, 0), RestoreOptions{})
 	if err == nil {
 		t.Fatal("RestoreSnapshot answered nil with no snapshot on disk")
 	}

@@ -39,6 +39,9 @@ type UpdateCommand struct {
 	// changing it. The snapshot reports it, so the update can remember a
 	// failed trial by the schema it started from. nil reports none.
 	SchemaVersion func() (int, error)
+	// FreeBytes reads the data directory's free space for the snapshot's
+	// space check. nil means FreeBytes.
+	FreeBytes func(path string) (uint64, error)
 	// Now is the clock. nil means time.Now.
 	Now func() time.Time
 	// Log receives diagnostics. nil is silent.
@@ -89,6 +92,7 @@ func (c UpdateCommand) Snapshot(ctx context.Context, hostAvailable *uint64) Upda
 	_, err = TakeSnapshot(layout, c.DataDir, c.now(), SnapshotOptions{
 		UpdateID:      c.UpdateID,
 		HostAvailable: hostAvailable,
+		FreeBytes:     c.FreeBytes,
 		Progress:      relay.copyProgress("update.snapshot", "Backing up the database"),
 	})
 	if err != nil {
@@ -135,7 +139,7 @@ func (c UpdateCommand) Space(hostAvailable *uint64) UpdateEvent {
 	}
 	// No database is the snapshot step's refusal to make, with its reason.
 	if found {
-		if err := plan.Check(c.DataDir, hostAvailable); err != nil {
+		if err := plan.Check(c.DataDir, hostAvailable, c.FreeBytes); err != nil {
 			var space *InsufficientSpaceError
 			if errors.As(err, &space) {
 				return failedEvent(UpdateOutcomeRefused, err)
@@ -207,7 +211,7 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	c.log("supervise: trial of update %s failed: %s", c.UpdateID, failed.Reason)
 	relay.step(phaseRestore, "Restoring the database")
 	if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, failed.Reason, c.now(),
-		relay.copyProgress(phaseRestore, "Restoring the database")); err != nil {
+		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed, Step: failed.Step,
 			Reason: fmt.Sprintf("%s, and the database backup could not be restored: %v", failed.Reason, err)}
 	}
@@ -225,7 +229,7 @@ func (c UpdateCommand) checkBeforeAttempt(layout Layout, relay *commandRelay, at
 		c.log("supervise: update %s: %v; restoring the database backup before attempt %d", c.UpdateID, err, attempt)
 		relay.step(phaseRestore, "Restoring the database")
 		if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, err.Error(), c.now(),
-			relay.copyProgress(phaseRestore, "Restoring the database")); err != nil {
+			RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
 			return failedEvent(UpdateOutcomeFailed, fmt.Errorf("%v, and the database backup could not be restored: %w", unended, err)), false
 		}
 		err = CheckLiveBeforeAttempt(layout, c.DataDir)
@@ -262,7 +266,7 @@ func (c UpdateCommand) Restore(ctx context.Context, reason string) UpdateEvent {
 	}
 	relay.step(phaseRestore, "Restoring the database")
 	if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, reason, c.now(),
-		relay.copyProgress(phaseRestore, "Restoring the database")); err != nil {
+		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
 		return failedEvent(UpdateOutcomeFailed, err)
 	}
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}

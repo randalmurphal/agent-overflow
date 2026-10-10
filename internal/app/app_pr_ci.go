@@ -73,17 +73,16 @@ func (a *App) RefreshPRCI(ctx context.Context, subscriptionID string) error {
 	return a.refreshPRCI(ctx, subscriptionID)
 }
 
+// errCIJobLogUnpublished is SavePRCIJobLog's answer to a forge 404: the
+// job has not started, or the forge has not published its log yet.
+var errCIJobLogUnpublished = errors.New("the forge has not published this job's log yet")
+
 // SavePRCIJobLog fetches the full job log and writes it under the
 // app-managed ci-logs directory, returning the absolute path. The path
 // is stable per (pr, job), so a re-save refreshes the same file.
 //
-// errCIJobLogUnpublished is the save's answer to a forge 404: the job has
-// not started, or the forge has not published its log yet.
-//
 //ao:scope git:operate
 //ao:route selected
-var errCIJobLogUnpublished = errors.New("the forge has not published this job's log yet")
-
 func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown

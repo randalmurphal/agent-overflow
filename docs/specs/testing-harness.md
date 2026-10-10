@@ -280,6 +280,8 @@ refuse them through AppArmor while
 `kernel.apparmor_restrict_unprivileged_userns` is 1; set it to 0 or give
 `bin/ao-netns` and `bin/ao-harness-e2e` an AppArmor profile that allows
 `userns`.
+GitHub-hosted runners get both settings from `.github/actions/setup`, which
+also loads the `dummy` link module the LAN interface needs.
 
 `--host-network` skips isolation for suites that need host services:
 `e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device

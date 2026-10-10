@@ -301,11 +301,12 @@ func TestManagerShutdownClosesEverything(t *testing.T) {
 // with the stale one — the PTY ends mis-sized against the xterm grid, recreating
 // the exact desync the refresh feature exists to clear.
 //
-// The shell traps WINCH and reports `stty size` per signal. We start a Refresh,
-// hold it inside its pause, then Resize to 30x120. With resizeMu the Resize
-// blocks until Refresh's restore completes, so the PTY settles at the resized
-// 30x120. Without it, the Resize lands inside the pause, the restore lands last
-// and rolls the child back to 24x80, which fails the settle assertion.
+// The shell reports `stty size` after each WINCH (winchSizeReporter). We start
+// a Refresh, hold it inside its pause, then Resize to 30x120. With resizeMu the
+// Resize blocks until Refresh's restore completes, so the PTY settles at the
+// resized 30x120. Without it, the Resize lands inside the pause, the restore
+// lands last and rolls the child back to 24x80, which fails the settle
+// assertion.
 func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
 	var mu sync.Mutex
 	var buf strings.Builder
@@ -323,7 +324,7 @@ func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
 	m := NewManager(onOutput, nil)
 	summary, err := m.Open("thread-refresh-race", SessionOptions{
 		Shell: "/bin/sh",
-		Args:  []string{"-c", "trap 'stty size' WINCH; echo READY; while :; do sleep 0.02; done"},
+		Args:  []string{"-c", winchSizeReporter},
 		Cwd:   t.TempDir(),
 		Rows:  24,
 		Cols:  80,

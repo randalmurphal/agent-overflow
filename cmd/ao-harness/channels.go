@@ -56,6 +56,8 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.NotificationSound,
 		eventchan.PowerKeepAwake,
 		eventchan.PRUpdated,
+		eventchan.PRCIUpdated,
+		eventchan.PRCILog,
 		eventchan.ProjectUpdated,
 		eventchan.ProviderAccount,
 		eventchan.ProviderAccountUsageError,

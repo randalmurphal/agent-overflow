@@ -106,6 +106,11 @@ func TestRepoIdentityRecognizesAnUnbornHead(t *testing.T) {
 // checkout from ever matching its clones elsewhere.
 func TestRepoIdentityReportsARepositoryGitRefuses(t *testing.T) {
 	repo := initGitRepo(t)
+	// The host may allow every directory through safe.directory (GitHub's
+	// runner image writes `[safe] directory = *` to /etc/gitconfig), which
+	// skips the ownership check this test needs git to perform.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
 
 	identity, err := NewCore().ReadRepoIdentity(context.Background(), repo)

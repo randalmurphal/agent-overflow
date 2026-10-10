@@ -18,20 +18,9 @@ func appLayout(t *testing.T, dataDir string) Layout {
 	return layout
 }
 
-// withFreeBytes replaces the free-space reading for one test.
-func withFreeBytes(t *testing.T, fn func(string) (uint64, error)) {
-	t.Helper()
-	previous := freeBytes
-	freeBytes = fn
-	t.Cleanup(func() { freeBytes = previous })
-}
-
-// withCloneFile replaces the platform clone for one test.
-func withCloneFile(t *testing.T, fn func(*os.File, string) (bool, error)) {
-	t.Helper()
-	previous := cloneFile
-	cloneFile = fn
-	t.Cleanup(func() { cloneFile = previous })
+// freeSpace is a free-space reading that reports n.
+func freeSpace(n uint64) func(string) (uint64, error) {
+	return func(string) (uint64, error) { return n, nil }
 }
 
 func TestAppUpdateLayoutIsBesideServesUnderRuntime(t *testing.T) {
@@ -214,7 +203,7 @@ func TestARestoreEndsTheUpdatesLastAttempt(t *testing.T) {
 	}
 	t.Run("RestoreSnapshot", func(t *testing.T) {
 		layout, dataDir, db := setup(t)
-		if err := RestoreSnapshot(layout, dataDir, "u1", "the trial failed", time.Now(), nil); err != nil {
+		if err := RestoreSnapshot(layout, dataDir, "u1", "the trial failed", time.Now(), RestoreOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		ended(t, layout, dataDir, db)
@@ -234,7 +223,7 @@ func TestARestoreEndsTheUpdatesLastAttempt(t *testing.T) {
 		if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{UpdateID: "u1"}); err != nil {
 			t.Fatalf("TakeSnapshot: %v", err)
 		}
-		if err := RestoreSnapshot(layout, dataDir, "u1", "rolled back", time.Now(), nil); err != nil {
+		if err := RestoreSnapshot(layout, dataDir, "u1", "rolled back", time.Now(), RestoreOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		if snapshot, _, err := ReadSnapshot(layout); err != nil || snapshot.Left != nil {
@@ -247,14 +236,14 @@ func TestSnapshotRefusesAFileThatChangesWhileItIsCopied(t *testing.T) {
 	dataDir := t.TempDir()
 	layout := appLayout(t, dataDir)
 	writeDatabase(t, dataDir, "before")
-	withCloneFile(t, func(in *os.File, destination string) (bool, error) {
+	clone := func(in *os.File, destination string) (bool, error) {
 		// Another process writes the live file mid-copy.
 		if filepath.Base(destination) == "agent-overflow.db" {
 			writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "a concurrent writer's longer contents")
 		}
 		return false, nil
-	})
-	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{})
+	}
+	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{CloneFile: clone})
 	if !errors.Is(err, errChangedDuringCopy) {
 		t.Fatalf("TakeSnapshot = %v, want the changed-during-copy refusal", err)
 	}
@@ -269,8 +258,7 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), strings.Repeat("x", 1024))
 	need := SnapshotSpaceNeeded(1024)
 
-	withFreeBytes(t, func(string) (uint64, error) { return need - 1, nil })
-	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{})
+	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{FreeBytes: freeSpace(need - 1)})
 	var space *InsufficientSpaceError
 	if !errors.As(err, &space) || space.Need != need || space.Available != need-1 {
 		t.Fatalf("TakeSnapshot = %v, want the data disk's shortfall", err)
@@ -279,9 +267,8 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 		t.Fatalf("message %q does not name the disk and the shortfall", err)
 	}
 
-	withFreeBytes(t, func(string) (uint64, error) { return need, nil })
 	host := need - (256 << 20)
-	_, err = TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host})
+	_, err = TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host, FreeBytes: freeSpace(need)})
 	if !errors.As(err, &space) || space.Where != hostDiskDescription {
 		t.Fatalf("TakeSnapshot = %v, want the host drive's shortfall", err)
 	}
@@ -290,7 +277,7 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 	}
 
 	host = need
-	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host}); err != nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host, FreeBytes: freeSpace(need)}); err != nil {
 		t.Fatalf("TakeSnapshot with exactly enough room: %v", err)
 	}
 }
@@ -320,12 +307,10 @@ func TestPlanSnapshotCountsWhatTheSnapshotWillCopy(t *testing.T) {
 		t.Fatalf("plan = %+v, %v, %v; want the live triple", plan, found, err)
 	}
 	need := SnapshotSpaceNeeded(4000)
-	withFreeBytes(t, func(string) (uint64, error) { return need - 1, nil })
-	if err := plan.Check(dataDir, nil); err == nil {
+	if err := plan.Check(dataDir, nil, freeSpace(need-1)); err == nil {
 		t.Fatal("a short disk passed")
 	}
-	withFreeBytes(t, func(string) (uint64, error) { return need, nil })
-	if err := plan.Check(dataDir, nil); err != nil {
+	if err := plan.Check(dataDir, nil, freeSpace(need)); err != nil {
 		t.Fatalf("an adequate disk failed: %v", err)
 	}
 
@@ -337,19 +322,16 @@ func TestPlanSnapshotCountsWhatTheSnapshotWillCopy(t *testing.T) {
 	if err != nil || plan.Reclaimable != 3000 {
 		t.Fatalf("plan = %+v, %v; want the leftover's 3000 bytes reclaimable", plan, err)
 	}
-	withFreeBytes(t, func(string) (uint64, error) { return need - 3000, nil })
 	host := need - 3000
-	if err := plan.Check(dataDir, &host); err != nil {
+	if err := plan.Check(dataDir, &host, freeSpace(need-3000)); err != nil {
 		t.Fatalf("free space plus the leftover suffices, got %v", err)
 	}
-	withFreeBytes(t, func(string) (uint64, error) { return need - 3001, nil })
 	var space *InsufficientSpaceError
-	if err := plan.Check(dataDir, nil); !errors.As(err, &space) || space.Need != need-3000 || space.Available != need-3001 {
+	if err := plan.Check(dataDir, nil, freeSpace(need-3001)); !errors.As(err, &space) || space.Need != need-3000 || space.Available != need-3001 {
 		t.Fatalf("Check = %v, want a shortfall of one byte beyond the leftover", err)
 	}
-	withFreeBytes(t, func(string) (uint64, error) { return need, nil })
 	host = need - 3001
-	if err := plan.Check(dataDir, &host); !errors.As(err, &space) || space.Where != hostDiskDescription {
+	if err := plan.Check(dataDir, &host, freeSpace(need)); !errors.As(err, &space) || space.Where != hostDiskDescription {
 		t.Fatalf("Check = %v, want the host drive's shortfall", err)
 	}
 }
@@ -363,8 +345,8 @@ func TestCopyReportsProgressAndACloneReportsTheWholeFile(t *testing.T) {
 
 	var reports [][2]int64
 	record := func(copied, total int64) { reports = append(reports, [2]int64{copied, total}) }
-	withCloneFile(t, func(*os.File, string) (bool, error) { return false, nil })
-	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{Progress: record}); err != nil {
+	noClone := func(*os.File, string) (bool, error) { return false, nil }
+	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{Progress: record, CloneFile: noClone}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	total := int64(size + 3)
@@ -384,15 +366,15 @@ func TestCopyReportsProgressAndACloneReportsTheWholeFile(t *testing.T) {
 	// A clone reports its file in one step and is not copied again.
 	reports = nil
 	cloned := 0
-	withCloneFile(t, func(in *os.File, destination string) (bool, error) {
+	clone := func(in *os.File, destination string) (bool, error) {
 		cloned++
 		data, err := os.ReadFile(in.Name())
 		if err != nil {
 			return false, err
 		}
 		return true, os.WriteFile(destination, data, 0o600)
-	})
-	if err := RestoreSnapshot(layout, dataDir, "u", "test", time.Now(), record); err != nil {
+	}
+	if err := RestoreSnapshot(layout, dataDir, "u", "test", time.Now(), RestoreOptions{Progress: record, CloneFile: clone}); err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
 	}
 	if cloned != 2 {
@@ -407,8 +389,8 @@ func TestAFailedCloneIsAnErrorNotACopy(t *testing.T) {
 	dataDir := t.TempDir()
 	layout := appLayout(t, dataDir)
 	writeDatabase(t, dataDir, "before")
-	withCloneFile(t, func(*os.File, string) (bool, error) { return false, errors.New("disk on fire") })
-	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{}); err == nil || !strings.Contains(err.Error(), "disk on fire") {
+	failing := func(*os.File, string) (bool, error) { return false, errors.New("disk on fire") }
+	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{CloneFile: failing}); err == nil || !strings.Contains(err.Error(), "disk on fire") {
 		t.Fatalf("TakeSnapshot = %v, want the clone's error", err)
 	}
 }

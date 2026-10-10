@@ -121,21 +121,29 @@ func TestProcessResize(t *testing.T) {
 	}
 }
 
+// winchSizeReporter is a shell that reports `stty size` after every winsize
+// change. bash, which may be /bin/sh, discards a WINCH that arrives while the
+// WINCH trap is still running, so a trap that ran `stty size` itself would
+// lose a change landing during that report. The trap only sets a flag and the
+// loop reports: a WINCH dropped during the trap is then followed by a report
+// that reads the current size, and one arriving later sets the flag again.
+// READY is echoed after the trap is installed.
+const winchSizeReporter = `trap 'w=1' WINCH; echo READY; while :; do if [ -n "$w" ]; then w=; stty size; fi; sleep 0.02; done`
+
 // TestProcessRefreshNudgesAndRestores verifies Refresh delivers a SIGWINCH by
-// briefly shrinking the winsize and then restores the original. A shell traps
-// WINCH and reports `stty size` on each one: the shrunk "23 80" proves the nudge
+// briefly shrinking the winsize and then restores the original. The shell
+// reports `stty size` after each WINCH: the shrunk "23 80" proves the nudge
 // reached the child, and a later "24 80" proves the size was restored.
 //
-// The shell echoes READY only after installing the trap, and the test waits for
-// it before nudging. Without that sync, a startup race lets the first (shrink)
-// SIGWINCH reach the default handler before the trap is installed — it is then
-// dropped and the test observes only the restore. In production the provider's
-// SIGWINCH handler is installed long before any refresh, so READY models the
-// steady state Refresh actually runs against.
+// The test waits for READY before nudging. Without that sync, a startup race
+// lets the shrink SIGWINCH reach the default handler before the trap is
+// installed, where it is dropped and the test observes only the restore. In
+// production the provider's SIGWINCH handler is installed long before any
+// refresh, so READY models the steady state Refresh actually runs against.
 func TestProcessRefreshNudgesAndRestores(t *testing.T) {
 	p, err := Start(ProcessConfig{
 		Shell: "/bin/sh",
-		Args:  []string{"-c", "trap 'stty size' WINCH; echo READY; while :; do sleep 0.02; done"},
+		Args:  []string{"-c", winchSizeReporter},
 		Cwd:   t.TempDir(),
 		Rows:  24,
 		Cols:  80,
@@ -151,9 +159,10 @@ func TestProcessRefreshNudgesAndRestores(t *testing.T) {
 		t.Fatalf("shell did not signal trap readiness, got %q", ready)
 	}
 
-	// The shell runs its trap only after the current sleep, and `stty size`
-	// reads the winsize when it runs, so a fixed pause can end before the
-	// child reports the nudge. Hold the nudge until it has.
+	// The shell reports only after the current sleep, and `stty size` reads
+	// the winsize when it runs, so a fixed pause can end before the child
+	// reports the nudge. Hold the nudge until it has. The report runs outside
+	// the trap, so the restore's WINCH cannot land in a running trap.
 	var nudged string
 	p.pauseNudge = func(time.Duration) {
 		nudged = drainUntil(t, p.Output(), "23 80", 3*time.Second)
