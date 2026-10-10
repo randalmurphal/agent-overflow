@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -63,7 +64,7 @@ func TestOutboundOperationsRefuseUnstartedOrClosedNode(t *testing.T) {
 func TestOutboundDialAndPeerDiscoveryUseApplicationNode(t *testing.T) {
 	requireBringUpCapableHost(t)
 	ctx := testContext(t)
-	controlURL, control := startControl(t)
+	controlURL, _ := startControl(t)
 	source := startTestNode(t, controlURL, "source-app")
 	awaitRunning(t, source)
 	peer := startPeerNode(t, ctx, controlURL, "ordinary-workstation")
@@ -76,34 +77,28 @@ func TestOutboundDialAndPeerDiscoveryUseApplicationNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := strings.TrimSuffix(status.Self.DNSName, ".")
-	// testcontrol omits peer presence; publish the production online update.
 	sourceStatus, err := source.lc.StatusWithoutPeers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	found := false
-	for time.Now().Before(deadline) {
-		if !control.AddRawMapResponse(sourceStatus.Self.PublicKey, &tailcfg.MapResponse{OnlineChange: map[tailcfg.NodeID]bool{status.Self.NodeID: true}}) {
-			t.Fatal("could not publish peer online state")
-		}
+	for found := false; !found; {
 		candidates, err := source.DiscoverCandidates(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, candidate := range candidates {
-			if candidate.DNSName == target {
-				found = true
-			}
+			found = found || candidate.DNSName == target
 		}
-		if found {
-			break
+		if !found {
+			pollAgain(t, ctx, fmt.Sprintf("discovery of peer %q", target))
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	if !found {
-		t.Fatalf("peer %q not discovered", target)
-	}
+	// Discovery needs only the peer's name and presence. A packet also needs
+	// the peer's home DERP, which reaches the source in a later map response,
+	// and the peer needs the source's to answer. A dial before both are known
+	// loses its first WireGuard handshake and waits out the 5s retry.
+	awaitHomeDERP(t, ctx, source.lc, "the source", status.Self.PublicKey)
+	awaitHomeDERP(t, ctx, lc, "the peer", sourceStatus.Self.PublicKey)
 	listener, err := peer.Listen("tcp", ":443")
 	if err != nil {
 		t.Fatal(err)
@@ -126,5 +121,32 @@ func TestOutboundDialAndPeerDiscoveryUseApplicationNode(t *testing.T) {
 	body, err := io.ReadAll(response.Body)
 	if err != nil || string(body) != "from peer" {
 		t.Fatalf("body=%q error=%v", body, err)
+	}
+}
+
+// awaitHomeDERP waits until lc's node knows the home DERP region of the
+// node with key want, which is the route every first packet takes.
+func awaitHomeDERP(t *testing.T, ctx context.Context, lc *local.Client, who string, want key.NodePublic) {
+	t.Helper()
+	for {
+		status, err := lc.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if peer := status.Peer[want]; peer != nil && peer.Relay != "" {
+			return
+		}
+		pollAgain(t, ctx, who+" learning its peer's home DERP")
+	}
+}
+
+// pollAgain pauses between reads of state that tsnet publishes without an
+// event, failing once the case's context has expired.
+func pollAgain(t *testing.T, ctx context.Context, what string) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", what, ctx.Err())
+	case <-time.After(20 * time.Millisecond):
 	}
 }
