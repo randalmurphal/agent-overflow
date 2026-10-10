@@ -10,13 +10,18 @@
 # is writable and tests that expect permission errors keep getting them.
 # Caches the jobs read live at fixed paths named by ENV, because a job's
 # HOME is a mount the runner provides, not /home/runner.
-FROM ubuntu:24.04
+#
+# The `tools` stage compiles the Wails CLI and golangci-lint and fills the
+# module cache from the repository's own import graph; the final stage
+# copies the binaries and the cache, leaving behind the build cache and
+# the modules only golangci-lint needed. Keep the image to what the jobs
+# read: every megabyte is pulled by every Linux job of every run.
+FROM ubuntu:24.04 AS base
 
 ARG GO_VERSION
 ARG NODE_VERSION=24.21.0
 ARG PNPM_VERSION
 ARG PLAYWRIGHT_VERSION
-ARG GOLANGCI_LINT_VERSION
 ARG GH_VERSION=2.102.0
 ARG TARGETARCH=amd64
 
@@ -60,23 +65,52 @@ ENV PATH=/opt/ao-toolchain/bin:/usr/local/go/bin:$PATH \
 RUN mkdir -p /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright \
     && chown runner:runner /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright
 
-# Playwright browsers and their OS libraries for the pinned version.
+# Playwright browsers and their OS libraries for the pinned version. The
+# suites run headless without a channel, so Chromium is the headless shell
+# only; .github/actions/setup installs the same set.
 RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium webkit \
     && rm -rf /var/lib/apt/lists/* \
-    && su runner -c "npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium webkit" \
+    && su runner -c "npx --yes playwright@${PLAYWRIGHT_VERSION} install --only-shell chromium webkit" \
     && rm -rf /home/runner/.npm
 
 USER runner
+
+
+FROM base AS tools
+
+ARG GOLANGCI_LINT_VERSION
 WORKDIR /tmp/toolchain
 
-# The module cache for the current go.mod, the Wails CLI it names and
-# golangci-lint at the Makefile's pin, all compiled by this Go. The build
-# cache from compiling them is dropped: jobs restore their own.
+# The Wails CLI go.mod names, whose modules stay in the cache because the
+# checks job runs `go install tool` again, and golangci-lint at the
+# Makefile's pin into a cache of its own that is left behind.
 COPY --chown=runner:runner go.mod go.sum ./
-RUN go mod download \
-    && go install tool \
-    && go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}" \
+RUN go install tool \
+    && GOMODCACHE=/tmp/lint-mod go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}"
+
+# The modules every package and test imports under each tag set the Make
+# targets build, vet and test, plus the Windows launcher: listing them
+# downloads exactly that, and `make go-test` prefetches the same way. A
+# placeholder bundle satisfies the root embed, which only the build needs.
+# The zips are dropped: Go builds from the extracted modules and verifies
+# them through the .ziphash files, so the zips would only double the layer.
+COPY --chown=runner:runner . src
+RUN cd src \
+    && mkdir -p frontend/dist && touch frontend/dist/index.html \
+    && for tags in "" nogui noremote nogui,noremote production; do \
+         go list -deps -test -tags "$tags" ./... > /dev/null || exit 1; \
+       done \
+    && GOOS=windows CGO_ENABLED=0 go list -deps -tags noremote ./cmd/agent-overflow-windows > /dev/null \
+    && find /var/cache/go-mod/cache/download -name '*.zip' -delete \
     && go clean -cache
+
+
+FROM base
+
+COPY --from=tools --chown=runner:runner /opt/ao-toolchain/bin /opt/ao-toolchain/bin
+COPY --from=tools --chown=runner:runner /var/cache/go-mod /var/cache/go-mod
+
+WORKDIR /tmp/toolchain
 
 # The package store and registry metadata for the current lockfiles. A real
 # install fills both and proves the lockfile and patches apply; the linked

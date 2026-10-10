@@ -96,11 +96,14 @@ Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `AO_E2E_WORKERS`).
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
 built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
-browsers with their OS libraries, the Wails CLI, golangci-lint, the Go
-module cache and the pnpm store, all at the repository's pins. A job pulls
-that one image instead of apt, the Go download site, the npm registry and
-the Playwright CDN. `ci/toolchain-inputs.sh` lists the pins that name a
-tag; the `toolchain` job (`.github/actions/toolchain-image`) resolves it at
+browsers with their OS libraries (Chromium as the headless shell the
+suites run), the Wails CLI, golangci-lint, the pnpm store and a Go module
+cache holding what the tree imports under every tag set the Make targets
+use. The Make test targets prefetch that same set before entering the
+network namespace. A job pulls that one image instead of apt, the Go
+download site, the npm registry and the Playwright CDN.
+`ci/toolchain-inputs.sh` lists the pins that name a tag; the `toolchain`
+job (`.github/actions/toolchain-image`) resolves it at
 the start of every run, builds and publishes it when it is missing and the
 token may push, and otherwise runs the jobs on the newest `main` image
 while `.github/actions/setup` installs what the change moved past it. A

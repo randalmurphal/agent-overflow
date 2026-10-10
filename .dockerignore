@@ -1,11 +1,13 @@
-# The CI toolchain image (ci/Dockerfile) copies only the dependency
-# manifests; the checkout is mounted into jobs, never baked.
-*
-!go.mod
-!go.sum
-!frontend/package.json
-!frontend/pnpm-lock.yaml
-!frontend/pnpm-workspace.yaml
-!frontend/patches
-!e2e/package.json
-!e2e/pnpm-lock.yaml
+# The CI toolchain image (ci/Dockerfile) lists the tracked tree's imports
+# to fill its module cache; the checkout itself is mounted into jobs,
+# never baked. Keep local build output and checkouts out of the context.
+.git
+.claude
+.playwright-mcp
+bin
+**/node_modules
+frontend/dist
+e2e/test-results
+e2e/playwright-report
+mobile/android/build
+mobile/android/app/build

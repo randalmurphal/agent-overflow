@@ -173,8 +173,9 @@ runs:
       run: |
         set -euo pipefail
         # The frontend and e2e lockfiles pin the same Playwright; the e2e
-        # package owns the CLI here. `install` is a no-op for a browser
-        # build that is already present (the image bakes the pinned ones)
+        # package owns the CLI here. The suites run headless without a
+        # channel, so Chromium is the headless shell only, as in the image.
+        # `install` is a no-op for a browser build that is already present
         # and downloads a missing one, after which the OS libraries that
         # build needs are installed too.
         dir=e2e
@@ -182,7 +183,7 @@ runs:
         root=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}
         before=$(ls -1 "$root" 2>/dev/null | sort || true)
         # shellcheck disable=SC2086
-        pnpm --dir "$dir" exec playwright install $BROWSERS
+        pnpm --dir "$dir" exec playwright install --only-shell $BROWSERS
         after=$(ls -1 "$root" | sort)
         if [[ "$CACHED" == "true" || "$before" != "$after" ]]; then
           # shellcheck disable=SC2086
