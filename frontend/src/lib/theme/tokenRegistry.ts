@@ -457,6 +457,7 @@ export const EXCLUDED_VAR_NAMES: Readonly<Record<string, string>> = {
   '--text-sm': 'type scale',
   '--text-base': 'type scale',
   '--text-lg': 'type scale',
+  '--review-slab-inset': 'a length: the inset the review pane shares between its overview sections and file slabs',
 };
 
 export function isExcludedVar(name: string): boolean {
