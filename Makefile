@@ -141,14 +141,16 @@ go-build:
 # private LAN, no route off it; internal/netisolate), so a test that binds
 # every interface or dials out reaches nothing beyond the namespace in any
 # WSL networking mode. `go test` itself runs under bin/ao-netns rather than
-# through `-exec`, which would disable the test cache. go-prefetch fetches
-# what the named packages and their tests import on the host network first;
-# the CI toolchain image carries exactly that set, not the whole module
-# graph, so a bare `go mod download` would reach the proxy from every job.
+# through `-exec`, which would disable the test cache. go-prefetch fetches,
+# on the host network first, what the named packages and their tests import
+# plus the module's tools, since a test may run `go tool wails3`. The CI
+# toolchain image carries that set rather than the whole module graph, and
+# can lag go.mod, so a bare `go mod download` here would reach the proxy
+# from every job and a narrower prefetch would strand a tool in the namespace.
 # Narrow a run with GO_TEST_PKGS and GO_TEST_FLAGS:
 #   make go-test GO_TEST_PKGS=./internal/shellenv GO_TEST_FLAGS='-run TestSync -count=1'
 NETNS := $(CURDIR)/bin/ao-netns
-go-prefetch = go list -deps -test $(1) > /dev/null
+go-prefetch = go list -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 
