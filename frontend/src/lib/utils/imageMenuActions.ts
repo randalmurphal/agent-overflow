@@ -15,8 +15,10 @@
 //               carries the nonce-gated href the host was given, and
 //               `taggedMenuImage` accepts it only through
 //               `parseForgeAttachmentHref`, so text a forge wrote cannot
-//               name one. Copy uses the bytes the page already holds; save
-//               is the forge attachment activation (`openForgeAttachment`).
+//               name one. Copy uses the original: the bytes the page
+//               already holds when they are not a display-size derivative;
+//               save is the forge attachment activation
+//               (`openForgeAttachment`).
 //
 // The host reads a tag back with `taggedMenuImage`, so the attribute names
 // live here only.
@@ -28,10 +30,11 @@ import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
+import { downloadBlob } from './blobDownload';
 import { errString } from './errors';
 import { fileSaveAction, savedFileMessage, type FileSaveAction } from './fileSaveAction';
 import { openForgeAttachment } from './forgeAttachmentActions';
-import { acquireForgeAttachment } from './forgeAttachmentCache';
+import { acquirePaintedForgeAttachment, fetchForgeAttachmentOriginal } from './forgeAttachmentCache';
 import {
   browserUrlForForgeAttachment,
   parseForgeAttachmentHref,
@@ -108,17 +111,20 @@ export function copyMenuImage(target: ImageMenuTarget): Promise<void> {
   return writePngToClipboard(async () => asPng(await original()), 'Could not copy the image');
 }
 
-// The bytes the page already painted the forge image from, under a claim
-// of this copy's own so the cache cannot evict them mid-read.
+// The forge image's original bytes: the ones the page painted it from when
+// those are the original, under a claim of this copy's own so the cache
+// cannot evict them mid-read, else a fetch of the original behind the
+// display-size derivative.
 async function heldForgeImage(attachment: ParsedForgeAttachmentHref): Promise<Blob> {
-  const handle = acquireForgeAttachment(attachment.backend, attachment.pr, attachment.href);
+  const handle = acquirePaintedForgeAttachment(attachment.backend, attachment.pr, attachment.href);
   try {
     const resolved = await handle.value;
     if (resolved.kind !== 'image') throw new Error('this attachment is not an image');
-    return resolved.blob;
+    if (!resolved.derived) return resolved.blob;
   } finally {
     handle.release();
   }
+  return await fetchForgeAttachmentOriginal(attachment.backend, attachment.pr, attachment.href);
 }
 
 /** What Save does for `target` on this page (`fileSaveAction`). */
@@ -171,14 +177,6 @@ export function saveMenuImageLabel(target: ImageMenuTarget): string {
 }
 
 /**
- * How long a download's object URL outlives the click. The anchor click
- * only starts the download; some engines read the URL later, so revoking
- * synchronously can cancel it. Bounded, so the bytes are not held for the
- * page's lifetime.
- */
-export const DOWNLOAD_URL_LIFETIME_MS = 40_000;
-
-/**
  * Save the image where this page's user will find it. A forge image goes
  * through the forge attachment activation, which the file chip and link
  * clicks share. A thread attachment follows `fileSaveAction` with no browser
@@ -226,20 +224,4 @@ export function downloadName(filename: string, mimeType: string): string {
   const name = filename.trim() || 'image';
   if (/\.[A-Za-z0-9]{1,5}$/.test(name)) return name;
   return name + (IMAGE_EXTENSIONS[mimeType.toLowerCase()] ?? '');
-}
-
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.rel = 'noopener';
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  try {
-    anchor.click();
-  } finally {
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
-  }
 }

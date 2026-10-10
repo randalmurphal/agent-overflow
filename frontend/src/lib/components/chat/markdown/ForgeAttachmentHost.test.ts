@@ -82,7 +82,7 @@ describe('<ForgeAttachmentHost>', () => {
     expect(img.getAttribute('data-markdown-image-src')).toBe(`/uploads/${HEX}/shot.png`);
     // In-memory bytes are never lazy: the box is painted the frame it mounts.
     expect(img.hasAttribute('loading')).toBe(false);
-    expect(acquire).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/shot.png`);
+    expect(acquire).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/shot.png`, 0);
 
     unmount();
     expect(release).toHaveBeenCalledTimes(1);

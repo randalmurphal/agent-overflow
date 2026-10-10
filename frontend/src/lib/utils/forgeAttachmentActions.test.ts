@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openForgeAttachment } from './forgeAttachmentActions';
+import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttachments';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { PRRef } from './prReference';
@@ -12,6 +13,7 @@ const toastErrors = vi.hoisted(() => [] as unknown[]);
 const externalOpens = vi.hoisted(() => [] as string[]);
 const release = vi.hoisted(() => vi.fn());
 const acquired = vi.hoisted(() => ({ value: Promise.resolve({}) as Promise<unknown> }));
+const original = vi.hoisted(() => vi.fn(async () => new Blob(['full'], { type: 'image/png' })));
 
 vi.mock('../native/platform', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../native/platform')>()),
@@ -41,7 +43,8 @@ vi.mock('./externalLinks', () => ({
   handleExternalURL: async (url: string) => { externalOpens.push(url); return true; },
 }));
 vi.mock('./forgeAttachmentCache', () => ({
-  acquireForgeAttachment: () => ({ value: acquired.value, release }),
+  acquirePaintedForgeAttachment: () => ({ value: acquired.value, release }),
+  fetchForgeAttachmentOriginal: (...args: unknown[]) => original(...(args as [])),
 }));
 
 const HEX = '0123456789abcdef0123456789abcdef';
@@ -77,6 +80,7 @@ describe('activating a forge attachment', () => {
     toastErrors.length = 0;
     externalOpens.length = 0;
     release.mockClear();
+    original.mockClear();
     acquired.value = Promise.resolve({
       url: 'blob:forge-1',
       mimeType: 'application/octet-stream',
@@ -144,9 +148,40 @@ describe('activating a forge attachment', () => {
     const downloads = spyAnchorClicks();
     await openForgeAttachment(parsed());
     expect(downloads).toEqual([['blob:forge-1', 'report.pdf']]);
+    expect(original).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
     // Nothing is left behind in the document.
     expect(document.body.querySelector('a')).toBeNull();
+  });
+
+  it('downloads the original, not the display-size derivative the timeline painted', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    acquired.value = Promise.resolve({
+      url: 'blob:derivative',
+      mimeType: 'image/png',
+      kind: 'image',
+      sizeBytes: 9000,
+      filename: 'shot.png',
+      derived: true,
+    });
+    const created: Blob[] = [];
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+      created.push(blob as Blob);
+      return 'blob:original';
+    });
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const downloads = spyAnchorClicks();
+    try {
+      await openForgeAttachment(parsed());
+      expect(original).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/report.pdf`);
+      expect(downloads).toEqual([['blob:original', 'shot.png']]);
+      expect(await created[0]!.text()).toBe('full');
+      expect(release).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(DOWNLOAD_URL_LIFETIME_MS);
+      expect(revoke).toHaveBeenCalledWith('blob:original');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a failed download and still releases its cache claim', async () => {

@@ -82,7 +82,7 @@
       return;
     }
 
-    const handle = acquireLocalImage(backend, local.path, local.workspacePath);
+    const handle = acquireLocalImage(backend, local.path, local.workspacePath, 0);
     let disposed = false;
     directSrc = '';
     error = '';

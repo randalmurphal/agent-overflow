@@ -83,14 +83,30 @@ export async function fetchAttachmentBytes(threadId: string, attachmentId: strin
 }
 
 /**
+ * The route answered 404 for a ticket: spent by an earlier request, expired,
+ * or its bytes evicted from the backend's short-lived cache. A caller that
+ * minted the ticket itself may mint once more; the message is what the user
+ * sees when that fails too.
+ */
+export class TransferUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransferUnavailableError';
+  }
+}
+
+/**
  * Spends one ticketed download URL that `backend` minted and returns the
  * body. The ticket is single use, so the URL is fetched here once and never
- * handed to an element that might request it again.
+ * handed to an element that might request it again. A 404 throws
+ * `TransferUnavailableError`; any other refusal throws an Error naming what
+ * the route answered.
  */
 export async function fetchTicketedBytes(backend: BackendKey, url: string, signal?: AbortSignal): Promise<Blob> {
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend), signal });
   if (!response.ok) {
-    throw new Error(await transferFailure(response, 'Could not load image'));
+    const message = await transferFailure(response, 'Could not load image');
+    throw response.status === 404 ? new TransferUnavailableError(message) : new Error(message);
   }
   return await response.blob();
 }

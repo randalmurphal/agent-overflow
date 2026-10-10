@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import {
-  DOWNLOAD_URL_LIFETIME_MS,
   attachmentImageMenuTag,
   canSaveMenuImage,
   copyMenuImage,
@@ -19,7 +19,7 @@ import { mockAttachmentDownload } from '../../test/mocks/attachmentTransfer';
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
 const scopes = vi.hoisted(() => ({ host: false, write: true, git: true }));
-const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn() }));
+const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
 const toasts = vi.hoisted(() => [] as Array<[string, string]>);
 const toastErrors = vi.hoisted(() => [] as unknown[]);
@@ -43,7 +43,8 @@ vi.mock('../transport/scopes', async (importOriginal) => ({
 }));
 vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./forgeAttachmentCache')>()),
-  acquireForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
+  acquirePaintedForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
+  fetchForgeAttachmentOriginal: (...args: unknown[]) => forgeCache.original(...args),
 }));
 vi.mock('./forgeAttachmentActions', () => ({
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
@@ -313,6 +314,7 @@ describe('forge images', () => {
     scopes.git = true;
     forgeCache.acquire.mockReset();
     forgeCache.release.mockReset();
+    forgeCache.original.mockReset();
     openForge.mockClear();
     toasts.length = 0;
   });
@@ -360,6 +362,27 @@ describe('forge images', () => {
     expect(forgeCache.acquire).toHaveBeenCalledWith(parsed!.backend, parsed!.pr, parsed!.href);
     expect(decode).toHaveBeenCalledWith(original);
     expect(written).toEqual([encoded]);
+    expect(forgeCache.original).not.toHaveBeenCalled();
+    expect(forgeCache.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies the original, not the display-size derivative the page painted', async () => {
+    forgeResolves({ blob: new Blob(['small'], { type: 'image/png' }), derived: true });
+    const full = new Blob(['full-size'], { type: 'image/png' });
+    forgeCache.original.mockResolvedValue(full);
+    const written: Blob[] = [];
+    setClipboard({
+      write: async (items: ClipboardItem[]) => {
+        written.push(await items[0].getType('image/png'));
+      },
+    });
+
+    await copyMenuImage(FORGE);
+
+    const parsed = FORGE.kind === 'forge' ? FORGE.attachment : null;
+    expect(forgeCache.original).toHaveBeenCalledWith(parsed!.backend, parsed!.pr, parsed!.href);
+    // A PNG goes on the clipboard as it is, so what was written is the original.
+    expect(written).toEqual([full]);
     expect(forgeCache.release).toHaveBeenCalledTimes(1);
   });
 

@@ -66,7 +66,7 @@
     let disposed = false;
     error = '';
     decodeFailed = false;
-    const handle = acquireForgeAttachment(target.backend, target.pr, target.href);
+    const handle = acquireForgeAttachment(target.backend, target.pr, target.href, 0);
     if (handle.settled) {
       // Painted in this same frame: no placeholder, no height change.
       resolved = handle.settled;

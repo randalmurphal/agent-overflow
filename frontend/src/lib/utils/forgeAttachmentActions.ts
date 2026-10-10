@@ -10,7 +10,8 @@ import { handleExternalURL } from './externalLinks';
 import { errString } from './errors';
 import { prReferenceWire } from './prReference';
 import { fileSaveAction, savedFileMessage } from './fileSaveAction';
-import { acquireForgeAttachment } from './forgeAttachmentCache';
+import { downloadBlob } from './blobDownload';
+import { acquirePaintedForgeAttachment, fetchForgeAttachmentOriginal } from './forgeAttachmentCache';
 import {
   browserUrlForForgeAttachment,
   forgeAttachmentName,
@@ -51,13 +52,20 @@ async function saveOnOwningComputer(
 }
 
 async function downloadForgeAttachment(parsed: ParsedForgeAttachmentHref): Promise<void> {
-  const handle = acquireForgeAttachment(parsed.backend, parsed.pr, parsed.href);
+  // The bytes the page already holds, which are the attachment itself unless
+  // the timeline painted an image from a display-size derivative.
+  const handle = acquirePaintedForgeAttachment(parsed.backend, parsed.pr, parsed.href);
   try {
     const resolved = await handle.value;
     if (typeof document === 'undefined') return;
+    const filename = resolved.filename || forgeAttachmentName(parsed.pr.forge, parsed.href);
+    if (resolved.derived) {
+      downloadBlob(await fetchForgeAttachmentOriginal(parsed.backend, parsed.pr, parsed.href), filename);
+      return;
+    }
     const anchor = document.createElement('a');
     anchor.href = resolved.url;
-    anchor.download = resolved.filename || forgeAttachmentName(parsed.pr.forge, parsed.href);
+    anchor.download = filename;
     anchor.rel = 'noopener';
     anchor.style.display = 'none';
     document.body.appendChild(anchor);
