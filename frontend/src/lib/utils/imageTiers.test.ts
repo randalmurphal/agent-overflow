@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IMAGE_TIER_MEMO_MAX_ENTRIES,
   IMAGE_TIER_WIDTHS,
+  fullSizeMaxWidth,
   imageBoxContainer,
   __resetImageTiersForTest,
   imageTierFor,
@@ -13,6 +14,7 @@ import {
   rememberImageTier,
 } from './imageTiers';
 import { SRC_ROOT } from '../../test/sourceScan';
+import { setCompactLayoutForTest } from '../stores/layoutMode.svelte';
 
 class FakeResizeObserver {
   static instances: FakeResizeObserver[] = [];
@@ -261,5 +263,16 @@ describe('the last-tier memo', () => {
     expect(lastImageTier('second')).toBeUndefined();
     expect(lastImageTier('first')).toBe(720);
     expect(lastImageTier('overflow')).toBe(1080);
+  });
+});
+
+describe('fullSizeMaxWidth', () => {
+  afterEach(() => setCompactLayoutForTest(false));
+
+  it('is the original on a desktop layout and the top ladder tier on compact', () => {
+    expect(fullSizeMaxWidth()).toBe(0);
+    setCompactLayoutForTest(true);
+    expect(fullSizeMaxWidth()).toBe(IMAGE_TIER_WIDTHS[IMAGE_TIER_WIDTHS.length - 1]);
+    expect(fullSizeMaxWidth()).toBe(5120);
   });
 });

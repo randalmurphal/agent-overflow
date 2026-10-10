@@ -158,7 +158,7 @@ describe('<StreamdownImageHost>', () => {
       height: 3000,
       originalBytes: 77,
     });
-    const original = await item!.original!(new AbortController().signal);
+    const original = await item!.original!(new AbortController().signal, 0);
     expect(await original.text()).toBe('full');
     expect(getLocalImage.mock.calls.map((call) => call[2])).toEqual([1080, 0]);
   });

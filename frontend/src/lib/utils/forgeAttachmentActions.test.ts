@@ -44,7 +44,7 @@ vi.mock('./externalLinks', () => ({
 }));
 vi.mock('./forgeAttachmentCache', () => ({
   acquirePaintedForgeAttachment: () => ({ value: acquired.value, release }),
-  fetchForgeAttachmentOriginal: (...args: unknown[]) => original(...(args as [])),
+  fetchForgeAttachmentBytes: (...args: unknown[]) => original(...(args as [])),
 }));
 
 const HEX = '0123456789abcdef0123456789abcdef';
@@ -173,7 +173,7 @@ describe('activating a forge attachment', () => {
     const downloads = spyAnchorClicks();
     try {
       await openForgeAttachment(parsed());
-      expect(original).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/report.pdf`);
+      expect(original).toHaveBeenCalledWith('gpu', MR, `/uploads/${HEX}/report.pdf`, 0);
       expect(downloads).toEqual([['blob:original', 'shot.png']]);
       expect(await created[0]!.text()).toBe('full');
       expect(release).toHaveBeenCalledTimes(1);

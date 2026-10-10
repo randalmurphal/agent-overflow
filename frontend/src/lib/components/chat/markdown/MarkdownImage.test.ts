@@ -347,8 +347,8 @@ describe('<MarkdownImage>', () => {
       menuTag: fake.source.menuTag,
     });
     const signal = new AbortController().signal;
-    expect(await (await item.original!(signal)).text()).toBe('original');
-    expect(fake.source.original).toHaveBeenCalledWith(signal);
+    expect(await (await item.original!(signal, 0)).text()).toBe('original');
+    expect(fake.source.original).toHaveBeenCalledWith(signal, 0);
   });
 
   it('opens the original as it is, with nothing to fetch behind it', async () => {

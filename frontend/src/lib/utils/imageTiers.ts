@@ -16,6 +16,8 @@
 // mount effect forces layout in the frame the virtualizer is mounting rows
 // (docs/architecture/frontend-scroll.md).
 
+import { isCompactLayout } from '../stores/layoutMode.svelte';
+
 /**
  * The ladder, in device pixels. `internal/attachment/derive.go`
  * (`DeriveWidths`) is the other copy; the two must match, or a request
@@ -43,6 +45,17 @@ export function imageTierFor(cssWidth: number, devicePixelRatio: number): number
 export function isHigherImageTier(candidate: number, current: number): boolean {
   if (current === 0) return false;
   return candidate === 0 || candidate > current;
+}
+
+/**
+ * The widest variant a full-size view (the lightbox, Copy Image) decodes on
+ * this device: 0, the original, on a desktop layout; the top ladder tier on
+ * compact, where a phone's webview decoding a 50 megapixel original can
+ * take the page down. The backend's derivative pixel cap bounds that tier
+ * further. A save never decodes, so it always takes the original.
+ */
+export function fullSizeMaxWidth(): number {
+  return isCompactLayout() ? IMAGE_TIER_WIDTHS[IMAGE_TIER_WIDTHS.length - 1]! : 0;
 }
 
 // Elements markdown and sanitized HTML render inline. An inline box has no

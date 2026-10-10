@@ -31,6 +31,7 @@
   import { untrack } from 'svelte';
   import { errString } from '../../utils/errors';
   import { formatBytes } from '../../utils/formatBytes';
+  import { fullSizeMaxWidth } from '../../utils/imageTiers';
   import { PanZoom, type ContentSize } from '../../utils/panZoom.svelte';
 
   interface Props {
@@ -73,6 +74,9 @@
   const original = $derived(image ? originals[image.id] : undefined);
   const src = $derived(original?.kind === 'ready' ? original.url : (image?.url ?? ''));
   const loadingOriginal = $derived(original?.kind === 'loading');
+  // On compact the full-size view tops out at a ladder tier, so the line
+  // promises a sharper image, not the file and its byte count.
+  const capped = $derived(fullSizeMaxWidth() > 0);
   const content = $derived.by((): ContentSize | null => {
     if (!image) return null;
     if (image.width > 0 && image.height > 0) return { width: image.width, height: image.height };
@@ -128,7 +132,7 @@
   async function loadOriginal(item: ImagePreviewItem, signal: AbortSignal): Promise<void> {
     let url = '';
     try {
-      const blob = await item.original!(signal);
+      const blob = await item.original!(signal, fullSizeMaxWidth());
       if (signal.aborted) return;
       url = URL.createObjectURL(blob);
       // Decode off screen first: the swap then paints a finished bitmap
@@ -349,16 +353,22 @@
       {#if loadingOriginal}
         <div data-lightbox-loading class="pointer-events-auto flex items-center gap-2 rounded-full bg-scrim/70 px-3 py-1">
           <SteppedSpinner size={11} />
-          <span>Loading full size{image.originalBytes > 0 ? ` (${formatBytes(image.originalBytes)})` : ''}…</span>
+          <span>
+            {#if capped}
+              Loading sharper image…
+            {:else}
+              Loading full size{image.originalBytes > 0 ? ` (${formatBytes(image.originalBytes)})` : ''}…
+            {/if}
+          </span>
         </div>
       {:else if original?.kind === 'failed'}
         <div data-lightbox-failed class="pointer-events-auto rounded-full bg-error/20 px-3 py-1 text-error" title={original.reason}>
-          Full size unavailable: {original.reason}
+          {capped ? 'Sharper image' : 'Full size'} unavailable: {original.reason}
         </div>
       {/if}
       <div class="pointer-events-auto max-w-[92vw] truncate rounded-full bg-scrim/70 px-3 py-1">
         {image.filename}{hasMultiple ? ` (${index + 1}/${preview.images.length})` : ''}
-        <span class="ml-2 tabular-nums text-scrim-fg/60" aria-live="polite">{zoomLabel}</span>
+        <span data-lightbox-zoom class="ml-2 tabular-nums text-scrim-fg/60" aria-live="polite">{zoomLabel}</span>
       </div>
     </div>
   {/if}

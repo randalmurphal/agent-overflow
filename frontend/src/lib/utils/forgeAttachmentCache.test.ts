@@ -4,7 +4,7 @@ import { TransferUnavailableError } from '../transport/attachmentTransfer';
 import {
   acquireForgeAttachment,
   acquirePaintedForgeAttachment,
-  fetchForgeAttachmentOriginal,
+  fetchForgeAttachmentBytes,
   forgeAttachmentCacheKey,
 } from './forgeAttachmentCache';
 import { __resetImageTiersForTest, rememberImageTier } from './imageTiers';
@@ -214,7 +214,7 @@ describe('the forge attachment original', () => {
   it('asks for the attachment itself, typed by what the backend classified', async () => {
     const rpc = setBindingMock('FetchForgeAttachment', async () => attachment({ mimeType: 'image/webp' }));
     stageBody('full-size');
-    const blob = await fetchForgeAttachmentOriginal('gpu', PR, HREF);
+    const blob = await fetchForgeAttachmentBytes('gpu', PR, HREF, 0);
     expect(rpc).toHaveBeenCalledWith(expect.anything(), HREF, 0);
     expect(blob.type).toBe('image/webp');
     expect(await blob.text()).toBe('full-size');
@@ -225,8 +225,8 @@ describe('the forge attachment original', () => {
     stageBody('one');
     stageBody('two');
     stageBody('three');
-    await fetchForgeAttachmentOriginal('gpu', PR, HREF);
-    await fetchForgeAttachmentOriginal('gpu', PR, HREF);
+    await fetchForgeAttachmentBytes('gpu', PR, HREF, 0);
+    await fetchForgeAttachmentBytes('gpu', PR, HREF, 0);
     await acquireForgeAttachment('gpu', PR, HREF, 0).value;
     expect(rpc).toHaveBeenCalledTimes(3);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
@@ -236,7 +236,7 @@ describe('the forge attachment original', () => {
     const rpc = setBindingMock('FetchForgeAttachment', async () => attachment());
     responses.push(new Response('gone', { status: 404 }));
     stageBody('bytes');
-    expect(await (await fetchForgeAttachmentOriginal('gpu', PR, HREF)).text()).toBe('bytes');
+    expect(await (await fetchForgeAttachmentBytes('gpu', PR, HREF, 0)).text()).toBe('bytes');
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 });

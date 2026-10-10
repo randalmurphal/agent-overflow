@@ -230,7 +230,7 @@ describe('loadExpandedPreview', () => {
     const { previews, cleanup } = mountPreviews([ATTACHMENT, SECOND]);
 
     const opened = previews.loadExpandedPreview('att-1')!;
-    const blob = await opened.images[1].original!(new AbortController().signal);
+    const blob = await opened.images[1].original!(new AbortController().signal, 0);
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(TEST_PNG_BYTES);
     expect(blob.type).toBe('image/png');
     expect(download).toHaveBeenCalledExactlyOnceWith('thread-1', 'att-2');
@@ -250,7 +250,7 @@ describe('loadExpandedPreview', () => {
     const { previews, cleanup } = mountPreviews([ATTACHMENT]);
     const controller = new AbortController();
 
-    const pending = previews.loadExpandedPreview('att-1')!.images[0].original!(controller.signal);
+    const pending = previews.loadExpandedPreview('att-1')!.images[0].original!(controller.signal, 0);
     controller.abort();
 
     await expect(pending).rejects.toBe(controller.signal.reason);
@@ -285,7 +285,7 @@ describe('loadAttachmentPreview', () => {
     expect(item.url).toMatch(/^(blob:|data:image\/png;base64,)/);
     expect(download).not.toHaveBeenCalled();
 
-    await item.original!(new AbortController().signal);
+    await item.original!(new AbortController().signal, 0);
     expect(download).toHaveBeenCalledExactlyOnceWith('thread-1', 'att-1');
     if (item.url.startsWith('blob:')) URL.revokeObjectURL(item.url);
   });

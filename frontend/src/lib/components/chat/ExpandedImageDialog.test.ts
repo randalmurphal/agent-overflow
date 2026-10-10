@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ExpandedImageDialog from './ExpandedImageDialog.svelte';
 import type { ExpandedImagePreview, ImagePreviewItem } from '../../utils/attachmentPreview.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 type Deferred = { promise: Promise<Blob>; resolve: (blob: Blob) => void; reject: (err: unknown) => void };
 
@@ -79,6 +80,26 @@ describe('ExpandedImageDialog', () => {
     expect(picture()!.getAttribute('src')).toBe(created[0]);
     expect(picture()!.getAttribute('width')).toBe('4000');
     expect(container.querySelector('[data-lightbox-loading]')).toBeNull();
+    // A desktop layout asks for the file itself.
+    expect(first.original).toHaveBeenCalledWith(expect.any(AbortSignal), 0);
+  });
+
+  it('tops out at the widest ladder tier on compact, where decoding the file can take the page down', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      const sharper = deferred();
+      const first = item('a', { original: vi.fn(() => sharper.promise) });
+      const { container, picture } = open([first]);
+      expect(first.original).toHaveBeenCalledWith(expect.any(AbortSignal), 5120);
+      const line = container.querySelector('[data-lightbox-loading]')?.textContent ?? '';
+      expect(line).toContain('Loading sharper image');
+      expect(line).not.toContain('12.4 MB');
+
+      sharper.resolve(new Blob([new Uint8Array(3)], { type: 'image/png' }));
+      await waitFor(() => expect(picture()!.hasAttribute('data-lightbox-original')).toBe(true));
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('fetches nothing for an image whose preview is already the original', () => {

@@ -25,8 +25,14 @@ export interface ImagePreviewItem {
   height: number;
   /** The original's byte count, for the loading line; 0 when unknown. */
   originalBytes: number;
-  /** Fetches the original bytes. Absent when `url` already is the original. */
-  original?: (signal: AbortSignal) => Promise<Blob>;
+  /**
+   * Fetches the bytes for the full-size view: the original at `maxWidth`
+   * 0, else the widest variant at most `maxWidth` device pixels
+   * (`utils/imageTiers.ts#fullSizeMaxWidth`). Absent when `url` already is
+   * the original. A thread attachment ignores the width: its bytes are the
+   * composer's compressed upload, bounded already.
+   */
+  original?: (signal: AbortSignal, maxWidth: number) => Promise<Blob>;
   /** Attributes the image menu reads for this image (`utils/imageMenuActions.ts`). */
   menuTag: Record<string, string>;
 }

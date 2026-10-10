@@ -7,11 +7,11 @@
 import type { BackendKey } from '../transport/backendKey';
 import {
   acquireForgeAttachment,
-  fetchForgeAttachmentOriginal,
+  fetchForgeAttachmentBytes,
   forgeAttachmentCacheKey,
 } from './forgeAttachmentCache';
 import { forgeAttachmentName, type ParsedForgeAttachmentHref } from './forgeAttachments';
-import { acquireLocalImage, fetchLocalImageOriginal, localImageCacheKey } from './localImageCache';
+import { acquireLocalImage, fetchLocalImageBytes, localImageCacheKey } from './localImageCache';
 import type { ImageSize, MediaBytes, MediaHandle } from './mediaBlobCache';
 import { pathBasename } from './pathDisplay';
 
@@ -27,7 +27,7 @@ export interface MarkdownImageSource {
   key: string;
   filename: string;
   acquire(tier: number): MediaHandle<MarkdownImageVariant>;
-  original(signal: AbortSignal): Promise<Blob>;
+  original(signal: AbortSignal, maxWidth: number): Promise<Blob>;
   menuTag: Record<string, string>;
 }
 
@@ -42,7 +42,7 @@ export function localMarkdownImageSource(
     key: localImageCacheKey(backend, path, workspacePath),
     filename: pathBasename(path) || path,
     acquire: (tier) => acquireLocalImage(backend, path, workspacePath, tier),
-    original: (signal) => fetchLocalImageOriginal(backend, path, workspacePath, signal),
+    original: (signal, maxWidth) => fetchLocalImageBytes(backend, path, workspacePath, maxWidth, signal),
     menuTag,
   };
 }
@@ -57,7 +57,7 @@ export function forgeMarkdownImageSource(
     key: forgeAttachmentCacheKey(backend, pr, href),
     filename: forgeAttachmentName(pr.forge, href) || 'attachment',
     acquire: (tier) => acquireForgeAttachment(backend, pr, href, tier),
-    original: (signal) => fetchForgeAttachmentOriginal(backend, pr, href, signal),
+    original: (signal, maxWidth) => fetchForgeAttachmentBytes(backend, pr, href, maxWidth, signal),
     menuTag,
   };
 }

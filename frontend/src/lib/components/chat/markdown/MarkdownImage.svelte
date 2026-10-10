@@ -244,7 +244,7 @@
           width: value.originalWidth > 0 ? value.originalWidth : value.width,
           height: value.originalHeight > 0 ? value.originalHeight : value.height,
           originalBytes: value.originalBytes,
-          original: value.derived ? (signal: AbortSignal) => source.original(signal) : undefined,
+          original: value.derived ? source.original : undefined,
           menuTag: source.menuTag,
         },
       ],
@@ -263,7 +263,7 @@
 {#if image}
   <!-- Inside a link the anchor is the control and this span is plain; the
        role, tab stop and zoom cursor belong to the unlinked picture only. -->
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
   <span
     data-streamdown-image
     class={[

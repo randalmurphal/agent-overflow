@@ -12,7 +12,7 @@
 //
 // The tier (utils/imageTiers.ts) is the display width the timeline asked
 // for, so each tier is its own entry. The original, which the lightbox,
-// copy and save want, is fetched by `fetchLocalImageOriginal` and never
+// copy and save want, is fetched by `fetchLocalImageBytes` and never
 // cached here: the timeline's budget is for what is on screen.
 
 import { GetLocalImage } from '../stores/bindings';
@@ -70,17 +70,20 @@ export function acquireLocalImage(
 }
 
 /**
- * The file's own bytes, typed by what GetLocalImage classified. Not cached:
- * the caller (the lightbox, a copy, a download) holds the Blob for as long
- * as it needs it.
+ * The file's own bytes at `maxWidth` 0, else the widest variant at most
+ * `maxWidth` device pixels (what a full-size view decodes on this device,
+ * `imageTiers.ts#fullSizeMaxWidth`), typed by what GetLocalImage
+ * classified. Not cached: the caller (the lightbox, a copy, a download)
+ * holds the Blob for as long as it needs it.
  */
-export async function fetchLocalImageOriginal(
+export async function fetchLocalImageBytes(
   backend: BackendKey,
   path: string,
   workspacePath: string,
+  maxWidth: number,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  const { blob } = await mintAndFetch(backend, path, workspacePath, 0, signal);
+  const { blob } = await mintAndFetch(backend, path, workspacePath, maxWidth, signal);
   return blob;
 }
 

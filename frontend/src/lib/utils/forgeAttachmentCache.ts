@@ -82,7 +82,7 @@ export function acquireForgeAttachment(
  * on the page has asked. A file or video is the same bytes at every tier,
  * so a save reuses them instead of fetching them twice; an image may come
  * back as a derivative (`derived`), which a caller wanting the original
- * replaces through `fetchForgeAttachmentOriginal`.
+ * replaces through `fetchForgeAttachmentBytes`.
  */
 export function acquirePaintedForgeAttachment(
   backend: BackendKey,
@@ -94,17 +94,20 @@ export function acquirePaintedForgeAttachment(
 }
 
 /**
- * The attachment's own bytes, typed by what the backend classified. Not
- * cached: the caller (the lightbox, a copy, a download) holds the Blob for
- * as long as it needs it.
+ * The attachment's own bytes at `maxWidth` 0, else, for an image, the
+ * widest variant at most `maxWidth` device pixels (what a full-size view
+ * decodes on this device, `imageTiers.ts#fullSizeMaxWidth`), typed by what
+ * the backend classified. Not cached: the caller (the lightbox, a copy, a
+ * download) holds the Blob for as long as it needs it.
  */
-export async function fetchForgeAttachmentOriginal(
+export async function fetchForgeAttachmentBytes(
   backend: BackendKey,
   pr: PRRef,
   href: string,
+  maxWidth: number,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  const { blob } = await mintAndFetch(backend, pr, href, 0, signal);
+  const { blob } = await mintAndFetch(backend, pr, href, maxWidth, signal);
   return blob;
 }
 

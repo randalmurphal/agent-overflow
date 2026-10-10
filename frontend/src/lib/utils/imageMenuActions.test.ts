@@ -52,7 +52,7 @@ vi.mock('../transport/scopes', async (importOriginal) => ({
 vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./forgeAttachmentCache')>()),
   acquirePaintedForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
-  fetchForgeAttachmentOriginal: (...args: unknown[]) => forgeCache.original(...args),
+  fetchForgeAttachmentBytes: (...args: unknown[]) => forgeCache.original(...args),
 }));
 vi.mock('./forgeAttachmentActions', () => ({
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
@@ -388,7 +388,7 @@ describe('forge images', () => {
     await copyMenuImage(FORGE);
 
     const parsed = FORGE.kind === 'forge' ? FORGE.attachment : null;
-    expect(forgeCache.original).toHaveBeenCalledWith(parsed!.backend, parsed!.pr, parsed!.href);
+    expect(forgeCache.original).toHaveBeenCalledWith(parsed!.backend, parsed!.pr, parsed!.href, 0);
     // A PNG goes on the clipboard as it is, so what was written is the original.
     expect(written).toEqual([full]);
     expect(forgeCache.release).toHaveBeenCalledTimes(1);

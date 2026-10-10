@@ -11,7 +11,7 @@ import { errString } from './errors';
 import { prReferenceWire } from './prReference';
 import { fileSaveAction, savedFileMessage } from './fileSaveAction';
 import { downloadBlob } from './blobDownload';
-import { acquirePaintedForgeAttachment, fetchForgeAttachmentOriginal } from './forgeAttachmentCache';
+import { acquirePaintedForgeAttachment, fetchForgeAttachmentBytes } from './forgeAttachmentCache';
 import {
   browserUrlForForgeAttachment,
   forgeAttachmentName,
@@ -60,7 +60,7 @@ async function downloadForgeAttachment(parsed: ParsedForgeAttachmentHref): Promi
     if (typeof document === 'undefined') return;
     const filename = resolved.filename || forgeAttachmentName(parsed.pr.forge, parsed.href);
     if (resolved.derived) {
-      downloadBlob(await fetchForgeAttachmentOriginal(parsed.backend, parsed.pr, parsed.href), filename);
+      downloadBlob(await fetchForgeAttachmentBytes(parsed.backend, parsed.pr, parsed.href, 0), filename);
       return;
     }
     const anchor = document.createElement('a');

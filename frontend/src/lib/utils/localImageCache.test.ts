@@ -5,7 +5,7 @@ import { TransferUnavailableError } from '../transport/attachmentTransfer';
 import { getPinnedBackend } from '../transport/backends';
 import {
   acquireLocalImage,
-  fetchLocalImageOriginal,
+  fetchLocalImageBytes,
   localImageCacheKey,
   localImageFailureReason,
 } from './localImageCache';
@@ -153,7 +153,7 @@ describe('the local image original', () => {
       pins.push(getPinnedBackend());
       return { blob: new Blob(['full']), mimeType: 'image/webp', width: 4000, height: 3000 };
     });
-    const blob = await fetchLocalImageOriginal('gpu', '/workspace/shot.webp', '/workspace');
+    const blob = await fetchLocalImageBytes('gpu', '/workspace/shot.webp', '/workspace', 0);
     expect(rpc).toHaveBeenCalledWith('/workspace/shot.webp', '/workspace', 0);
     expect(pins).toEqual(['gpu']);
     expect(blob.type).toBe('image/webp');
@@ -163,8 +163,8 @@ describe('the local image original', () => {
   it('is never cached: each call fetches, and the timeline cache stays empty', async () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x');
     const rpc = mockLocalImage();
-    await fetchLocalImageOriginal('gpu', '/workspace/shot.png', '/workspace');
-    await fetchLocalImageOriginal('gpu', '/workspace/shot.png', '/workspace');
+    await fetchLocalImageBytes('gpu', '/workspace/shot.png', '/workspace', 0);
+    await fetchLocalImageBytes('gpu', '/workspace/shot.png', '/workspace', 0);
     expect(rpc).toHaveBeenCalledTimes(2);
     // The tier-0 entry a host would read is still a miss.
     await acquireLocalImage('gpu', '/workspace/shot.png', '/workspace', 0).value;
@@ -175,7 +175,7 @@ describe('the local image original', () => {
   it('mints once more on a spent ticket, then reports the second', async () => {
     mockLocalImage();
     const rpc = setBindingMock('GetLocalImage', async () => spentReply());
-    await expect(fetchLocalImageOriginal('gpu', '/workspace/shot.png', '/workspace'))
+    await expect(fetchLocalImageBytes('gpu', '/workspace/shot.png', '/workspace', 0))
       .rejects.toBeInstanceOf(TransferUnavailableError);
     expect(rpc).toHaveBeenCalledTimes(2);
   });
@@ -187,7 +187,7 @@ describe('the local image original', () => {
       controller.abort();
       return spentReply();
     });
-    await expect(fetchLocalImageOriginal('gpu', '/workspace/shot.png', '/workspace', controller.signal))
+    await expect(fetchLocalImageBytes('gpu', '/workspace/shot.png', '/workspace', 0, controller.signal))
       .rejects.toBe(controller.signal.reason);
     expect(rpc).toHaveBeenCalledTimes(1);
   });

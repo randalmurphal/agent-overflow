@@ -43,13 +43,14 @@ import { copyToClipboard } from './clipboard';
 import { errString } from './errors';
 import { fileSaveAction, savedFileMessage, type FileSaveAction } from './fileSaveAction';
 import { openForgeAttachment } from './forgeAttachmentActions';
-import { acquirePaintedForgeAttachment, fetchForgeAttachmentOriginal } from './forgeAttachmentCache';
+import { acquirePaintedForgeAttachment, fetchForgeAttachmentBytes } from './forgeAttachmentCache';
 import {
   browserUrlForForgeAttachment,
   parseForgeAttachmentHref,
   type ParsedForgeAttachmentHref,
 } from './forgeAttachments';
-import { fetchLocalImageOriginal } from './localImageCache';
+import { fullSizeMaxWidth } from './imageTiers';
+import { fetchLocalImageBytes } from './localImageCache';
 import { pathBasename } from './pathDisplay';
 import { parseLocalImageHref } from './pathLinkExtension';
 import { asPng, writePngToClipboard } from './pngClipboard';
@@ -164,7 +165,7 @@ export function copyMenuImage(target: ImageMenuTarget): Promise<void> {
   const original = target.kind === 'forge'
     ? () => heldForgeImage(target.attachment)
     : target.kind === 'local'
-      ? () => fetchLocalImageOriginal(target.backend, target.path, target.workspacePath)
+      ? () => fetchLocalImageBytes(target.backend, target.path, target.workspacePath, fullSizeMaxWidth())
       : () => fetchAttachmentBytes(target.threadId, target.attachmentId);
   return writePngToClipboard(async () => asPng(await original()), 'Could not copy the image');
 }
@@ -225,7 +226,7 @@ async function heldForgeImage(attachment: ParsedForgeAttachmentHref): Promise<Bl
   } finally {
     handle.release();
   }
-  return await fetchForgeAttachmentOriginal(attachment.backend, attachment.pr, attachment.href);
+  return await fetchForgeAttachmentBytes(attachment.backend, attachment.pr, attachment.href, fullSizeMaxWidth());
 }
 
 /** What Save does for `target` on this page (`fileSaveAction`). */
@@ -331,7 +332,7 @@ async function saveLocalImage(image: LocalMenuImage): Promise<void> {
       addToast('success', savedFileMessage(action, image.backend, path));
       return;
     }
-    const blob = await fetchLocalImageOriginal(image.backend, image.path, image.workspacePath);
+    const blob = await fetchLocalImageBytes(image.backend, image.path, image.workspacePath, 0);
     downloadBlob(blob, downloadName(pathBasename(image.path), blob.type));
   } catch (err) {
     addErrorToast(errString(err), err);
