@@ -33,6 +33,17 @@ jobs:
             build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Go extractor traces the build through a wrapper `go` that init
+      # puts first on PATH, so the toolchain is installed before init; the
+      # build needs the cgo webview headers and the embedded frontend bundle.
+      - uses: ./.github/actions/setup
+        if: matrix.language == 'go'
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: codeql
       - uses: github/codeql-action/init@d208ec71e39ae46397cbf6569bef8439b9aab974 # codeql-bundle-v2.27.2
         with:
           languages: ${{ matrix.language }}
@@ -43,16 +54,6 @@ jobs:
               - frontend/dist
               - "**/node_modules"
               - e2e/test-results
-      # The Go extractor compiles the module, which needs the cgo webview
-      # headers and the embedded frontend bundle.
-      - uses: ./.github/actions/setup
-        if: matrix.language == 'go'
-        with:
-          go: "true"
-          gtk: "true"
-          node: "true"
-          frontend-dist: "true"
-          cache-name: codeql
       - name: Build for the Go extractor
         if: matrix.language == 'go'
         run: go build ./...

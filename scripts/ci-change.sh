@@ -19,9 +19,11 @@ mkdir -p "$out"
 
 case "${GITHUB_EVENT_NAME:-}" in
 pull_request|pull_request_target)
-	base_sha=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
+	# The payload's base.sha is the base branch as last recorded on the pull
+	# request, which lags a push to the branch; the branch name is current.
+	base_ref=$(jq -r '.pull_request.base.ref | @uri' "$GITHUB_EVENT_PATH")
 	head_sha=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
-	base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$base_sha...$head_sha" --jq '.merge_base_commit.sha')
+	base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$base_ref...$head_sha" --jq '.merge_base_commit.sha')
 	;;
 push)
 	base=$(jq -r '.before' "$GITHUB_EVENT_PATH")
