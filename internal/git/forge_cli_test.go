@@ -83,9 +83,9 @@ func TestTrapCLIsAreReachableWithoutIsolation(t *testing.T) {
 	// and the trap does run. Without this the isolation assertions could
 	// pass because the trap was never reachable at all.
 	markers := installTrapCLIs(t)
-	result, err := NewCore().runBinary("gh", "", "api", "user")
+	result, err := NewCore().runSpec(commandSpec{ctx: t.Context(), binary: "gh", args: []string{"api", "user"}})
 	if err != nil {
-		t.Fatalf("runBinary: %v", err)
+		t.Fatalf("runSpec: %v", err)
 	}
 	if strings.TrimSpace(result.stdout) != "trapped" {
 		t.Fatalf("stdout = %q, want the trap's answer", result.stdout)
@@ -99,21 +99,22 @@ func TestIsolatedCoreWithoutFakeRefusesForgeCLIs(t *testing.T) {
 	markers := installTrapCLIs(t)
 	core := NewCore(WithIsolatedForgeCLIs("", nil))
 
-	for _, forge := range []string{"github", "gitlab"} {
-		_, err := core.ForgeByID(forge).GetPRDetail("", "acme/widgets", 7)
+	_, err := core.ForgeByID("gitlab").CreatePR(t.Context(), t.TempDir(), "title", "body", "", false)
+	_, createErr := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "title", "body", "", false)
+	for _, err := range []error{err, createErr} {
 		var unavailable *ForgeCLIUnavailableError
 		if !errors.As(err, &unavailable) {
-			t.Fatalf("%s GetPRDetail error = %v, want ForgeCLIUnavailableError", forge, err)
+			t.Fatalf("error = %v, want ForgeCLIUnavailableError", err)
 		}
 		if !strings.Contains(err.Error(), "isolated boot") {
 			t.Errorf("error %q does not say why", err)
 		}
 	}
-	if _, _, err := core.FetchAttachment("", PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7},
-		"https://github.com/user-attachments/assets/0f1e2d3c", 1<<20); err == nil {
+	if _, _, err := core.FetchAttachment(t.Context(), PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "acme", Repo: "widgets", Number: 7},
+		"/uploads/0123456789abcdef0123456789abcdef/a.png", 1<<20); err == nil {
 		t.Fatal("attachment download succeeded with no fake configured")
 	}
-	if _, err := core.runBinary("curl", "", "https://example.invalid"); err == nil {
+	if _, err := core.runSpec(commandSpec{ctx: t.Context(), binary: "curl", args: []string{"https://example.invalid"}}); err == nil {
 		t.Fatal("an isolated Core ran a binary that is neither git nor a forge CLI")
 	}
 	assertNoTrapRan(t, markers)
@@ -132,7 +133,8 @@ func TestIsolatedCoreRunsTheFakeAsTheForgeCLI(t *testing.T) {
 	}))
 
 	for _, binary := range forgeCLINames {
-		result, err := core.runBinaryInput(binary, cwd, `{"event":"APPROVE"}`, "api", "repos/acme/widgets/pulls/7/reviews", "-X", "POST", "--input", "-")
+		result, err := core.runSpec(commandSpec{ctx: t.Context(), binary: binary, cwd: cwd, stdin: `{"event":"APPROVE"}`,
+			args: []string{"api", "repos/acme/widgets/pulls/7/reviews", "-X", "POST", "--input", "-"}})
 		if err != nil {
 			t.Fatalf("%s: %v", binary, err)
 		}

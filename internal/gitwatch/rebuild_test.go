@@ -1,6 +1,7 @@
 package gitwatch
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -108,7 +109,7 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure 
 		return nil
 	}
 	inner := h.stub.fn()
-	statusFn := func(cwd string) (gitops.GitStatus, error) {
+	statusFn := func(ctx context.Context, cwd string) (gitops.GitStatus, error) {
 		h.mu.Lock()
 		h.statusEntered++
 		gate := h.statusGate
@@ -116,7 +117,7 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure 
 		if gate != nil {
 			<-gate
 		}
-		return inner(cwd)
+		return inner(ctx, cwd)
 	}
 	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
 	for _, fn := range configure {
@@ -548,7 +549,7 @@ func TestIgnoredSubtreeWritesDoNotRefresh(t *testing.T) {
 		WatchRootsFn: gitops.NewCore().WatchRoots,
 	})
 	t.Cleanup(m.Close)
-	sub, err := m.Subscribe(repo)
+	sub, err := m.Subscribe(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -631,7 +632,7 @@ func TestUnignoreRestoresWatch(t *testing.T) {
 	})
 	m.installFn = installs.fn()
 	t.Cleanup(m.Close)
-	sub, err := m.Subscribe(repo)
+	sub, err := m.Subscribe(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -692,7 +693,7 @@ func TestRecreatedSubtreeRegainsWatch(t *testing.T) {
 	})
 	m.installFn = installs.fn()
 	t.Cleanup(m.Close)
-	sub, err := m.Subscribe(repo)
+	sub, err := m.Subscribe(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

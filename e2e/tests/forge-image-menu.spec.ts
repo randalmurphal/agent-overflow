@@ -1,5 +1,5 @@
 // Forge-hosted images in a pull or merge request's review pane, through the
-// shipped UI, the real backend and the fake forge CLI (cmd/ao-mockforge).
+// shipped UI, the real backend and the fake forge (internal/harness/forgefake).
 //
 // Each forge seeds one PR/MR whose body wraps a PNG in
 // `<p align="center"><img ...></p>` (the claim hook in the sanitizer, not a
@@ -8,7 +8,7 @@
 // branch published through a local origin (`publishPullRequest`), and the
 // review pane is reached the way a user reaches it: the thread, then the
 // chat header's PR badge. Covered: the images render from
-// bytes the backend fetched through `gh api` / `glab api` (asserted on the
+// bytes the backend fetched from the forge API (asserted on the
 // recorded invocations), a right-click opens only the Image Actions menu,
 // Copy Image puts a PNG of the right size on the clipboard (an SVG is
 // rasterised), Save Image on the owner's screen writes the forge's exact
@@ -124,9 +124,13 @@ function githubCase(): ForgeCase {
       log: logName,
     },
     downloadName: `${id.centered}.png`,
-    fetches: (call, key) => call.cli === 'gh' && call.route === 'gh api attachment' && call.args[1] === href[key],
+    fetches: (call, key) => call.via === 'http' && call.route === 'gh api attachment' && call.host === 'github.com' && call.path === href[key],
     readsPull: (call) =>
-      call.route === 'gh pr view' && call.args.includes(project) && call.args.includes(String(number)),
+      call.via === 'http' &&
+      call.route === 'gh graphql PRTick' &&
+      call.host === 'github.com' &&
+      `${call.variables?.owner}/${call.variables?.name}` === project &&
+      call.variables?.number === number,
   };
 }
 
@@ -169,12 +173,17 @@ function gitlabCase(): ForgeCase {
     savedName,
     downloadName: savedName.centered,
     fetches: (call, key) =>
-      call.cli === 'glab' &&
+      call.via === 'http' &&
+      call.forge === 'gitlab' &&
       call.route === 'glab api upload' &&
-      call.args[1] === `projects/${encodeURIComponent(project)}/uploads/${secret[key]}/${savedName[key]}`,
+      call.host === 'gitlab.com' &&
+      call.path === `projects/${encodeURIComponent(project)}/uploads/${secret[key]}/${savedName[key]}`,
     readsPull: (call) =>
+      call.via === 'http' &&
+      call.forge === 'gitlab' &&
       call.route === 'glab api merge request' &&
-      call.args[1] === `projects/${encodeURIComponent(project)}/merge_requests/${number}`,
+      call.host === 'gitlab.com' &&
+      call.path === `projects/${encodeURIComponent(project)}/merge_requests/${number}`,
   };
 }
 
@@ -270,7 +279,7 @@ async function seedCase(harness: HarnessApp, make: () => ForgeCase): Promise<For
 
 for (const [name, make] of forges) {
   test.describe(`${name} review pane`, () => {
-    test('renders the body and comment images from bytes fetched through the forge CLI', async ({
+    test('renders the body and comment images from bytes fetched through the forge', async ({
       harness,
       page,
     }) => {
@@ -288,11 +297,11 @@ for (const [name, make] of forges) {
       await expect(page.locator('p[align="center"]').getByRole('img', { name: ALT.centered })).toBeVisible();
 
       const calls = await forgeInvocations(harness);
-      expect(calls.some(forge.readsPull), 'the pull request was read through the fake CLI').toBe(true);
+      expect(calls.some(forge.readsPull), 'the pull request was read through the fake forge').toBe(true);
       for (const key of ['centered', 'diagram', 'comment'] as const) {
         expect(
-          calls.some((call) => forge.fetches(call, key) && call.exitCode === 0),
-          `${key} was fetched through the fake CLI`,
+          calls.some((call) => forge.fetches(call, key) && call.via === 'http' && call.status === 200),
+          `${key} was fetched through the fake forge`,
         ).toBe(true);
       }
       await expectEveryForgeCallHandled(harness);

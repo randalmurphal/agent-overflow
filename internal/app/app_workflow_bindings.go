@@ -847,8 +847,8 @@ const workflowDispositionPR = "pr"
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowMergeItem(itemID string) (WorkflowDispositionReceipt, error) {
-	receipt, err := a.workflowApplication().MergeItem(itemID)
+func (a *App) WorkflowMergeItem(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
+	receipt, err := a.workflowApplication().MergeItem(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
 }
 
@@ -857,8 +857,8 @@ func (a *App) WorkflowMergeItem(itemID string) (WorkflowDispositionReceipt, erro
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowCreateItemPR(itemID string) (WorkflowDispositionReceipt, error) {
-	receipt, err := a.workflowApplication().CreateItemPR(itemID)
+func (a *App) WorkflowCreateItemPR(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
+	receipt, err := a.workflowApplication().CreateItemPR(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
 }
 
@@ -867,8 +867,8 @@ func (a *App) WorkflowCreateItemPR(itemID string) (WorkflowDispositionReceipt, e
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowDiscardItem(itemID string) (WorkflowDispositionReceipt, error) {
-	receipt, err := a.workflowApplication().DiscardItem(itemID)
+func (a *App) WorkflowDiscardItem(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
+	receipt, err := a.workflowApplication().DiscardItem(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
 }
 
@@ -973,11 +973,11 @@ type WorkflowPRReviewComments struct {
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowFetchPRReviewComments(itemID string) (WorkflowPRReviewComments, error) {
+func (a *App) WorkflowFetchPRReviewComments(ctx context.Context, itemID string) (WorkflowPRReviewComments, error) {
 	if a.shuttingDown.Load() {
 		return WorkflowPRReviewComments{}, ErrShuttingDown
 	}
-	comments, err := a.workflowApplication().FetchPRReviewComments(itemID)
+	comments, err := a.workflowApplication().FetchPRReviewComments(ctx, itemID)
 	if err != nil {
 		return WorkflowPRReviewComments{}, err
 	}
@@ -990,11 +990,11 @@ func (a *App) WorkflowFetchPRReviewComments(itemID string) (WorkflowPRReviewComm
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread, error) {
+func (a *App) WorkflowSendPRReviewCommentsToThread(ctx context.Context, itemID string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	return a.workflowApplication().SendPRReviewCommentsToThread(itemID)
+	return a.workflowApplication().SendPRReviewCommentsToThread(ctx, itemID)
 }
 
 // WorkflowDiscussPR opens or reuses the run's linked thread and sends a
@@ -1002,11 +1002,11 @@ func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread,
 //
 //ao:scope threads:autonomy
 //ao:route home
-func (a *App) WorkflowDiscussPR(itemID string) (store.Thread, error) {
+func (a *App) WorkflowDiscussPR(ctx context.Context, itemID string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	return a.workflowApplication().DiscussPR(itemID)
+	return a.workflowApplication().DiscussPR(ctx, itemID)
 }
 
 // The run map's one read: a whole run TREE as metadata, in one call.

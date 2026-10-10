@@ -1,6 +1,7 @@
 package workflowapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -13,13 +14,13 @@ import (
 
 const workflowPRMessageMaxRunes = 24_000
 
-func (s *Service) FetchPRReviewComments(itemID string) (PRReviewComments, error) {
-	_, comments, err := s.fetchPRReviewComments(itemID)
+func (s *Service) FetchPRReviewComments(ctx context.Context, itemID string) (PRReviewComments, error) {
+	_, comments, err := s.fetchPRReviewComments(ctx, itemID)
 	return comments, err
 }
 
-func (s *Service) SendPRReviewCommentsToThread(itemID string) (store.Thread, error) {
-	coordinates, comments, err := s.fetchPRReviewComments(itemID)
+func (s *Service) SendPRReviewCommentsToThread(ctx context.Context, itemID string) (store.Thread, error) {
+	coordinates, comments, err := s.fetchPRReviewComments(ctx, itemID)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -38,7 +39,7 @@ func (s *Service) SendPRReviewCommentsToThread(itemID string) (store.Thread, err
 	return database.GetThread(thread.ID)
 }
 
-func (s *Service) DiscussPR(itemID string) (store.Thread, error) {
+func (s *Service) DiscussPR(ctx context.Context, itemID string) (store.Thread, error) {
 	coordinates, err := s.prCoordinates(itemID)
 	if err != nil {
 		return store.Thread{}, err
@@ -47,7 +48,7 @@ func (s *Service) DiscussPR(itemID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	detail, err := client.GetPRDetail(coordinates.CWD, coordinates.Ref)
+	read, err := client.ReadPR(ctx, coordinates.Ref, gitops.PRReadParts{Detail: true}, nil, nil)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("discuss workflow PR: fetch PR detail: %w", err)
 	}
@@ -68,14 +69,14 @@ func (s *Service) DiscussPR(itemID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	message := PRDiscussionMessage(coordinates.Receipt.PRRef, coordinates.Ref, detail, coordinates.Item.Goal, digest)
+	message := PRDiscussionMessage(coordinates.Receipt.PRRef, coordinates.Ref, read.Detail, coordinates.Item.Goal, digest)
 	if err := s.sendThreadMessage(thread.ID, message); err != nil {
 		return store.Thread{}, fmt.Errorf("discuss workflow PR: send context: %w", err)
 	}
 	return database.GetThread(thread.ID)
 }
 
-func (s *Service) fetchPRReviewComments(itemID string) (prCoordinates, PRReviewComments, error) {
+func (s *Service) fetchPRReviewComments(ctx context.Context, itemID string) (prCoordinates, PRReviewComments, error) {
 	coordinates, err := s.prCoordinates(itemID)
 	if err != nil {
 		return prCoordinates{}, PRReviewComments{}, err
@@ -84,12 +85,12 @@ func (s *Service) fetchPRReviewComments(itemID string) (prCoordinates, PRReviewC
 	if err != nil {
 		return prCoordinates{}, PRReviewComments{}, err
 	}
-	threads, err := client.ListReviewThreads(coordinates.CWD, coordinates.Ref)
+	read, err := client.ReadPR(ctx, coordinates.Ref, gitops.PRReadParts{Threads: true}, nil, nil)
 	if err != nil {
 		return prCoordinates{}, PRReviewComments{}, fmt.Errorf("fetch workflow PR review comments: %w", err)
 	}
-	unresolved := make([]gitops.ReviewThread, 0, len(threads))
-	for _, thread := range threads {
+	unresolved := make([]gitops.ReviewThread, 0, len(read.Threads))
+	for _, thread := range read.Threads {
 		if !thread.IsResolvable || !thread.IsResolved {
 			unresolved = append(unresolved, thread)
 		}
@@ -124,15 +125,7 @@ func (s *Service) prCoordinates(itemID string) (prCoordinates, error) {
 	if err != nil {
 		return prCoordinates{}, fmt.Errorf("workflow PR %s: resolve disposition reference: %w", itemID, err)
 	}
-	project, err := database.GetProject(item.ProjectID)
-	if err != nil {
-		return prCoordinates{}, err
-	}
-	cwd := strings.TrimSpace(item.WorktreePath)
-	if cwd == "" {
-		cwd = strings.TrimSpace(project.Path)
-	}
-	return prCoordinates{Item: item, Receipt: receipt, Ref: ref, CWD: cwd}, nil
+	return prCoordinates{Item: item, Receipt: receipt, Ref: ref}, nil
 }
 
 func (s *Service) sendThreadMessage(threadID, message string) error {

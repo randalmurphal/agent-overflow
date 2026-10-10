@@ -19,9 +19,9 @@ type Git interface {
 	MergeBranch(cwd, base, head string) (gitops.MergeResult, error)
 	HeadSHA(cwd string) (string, error)
 	PushUnattended(cwd string) error
-	CreatePR(cwd, title, body, base string, draft bool) (string, error)
-	GetPRDetail(cwd string, ref gitops.PRReference) (gitops.PRDetail, error)
-	ListReviewThreads(cwd string, ref gitops.PRReference) ([]gitops.ReviewThread, error)
+	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
+	// ReadPR is one forge read of the parts of a PR its caller names.
+	ReadPR(ctx context.Context, ref gitops.PRReference, want gitops.PRReadParts, prev *gitops.CIPipeline, stepsFor []string) (gitops.PRRead, error)
 }
 
 type ListBranchCommitsFunc func(context.Context, string, string, string) ([]gitdiff.Commit, error)
@@ -113,5 +113,4 @@ type prCoordinates struct {
 	Item    store.WorkItem
 	Receipt DispositionReceipt
 	Ref     gitops.PRReference
-	CWD     string
 }

@@ -70,7 +70,7 @@ func TestLocalePinningIsPerCommand(t *testing.T) {
 	core := NewCore()
 	cwd := t.TempDir()
 
-	if _, err := core.Status(cwd); err != nil {
+	if _, err := core.Status(t.Context(), cwd); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if _, err := core.WatchRoots(cwd); err != nil {
@@ -146,7 +146,7 @@ func TestStatusReportsNonRepoUnderLocalizedGit(t *testing.T) {
 	t.Setenv("LC_ALL", userLocale)
 	t.Setenv("LANG", userLocale)
 
-	status, err := NewCore().Status(t.TempDir())
+	status, err := NewCore().Status(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Status: %v (a localized non-repo message must not surface as an error)", err)
 	}

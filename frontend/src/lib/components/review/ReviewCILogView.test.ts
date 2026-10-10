@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import ReviewCILogView from './ReviewCILogView.svelte';
+import { formatTimeOfDay } from '../../utils/format';
+import type { ForgeFailure } from '../../utils/forgeFailure';
 import type { CIJob } from '../../types/models';
 
 // The follow itself needs real geometry (a grown chunk re-measures through
@@ -31,6 +33,8 @@ function props(overrides: Record<string, unknown> = {}) {
     log: logOf(10) as ReturnType<typeof logOf> | null,
     loading: false,
     error: null as string | null,
+    failure: null as ForgeFailure | null,
+    forge: 'github',
     available: true,
     savedPath: null,
     onBack: () => {},
@@ -168,6 +172,25 @@ describe('<ReviewCILogView>', () => {
     await update(() => { p.error = 'failed to fetch job log (id: x)'; });
     expect(view.queryByTestId('review-ci-log-pending')).toBeNull();
     expect(view.getByTestId('review-ci-log-error')).toBeInTheDocument();
+  });
+
+  it('shows a rate-limited log as a pause until its resume time', async () => {
+    const resumeAt = '2026-10-10T12:30:00Z';
+    const { p, view } = renderLogView({
+      log: logOf(2),
+      error: 'failed to refresh pull request (id: x)',
+      failure: { kind: 'rate_limited', reserve: true, resumeAt },
+      forge: 'gitlab',
+    });
+    await settle();
+    expect(view.getByTestId('review-ci-log-rate-limited')).toHaveTextContent(
+      `GitLab rate limit nearly used up. Updates pause until ${formatTimeOfDay(Date.parse(resumeAt))} so your own actions still go through.`,
+    );
+    expect(view.queryByTestId('review-ci-log-error')).toBeNull();
+
+    await update(() => { p.failure = { kind: 'forge', reserve: false, resumeAt: '' }; });
+    expect(view.queryByTestId('review-ci-log-rate-limited')).toBeNull();
+    expect(view.getByTestId('review-ci-log-error')).toHaveTextContent('failed to refresh pull request (id: x)');
   });
 
   it('says the forge has not published the log of a job that finished', async () => {

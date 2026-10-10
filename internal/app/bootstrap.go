@@ -43,16 +43,17 @@ type IsolationConfig struct {
 	// spawns, so an isolated boot never dials a listener outside the
 	// processes it was given.
 	ScanScopePIDs []int
-	// ThreadRequestPoll, TransferPendingRetry, PRUpdateRetryBase,
-	// PRCILiveInterval, PRCIFollowInterval and PRCILogWaitInterval replace
-	// the agent thread request poll cadence, threadtransfer.PendingRetry,
-	// the pull request poll's first retry delay and the CI phase's three
-	// cadences, so an
+	// ThreadRequestPoll, TransferPendingRetry, PRUpdateInterval,
+	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval and
+	// PRCILogWaitInterval replace the agent thread request poll cadence,
+	// threadtransfer.PendingRetry, the pull request poll cadence and its
+	// first retry delay, and the CI phase's three cadences, so an
 	// end-to-end test does not wait out a production interval it is not
 	// about. Zero keeps the product value; only a harness boot sets them
 	// (diagenv.HarnessTiming).
 	ThreadRequestPoll    time.Duration
 	TransferPendingRetry time.Duration
+	PRUpdateInterval     time.Duration
 	PRUpdateRetryBase    time.Duration
 	PRCILiveInterval     time.Duration
 	PRCIFollowInterval   time.Duration
@@ -76,6 +77,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
 	a.transferPendingRetry = config.TransferPendingRetry
+	a.prUpdates.interval = config.PRUpdateInterval
 	a.prUpdates.retryBase = config.PRUpdateRetryBase
 	a.prUpdates.ciLiveInterval = config.PRCILiveInterval
 	a.prUpdates.ciFollowInterval = config.PRCIFollowInterval
@@ -248,6 +250,20 @@ func SetBrowserCDPRelay(a *App, relay appbrowser.CDPRelay) { a.browser.cdpRelay 
 // EnsurePrivateDir applies the same ownership and mode rules used by App
 // startup to a bootstrap-owned data directory.
 func EnsurePrivateDir(path string) error { return ensureAppPrivateDir(path) }
+
+// ForgeAPI is the fake forge an isolated boot's forge API transport talks
+// to: the base URL of the harness's forge listener and the fixed token it
+// accepts (forgeapi.Isolated).
+type ForgeAPI struct {
+	BaseURL string
+	Token   string
+}
+
+// SetForgeAPI installs the fake forge listener beside the ForgeCLI pin
+// before Start. The listener starts after ConfigureIsolation, so it
+// arrives separately; an isolated boot without one refuses every forge
+// API request. A desktop boot ignores it.
+func SetForgeAPI(a *App, api ForgeAPI) { a.forgeCLIs.api = api }
 
 // SetProviderExtraEnv installs mock-control credentials before Start. Copying
 // makes the write-once boot input independent of the control server's map.

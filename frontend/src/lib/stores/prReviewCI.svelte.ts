@@ -19,11 +19,13 @@ import { withBackendTarget } from '../transport/backends';
 import { errString } from '../utils/errors';
 import { workspaceKeyBackend } from '../utils/workspaceKey';
 import type { CIPipeline } from '../types/models';
+import { forgeFailureFrom, type ForgeFailure, type ForgeFailureWire } from '../utils/forgeFailure';
 
 // Wire payload shapes for "pr:ci_updated" and "pr:ci_log". Wails generates
 // no TS type for event payloads; kept in sync with PRCIUpdatedEvent and
-// PRCILogEvent in internal/app/app_forge_ci.go.
-export interface PRCIUpdatedEvent {
+// PRCILogEvent in internal/app/app_forge_ci.go. A failure's kind fields
+// (errorKind, reserve, resumeAt) are ForgeFailureWire's.
+export interface PRCIUpdatedEvent extends ForgeFailureWire {
   prKey: string;
   /** Set on a pipeline frame; a PR with no pipeline is an empty one. */
   pipeline?: CIPipeline | null;
@@ -33,7 +35,7 @@ export interface PRCIUpdatedEvent {
   seq?: number;
 }
 
-export interface PRCILogEvent {
+export interface PRCILogEvent extends ForgeFailureWire {
   prKey: string;
   jobId: string;
   seq: number;
@@ -51,7 +53,7 @@ export interface PRCILogEvent {
 }
 
 /** The followed job log as the wire's PRCILogState carries it. */
-export interface PRCILogWireState {
+export interface PRCILogWireState extends ForgeFailureWire {
   text: string;
   truncated: boolean;
   totalBytes: number;
@@ -67,6 +69,8 @@ export interface PRCILogState {
   readonly totalBytes: number;
   readonly available: boolean;
   readonly error: string | null;
+  /** The pump's kind of error; null for a local one or none. */
+  readonly failure: ForgeFailure | null;
   /** The backend sequence of the last frame or reply applied. */
   readonly seq: number;
 }
@@ -75,8 +79,10 @@ export type PRCILogApply = 'applied' | 'ignored' | 'resync';
 
 class PRCIEntry {
   pipeline = $state<CIPipeline | null>(null);
-  /** The pump's CI poll failure, as the subscribe result or a frame said. */
+  /** The pump's CI poll failure, as the subscribe result or a frame said,
+   * and its kind. */
   pumpError = $state<string | null>(null);
+  pumpFailure = $state<ForgeFailure | null>(null);
   /** The failure of this client's last RefreshPRCI. The pump emits only on
    * change, so it is cleared by the next refresh or pipeline frame. */
   refreshError = $state<string | null>(null);
@@ -93,6 +99,11 @@ class PRCIEntry {
   get error(): string | null {
     return this.refreshError ?? this.pumpError;
   }
+
+  /** The kind of the error shown: the pump's, unless a refresh failed. */
+  get failure(): ForgeFailure | null {
+    return this.refreshError === null ? this.pumpFailure : null;
+  }
 }
 
 export interface PRCIView {
@@ -101,6 +112,8 @@ export interface PRCIView {
   /** A manual RefreshPRCI is in flight. */
   readonly refreshing: boolean;
   readonly error: string | null;
+  /** The kind of error; null for a refresh's own failure or none. */
+  readonly failure: ForgeFailure | null;
   readonly logs: ReadonlyMap<string, PRCILogState>;
 }
 
@@ -109,6 +122,7 @@ const EMPTY_CI: PRCIView = Object.freeze({
   loading: false,
   refreshing: false,
   error: null,
+  failure: null,
   logs: new Map<string, PRCILogState>(),
 });
 const ciByKey = new SvelteMap<string, PRCIEntry>();
@@ -135,11 +149,12 @@ export function peekPRCI(key: string | null): PRCIView {
  * from the key's previous subscription stays until then, as the snapshot
  * does across a re-source.
  */
-export function seedPRCI(key: string, pipeline: CIPipeline | null, ciError: string): void {
+export function seedPRCI(key: string, pipeline: CIPipeline | null, ciError: string, kind: ForgeFailureWire): void {
   const entry = entryFor(key);
   if (!entry) return;
   if (pipeline) entry.pipeline = pipeline;
   entry.pumpError = ciError || null;
+  entry.pumpFailure = ciError ? forgeFailureFrom(kind) : null;
 }
 
 /** Applies one pr:ci_updated frame the PR's watermark admitted. */
@@ -148,11 +163,13 @@ export function applyPRCIUpdated(key: string, event: PRCIUpdatedEvent): void {
   if (!entry) return;
   if (event.error) {
     entry.pumpError = event.error;
+    entry.pumpFailure = forgeFailureFrom(event);
     return;
   }
   if (!event.pipeline) return;
   entry.pipeline = event.pipeline;
   entry.pumpError = null;
+  entry.pumpFailure = null;
   entry.refreshError = null;
 }
 
@@ -176,6 +193,7 @@ export function applyPRCILog(key: string, event: PRCILogEvent): PRCILogApply {
     totalBytes: event.totalBytes,
     available: event.available,
     error: event.error || null,
+    failure: event.error ? forgeFailureFrom(event) : null,
     seq: event.seq,
   });
   return 'applied';
@@ -196,6 +214,7 @@ export function replacePRCILog(key: string, jobId: string, state: PRCILogWireSta
     totalBytes: state.totalBytes,
     available: state.available,
     error: state.error || null,
+    failure: state.error ? forgeFailureFrom(state) : null,
     seq: state.seq,
   });
 }
@@ -211,6 +230,7 @@ export function failPRCILog(key: string, jobId: string, message: string): void {
     totalBytes: prev?.totalBytes ?? 0,
     available: prev?.available ?? true,
     error: message,
+    failure: null,
     seq: prev?.seq ?? 0,
   });
 }

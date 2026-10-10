@@ -3383,7 +3383,7 @@ frame.**
   (`internal/transport/forgeattachmentroutes.go`), a third ticket book
   with the same TTL and cap. `FetchForgeAttachment` (git:operate, route
   `selected`) parses the href, downloads it on the computer that owns
-  the PR through `gh api` / `glab api` under the user's own CLI login,
+  the PR through the forge API with the token of the user's own CLI login,
   classifies the bytes by signature, and holds them in a bounded LRU
   (`internal/forgeattach`, 128 MiB, 10 min, 100 MiB per body). The
   ticket subject is the opaque cache id; an expired id answers the same

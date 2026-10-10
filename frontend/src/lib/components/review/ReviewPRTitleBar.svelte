@@ -10,6 +10,7 @@
   import ReviewIconButton from './ReviewIconButton.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
   import { authorDisplayName } from '../../utils/reviewIdentity';
+  import type { ForgeFailure } from '../../utils/forgeFailure';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { CIJob, CIPipeline, PRDetail } from '../../types/models';
 
@@ -31,6 +32,10 @@
     /** A manual refresh is in flight; the chips stay. */
     ciRefreshing?: boolean;
     ciError?: string | null;
+    /** The kind of ciError. */
+    ciFailure?: ForgeFailure | null;
+    /** The PR's forge, which names a rate limit. */
+    forge?: string;
     onOpenCIJob?: (stageName: string, job: CIJob) => void;
     /** Has the pump re-poll CI now, no diff or thread refresh. */
     onRefreshCI?: () => void;
@@ -48,6 +53,8 @@
     ciLoading = false,
     ciRefreshing = false,
     ciError = null,
+    ciFailure = null,
+    forge = '',
     onOpenCIJob,
     onRefreshCI,
     review = null,
@@ -165,6 +172,8 @@
         pipeline={ciPipeline}
         loading={ciLoading}
         error={ciError}
+        failure={ciFailure}
+        {forge}
         onOpenJob={onOpenCIJob}
       />
       {#if onRefreshCI}

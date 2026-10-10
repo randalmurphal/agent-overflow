@@ -10,6 +10,7 @@
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import type { RowEstimate } from '../../utils/virtual/types';
+  import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
 
   // CI job log view — replaces the diff body (same pattern as the
   // conflict viewer). The log is chunked into fixed line blocks and
@@ -42,6 +43,10 @@
     log: LogText | null;
     loading: boolean;
     error: string | null;
+    /** The kind of error; a rate limit reads as a pause until its time. */
+    failure?: ForgeFailure | null;
+    /** The PR's forge, which names a rate limit. */
+    forge?: string;
     /** False while the forge cannot serve the log: the job is live on a
      * forge that serves logs only after completion, or the forge has not
      * published a completed job's log yet. */
@@ -58,6 +63,8 @@
     log,
     loading,
     error,
+    failure = null,
+    forge = '',
     available = true,
     savedPath,
     onBack,
@@ -223,7 +230,11 @@
       Saved to {savedPath}
     </div>
   {/if}
-  {#if error}
+  {#if error && failure?.kind === 'rate_limited'}
+    <div class="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-ci-log-rate-limited">
+      {rateLimitMessage(forge, failure)}
+    </div>
+  {:else if error}
     <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-ci-log-error">
       {error}
     </div>

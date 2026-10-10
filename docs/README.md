@@ -40,6 +40,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Current application composition, ownership and Wails wire compatibility. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
+| [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake. |
 | [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |
 | [`remote-commands.md`](architecture/remote-commands.md) | Explicit peer access, durable remote commands, connection recovery, and ownership. |
@@ -139,6 +140,7 @@ External repos and tools we track, and how to use them. Under
 | [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
+| [`forge-api-measurements.md`](references/forge-api-measurements.md) | Measured GitHub and GitLab API behavior behind the forge transport: process cost, token handoff, rate-limit headers, ETag and Range. |
 | [`voice-dictation.md`](references/voice-dictation.md) | Researched voice-to-text options (Claude voice_stream, Codex realtime) and why none is built. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |

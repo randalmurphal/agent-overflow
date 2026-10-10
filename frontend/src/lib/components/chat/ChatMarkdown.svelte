@@ -247,6 +247,7 @@
   );
   const forgeSource = $derived(readForgeSource?.() ?? null);
   const forgeForge = $derived(forgeSource?.pr.forge ?? '');
+  const forgeHost = $derived(forgeSource?.pr.host ?? '');
   const forgeNamespace = $derived(forgeSource?.pr.namespace ?? '');
   const forgeRepo = $derived(forgeSource?.pr.repo ?? '');
   const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
@@ -257,6 +258,7 @@
     return buildForgeAttachmentExtension({
       pr: {
         forge: forgeForge,
+        host: forgeHost,
         namespace: forgeNamespace,
         repo: forgeRepo,
         number: forgeNumber,
@@ -279,6 +281,7 @@
     if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
     const pr = {
       forge: forgeForge,
+      host: forgeHost,
       namespace: forgeNamespace,
       repo: forgeRepo,
       number: forgeNumber,

@@ -6,14 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/testutil"
-	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/unidiff"
 )
 
@@ -61,7 +59,7 @@ func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
 
-	status, err := core.Status(t.TempDir())
+	status, err := core.Status(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -456,26 +454,16 @@ func TestCurrentBranchReturnsEmptyOutsideRepository(t *testing.T) {
 }
 
 func TestCurrentBranchDoesNotRunForgeLookup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
-
+	t.Parallel()
 	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/example/project.git")
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer { return forgeUnexpected(t, call) })
 
-	binDir := t.TempDir()
-	markerPath := filepath.Join(binDir, "gh-called")
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\nprintf called > \"$AO_CURRENT_BRANCH_GH_MARKER\"\n"
-	mockexec.Write(t, ghPath, script)
-	t.Setenv("AO_CURRENT_BRANCH_GH_MARKER", markerPath)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	if got := NewCore().CurrentBranch(repo); got != "main" {
+	if got := core.CurrentBranch(repo); got != "main" {
 		t.Fatalf("CurrentBranch() = %q, want main", got)
 	}
-	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("CurrentBranch invoked gh; marker stat error = %v", err)
+	if n := len(calls.all()); n != 0 {
+		t.Fatalf("CurrentBranch sent %d forge requests", n)
 	}
 }
 
@@ -496,7 +484,7 @@ func TestStatusOnRepositoryWithOrigin(t *testing.T) {
 	}
 
 	core := NewCore()
-	status, err := core.Status(repo)
+	status, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -556,7 +544,7 @@ func TestStatusReportsForge(t *testing.T) {
 			// Isolated so the open-PR lookup a detected forge triggers
 			// never reaches the developer's gh or glab.
 			core := NewCore(WithIsolatedForgeCLIs("", nil))
-			status, err := core.Status(repo)
+			status, err := core.Status(t.Context(), repo)
 			if err != nil {
 				t.Fatalf("Status returned error: %v", err)
 			}
@@ -587,7 +575,7 @@ func TestStatusSkipsPRLookupWithoutSupportedForge(t *testing.T) {
 				testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
 			}
 
-			status, err := NewCore().Status(repo)
+			status, err := NewCore().Status(t.Context(), repo)
 			if err != nil {
 				t.Fatalf("Status returned error: %v", err)
 			}
@@ -737,7 +725,7 @@ func TestStatusOnCleanRepository(t *testing.T) {
 	repo := initGitRepo(t)
 	core := NewCore()
 
-	status, err := core.Status(repo)
+	status, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -782,7 +770,7 @@ func TestStatusIsRaceFreeAndOrderIndependent(t *testing.T) {
 	for i := range callers {
 		go func() {
 			defer wg.Done()
-			results[i], errs[i] = core.Status(repo)
+			results[i], errs[i] = core.Status(t.Context(), repo)
 		}()
 	}
 	wg.Wait()
@@ -801,7 +789,7 @@ func TestStatusIsRaceFreeAndOrderIndependent(t *testing.T) {
 	}
 
 	// Warm caches must produce the same answer as the cold race did.
-	warm, err := core.Status(repo)
+	warm, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("warm Status: %v", err)
 	}
@@ -820,7 +808,7 @@ func TestStatusNonRepoLeavesNoForgeCacheEntry(t *testing.T) {
 	core := NewCore()
 	dir := t.TempDir()
 
-	status, err := core.Status(dir)
+	status, err := core.Status(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}

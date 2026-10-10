@@ -1,21 +1,21 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
 	"bytes"
 	"context"
-	"fmt"
 	"image/png"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/contentcache"
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
@@ -23,36 +23,37 @@ import (
 
 const testForgeUploadSecret = "0123456789abcdef0123456789abcdef"
 
-var testGitLabPR = gitops.PRReference{Forge: "gitlab", Namespace: "group", Repo: "widget", Number: 12}
+var testGitLabPR = gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group", Repo: "widget", Number: 12}
 
 func testUploadHref() string { return "/uploads/" + testForgeUploadSecret + "/hero.png" }
 
-// stubGlab writes a fake glab on PATH that emits body and counts its own
-// invocations, and returns the counter path.
-func stubGlab(t *testing.T, body string) string {
+// gitlabUploads is a forge API transport whose GitLab serves the upload
+// hero.png of testGitLabPR's project, answering payload on each request.
+// It returns a Core reading through it and the count of requests made.
+func gitlabUploads(t *testing.T, payload func() []byte) (*gitops.Core, *atomic.Int32) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock forge CLI is unix-only")
+	var requests atomic.Int32
+	want := "/gitlab/api/v4/projects/group%2Fwidget/uploads/" + testForgeUploadSecret + "/hero.png"
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != want || r.Header.Get("Private-Token") != "test-token" {
+			t.Errorf("unexpected forge request %s %s", r.Method, r.URL.EscapedPath())
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(payload())
+	}))
+	t.Cleanup(fake.Close)
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: fake.URL, Token: "test-token"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	binDir := t.TempDir()
-	counter := filepath.Join(binDir, "runs")
-	script := fmt.Sprintf("#!/bin/sh\necho run >> %q\n%s", counter, body)
-	mockexec.Write(t, filepath.Join(binDir, "glab"), script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return counter
+	t.Cleanup(svc.Close)
+	return gitops.NewCore(gitops.WithForgeAPI(svc)), &requests
 }
 
-func runCount(t *testing.T, counter string) int {
-	t.Helper()
-	raw, err := os.ReadFile(counter)
-	if os.IsNotExist(err) {
-		return 0
-	}
-	if err != nil {
-		t.Fatalf("read run counter: %v", err)
-	}
-	return strings.Count(string(raw), "run\n")
-}
+func constantPayload(data []byte) func() []byte { return func() []byte { return data } }
 
 // forgeAttachmentApp is a bare App with a live transport: no store and no
 // thread, because a forge attachment belongs to a pull request rather
@@ -81,16 +82,18 @@ func forgeAttachmentApp(t *testing.T) (*App, string) {
 	return app, "http://" + srv.Addr()
 }
 
-// TestFetchForgeAttachmentRoundTripsOverHTTP is the whole path: the CLI
+// TestFetchForgeAttachmentRoundTripsOverHTTP is the whole path: the forge
 // fetch on the computer that owns the PR, the signature classification,
 // the ticketed URL, and the bytes coming back unchanged at the page
 // origin — which is what makes this work on a phone.
 func TestFetchForgeAttachmentRoundTripsOverHTTP(t *testing.T) {
+	t.Parallel()
 	payload := realPNGBytes(t)
-	stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	core, _ := gitlabUploads(t, constantPayload(payload))
 	app, base := forgeAttachmentApp(t)
+	app.git = core
 
-	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
+	got, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0)
 	if err != nil {
 		t.Fatalf("FetchForgeAttachment: %v", err)
 	}
@@ -127,21 +130,23 @@ func TestFetchForgeAttachmentRoundTripsOverHTTP(t *testing.T) {
 }
 
 // TestFetchForgeAttachmentReusesTheCachedBytes: a PR body referencing the
-// same image three times must spawn one glab, not three.
+// same image three times must fetch once, not three times.
 func TestFetchForgeAttachmentReusesTheCachedBytes(t *testing.T) {
-	counter := stubGlab(t, "cat "+shellQuote(writeTempFile(t, realPNGBytes(t)))+"\n")
+	t.Parallel()
+	core, counter := gitlabUploads(t, constantPayload(realPNGBytes(t)))
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 
-	first, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
+	first, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0)
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
-	second, err := app.FetchForgeAttachment(testGitLabPR, "  "+testUploadHref()+"\n", 0)
+	second, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, "  "+testUploadHref()+"\n", 0)
 	if err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
-	if runs := runCount(t, counter); runs != 1 {
-		t.Fatalf("glab ran %d times for one reference, want 1", runs)
+	if runs := int(counter.Load()); runs != 1 {
+		t.Fatalf("the forge was asked %d times for one reference, want 1", runs)
 	}
 	// A fresh ticket each time, because a ticket is spent by its request.
 	if first.URL == second.URL {
@@ -155,50 +160,55 @@ func TestFetchForgeAttachmentReusesTheCachedBytes(t *testing.T) {
 	// upload secret is scoped to its project.
 	other := testGitLabPR
 	other.Number = 13
-	if _, err := app.FetchForgeAttachment(other, testUploadHref(), 0); err != nil {
+	if _, err := app.FetchForgeAttachment(t.Context(), other, testUploadHref(), 0); err != nil {
 		t.Fatalf("other-PR fetch: %v", err)
 	}
-	if runs := runCount(t, counter); runs != 2 {
-		t.Fatalf("glab ran %d times, want 2 (one per PR)", runs)
+	if runs := int(counter.Load()); runs != 2 {
+		t.Fatalf("the forge was asked %d times, want 2 (one per PR)", runs)
 	}
 }
 
-// TestFetchForgeAttachmentRefusesBeforeSpawning: a bad PR reference or a
-// href that is not an upload costs no subprocess.
-func TestFetchForgeAttachmentRefusesBeforeSpawning(t *testing.T) {
-	counter := stubGlab(t, "printf 'x'\n")
+// TestFetchForgeAttachmentRefusesBeforeRequesting: a bad PR reference or a
+// href that is not an upload costs no forge request.
+func TestFetchForgeAttachmentRefusesBeforeRequesting(t *testing.T) {
+	t.Parallel()
+	core, counter := gitlabUploads(t, constantPayload([]byte("x")))
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 
-	if _, err := app.FetchForgeAttachment(testGitLabPR, "https://example.com/logo.png", 0); err == nil {
+	if _, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, "https://example.com/logo.png", 0); err == nil {
 		t.Fatal("FetchForgeAttachment accepted a href that is not a forge upload")
 	}
 	bad := testGitLabPR
 	bad.Number = 0
-	if _, err := app.FetchForgeAttachment(bad, testUploadHref(), 0); err == nil {
+	if _, err := app.FetchForgeAttachment(t.Context(), bad, testUploadHref(), 0); err == nil {
 		t.Fatal("FetchForgeAttachment accepted a PR number of zero")
 	}
-	if runs := runCount(t, counter); runs != 0 {
-		t.Fatalf("glab ran %d times for references that never resolved", runs)
+	if runs := int(counter.Load()); runs != 0 {
+		t.Fatalf("the forge was asked %d times for references that never resolved", runs)
 	}
 }
 
 func TestFetchForgeAttachmentNeedsATransport(t *testing.T) {
-	stubGlab(t, "cat "+shellQuote(writeTempFile(t, realPNGBytes(t)))+"\n")
-	app := &App{configDir: t.TempDir()}
-	_, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
+	t.Parallel()
+	core, _ := gitlabUploads(t, constantPayload(realPNGBytes(t)))
+	app := &App{configDir: t.TempDir(), git: core}
+	_, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0)
 	if err == nil || !strings.Contains(err.Error(), "transport is not serving") {
 		t.Fatalf("error = %v, want a transport-not-serving refusal", err)
 	}
 }
 
 func TestFetchForgeAttachmentStopsWhenShuttingDown(t *testing.T) {
-	stubGlab(t, "printf 'x'\n")
+	t.Parallel()
+	core, _ := gitlabUploads(t, constantPayload([]byte("x")))
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 	app.shuttingDown.Store(true)
-	if _, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0); err != ErrShuttingDown {
+	if _, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0); err != ErrShuttingDown {
 		t.Fatalf("error = %v, want ErrShuttingDown", err)
 	}
-	if _, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref()); err != ErrShuttingDown {
+	if _, err := app.SaveForgeAttachment(t.Context(), testGitLabPR, testUploadHref()); err != ErrShuttingDown {
 		t.Fatalf("error = %v, want ErrShuttingDown", err)
 	}
 }
@@ -208,7 +218,7 @@ func TestFetchForgeAttachmentStopsWhenShuttingDown(t *testing.T) {
 // rather than a lost one.
 func TestSaveForgeAttachmentNeverOverwrites(t *testing.T) {
 	payload := realPNGBytes(t)
-	stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	core, _ := gitlabUploads(t, constantPayload(payload))
 	home := t.TempDir()
 	downloads := filepath.Join(home, "Downloads")
 	if err := os.MkdirAll(downloads, 0o755); err != nil {
@@ -216,8 +226,9 @@ func TestSaveForgeAttachmentNeverOverwrites(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 
-	first, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref())
+	first, err := app.SaveForgeAttachment(t.Context(), testGitLabPR, testUploadHref())
 	if err != nil {
 		t.Fatalf("SaveForgeAttachment: %v", err)
 	}
@@ -239,7 +250,7 @@ func TestSaveForgeAttachmentNeverOverwrites(t *testing.T) {
 		t.Fatalf("saved mode = %v, want 0600", perm)
 	}
 
-	second, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref())
+	second, err := app.SaveForgeAttachment(t.Context(), testGitLabPR, testUploadHref())
 	if err != nil {
 		t.Fatalf("second SaveForgeAttachment: %v", err)
 	}
@@ -252,11 +263,12 @@ func TestSaveForgeAttachmentNeverOverwrites(t *testing.T) {
 // Downloads folder: the save still has to land somewhere the app can
 // report a path for.
 func TestSaveForgeAttachmentFallsBackToTheAppDirectory(t *testing.T) {
-	stubGlab(t, "cat "+shellQuote(writeTempFile(t, realPNGBytes(t)))+"\n")
+	core, _ := gitlabUploads(t, constantPayload(realPNGBytes(t)))
 	t.Setenv("HOME", t.TempDir())
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 
-	path, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref())
+	path, err := app.SaveForgeAttachment(t.Context(), testGitLabPR, testUploadHref())
 	if err != nil {
 		t.Fatalf("SaveForgeAttachment: %v", err)
 	}
@@ -270,11 +282,12 @@ func TestSaveForgeAttachmentFallsBackToTheAppDirectory(t *testing.T) {
 // once per tier, and never what a save writes.
 func TestFetchForgeAttachmentServesADerivedTier(t *testing.T) {
 	payload := sizedPNG(t, 641, 480)
-	counter := stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	core, counter := gitlabUploads(t, constantPayload(payload))
 	t.Setenv("HOME", t.TempDir())
 	app, base := forgeAttachmentApp(t)
+	app.git = core
 
-	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 300)
+	got, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 300)
 	if err != nil {
 		t.Fatalf("FetchForgeAttachment: %v", err)
 	}
@@ -291,25 +304,25 @@ func TestFetchForgeAttachmentServesADerivedTier(t *testing.T) {
 		t.Fatalf("served %d %v %dx%d, want a 320x240 png", resp.StatusCode, err, cfg.Width, cfg.Height)
 	}
 
-	again, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	again, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 320)
 	if err != nil {
 		t.Fatalf("second FetchForgeAttachment: %v", err)
 	}
-	original, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0)
+	original, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0)
 	if err != nil {
 		t.Fatalf("original FetchForgeAttachment: %v", err)
 	}
 	if !again.Derived || again.Width != 320 || original.Derived || original.Width != 641 || original.Height != 480 {
 		t.Fatalf("second = %+v, original = %+v", again, original)
 	}
-	if runs := runCount(t, counter); runs != 1 {
-		t.Fatalf("glab ran %d times for one attachment at two widths", runs)
+	if runs := int(counter.Load()); runs != 1 {
+		t.Fatalf("the forge was asked %d times for one attachment at two widths", runs)
 	}
 	resp, body = getBytes(t, base, original.URL)
 	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, payload) {
 		t.Fatalf("the original URL served %d with %d bytes, want the attachment", resp.StatusCode, len(body))
 	}
-	saved, err := app.SaveForgeAttachment(testGitLabPR, testUploadHref())
+	saved, err := app.SaveForgeAttachment(t.Context(), testGitLabPR, testUploadHref())
 	if err != nil {
 		t.Fatalf("SaveForgeAttachment: %v", err)
 	}
@@ -325,18 +338,20 @@ func TestFetchForgeAttachmentServesADerivedTier(t *testing.T) {
 		t.Fatal("the original is not cached")
 	}
 	clear(held.Value.Data[:8])
-	if again, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320); err != nil || !again.Derived || again.Width != 320 {
+	if again, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 320); err != nil || !again.Derived || again.Width != 320 {
 		t.Fatalf("held tier = %+v, %v; want the derivative answered from the cache", again, err)
 	}
 }
 
 // A tier of an attachment Go cannot decode answers the attachment itself.
 func TestFetchForgeAttachmentServesTheOriginalWhenItsPixelsDoNotDecode(t *testing.T) {
+	t.Parallel()
 	payload := undecodablePNG(t, 641, 480)
-	stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	core, _ := gitlabUploads(t, constantPayload(payload))
 	app, base := forgeAttachmentApp(t)
+	app.git = core
 
-	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 300)
+	got, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 300)
 	if err != nil {
 		t.Fatalf("FetchForgeAttachment: %v", err)
 	}
@@ -352,9 +367,17 @@ func TestFetchForgeAttachmentServesTheOriginalWhenItsPixelsDoNotDecode(t *testin
 // expires and the forge serves different bytes, the tier is derived from the
 // new bytes instead of answering a derivative of the old ones.
 func TestForgeAttachmentDerivativeFollowsARefetchedOriginal(t *testing.T) {
+	t.Parallel()
 	source := writeTempFile(t, sizedPNG(t, 641, 480))
-	stubGlab(t, "cat "+shellQuote(source)+"\n")
+	core, _ := gitlabUploads(t, func() []byte {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Error(err)
+		}
+		return data
+	})
 	app, _ := forgeAttachmentApp(t)
+	app.git = core
 	now := time.Unix(1_700_000_000, 0)
 	app.forgeAttachOnce.Do(func() {
 		app.forgeAttachCache = contentcache.New(contentcache.Config[forgeattach.Attachment]{
@@ -365,11 +388,11 @@ func TestForgeAttachmentDerivativeFollowsARefetchedOriginal(t *testing.T) {
 		})
 	})
 
-	if _, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 0); err != nil {
+	if _, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 0); err != nil {
 		t.Fatalf("original: %v", err)
 	}
 	now = now.Add(50 * time.Second)
-	first, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	first, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 320)
 	if err != nil || first.Height != 240 {
 		t.Fatalf("first tier = %+v, %v; want 320x240", first, err)
 	}
@@ -378,7 +401,7 @@ func TestForgeAttachmentDerivativeFollowsARefetchedOriginal(t *testing.T) {
 	if err := os.WriteFile(source, sizedPNG(t, 641, 641), 0o600); err != nil {
 		t.Fatalf("change the forge's bytes: %v", err)
 	}
-	second, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 320)
+	second, err := app.FetchForgeAttachment(t.Context(), testGitLabPR, testUploadHref(), 320)
 	if err != nil || !second.Derived || second.Width != 320 || second.Height != 320 || second.OriginalHeight != 641 {
 		t.Fatalf("tier after a re-fetch = %+v, %v; want 320x320 from the new 641x641 bytes", second, err)
 	}

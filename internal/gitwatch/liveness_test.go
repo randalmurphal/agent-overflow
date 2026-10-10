@@ -8,6 +8,7 @@ package gitwatch
 // heal itself.
 
 import (
+	"context"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -44,9 +45,9 @@ func newLivenessHarness(t *testing.T, configure func(w *workspaceWatcher)) *live
 		return append([]gitops.WatchRoot(nil), roots...), nil
 	}
 	inner := h.stub.fn()
-	fastFn := func(cwd string) (gitops.GitStatus, error) {
+	fastFn := func(ctx context.Context, cwd string) (gitops.GitStatus, error) {
 		h.fastCalls.Add(1)
-		return inner(cwd)
+		return inner(ctx, cwd)
 	}
 	h.w = newWorkspaceWatcher(h.ws, h.stub.fn(), fastFn, gitops.GitStatus{Branch: "main"}, roots, rootsFn)
 	if configure != nil {

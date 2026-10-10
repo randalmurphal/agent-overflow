@@ -427,7 +427,7 @@ func TestDiscardKeepsTheMemoryTree(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.app.WorkflowDiscardItem(fixture.root.ID); err != nil {
+	if _, err := fixture.app.WorkflowDiscardItem(t.Context(), fixture.root.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.app.store.GetWorkItem(fixture.root.ID); err != nil {

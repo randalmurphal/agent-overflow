@@ -19,7 +19,7 @@ func forgeRepositoryIdentity(e *Engine, c *call, match []string) response {
 	r := e.repo(forge, project)
 	if r == nil || !strings.EqualFold(r.Host, c.flag("hostname")) {
 		if forge == "github" {
-			return ghNotFoundRepo(project)
+			return ghHTTPNotFound()
 		}
 		return glabNotFound("Project")
 	}

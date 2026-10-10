@@ -127,6 +127,15 @@ func runHarness(flags cliFlags) {
 	// write-once boot input; the first restored/started session must not race it.
 	appservice.SetProviderExtraEnv(appService.App, providerEnv)
 	defer controlServer.Shutdown()
+	// The fake forge's HTTP listener, beside the control server and for
+	// the same reason before App.Start: the git core Start builds takes
+	// its address.
+	forgeAPIServer, forgeAPI, err := harnessrpc.StartForgeAPI(h)
+	if err != nil {
+		fatalf("harness: start fake forge API: %v", err)
+	}
+	appservice.SetForgeAPI(appService.App, appservice.ForgeAPI{BaseURL: forgeAPI.BaseURL, Token: forgeAPI.Token})
+	defer forgeAPIServer.Shutdown()
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		IgnorePersistedNetwork: true,
 		HarnessReceiver:        h,
@@ -198,6 +207,7 @@ func runHarness(flags cliFlags) {
 		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeHarness, instance.id), nativeWindow); err != nil {
 			instance.remove()
 			controlServer.Shutdown()
+			forgeAPIServer.Shutdown()
 			fatalf("harness: %v", err)
 		}
 		return
@@ -249,8 +259,10 @@ type harnessTiming struct {
 	// TransferRetry is how soon a pending outgoing conversation transfer
 	// asks again (app.IsolationConfig.TransferPendingRetry).
 	TransferRetry time.Duration
-	// PRUpdateRetry is the first retry delay after a pull request poll
-	// fails (app.IsolationConfig.PRUpdateRetryBase).
+	// PRUpdate is the pull request poll cadence
+	// (app.IsolationConfig.PRUpdateInterval); PRUpdateRetry is the first
+	// retry delay after a poll fails (app.IsolationConfig.PRUpdateRetryBase).
+	PRUpdate      time.Duration
 	PRUpdateRetry time.Duration
 	// PRCILive and PRCIFollow are the pull request pipeline poll cadences
 	// while a job is live and while a job log is followed
@@ -273,6 +285,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"watermark":       &timing.Watermark,
 		"thread-poll":     &timing.ThreadPoll,
 		"transfer-retry":  &timing.TransferRetry,
+		"pr-update":       &timing.PRUpdate,
 		"pr-update-retry": &timing.PRUpdateRetry,
 		"pr-ci-live":      &timing.PRCILive,
 		"pr-ci-follow":    &timing.PRCIFollow,
@@ -369,6 +382,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		ScanScopePIDs:        opts.ScanScopePIDs,
 		ThreadRequestPoll:    opts.Timing.ThreadPoll,
 		TransferPendingRetry: opts.Timing.TransferRetry,
+		PRUpdateInterval:     opts.Timing.PRUpdate,
 		PRUpdateRetryBase:    opts.Timing.PRUpdateRetry,
 		PRCILiveInterval:     opts.Timing.PRCILive,
 		PRCIFollowInterval:   opts.Timing.PRCIFollow,

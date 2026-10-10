@@ -240,6 +240,7 @@ export function buildForgeAttachmentHref(
   const params = new URLSearchParams();
   params.set('href', args.href);
   params.set('forge', args.pr.forge);
+  params.set('host', args.pr.host);
   params.set('ns', args.pr.namespace);
   params.set('repo', args.pr.repo);
   params.set('n', String(args.pr.number));
@@ -260,14 +261,15 @@ export function parseForgeAttachmentHref(
   }
   const raw = url.searchParams.get('href');
   const forge = url.searchParams.get('forge');
+  const host = url.searchParams.get('host');
   const repo = url.searchParams.get('repo');
   const number = Number(url.searchParams.get('n') ?? '');
-  if (!raw || !repo) return null;
+  if (!raw || !repo || !host) return null;
   if (forge !== 'github' && forge !== 'gitlab') return null;
   if (!Number.isSafeInteger(number) || number <= 0) return null;
   return {
     href: raw,
-    pr: { forge, namespace: url.searchParams.get('ns') ?? '', repo, number },
+    pr: { forge, host, namespace: url.searchParams.get('ns') ?? '', repo, number },
     backend: url.searchParams.get('backend') ?? '',
     webBase: url.searchParams.get('web') ?? '',
   };

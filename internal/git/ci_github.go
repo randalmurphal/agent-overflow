@@ -1,19 +1,23 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // GitHub CI: Actions has no stage concept, so the "stage" grouping is
-// the workflow name. The PR's statusCheckRollup carries every check run
-// with its status, times and details URL (which names the run and job
-// ids); every Actions job has exactly one check run, so the rollup alone
-// lists the jobs. Steps are the one thing it lacks: they come from the
+// the workflow name. The head commit's statusCheckRollup carries every
+// check run with its status, times, workflow and details URL (which names
+// the run and job ids); every Actions job has exactly one check run, so
+// the rollup alone lists the jobs. Steps are the one thing it lacks: they come from the
 // REST jobs list of a run, read only for the runs that hold a job the
 // caller shows the steps of. External checks (StatusContext, or check
 // runs from non-Actions apps) have no log API and group under "External"
@@ -37,44 +41,17 @@ type githubCIRun struct {
 	jobs     []CIJob
 }
 
-// ListPRCIJobs builds the pipeline from the rollup, one GraphQL request
-// per poll. Steps cost one REST request (more only for a run past 100
-// jobs) per run holding a stepsFor job whose steps can still change: a job
-// prev observed terminal with settled steps keeps them. Jobs outside
-// stepsFor carry no steps.
-func (f *githubForge) ListPRCIJobs(cwd, project string, number int, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
-	if strings.TrimSpace(project) == "" {
-		return CIPipeline{}, errors.New("project (owner/repo) is required")
-	}
-	if number <= 0 {
-		return CIPipeline{}, fmt.Errorf("PR number must be positive, got %d", number)
-	}
-	result, err := f.core.runBinary(
-		"gh", cwd,
-		"pr", "view",
-		"--repo", project,
-		strconv.Itoa(number),
-		"--json", "statusCheckRollup",
-	)
-	if err != nil {
-		return CIPipeline{}, normalizeGitHubCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return CIPipeline{}, githubCommandFailure("gh pr view failed", result)
-	}
-	var raw struct {
-		StatusCheckRollup []json.RawMessage `json:"statusCheckRollup"`
-	}
-	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
-		return CIPipeline{}, fmt.Errorf("gh pr view returned malformed JSON: %w", err)
-	}
-	summary := parseGitHubCheckSummary(raw.StatusCheckRollup)
-
-	runs, external := splitGitHubChecks(summary.Checks)
+// githubPipeline builds the pipeline from the rollup's checks, read by
+// the same PRTick request as the rest of the tick. Steps cost one REST
+// request (more only for a run past 100 jobs) per run holding a stepsFor
+// job whose steps can still change: a job prev observed terminal with
+// settled steps keeps them. Jobs outside stepsFor carry no steps.
+func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Client, ref PRReference, checks []CheckStatus, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+	runs, external := splitGitHubChecks(checks)
 	if len(runs) > githubCIMaxRuns {
 		runs = runs[:githubCIMaxRuns]
 	}
-	if err := f.fillGitHubSteps(cwd, project, runs, prev, stepsFor); err != nil {
+	if err := f.fillGitHubSteps(ctx, client, ref, runs, prev, stepsFor); err != nil {
 		return CIPipeline{}, err
 	}
 	stages := make([]CIStage, 0, len(runs)+1)
@@ -164,7 +141,7 @@ func checkDisplayName(check CheckStatus) string {
 // already observed terminal, with steps that were settled then, keeps
 // prev's: they cannot change again. Any other stepsFor job has its run's
 // jobs read once.
-func (f *githubForge) fillGitHubSteps(cwd, project string, runs []githubCIRun, prev *CIPipeline, stepsFor []string) error {
+func (f *githubForge) fillGitHubSteps(ctx context.Context, client *forgeapi.Client, ref PRReference, runs []githubCIRun, prev *CIPipeline, stepsFor []string) error {
 	if len(stepsFor) == 0 {
 		return nil
 	}
@@ -189,7 +166,7 @@ func (f *githubForge) fillGitHubSteps(cwd, project string, runs []githubCIRun, p
 		if len(pending) == 0 {
 			continue
 		}
-		steps, err := f.githubRunSteps(cwd, project, run.id, pending)
+		steps, err := githubRunSteps(ctx, client, ref, run.id, pending)
 		if err != nil {
 			return err
 		}
@@ -223,23 +200,17 @@ func settledGitHubSteps(prev *CIPipeline, job CIJob) ([]CIStep, bool) {
 }
 
 // githubRunSteps reads a run's jobs from the REST API (one request per 100
-// jobs, stopping once every wanted job was seen) and returns their steps
-// by job id. A job the answer lacks is absent from the map.
-func (f *githubForge) githubRunSteps(cwd, project, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
+// jobs, following the next page only until every wanted job was seen)
+// and returns their steps by job id. A job the answer lacks is absent
+// from the map.
+func githubRunSteps(ctx context.Context, client *forgeapi.Client, ref PRReference, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
 	steps := make(map[string][]CIStep, len(wanted))
+	request := forgeapi.Request{
+		Path:  githubRepoPath(ref) + "/actions/runs/" + runID + "/jobs",
+		Query: url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
+	}
 	seen := 0
-	for page := 1; ; page++ {
-		endpoint := "repos/" + project + "/actions/runs/" + runID + "/jobs?per_page=" + strconv.Itoa(githubCIJobsPerPage)
-		if page > 1 {
-			endpoint += "&page=" + strconv.Itoa(page)
-		}
-		result, err := f.core.runBinary("gh", cwd, "api", endpoint)
-		if err != nil {
-			return nil, normalizeGitHubCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return nil, githubCommandFailure("gh api run jobs failed", result)
-		}
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw struct {
 			TotalCount int `json:"total_count"`
 			Jobs       []struct {
@@ -252,8 +223,8 @@ func (f *githubForge) githubRunSteps(cwd, project, runID string, wanted map[stri
 				} `json:"steps"`
 			} `json:"jobs"`
 		}
-		if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
-			return nil, fmt.Errorf("gh api run jobs returned malformed JSON: %w", err)
+		if err := json.Unmarshal(resp.Body, &raw); err != nil {
+			return false, fmt.Errorf("GitHub run %s jobs: decode response: %w", runID, err)
 		}
 		for _, job := range raw.Jobs {
 			jobID := strconv.FormatInt(job.ID, 10)
@@ -271,32 +242,58 @@ func (f *githubForge) githubRunSteps(cwd, project, runID string, wanted map[stri
 			steps[jobID] = jobSteps
 		}
 		seen += len(raw.Jobs)
-		if len(steps) == len(wanted) || len(raw.Jobs) < githubCIJobsPerPage || seen >= raw.TotalCount {
-			return steps, nil
-		}
+		return len(steps) < len(wanted) && len(raw.Jobs) == githubCIJobsPerPage && seen < raw.TotalCount, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return steps, nil
 }
 
-func (f *githubForge) GetCIJobLog(cwd, project, jobID string) (string, error) {
-	if strings.TrimSpace(project) == "" {
-		return "", errors.New("project (owner/repo) is required")
+// GetCIJobLog reads a job's log, keeping its last maxCILogBytes: a longer
+// log is read from its tail and starts at the first whole line. A 404 (the
+// job has not completed, or its log is not published yet) is
+// ErrCIJobLogNotFound. The logs endpoint redirects to a blob; the request's
+// If-None-Match goes with the hop, and the ETag is the blob's.
+func (f *githubForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
+	if err := ValidateCIJobID(req.JobID); err != nil {
+		return CIJobLog{}, err
 	}
-	if err := ValidateCIJobID(jobID); err != nil {
-		return "", err
-	}
-	result, err := f.core.runBinaryWithLimit("gh", cwd, maxCILogBytes,
-		"api", "repos/"+project+"/actions/jobs/"+jobID+"/logs")
+	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
-		return "", normalizeGitHubCLIError(err)
+		return CIJobLog{}, err
 	}
-	if result.exitCode != 0 {
-		return "", ciJobLogFailure(githubCommandFailure("gh api job logs failed", result), result)
+	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
+		return CIJobLog{}, err
+	}
+	tail := forgeapi.NewTailBuffer(maxCILogBytes)
+	resp, err := client.Stream(ctx, ciLogRequest(githubRepoPath(ref)+"/actions/jobs/"+req.JobID+"/logs", req.ETag), tail, ciLogReadLimit)
+	if err != nil {
+		if errors.Is(err, forgeapi.ErrNotFound) {
+			return CIJobLog{}, fmt.Errorf("%w: %w", ErrCIJobLogNotFound, err)
+		}
+		return CIJobLog{}, err
+	}
+	if resp.NotModified {
+		return CIJobLog{ETag: req.ETag, NotModified: true}, nil
+	}
+	etag := resp.Header.Get("ETag")
+	text, cut := ciLogText(resp, tail)
+	if cut {
+		return CIJobLog{Text: string(text), ETag: etag}, nil
 	}
 	// The log endpoint prepends a UTF-8 BOM.
-	return strings.TrimPrefix(result.stdout, "\ufeff"), nil
+	return CIJobLog{Text: strings.TrimPrefix(string(text), "\ufeff"), ETag: etag}, nil
 }
 
 // CILogWhileRunning is false: the Actions log endpoint answers 404 until
 // the job completes, and for a while after; the live log is only the
 // website's own stream.
 func (f *githubForge) CILogWhileRunning() bool { return false }
+
+// githubRepoPath is the REST path of ref's repository, each segment
+// escaped.
+func githubRepoPath(ref PRReference) string {
+	owner, repo, _ := strings.Cut(ref.Project(), "/")
+	return "repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+}

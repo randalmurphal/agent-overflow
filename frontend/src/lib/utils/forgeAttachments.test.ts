@@ -12,8 +12,8 @@ import type { PRRef } from './prReference';
 
 const HEX = '0123456789abcdef0123456789abcdef';
 
-const GITHUB_PR: PRRef = { forge: 'github', namespace: 'acme', repo: 'widget', number: 7 };
-const GITLAB_MR: PRRef = { forge: 'gitlab', namespace: 'group/sub', repo: 'widget', number: 3 };
+const GITHUB_PR: PRRef = { forge: 'github', host: 'github.com', namespace: 'acme', repo: 'widget', number: 7 };
+const GITLAB_MR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group/sub', repo: 'widget', number: 3 };
 
 describe('github attachment shapes', () => {
   it.each([
@@ -136,6 +136,12 @@ describe('the nonce-gated href', () => {
     });
   });
 
+  it('carries a self-hosted PR host through the href', () => {
+    const pr: PRRef = { ...GITLAB_MR, host: 'gitlab.example.test:8443' };
+    const href = buildForgeAttachmentHref({ href: `/uploads/${HEX}/x.png`, pr, backend: '', webBase: '' });
+    expect(parseForgeAttachmentHref(href)?.pr).toEqual(pr);
+  });
+
   it('keeps the home backend and an unknown web URL as empty strings', () => {
     const href = buildForgeAttachmentHref({
       href: 'https://github.com/user-attachments/assets/x',
@@ -170,6 +176,10 @@ describe('the nonce-gated href', () => {
     'forge=github&repo=x&n=abc&href=y',
     'forge=github&repo=&n=1&href=y',
     'forge=github&repo=x&n=1',
+    // The PR's host is part of its address; the backend refuses a
+    // reference without one.
+    'forge=github&repo=x&n=1&href=y',
+    'forge=github&host=&repo=x&n=1&href=y',
   ])('refuses our own prefix with an unusable payload: %s', (query) => {
     expect(parseForgeAttachmentHref(`${FORGE_ATTACHMENT_HREF_PREFIX}${query}`)).toBeNull();
   });

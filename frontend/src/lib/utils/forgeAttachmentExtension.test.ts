@@ -11,8 +11,8 @@ vi.mock('../native/platform', async (importOriginal) => ({
 }));
 
 const HEX = '0123456789abcdef0123456789abcdef';
-const GITHUB_PR: PRRef = { forge: 'github', namespace: 'acme', repo: 'widget', number: 7 };
-const GITLAB_MR: PRRef = { forge: 'gitlab', namespace: 'group/sub', repo: 'widget', number: 3 };
+const GITHUB_PR: PRRef = { forge: 'github', host: 'github.com', namespace: 'acme', repo: 'widget', number: 7 };
+const GITLAB_MR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group/sub', repo: 'widget', number: 3 };
 const GITLAB_WEB = 'https://gitlab.example.test/group/sub/widget/-/merge_requests/3';
 
 type Ext = { level: 'inline' | 'block'; tokenizer: unknown; start?: unknown };

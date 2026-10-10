@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -69,14 +70,15 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.PendingOperation == other.PendingOperation
 }
 
-// Status reads repository status using porcelain v2 output.
-func (c *Core) Status(cwd string) (GitStatus, error) {
+// Status reads repository status using porcelain v2 output. ctx bounds
+// the forge's open-PR lookup.
+func (c *Core) Status(ctx context.Context, cwd string) (GitStatus, error) {
 	status, err := c.baseStatus(cwd)
 	if err != nil || !status.IsRepo {
 		return status, err
 	}
 	if status.Branch != "" && status.Forge != "" {
-		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPR(cwd, status.Branch)
+		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPR(ctx, cwd, status.Branch)
 	}
 	return status, nil
 }

@@ -8,7 +8,9 @@ import (
 )
 
 // ParsePRURL parses the URL shape returned by the GitHub and GitLab
-// CreatePR implementations into the coordinates used by forge reads.
+// CreatePR implementations into the coordinates used by forge reads. The
+// reference's Host is the URL's host as a browser's URL.host spells it, so
+// the Go and frontend keys agree (prURLHost).
 func ParsePRURL(raw string) (PRReference, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -23,7 +25,11 @@ func ParsePRURL(raw string) (PRReference, error) {
 		return PRReference{}, err
 	}
 
-	var ref PRReference
+	host, err := prURLHost(parsed)
+	if err != nil {
+		return PRReference{}, err
+	}
+	ref := PRReference{Host: host}
 	switch {
 	case len(segments) == 4 && segments[2] == "pull":
 		ref.Forge = "github"
@@ -49,7 +55,35 @@ func ParsePRURL(raw string) (PRReference, error) {
 	}
 	ref.Namespace = namespace
 	ref.Repo = repo
+	if err := ref.Validate(); err != nil {
+		return PRReference{}, fmt.Errorf("parse PR URL: %w", err)
+	}
 	return ref, nil
+}
+
+// defaultURLPorts is each accepted scheme's default port, which URL.host
+// omits.
+var defaultURLPorts = map[string]int{"https": 443, "http": 80}
+
+// prURLHost spells u's host the way the WHATWG URL parser's URL.host does:
+// lowercase, the port in canonical decimal, and no port at all when it is
+// empty or the scheme's default. `https://github.com:443/o/r/pull/1` and
+// `https://github.com/o/r/pull/1` therefore name one PR on both sides.
+func prURLHost(u *url.URL) (string, error) {
+	host := strings.ToLower(u.Host)
+	port := u.Port()
+	name := strings.TrimSuffix(host, ":"+port)
+	if port == "" {
+		return name, nil
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number > 65535 {
+		return "", fmt.Errorf("parse PR URL: invalid port %q", port)
+	}
+	if number == defaultURLPorts[u.Scheme] {
+		return name, nil
+	}
+	return name + ":" + strconv.Itoa(number), nil
 }
 
 func prURLPathSegments(escapedPath string) ([]string, error) {

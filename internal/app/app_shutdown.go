@@ -369,6 +369,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.closePRUpdatePumps()
 	record("close PR update subscriptions", nil)
 
+	// The forge API transport outlives every caller above: the PR pumps
+	// and gitwatch are joined. Close zeroes its tokens and idle
+	// connections; it has no failure to report. Only the Core Start built
+	// carries one (gitCore).
+	if a.git != nil && a.git.ForgeAPI() != nil {
+		a.git.ForgeAPI().Close()
+		record("close forge API transport", nil)
+	}
+
 	// Step 6: close PTYs. Must happen after provider sessions because
 	// a provider close might emit terminal output events; terminating
 	// the terminal manager first would drop those final frames. Their

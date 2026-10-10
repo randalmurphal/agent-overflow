@@ -1,6 +1,7 @@
 package gitapp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -40,7 +41,7 @@ type BranchPruneResult struct {
 
 // ListBranchPruneCandidates refreshes remote-tracking refs and builds the
 // consent preview from gone-upstream branches only.
-func (s *Service) ListBranchPruneCandidates(ref WorkspaceRef) (BranchPruneCandidates, error) {
+func (s *Service) ListBranchPruneCandidates(ctx context.Context, ref WorkspaceRef) (BranchPruneCandidates, error) {
 	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return BranchPruneCandidates{}, err
@@ -52,12 +53,12 @@ func (s *Service) ListBranchPruneCandidates(ref WorkspaceRef) (BranchPruneCandid
 	if err != nil {
 		return BranchPruneCandidates{}, err
 	}
-	return s.classifyPruneCandidates(project, candidates), nil
+	return s.classifyPruneCandidates(ctx, project, candidates), nil
 }
 
 func pruneMatchKey(name, tip string) string { return name + "\x00" + tip }
 
-func (s *Service) classifyPruneCandidates(project string, candidates []gitops.PruneCandidate) BranchPruneCandidates {
+func (s *Service) classifyPruneCandidates(ctx context.Context, project string, candidates []gitops.PruneCandidate) BranchPruneCandidates {
 	needForge := false
 	for _, candidate := range candidates {
 		if !candidate.MergedIntoDefault {
@@ -69,7 +70,7 @@ func (s *Service) classifyPruneCandidates(project string, candidates []gitops.Pr
 	prByTip := make(map[string]gitops.MergedPRHead)
 	forgeWarning := ""
 	if needForge {
-		heads, err := s.core.ListMergedPRHeads(project, mergedPRLookupWindow)
+		heads, err := s.core.ListMergedPRHeads(ctx, project, mergedPRLookupWindow)
 		if err != nil {
 			forgeWarning = fmt.Sprintf("merged PR lookup unavailable: %v", err)
 		}

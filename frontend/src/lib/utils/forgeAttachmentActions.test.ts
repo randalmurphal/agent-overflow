@@ -48,10 +48,10 @@ vi.mock('./forgeAttachmentCache', () => ({
 }));
 
 const HEX = '0123456789abcdef0123456789abcdef';
-const MR: PRRef = { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 };
+const MR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 };
 const WEB = 'https://gitlab.example.test/group/widget/-/merge_requests/3';
 const FORGE_URL = `https://gitlab.example.test/group/widget/uploads/${HEX}/report.pdf`;
-const WIRE_REF = { Forge: 'gitlab', Namespace: 'group', Repo: 'widget', Number: 3 };
+const WIRE_REF = { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'widget', Number: 3 };
 
 function parsed(webBase = WEB) {
   const href = buildForgeAttachmentHref({

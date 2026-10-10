@@ -13,8 +13,8 @@ import (
 // spec writes; every field a handler reads is documented where it is
 // declared, and the handler that reads it names the field back.
 type Fixture struct {
-	// Viewer is the signed-in forge user (`gh api user`). Defaults to
-	// "ao-viewer".
+	// Viewer is the signed-in forge user (GitHub's GraphQL viewer).
+	// Defaults to "ao-viewer".
 	Viewer string `json:"viewer,omitempty"`
 	Repos  []Repo `json:"repos"`
 	// SSHHosts maps an SSH alias to the hostname returned by ssh -G.
@@ -112,8 +112,8 @@ type Thread struct {
 // Review is one submitted review verdict.
 type Review struct {
 	Author string `json:"author"`
-	// AuthorName is the approver's GitLab display name. GitHub's review
-	// list reports a login only, so a GitHub review refuses it.
+	// AuthorName is the reviewer's display name. Empty answers as a user
+	// with no display name (GitLab) or a bot (GitHub).
 	AuthorName string `json:"authorName,omitempty"`
 	// State is GitHub's vocabulary: APPROVED, CHANGES_REQUESTED,
 	// COMMENTED.
@@ -323,9 +323,6 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		if forge == "gitlab" && review.State != "APPROVED" {
 			return fmt.Errorf("reviews[%d]: GitLab has approvals only; state must be APPROVED", i)
-		}
-		if forge == "github" && review.AuthorName != "" {
-			return fmt.Errorf("reviews[%d]: gh reports a GitHub reviewer's login only; authorName is GitLab-only", i)
 		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)

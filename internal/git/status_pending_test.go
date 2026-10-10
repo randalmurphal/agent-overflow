@@ -15,7 +15,7 @@ import (
 func TestPendingOperationClean(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
-	status, err := NewCore().Status(repo)
+	status, err := NewCore().Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestPendingOperationMerge(t *testing.T) {
 	// state.
 	_ = testutil.RunGitAllowError(repo, "merge", "--no-commit", "--no-ff", "feature")
 
-	status, err := NewCore().Status(repo)
+	status, err := NewCore().Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestPendingOperationRebase(t *testing.T) {
 	// Expect the rebase to stop on the conflict - that's what we want.
 	_ = testutil.RunGitAllowError(repo, "rebase", "main")
 
-	status, err := NewCore().Status(repo)
+	status, err := NewCore().Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPendingOperationBisect(t *testing.T) {
 	// Provide a known-good commit to activate the bisect session.
 	testutil.RunGit(t, repo, "bisect", "good", "HEAD~2")
 
-	status, err := NewCore().Status(repo)
+	status, err := NewCore().Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPendingOperationNonRepoReturnsEmpty(t *testing.T) {
 	// A non-repo directory must yield an empty pendingOperation - never a
 	// false positive, since Status already reports IsRepo=false.
 	dir := t.TempDir()
-	status, err := NewCore().Status(dir)
+	status, err := NewCore().Status(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}

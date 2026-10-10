@@ -27,7 +27,7 @@ vi.mock('../transport/backends', () => ({
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 
-const PR: PRRef = { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 };
+const PR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 };
 const HREF = '/uploads/0123456789abcdef0123456789abcdef/shot.png';
 
 function stageBody(body: string, init: ResponseInit = {}): void {

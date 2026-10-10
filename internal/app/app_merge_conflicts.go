@@ -26,7 +26,7 @@ func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRe
 	if a.shuttingDown.Load() {
 		return PRMergeConflictsResult{}, ErrShuttingDown
 	}
-	if err := validatePRReference(pr); err != nil {
+	if err := pr.Validate(); err != nil {
 		return PRMergeConflictsResult{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)

@@ -1239,7 +1239,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		t.Fatalf("stored Branch = %q, want ao-feature-reconnect-spinner", stored.Branch)
 	}
 
-	status, err := app.GetGitStatus(workspaceRefForThread(thread))
+	status, err := app.GetGitStatus(t.Context(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GetGitStatus() error = %v", err)
 	}

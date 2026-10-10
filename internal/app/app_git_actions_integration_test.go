@@ -106,7 +106,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	}
 
 	// Step 3: create PR via mock gh.
-	prResult, err := app.GitCreatePR(ref, "Ship feature", "details", false)
+	prResult, err := app.GitCreatePR(t.Context(), ref, "Ship feature", "details", false)
 	if err != nil {
 		t.Fatalf("GitCreatePR() error = %v", err)
 	}
@@ -223,7 +223,7 @@ func TestGitActions_CreatePRFailsWhenNotPushed(t *testing.T) {
 
 	installMockGh(t, app, "", "must push first", 1)
 
-	_, err := app.GitCreatePR(ref, "PR title", "body", false)
+	_, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false)
 	if err == nil {
 		t.Fatal("GitCreatePR() with failing gh error = nil, want failure")
 	}
@@ -337,7 +337,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	app.forgeCLIs.fake = ghPath
 
 	// draft=false: gh is invoked without --draft.
-	result, err := app.GitCreatePR(ref, "PR title", "body", false)
+	result, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false)
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=false) error = %v", err)
 	}
@@ -346,7 +346,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	}
 
 	// draft=true: gh is invoked with --draft.
-	result, err = app.GitCreatePR(ref, "PR title", "body", true)
+	result, err = app.GitCreatePR(t.Context(), ref, "PR title", "body", true)
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=true) error = %v", err)
 	}

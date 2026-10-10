@@ -26,7 +26,7 @@ func TestWorkflowMergeItemPersistsReceiptAndEmitsRefresh(t *testing.T) {
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "merge-item")
 
-	receipt, err := app.WorkflowMergeItem(item.ID)
+	receipt, err := app.WorkflowMergeItem(t.Context(), item.ID)
 	if err != nil {
 		t.Fatalf("WorkflowMergeItem: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestWorkflowMergeRefusalParksDispositionWithoutReceipt(t *testing.T) {
 	testutil.RunGit(t, repo, "add", "README.txt")
 	testutil.RunGit(t, repo, "commit", "-m", "base conflict")
 
-	if _, err := app.WorkflowMergeItem(item.ID); err == nil {
+	if _, err := app.WorkflowMergeItem(t.Context(), item.ID); err == nil {
 		t.Fatal("conflicted merge unexpectedly succeeded")
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -117,7 +117,7 @@ func TestWorkflowMergeResolvesDispositionPark(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	receipt, err := app.WorkflowMergeItem(item.ID)
+	receipt, err := app.WorkflowMergeItem(t.Context(), item.ID)
 	if err != nil {
 		t.Fatalf("WorkflowMergeItem parked disposition: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestWorkflowMergeRefusesDirtyItemWorktree(t *testing.T) {
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-item")
 	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "must not be lost\n")
-	if _, err := app.WorkflowMergeItem(item.ID); err == nil {
+	if _, err := app.WorkflowMergeItem(t.Context(), item.ID); err == nil {
 		t.Fatal("dirty item worktree unexpectedly merged")
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -238,7 +238,7 @@ func TestWorkflowDispositionCleanupFailureReturnsMarkedReceiptAndEmits(t *testin
 		t.Fatal(err)
 	}
 
-	receipt, err := app.WorkflowMergeItem(item.ID)
+	receipt, err := app.WorkflowMergeItem(t.Context(), item.ID)
 	if err != nil {
 		t.Fatalf("landed disposition returned cleanup error: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestWorkflowDiscardUsesGuardedRemovalAndKeepsRecord(t *testing.T) {
 	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "discard-item")
-	receipt, err := app.WorkflowDiscardItem(item.ID)
+	receipt, err := app.WorkflowDiscardItem(t.Context(), item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestWorkflowDiscardWithoutWorktreeRecordsReceiptAndResolvesPark(t *testing.
 	if err := app.store.CreateWorkItem(item); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := app.WorkflowDiscardItem(item.ID)
+	receipt, err := app.WorkflowDiscardItem(t.Context(), item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestWorkflowDiscardRemovesDirtyWorktree(t *testing.T) {
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-discard")
 	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "authorized loss\n")
-	if _, err := app.WorkflowDiscardItem(item.ID); err != nil {
+	if _, err := app.WorkflowDiscardItem(t.Context(), item.ID); err != nil {
 		t.Fatalf("dirty discard: %v", err)
 	}
 	if _, err := os.Stat(item.WorktreePath); !os.IsNotExist(err) {
@@ -357,7 +357,7 @@ func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T
 			if err := app.store.UpdateWorkItemState(item.ID, string(state), reason, time.Now().UnixMilli()); err != nil {
 				t.Fatal(err)
 			}
-			receipt, err := app.WorkflowDiscardItem(item.ID)
+			receipt, err := app.WorkflowDiscardItem(t.Context(), item.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -407,7 +407,7 @@ func TestWorkflowDiscardSettlesParkedTreeMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	receipt, err := app.WorkflowDiscardItem(root.ID)
+	receipt, err := app.WorkflowDiscardItem(t.Context(), root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 	mockexec.Write(t, ghPath, "#!/bin/sh\nprintf '%s\\n' 'https://github.com/example/agent-overflow/pull/42'\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	receipt, err := app.WorkflowCreateItemPR(item.ID)
+	receipt, err := app.WorkflowCreateItemPR(t.Context(), item.ID)
 	if err != nil {
 		t.Fatalf("WorkflowCreateItemPR: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestWorkflowDiscardRefusesACalledRun(t *testing.T) {
 		!strings.Contains(err.Error(), "discard the run that called it") {
 		t.Fatalf("preview of a called run = %v, want a refusal", err)
 	}
-	if _, err := f.app.WorkflowDiscardItem(child.ID); err == nil {
+	if _, err := f.app.WorkflowDiscardItem(t.Context(), child.ID); err == nil {
 		t.Fatal("discarding a called run succeeded; it would delete its caller's branch")
 	}
 	if !f.branchExists(t, f.root.Branch) {
@@ -749,7 +749,7 @@ func TestWorkflowDiscardRemovesEveryCheckoutAndBranchInTheTree(t *testing.T) {
 	unit := f.addUnitWorktree(t, f.root, "unit-a")
 	writeDispositionFile(t, f.root.WorktreePath, "dirty.txt", "unsaved\n")
 
-	receipt, err := f.app.WorkflowDiscardItem(f.root.ID)
+	receipt, err := f.app.WorkflowDiscardItem(t.Context(), f.root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,7 +820,7 @@ func TestWorkflowDiscardEmitsTheRowsActualStateAndReason(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.app.WorkflowDiscardItem(f.root.ID); err != nil {
+	if _, err := f.app.WorkflowDiscardItem(t.Context(), f.root.ID); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := f.app.store.GetWorkItem(f.root.ID)
@@ -864,7 +864,7 @@ func TestWorkflowDiscardNeverTouchesTheProjectCheckout(t *testing.T) {
 	if len(preview.Worktrees) != 0 {
 		t.Fatalf("preview lists the project checkout as a loss: %+v", preview.Worktrees)
 	}
-	if _, err := f.app.WorkflowDiscardItem(item.ID); err != nil {
+	if _, err := f.app.WorkflowDiscardItem(t.Context(), item.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(f.project.Path, ".git")); err != nil {
@@ -883,7 +883,7 @@ func TestWorkflowDiscardRefusesWhenALiveMemberCannotBeStopped(t *testing.T) {
 	f := newDiscardFixture(t, "inflight-item")
 	child := f.addChild(t, f.root, "inflight-child", engine.StateRunning)
 
-	if _, err := f.app.WorkflowDiscardItem(f.root.ID); err == nil {
+	if _, err := f.app.WorkflowDiscardItem(t.Context(), f.root.ID); err == nil {
 		t.Fatal("discard succeeded with a live member in the tree")
 	} else if !strings.Contains(err.Error(), child.ID) {
 		t.Fatalf("error = %v, want it to name the live run %s", err, child.ID)

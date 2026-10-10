@@ -49,9 +49,10 @@ type Config struct {
 	ChecksumAsset  string
 	BaseURL        string
 	HTTPClient     *http.Client
-	// GlabRunner runs `glab api` for a build linked with a GitLab release
-	// project (gitlabProject). Unused by the GitHub feed.
-	GlabRunner GlabRunner
+	// GitLab returns the client of a GitLab host's REST API, for a build
+	// linked with a GitLab release project (gitlabProject). Unused by the
+	// GitHub feed.
+	GitLab func(host string) GitLabClient
 }
 
 // Configure wires a Wails updater handle to the release provider and

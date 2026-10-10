@@ -90,7 +90,7 @@ func TestCredentialPromptsBlockedUnlessUserInitiated(t *testing.T) {
 	core := NewCore()
 	cwd := t.TempDir()
 
-	if _, err := core.Status(cwd); err != nil {
+	if _, err := core.Status(t.Context(), cwd); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if _, err := core.MaybeFetchRemotes(cwd); err != nil {

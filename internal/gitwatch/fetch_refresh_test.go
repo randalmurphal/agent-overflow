@@ -1,6 +1,7 @@
 package gitwatch
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -26,12 +27,12 @@ func TestBackgroundFetchRefUpdateReachesSubscribers(t *testing.T) {
 	core := gitops.NewCore()
 	mgr := NewManager(ManagerConfig{
 		StatusFn:     core.Status,
-		FastStatusFn: core.StatusFast,
+		FastStatusFn: func(_ context.Context, cwd string) (gitops.GitStatus, error) { return core.StatusFast(cwd) },
 		WatchRootsFn: core.WatchRoots,
 	})
 	t.Cleanup(mgr.Close)
 
-	sub, err := mgr.Subscribe(repo)
+	sub, err := mgr.Subscribe(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

@@ -1,11 +1,15 @@
 package git
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // Forge-agnostic CI shapes for the review pane's pipeline surface.
@@ -74,21 +78,54 @@ type CIStep struct {
 // after the job completed.
 var ErrCIJobLogNotFound = errors.New("ci job log not found")
 
-// ciJobLogFailure is the error of a failed job log command: failure (the
-// forge's command failure) wrapped in ErrCIJobLogNotFound when the forge
-// answered 404. An authentication failure stays as it is.
-func ciJobLogFailure(failure error, result commandResult) error {
-	if _, setup := errors.AsType[*ForgeSetupError](failure); setup || !forgeCommandNotFound(result) {
-		return failure
-	}
-	return fmt.Errorf("%w: %s", ErrCIJobLogNotFound, failure.Error())
+// CIJobLogRequest names one job's log for GetCIJobLog. ETag is the
+// validator of the log text the caller already holds, sent as
+// If-None-Match; empty asks for the log unconditionally.
+type CIJobLogRequest struct {
+	JobID string
+	ETag  string
 }
 
-// forgeCommandNotFound reports whether a failed gh or glab api call was
-// answered HTTP 404. Both CLIs end their error line with the status:
-// "gh: Not Found (HTTP 404)", "glab: 404 Not found (HTTP 404)".
-func forgeCommandNotFound(result commandResult) bool {
-	return result.exitCode != 0 && strings.Contains(result.stderr, "(HTTP 404)")
+// CIJobLog is a GetCIJobLog answer. Text is the log's last maxCILogBytes
+// (a longer log starts at its first whole line); ETag is the validator the
+// forge sent with it, empty when none. NotModified means the forge
+// answered 304 to the request's ETag: Text is empty and the caller's text
+// stands.
+type CIJobLog struct {
+	Text        string
+	ETag        string
+	NotModified bool
+}
+
+// ciLogRequest is the Stream request for a job log at path, conditional
+// on etag when the caller holds one.
+func ciLogRequest(path, etag string) forgeapi.Request {
+	header := http.Header{}
+	if etag != "" {
+		header.Set("If-None-Match", etag)
+	}
+	return forgeapi.Request{Path: path, Header: header}
+}
+
+// ciLogReadLimit bounds the bytes a job log read streams. A log over
+// maxCILogBytes is re-requested as a Range from its tail; a server that
+// ignores the Range (GitHub's log blob for a suffix range, a running
+// GitLab trace for any range) streams the whole log through the tail
+// buffer, up to this many bytes.
+const ciLogReadLimit = 4 * maxCILogBytes
+
+// ciLogText is a job log Stream read into tail. A log read from its tail
+// (a 206, or a body the buffer dropped bytes of) starts mid-line, so it
+// begins after the first newline; cut reports that it was.
+func ciLogText(resp *forgeapi.Response, tail *forgeapi.TailBuffer) (text []byte, cut bool) {
+	text = tail.Bytes()
+	if resp.Status != http.StatusPartialContent && !tail.Truncated() {
+		return text, false
+	}
+	if newline := bytes.IndexByte(text, '\n'); newline >= 0 {
+		text = text[newline+1:]
+	}
+	return text, true
 }
 
 var ciJobIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)

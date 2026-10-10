@@ -23,7 +23,7 @@ func installForgeTraps(t *testing.T) string {
 	bin := t.TempDir()
 	markers := t.TempDir()
 	for _, name := range []string{"gh", "glab"} {
-		script := "#!/bin/sh\ntouch '" + filepath.Join(markers, name) + "'\necho '{\"title\":\"real cli\"}'\n"
+		script := "#!/bin/sh\ntouch '" + filepath.Join(markers, name) + "'\necho 'https://forge.example/real-cli/1'\n"
 		mockexec.Write(t, filepath.Join(bin, name), script)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -53,9 +53,17 @@ func writeFakeForge(t *testing.T) (path, record string) {
 	record = filepath.Join(dir, "record")
 	script := "#!/bin/sh\n" +
 		"printf '%s %s\\n' \"$AO_FORGE_CLI\" \"$AO_HARNESS_CONTROL\" >> '" + record + "'\n" +
-		"echo '{\"title\":\"from fake\",\"iid\":7}'\n"
+		"echo 'https://forge.example/from-fake/7'\n"
 	mockexec.Write(t, path, script)
 	return path, record
+}
+
+// runForgeCLI makes the one call that runs the forge's CLI, `gh pr create`
+// or `glab mr create`; every other forge call goes through the forge API
+// transport.
+func runForgeCLI(t *testing.T, core *gitops.Core, forge string) (string, error) {
+	t.Helper()
+	return core.ForgeByID(forge).CreatePR(t.Context(), t.TempDir(), "title", "", "", false)
 }
 
 // The seam an isolated boot relies on: ConfigureIsolation plus the control
@@ -71,12 +79,12 @@ func TestIsolatedAppRunsTheFakeForgeCLI(t *testing.T) {
 
 	core := app.gitCore()
 	for _, forge := range []string{"github", "gitlab"} {
-		log, err := core.ForgeByID(forge).GetCIJobLog("", "acme/widgets", "7")
+		out, err := runForgeCLI(t, core, forge)
 		if err != nil {
-			t.Fatalf("%s GetCIJobLog: %v", forge, err)
+			t.Fatalf("%s forge CLI call: %v", forge, err)
 		}
-		if !strings.Contains(log, "from fake") {
-			t.Fatalf("%s GetCIJobLog = %q, want the fake's answer", forge, log)
+		if !strings.Contains(out, "from-fake") {
+			t.Fatalf("%s forge CLI call = %q, want the fake's answer", forge, out)
 		}
 	}
 	got, err := os.ReadFile(record)
@@ -98,9 +106,9 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 	ConfigureIsolation(app, IsolationConfig{})
 
 	for _, forge := range []string{"github", "gitlab"} {
-		_, err := app.gitCore().ForgeByID(forge).GetCIJobLog("", "acme/widgets", "7")
+		_, err := runForgeCLI(t, app.gitCore(), forge)
 		if _, ok := errors.AsType[*gitops.ForgeCLIUnavailableError](err); !ok {
-			t.Fatalf("%s GetCIJobLog error = %v, want ForgeCLIUnavailableError", forge, err)
+			t.Fatalf("%s forge CLI call error = %v, want ForgeCLIUnavailableError", forge, err)
 		}
 	}
 	if ran := trapsThatRan(t, markers); len(ran) != 0 {
@@ -109,15 +117,15 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 
 	// The control: the same PATH reaches the trap from an ordinary App,
 	// so the assertions above are not passing because it was unreachable.
-	if _, err := (&App{}).gitCore().ForgeByID("github").GetCIJobLog("", "acme/widgets", "7"); err != nil {
-		t.Fatalf("desktop GetCIJobLog through the trap: %v", err)
+	if _, err := runForgeCLI(t, (&App{}).gitCore(), "gitlab"); err != nil {
+		t.Fatalf("desktop glab mr create through the trap: %v", err)
 	}
-	if ran := trapsThatRan(t, markers); strings.Join(ran, ",") != "gh" {
-		t.Fatalf("desktop App ran %v, want the gh on PATH", ran)
+	if ran := trapsThatRan(t, markers); strings.Join(ran, ",") != "glab" {
+		t.Fatalf("desktop App ran %v, want the glab on PATH", ran)
 	}
 }
 
-// Every git.Core the app package builds must come from newGitCore, or an
+// Every git.Core the app package builds must come from buildGitCore, or an
 // isolated boot would hold a Core that resolves gh and glab on PATH.
 func TestAppBuildsGitCoresOnlyThroughNewGitCore(t *testing.T) {
 	t.Parallel()
@@ -136,13 +144,13 @@ func TestAppBuildsGitCoresOnlyThroughNewGitCore(t *testing.T) {
 		}
 		count := len(direct.FindAllIndex(source, -1))
 		if filepath.Base(path) == "app_git.go" {
-			if count != 2 {
-				t.Errorf("app_git.go calls gitops.NewCore %d times; only newGitCore's two branches may", count)
+			if count != 1 {
+				t.Errorf("app_git.go calls gitops.NewCore %d times; only buildGitCore may", count)
 			}
 			continue
 		}
 		if count != 0 {
-			t.Errorf("%s builds a git.Core directly; use a.newGitCore()", path)
+			t.Errorf("%s builds a git.Core directly; use a.buildGitCore()", path)
 		}
 	}
 }

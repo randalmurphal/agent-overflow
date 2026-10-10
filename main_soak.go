@@ -160,6 +160,12 @@ func runSoak(flags cliFlags) {
 	}
 	appservice.SetProviderExtraEnv(appService.App, providerEnv)
 	defer controlServer.Shutdown()
+	forgeAPIServer, forgeAPI, err := harnessrpc.StartForgeAPI(h)
+	if err != nil {
+		fatalf("%s: start fake forge API: %v", label, err)
+	}
+	appservice.SetForgeAPI(appService.App, appservice.ForgeAPI{BaseURL: forgeAPI.BaseURL, Token: forgeAPI.Token})
+	defer forgeAPIServer.Shutdown()
 
 	// The Harness receiver rides along (LocalOnly, same as --harness) so
 	// this instance is inspectable with the tools an agent already
@@ -247,6 +253,7 @@ func runSoak(flags cliFlags) {
 		if err := runWindowedShell(appService, srv, isolatedWindowTitle(mode, instance.id), nativeWindow); err != nil {
 			instance.remove()
 			controlServer.Shutdown()
+			forgeAPIServer.Shutdown()
 			fatalf("%s: %v", label, err)
 		}
 		return

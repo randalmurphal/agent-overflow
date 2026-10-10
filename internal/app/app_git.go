@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/store"
@@ -54,8 +56,8 @@ func (a *App) workspaceState(project, workspace string) GitWorkspaceState {
 // never reported is how a silently dead watchpoint gets reinstalled.
 //
 //ao:scope git:operate
-func (a *App) GetGitStatus(ws WorkspaceRef) (gitops.GitStatus, error) {
-	return a.gitApplication().Status(ws)
+func (a *App) GetGitStatus(ctx context.Context, ws WorkspaceRef) (gitops.GitStatus, error) {
+	return a.gitApplication().Status(ctx, ws)
 }
 
 // GitListBranches lists repository branches from the workspace's project root.
@@ -331,8 +333,8 @@ func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, base
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
 //
 //ao:scope git:operate
-func (a *App) GitCreatePR(ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
-	return a.gitApplication().CreatePR(ws, title, body, draft)
+func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
+	return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
 }
 
 // restoreStashOnError best-effort applies a previously-pushed stash back
@@ -368,36 +370,69 @@ func (a *App) resolveGitPaths(thread store.Thread) (project string, workspace st
 	return a.gitApplication().ResolveThreadPaths(thread)
 }
 
-// gitCore returns the shared Core instance, lazily creating one if ServiceStartup
-// has not run (e.g. in tests).
+// gitCore returns the Core Start built. Code that runs while a.git is
+// unset (the updater's glab runner before Start, Shutdown after a boot
+// that failed, fixtures that never start) gets a new Core with no forge
+// API transport: the transport is Start's, and building one per call
+// would leave a construction failure and a transport with no owner to
+// report or close them. Every forge request through that Core fails with
+// gitops.ErrNoForgeAPI.
 func (a *App) gitCore() *gitops.Core {
 	if a.git != nil {
 		return a.git
 	}
-	return a.newGitCore()
+	return a.buildGitCore(nil)
 }
 
-// isolatedForgeCLIs is the forge CLI half of an isolated boot's pins; see
-// IsolationConfig.ForgeCLI.
+// isolatedForgeCLIs is the forge half of an isolated boot's pins: the fake
+// CLI (IsolationConfig.ForgeCLI) and the fake forge API (SetForgeAPI).
 type isolatedForgeCLIs struct {
 	isolated bool
 	fake     string
+	api      ForgeAPI
 }
 
-// newGitCore is the one constructor of this App's git.Core, so no Core an
-// isolated boot builds can resolve gh or glab on PATH. The fake receives
-// the mock-control environment (providerExtraEnv), which is how it reaches
-// the harness that answers it.
-func (a *App) newGitCore() *gitops.Core {
-	if !a.forgeCLIs.isolated {
-		return gitops.NewCore()
+// newGitCore builds the Core Start keeps, with the process's forge API
+// transport. A desktop transport reads each host's token from gh or glab;
+// an isolated one is pointed at the fake's listener with its fixed token.
+// A transport that cannot be built fails the construction, and Start
+// fails the boot with it. The Core's owner closes the transport; see
+// Shutdown.
+func (a *App) newGitCore() (*gitops.Core, error) {
+	opts := forgeapi.Options{
+		Version:     a.version,
+		TokenSource: forgeapi.CLITokenSource{Run: forgeapi.ExecProcess},
 	}
-	env := make([]string, 0, len(a.providerExtraEnv))
-	for key, value := range a.providerExtraEnv {
-		env = append(env, key+"="+value)
+	if a.forgeCLIs.isolated {
+		opts.TokenSource = nil
+		opts.Isolated = &forgeapi.Isolated{BaseURL: a.forgeCLIs.api.BaseURL, Token: a.forgeCLIs.api.Token}
 	}
-	slices.Sort(env)
-	return gitops.NewCore(gitops.WithIsolatedForgeCLIs(a.forgeCLIs.fake, env))
+	forgeAPI, err := forgeapi.New(opts)
+	if err != nil {
+		return nil, fmt.Errorf("forge API transport: %w", err)
+	}
+	return a.buildGitCore(forgeAPI), nil
+}
+
+// buildGitCore is the one constructor of this App's git.Core, so no Core
+// an isolated boot builds can resolve gh or glab on PATH. An isolated
+// Core's fake CLI receives the mock-control environment
+// (providerExtraEnv), which is how it reaches the harness that answers
+// it. forgeAPI is nil for gitCore's Core.
+func (a *App) buildGitCore(forgeAPI *forgeapi.Service) *gitops.Core {
+	var opts []gitops.CoreOption
+	if forgeAPI != nil {
+		opts = append(opts, gitops.WithForgeAPI(forgeAPI))
+	}
+	if a.forgeCLIs.isolated {
+		env := make([]string, 0, len(a.providerExtraEnv))
+		for key, value := range a.providerExtraEnv {
+			env = append(env, key+"="+value)
+		}
+		slices.Sort(env)
+		opts = append(opts, gitops.WithIsolatedForgeCLIs(a.forgeCLIs.fake, env))
+	}
+	return gitops.NewCore(opts...)
 }
 
 // lockWorkspaceThreads takes the per-thread action lock of EVERY thread

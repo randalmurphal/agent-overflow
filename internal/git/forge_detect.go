@@ -1,8 +1,12 @@
 package git
 
 import (
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/repoidentity"
 )
 
 // forgeDetectionTTL bounds how long an origin-URL classification stays
@@ -269,4 +273,52 @@ func extractRemoteHost(remoteURL string) string {
 	}
 
 	return strings.ToLower(authority)
+}
+
+// OriginUnknownError is a repository-scoped forge operation on a checkout
+// whose origin remote is missing or does not name a repository on a
+// supported forge, so the forge, host and project it would address are
+// unknown. The operation fails instead of guessing them. The remote URL
+// is not part of the message: it can carry credentials.
+type OriginUnknownError struct {
+	// Cwd is the checkout whose origin was read.
+	Cwd string
+	// Reason says what the origin lacked.
+	Reason string
+}
+
+func (e *OriginUnknownError) Error() string {
+	return fmt.Sprintf("origin remote of %s: %s", e.Cwd, e.Reason)
+}
+
+// originCoordinates is the forge, host and project path a
+// repository-scoped forge operation on cwd addresses, from the origin
+// identity forge detection cached for cwd (read again when none is
+// cached). The host is the bare hostname, as the remote names it, and
+// the project path is unescaped.
+func (c *Core) originCoordinates(cwd string) (forge, host, project string, err error) {
+	origin := c.cachedOrigin(cwd)
+	if !origin.known {
+		origin = c.originRemote(cwd)
+	}
+	if !origin.known {
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "no origin remote could be read"}
+	}
+	locator := repoidentity.Locator(origin.url)
+	if locator == "" {
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "the origin URL does not name a network repository"}
+	}
+	host, escaped, _ := strings.Cut(locator, "/")
+	forge = classifyOriginURL("https://"+locator, c.gitLabHostsSnapshot())
+	if forge == "" {
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "the origin host " + host + " is not a supported forge"}
+	}
+	project, err = url.PathUnescape(escaped)
+	if err == nil {
+		_, _, err = SplitProjectForForge(forge, project)
+	}
+	if err != nil {
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "the origin URL does not name a " + forge + " repository"}
+	}
+	return forge, host, project, nil
 }

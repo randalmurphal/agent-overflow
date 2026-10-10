@@ -2,9 +2,10 @@ import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import {
   applyPRCIUpdatedEvent,
+  applyPRError,
   applyPRThreads,
   applyPRUpdatedEvent,
   attachPR,
@@ -12,6 +13,7 @@ import {
   handlePRVisibilityChange,
   overriddenPRThreads,
   peekPRError,
+  peekPRFailure,
   peekPRSnapshot,
   prReviewKeys,
   setPRThreadResolveOverride,
@@ -34,7 +36,7 @@ import type { WorkspaceRef } from '../types/git';
 const CONFLICT_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: '/workspace' };
 import { applyTransportGap } from './eventsTransportGap';
 
-const REF: PRRef = { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 };
+const REF: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
 const KEY = prKey(REF);
 
 async function flush(n = 8): Promise<void> {
@@ -276,7 +278,7 @@ describe('prReviewStore — superseded source runs', () => {
     // The two formatters agree for every real PR, but a namespace-less
     // project is already a case where they do not: Go joins through
     // PRReference.Project(), TypeScript through `${namespace}/${repo}`.
-    const bare: PRRef = { forge: 'github', namespace: '', repo: 'repo', number: 7 };
+    const bare: PRRef = { forge: 'github', host: 'github.com', namespace: '', repo: 'repo', number: 7 };
     const localKey = prKey(bare);
     const wireKey = 'github:repo:7';
     expect(localKey).not.toBe(wireKey);
@@ -395,7 +397,7 @@ describe('prReviewStore — the join/push handoff', () => {
   // A second key on the SAME wireKey has the same window — the frame reaches
   // key 1 only, because key 2's alias is not installed yet.
   it('replays into a second key joining a wireKey the first one already routes', async () => {
-    const bare: PRRef = { forge: 'github', namespace: '', repo: 'repo', number: 7 };
+    const bare: PRRef = { forge: 'github', host: 'github.com', namespace: '', repo: 'repo', number: 7 };
     const otherLocalKey = `${prKey(bare)}:mirror`;
     const wireKey = 'github:repo:7';
 
@@ -744,6 +746,106 @@ describe('prReviewStore — applying pushes', () => {
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
     expect(a.error).toBeNull();
     a.release();
+  });
+
+  // The kind picks the pane's surface: a rate limit is a pause with a
+  // resume time, a setup failure a login to fix, the rest a retry.
+  it('reads each failure kind beside the error, and none once it clears', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const resumeAt = '2026-10-10T12:30:00Z';
+    const frames = [
+      { errorKind: 'rate_limited', reserve: false, resumeAt, want: { kind: 'rate_limited', reserve: false, resumeAt } },
+      { errorKind: 'rate_limited', reserve: true, resumeAt, want: { kind: 'rate_limited', reserve: true, resumeAt } },
+      { errorKind: 'setup', want: { kind: 'setup', reserve: false, resumeAt: '' } },
+      { errorKind: 'transient', want: { kind: 'transient', reserve: false, resumeAt: '' } },
+      { errorKind: 'forge', want: { kind: 'forge', reserve: false, resumeAt: '' } },
+    ];
+    let seq = 1;
+    for (const { want, ...kind } of frames) {
+      seq += 1;
+      applyPRUpdatedEvent({ prKey: KEY, error: `failed to refresh pull request (id: ${seq})`, ...kind, seq });
+      expect(a.error).toBe(`failed to refresh pull request (id: ${seq})`);
+      expect(peekPRFailure(KEY)).toEqual(want);
+    }
+    // A frame naming no kind (an older backend) is an error with none.
+    applyPRUpdatedEvent({ prKey: KEY, error: 'failed to refresh pull request (id: old)', seq: 20 });
+    expect(peekPRFailure(KEY)).toBeNull();
+
+    applyPRUpdatedEvent({ prKey: KEY, error: 'limited', errorKind: 'rate_limited', resumeAt, seq: 21 });
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 22 });
+    expect(a.error).toBeNull();
+    expect(peekPRFailure(KEY)).toBeNull();
+    a.release();
+  });
+
+  it('re-renders a rate limit whose resume time moved', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const seen: (string | null)[] = [];
+    const stop = $effect.root(() => {
+      $effect(() => {
+        seen.push(peekPRFailure(KEY)?.resumeAt ?? null);
+      });
+    });
+    flushSync();
+    applyPRUpdatedEvent({ prKey: KEY, error: 'failed (id: 1)', errorKind: 'rate_limited', resumeAt: '2026-10-10T12:30:00Z', seq: 2 });
+    flushSync();
+    applyPRUpdatedEvent({ prKey: KEY, error: 'failed (id: 2)', errorKind: 'rate_limited', resumeAt: '2026-10-10T12:45:00Z', seq: 3 });
+    flushSync();
+    stop();
+    expect(seen).toEqual([null, '2026-10-10T12:30:00Z', '2026-10-10T12:45:00Z']);
+    a.release();
+  });
+
+  it('gives an error the pump did not report no kind', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    applyPRUpdatedEvent({ prKey: KEY, error: 'failed (id: 1)', errorKind: 'setup', seq: 2 });
+    expect(peekPRFailure(KEY)?.kind).toBe('setup');
+    applyPRError(KEY, new Error('re-list failed'));
+    expect(peekPRError(KEY)).toBe('re-list failed');
+    expect(peekPRFailure(KEY)).toBeNull();
+    a.release();
+  });
+
+  it('reads the join result\'s failure kinds for the snapshot and CI', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: KEY,
+      detail: detailStub(),
+      threads: [],
+      headSHA: 'sha-a',
+      error: 'failed to refresh pull request (id: abc)',
+      errorKind: 'rate_limited',
+      reserve: true,
+      resumeAt: '2026-10-10T12:30:00Z',
+      ciError: 'failed to refresh pull request (id: def)',
+      ciErrorKind: 'rate_limited',
+      ciReserve: false,
+      ciResumeAt: '2026-10-10T12:31:00Z',
+      seq: 4,
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    const a = attachPR(KEY, { ref: REF });
+    await a.ready();
+    expect(peekPRFailure(KEY)).toEqual({ kind: 'rate_limited', reserve: true, resumeAt: '2026-10-10T12:30:00Z' });
+    expect(peekPRCI(KEY).failure).toEqual({ kind: 'rate_limited', reserve: false, resumeAt: '2026-10-10T12:31:00Z' });
+
+    applyPRCIUpdatedEvent({ prKey: KEY, error: 'failed (id: 2)', errorKind: 'transient', seq: 5 });
+    expect(peekPRCI(KEY).error).toBe('failed (id: 2)');
+    expect(peekPRCI(KEY).failure).toEqual({ kind: 'transient', reserve: false, resumeAt: '' });
+    applyPRCIUpdatedEvent({ prKey: KEY, pipeline: { status: 'success', stages: [] }, seq: 6 });
+    expect(peekPRCI(KEY).failure).toBeNull();
+    a.release();
+    await flush();
   });
 
   // A thread-only re-list (submit / reply) observes the FORGE's review
@@ -1359,7 +1461,7 @@ describe('prReviewStore — visibility and transport transitions', () => {
 // never followed by a corrective one. Recovery is blanket because the gap
 // carries no PR key — and it must not blank the pane on the way.
 describe('prReviewStore — transport gap', () => {
-  const OTHER_REF: PRRef = { forge: 'github', namespace: 'owner', repo: 'repo', number: 9 };
+  const OTHER_REF: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 9 };
   const OTHER_KEY = prKey(OTHER_REF);
   const keyForNumber = (n: number): string =>
     prKey(n === OTHER_REF.number ? OTHER_REF : REF);

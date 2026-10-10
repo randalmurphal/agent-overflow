@@ -7,8 +7,9 @@ filesystem changes, explicit refresh requests, and liveness polling.
 `NewManager` requires `StatusFn`. `FastStatusFn` is the network-free initial
 and liveness path, and marks a cold PR cache with `OpenPRLookupPending` so
 readers can tell its empty PR fields from an answer; `StatusFn` performs full
-refreshes. Multiple subscribers to
-one workspace share cached status and watch roots.
+refreshes. Both run under the watcher's context, or the `Subscribe` caller's
+for the initial read, so stopping a watcher cancels its forge lookup.
+Multiple subscribers to one workspace share cached status and watch roots.
 
 Watch roots include the workspace, pruned content subtrees, linked-worktree Git
 metadata, and configured ignore files. Canonicalize them, reject system roots,

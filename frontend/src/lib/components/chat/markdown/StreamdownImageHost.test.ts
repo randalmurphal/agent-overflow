@@ -200,7 +200,7 @@ describe('<StreamdownImageHost>', () => {
     // does not display agent-overflow: images" branch.
     const href = buildForgeAttachmentHref({
       href: '/uploads/0123456789abcdef0123456789abcdef/shot.png',
-      pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+      pr: { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 },
       backend: 'gpu',
       webBase: '',
     });

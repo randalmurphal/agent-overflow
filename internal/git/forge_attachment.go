@@ -2,12 +2,14 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
 )
 
@@ -15,136 +17,98 @@ import (
 //
 // A PR body or a review comment references media the forge holds behind
 // the same login the browser uses: GitLab's /uploads/<secret>/<name>,
-// GitHub's user-attachments assets. The user's own gh / glab session is
-// the credential, so the fetch is one more `api` subcommand rather than
-// an HTTP client of ours with a token we would have to find.
+// GitHub's user-attachments assets. The user's own gh / glab login is
+// the credential, and each fetch is a forge API transport request
+// (Request.Attachment): GitHub's for the absolute URL, whose token goes
+// only to the forge's own hosts, GitLab's for the project's uploads path
+// on its REST API.
 //
-// Nothing here echoes the argument vector into an error. A GitLab upload
-// path carries the file's 32-hex secret and a GitHub asset URL can
-// redirect through a signed one, and both would otherwise land in a
-// message the review pane shows.
+// A GitLab upload path carries the file's 32-hex secret and a GitHub
+// asset URL can redirect through a signed one. The transport redacts a
+// signed query from the URLs it reports but keeps the path, so a GitLab
+// fetch's error has its request elided before the review pane shows it.
 
-// forgeAttachmentTimeout bounds one download. The package default (45s)
+// forgeAttachmentTimeout bounds one download. The transport default (45s)
 // is sized for a metadata call; a video at the transport's minimum
 // sustained transfer rate needs minutes, and cutting it at 45s would read
 // as a broken forge rather than a slow one.
 const forgeAttachmentTimeout = 10 * time.Minute
 
-// githubEscapeSequencesFlag disables gh's refusal to print a body
-// containing terminal escape bytes. Media contains 0x1b by chance, so
-// without it a perfectly good video is a failed download. Older gh does
-// not know the flag; githubForge.FetchAttachment retries once without it.
-const githubEscapeSequencesFlag = "--allow-escape-sequences"
-
 // FetchAttachment resolves one attachment reference found in a PR/MR and
-// downloads its bytes through the owning forge's CLI.
+// downloads its bytes through the owning forge's login.
 //
 // The reference is parsed BEFORE anything is dispatched, so a href that
-// is not a forge attachment costs no subprocess.
-func (c *Core) FetchAttachment(cwd string, ref PRReference, href string, maxBytes int64) (data []byte, filename string, err error) {
+// is not a forge attachment costs no request.
+func (c *Core) FetchAttachment(ctx context.Context, ref PRReference, href string, maxBytes int64) (data []byte, filename string, err error) {
+	if err := ref.Validate(); err != nil {
+		return nil, "", err
+	}
 	target, err := forgeattach.ParseReference(ref.Forge, ref.Project(), href)
 	if err != nil {
 		return nil, "", err
 	}
-	data, err = c.ForgeByID(ref.Forge).FetchAttachment(cwd, target, maxBytes)
+	data, err = c.ForgeByID(ref.Forge).FetchAttachment(ctx, ref, target, maxBytes)
 	if err != nil {
 		return nil, "", err
 	}
 	return data, target.Filename, nil
 }
 
-func (f *gitlabForge) FetchAttachment(cwd string, target forgeattach.Target, maxBytes int64) ([]byte, error) {
-	if target.Forge != "gitlab" || target.Request == "" {
+func (f *gitlabForge) FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
+	if target.Forge != "gitlab" || target.Request == "" || strings.Contains(target.Request, "://") {
 		return nil, errors.New("attachment reference is not a GitLab upload")
 	}
-	// glab copies a non-JSON response body to stdout verbatim, which is
-	// what the uploads endpoint answers with.
-	body, result, err := f.core.runAttachmentDownload("glab", cwd, maxBytes,
-		"api", target.Request)
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return nil, normalizeGitLabCLIError(err)
+		return nil, err
 	}
-	if result.exitCode != 0 {
-		return nil, gitlabCommandFailure("glab api upload download failed", result)
+	var body bytes.Buffer
+	_, err = client.Stream(ctx, forgeapi.Request{
+		Path:       target.Request,
+		Attachment: true,
+		Header:     http.Header{"Accept": {"*/*"}},
+		Timeout:    forgeAttachmentTimeout,
+	}, &body, maxBytes)
+	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
+		return nil, attachmentTooLargeError(maxBytes)
 	}
-	return body, nil
+	if err != nil {
+		return nil, redactGitLabUpload(err, target.Request)
+	}
+	return body.Bytes(), nil
 }
 
-func (f *githubForge) FetchAttachment(cwd string, target forgeattach.Target, maxBytes int64) ([]byte, error) {
+func (f *githubForge) FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error) {
 	if target.Forge != "github" || !strings.Contains(target.Request, "://") {
 		return nil, errors.New("attachment reference is not a GitHub attachment URL")
 	}
-	// An argument containing "://" is used by gh as the request URL
-	// as-is. It attaches the user's token for github.com and follows the
-	// redirect to the signed asset host, which carries its own admission
-	// in the query — Go's client drops Authorization across hosts, which
-	// is exactly right here.
-	args := []string{"api", target.Request, "-H", "Accept: */*", githubEscapeSequencesFlag}
-	body, result, err := f.core.runAttachmentDownload("gh", cwd, maxBytes, args...)
+	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
-		return nil, normalizeGitHubCLIError(err)
+		return nil, err
 	}
-	if result.exitCode != 0 && mentionsUnknownFlag(result, githubEscapeSequencesFlag) {
-		body, result, err = f.core.runAttachmentDownload("gh", cwd, maxBytes, args[:len(args)-1]...)
-		if err != nil {
-			return nil, normalizeGitHubCLIError(err)
-		}
-	}
-	if result.exitCode != 0 {
-		return nil, fmt.Errorf("gh api attachment download failed: %s", commandOutputMessage(result.stdout, result.stderr))
-	}
-	return body, nil
-}
-
-func (nullForge) FetchAttachment(string, forgeattach.Target, int64) ([]byte, error) {
-	return nil, ErrUnsupportedForge
-}
-
-// runAttachmentDownload streams one forge-CLI response body into memory
-// under a hard cap.
-//
-// Streamed rather than captured as stdout because the shared runner
-// keeps stdout as a string: a 100 MiB video would be buffered, copied
-// into a string and copied back out. It also means an over-cap body
-// cancels the child on the chunk that crosses the line instead of being
-// drained in full and then rejected.
-func (c *Core) runAttachmentDownload(binary, cwd string, maxBytes int64, args ...string) ([]byte, commandResult, error) {
+	// The absolute URL is requested as given. The token goes to github.com
+	// only (forgeattach admits github.com attachment hosts, and the client
+	// authorizes its own hosts); the signed asset host a github.com URL
+	// redirects to carries its own admission in the query and gets no
+	// token.
 	var body bytes.Buffer
-	result, err := c.runSpec(commandSpec{
-		binary:  binary,
-		cwd:     cwd,
-		args:    args,
-		timeout: forgeAttachmentTimeout,
-		output:  &body,
-		// One byte of headroom: the cap is crossed by a body LARGER than
-		// the limit, not by one that exactly reaches it.
-		outputLimit: maxBytes + 1,
-	})
+	_, err = client.Stream(ctx, forgeapi.Request{
+		Path:       target.Request,
+		Attachment: true,
+		Header:     http.Header{"Accept": {"*/*"}},
+		Timeout:    forgeAttachmentTimeout,
+	}, &body, maxBytes)
+	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
+		return nil, attachmentTooLargeError(maxBytes)
+	}
 	if err != nil {
-		if errors.Is(err, errOutputLimitExceeded) {
-			return nil, result, attachmentTooLargeError(maxBytes)
-		}
-		// runSpec names the command it ran, and that name carries the
-		// GitLab upload secret or a signed GitHub URL. The cause is
-		// kept for errors.Is / errors.As — a missing binary is still
-		// recognized as exec.Error downstream — and only the text the
-		// review pane shows is redacted.
-		return nil, result, &redactedCommandError{
-			message: redactForgeRequest(err.Error(), args),
-			err:     err,
-		}
+		return nil, err
 	}
-	if int64(body.Len()) > maxBytes {
-		return nil, result, attachmentTooLargeError(maxBytes)
-	}
-	if result.exitCode != 0 {
-		// The response body is where both CLIs put a forge's own error
-		// JSON, and stdout is empty here because the body was streamed.
-		// Hand the readable part of it back so the failure says what the
-		// forge said rather than "command failed".
-		result.stdout = errorBodyText(body.Bytes())
-	}
-	return body.Bytes(), result, nil
+	return body.Bytes(), nil
+}
+
+func (nullForge) FetchAttachment(context.Context, PRReference, forgeattach.Target, int64) ([]byte, error) {
+	return nil, ErrUnsupportedForge
 }
 
 func attachmentTooLargeError(maxBytes int64) error {
@@ -154,51 +118,31 @@ func attachmentTooLargeError(maxBytes int64) error {
 	return fmt.Errorf("attachment is larger than %d bytes", maxBytes)
 }
 
-// redactedCommandError is a run failure with the request taken out of
-// its message and left in its cause.
-type redactedCommandError struct {
+// redactedError is a failure whose message has a secret taken out of it
+// and whose cause keeps it, for errors.Is and errors.As.
+type redactedError struct {
 	message string
 	err     error
 }
 
-func (e *redactedCommandError) Error() string { return e.message }
-func (e *redactedCommandError) Unwrap() error { return e.err }
+func (e *redactedError) Error() string { return e.message }
+func (e *redactedError) Unwrap() error { return e.err }
 
-// redactForgeRequest removes the request arguments from a message.
-//
-// By VALUE rather than by position, because the message was formatted by
-// a shared runner this package does not own: matching what it printed is
-// a guess, while replacing the exact strings that were passed in is not.
-// Both spellings, since the runner quotes an argument containing a space.
-func redactForgeRequest(message string, args []string) string {
+// redactGitLabUpload elides a GitLab upload request, and its secret in
+// any spelling the message carries it, from err's message. An error that
+// does not carry it is returned as it is.
+func redactGitLabUpload(err error, request string) error {
 	const elision = "<attachment>"
-	for _, arg := range args {
-		if len(arg) < 8 {
-			continue
+	message := err.Error()
+	redacted := strings.ReplaceAll(message, request, elision)
+	segments := strings.Split(request, "/")
+	if len(segments) >= 2 {
+		if secret := segments[len(segments)-2]; secret != "" {
+			redacted = strings.ReplaceAll(redacted, secret, elision)
 		}
-		message = strings.ReplaceAll(message, fmt.Sprintf("%q", arg), elision)
-		message = strings.ReplaceAll(message, arg, elision)
 	}
-	return message
-}
-
-// mentionsUnknownFlag reports whether the CLI refused the named flag,
-// which is how an older gh answers one it does not know.
-func mentionsUnknownFlag(result commandResult, flag string) bool {
-	message := strings.ToLower(result.stderr + "\n" + result.stdout)
-	return strings.Contains(message, "unknown flag") && strings.Contains(message, strings.ToLower(strings.TrimPrefix(flag, "--")))
-}
-
-// errorBodyText is the readable prefix of a failed response body. Binary
-// is dropped rather than shown: a truncated video in an error toast is
-// noise, and the exit status already carries the fact of the failure.
-func errorBodyText(body []byte) string {
-	const maxErrorBodyBytes = 2 << 10
-	if len(body) > maxErrorBodyBytes {
-		body = body[:maxErrorBodyBytes]
+	if redacted == message {
+		return err
 	}
-	if !utf8.Valid(body) {
-		return ""
-	}
-	return strings.TrimSpace(string(body))
+	return &redactedError{message: redacted, err: err}
 }

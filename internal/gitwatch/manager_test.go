@@ -1,6 +1,7 @@
 package gitwatch
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func newStubStatus(initial gitops.GitStatus) *stubStatus {
 }
 
 func (s *stubStatus) fn() StatusFn {
-	return func(cwd string) (gitops.GitStatus, error) {
+	return func(_ context.Context, cwd string) (gitops.GitStatus, error) {
 		atomic.AddInt32(&s.calls, 1)
 		if s.failNext.CompareAndSwap(true, false) {
 			return gitops.GitStatus{}, errors.New("stub: forced failure")
@@ -125,7 +126,7 @@ func TestSubscribeReturnsInitialStatus(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err == nil {
 		sub.Close()
 		t.Fatalf("expected initial fetch error to propagate")
@@ -158,7 +159,7 @@ func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestMetadataRootEventTriggersUpdate(t *testing.T) {
 	})
 	t.Cleanup(mgr.Close)
 
-	sub, err := mgr.Subscribe(workspace)
+	sub, err := mgr.Subscribe(t.Context(), workspace)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -235,10 +236,10 @@ func TestLinkedWorktreeCommitEmitsCleanStatus(t *testing.T) {
 	}
 
 	core := gitops.NewCore()
-	mgr := NewManager(ManagerConfig{StatusFn: core.Status, FastStatusFn: core.StatusFast, WatchRootsFn: core.WatchRoots})
+	mgr := NewManager(ManagerConfig{StatusFn: core.Status, FastStatusFn: func(_ context.Context, cwd string) (gitops.GitStatus, error) { return core.StatusFast(cwd) }, WatchRootsFn: core.WatchRoots})
 	t.Cleanup(mgr.Close)
 
-	sub, err := mgr.Subscribe(worktreePath)
+	sub, err := mgr.Subscribe(t.Context(), worktreePath)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -273,12 +274,12 @@ func TestMultipleSubscribersShareWatcher(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	subA, err := mgr.Subscribe(dir)
+	subA, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
 	defer subA.Close()
-	subB, err := mgr.Subscribe(dir)
+	subB, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -310,11 +311,11 @@ func TestLastUnsubscribeStopsWatcher(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	subA, err := mgr.Subscribe(dir)
+	subA, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
-	subB, err := mgr.Subscribe(dir)
+	subB, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -362,7 +363,7 @@ func TestPollingFallbackEmitsUpdates(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -390,7 +391,7 @@ func TestManagerCloseDrainsSubscribers(t *testing.T) {
 	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -407,7 +408,7 @@ func TestManagerCloseDrainsSubscribers(t *testing.T) {
 	}
 
 	// Subsequent Subscribe must fail.
-	if _, err := mgr.Subscribe(dir); err == nil {
+	if _, err := mgr.Subscribe(t.Context(), dir); err == nil {
 		t.Fatalf("Subscribe after Close must error")
 	}
 }
@@ -419,7 +420,7 @@ func TestStatusFnFailureDoesNotEmit(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -451,7 +452,7 @@ func TestStatusFnFailureDoesNotEmit(t *testing.T) {
 func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 	t.Parallel()
 	current := atomic.Int64{}
-	statusFn := func(string) (gitops.GitStatus, error) {
+	statusFn := func(context.Context, string) (gitops.GitStatus, error) {
 		// Vary the returned value per-call so dedup never short-circuits
 		// the broadcast — we want to drive the broadcast loop on every
 		// fs event.
@@ -465,7 +466,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 	const initialSubs = 8
 	subs := make([]*Subscription, 0, initialSubs)
 	for i := 0; i < initialSubs; i++ {
-		s, err := mgr.Subscribe(dir)
+		s, err := mgr.Subscribe(t.Context(), dir)
 		if err != nil {
 			t.Fatalf("subscribe: %v", err)
 		}
@@ -514,7 +515,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 				return
 			default:
 			}
-			s, err := mgr.Subscribe(dir)
+			s, err := mgr.Subscribe(t.Context(), dir)
 			if err != nil {
 				return
 			}
@@ -545,7 +546,7 @@ func TestSupersedeOnOverflow(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -591,7 +592,7 @@ func TestSupersedeOnOverflow(t *testing.T) {
 func TestWatcherPanicRecovery(t *testing.T) {
 	t.Parallel()
 	var fired atomic.Bool
-	statusFn := func(string) (gitops.GitStatus, error) {
+	statusFn := func(context.Context, string) (gitops.GitStatus, error) {
 		if fired.CompareAndSwap(false, true) {
 			return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
 		}
@@ -601,7 +602,7 @@ func TestWatcherPanicRecovery(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -629,7 +630,7 @@ func TestWatcherPanicRecovery(t *testing.T) {
 func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
-	statusFn := func(string) (gitops.GitStatus, error) {
+	statusFn := func(context.Context, string) (gitops.GitStatus, error) {
 		<-release
 		return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
 	}
@@ -638,7 +639,7 @@ func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 	dir := makeRepoDir(t)
 	subDone := make(chan struct{})
 	go func() {
-		_, _ = mgr.Subscribe(dir)
+		_, _ = mgr.Subscribe(t.Context(), dir)
 		close(subDone)
 	}()
 
@@ -682,7 +683,7 @@ func TestSubscribeRejectsEmptyCwd(t *testing.T) {
 	t.Parallel()
 	mgr := NewManager(ManagerConfig{StatusFn: newStubStatus(gitops.GitStatus{}).fn()})
 	t.Cleanup(mgr.Close)
-	if _, err := mgr.Subscribe(""); err == nil {
+	if _, err := mgr.Subscribe(t.Context(), ""); err == nil {
 		t.Fatalf("Subscribe(\"\") must error")
 	}
 }
@@ -692,7 +693,7 @@ func TestSubscribeRejectsNonexistentPath(t *testing.T) {
 	mgr := NewManager(ManagerConfig{StatusFn: newStubStatus(gitops.GitStatus{}).fn()})
 	t.Cleanup(mgr.Close)
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := mgr.Subscribe(missing); err == nil {
+	if _, err := mgr.Subscribe(t.Context(), missing); err == nil {
 		t.Fatalf("Subscribe(missing) must error")
 	}
 	mgr.mu.Lock()
@@ -711,7 +712,7 @@ func TestSubscribeRejectsSystemPath(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			continue // not present on this OS
 		}
-		if _, err := mgr.Subscribe(p); err == nil {
+		if _, err := mgr.Subscribe(t.Context(), p); err == nil {
 			t.Fatalf("Subscribe(%q) must be refused", p)
 		}
 	}
@@ -728,7 +729,7 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	if _, err := mgr.Subscribe(dir); err == nil {
+	if _, err := mgr.Subscribe(t.Context(), dir); err == nil {
 		t.Fatalf("expected initial fetch error to propagate")
 	}
 	mgr.mu.Lock()
@@ -749,14 +750,14 @@ func TestSharedCwdReusesFreshLastStatus(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	subA, err := mgr.Subscribe(dir)
+	subA, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
 	defer subA.Close()
 	callsAfterA := stub.callCount()
 
-	subB, err := mgr.Subscribe(dir)
+	subB, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -798,7 +799,7 @@ func TestFastStatusFnSkipsPRThenRefreshDelivers(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -836,7 +837,7 @@ func TestSharedWatcherMissingPRRefreshesForNewSubscriber(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	subA, err := mgr.Subscribe(dir)
+	subA, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
@@ -849,7 +850,7 @@ func TestSharedWatcherMissingPRRefreshesForNewSubscriber(t *testing.T) {
 	expectNoUpdate(t, subA, 100*time.Millisecond)
 
 	fullStub.setStatus(withPRStatus)
-	subB, err := mgr.Subscribe(dir)
+	subB, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -880,7 +881,7 @@ func TestFastStatusFnNilFallsBackToStatusFn(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -901,7 +902,7 @@ func TestNoAsyncRefreshWithoutForge(t *testing.T) {
 		IsRepo: true, Branch: "main", Forge: "",
 	}
 	var fullCalls atomic.Int32
-	fullFn := func(cwd string) (gitops.GitStatus, error) {
+	fullFn := func(_ context.Context, cwd string) (gitops.GitStatus, error) {
 		fullCalls.Add(1)
 		return fastStatus, nil
 	}
@@ -914,7 +915,7 @@ func TestNoAsyncRefreshWithoutForge(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -937,7 +938,7 @@ func TestSuppressHoldsBroadcastsUntilResume(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -981,14 +982,14 @@ func TestSuppressEndsWithTheWatcher(t *testing.T) {
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(dir)
+	sub, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	resume := mgr.Suppress(dir)
 	sub.Close()
 
-	next, err := mgr.Subscribe(dir)
+	next, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("resubscribe: %v", err)
 	}

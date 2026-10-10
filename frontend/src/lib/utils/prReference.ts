@@ -17,6 +17,9 @@ export type Forge = 'github' | 'gitlab';
 
 export interface ParsedPRReference {
   forge: Forge;
+  // The forge host a URL input matched, lowercase (the URL patterns admit
+  // no port); '' for a short form, which names no host.
+  host: string;
   // The path-segment chain before the repo. Single segment for github
   // (the owner) or the empty string when no namespace; arbitrary depth
   // for GitLab subgroups.
@@ -27,6 +30,9 @@ export interface ParsedPRReference {
 
 export interface PRRef {
   forge: Forge;
+  // The forge host the PR lives on, from its URL (`URL.host`: lowercase,
+  // a non-default port kept). The backend refuses a reference without one.
+  host: string;
   namespace: string;
   repo: string;
   number: number;
@@ -51,7 +57,7 @@ export interface ParsePRReferenceOptions {
 // internal/git/forge.go::ParsePRReference. Keep the two in sync — the
 // backend validates again, but the UI should reject obvious garbage
 // without a round-trip.
-const GITHUB_URL_PATTERN = /^(?:https?:\/\/)?github\.com\/([^/]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/;
+const GITHUB_URL_PATTERN = /^(?:https?:\/\/)?(github\.com)\/([^/]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/;
 const GITHUB_SHORT_PATTERN = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/;
 const GITLAB_SHORT_PATTERN = /^((?:[^/\s]+\/)+[^/\s!]+)!(\d+)$/;
 
@@ -68,10 +74,16 @@ function gitlabUrlPatternFor(hosts: string[]): RegExp {
   const all = ['gitlab.com', ...hosts];
   const alternation = all.map(escapeRegex).join('|');
   return new RegExp(
-    `^(?:https?:\\/\\/)?(?:${alternation})\\/((?:[^/\\s]+\\/)+[^/\\s]+)\\/-\\/merge_requests\\/(\\d+)(?:[/?#].*)?$`,
+    `^(?:https?:\\/\\/)?(${alternation})\\/((?:[^/\\s]+\\/)+[^/\\s]+)\\/-\\/merge_requests\\/(\\d+)(?:[/?#].*)?$`,
   );
 }
 
+/**
+ * Parse a PR/MR reference typed or pasted by a user. A URL input carries its
+ * host; a short form (`OWNER/REPO#N`, `NAMESPACE/REPO!N`) yields `host: ''`
+ * and must be given the host of the repository it names before it becomes a
+ * `PRRef` or reaches the wire, where an empty host is refused.
+ */
 export function parsePRReference(
   input: string,
   opts: ParsePRReferenceOptions = {},
@@ -83,25 +95,25 @@ export function parsePRReference(
 
   let match = GITHUB_URL_PATTERN.exec(trimmed);
   if (match) {
-    return parseMatch('github', match[1], match[2], match[3]);
+    return parseMatch('github', match[1], match[2], match[3], match[4]);
   }
 
   const gitlabUrlPattern = gitlabUrlPatternFor(opts.gitlabHosts ?? []);
   match = gitlabUrlPattern.exec(trimmed);
   if (match) {
-    const { namespace, repo } = splitNamespacePath(match[1]);
-    return parseMatch('gitlab', namespace, repo, match[2]);
+    const { namespace, repo } = splitNamespacePath(match[2]);
+    return parseMatch('gitlab', match[1].toLowerCase(), namespace, repo, match[3]);
   }
 
   match = GITHUB_SHORT_PATTERN.exec(trimmed);
   if (match) {
-    return parseMatch('github', match[1], match[2], match[3]);
+    return parseMatch('github', '', match[1], match[2], match[3]);
   }
 
   match = GITLAB_SHORT_PATTERN.exec(trimmed);
   if (match) {
     const { namespace, repo } = splitNamespacePath(match[1]);
-    return parseMatch('gitlab', namespace, repo, match[2]);
+    return parseMatch('gitlab', '', namespace, repo, match[2]);
   }
 
   return {
@@ -114,6 +126,11 @@ export function parsePRReference(
   };
 }
 
+/**
+ * The reference for a PR the forge reported by URL (a workspace's open PR).
+ * The host is the URL's, so a GitHub Enterprise or self-hosted GitLab PR
+ * keeps the host it lives on.
+ */
 export function prRefFromUrl(forge: string, url: string, number: number): PRRef | null {
   if (forge !== 'github' && forge !== 'gitlab') return null;
   if (!Number.isFinite(number) || number <= 0) return null;
@@ -123,13 +140,14 @@ export function prRefFromUrl(forge: string, url: string, number: number): PRRef 
   } catch {
     return null;
   }
+  const host = parsed.host;
+  if (host === '') return null;
   const parts = parsed.pathname.split('/').filter(Boolean);
   if (forge === 'github') {
-    if (parsed.hostname !== 'github.com') return null;
     if (parts.length < 4 || parts[2] !== 'pull') return null;
     const n = Number.parseInt(parts[3] ?? '', 10);
     if (n !== number) return null;
-    return { forge, namespace: parts[0], repo: parts[1], number };
+    return { forge, host, namespace: parts[0], repo: parts[1], number };
   }
   const sep = parts.indexOf('-');
   if (sep < 2 || parts[sep + 1] !== 'merge_requests') return null;
@@ -138,6 +156,7 @@ export function prRefFromUrl(forge: string, url: string, number: number): PRRef 
   const project = parts.slice(0, sep);
   return {
     forge,
+    host,
     namespace: project.slice(0, -1).join('/'),
     repo: project[project.length - 1] ?? '',
     number,
@@ -148,16 +167,26 @@ export function prScopeLabel(ref: PRRef): string {
   return ref.forge === 'gitlab' ? `MR !${ref.number}` : `PR #${ref.number}`;
 }
 
+// The host a PR key leaves implicit, per forge.
+const PUBLIC_FORGE_HOST: Record<Forge, string> = { github: 'github.com', gitlab: 'gitlab.com' };
+
 /**
- * The entity key for a pull/merge request: `<forge>:<namespace>/<repo>:<n>`.
+ * The entity key for a pull/merge request: `<forge>:<namespace>/<repo>:<n>`
+ * on the forge's public host, `<forge>@<host>:<namespace>/<repo>:<n>` on any
+ * other.
  *
- * One spelling of "which PR" everywhere it is needed — the PR-review store's
- * key, the `pr:updated` wire address (`prUpdateKey` in app_forge_review.go
- * builds the identical string), and, with the `pr:` prefix below, the review
- * pane's comment sourceKey.
+ * One spelling of "which PR" everywhere it is needed: the PR-review store's
+ * key, the `pr:updated` wire address (`PRReference.Key` in
+ * internal/git/forge.go builds the identical string), and, with the `pr:`
+ * prefix below, the review pane's comment sourceKey. Keys are compared,
+ * never parsed.
  */
 export function prKey(ref: PRRef): string {
-  return `${ref.forge}:${ref.namespace}/${ref.repo}:${ref.number}`;
+  const project = `${ref.namespace}/${ref.repo}`;
+  if (ref.host === PUBLIC_FORGE_HOST[ref.forge]) {
+    return `${ref.forge}:${project}:${ref.number}`;
+  }
+  return `${ref.forge}@${ref.host}:${project}:${ref.number}`;
 }
 
 /**
@@ -172,6 +201,7 @@ export function prSourceKey(ref: PRRef): string {
 /** The wire shape the Go `git.PRReference` parameter expects. */
 export interface PRReferenceWire {
   Forge: string;
+  Host: string;
   Namespace: string;
   Repo: string;
   Number: number;
@@ -180,18 +210,25 @@ export interface PRReferenceWire {
 export function prReferenceWire(ref: PRRef): PRReferenceWire {
   return {
     Forge: ref.forge,
+    Host: ref.host,
     Namespace: ref.namespace,
     Repo: ref.repo,
     Number: ref.number,
   };
 }
 
-function parseMatch(forge: Forge, namespace: string, repo: string, numberStr: string): PRReferenceResult {
+function parseMatch(
+  forge: Forge,
+  host: string,
+  namespace: string,
+  repo: string,
+  numberStr: string,
+): PRReferenceResult {
   const number = Number.parseInt(numberStr, 10);
   if (!Number.isFinite(number) || number <= 0) {
     return { ok: false, error: `PR/MR number must be a positive integer, got "${numberStr}"` };
   }
-  return { ok: true, value: { forge, namespace, repo, number } };
+  return { ok: true, value: { forge, host, namespace, repo, number } };
 }
 
 function splitNamespacePath(path: string): { namespace: string; repo: string } {

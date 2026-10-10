@@ -6,23 +6,32 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/forgefake"
 )
 
 // fakeBin is ao-mockforge, built once per run and executed by a real
-// git.Core in place of gh and glab. These tests hold the fake's answers
-// to the app's own parsers: a shape the fake gets wrong fails here, not
-// as a blank review pane in a browser spec.
+// git.Core in place of gh and glab. The same Core sends its forge API
+// requests (every GitHub and GitLab read) to the engine's HTTP mounts. These tests
+// hold the fake's answers to the app's own parsers: a shape the fake gets
+// wrong fails here, not as a blank review pane in a browser spec.
 var fakeBin string
+
+// rigAPIToken is the fixed token the rig's forge API transport presents.
+const rigAPIToken = "rig-token"
 
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "ao-mockforge-test-*")
@@ -40,7 +49,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// rig is one harness-side fake forge and an isolated Core that reaches it.
+// rig is one harness-side fake forge and an isolated Core that reaches
+// it: its CLIs through ao-mockforge and the control channel, its forge
+// API transport through the engine's HTTP listener.
 type rig struct {
 	engine *forgefake.Engine
 	core   *gitops.Core
@@ -48,7 +59,7 @@ type rig struct {
 
 func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 	t.Helper()
-	engine := forgefake.New(forgefake.Options{})
+	engine := forgefake.New(forgefake.Options{APIToken: rigAPIToken})
 	if _, err := engine.Seed(fixture); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
@@ -68,7 +79,14 @@ func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 		_ = srv.Shutdown(ctx)
 	})
 	env := []string{control.EnvAddr + "=" + srv.Addr(), control.EnvToken + "=" + srv.Token()}
-	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env))}
+	api := httptest.NewServer(engine)
+	t.Cleanup(api.Close)
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: api.URL, Token: rigAPIToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env), gitops.WithForgeAPI(svc))}
 }
 
 func intPtr(n int) *int { return &n }
@@ -101,7 +119,7 @@ func githubFixture() forgefake.Fixture {
 		}},
 		{Path: "app.go", Side: "file", Comments: []forgefake.Comment{{Author: "bob", Body: "file level"}}},
 		{Path: "app.go", Line: intPtr(1), Side: "left", Outdated: true, Comments: []forgefake.Comment{{Author: "bob", Body: "old"}}},
-	}, manyThreads(60)...)
+	}, manyThreads(110)...)
 	return forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
 		Forge: "github", Project: "acme/widgets",
 		Attachments: []forgefake.Attachment{{URL: "https://github.com/user-attachments/assets/1a2b", ContentType: "image/png", Base64: base64.StdEncoding.EncodeToString(pngBytes)}},
@@ -110,7 +128,7 @@ func githubFixture() forgefake.Fixture {
 				Number: 7, Title: "Add widgets", Body: "![shot](https://github.com/user-attachments/assets/1a2b)",
 				Author: "alice", AuthorName: "Alice Ng", HeadRef: "feat/widgets", HeadSHA: strings.Repeat("a", 40), Diff: diff, Draft: true,
 				Mergeable: "conflicts",
-				Comments:  manyComments(55, "conversation"),
+				Comments:  manyComments(130, "conversation"),
 				Threads:   threads,
 				Reviews: []forgefake.Review{
 					{Author: "bob", State: "COMMENTED"}, {Author: "bob", State: "CHANGES_REQUESTED", Body: "fix"},
@@ -123,8 +141,21 @@ func githubFixture() forgefake.Fixture {
 				}},
 			},
 			{Number: 5, Title: "Old", State: "merged", HeadRef: "old-branch", HeadSHA: strings.Repeat("b", 40)},
+			{
+				Number: 6, Title: "Busy", HeadRef: "busy",
+				Threads: []forgefake.Thread{{Path: "app.go", Line: intPtr(2), Comments: manyComments(130, "reply")}},
+				CI:      &forgefake.Pipeline{ID: 556, Name: "Matrix", Jobs: manyJobs(120)},
+			},
 		},
 	}}}
+}
+
+func manyJobs(n int) []forgefake.Job {
+	out := make([]forgefake.Job, n)
+	for i := range out {
+		out[i] = forgefake.Job{Name: fmt.Sprintf("job %d", i), Status: "success"}
+	}
+	return out
 }
 
 func gitlabFixture() forgefake.Fixture {
@@ -151,9 +182,9 @@ func gitlabFixture() forgefake.Fixture {
 
 func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, githubFixture())
-	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
 
-	detail, err := r.core.GetPRDetail("", ref)
+	detail, err := r.core.GetPRDetail(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("GetPRDetail: %v", err)
 	}
@@ -164,19 +195,19 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		detail.Checks.Total != 4 || detail.Checks.Success != 2 || detail.Checks.Failure != 1 || detail.Checks.Pending != 1 {
 		t.Fatalf("GetPRDetail = %+v", detail)
 	}
-	// gh reports the PR author's name; its review list carries logins only.
+	// A reviewer without a display name answers as a bot.
 	if detail.AuthorLogin != "alice" || detail.AuthorName != "Alice Ng" || detail.LatestReviews[0].AuthorName != "" {
 		t.Fatalf("GetPRDetail authors = %q/%q, review %+v", detail.AuthorLogin, detail.AuthorName, detail.LatestReviews[0])
 	}
 
-	threads, err := r.core.ListReviewThreads("", ref)
+	threads, err := r.core.ListReviewThreads(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("ListReviewThreads: %v", err)
 	}
-	// 63 review threads over two GraphQL pages, then 55 conversation
+	// 113 review threads over two GraphQL pages, then 130 conversation
 	// comments over two more.
-	if len(threads) != 63+55 {
-		t.Fatalf("threads = %d, want %d", len(threads), 63+55)
+	if len(threads) != 113+130 {
+		t.Fatalf("threads = %d, want %d", len(threads), 113+130)
 	}
 	ranged, file, outdated := threads[0], threads[1], threads[2]
 	if !ranged.IsResolved || *ranged.Line != 3 || *ranged.StartLine != 2 || ranged.Side != "right" ||
@@ -193,12 +224,12 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	if !outdated.IsOutdated || outdated.Side != "left" {
 		t.Fatalf("outdated thread = %+v", outdated)
 	}
-	if last := threads[len(threads)-1]; last.Path != "" || last.Comments[0].Body != "conversation 54" {
+	if last := threads[len(threads)-1]; last.Path != "" || last.Comments[0].Body != "conversation 129" {
 		t.Fatalf("last conversation comment = %+v", last)
 	}
 
 	// Steps are read for the followed job only, through the REST jobs list.
-	pipeline, err := r.core.ListPRCIJobs("", ref, nil, []string{"901"})
+	pipeline, err := r.core.ListPRCIJobs(t.Context(), ref, nil, []string{"901"})
 	if err != nil {
 		t.Fatalf("ListPRCIJobs: %v", err)
 	}
@@ -208,21 +239,47 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Jobs[1].Steps != nil || pipeline.Stages[0].Jobs[2].LogsAvailable {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	if log, err := r.core.GetCIJobLog("", ref, "902"); err != nil || log != "lint failed" {
-		t.Fatalf("GetCIJobLog = %q, %v", log, err)
+	log, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "902"})
+	if err != nil || log.Text != "lint failed" || log.ETag == "" {
+		t.Fatalf("GetCIJobLog = %+v, %v", log, err)
 	}
-	if _, err := r.core.GetCIJobLog("", ref, "903"); err == nil {
+	if again, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "902", ETag: log.ETag}); err != nil || !again.NotModified || again.ETag != log.ETag {
+		t.Fatalf("revalidated GetCIJobLog = %+v, %v", again, err)
+	}
+	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "903"}); err == nil {
 		t.Fatal("a queued job served a log")
 	}
-	if _, err := r.core.GetCIJobLog("", ref, "904"); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "904"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld log error = %v, want ErrCIJobLogNotFound", err)
 	}
 
-	data, name, err := r.core.FetchAttachment("", ref, "https://github.com/user-attachments/assets/1a2b", 1<<20)
+	// A thread and a rollup past one page are read through their node
+	// page operations.
+	busy := ref
+	busy.Number = 6
+	read, err := r.core.ReadPR(t.Context(), busy, gitops.PRReadParts{Detail: true, Threads: true, CI: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR(#6): %v", err)
+	}
+	if len(read.Threads) != 1 || len(read.Threads[0].Comments) != 130 || read.Threads[0].Comments[129].Body != "reply 129" ||
+		read.Detail.Checks.Total != 120 || len(read.CI.Stages) != 1 || len(read.CI.Stages[0].Jobs) != 120 {
+		t.Fatalf("ReadPR(#6) = %d threads, checks %+v, stages %d", len(read.Threads), read.Detail.Checks, len(read.CI.Stages))
+	}
+	ops := map[string]int{}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		ops[inv.Operation]++
+	}
+	for _, op := range []string{"PRTick", "PRThreadsPage", "PRCommentsPage", "ThreadCommentsPage", "RollupContextsPage"} {
+		if ops[op] == 0 {
+			t.Errorf("no %s request in %v", op, ops)
+		}
+	}
+
+	data, name, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/1a2b", 1<<20)
 	if err != nil || !bytes.Equal(data, pngBytes) || name != "1a2b" {
 		t.Fatalf("FetchAttachment = %d bytes %q, %v", len(data), name, err)
 	}
-	if _, _, err := r.core.FetchAttachment("", ref, "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
+	if _, _, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
 		t.Fatal("an unseeded attachment downloaded")
 	}
 
@@ -239,9 +296,9 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 
 func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, gitlabFixture())
-	ref := gitops.PRReference{Forge: "gitlab", Namespace: "grp/sub", Repo: "tool", Number: 3}
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
 
-	detail, err := r.core.GetPRDetail("", ref)
+	detail, err := r.core.GetPRDetail(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("GetPRDetail: %v", err)
 	}
@@ -253,11 +310,11 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("GetPRDetail = %+v", detail)
 	}
 
-	threads, err := r.core.ListReviewThreads("", ref)
+	threads, err := r.core.ListReviewThreads(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("ListReviewThreads: %v", err)
 	}
-	// 22 diff threads and 40 notes over two pages of 50.
+	// 22 diff threads and 40 notes in one page of 100.
 	if len(threads) != 62 {
 		t.Fatalf("threads = %d, want 62", len(threads))
 	}
@@ -273,7 +330,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("last note = %+v", last)
 	}
 
-	pipeline, err := r.core.ListPRCIJobs("", ref, nil, nil)
+	pipeline, err := r.core.ListPRCIJobs(t.Context(), ref, nil, nil)
 	if err != nil {
 		t.Fatalf("ListPRCIJobs: %v", err)
 	}
@@ -281,11 +338,47 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Name != "build" || pipeline.Stages[0].Jobs[0].DurationSeconds != 60 || pipeline.Stages[1].Jobs[0].ID != "12" {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	if log, err := r.core.GetCIJobLog("", ref, "11"); err != nil || log != "built" {
-		t.Fatalf("GetCIJobLog = %q, %v", log, err)
+	log, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "11"})
+	if err != nil || log.Text != "built" || log.ETag == "" {
+		t.Fatalf("GetCIJobLog = %+v, %v", log, err)
 	}
-	if _, err := r.core.GetCIJobLog("", ref, "13"); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if again, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "11", ETag: log.ETag}); err != nil || !again.NotModified {
+		t.Fatalf("revalidated GetCIJobLog = %+v, %v", again, err)
+	}
+	// The merge request read revalidates its ETag: a second read is a 304
+	// the transport answers from its store.
+	if again, err := r.core.GetPRDetail(t.Context(), ref); err != nil || again.Title != detail.Title {
+		t.Fatalf("second GetPRDetail = %+v, %v", again, err)
+	}
+	if !slices.ContainsFunc(r.engine.Invocations(0).Invocations, func(inv forgefake.Invocation) bool {
+		return inv.Route == "glab api merge request" && inv.Status == http.StatusNotModified
+	}) {
+		t.Fatal("the second merge request read was not a 304")
+	}
+	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld trace error = %v, want ErrCIJobLogNotFound", err)
+	}
+
+	// One pump tick reads the merge request once and derives every part
+	// from it: approvals for the detail, discussions for the threads and
+	// the head pipeline's jobs for CI.
+	before := len(r.engine.Invocations(0).Invocations)
+	read, err := r.core.ReadPR(t.Context(), ref, gitops.PRReadParts{Detail: true, Threads: true, CI: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR: %v", err)
+	}
+	if read.Detail.Title != "Fix tool" || len(read.Threads) != 62 || !read.HasCI || len(read.CI.Stages) != 2 {
+		t.Fatalf("ReadPR = %+v", read)
+	}
+	routes := map[string]int{}
+	for _, inv := range r.engine.Invocations(0).Invocations[before:] {
+		if inv.Via != forgefake.ViaHTTP || inv.Forge != "gitlab" {
+			t.Fatalf("ReadPR made a non-HTTP call: %+v", inv)
+		}
+		routes[inv.Route]++
+	}
+	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab api pipeline jobs": 1}; !maps.Equal(routes, want) {
+		t.Fatalf("ReadPR requests = %v, want %v", routes, want)
 	}
 
 	svg := "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
@@ -294,12 +387,113 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		"https://gitlab.com/grp/sub/tool/-/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 		"/-/project/4242/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 	} {
-		data, name, err := r.core.FetchAttachment("", ref, href, 1<<20)
+		data, name, err := r.core.FetchAttachment(t.Context(), ref, href, 1<<20)
 		if err != nil || string(data) != svg || name != "diagram one.svg" {
 			t.Fatalf("FetchAttachment(%s) = %q %q, %v", href, data, name, err)
 		}
 	}
 
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+	}
+}
+
+// TestPRReadsAddressTheReferencesHost: a PR on GitHub Enterprise or
+// self-hosted GitLab is read from its own host, whatever the default. The
+// reference keeps the URL's port, and a forge API request names it as
+// given.
+// The same reference on the public host is a not-found the app surfaces,
+// never an answer from the wrong forge.
+// The fake's rate limits read as the forge's through the app's transport:
+// an exhausted pool is a *forgeapi.RateLimitedError until its reset, and
+// a pool under the reserve refuses background reads but serves the
+// user's own.
+func TestRateLimitsReadThroughTheAppsTransport(t *testing.T) {
+	for _, tc := range []struct {
+		forge, pool string
+		fixture     forgefake.Fixture
+		ref         gitops.PRReference
+	}{
+		{"github", "graphql", githubFixture(), gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}},
+		{"gitlab", "throttle_authenticated_api", gitlabFixture(), gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}},
+	} {
+		t.Run(tc.forge, func(t *testing.T) {
+			r := newRig(t, tc.fixture)
+			reset := time.Now().Add(time.Hour).Truncate(time.Second)
+			if err := r.engine.SetRateLimit(forgefake.RateLimit{Forge: tc.forge, Pool: tc.pool, Remaining: 100, Reset: reset.Unix()}); err != nil {
+				t.Fatal(err)
+			}
+			// The first answer tells the transport the pool is low (GitLab's
+			// detail is two requests, so its second is already refused);
+			// the next background read is refused under the reserve, the
+			// user's own goes through.
+			var limited *forgeapi.RateLimitedError
+			if _, err := r.core.GetPRDetail(t.Context(), tc.ref); err != nil && (!errors.As(err, &limited) || !limited.Reserve) {
+				t.Fatalf("first read: %v", err)
+			}
+			_, err := r.core.GetPRDetail(t.Context(), tc.ref)
+			if !errors.As(err, &limited) || !limited.Reserve || limited.Until.Unix() < reset.Unix()-1 {
+				t.Fatalf("background read under the reserve = %v", err)
+			}
+			if _, err := r.core.GetPRDetail(forgeapi.WithInteractive(t.Context()), tc.ref); err != nil {
+				t.Fatalf("interactive read under the reserve: %v", err)
+			}
+
+			if err := r.engine.SetRateLimit(forgefake.RateLimit{Forge: tc.forge, Pool: tc.pool, Remaining: 0, Reset: reset.Unix()}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = r.core.GetPRDetail(forgeapi.WithInteractive(t.Context()), tc.ref)
+			if !errors.As(err, &limited) || limited.Reserve || limited.Until.Unix() < reset.Unix()-1 || limited.Until.Unix() > reset.Unix()+1 {
+				t.Fatalf("read of an exhausted pool = %v", err)
+			}
+		})
+	}
+}
+
+func TestPRReadsAddressTheReferencesHost(t *testing.T) {
+	github, gitlab := githubFixture(), gitlabFixture()
+	github.Repos[0].Host = "ghe.example:8443"
+	gitlab.Repos[0].Host = "gitlab.example.com:8443"
+	r := newRig(t, forgefake.Fixture{Repos: append(github.Repos, gitlab.Repos...)})
+	refs := []gitops.PRReference{
+		{Forge: "github", Host: "ghe.example:8443", Namespace: "acme", Repo: "widgets", Number: 7},
+		{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "grp/sub", Repo: "tool", Number: 3},
+	}
+	for _, ref := range refs {
+		if detail, err := r.core.GetPRDetail(t.Context(), ref); err != nil || detail.Number != ref.Number {
+			t.Fatalf("%s GetPRDetail = %+v, %v", ref.Host, detail, err)
+		}
+		if threads, err := r.core.ListReviewThreads(t.Context(), ref); err != nil || len(threads) == 0 {
+			t.Fatalf("%s ListReviewThreads = %d threads, %v", ref.Host, len(threads), err)
+		}
+		if pipeline, err := r.core.ListPRCIJobs(t.Context(), ref, nil, nil); err != nil || len(pipeline.Stages) == 0 {
+			t.Fatalf("%s ListPRCIJobs = %+v, %v", ref.Host, pipeline, err)
+		}
+	}
+	if _, _, err := r.core.FetchAttachment(t.Context(), refs[1], "/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg", 1<<20); err != nil {
+		t.Fatalf("self-hosted GitLab FetchAttachment: %v", err)
+	}
+	reads := r.engine.Invocations(0).Invocations
+	if len(reads) == 0 {
+		t.Fatal("no invocations recorded")
+	}
+	hosts := map[string]string{"github": "ghe.example:8443", "gitlab": "gitlab.example.com:8443"}
+	for _, inv := range reads {
+		if inv.Via != forgefake.ViaHTTP || inv.Host != hosts[inv.Forge] {
+			t.Fatalf("read %+v does not name its reference's host", inv)
+		}
+	}
+
+	for _, ref := range refs {
+		public := ref
+		public.Host = map[string]string{"github": "github.com", "gitlab": "gitlab.com"}[ref.Forge]
+		_, err := r.core.GetPRDetail(t.Context(), public)
+		if err == nil || strings.Contains(err.Error(), "unhandled") {
+			t.Fatalf("%s PR read on %s: %v, want the forge's not-found", ref.Forge, public.Host, err)
+		}
+	}
 	for _, inv := range r.engine.Invocations(0).Invocations {
 		if inv.Unhandled {
 			t.Fatalf("unimplemented invocation: %+v", inv)
@@ -325,19 +519,19 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	gh := checkout("git@github.com:acme/widgets.git")
 	gl := checkout("https://gitlab.com/grp/sub/tool.git")
 
-	open, err := r.core.ListOpenPRs(gh, "feat/widgets")
+	open, err := r.core.ListOpenPRs(t.Context(), gh, "feat/widgets")
 	if err != nil || len(open) != 1 || open[0].Number != 7 || open[0].State != "open" {
 		t.Fatalf("gh ListOpenPRs = %+v, %v", open, err)
 	}
-	merged, err := r.core.ListMergedPRHeads(gh, 10)
+	merged, err := r.core.ListMergedPRHeads(t.Context(), gh, 10)
 	if err != nil || len(merged) != 1 || merged[0].HeadRefName != "old-branch" {
 		t.Fatalf("gh ListMergedPRHeads = %+v, %v", merged, err)
 	}
-	openMR, err := r.core.ListOpenPRs(gl, "fix")
+	openMR, err := r.core.ListOpenPRs(t.Context(), gl, "fix")
 	if err != nil || len(openMR) != 1 || openMR[0].Number != 3 {
 		t.Fatalf("glab ListOpenPRs = %+v, %v", openMR, err)
 	}
-	mergedMR, err := r.core.ListMergedPRHeads(gl, 10)
+	mergedMR, err := r.core.ListMergedPRHeads(t.Context(), gl, 10)
 	if err != nil || len(mergedMR) != 1 || mergedMR[0].HeadOid != strings.Repeat("e", 40) {
 		t.Fatalf("glab ListMergedPRHeads = %+v, %v", mergedMR, err)
 	}
@@ -364,24 +558,24 @@ func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {
 		return dir
 	}
 	gh := checkout("git@github.com:acme/widgets.git", "topic")
-	url, err := r.core.CreatePR(gh, "Topic", "Why", "", true)
+	url, err := r.core.CreatePR(t.Context(), gh, "Topic", "Why", "", true)
 	if err != nil || url != "https://github.com/acme/widgets/pull/8" {
 		t.Fatalf("gh CreatePR = %q, %v", url, err)
 	}
-	open, err := r.core.ListOpenPRs(gh, "topic")
+	open, err := r.core.ListOpenPRs(t.Context(), gh, "topic")
 	if err != nil || len(open) != 1 || open[0].Number != 8 || open[0].URL != url {
 		t.Fatalf("gh ListOpenPRs after create = %+v, %v", open, err)
 	}
-	if _, err := r.core.CreatePR(gh, "Again", "", "", false); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if _, err := r.core.CreatePR(t.Context(), gh, "Again", "", "", false); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second gh CreatePR error = %v", err)
 	}
 
 	gl := checkout("https://gitlab.com/grp/sub/tool.git", "topic")
-	mrURL, err := r.core.CreatePR(gl, "Topic", "Why", "", false)
+	mrURL, err := r.core.CreatePR(t.Context(), gl, "Topic", "Why", "", false)
 	if err != nil || mrURL != "https://gitlab.com/grp/sub/tool/-/merge_requests/4" {
 		t.Fatalf("glab CreatePR = %q, %v", mrURL, err)
 	}
-	openMR, err := r.core.ListOpenPRs(gl, "topic")
+	openMR, err := r.core.ListOpenPRs(t.Context(), gl, "topic")
 	if err != nil || len(openMR) != 1 || openMR[0].Number != 4 {
 		t.Fatalf("glab ListOpenPRs after create = %+v, %v", openMR, err)
 	}
@@ -394,22 +588,27 @@ func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {
 }
 
 func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
-	r := newRig(t, githubFixture())
-	dir := t.TempDir()
-	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
+	fixture := githubFixture()
+	fixture.Repos = append(fixture.Repos, gitlabFixture().Repos...)
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	err := r.core.ReplyToThread(t.Context(), ref, "", 99, "Body")
+	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST repos/acme/widgets/pulls/7/comments/99/replies") {
+		t.Fatalf("GitHub ReplyToThread error = %v, want the fake's unhandled report with the request", err)
 	}
-	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://github.com/acme/widgets.git").CombinedOutput(); err != nil {
-		t.Fatalf("git remote: %v\n%s", err, out)
-	}
-	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
-	err := r.core.ReplyToThread(dir, ref, "", 99, "Body")
-	if err == nil || !strings.Contains(err.Error(), `unhandled gh invocation`) || !strings.Contains(err.Error(), `gh "api" "repos/acme/widgets/pulls/7/comments/99/replies"`) {
-		t.Fatalf("ReplyToThread error = %v, want the fake's unhandled report with the argv", err)
+	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
+	err = r.core.ReplyToThread(t.Context(), mr, "abc", 0, "Body")
+	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes") {
+		t.Fatalf("GitLab ReplyToThread error = %v, want the fake's unhandled report with the request", err)
 	}
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 1 || !log[0].Unhandled || log[0].Args[0] != "api" || log[0].Cwd == "" {
+	if len(log) != 2 {
 		t.Fatalf("recorded %+v", log)
+	}
+	for i, forge := range []string{"github", "gitlab"} {
+		if inv := log[i]; !inv.Unhandled || inv.Via != forgefake.ViaHTTP || inv.Method != "POST" || inv.Forge != forge {
+			t.Fatalf("recorded %+v", log)
+		}
 	}
 }
 
@@ -459,7 +658,7 @@ func exitCode(err error) int {
 	return -1
 }
 
-func TestRepositoryIdentityThroughRealFakeBinary(t *testing.T) {
+func TestRepositoryIdentityThroughTheFake(t *testing.T) {
 	t.Parallel()
 	for _, forge := range []string{"github", "gitlab"} {
 		t.Run(forge, func(t *testing.T) {
@@ -472,7 +671,7 @@ func TestRepositoryIdentityThroughRealFakeBinary(t *testing.T) {
 	}
 }
 
-func TestRepositorySSHIdentityThroughRealFakeBinary(t *testing.T) {
+func TestRepositorySSHIdentityThroughTheFake(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, forgefake.Fixture{SSHHosts: map[string]string{"work-github": "github.com"}, Repos: []forgefake.Repo{{Forge: "github", Project: "owner/repo", ID: 456}}})
 	result := r.core.ResolveRepository(context.Background(), t.TempDir(), gitops.RepoIdentity{RemoteURL: "git@work-github:owner/repo.git"})
@@ -480,7 +679,7 @@ func TestRepositorySSHIdentityThroughRealFakeBinary(t *testing.T) {
 		t.Fatalf("alias: %+v", result)
 	}
 	calls := r.engine.Invocations(0).Invocations
-	if len(calls) != 2 || calls[0].CLI != "ssh" || calls[1].CLI != "gh" {
+	if len(calls) != 2 || calls[0].CLI != "ssh" || calls[1].Via != forgefake.ViaHTTP || calls[1].Route != "gh repository identity" {
 		t.Fatalf("calls: %+v", calls)
 	}
 	for _, call := range calls {

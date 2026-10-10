@@ -181,14 +181,14 @@ func TestNullForgeReturnsErrUnsupported(t *testing.T) {
 		t.Errorf("BinaryName() = %q, want empty", bn)
 	}
 
-	if _, err := f.ListOpenPRs("", "main"); !errors.Is(err, ErrUnsupportedForge) {
+	if _, err := f.ListOpenPRs(t.Context(), "", "main"); !errors.Is(err, ErrUnsupportedForge) {
 		t.Errorf("ListOpenPRs err = %v, want ErrUnsupportedForge", err)
 	}
-	if _, err := f.CreatePR("", "title", "body", "", false); !errors.Is(err, ErrUnsupportedForge) {
+	if _, err := f.CreatePR(t.Context(), "", "title", "body", "", false); !errors.Is(err, ErrUnsupportedForge) {
 		t.Errorf("CreatePR err = %v, want ErrUnsupportedForge", err)
 	}
-	if _, err := f.GetPRDetail("", "owner/repo", 1); !errors.Is(err, ErrUnsupportedForge) {
-		t.Errorf("GetPRDetail err = %v, want ErrUnsupportedForge", err)
+	if _, err := f.ReadPR(t.Context(), testPRRef("owner/repo", 1), PRReadParts{Detail: true}, nil, nil); !errors.Is(err, ErrUnsupportedForge) {
+		t.Errorf("ReadPR err = %v, want ErrUnsupportedForge", err)
 	}
 }
 
@@ -208,4 +208,111 @@ func TestCoreForgeByID(t *testing.T) {
 	if got := core.ForgeByID("bitbucket").ID(); got != "" {
 		t.Errorf("ForgeByID(bitbucket).ID() = %q, want empty (nullForge)", got)
 	}
+}
+
+// testPRRef is a reference for direct forge-implementation calls, which
+// read only Project() and Number.
+// testForgeHost is the host testPRRef puts on a reference: not either
+// public host, so an argv that drops it fails the mock CLIs.
+const testForgeHost = "forge.example"
+
+func testPRRef(project string, number int) PRReference {
+	slash := strings.LastIndex(project, "/")
+	return PRReference{Host: testForgeHost, Namespace: project[:slash], Repo: project[slash+1:], Number: number}
+}
+
+func TestPRReferenceKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		ref  PRReference
+		want string
+	}{
+		// The public-host spelling is the one persisted draft sourceKeys
+		// ("pr:" + key) were written under; it must never change.
+		{PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 5}, "github:owner/repo:5"},
+		{PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo", Number: 3}, "gitlab:group/sub/repo:3"},
+		{PRReference{Forge: "github", Host: "ghe.example.com", Namespace: "owner", Repo: "repo", Number: 5}, "github@ghe.example.com:owner/repo:5"},
+		{PRReference{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "group/sub", Repo: "repo", Number: 3}, "gitlab@gitlab.example.com:8443:group/sub/repo:3"},
+		// The other forge's public host is not this forge's.
+		{PRReference{Forge: "gitlab", Host: "github.com", Namespace: "group", Repo: "repo", Number: 1}, "gitlab@github.com:group/repo:1"},
+	}
+	for _, tc := range cases {
+		if got := tc.ref.Key(); got != tc.want {
+			t.Errorf("Key(%+v) = %q, want %q", tc.ref, got, tc.want)
+		}
+	}
+}
+
+func TestPRReferenceValidate(t *testing.T) {
+	t.Parallel()
+	valid := PRReference{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "group/sub", Repo: "repo", Number: 3}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate(%+v) = %v", valid, err)
+	}
+	if err := (PRReference{Forge: "github", Host: "[::1]:8443", Namespace: "o", Repo: "r", Number: 1}).Validate(); err != nil {
+		t.Fatalf("an IPv6 literal host was refused: %v", err)
+	}
+	bad := map[string]PRReference{
+		"empty host":      {Forge: "github", Namespace: "o", Repo: "r", Number: 1},
+		"uppercase host":  {Forge: "github", Host: "GitHub.com", Namespace: "o", Repo: "r", Number: 1},
+		"userinfo":        {Forge: "github", Host: "u@github.com", Namespace: "o", Repo: "r", Number: 1},
+		"path in host":    {Forge: "github", Host: "github.com/x", Namespace: "o", Repo: "r", Number: 1},
+		"space in host":   {Forge: "github", Host: "git hub.com", Namespace: "o", Repo: "r", Number: 1},
+		"zero number":     {Forge: "github", Host: "github.com", Namespace: "o", Repo: "r"},
+		"bad project":     {Forge: "github", Host: "github.com", Namespace: "a/b", Repo: "r", Number: 1},
+		"colon segment":   {Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r:x", Number: 1},
+		"unknown forge":   {Forge: "bitbucket", Host: "bitbucket.org", Namespace: "o", Repo: "r", Number: 1},
+		"missing forge":   {Host: "github.com", Namespace: "o", Repo: "r", Number: 1},
+		"control in host": {Forge: "github", Host: "github.com\x00", Namespace: "o", Repo: "r", Number: 1},
+	}
+	for name, ref := range bad {
+		if err := ref.Validate(); err == nil {
+			t.Errorf("%s: Validate(%+v) accepted it", name, ref)
+		}
+	}
+	if err := bad["unknown forge"].Validate(); !errors.Is(err, ErrUnsupportedForge) {
+		t.Errorf("unknown forge error = %v, want ErrUnsupportedForge", err)
+	}
+}
+
+// TestCoreRefusesInvalidPRReferenceBeforeDispatch proves the wrappers
+// validate inside the API: a reference without a host never reaches a
+// forge CLI, whichever wrapper the caller used.
+func TestCoreRefusesInvalidPRReferenceBeforeDispatch(t *testing.T) {
+	markers := installTrapCLIs(t)
+	core := NewCore()
+	ref := PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
+	calls := map[string]func() error{
+		"ReadPR": func() error {
+			_, err := core.ReadPR(t.Context(), ref, PRReadParts{Detail: true, Threads: true, CI: true}, nil, nil)
+			return err
+		},
+		"GetPRDetail": func() error { _, err := core.GetPRDetail(t.Context(), ref); return err },
+		"ListReviewThreads": func() error {
+			_, err := core.ListReviewThreads(t.Context(), ref)
+			return err
+		},
+		"SubmitReview": func() error {
+			_, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictComment})
+			return err
+		},
+		"ReplyToThread":     func() error { return core.ReplyToThread(t.Context(), ref, "t", 1, "body") },
+		"SetThreadResolved": func() error { return core.SetThreadResolved(t.Context(), ref, "t", true) },
+		"ListPRCIJobs": func() error {
+			_, err := core.ListPRCIJobs(t.Context(), ref, nil, nil)
+			return err
+		},
+		"GetCIJobLog": func() error { _, err := core.GetCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "1"}); return err },
+		"FetchAttachment": func() error {
+			_, _, err := core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/0f1e2d3c", 1<<20)
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := call()
+		if err == nil || !strings.Contains(err.Error(), "host is required") {
+			t.Errorf("%s error = %v, want the missing-host refusal", name, err)
+		}
+	}
+	assertNoTrapRan(t, markers)
 }

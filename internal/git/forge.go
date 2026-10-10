@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -8,57 +9,84 @@ import (
 	"agent-overflow/internal/forgeattach"
 )
 
-// Forge wraps the host-specific operations against a code-hosting CLI
-// (gh for GitHub, glab for GitLab). All operations route through the
-// owning Core's runBinary so timeouts, size caps, and subprocess
-// discipline stay consistent across forges — the Forge implementation
-// must not call exec.Command directly.
+// Forge wraps the host-specific operations against a code-hosting forge.
+// Requests go through the owning Core's forge API transport (see
+// docs/architecture/forge-transport.md); the operations that still run a
+// CLI (`gh pr create`, `glab mr create`) route through the Core's runSpec
+// so timeouts and subprocess discipline stay consistent. A Forge
+// implementation must not call exec.Command directly.
+//
+// Every operation takes the context of its owner: a bound method's call,
+// or the PR pump's lifetime. Cancelling it ends the request. A context
+// marked with forgeapi.WithInteractive is a user's own action.
+//
+// Repository-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
+// resolve the repository from cwd. PR-scoped operations take the
+// PRReference, which carries the forge host, and no cwd.
 type Forge interface {
-	// ID returns "github" or "gitlab" — the canonical short id for this forge.
+	// ID returns "github" or "gitlab", the canonical short id for this forge.
 	ID() string
-	// BinaryName returns the OS binary the forge shells out to (e.g. "gh").
-	// Used for "<binary> is not installed" messaging.
+	// BinaryName returns the forge's CLI (e.g. "gh"), whose login the
+	// transport borrows. Used for "<binary> is not installed" messaging.
 	BinaryName() string
 
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
-	ListOpenPRs(cwd, head string) ([]GitPR, error)
+	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
 	// ListMergedPRHeads returns the head branch name + head SHA of up to
-	// `limit` recently merged PRs/MRs. One bulk call backing the prune
+	// `limit` recently merged PRs/MRs. One bulk read backing the prune
 	// preview's squash-merge detection: a gone local branch whose tip
 	// matches a merged PR head was fully pushed before the merge.
-	ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error)
+	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
-	CreatePR(cwd, title, body, base string, draft bool) (string, error)
-	// GetPRDetail fetches the review-pane detail shape for a PR/MR.
-	GetPRDetail(cwd, project string, number int) (PRDetail, error)
-	// ListReviewThreads fetches normalized inline review threads.
-	ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error)
+	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
+	// ReadPR reads the parts of a PR/MR want names, the PR pump's one
+	// read per tick (docs/architecture/forge-transport.md#reads-per-tick).
+	// Detail is the review-pane detail shape, Threads the normalized
+	// review threads and conversation comments, CI the head pipeline
+	// grouped into stages (GitLab stages, GitHub workflows) with per-job
+	// status. For CI, prev is the pipeline the caller last observed, or
+	// nil: a forge may serve the parts of it the forge reports unchanged
+	// instead of refetching them; stepsFor names the jobs whose steps the
+	// caller shows, and a forge with steps fills them on those jobs only.
+	// A part not wanted is left zero.
+	ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error)
 	// SubmitReview publishes a PR/MR review verdict plus draft comments.
-	SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error)
+	SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error)
 	// ReplyToThread posts an immediate reply to an existing review thread.
-	ReplyToThread(cwd, project string, number int, threadID string, databaseID int64, body string) error
+	ReplyToThread(ctx context.Context, ref PRReference, threadID string, databaseID int64, body string) error
 	// SetThreadResolved marks one review thread resolved (or reopens it).
-	// threadID is the same id ListReviewThreads reported: a GitHub review
-	// thread node id, a GitLab discussion id.
-	SetThreadResolved(cwd, project string, number int, threadID string, resolved bool) error
-	// ListPRCIJobs fetches the PR/MR head pipeline grouped into stages
-	// (GitLab stages, GitHub workflows) with per-job status. prev is the
-	// pipeline the caller last observed, or nil: a forge may serve the
-	// parts of it the forge reports unchanged instead of refetching them.
-	// stepsFor names the jobs whose steps the caller shows; a forge with
-	// steps fills them on those jobs only.
-	ListPRCIJobs(cwd, project string, number int, prev *CIPipeline, stepsFor []string) (CIPipeline, error)
-	// GetCIJobLog fetches the raw log/trace for one CI job.
-	GetCIJobLog(cwd, project, jobID string) (string, error)
+	// threadID is the same id ReadPR reported: a GitHub review thread node
+	// id, a GitLab discussion id.
+	SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error
+	// GetCIJobLog fetches the log/trace of one CI job of ref's repository,
+	// conditional on the request's ETag (see CIJobLog).
+	GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error)
 	// CILogWhileRunning reports whether GetCIJobLog answers for a job that
 	// is still running (GitLab serves the partial trace; GitHub serves a
 	// log only once the job completed).
 	CILogWhileRunning() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
-	// a PR/MR body or review comment, through the user's own CLI login.
+	// ref's body or review comments, through the user's own forge login.
 	// A body larger than maxBytes is an error, not a truncation. See
 	// forge_attachment.go.
-	FetchAttachment(cwd string, target forgeattach.Target, maxBytes int64) ([]byte, error)
+	FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
+}
+
+// PRReadParts names the parts of a PR one ReadPR decodes.
+type PRReadParts struct {
+	Detail, Threads, CI bool
+}
+
+func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI }
+
+// PRRead is one ReadPR answer. A part ReadPR was not asked for is zero.
+// HasCI reports that the CI part was read, so a caller can tell a PR
+// with no pipeline (HasCI, empty CI) from a read that did not ask.
+type PRRead struct {
+	Detail  PRDetail
+	Threads []ReviewThread
+	CI      CIPipeline
+	HasCI   bool
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
@@ -224,47 +252,83 @@ func (e *PartialSubmitError) Unwrap() error {
 	return e.Err
 }
 
-// ForgeSetupError is a typed, user-facing setup problem for a forge CLI.
-type ForgeSetupError struct {
-	Forge   string
-	Binary  string
-	Kind    string
-	Message string
-	Err     error
-}
-
-func (e *ForgeSetupError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return e.Message
-}
-
-func (e *ForgeSetupError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
 // PRReference identifies a PR/MR by host, namespace, repo, and number.
 // Namespace carries the full path-segment chain before the repo
 // (a single "owner" for GitHub, possibly a "group/sub/sub" chain for
 // GitLab subgroups).
 type PRReference struct {
-	Forge     string // "github" | "gitlab"
+	Forge string // "github" | "gitlab"
+	// Host is the forge host the PR lives on, spelled as its URL's
+	// URL.host (lowercase, a non-default port kept; see ParsePRURL).
+	// Required.
+	Host      string
 	Namespace string // "owner" or "group/sub/..."
 	Repo      string
 	Number    int
 }
 
-// Project returns "namespace/repo" suitable for passing as gh --repo or
-// glab -R.
+// Project returns "namespace/repo", the repository path within Host.
 func (r PRReference) Project() string {
 	if r.Namespace == "" {
 		return r.Repo
 	}
 	return r.Namespace + "/" + r.Repo
+}
+
+// publicForgeHosts maps a forge id to its public host, the one a PR key
+// leaves implicit.
+var publicForgeHosts = map[string]string{
+	"github": "github.com",
+	"gitlab": "gitlab.com",
+}
+
+// Key is the entity key for the PR: "forge:namespace/repo:number" on the
+// forge's public host and "forge@host:namespace/repo:number" on any other.
+// The frontend's prKey (frontend/src/lib/utils/prReference.ts) builds the
+// identical string. Segments never contain ':' and a valid host never
+// contains '@' (Validate), so two references share a key only when they
+// name the same PR. Keys are compared, never parsed.
+func (r PRReference) Key() string {
+	if publicForgeHosts[r.Forge] == r.Host {
+		return fmt.Sprintf("%s:%s:%d", r.Forge, r.Project(), r.Number)
+	}
+	return fmt.Sprintf("%s@%s:%s:%d", r.Forge, r.Host, r.Project(), r.Number)
+}
+
+// Validate reports whether r names a PR a forge operation can address: a
+// supported forge, a lowercase host, a project path that satisfies
+// SplitProjectForForge, and a positive number.
+func (r PRReference) Validate() error {
+	if _, ok := publicForgeHosts[r.Forge]; !ok {
+		return fmt.Errorf("unsupported forge %q: %w", r.Forge, ErrUnsupportedForge)
+	}
+	if err := validatePRHost(r.Host); err != nil {
+		return err
+	}
+	if r.Number <= 0 {
+		return fmt.Errorf("PR number must be positive, got %d", r.Number)
+	}
+	_, _, err := SplitProjectForForge(r.Forge, r.Project())
+	return err
+}
+
+// validatePRHost accepts a URL host as ParsePRURL records it: lowercase,
+// optionally with a port or as a bracketed IPv6 literal. Userinfo, paths,
+// whitespace and control characters are refused so the host cannot alias
+// another key or reach a request line.
+func validatePRHost(host string) error {
+	if host == "" {
+		return errors.New("PR host is required")
+	}
+	if host != strings.ToLower(host) {
+		return fmt.Errorf("PR host %q must be lowercase", host)
+	}
+	for _, r := range host {
+		if r <= 0x20 || r == 0x7f || strings.ContainsRune("/\\@?#%", r) {
+			return fmt.Errorf("PR host %q contains an invalid character", host)
+		}
+	}
+	return nil
 }
 
 // ErrUnsupportedForge is returned by every nullForge operation. Callers
@@ -280,46 +344,38 @@ type nullForge struct{}
 func (nullForge) ID() string         { return "" }
 func (nullForge) BinaryName() string { return "" }
 
-func (nullForge) ListOpenPRs(string, string) ([]GitPR, error) {
+func (nullForge) ListOpenPRs(context.Context, string, string) ([]GitPR, error) {
 	return nil, ErrUnsupportedForge
 }
 
-func (nullForge) ListMergedPRHeads(string, int) ([]MergedPRHead, error) {
+func (nullForge) ListMergedPRHeads(context.Context, string, int) ([]MergedPRHead, error) {
 	return nil, ErrUnsupportedForge
 }
 
-func (nullForge) CreatePR(string, string, string, string, bool) (string, error) {
+func (nullForge) CreatePR(context.Context, string, string, string, string, bool) (string, error) {
 	return "", ErrUnsupportedForge
 }
 
-func (nullForge) GetPRDetail(string, string, int) (PRDetail, error) {
-	return PRDetail{}, ErrUnsupportedForge
+func (nullForge) ReadPR(context.Context, PRReference, PRReadParts, *CIPipeline, []string) (PRRead, error) {
+	return PRRead{}, ErrUnsupportedForge
 }
 
-func (nullForge) ListReviewThreads(string, string, int) ([]ReviewThread, error) {
-	return nil, ErrUnsupportedForge
-}
-
-func (nullForge) SubmitReview(string, string, int, SubmitReviewRequest) (SubmitReviewResult, error) {
+func (nullForge) SubmitReview(context.Context, PRReference, SubmitReviewRequest) (SubmitReviewResult, error) {
 	return SubmitReviewResult{}, ErrUnsupportedForge
 }
 
-func (nullForge) ReplyToThread(string, string, int, string, int64, string) error {
+func (nullForge) ReplyToThread(context.Context, PRReference, string, int64, string) error {
 	return ErrUnsupportedForge
 }
 
-func (nullForge) SetThreadResolved(string, string, int, string, bool) error {
+func (nullForge) SetThreadResolved(context.Context, PRReference, string, bool) error {
 	return ErrUnsupportedForge
-}
-
-func (nullForge) ListPRCIJobs(string, string, int, *CIPipeline, []string) (CIPipeline, error) {
-	return CIPipeline{}, ErrUnsupportedForge
 }
 
 func (nullForge) CILogWhileRunning() bool { return false }
 
-func (nullForge) GetCIJobLog(string, string, string) (string, error) {
-	return "", ErrUnsupportedForge
+func (nullForge) GetCIJobLog(context.Context, PRReference, CIJobLogRequest) (CIJobLog, error) {
+	return CIJobLog{}, ErrUnsupportedForge
 }
 
 // SplitProjectForForge separates "namespace/repo" with per-forge
@@ -367,7 +423,7 @@ func SplitProjectForForge(forgeID, project string) (namespace, repo string, err 
 // all real github / gitlab owner / namespace / repo names.
 //
 // `:` is rejected because the PR entity key is `<forge>:<project>:<number>`
-// (prUpdateKey / the frontend's prKey). A segment carrying a colon would
+// (PRReference.Key / the frontend's prKey). A segment carrying a colon would
 // let two different pull requests spell the same key, and the key is what
 // every `pr:updated` frame is addressed by — one PR's poll results would
 // land on another PR's panes. GitHub and GitLab both refuse `:` in a path
@@ -412,28 +468,58 @@ func NormalizePRState(s string) string {
 	}
 }
 
-func (c *Core) GetPRDetail(cwd string, ref PRReference) (PRDetail, error) {
-	return c.ForgeByID(ref.Forge).GetPRDetail(cwd, ref.Project(), ref.Number)
+// The PR-scoped Core operations validate ref before dispatching, so no
+// caller's precondition decides what reaches a forge.
+
+// ReadPR reads the parts of ref want names in one forge read (see
+// Forge.ReadPR). Asking for no part is an error.
+func (c *Core) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error) {
+	if err := ref.Validate(); err != nil {
+		return PRRead{}, err
+	}
+	if want.none() {
+		return PRRead{}, errors.New("PR read names no part")
+	}
+	return c.ForgeByID(ref.Forge).ReadPR(ctx, ref, want, prev, stepsFor)
 }
 
-func (c *Core) ListReviewThreads(cwd string, ref PRReference) ([]ReviewThread, error) {
-	return c.ForgeByID(ref.Forge).ListReviewThreads(cwd, ref.Project(), ref.Number)
+// GetPRDetail is ReadPR for the detail alone.
+func (c *Core) GetPRDetail(ctx context.Context, ref PRReference) (PRDetail, error) {
+	read, err := c.ReadPR(ctx, ref, PRReadParts{Detail: true}, nil, nil)
+	return read.Detail, err
 }
 
-func (c *Core) SubmitReview(cwd string, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	return c.ForgeByID(ref.Forge).SubmitReview(cwd, ref.Project(), ref.Number, review)
+// ListReviewThreads is ReadPR for the threads alone.
+func (c *Core) ListReviewThreads(ctx context.Context, ref PRReference) ([]ReviewThread, error) {
+	read, err := c.ReadPR(ctx, ref, PRReadParts{Threads: true}, nil, nil)
+	return read.Threads, err
 }
 
-func (c *Core) ReplyToThread(cwd string, ref PRReference, threadID string, databaseID int64, body string) error {
-	return c.ForgeByID(ref.Forge).ReplyToThread(cwd, ref.Project(), ref.Number, threadID, databaseID, body)
+func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	if err := ref.Validate(); err != nil {
+		return SubmitReviewResult{}, err
+	}
+	return c.ForgeByID(ref.Forge).SubmitReview(ctx, ref, review)
 }
 
-func (c *Core) SetThreadResolved(cwd string, ref PRReference, threadID string, resolved bool) error {
-	return c.ForgeByID(ref.Forge).SetThreadResolved(cwd, ref.Project(), ref.Number, threadID, resolved)
+func (c *Core) ReplyToThread(ctx context.Context, ref PRReference, threadID string, databaseID int64, body string) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).ReplyToThread(ctx, ref, threadID, databaseID, body)
 }
 
-func (c *Core) ListPRCIJobs(cwd string, ref PRReference, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
-	return c.ForgeByID(ref.Forge).ListPRCIJobs(cwd, ref.Project(), ref.Number, prev, stepsFor)
+func (c *Core) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	return c.ForgeByID(ref.Forge).SetThreadResolved(ctx, ref, threadID, resolved)
+}
+
+// ListPRCIJobs is ReadPR for the pipeline alone.
+func (c *Core) ListPRCIJobs(ctx context.Context, ref PRReference, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+	read, err := c.ReadPR(ctx, ref, PRReadParts{CI: true}, prev, stepsFor)
+	return read.CI, err
 }
 
 // CILogWhileRunning reports whether ref's forge serves a running job's
@@ -442,6 +528,9 @@ func (c *Core) CILogWhileRunning(ref PRReference) bool {
 	return c.ForgeByID(ref.Forge).CILogWhileRunning()
 }
 
-func (c *Core) GetCIJobLog(cwd string, ref PRReference, jobID string) (string, error) {
-	return c.ForgeByID(ref.Forge).GetCIJobLog(cwd, ref.Project(), jobID)
+func (c *Core) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
+	if err := ref.Validate(); err != nil {
+		return CIJobLog{}, err
+	}
+	return c.ForgeByID(ref.Forge).GetCIJobLog(ctx, ref, req)
 }

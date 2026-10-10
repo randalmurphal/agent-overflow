@@ -1,6 +1,7 @@
 package gitapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -36,7 +37,7 @@ type statusState struct {
 // Subscribe begins one workspace-keyed status stream and returns its initial
 // snapshot. The caller owns connection-lifetime cleanup and must call
 // Unsubscribe if it cannot register that cleanup.
-func (s *Service) Subscribe(ref WorkspaceRef) (StatusSubscription, error) {
+func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscription, error) {
 	if s.shuttingDown() {
 		if s.shuttingDownError != nil {
 			return StatusSubscription{}, s.shuttingDownError
@@ -59,7 +60,7 @@ func (s *Service) Subscribe(ref WorkspaceRef) (StatusSubscription, error) {
 	}
 
 	s.core.InvalidatePRCache(workspace)
-	sub, err := s.watch.Subscribe(workspace)
+	sub, err := s.watch.Subscribe(ctx, workspace)
 	if err != nil {
 		return StatusSubscription{}, fmt.Errorf("gitwatch subscribe: %w", err)
 	}

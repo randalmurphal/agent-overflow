@@ -1,11 +1,12 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestTailCapLog(t *testing.T) {
 
 func TestCILogFileName(t *testing.T) {
 	t.Parallel()
-	pr := gitops.PRReference{Forge: "gitlab", Namespace: "group/sub", Repo: "repo", Number: 42}
+	pr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo", Number: 42}
 	name := ciLogFileName(pr, "1234", "unit tests (linux/amd64)")
 	if name != "gitlab-group-sub-repo-pr42-1234-unit-tests--linux-amd64.log" {
 		t.Fatalf("name = %q", name)
@@ -48,19 +49,22 @@ func TestCILogFileName(t *testing.T) {
 }
 
 func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.configDir = t.TempDir()
+	const content = "full log content\nsecond line\n"
+	app.git = githubAPITestCore(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/github/rest/repos/acme/widgets/actions/jobs/901/logs" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		_, _ = io.WriteString(w, content)
+	})
 
-	binDir := t.TempDir()
-	script := "#!/bin/sh\nprintf 'full log content\\nsecond line\\n'\n"
-	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
-	app.forgeCLIs.fake = filepath.Join(binDir, "gh")
-
-	pr := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
-	path, err := app.SavePRCIJobLog(pr, "901", "build")
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	path, err := app.SavePRCIJobLog(t.Context(), pr, "901", "build")
 	if err != nil {
 		t.Fatalf("SavePRCIJobLog: %v", err)
 	}
@@ -78,25 +82,23 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 		t.Fatalf("saved content = %q", data)
 	}
 
-	if _, err := app.SavePRCIJobLog(pr, "not-a-number", "build"); err == nil {
+	if _, err := app.SavePRCIJobLog(t.Context(), pr, "not-a-number", "build"); err == nil {
 		t.Fatal("expected error for invalid job id")
 	}
 }
 
 func TestSavePRCIJobLogNamesAnUnpublishedLog(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
+	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.configDir = t.TempDir()
+	app.git = githubAPITestCore(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	})
 
-	binDir := t.TempDir()
-	script := "#!/bin/sh\nprintf '{\"message\":\"Not Found\"}'\necho 'gh: Not Found (HTTP 404)' 1>&2\nexit 1\n"
-	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
-	app.forgeCLIs.fake = filepath.Join(binDir, "gh")
-
-	pr := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
-	_, err := app.SavePRCIJobLog(pr, "901", "build")
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	_, err := app.SavePRCIJobLog(t.Context(), pr, "901", "build")
 	if !errors.Is(err, errCIJobLogUnpublished) {
 		t.Fatalf("SavePRCIJobLog error = %v, want the unpublished-log answer", err)
 	}

@@ -73,7 +73,7 @@ const REF = { kind: 'attachment' as const, threadId: 'thread-1', attachmentId: '
 
 const GITHUB_HREF = buildForgeAttachmentHref({
   href: 'https://github.com/user-attachments/assets/4f0b0b1e-1111-2222-3333-444455556666',
-  pr: { forge: 'github', namespace: 'octo', repo: 'widget', number: 7 },
+  pr: { forge: 'github', host: 'github.com', namespace: 'octo', repo: 'widget', number: 7 },
   backend: 'gpu',
   webBase: 'https://github.com/octo/widget/pull/7',
 });

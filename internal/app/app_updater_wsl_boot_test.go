@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
-	"strings"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/buildvariant"
+	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/wsldistro"
 )
 
@@ -77,30 +82,63 @@ func TestInitWSLUpdaterConfiguresService(t *testing.T) {
 	}
 }
 
-// The GitLab release feed's glab runs through the App's git Core, so an
-// isolated boot runs its fake glab and never the one on PATH.
-func TestGlabAPIRunnerUsesTheIsolatedForgeCLI(t *testing.T) {
-	markers := installForgeTraps(t)
-	fake, record := writeFakeForge(t)
+// The GitLab release feed reads through the App's forge API transport,
+// resolved per call: before Start there is none, and once the Core has one
+// the request goes to the feed's host with the transport's token, bounded
+// by the caller's deadline rather than the transport's read timeout.
+func TestGitLabReleaseClientUsesTheAppsForgeAPI(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var seen []*http.Request
+	delay := make(chan time.Duration, 1)
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Clone(context.Background()))
+		mu.Unlock()
+		select {
+		case d := <-delay:
+			time.Sleep(d)
+		default:
+		}
+		_, _ = w.Write([]byte(`[{"tag_name":"v1"}]`))
+	}))
+	t.Cleanup(fake.Close)
 	a := &App{}
-	ConfigureIsolation(a, IsolationConfig{ForgeCLI: fake})
-
+	client := a.gitlabReleaseClient("gitlab.example.com")
 	var out bytes.Buffer
-	exitCode, _, err := a.glabAPIRunner(context.Background(), []string{"--hostname", "gitlab.example.com", "--", "projects/grp%2Fapp/releases"}, &out, 1<<20)
-	if err != nil || exitCode != 0 {
-		t.Fatalf("glabAPIRunner = %d, %v", exitCode, err)
+	if err := client.Stream(t.Context(), "projects/grp%2Fapp/releases", &out, 1<<20); !errors.Is(err, gitops.ErrNoForgeAPI) {
+		t.Fatalf("Stream before Start = %v, want ErrNoForgeAPI", err)
 	}
-	if !strings.Contains(out.String(), "from fake") {
-		t.Fatalf("runner output = %q, want the fake's answer", out.String())
-	}
-	got, err := os.ReadFile(record)
+
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", ReadTimeout: 250 * time.Millisecond,
+		Isolated: &forgeapi.Isolated{BaseURL: fake.URL, Token: "fake-token"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(got), "glab ") {
-		t.Fatalf("fake saw %q, want it run as glab", got)
+	t.Cleanup(svc.Close)
+	a.git = gitops.NewCore(gitops.WithForgeAPI(svc))
+	if err := client.Stream(t.Context(), "projects/grp%2Fapp/releases", &out, 1<<20); err != nil || out.String() != `[{"tag_name":"v1"}]` {
+		t.Fatalf("Stream = %q, %v", out.String(), err)
 	}
-	if ran := trapsThatRan(t, markers); len(ran) != 0 {
-		t.Fatalf("the real %v on PATH ran under an isolated App", ran)
+	mu.Lock()
+	got := seen[0]
+	mu.Unlock()
+	if got.URL.EscapedPath() != "/gitlab/api/v4/projects/grp%2Fapp/releases" || got.Host != "gitlab.example.com" ||
+		got.Header.Get("Private-Token") != "fake-token" || got.Header.Get("Accept") != "*/*" {
+		t.Fatalf("request = %s %s host %q accept %q", got.Method, got.URL.EscapedPath(), got.Host, got.Header.Get("Accept"))
+	}
+
+	// A call that outlasts the read timeout completes inside the caller's
+	// deadline, and fails without one.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	delay <- 750 * time.Millisecond
+	out.Reset()
+	if err := client.Stream(ctx, "projects/grp%2Fapp/releases", &out, 1<<20); err != nil {
+		t.Fatalf("Stream under a 10s deadline = %v", err)
+	}
+	delay <- 750 * time.Millisecond
+	if err := client.Stream(t.Context(), "projects/grp%2Fapp/releases", io.Discard, 1<<20); err == nil {
+		t.Fatal("Stream without a deadline outlasted the read timeout")
 	}
 }

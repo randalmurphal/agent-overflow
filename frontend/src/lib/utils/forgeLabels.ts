@@ -5,6 +5,8 @@
 // per-forge mapping testable in isolation.
 
 export interface ForgeLabels {
+  /** The forge's own name: "GitHub" / "GitLab". */
+  name: 'GitHub' | 'GitLab';
   /** Short noun: "PR" / "MR". */
   noun: 'PR' | 'MR';
   /** Action verb phrase: "Create PR" / "Create MR". */
@@ -20,6 +22,7 @@ export interface ForgeLabels {
 }
 
 const githubLabels: ForgeLabels = {
+  name: 'GitHub',
   noun: 'PR',
   createAction: 'Create PR',
   longSingular: 'Pull request',
@@ -29,6 +32,7 @@ const githubLabels: ForgeLabels = {
 };
 
 const gitlabLabels: ForgeLabels = {
+  name: 'GitLab',
   noun: 'MR',
   createAction: 'Create MR',
   longSingular: 'Merge request',

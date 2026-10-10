@@ -30,7 +30,7 @@ vi.mock('../../../utils/forgeAttachmentActions', () => ({
 }));
 
 const HEX = '0123456789abcdef0123456789abcdef';
-const MR: PRRef = { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 };
+const MR: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 };
 const WEB = 'https://gitlab.example.test/group/widget/-/merge_requests/3';
 
 function hrefFor(raw = `/uploads/${HEX}/shot.png`, webBase = WEB): string {
