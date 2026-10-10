@@ -30,6 +30,12 @@ type GitStatus struct {
 	// OpenPRLookupError is set when the forge lookup failed, distinct from
 	// a successful lookup that found no open PR/MR for the branch.
 	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
+	// OpenPRLookupPending is set by StatusFast when the PR cache holds no
+	// live entry for the branch: the open-PR fields above are not an
+	// answer yet, and the follow-up Status call that warms the cache
+	// broadcasts the real ones. A reader that needs the answer (the review
+	// pane choosing between "no PR" and "not yet") waits on it.
+	OpenPRLookupPending bool `json:"openPrLookupPending,omitempty"`
 	// PendingOperation surfaces an in-progress multi-step operation.
 	// Values: "merge", "rebase", "bisect", or "" when none is pending. The
 	// commit dialog shows it as a notice; git itself decides whether a
@@ -59,6 +65,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
 		s.OpenPRLookupError == other.OpenPRLookupError &&
+		s.OpenPRLookupPending == other.OpenPRLookupPending &&
 		s.PendingOperation == other.PendingOperation
 }
 
@@ -76,15 +83,19 @@ func (c *Core) Status(cwd string) (GitStatus, error) {
 
 // StatusFast is the same as Status but uses only cached PR info,
 // avoiding the network call to gh/glab. Returns immediately even when
-// the PR cache is cold — the caller is expected to arrange a follow-up
-// full Status call that warms the cache and broadcasts the PR fields.
+// the PR cache is cold, with OpenPRLookupPending set so readers can tell
+// the empty PR fields from an answer; the caller is expected to arrange
+// a follow-up full Status call that warms the cache and broadcasts the
+// PR fields.
 func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 	status, err := c.baseStatus(cwd)
 	if err != nil || !status.IsRepo {
 		return status, err
 	}
 	if status.Branch != "" && status.Forge != "" {
-		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPRCached(cwd, status.Branch)
+		var cached bool
+		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError, cached = c.lookupOpenPRCached(cwd, status.Branch)
+		status.OpenPRLookupPending = !cached
 	}
 	return status, nil
 }

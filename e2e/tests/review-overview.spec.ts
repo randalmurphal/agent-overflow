@@ -221,7 +221,10 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   // Scrolling into the diff takes the overview with it; the title bar
   // offers the way back.
   await expect(review.getByTestId('review-overview-peek')).toHaveCount(0);
+  // The bar does not breathe when its peek controls appear.
+  const barHeightBefore = (await review.getByTestId('review-pr-header').boundingBox())!.height;
   await scrollPastOverview(review);
+  expect((await review.getByTestId('review-pr-header').boundingBox())!.height).toBe(barHeightBefore);
   await expect(review.getByTestId('review-peek-conversation')).toContainText('2 unresolved');
   await page.screenshot({ path: testInfo.outputPath('diff-scrolled.png') });
 

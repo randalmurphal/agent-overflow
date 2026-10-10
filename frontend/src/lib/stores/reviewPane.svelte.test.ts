@@ -1506,27 +1506,76 @@ describe('reviewPane store — PR scope', () => {
     });
   });
 
-  it('a pane restored into pr scope before git status lands retries when the ref resolves', async () => {
+  it('a pane restored into pr scope before git status lands waits, then loads when the ref resolves', async () => {
     installPRMocks();
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 2));
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
     // No pane registered and no git status yet: the boot load runs before
-    // the fetch lands and comes up with no reference.
+    // the fetch lands. That is input still coming, not a missing PR, so
+    // nothing is said and no diff is asked for.
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.scope).toBe('pr');
-    expect(state.error).toContain('No PR or MR');
+    expect(state.awaitingPR).toBe(true);
+    expect(state.error).toBeNull();
+    expect(diff).not.toHaveBeenCalled();
 
-    // The enriched status lands on the shared store; the ref watcher
-    // retries the load with no user interaction and the pane recovers.
+    // The enriched status lands on the shared store; the watcher loads
+    // with no user interaction and nothing else was ever shown.
     seedPaneWorkspaceStatus('pane-1', {
       forge: 'github',
       openPrUrl: 'https://github.com/owner/repo/pull/5',
       openPrNumber: 5,
     });
     await vi.waitFor(() => {
-      expect(state.prRef?.number).toBe(5);
-      expect(state.error).toBeNull();
+      expect(state.files.length).toBe(1);
     });
+    expect(state.prRef?.number).toBe(5);
+    expect(state.awaitingPR).toBe(false);
+    expect(state.error).toBeNull();
+    expect(diff).toHaveBeenCalledTimes(1);
+  });
+
+
+  it('a pane restored into pr scope waits through the fast status whose PR lookup is pending', async () => {
+    installPRMocks();
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 2));
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
+    // The first status a subscribe answers with is the fast one: no PR
+    // fields, and the lookup still pending. That is not "no PR".
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrLookupPending: true });
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.awaitingPR).toBe(true);
+    expect(state.error).toBeNull();
+    expect(diff).not.toHaveBeenCalled();
+
+    // The warmed status replaces it with the PR; the diff loads.
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/5',
+      openPrNumber: 5,
+    });
+    await vi.waitFor(() => {
+      expect(state.files.length).toBe(1);
+    });
+    expect(state.awaitingPR).toBe(false);
+    expect(state.error).toBeNull();
+  });
+
+  it('a pane restored into pr scope answers "no PR" once git status lands without one', async () => {
+    installPRMocks();
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.awaitingPR).toBe(true);
+
+    seedPaneWorkspaceStatus('pane-1', {});
+    await vi.waitFor(() => {
+      expect(state.error).toContain('No PR or MR');
+    });
+    expect(state.awaitingPR).toBe(false);
+    expect(state.prRef).toBeNull();
   });
 
   it('restores a persisted pr scope from the workspace\'s open PR', async () => {
@@ -3305,7 +3354,7 @@ describe('reviewPane store — PR whose first fetch failed', () => {
     await state.setScope('pr');
     await waitLoaded(state);
 
-    expect(state.awaitingPRDetail).toBe(true);
+    expect(state.awaitingPR).toBe(true);
     expect(state.error).toBeNull();
     expect(state.prUpdateError).toContain('failed to refresh');
     expect(state.prDetail).toBeNull();
@@ -3318,7 +3367,7 @@ describe('reviewPane store — PR whose first fetch failed', () => {
     await vi.waitFor(() => {
       expect(state.files.length).toBe(1);
     });
-    expect(state.awaitingPRDetail).toBe(false);
+    expect(state.awaitingPR).toBe(false);
     expect(state.prUpdateError).toBeNull();
     expect(state.prDetail?.number).toBe(5);
     expect(diff).toHaveBeenCalledTimes(1);

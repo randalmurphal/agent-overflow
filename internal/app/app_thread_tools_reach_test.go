@@ -24,6 +24,7 @@ import (
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -610,9 +611,19 @@ func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	// One reply per session: each of the three requests below runs in a
-	// thread that has not run before, which is one mock process each.
+	// thread that has not run before, which is one mock process each. The
+	// turn holds before its result until the gate file exists: a mock that
+	// answers at once can settle the spawn before its ack is even built,
+	// and then the ack carries the answer inline instead of the acceptance
+	// this test is about. The gate releases every later session at once.
 	const answer = "the other computer answered"
-	installMockClaudeReplies(t, pair.dest, answer)
+	gate := filepath.Join(t.TempDir(), "answer")
+	installMockClaudeTurns(t, pair.dest, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(answer) + `}]}}`,
+		testutil.MockWaitForFile(gate),
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}})
 
 	spawn := pair.spawnThere(t, "start work over there", nil)
 	if spawn.ComputerID != pair.computer || (spawn.State != store.ThreadRequestAccepted && spawn.State != store.ThreadRequestRunning) {
@@ -621,6 +632,9 @@ func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
 	row := pair.request(t, spawn.Token)
 	if row.TargetComputerID != pair.computer {
 		t.Fatalf("the source row names computer %q, want %q", row.TargetComputerID, pair.computer)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	target := pair.collect(t, spawn.Token, answer)
 	if target == "" {

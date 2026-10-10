@@ -67,6 +67,7 @@ func TestStatusDiffersIgnoringPR(t *testing.T) {
 	prOnly.OpenPRURL = "https://example.com/pr/7"
 	prOnly.OpenPRNumber = 7
 	prOnly.OpenPRLookupError = "boom"
+	prOnly.OpenPRLookupPending = true
 	if statusDiffersIgnoringPR(base, prOnly) {
 		t.Fatalf("PR-only delta must not count as a non-PR change")
 	}

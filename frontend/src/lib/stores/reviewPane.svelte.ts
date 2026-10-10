@@ -21,7 +21,7 @@ import {
   VerifyEditDiffs,
 } from './bindings';
 import { openCompanion } from './companionPanes.svelte';
-import { peekGitStatus } from './gitStatusStore.svelte';
+import { peekGitStatus, peekGitStatusError } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
@@ -184,10 +184,11 @@ export interface ReviewPaneState {
    * head against the head this pane loaded at, so a push seen by one pane
    * can never mark another pane's freshly-loaded diff stale. */
   readonly prStale: boolean;
-  /** PR scope with a held PR whose first snapshot has not arrived (the
-   * forge failed the first fetch; the poller is retrying). The diff loads
-   * on its own once it lands. */
-  readonly awaitingPRDetail: boolean;
+  /** PR scope waiting on input rather than failed: the workspace's git
+   * status (which names the PR) has not been observed yet, or the PR is
+   * held but its poller has no snapshot (the forge failed the first
+   * fetch; it is retrying). The diff loads on its own once either lands. */
+  readonly awaitingPR: boolean;
   readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
   readonly conflicts: PRConflicts | null;
@@ -866,10 +867,31 @@ function createReviewPaneState(
   // no detail sets this; the watcher reloads the moment the pump's
   // recovery frame lands.
   let awaitingPRDetail = $state(false);
+  // One step earlier still: pr scope before the workspace's git status
+  // has answered which PR the branch has. A pane remounted on a thread,
+  // or restored at boot, reaches reload before the status store has a
+  // status for its workspace, or with the fast first status whose PR
+  // lookup is still pending (`openPrLookupPending`); either is "not yet",
+  // not "no PR".
+  let awaitingPRStatus = $state(false);
+  const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
+  function workspacePRLookupSettled(): boolean {
+    const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
+    const status = peekGitStatus(key);
+    if (status !== null) return !status.openPrLookupPending;
+    return peekGitStatusError(key) !== null;
+  }
   const disposePRRefWatch = $effect.root(() => {
     $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
+      void reload();
+    });
+    $effect(() => {
+      // Status landed, with or without a PR: the load runs now, so a
+      // workspace with no PR answers "no PR" instead of waiting forever.
+      if (!awaitingPRStatus || !workspacePRLookupSettled()) return;
+      awaitingPRStatus = false;
       void reload();
     });
     $effect(() => {
@@ -1058,6 +1080,7 @@ function createReviewPaneState(
       let loadingPRKey: string | null = null;
       if (scope === 'pr' && prRef) {
         awaitingPRRef = false;
+        awaitingPRStatus = false;
         loadingPRRef = prRef;
         loadingPRKey = computerPRKey(loadingPRRef);
         const hold = holdPR(loadingPRRef);
@@ -1075,10 +1098,19 @@ function createReviewPaneState(
         // loads); a pane that is no longer on a PR holds no reference.
         releasePR();
         awaitingPRRef = false;
+        awaitingPRStatus = false;
+        awaitingPRDetail = false;
       } else {
-        // pr scope with no resolvable ref: loadPatch will surface the
-        // user-facing error, and the ref watcher retries if one appears.
+        // pr scope with no resolvable ref. Before the workspace's status has
+        // been observed there is nothing to say yet: wait, and the watcher
+        // above reloads when it lands. Once it has, loadPatch surfaces the
+        // user-facing error, and the ref watcher retries if a PR appears.
         awaitingPRRef = true;
+        if (!workspacePRLookupSettled()) {
+          awaitingPRStatus = true;
+          return;
+        }
+        awaitingPRStatus = false;
       }
       const loaded = await loadPatch(
         { workspace, threadId, backend },
@@ -2050,7 +2082,7 @@ function createReviewPaneState(
       return patchScopeContext();
     },
     get prStale() { return prStale; },
-    get awaitingPRDetail() { return awaitingPRDetail; },
+    get awaitingPR() { return awaitingPR; },
     get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },
     get conflicts() { return conflictsState.state; },

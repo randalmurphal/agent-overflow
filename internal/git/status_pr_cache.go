@@ -3,21 +3,23 @@ package git
 import "strings"
 
 // lookupOpenPRCached returns cached PR info without making a network
-// call. Returns ("", 0, "") on cache miss. A cached lookup failure returns
-// the user-facing error together with the last PR the branch was known to
-// have (empty when there was none) — see lookupOpenPR. Used by StatusFast
-// to keep the initial subscribe path free of network calls.
-func (c *Core) lookupOpenPRCached(cwd, branch string) (string, int, string) {
+// call. The last result reports whether the cache answered: false is a
+// miss (cold or expired), and the PR fields with it say nothing about the
+// branch. A cached lookup failure returns the user-facing error together
+// with the last PR the branch was known to have (empty when there was
+// none) — see lookupOpenPR. Used by StatusFast to keep the initial
+// subscribe path free of network calls.
+func (c *Core) lookupOpenPRCached(cwd, branch string) (url string, number int, lookupError string, cached bool) {
 	if branch == "" {
-		return "", 0, ""
+		return "", 0, "", true
 	}
 	key := prCacheKey(cwd, branch)
 	c.prCacheMu.RLock()
 	defer c.prCacheMu.RUnlock()
 	if entry, ok := c.prCache[key]; ok && entry.expiresAt.After(c.nowFn()) {
-		return entry.url, entry.number, entry.lookupError
+		return entry.url, entry.number, entry.lookupError, true
 	}
-	return "", 0, ""
+	return "", 0, "", false
 }
 
 // lookupOpenPR returns the open PR for (cwd, branch), consulting the TTL'd

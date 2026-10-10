@@ -38,6 +38,12 @@ export interface GitStatus {
    */
   openPrLookupError?: string;
   /**
+   * The fast first status answers before the forge has been asked: the
+   * open-PR fields above say nothing yet, and the follow-up status that
+   * warms the lookup replaces them. Absent once the lookup has settled.
+   */
+  openPrLookupPending?: boolean;
+  /**
    * Identifier of an in-progress multi-step git operation that blocks new
    * commits. Empty string when the repo is idle. Known values: "merge",
    * "rebase", "bisect".

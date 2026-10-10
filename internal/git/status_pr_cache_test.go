@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -176,7 +177,7 @@ func TestLookupOpenPRCachesErrorsBriefly(t *testing.T) {
 		t.Fatal("expected lookup error")
 	}
 
-	if _, _, cachedErr := core.lookupOpenPRCached(cwd, "main"); cachedErr == "" {
+	if _, _, cachedErr, cached := core.lookupOpenPRCached(cwd, "main"); !cached || cachedErr == "" {
 		t.Fatal("cached lookup error is empty")
 	}
 	core.lookupOpenPR(cwd, "main")
@@ -389,4 +390,59 @@ func TestPRCacheKeepsStickyEntryPastRefreshTTL(t *testing.T) {
 
 	f.setMode("fail")
 	f.wantPR("failure after sibling sweep", f.lookup("feat"), "https://example.com/pr/7", 7, true)
+}
+
+// TestStatusFastReportsAPendingLookupUntilTheCacheIsWarm: the fast status
+// a subscribe answers with cannot tell "no PR" from "not looked up yet" by
+// its PR fields alone, so it says which. A warm entry, PR or none, is an
+// answer; a cold or expired one is not.
+func TestStatusFastReportsAPendingLookupUntilTheCacheIsWarm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	mockexec.Write(t, ghPath, "#!/bin/sh\necho '[]'\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	core := NewCore()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/acme/repo.git")
+	seedForgeCacheGitHub(t, core, repo)
+
+	cold, err := core.StatusFast(repo)
+	if err != nil {
+		t.Fatalf("StatusFast cold: %v", err)
+	}
+	if !cold.OpenPRLookupPending || cold.OpenPRURL != "" {
+		t.Fatalf("cold fast status = pending %v url %q, want pending with no PR fields", cold.OpenPRLookupPending, cold.OpenPRURL)
+	}
+
+	full, err := core.Status(repo)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if full.OpenPRLookupPending {
+		t.Fatal("a full status is never pending")
+	}
+	if full.Equal(cold) {
+		t.Fatal("the warmed answer must differ from the pending one, or it is never broadcast")
+	}
+
+	warm, err := core.StatusFast(repo)
+	if err != nil {
+		t.Fatalf("StatusFast warm: %v", err)
+	}
+	if warm.OpenPRLookupPending || warm.OpenPRURL != "" {
+		t.Fatalf("warm fast status = pending %v url %q, want a settled answer of no PR", warm.OpenPRLookupPending, warm.OpenPRURL)
+	}
+
+	core.nowFn = func() time.Time { return time.Now().Add(prLookupTTL + time.Second) }
+	expired, err := core.StatusFast(repo)
+	if err != nil {
+		t.Fatalf("StatusFast expired: %v", err)
+	}
+	if !expired.OpenPRLookupPending {
+		t.Fatal("an expired entry is a cold cache again")
+	}
 }

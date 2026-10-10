@@ -98,6 +98,10 @@ func MockClaudeStreamedText(msgID, text string) []string {
 // message), the mock emits the first batch, then a second Send() arrives and
 // the mock emits the second batch, etc.
 //
+// A batch line from MockWaitForFile is not printed: the script blocks
+// there until the named file exists, so a test can hold a turn open past
+// the point it is asserting about and then let it finish.
+//
 // Interrupt control_requests are handled out-of-band: the script always
 // answers them with a synthetic success control_response (echoing the
 // request_id) and does NOT advance the index counter. This matches the
@@ -147,6 +151,12 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	for i, batch := range responses {
 		b.WriteString(fmt.Sprintf("    %d)\n", i))
 		for _, line := range batch {
+			if gate, ok := strings.CutPrefix(line, mockWaitForFilePrefix); ok {
+				b.WriteString("      while [ ! -e ")
+				b.WriteString(shellSingleQuote(gate))
+				b.WriteString(" ]; do sleep 0.02; done\n")
+				continue
+			}
 			b.WriteString("      emit ")
 			b.WriteString(shellSingleQuote(line))
 			b.WriteString("\n")
@@ -160,6 +170,15 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	b.WriteString("exit 0\n")
 
 	return writeMockShellScript(t, dir, "mock-claude-script.sh", b.String())
+}
+
+const mockWaitForFilePrefix = "\x00wait-for-file:"
+
+// MockWaitForFile is a WriteMockClaudeScript batch line that makes the
+// mock block until `path` exists before it prints the lines after it.
+// Create the file to release the turn.
+func MockWaitForFile(path string) string {
+	return mockWaitForFilePrefix + path
 }
 
 // WriteMockCodexSession writes a shell script that behaves like `codex

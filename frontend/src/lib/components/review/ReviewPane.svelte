@@ -644,7 +644,7 @@
       {/if}
     {:else if review.loading && review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
-    {:else if review.files.length === 0 && review.awaitingPRDetail}
+    {:else if review.files.length === 0 && review.awaitingPR}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the pull request…</div>
     {:else if review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>

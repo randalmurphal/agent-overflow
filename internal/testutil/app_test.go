@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -202,4 +203,57 @@ func readLineWithTimeout(t *testing.T, r *bufio.Reader, d time.Duration) string 
 		t.Fatal("timed out reading stdout")
 		return ""
 	}
+}
+
+// TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine: the lines before
+// the gate print at once, the ones after it only once the file exists.
+func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
+	t.Parallel()
+
+	gate := filepath.Join(t.TempDir(), "go")
+	before := `{"type":"system","subtype":"init","session_id":"s1","model":"opus","cwd":"/tmp","tools":[],"claude_code_version":"1"}`
+	after := `{"type":"result","subtype":"success","is_error":false}`
+	path := WriteMockClaudeScript(t, t.TempDir(), [][]string{{before, MockWaitForFile(gate), after}})
+
+	cmd := exec.Command(path)
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = cmd.Wait() }()
+	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+
+	reader := bufio.NewReader(stdout)
+	if line := readLineWithTimeout(t, reader, 3*time.Second); line != before {
+		t.Fatalf("first line = %q, want the line before the gate", line)
+	}
+	lines := make(chan string, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			lines <- "read: " + err.Error()
+			return
+		}
+		lines <- strings.TrimRight(line, "\n")
+	}()
+	select {
+	case line := <-lines:
+		t.Fatalf("the line after the gate printed before the file existed: %q", line)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case line := <-lines:
+		if line != after {
+			t.Fatalf("line after the gate = %q, want %q", line, after)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not resume once the gate file existed")
+	}
+	_ = stdin.Close()
 }

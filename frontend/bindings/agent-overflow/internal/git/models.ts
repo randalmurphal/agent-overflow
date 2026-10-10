@@ -342,6 +342,15 @@ export class GitStatus {
     "openPrLookupError"?: string;
 
     /**
+     * OpenPRLookupPending is set by StatusFast when the PR cache holds no
+     * live entry for the branch: the open-PR fields above are not an
+     * answer yet, and the follow-up Status call that warms the cache
+     * broadcasts the real ones. A reader that needs the answer (the review
+     * pane choosing between "no PR" and "not yet") waits on it.
+     */
+    "openPrLookupPending"?: boolean;
+
+    /**
      * PendingOperation surfaces an in-progress multi-step operation.
      * Values: "merge", "rebase", "bisect", or "" when none is pending. The
      * commit dialog shows it as a notice; git itself decides whether a

@@ -565,8 +565,8 @@ func (w *workspaceWatcher) suppress() func() {
 // second field list) keeps the comparison honest when GitStatus grows a
 // field: Equal is the single place that must learn about it.
 func statusDiffersIgnoringPR(a, b gitops.GitStatus) bool {
-	a.OpenPRURL, a.OpenPRNumber, a.OpenPRLookupError = "", 0, ""
-	b.OpenPRURL, b.OpenPRNumber, b.OpenPRLookupError = "", 0, ""
+	a.OpenPRURL, a.OpenPRNumber, a.OpenPRLookupError, a.OpenPRLookupPending = "", 0, "", false
+	b.OpenPRURL, b.OpenPRNumber, b.OpenPRLookupError, b.OpenPRLookupPending = "", 0, "", false
 	return !a.Equal(b)
 }
 

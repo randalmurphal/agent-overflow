@@ -120,8 +120,10 @@ read/write APIs and per-PR-key polling.
   first one included, never fails the subscribe: the pump carries the
   failure (a caller-safe summary with a log id) and retries on a doubling
   delay from 5s up to the interval, and the pane loads its diff when the
-  recovery frame brings the first snapshot. No background polling in
-  v1.
+  recovery frame brings the first snapshot. The pane reads its PR from
+  the workspace's git status; the fast first status marks its PR lookup
+  pending (`openPrLookupPending`), and the pane waits on that too rather
+  than reading empty PR fields as "no PR". No background polling in v1.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,

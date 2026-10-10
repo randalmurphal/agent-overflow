@@ -82,7 +82,9 @@
 </script>
 
 <section class="shrink-0 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
-  <div class="flex min-w-0 items-center gap-3">
+  <!-- Fixed-height rows: the peek controls (h-6) and the CI chips come
+       and go, and the bar must not breathe with them. -->
+  <div class="flex min-h-6 min-w-0 items-center gap-3">
     <button
       type="button"
       class="min-w-0 flex-1 truncate text-left text-sm font-semibold text-fg hover:text-accent"
@@ -131,7 +133,7 @@
       </div>
     {/if}
   </div>
-  <div class="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted">
+  <div class="mt-1.5 flex min-h-6 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted">
     <span class="inline-flex min-w-0 items-center gap-1.5" data-testid="review-pr-author">
       <ReviewAvatar login={detail.authorLogin} name={detail.authorName} size={16} />
       <span class="truncate font-medium text-fg">{authorDisplayName(detail)}</span>
