@@ -1,6 +1,7 @@
 // Warm switches and pane reopen must retain enough fresh history across
 // byte-limited sync pages to keep the visible activity tail at the bottom.
 import { test, expect, type SeedResult } from './fixtures.js';
+import { waitForWebFonts } from '../src/scroll.js';
 
 for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
   test.describe(`DPR ${deviceScaleFactor}`, () => {
@@ -45,6 +46,7 @@ for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
         await expect(tail).toBeVisible();
         // Wait for the initial short page to fill the viewport and settle.
         await expect.poll(() => page.getByTestId('message-timeline-scroll').evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(500);
+        await waitForWebFonts(page);
         const baseline = await tail.evaluate(async el => {
           let previous = -1;
           let stable = 0;

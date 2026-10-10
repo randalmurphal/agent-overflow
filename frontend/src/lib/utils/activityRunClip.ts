@@ -389,18 +389,26 @@ export function activityRunChildElement(clip: Element, index: number): HTMLEleme
 }
 
 /**
- * Where run row `index` sits in `clip`'s viewport, or null when that row is
- * not mounted.
+ * The mounted wrapper for the run row whose node key (`timelineNodeKey`) is
+ * `key`, or null when that row is outside the mount window.
+ *
+ * By identity rather than index for the window's head: rows fetched above
+ * the loaded span shift every index without moving a mounted row, so an
+ * index read against the previous flush's DOM names a different row.
  */
-export function activityRunRowViewportTop(clip: HTMLElement, index: number): number | null {
-  const el = activityRunChildElement(clip, index);
-  if (!el) return null;
-  return el.getBoundingClientRect().top - clip.getBoundingClientRect().top;
+export function activityRunKeyedRow(clip: Element, key: string): HTMLElement | null {
+  const found = clip.querySelector(`[data-run-key="${CSS.escape(key)}"]`);
+  return found instanceof HTMLElement ? found : null;
+}
+
+/** Where `row` sits in `clip`'s viewport. */
+export function activityRunRowViewportTop(clip: HTMLElement, row: HTMLElement): number {
+  return row.getBoundingClientRect().top - clip.getBoundingClientRect().top;
 }
 
 /**
- * The `scrollTop` that puts run row `index` back at `viewportTop`, or null
- * when that row is not mounted.
+ * The `scrollTop` that puts `row` back at `viewportTop`, or null when the row
+ * is no longer in the clip.
  *
  * Read against the live `scrollTop` rather than against a content-space offset
  * captured earlier, so the answer holds whether or not the browser has already
@@ -409,12 +417,11 @@ export function activityRunRowViewportTop(clip: HTMLElement, index: number): num
  */
 export function activityRunScrollTopHoldingRow(
   clip: HTMLElement,
-  index: number,
+  row: HTMLElement,
   viewportTop: number,
 ): number | null {
-  const now = activityRunRowViewportTop(clip, index);
-  if (now === null) return null;
-  return clip.scrollTop + now - viewportTop;
+  if (!clip.contains(row)) return null;
+  return clip.scrollTop + activityRunRowViewportTop(clip, row) - viewportTop;
 }
 
 /**

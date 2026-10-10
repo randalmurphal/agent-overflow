@@ -11,7 +11,7 @@
 // ResizeObserver timing, real fonts) through the shared harness, because both
 // behaviors are reached the way a user reaches them: a click on the boundary,
 // and `pane.requestScrollToItem` from search / review / the jump tray.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 // Real production cascade: the clip's cap, the rail indent, and row heights
 // all come from app.css, and every number below is measured against them.
 import '../../../app.css';
@@ -27,6 +27,8 @@ import {
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
+import type { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/store/models';
+import { windowDigest } from '../../stores/threadWindowDigest';
 
 setupTimelineHarness();
 
@@ -260,6 +262,170 @@ describe('activity run — prepend compensation', () => {
     await raf();
 
     expect(clip.scrollTop).toBe(mid);
+  });
+});
+
+describe('activity run: an earlier chunk fetched from the server', () => {
+  // The page shipped the run's newest window and a stub counting the rest, so
+  // the earlier boundary fetches before it mounts. The fetched rows land at
+  // the head of the run's loaded span, which re-indexes every mounted row
+  // without moving one of them. The TAIL run, so the controller is there to
+  // be misled.
+  const THREAD_ID = 'thread-run-fetch-earlier';
+  const UNSHIPPED = 25;
+  const MEMBERS = UNSHIPPED + WINDOW_ROWS;
+  const member = (i: number) => tool(`a${i}`, i + 1, THREAD_ID);
+  const members = (from: number, to: number) =>
+    Array.from({ length: to - from }, (_, i) => member(from + i));
+
+  function stub(loadedFrom: number): ActivityRunStub {
+    return {
+      firstItemId: 'a0',
+      lastItemId: `a${MEMBERS - 1}`,
+      firstTurnIndex: 0,
+      firstItemIndex: 1,
+      lastTurnIndex: 0,
+      lastItemIndex: MEMBERS,
+      memberCount: MEMBERS,
+      loadedFirstItemId: `a${loadedFrom}`,
+      loadedLastItemId: `a${MEMBERS - 1}`,
+      unshippedBefore: loadedFrom,
+      unshippedAfter: 0,
+      unshippedDigest: windowDigest(
+        Array.from({ length: loadedFrom }, (_, i) => ({ id: `a${i}`, rev: 0 })),
+      ),
+      unshippedGroups: [],
+      unshippedPairedLaunchIds: [],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: false,
+      runningBefore: null,
+      runningAfter: null,
+    };
+  }
+
+  /** Macrotask turns until `predicate` holds: frames may be held, so no rAF. */
+  async function settleTasks(predicate: () => boolean, label: string): Promise<void> {
+    for (let i = 0; i < 200; i += 1) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error(`timed out waiting for: ${label}`);
+  }
+
+  async function mountFetchable() {
+    const { pane, scrollEl } = await mountTimeline(
+      THREAD_ID,
+      [prose('p0', 0, THREAD_ID), ...members(UNSHIPPED, MEMBERS)],
+      QUIET_BOTTOM,
+      undefined,
+      [stub(UNSHIPPED)],
+    );
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    expect(clip.dataset.scrollOwner).toBe('controller');
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+    const boundary = run.querySelector('[data-testid="activity-run-earlier"]') as HTMLElement;
+    expect(boundary.textContent).toContain(`${UNSHIPPED} earlier`);
+    let resolveMembers: ((answer: { items: Item[]; stub: ActivityRunStub }) => void) | undefined;
+    setBindingMock('ListActivityRunMembers', () =>
+      new Promise((resolve) => { resolveMembers = resolve; }));
+    const fetchOut = () => resolveMembers !== undefined;
+    // Answers the fetch once it is out, then waits for the chunk to mount.
+    const answerFetch = async () => {
+      await settleTasks(fetchOut, 'the member fetch');
+      resolveMembers!({ items: members(0, UNSHIPPED), stub: stub(0) });
+      await settleTasks(() => clip.querySelector('[data-item-id="a0"]') !== null, 'the chunk to mount');
+      for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    return { pane, clip, boundary, answerFetch, fetchOut };
+  }
+
+  it('lands a following reader in one step, with frames held across the fetch', async () => {
+    const { pane, clip, boundary, answerFetch } = await mountFetchable();
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+
+    // Keyboard focus scrolls the boundary into view with no wheel, which is
+    // not a gesture, so the reader is still following the tail by intent
+    // (docs/architecture/frontend-scroll.md, "Intent And Programmatic
+    // Writes"). A prepend leaves them following, so the run's newest row is
+    // where they belong once the chunk mounts.
+    boundary.focus();
+    await raf();
+    await raf();
+    expect(bottomGap()).toBeGreaterThan(DRIFT_PX);
+    const topBefore = clip.scrollTop;
+    const heightBefore = clip.scrollHeight;
+
+    // The geometry the prepend compensation measures from, read where it
+    // reads it: after the fetch has landed and before the window grows.
+    let atGrow: { top: number; height: number } | null = null;
+    const runs = pane.activityRuns;
+    const setMountWindow = runs.setMountWindow;
+    runs.setMountWindow = (...args) => {
+      atGrow ??= { top: clip.scrollTop, height: clip.scrollHeight };
+      return setMountWindow(...args);
+    };
+    onTestFinished(() => { runs.setMountWindow = setMountWindow; });
+
+    // A machine too busy to run a frame across the round trip and the mount:
+    // held frames stand in for the ones it has not rendered yet.
+    const nativeRequest = window.requestAnimationFrame;
+    const nativeCancel = window.cancelAnimationFrame;
+    const held = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    const releaseFrames = () => {
+      window.requestAnimationFrame = nativeRequest;
+      window.cancelAnimationFrame = nativeCancel;
+      for (const callback of held.values()) nativeRequest(callback);
+      held.clear();
+    };
+    onTestFinished(releaseFrames);
+    window.requestAnimationFrame = (callback) => {
+      held.set(nextFrame, callback);
+      return nextFrame++;
+    };
+    window.cancelAnimationFrame = (id) => {
+      held.delete(id);
+    };
+
+    boundary.click();
+    await answerFetch();
+    // The fetch moved nothing the reader sees: the window grows from where
+    // the reader left it.
+    expect(atGrow).toEqual({ top: topBefore, height: heightBefore });
+    expect(clip.scrollHeight).toBeGreaterThan(heightBefore);
+
+    // At the bottom on every frame once frames run. A head compensation
+    // misread from the re-indexed window starts a follow glide instead, which
+    // shows the reader the run's whole height going by.
+    releaseFrames();
+    const gaps: number[] = [Math.round(bottomGap())];
+    for (let i = 0; i < 60; i += 1) {
+      await raf();
+      gaps.push(Math.round(bottomGap()));
+    }
+    expect(gaps.filter((gap) => gap > DRIFT_PX)).toEqual([]);
+  });
+
+  it('keeps the rows of a reader who scrolls on while the fetch is out', async () => {
+    const { clip, answerFetch, fetchOut } = await mountFetchable();
+    // The wheel is a reader leaving the tail, and the runway position it
+    // reaches pages the chunk in.
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    clip.scrollTop = 40;
+    await waitFor(fetchOut, 'the runway to page the chunk in');
+    // They read on down while the round trip is out. The compensation holds
+    // where they are when the rows land, not where the fetch began.
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    clip.scrollTop = 200;
+    await raf();
+    const anchor = `a${UNSHIPPED + 10}`;
+    const anchorBefore = offsetInClip(clip, anchor);
+    await answerFetch();
+    await raf();
+    await raf();
+
+    expect(Math.abs(offsetInClip(clip, anchor) - anchorBefore)).toBeLessThanOrEqual(DRIFT_PX);
   });
 });
 

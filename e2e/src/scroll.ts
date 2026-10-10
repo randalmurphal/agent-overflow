@@ -1,4 +1,4 @@
-import type { Locator } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 /** Capture a reading position only after native wheel motion has settled. */
 export async function waitForScrollSettle(scroller: Locator): Promise<void> {
@@ -13,5 +13,22 @@ export async function waitForScrollSettle(scroller: Locator): Promise<void> {
       if (stableFrames >= 30) return;
     }
     throw new Error('scroll gesture did not settle');
+  });
+}
+
+/**
+ * Wait for every web font the page has started loading, before reading a
+ * position that a later read is compared against.
+ *
+ * The app's faces use `font-display: swap`, so rows first lay out in a
+ * fallback face and change height when the real face lands. A change under
+ * the idle re-pin deadband (`IDLE_REPIN_DEADBAND_PX`) leaves a bottom-pinned
+ * pane where it was, so a baseline read before the swap captures a position
+ * the pane never returns to. A face starts loading on first use, so call
+ * this after the content that uses it is visible.
+ */
+export async function waitForWebFonts(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
   });
 }

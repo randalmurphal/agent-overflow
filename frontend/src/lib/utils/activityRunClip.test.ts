@@ -9,7 +9,7 @@ import {
   activityRunDisclosureBodies,
   activityRunExpandedHeight,
   activityRunRecordCollapsedHeights,
-  activityRunRowViewportTop,
+  activityRunKeyedRow,
   activityRunScrollTopHoldingRow,
   activityRunShouldMountEarlier,
 } from './activityRunClip';
@@ -59,18 +59,21 @@ describe('holding a row across a window slide', () => {
   // in its place would compensate against a row that was never there and drag
   // the reader to the top of the run.
   it('reports no answer for a row outside the mount window', () => {
-    const clip = clipWith('<div data-run-child="12"></div>');
-    expect(activityRunRowViewportTop(clip, 40)).toBeNull();
-    expect(activityRunScrollTopHoldingRow(clip, 40, 80)).toBeNull();
+    const clip = clipWith('<div data-run-key="l:t:a12"></div>');
+    expect(activityRunKeyedRow(clip, 'l:t:a40')).toBeNull();
+    // A row the flush unmounted between the measurement and the hold.
+    const departed = clipWith('<div data-run-key="l:t:a40"></div>').firstElementChild as HTMLElement;
+    expect(activityRunScrollTopHoldingRow(clip, departed, 80)).toBeNull();
   });
 
   it('answers for a row that is mounted', () => {
     // happy-dom lays nothing out, so every rect is zero — the value is a
     // vacuous 0 and only its presence is meaningful. Asserted so the null above
     // is known to be the missing-row branch rather than the only branch.
-    const clip = clipWith('<div data-run-child="12"></div>');
-    expect(activityRunRowViewportTop(clip, 12)).not.toBeNull();
-    expect(activityRunScrollTopHoldingRow(clip, 12, 0)).not.toBeNull();
+    const clip = clipWith('<div data-run-key="l:t:a12"></div>');
+    const row = activityRunKeyedRow(clip, 'l:t:a12');
+    expect(row).not.toBeNull();
+    expect(activityRunScrollTopHoldingRow(clip, row!, 0)).not.toBeNull();
   });
 });
 

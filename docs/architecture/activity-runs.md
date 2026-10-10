@@ -926,6 +926,12 @@ one on: streaming tool calls jumped while thinking text growing 1→2→3 lines
   see: `markStructuralContentPending()` + `observe('live-content')`. The spring
   glides that row into view.
 
+The head is tracked by row identity (`timelineNodeKey`, carried on the wrapper
+as `data-run-key`), not by `mountedFrom`. Members fetched above the loaded span
+shift every index without moving a mounted row, so an index read against the
+previous flush's DOM names a different row, and the hold would apply a bogus
+splice and start a follow glide.
+
 Both writes are the controller's, never the element's:
 `applyEngineCompensation({ kind: 'head-splice' })` is the engine's own name for
 this change (content above the viewport spliced out, anchor holds) and the
@@ -933,7 +939,8 @@ resolver applies it verbatim. A bare `scrollTop =` on a run with a controller wo
 a reader gesture and escape bottom-follow. A run with no controller writes
 directly, because there is no intent machine to mislead.
 
-**Advances only.** A head that retreats is a chunk the reader paged in, which
+**Advances only.** The new head is an advance exactly when the old window
+already mounted it. A head that retreats is a chunk the reader paged in, which
 compensates its own prepend, or a jump relocating the window, which places its
 own target. Compensating those here would be a second write for one change. The
 effect is declared before the focus effect for the same reason: it holds a

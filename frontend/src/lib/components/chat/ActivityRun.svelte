@@ -51,6 +51,7 @@
     ACTIVITY_RUN_CAP_CSS,
     activityRunChildElement,
     activityRunAtBottom,
+    activityRunKeyedRow,
     activityRunRowFullyVisible,
     activityRunRowViewportTop,
     activityRunScrollTopHoldingRow,
@@ -122,9 +123,15 @@
   let collapsed = $derived(run.collapsed);
   let isLive = $derived(live);
   let isTail = $derived(atTail);
-  // And on the mount window's head, which the compensation below must react to
-  // exactly when it moves and never on the passes where it has not.
   let mountedFrom = $derived(run.mountedFrom);
+  // And on the mount window's head ROW, which the compensation below must
+  // react to exactly when it moves and never on the passes where it has not.
+  // By identity: rows fetched above the loaded span move `mountedFrom` without
+  // moving the head.
+  let mountedHeadKey = $derived.by(() => {
+    const head = run.children[run.mountedFrom];
+    return head ? timelineNodeKey(head) : null;
+  });
 
   // Built only for the tail run, with retirement after its final chase —
   // a settled run that a later node displaces has no use for a spring, and a
@@ -274,6 +281,9 @@
       // Nothing loaded above the window, so what `hiddenEarlier` counts is
       // on the server: fetch first, then grow over the rows that landed.
       if (run.mountedFrom === 0 && !(await fetchEarlier(clip))) return;
+      // Read after the fetch, not before it: the fetched rows land above the
+      // window and move no mounted row, while the reader's scrolling and a
+      // live append during the round trip are positions this must keep.
       const beforeHeight = clip.scrollHeight;
       const beforeTop = clip.scrollTop;
 
@@ -347,7 +357,7 @@
   $effect(() => {
     const clip = clipEl;
     if (!clip) return;
-    mountedWindowKey;
+    void mountedWindowKey;
     return observeActivityRunExpansion(clip);
   });
 
@@ -760,35 +770,40 @@
   // can be priced; the post-flush effect puts the anchor back and then states
   // the growth the observer could not see.
   //
-  // ADVANCES only. A head that retreats is a chunk the reader paged in
+  // ADVANCES only, decided by which row moved rather than by the index: the
+  // new head is an advance exactly when the old window already mounted it,
+  // below the old head. A head that retreats is a chunk the reader paged in
   // (`mountEarlier`, which compensates its own prepend) or a jump relocating the
   // window (the focus effect, which places its own target) — compensating those
-  // here would be a second write for one change.
+  // here would be a second write for one change. A chunk fetched above the
+  // loaded span moves no row at all, only the indexes.
   //
   // Declared BEFORE the focus effect so a jump wins: this holds a position the
   // reader did not ask to leave, and a jump is a position they did ask for.
-  let headAdvance: { row: number; viewportTop: number } | null = null;
-  let mountedHeadRow = -1;
+  let headAdvance: { row: HTMLElement; viewportTop: number } | null = null;
+  let headSeen: string | null = null;
 
   $effect.pre(() => {
-    const row = mountedFrom;
-    const previous = mountedHeadRow;
-    mountedHeadRow = row;
+    const key = mountedHeadKey;
+    const previous = headSeen;
+    headSeen = key;
     headAdvance = null;
     const clip = clipEl;
-    if (!clip || previous < 0 || row <= previous) return;
-    const viewportTop = activityRunRowViewportTop(clip, row);
-    // The old and new windows do not overlap, so there is no shared row to
-    // hold: a jump relocated this window wholesale and owns where it lands.
-    // Also the path a remounting clip takes, whose own mount write positions it.
-    if (viewportTop === null) return;
-    headAdvance = { row, viewportTop };
+    if (!clip || previous === null || key === null || key === previous) return;
+    // The keyed `{#each}` keeps this element through the flush, so the
+    // post-flush half holds the same row this one priced.
+    const row = activityRunKeyedRow(clip, key);
+    // Not mounted under the old window: a retreat, or a jump that relocated
+    // the window wholesale and owns where it lands. Also the path a
+    // remounting clip takes, whose own mount write positions it.
+    if (!row) return;
+    headAdvance = { row, viewportTop: activityRunRowViewportTop(clip, row) };
   });
 
   $effect(() => {
-    // The window, not the node: this must run on the same flush as the
+    // The head row, not the node: this must run on the same flush as the
     // measurement above and on no other.
-    mountedFrom;
+    void mountedHeadKey;
     const clip = clipEl;
     const advance = headAdvance;
     headAdvance = null;
@@ -837,7 +852,7 @@
     if (!clip) return;
     // The request is the dependency, not the node: a jump can target an item
     // the current window already holds, which changes nothing on the node.
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     const request = pane.activityRuns.takeFocus(runId);
     if (!request) return;
     const row = activityRunRowIndexOfItem(run, request.itemId);
@@ -1005,10 +1020,12 @@
             <!-- The wrapper carries the row's index because that is the only
                  handle a jump has on a non-leaf row: only leaves emit
                  `data-item-id`, and a hit inside a subagent card resolves to
-                 the card. A plain div, so row margins keep collapsing exactly
-                 as they did when these rows were the virtualizer's own. -->
+                 the card. It carries the node key for the head compensation,
+                 which needs the row across a flush that re-indexes it. A
+                 plain div, so row margins keep collapsing exactly as they
+                 did when these rows were the virtualizer's own. -->
             {#each mountedChildren as child, i (timelineNodeKey(child))}
-              <div data-run-child={mountedFrom + i}>
+              <div data-run-child={mountedFrom + i} data-run-key={timelineNodeKey(child)}>
                 {@render renderNode(child, depth)}
               </div>
             {/each}
