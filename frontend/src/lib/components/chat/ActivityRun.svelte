@@ -357,7 +357,7 @@
   $effect(() => {
     const clip = clipEl;
     if (!clip) return;
-    mountedWindowKey;
+    void mountedWindowKey;
     return observeActivityRunExpansion(clip);
   });
 
@@ -803,7 +803,7 @@
   $effect(() => {
     // The head row, not the node: this must run on the same flush as the
     // measurement above and on no other.
-    mountedHeadKey;
+    void mountedHeadKey;
     const clip = clipEl;
     const advance = headAdvance;
     headAdvance = null;
@@ -852,7 +852,7 @@
     if (!clip) return;
     // The request is the dependency, not the node: a jump can target an item
     // the current window already holds, which changes nothing on the node.
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     const request = pane.activityRuns.takeFocus(runId);
     if (!request) return;
     const row = activityRunRowIndexOfItem(run, request.itemId);
