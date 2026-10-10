@@ -19,7 +19,10 @@ import (
 // WAL. That keeps the file near 64 MiB and makes a commit wait on checkpoint
 // I/O once per 64 MiB of such writes, instead of once per 4 MiB with SQLite's
 // default of 1000 frames. Writes with gaps do not reach it: the WAL restarts
-// in a gap after the checkpointer catches up.
+// in a gap after the checkpointer catches up. The writer's checkpoint is
+// skipped while a checkpointer round holds the checkpoint lock and runs at
+// the first commit after the round, so the WAL can pass the bound by the
+// frames committed during one round.
 const walCheckpointBoundPages = 16384
 
 // checkpointInterval is how long the checkpointer lets commits accumulate

@@ -82,9 +82,13 @@ func TestConvertToIncrementalVacuumSwapsFileWithoutFailingCallers(t *testing.T) 
 		t.Fatalf("stat before: %v", err)
 	}
 
-	// Callers started inside the blocked window are the ones the swap
-	// has to keep correct: they block on a connection the swap is about
-	// to retire and must come back on the new file.
+	// The swap blocks callers only for work that does not grow with the
+	// database: the snapshot is built and verified before the window,
+	// and the outgoing file is unlinked after it. Callers started inside
+	// the window are the ones the swap has to keep correct: they block on
+	// a connection the swap is about to retire and must come back on the
+	// new file once the gate opens, while the outgoing file still exists.
+	tmp := s.path + incrementalTmpSuffix
 	var (
 		wg           sync.WaitGroup
 		writeErr     error
@@ -92,10 +96,24 @@ func TestConvertToIncrementalVacuumSwapsFileWithoutFailingCallers(t *testing.T) 
 		readValue    string
 		writeLatency time.Duration
 		readLatency  time.Duration
+		snapshot     os.FileInfo
+		windowSeen   bool
+		afterSeen    bool
 	)
-	const hookSettle = 20 * time.Millisecond
-	started := make(chan struct{})
 	s.convertHooks.insideWindow = func() {
+		windowSeen = true
+		var err error
+		if snapshot, err = os.Stat(tmp); err != nil {
+			t.Errorf("snapshot at the start of the window: %v, want it built before the window", err)
+		}
+		for _, suffix := range walSidecarSuffixes {
+			if _, err := os.Stat(tmp + suffix); err == nil {
+				t.Errorf("snapshot still has %s at the start of the window, want it prepared before the window", suffix)
+			}
+		}
+		// Both callers queue on the writer pool: the swap holds its only
+		// connection, and reads are quiesced onto it.
+		waits := s.db.Stats().WaitCount
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -111,30 +129,57 @@ func TestConvertToIncrementalVacuumSwapsFileWithoutFailingCallers(t *testing.T) 
 			readErr = err
 			readValue = state["k"]
 		}()
-		// Give both goroutines time to reach the pool before the swap
-		// retires the connection they are waiting on. This sleep is
-		// inside the measured window, so it is subtracted below.
-		time.Sleep(hookSettle)
-		close(started)
+		for deadline := time.Now().Add(10 * time.Second); s.db.Stats().WaitCount < waits+2; {
+			if time.Now().After(deadline) {
+				t.Errorf("callers waiting on the writer pool = %d, want 2", s.db.Stats().WaitCount-waits)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
-	defer func() { s.convertHooks.insideWindow = nil }()
+	s.convertHooks.afterWindow = func() {
+		afterSeen = true
+		callersDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(callersDone)
+		}()
+		select {
+		case <-callersDone:
+		case <-time.After(10 * time.Second):
+			t.Fatal("callers blocked by the swap did not return before the outgoing file was unlinked")
+		}
+		if _, err := os.Stat(s.path + asideSuffix); err != nil {
+			t.Errorf("outgoing database when the window closed: %v, want it unlinked after the window", err)
+		}
+		installed, err := os.Stat(s.path)
+		if err != nil {
+			t.Errorf("stat the installed database: %v", err)
+		} else if snapshot != nil && !os.SameFile(snapshot, installed) {
+			t.Error("the installed database is not the snapshot the window started with")
+		}
+	}
+	defer func() {
+		s.convertHooks.insideWindow = nil
+		s.convertHooks.afterWindow = nil
+	}()
 
 	result, err := s.ConvertToIncrementalVacuum(context.Background())
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	<-started
 	wg.Wait()
+	if t.Failed() {
+		t.FailNow()
+	}
 
 	if result.Outcome != ConvertConverted {
 		t.Fatalf("outcome = %v, want converted", result.Outcome)
 	}
-	swapWindow := result.BlockedWindow - hookSettle
-	t.Logf("swap blocked callers for %s (%s excluding the test hook), %d -> %d bytes",
-		result.BlockedWindow, swapWindow, result.SizeBefore, result.SizeAfter)
-	if swapWindow > 100*time.Millisecond {
-		t.Fatalf("swap blocked callers for %s, want well under 100ms", swapWindow)
+	if !windowSeen || !afterSeen {
+		t.Fatalf("hooks ran: inside the window %v, after it %v; want both", windowSeen, afterSeen)
 	}
+	t.Logf("swap blocked callers for %s, %d -> %d bytes", result.BlockedWindow, result.SizeBefore, result.SizeAfter)
 	if writeErr != nil {
 		t.Fatalf("write started during the swap failed: %v", writeErr)
 	}
@@ -144,6 +189,8 @@ func TestConvertToIncrementalVacuumSwapsFileWithoutFailingCallers(t *testing.T) 
 	if readValue != "before" && readValue != "during" {
 		t.Fatalf("read during the swap returned %q, want the row", readValue)
 	}
+	// Under busy_timeout a caller that met a held lock would wait up to
+	// 5s; returning well inside that means the gate released it.
 	for _, latency := range []time.Duration{writeLatency, readLatency} {
 		if latency > 2*time.Second {
 			t.Fatalf("caller blocked %s during the swap", latency)

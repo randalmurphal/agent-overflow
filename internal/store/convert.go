@@ -42,10 +42,11 @@ const (
 	swapSidecarPoll = 2 * time.Millisecond
 )
 
-// convertHooks are test seams in the conversion. Production leaves both
+// convertHooks are test seams in the conversion. Production leaves them
 // nil; the tests that need a write to land at an exact point in the swap
 // set them, because the two interesting outcomes are decided by when a
-// commit arrives relative to the snapshot.
+// commit arrives relative to the snapshot, and the blocked window is
+// bounded by which work it encloses.
 type convertHooks struct {
 	// afterSnapshot runs once the snapshot is built and verified, before
 	// the swap takes the writer connection.
@@ -53,6 +54,10 @@ type convertHooks struct {
 	// insideWindow runs once the writer connection is held, so work
 	// started here blocks for the rest of the swap.
 	insideWindow func()
+	// afterWindow runs after a converting swap has released the writer
+	// connection, the gate and the read pool, before the outgoing file
+	// is unlinked.
+	afterWindow func()
 }
 
 // ConvertOutcome says what ConvertToIncrementalVacuum did. Only
@@ -312,6 +317,9 @@ func (s *Store) ConvertToIncrementalVacuum(ctx context.Context) (ConvertResult, 
 	}
 	if result.Outcome != ConvertConverted {
 		return result, nil
+	}
+	if s.convertHooks.afterWindow != nil {
+		s.convertHooks.afterWindow()
 	}
 
 	// Unlinking the outgoing file costs about as much as the swap did on
