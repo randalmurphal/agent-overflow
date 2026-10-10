@@ -490,8 +490,6 @@ export {
   OpenPRCommitDiff,
   GetPRMergeConflicts,
   GetMergeConflictFile,
-  GetPRCIJobs,
-  GetPRCIJobLog,
   SavePRCIJobLog,
   // Forge-hosted attachments referenced by PR/MR content: one mints a
   // single-use ticketed URL for the bytes, the other writes the file into
@@ -505,6 +503,8 @@ export {
   SubscribePRUpdates,
   UnsubscribePRUpdates,
   SetPRUpdatesActive,
+  SetPRCILogFollows,
+  RefreshPRCI,
   ListLiveBackgroundTasks,
   CancelThreadRemoteCommand,
   ListThreadRemoteCommands,

@@ -158,6 +158,8 @@ func TestUnknownInvocationsFailLoudlyWithTheFullArgv(t *testing.T) {
 		{"gh", "api", "graphql", "-f", "query=mutation { thread: resolveReviewThread(input: {threadId: \"X\"}) { thread { isResolved } } }"},
 		{"gh", "api", "user", "--jq", ".login | ascii_downcase"},
 		{"gh", "api", "user", "--paginate"},
+		{"gh", "run", "view", "1", "--repo", "acme/widgets", "--json", "jobs"},
+		{"gh", "api", "repos/acme/widgets/actions/runs/1/jobs?per_page=100&filter=all"},
 		{"glab", "mr", "create", "--title", "t"},
 		{"glab", "api", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions?per_page=50&page=1&sort=asc", "--include"},
 		{"glab", "api", "projects/grp%2Fsub%2Ftool/merge_requests/3/approve", "-X", "POST", "-f", "sha=abc"},
@@ -594,5 +596,113 @@ func TestOfflineAnswersEveryForgeCallAsUnreachableUntilBack(t *testing.T) {
 	}
 	if result := handle(e, "gh", view...); result.ExitCode != 0 {
 		t.Fatalf("Reset left the forge offline: exit %d %s", result.ExitCode, result.Stderr)
+	}
+}
+
+// TestGitHubJobLogsAnswer404UntilTheJobCompletes: the Actions log endpoint
+// serves nothing for a running job, which is what makes the app wait for
+// completion on GitHub while it follows a GitLab trace live.
+func TestGitHubJobLogsAnswer404UntilTheJobCompletes(t *testing.T) {
+	e := New(Options{})
+	fixture, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"id":500,"name":"j","status":"running","log":"partial"}]}}]}]}`)
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	result := handle(e, "gh", "api", "repos/a/b/actions/jobs/500/logs")
+	if result.ExitCode == 0 || !strings.Contains(result.Stderr, "404") {
+		t.Fatalf("running job log: exit %d stdout %q stderr %q, want 404", result.ExitCode, result.Stdout, result.Stderr)
+	}
+	fixture.Repos[0].Pulls[0].CI.Jobs[0].Status = "success"
+	if _, err := e.Seed(fixture); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	result = handle(e, "gh", "api", "repos/a/b/actions/jobs/500/logs")
+	if result.ExitCode != 0 || string(result.Stdout) != "\xef\xbb\xbfpartial" {
+		t.Fatalf("completed job log: exit %d stdout %q stderr %q", result.ExitCode, result.Stdout, result.Stderr)
+	}
+	// A completed job whose log the forge has not published yet.
+	fixture.Repos[0].Pulls[0].CI.Jobs[0].LogWithheld = true
+	if _, err := e.Seed(fixture); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	result = handle(e, "gh", "api", "repos/a/b/actions/jobs/500/logs")
+	if result.ExitCode == 0 || !strings.Contains(result.Stderr, "(HTTP 404)") {
+		t.Fatalf("withheld job log: exit %d stdout %q stderr %q, want 404", result.ExitCode, result.Stdout, result.Stderr)
+	}
+}
+
+func TestGitLabTraceAnswers404WhileTheLogIsWithheld(t *testing.T) {
+	e := New(Options{})
+	fixture, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"g/t","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"id":600,"name":"j","status":"success","log":"done","logWithheld":true}]}}]}]}`)
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	result := handle(e, "glab", "api", "projects/g%2Ft/jobs/600/trace")
+	if result.ExitCode == 0 || !strings.Contains(result.Stderr, "(HTTP 404)") {
+		t.Fatalf("withheld trace: exit %d stdout %q stderr %q, want 404", result.ExitCode, result.Stdout, result.Stderr)
+	}
+	fixture.Repos[0].Pulls[0].CI.Jobs[0].LogWithheld = false
+	if _, err := e.Seed(fixture); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	result = handle(e, "glab", "api", "projects/g%2Ft/jobs/600/trace")
+	if result.ExitCode != 0 || string(result.Stdout) != "done" {
+		t.Fatalf("published trace: exit %d stdout %q stderr %q", result.ExitCode, result.Stdout, result.Stderr)
+	}
+}
+
+// TestGitHubRunJobsAnswerTheRESTShape: the REST jobs list of a run, as the
+// real endpoint spells it (snake_case, lowercase states, null for what is
+// not there yet), paginated.
+func TestGitHubRunJobsAnswerTheRESTShape(t *testing.T) {
+	e := New(Options{})
+	_, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"id":70,"name":"CI","jobs":[
+{"id":501,"name":"build","status":"running","steps":[{"name":"Set up job","status":"success"},{"name":"Build","status":"running"}]},
+{"id":502,"name":"lint","status":"failed","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z"}]}}]}]}`)
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	type step struct {
+		Number     int     `json:"number"`
+		Name       string  `json:"name"`
+		Status     string  `json:"status"`
+		Conclusion *string `json:"conclusion"`
+	}
+	type answer struct {
+		TotalCount int `json:"total_count"`
+		Jobs       []struct {
+			ID          int64   `json:"id"`
+			RunID       int64   `json:"run_id"`
+			Name        string  `json:"name"`
+			Status      string  `json:"status"`
+			Conclusion  *string `json:"conclusion"`
+			CompletedAt *string `json:"completed_at"`
+			HTMLURL     string  `json:"html_url"`
+			Steps       []step  `json:"steps"`
+		} `json:"jobs"`
+	}
+	got := decode[answer](t, handle(e, "gh", "api", "repos/a/b/actions/runs/70/jobs?per_page=100"))
+	if got.TotalCount != 2 || len(got.Jobs) != 2 {
+		t.Fatalf("answer = %+v", got)
+	}
+	build, lint := got.Jobs[0], got.Jobs[1]
+	if build.ID != 501 || build.RunID != 70 || build.Status != "in_progress" || build.Conclusion != nil || build.CompletedAt != nil ||
+		build.HTMLURL != "https://github.com/a/b/actions/runs/70/job/501" {
+		t.Fatalf("build = %+v", build)
+	}
+	if len(build.Steps) != 2 || build.Steps[0].Number != 1 || build.Steps[0].Status != "completed" || *build.Steps[0].Conclusion != "success" ||
+		build.Steps[1].Status != "in_progress" || build.Steps[1].Conclusion != nil {
+		t.Fatalf("build steps = %+v", build.Steps)
+	}
+	if lint.Status != "completed" || lint.Conclusion == nil || *lint.Conclusion != "failure" || lint.CompletedAt == nil {
+		t.Fatalf("lint = %+v", lint)
+	}
+
+	second := decode[answer](t, handle(e, "gh", "api", "repos/a/b/actions/runs/70/jobs?per_page=1&page=2"))
+	if second.TotalCount != 2 || len(second.Jobs) != 1 || second.Jobs[0].ID != 502 {
+		t.Fatalf("page 2 = %+v", second)
+	}
+	if result := handle(e, "gh", "api", "repos/a/b/actions/runs/71/jobs?per_page=100"); result.ExitCode == 0 || !strings.Contains(result.Stderr, "(HTTP 404)") {
+		t.Fatalf("unknown run: exit %d stderr %q, want 404", result.ExitCode, result.Stderr)
 	}
 }

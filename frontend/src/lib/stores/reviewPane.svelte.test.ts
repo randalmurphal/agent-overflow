@@ -20,7 +20,7 @@ import {
   reviewLineCommentForDraft,
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
-import { applyPRUpdatedEvent } from './prReviewStore.svelte';
+import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
 import { resetCompanionPanesForTest } from './companionPanes.svelte';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
@@ -676,10 +676,49 @@ function installPRMocks(): {
   const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
   setBindingMock('ListPRReviewThreads', async () => []);
-  setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
+  setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
   setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
   return { subscribe, unsubscribe };
+}
+
+function ciPipelineStub(status: string, steps?: { number: number; name: string; status: string }[]) {
+  return {
+    status,
+    stages: [{
+      name: 'test',
+      status,
+      jobs: [{ id: '20', name: 'unit', status, logsAvailable: true, ...(steps ? { steps } : {}) }],
+    }],
+  };
+}
+
+/** installPRMocks with a subscribe result that carries a running pipeline. */
+function installCIMocks(): void {
+  installPRMocks();
+  setBindingMock('SubscribePRUpdates', async () => ({
+    id: 'sub-1',
+    prKey: PR_KEY,
+    detail: prDetailStub(),
+    threads: [],
+    headSHA: 'sha-a',
+    seq: 3,
+    ci: ciPipelineStub('running', [{ number: 1, name: 'build', status: 'running' }]),
+    ciError: '',
+  }));
+}
+
+function installLogFollows(text: string, seq = 5) {
+  return setBindingMock('SetPRCILogFollows', async (_id: string, jobs: string[]) => ({
+    logs: Object.fromEntries(jobs.map((job) => [
+      job,
+      { text, truncated: false, totalBytes: text.length, available: true, error: '', seq },
+    ])),
+  }));
+}
+
+async function flushPane(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await tick();
 }
 
 describe('reviewPane store — PR scope', () => {
@@ -1358,55 +1397,179 @@ describe('reviewPane store — PR scope', () => {
     expect(rows.some((row) => row.kind === 'comment-thread' || row.kind === 'draft-editor' || row.kind === 'pr-thread')).toBe(false);
   });
 
-  it('loads CI jobs in pr scope and opens a job log view', async () => {
-    installPRMocks();
-    setBindingMock('GetPRCIJobs', async () => ({
-      status: 'failed',
-      url: 'https://gl/p/77',
-      stages: [
-        {
-          name: 'test',
-          status: 'failed',
-          jobs: [
-            { id: '20', name: 'unit', status: 'failed', logsAvailable: true, url: 'https://gl/j/20' },
-          ],
-        },
-      ],
+  it('reads CI from the subscription and follows the opened job\'s log', async () => {
+    installCIMocks();
+    const follows = installLogFollows('line 1\nline 2\n');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    expect(state.ciLoading).toBe(false);
+    expect(state.ciPipeline?.status).toBe('running');
+    const job = state.ciPipeline!.stages[0]!.jobs[0]!;
+    state.openCIJobLog('test', job);
+    expect(state.ciLogLoading).toBe(true);
+    expect(state.ciLog).toBeNull();
+    await flushPane();
+    expect(follows).toHaveBeenCalledWith('sub-1', ['20']);
+    expect(state.ciLogLoading).toBe(false);
+    expect(state.ciLogView?.jobId).toBe('20');
+    expect(state.ciLog?.text).toBe('line 1\nline 2\n');
+    expect(state.ciLogAvailable).toBe(true);
+
+    applyPRCILogEvent({
+      prKey: PR_KEY, jobId: '20', seq: 6, prevLen: 14, base: 14, append: 'line 3\n',
+      truncated: false, totalBytes: 21, available: true,
+    });
+    expect(state.ciLog?.text).toBe('line 1\nline 2\nline 3\n');
+
+    state.closeCILogView();
+    await flushPane();
+    expect(follows).toHaveBeenLastCalledWith('sub-1', []);
+    expect(state.ciLogView).toBeNull();
+    expect(state.ciLog).toBeNull();
+
+    // Leaving pr scope: this pane no longer reports the PR's CI.
+    await state.setScope('workspace');
+    expect(state.ciPipeline).toBeNull();
+  });
+
+  it('moves the open job\'s status and steps with the pipeline', async () => {
+    installCIMocks();
+    installLogFollows('building\n');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+    expect(state.ciLogView?.job.status).toBe('running');
+
+    applyPRCIUpdatedEvent({ prKey: PR_KEY, pipeline: ciPipelineStub('failed', [{ number: 1, name: 'build', status: 'failed' }]), seq: 4 });
+    expect(state.ciLogView?.job.status).toBe('failed');
+    expect(state.ciLogView?.job.steps?.[0]?.status).toBe('failed');
+
+    // A new head's pipeline no longer lists the job: the row captured at
+    // open stands rather than the view going blank.
+    applyPRCIUpdatedEvent({ prKey: PR_KEY, pipeline: { status: 'running', stages: [] }, seq: 5 });
+    expect(state.ciLogView?.jobId).toBe('20');
+    expect(state.ciLogView?.job.status).toBe('running');
+    expect(state.ciLogView?.stageName).toBe('test');
+  });
+
+  it('reads a GitHub job that is still running as unavailable', async () => {
+    installCIMocks();
+    setBindingMock('SetPRCILogFollows', async () => ({
+      logs: { 20: { text: '', truncated: false, totalBytes: 0, available: false, error: '', seq: 5 } },
     }));
-    const getLog = setBindingMock('GetPRCIJobLog', async () => ({
-      text: 'line 1\nline 2\n',
-      truncated: false,
-      totalBytes: 14,
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.ciLogAvailable).toBe(true);
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+    expect(state.ciLogAvailable).toBe(false);
+    expect(state.ciLogError).toBeNull();
+  });
+
+  it('refreshCI asks the pump to poll and keeps the pipeline while it runs', async () => {
+    installCIMocks();
+    let finish!: () => void;
+    const refresh = setBindingMock('RefreshPRCI', () => new Promise<void>((resolve) => {
+      finish = resolve;
     }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
-    await vi.waitFor(() => {
-      expect(state.ciPipeline?.status).toBe('failed');
+    const pending = state.refreshCI();
+    expect(refresh).toHaveBeenCalledWith('sub-1');
+    expect(state.ciRefreshing).toBe(true);
+    expect(state.ciLoading).toBe(false);
+    expect(state.ciPipeline?.status).toBe('running');
+    finish();
+    await pending;
+    expect(state.ciRefreshing).toBe(false);
+  });
+
+  it('refreshCILog re-sends the follow, which refetches the log', async () => {
+    installCIMocks();
+    const follows = installLogFollows('first\n');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+
+    const again = installLogFollows('second\n', 9);
+    state.refreshCILog();
+    await flushPane();
+    expect(follows).toHaveBeenCalledTimes(1);
+    expect(again).toHaveBeenCalledWith('sub-1', ['20']);
+    expect(state.ciLog?.text).toBe('second\n');
+  });
+
+  it('clears the follow when the pane is disposed', async () => {
+    installCIMocks();
+    const follows = installLogFollows('x\n');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+    // A second pane on the same PR keeps the PR subscribed, so the clear
+    // has a live handle to reach.
+    const other = attachPR(PR_KEY, { ref: { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 } });
+    try {
+      disposeReviewStateForPane('pane-1', state);
+      await flushPane();
+      expect(follows).toHaveBeenLastCalledWith('sub-1', []);
+    } finally {
+      other.release();
+    }
+  });
+
+  it('a PR switch closes the old PR\'s job log and clears its follow', async () => {
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/5',
+      openPrNumber: 5,
     });
-    expect(state.ciPipeline?.stages[0]?.jobs[0]?.name).toBe('unit');
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number }),
+      threads: [],
+      headSHA: 'sha-a',
+      seq: 3,
+      ci: ciPipelineStub('running'),
+      ciError: '',
+    }));
+    const follows = installLogFollows('x\n');
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+    expect(follows).toHaveBeenLastCalledWith('sub-5', ['20']);
 
-    const job = state.ciPipeline!.stages[0]!.jobs[0]!;
-    await state.openCIJobLog('test', job);
-    expect(getLog).toHaveBeenCalledWith(
-      { Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 },
-      '20',
-    );
-    expect(state.ciLogView?.job.name).toBe('unit');
-    expect(state.ciLog?.text).toBe('line 1\nline 2\n');
-
-    state.closeCILogView();
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/7',
+      openPrNumber: 7,
+    });
+    // Until the reload releases PR #5 the open log still reads #5.
+    expect(state.ciLogView?.jobId).toBe('20');
+    await state.reload();
+    await flushPane();
+    expect(state.prRef?.number).toBe(7);
     expect(state.ciLogView).toBeNull();
-    expect(state.ciLog).toBeNull();
-
-    // Leaving pr scope drops the pipeline state.
-    await state.setScope('workspace');
-    expect(state.ciPipeline).toBeNull();
+    expect(follows).toHaveBeenLastCalledWith('sub-5', []);
   });
 
   it('opening the conflict view closes the CI log view and vice versa', async () => {
-    installPRMocks();
+    installCIMocks();
+    installLogFollows('x\n');
     setBindingMock('GetPRMergeConflicts', async () => ({
       conflicted: false,
       treeOID: 'tree-clean',
@@ -1415,28 +1578,30 @@ describe('reviewPane store — PR scope', () => {
       paths: [],
       messages: [],
     }));
-    setBindingMock('GetPRCIJobLog', async () => ({ text: 'x\n', truncated: false, totalBytes: 2 }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
 
     const job = { id: '20', name: 'unit', status: 'failed', logsAvailable: true };
-    await state.openCIJobLog('test', job);
+    state.openCIJobLog('test', job);
     expect(state.ciLogView).not.toBeNull();
 
     await state.openConflictView();
     expect(state.ciLogView).toBeNull();
     expect(state.conflictView).toBe(true);
 
-    await state.openCIJobLog('test', job);
+    state.openCIJobLog('test', job);
     expect(state.conflictView).toBe(false);
     expect(state.ciLogView).not.toBeNull();
   });
 
   it('sendCILogToChat saves the log and prefills the source pane composer', async () => {
-    installPRMocks();
-    setBindingMock('GetPRCIJobLog', async () => ({ text: 'boom\n', truncated: false, totalBytes: 5 }));
-    const save = setBindingMock('SavePRCIJobLog', async () => '/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+    installCIMocks();
+    installLogFollows('boom\n');
+    let finishSave!: (path: string) => void;
+    const save = setBindingMock('SavePRCIJobLog', () => new Promise<string>((resolve) => {
+      finishSave = resolve;
+    }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1448,8 +1613,14 @@ describe('reviewPane store — PR scope', () => {
     } as never);
 
     try {
-      await state.openCIJobLog('test', { id: '20', name: 'unit', status: 'failed', logsAvailable: true });
-      await state.sendCILogToChat();
+      state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+      await flushPane();
+      const sending = state.sendCILogToChat();
+      // A pipeline frame while the save runs re-derives the view; the same
+      // log is still open, so the save's result lands.
+      applyPRCIUpdatedEvent({ prKey: PR_KEY, pipeline: ciPipelineStub('failed'), seq: 4 });
+      finishSave('/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+      await sending;
 
       expect(save).toHaveBeenCalledWith(
         { Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 },
@@ -1463,6 +1634,27 @@ describe('reviewPane store — PR scope', () => {
     } finally {
       dispose();
     }
+  });
+
+  it('shows a save failure over the log and the log\'s own failure after it clears', async () => {
+    installCIMocks();
+    setBindingMock('SetPRCILogFollows', async () => ({
+      logs: { 20: { text: 'x\n', truncated: false, totalBytes: 2, available: true, error: 'failed to fetch job log (id: q)', seq: 5 } },
+    }));
+    setBindingMock('SavePRCIJobLog', async () => {
+      throw new Error('disk full');
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+    await flushPane();
+    expect(state.ciLogError).toBe('failed to fetch job log (id: q)');
+
+    await state.saveCILog();
+    expect(state.ciLogError).toBe('disk full');
+    state.refreshCILog();
+    expect(state.ciLogError).toBe('failed to fetch job log (id: q)');
   });
 
   it('detects an open PR from git status at mount without switching scope', async () => {
@@ -3212,10 +3404,15 @@ describe('reviewPane store — diffs past the memory budget', () => {
       expect(size).toBe(Math.min(40, patch.length - offset));
     }
 
+    const files = state.files;
     state.dispose();
     expect(release).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledWith('diff-1');
-    expect(patchTextHeldBytes()).toBe(base);
+    // The diff's own text is gone. The global count is not compared exactly:
+    // stores other tests never disposed stop being counted when the garbage
+    // collector finds them, which can happen at any point of this test.
+    for (const file of files) expect(file.body.resident()).toBe(false);
+    expect(patchTextHeldBytes()).toBeLessThanOrEqual(base);
   });
 
   it('lets the previous diff go when a reload replaces it', async () => {

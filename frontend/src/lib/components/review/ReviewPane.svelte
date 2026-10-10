@@ -566,9 +566,10 @@
         onViewConflicts={() => { void review?.openConflictView(); }}
         ciPipeline={review.ciPipeline}
         ciLoading={review.ciLoading}
+        ciRefreshing={review.ciRefreshing}
         ciError={review.ciError}
-        onOpenCIJob={(stageName, job) => { void review?.openCIJobLog(stageName, job); }}
-        onRefreshCI={() => { void review?.loadCIJobs(); }}
+        onOpenCIJob={(stageName, job) => review?.openCIJobLog(stageName, job)}
+        onRefreshCI={() => { void review?.refreshCI(); }}
         {review}
         {overviewOff}
       />
@@ -579,9 +580,10 @@
         log={review.ciLog}
         loading={review.ciLogLoading}
         error={review.ciLogError}
+        available={review.ciLogAvailable}
         savedPath={review.ciLogSavedPath}
         onBack={() => review?.closeCILogView()}
-        onRefresh={() => { void review?.refreshCILog(); }}
+        onRefresh={() => review?.refreshCILog()}
         onSave={() => { void review?.saveCILog(); }}
         onSend={() => { void review?.sendCILogToChat(); }}
       />

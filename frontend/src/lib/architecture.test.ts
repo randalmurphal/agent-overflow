@@ -68,6 +68,7 @@ function owned(owner: string, where: string): EntityOwnedBinding {
 const GIT_STATUS_STORE = 'lib/stores/gitStatusStore.svelte.ts';
 const PR_REVIEW_STORE = 'lib/stores/prReviewStore.svelte.ts';
 const PR_REVIEW_CI = 'lib/stores/prReviewCI.svelte.ts';
+const PR_REVIEW_CI_FOLLOWS = 'lib/stores/prReviewCIFollows.svelte.ts';
 const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
@@ -105,7 +106,8 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   SetPRUpdatesActive: owned(PR_REVIEW_STORE, 'handlePRVisibilityChange()'),
   GetPRMergeConflicts: owned(PR_REVIEW_CONFLICTS, 'openPRConflicts()'),
   GetMergeConflictFile: owned(PR_REVIEW_CONFLICTS, 'ensurePRConflictFile()'),
-  GetPRCIJobs: owned(PR_REVIEW_CI, 'loadPRCIJobs()'),
+  RefreshPRCI: owned(PR_REVIEW_CI, 'refreshPRCI()'),
+  SetPRCILogFollows: owned(PR_REVIEW_CI_FOLLOWS, 'setPRCILogFollow()'),
   ListThreadMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   ListWorkspaceMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   SetThreadMcpServerEnabled: owned(MCP_SERVERS_STORE, 'setMcpServerEnabled()'),

@@ -124,6 +124,32 @@ read/write APIs and per-PR-key polling.
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`), and the pane waits on that too rather
   than reading empty PR fields as "no PR". No background polling in v1.
+- **CI rides the same pump** (`internal/app/app_forge_ci.go`). The pump
+  reads the head pipeline on start and re-reads it only while something
+  can change: every 10s while a job is queued or running, every 5s while
+  a followed job is live on GitLab or its final log is still being
+  fetched, never while every job is terminal (the 45s snapshot re-arms it
+  when the head SHA or the check summary moves). Pipeline frames go out on
+  `pr:ci_updated` only on change, under the PR's sequence, and the
+  subscribe result carries the current pipeline for a joiner. GitHub reads
+  every job from the rollup (one GraphQL request) and steps, which only
+  the open log view shows, from one REST jobs list per run holding a
+  followed job whose steps can still change; GitLab reads the MR view and
+  the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
+  the pump fetches each now and streams UTF-16 prefix deltas on
+  `pr:ci_log` while a GitLab job runs (the trace endpoint serves partial
+  traces); GitHub serves a log only after completion, so a running job
+  reads as unavailable with its steps live, and the log lands once the job
+  completes. A completed job's log the forge still answers 404 for is a
+  wait, not an error: asked every 5s for six tries, then every 45s while
+  the job stays followed. The pause, dedup, caller-safe error and
+  connection-cleanup rules of the
+  snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
+  are the manual refreshes and run while paused. The frontend sends the
+  union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
+  The open log view opens at the tail and follows growth through the
+  shared stick-to-bottom controller, wired over `LongListVirtualizer` as
+  chat wires it; a reader who scrolls away keeps their place.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,
@@ -184,7 +210,6 @@ read/write APIs and per-PR-key polling.
 - **Background polling / watched-PR badges.** Polling only while a pane is
   subscribed.
 - **Pure-remote context expansion** (fetching file contents via forge API).
-- **CI log viewing.** Check status is a read-only pass/fail summary.
 - **Reusing `TimelineVirtualizer.svelte` for diffs.** The chat adapter
   stays chat-only; the engine core is the shared layer.
 

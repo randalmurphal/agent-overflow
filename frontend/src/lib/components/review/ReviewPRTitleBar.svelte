@@ -26,10 +26,13 @@
     hasWorkspace?: boolean;
     onViewConflicts?: () => void;
     ciPipeline?: CIPipeline | null;
+    /** No pipeline or failure observed yet. */
     ciLoading?: boolean;
+    /** A manual refresh is in flight; the chips stay. */
+    ciRefreshing?: boolean;
     ciError?: string | null;
     onOpenCIJob?: (stageName: string, job: CIJob) => void;
-    /** Re-polls CI status alone, no diff or thread refresh. */
+    /** Has the pump re-poll CI now, no diff or thread refresh. */
     onRefreshCI?: () => void;
     /** Present in the review pane proper; absent in narrow test mounts. */
     review?: ReviewPaneState | null;
@@ -43,6 +46,7 @@
     onViewConflicts,
     ciPipeline = null,
     ciLoading = false,
+    ciRefreshing = false,
     ciError = null,
     onOpenCIJob,
     onRefreshCI,
@@ -170,10 +174,10 @@
           aria-label="Refresh CI status"
           title="Refresh CI status"
           data-testid="review-ci-refresh"
-          disabled={ciLoading}
+          disabled={ciRefreshing}
           onclick={onRefreshCI}
         >
-          <Icon icon={RefreshCw} size={12} class={ciLoading ? 'animate-spin' : ''} />
+          <Icon icon={RefreshCw} size={12} class={ciRefreshing ? 'animate-spin' : ''} />
         </button>
       {/if}
     {/if}

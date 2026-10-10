@@ -58,20 +58,20 @@ the Create PR/MR dialog:
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | gh | `pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | glab | `mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
-| gh | `pr view --repo P N --json ...` | GetPRDetail, CI rollup |
+| gh | `pr view --repo P N --json ...` | GetPRDetail, CI jobs (rollup) |
 | gh | `pr list --head B --state open --json ...` | open PR lookup (checkout origin) |
 | gh | `pr list --state merged --limit N --json ...` | merged heads (checkout origin) |
-| gh | `run view ID --repo P --json jobs,workflowName` | CI jobs |
+| gh | `api repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` | CI steps of a followed job's run |
 | gh | `api user --jq .login` | GetPRDetail viewer login |
 | gh | `api graphql -f query=...` review threads and PR comments | ListReviewThreads |
-| gh | `api repos/O/R/actions/jobs/ID/logs` | CI job log |
+| gh | `api repos/O/R/actions/jobs/ID/logs` | CI job log (404 while the job is running or pending, as the real endpoint, and while the job sets `logWithheld`) |
 | gh | `api <attachment URL> -H "Accept: */*" [--allow-escape-sequences]` | forge attachments |
 | glab | `api projects/P/merge_requests/N` | GetPRDetail, CI |
 | glab | `api projects/P/merge_requests/N/approvals` | GetPRDetail |
 | glab | `api --include projects/P/merge_requests/N/discussions?...` | ListReviewThreads |
 | glab | `api projects/:fullpath/merge_requests?...` (opened, merged) | open MR lookup, merged heads |
 | glab | `api projects/P/pipelines/ID/jobs?...` | CI jobs |
-| glab | `api projects/P/jobs/ID/trace` | CI job log |
+| glab | `api projects/P/jobs/ID/trace` | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`) |
 | glab | `api projects/P/uploads/SECRET/NAME` | forge attachments |
 
 Unhandled (fail with their argv): `gh api` review, file comment and reply

@@ -61,6 +61,11 @@ type PRUpdateSubscriptionResult struct {
 	HeadSHA string                `json:"headSHA"`
 	Error   string                `json:"error"`
 	Seq     uint64                `json:"seq"`
+	// CI is the pump's pipeline, nil until its first CI poll has answered
+	// (the frame then follows on pr:ci_updated); CIError is the CI poll's
+	// active failure, the same caller-safe summary as Error.
+	CI      *gitops.CIPipeline `json:"ci"`
+	CIError string             `json:"ciError"`
 }
 
 // PRUpdatedEvent is the shape pushed on the "pr:updated" channel, once per
@@ -137,16 +142,36 @@ type prUpdatePump struct {
 	lastErr      string
 	lastWireErr  string
 	seq          uint64
+
+	// The CI phase (app_forge_ci.go), under the same lock. ci is the last
+	// pipeline fetched (meaningful once ciKnown), ciLast its encoding for
+	// change detection, ciErr/ciWireErr the raw dedup key and the wire
+	// summary of the active fetch failure. ciStamp is the prCIStamp of the
+	// snapshot the pipeline was last polled under; ciDirty is set by a
+	// snapshot poll that moved it and by a new follow (whose steps the next
+	// pipeline poll fills). follows holds the logs being watched,
+	// by job id. requests is how an RPC has this goroutine poll now.
+	ci        gitops.CIPipeline
+	ciKnown   bool
+	ciLast    []byte
+	ciErr     string
+	ciWireErr string
+	ciStamp   string
+	ciDirty   bool
+	follows   map[string]*prCILogFollow
+	requests  chan *prPumpRequest
 }
 
 // prUpdateReference is one caller's take on a pump: the handle plus the
 // pump state AS OF the moment the reference was registered, all read in the
 // one critical section so the three cannot describe different observations.
 type prUpdateReference struct {
-	id       string
-	snapshot prUpdateSnapshot
-	wireErr  string
-	seq      uint64
+	id        string
+	snapshot  prUpdateSnapshot
+	wireErr   string
+	seq       uint64
+	ci        *gitops.CIPipeline
+	ciWireErr string
 }
 
 // prUpdateHandle is one caller's reference on a pump. active mirrors the
@@ -160,6 +185,9 @@ type prUpdateReference struct {
 type prUpdateHandle struct {
 	pump   *prUpdatePump
 	active bool
+	// follows are the job ids this caller follows the logs of
+	// (SetPRCILogFollows); each holds one ref on the pump's follow.
+	follows map[string]bool
 }
 
 // prUpdateKey is the entity key for a pull/merge request: forge, project
@@ -496,6 +524,8 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		HeadSHA: ref.snapshot.Detail.HeadSHA,
 		Error:   ref.wireErr,
 		Seq:     ref.seq,
+		CI:      ref.ci,
+		CIError: ref.ciWireErr,
 	}, nil
 }
 
@@ -545,6 +575,7 @@ func (a *App) createPRUpdatePump(
 		pr:           pr,
 		done:         make(chan struct{}),
 		wake:         make(chan struct{}, 1),
+		requests:     make(chan *prPumpRequest),
 		last:         encoded,
 		lastSnapshot: snapshot,
 		lastErr:      fetchErr,
@@ -602,12 +633,18 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference 
 	if resumed {
 		wakePRUpdatePump(pump)
 	}
-	return prUpdateReference{
-		id:       id,
-		snapshot: pump.lastSnapshot,
-		wireErr:  pump.lastWireErr,
-		seq:      pump.seq,
+	ref := prUpdateReference{
+		id:        id,
+		snapshot:  pump.lastSnapshot,
+		wireErr:   pump.lastWireErr,
+		seq:       pump.seq,
+		ciWireErr: pump.ciWireErr,
 	}
+	if pump.ciKnown {
+		ci := pump.ci
+		ref.ci = &ci
+	}
+	return ref
 }
 
 //ao:scope git:operate
@@ -707,12 +744,50 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		retry = time.After(retryDelay)
 	}
 	scheduleRetry()
+	// The CI phase rides its own timer, re-armed from the pump's CI state
+	// after every CI poll (prCIInterval): nil while nothing is live. A CI
+	// tick that lands while paused is folded into the resume poll.
+	var ciTick <-chan time.Time
+	var ciRetryDelay time.Duration
+	missedCI := false
+	runCI := func(forced map[string]bool, pollPipeline bool) {
+		missedCI = false
+		if pollPipeline || a.prCIWantsPoll(pump) {
+			if event, changed := a.pollPRCI(pump); changed {
+				a.emitPRPumpEvent(pump, eventchan.PRCIUpdated, event)
+			}
+		}
+		for _, event := range a.pollPRCILogs(pump, forced) {
+			a.emitPRPumpEvent(pump, eventchan.PRCILog, event)
+		}
+		if delay := a.prCIInterval(pump, &ciRetryDelay); delay > 0 {
+			ciTick = time.After(delay)
+		} else {
+			ciTick = nil
+		}
+	}
+	// The first pipeline read happens here rather than in Subscribe so a
+	// subscribe stays one forge call; the result carries CI nil until the
+	// frame lands.
+	runCI(nil, true)
 	for {
 		select {
 		case <-pump.done:
 			return
 		case <-a.lifeCtx().Done():
 			return
+		case req := <-pump.requests:
+			a.servePRPumpRequest(pump, req, runCI)
+			continue
+		case <-ciTick:
+			if pump.paused.Load() {
+				missedTick = true
+				missedCI = true
+				ciTick = nil
+				continue
+			}
+			runCI(nil, true)
+			continue
 		case <-pump.wake:
 			if pump.paused.Load() || !missedTick {
 				continue
@@ -736,15 +811,12 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		}
 		event, changed := a.pollPRUpdate(pump)
 		scheduleRetry()
-		if !changed {
-			continue
+		if changed {
+			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
 		}
-		select {
-		case <-pump.done:
-			return
-		default:
+		if missedCI || a.prCIWantsPoll(pump) {
+			runCI(nil, true)
 		}
-		a.emit(eventchan.PRUpdated, event)
 	}
 }
 
@@ -782,6 +854,11 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 				pump.lastWireErr = ""
 				pump.seq = a.nextPRUpdateSeqLocked()
 				seq = pump.seq
+				// A moved head or check summary is the pipeline moving;
+				// the loop polls it right after this snapshot goes out.
+				if prCIStamp(snapshot) != pump.ciStamp {
+					pump.ciDirty = true
+				}
 			}
 			a.prUpdates.mu.Unlock()
 			if unchanged {
@@ -877,6 +954,7 @@ func (a *App) unsubscribePRUpdates(id string) {
 	delete(a.prUpdates.handles, id)
 	var teardown *prUpdatePump
 	pump := handle.pump
+	releaseFollowsLocked(pump, handle)
 	if handle.active {
 		pump.active--
 	}

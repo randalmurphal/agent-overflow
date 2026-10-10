@@ -106,6 +106,18 @@ var testPR = gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo
 
 // capturePRUpdates routes "pr:updated" emissions into a channel. Buffered
 // deep enough that a pump ticking during an assertion cannot block.
+// stubPRCIFetch gives a bare App a forge-free CI phase: an empty pipeline
+// and empty logs. Every pump polls CI on start, and a test about the
+// snapshot half must not reach for gh/glab to answer that poll.
+func stubPRCIFetch(app *App) {
+	app.prUpdates.ciFetchFn = func(gitops.PRReference, *gitops.CIPipeline, []string) (gitops.CIPipeline, error) {
+		return gitops.CIPipeline{}, nil
+	}
+	app.prUpdates.ciLogFetchFn = func(gitops.PRReference, string) (string, error) { return "", nil }
+	whileRunning := true
+	app.prUpdates.ciLogWhileRunning = &whileRunning
+}
+
 func capturePRUpdates(t *testing.T, app *App) chan PRUpdatedEvent {
 	t.Helper()
 	events := make(chan PRUpdatedEvent, 16)
@@ -157,6 +169,7 @@ func prPumpState(app *App, prKey string) (refs, active int, paused, present bool
 func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	calls := 0
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -204,6 +217,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var changed atomic.Bool
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -283,6 +297,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -330,6 +345,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
@@ -375,6 +391,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
@@ -406,6 +423,7 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
@@ -430,6 +448,7 @@ func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
 func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
 	var changed atomic.Bool
@@ -485,6 +504,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -576,6 +596,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 400 * time.Millisecond
 	var changed atomic.Bool
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -626,6 +647,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
@@ -705,6 +727,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	var fetchErr error
 	head := "head-a"
@@ -780,6 +803,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -834,6 +858,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 300 * time.Millisecond
 	var calls atomic.Int32
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -877,6 +902,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -931,6 +957,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
 	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
@@ -998,6 +1025,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var head atomic.Value
 	head.Store("head-a")
@@ -1054,6 +1082,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 func TestSetPRUpdatesActiveUnknownIDIsNoOp(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	if err := app.SetPRUpdatesActive("nope", true); err != nil {
 		t.Fatalf("SetPRUpdatesActive: %v", err)
 	}
@@ -1086,6 +1115,7 @@ func TestPRUpdateKeyMatchesTheFrontendSourceKey(t *testing.T) {
 func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
+	stubPRCIFetch(app)
 	app.prUpdates.interval = 2 * time.Second
 	app.prUpdates.retryBase = 5 * time.Millisecond
 	var failing atomic.Bool

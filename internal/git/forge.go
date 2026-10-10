@@ -42,10 +42,18 @@ type Forge interface {
 	// thread node id, a GitLab discussion id.
 	SetThreadResolved(cwd, project string, number int, threadID string, resolved bool) error
 	// ListPRCIJobs fetches the PR/MR head pipeline grouped into stages
-	// (GitLab stages, GitHub workflows) with per-job status.
-	ListPRCIJobs(cwd, project string, number int) (CIPipeline, error)
+	// (GitLab stages, GitHub workflows) with per-job status. prev is the
+	// pipeline the caller last observed, or nil: a forge may serve the
+	// parts of it the forge reports unchanged instead of refetching them.
+	// stepsFor names the jobs whose steps the caller shows; a forge with
+	// steps fills them on those jobs only.
+	ListPRCIJobs(cwd, project string, number int, prev *CIPipeline, stepsFor []string) (CIPipeline, error)
 	// GetCIJobLog fetches the raw log/trace for one CI job.
 	GetCIJobLog(cwd, project, jobID string) (string, error)
+	// CILogWhileRunning reports whether GetCIJobLog answers for a job that
+	// is still running (GitLab serves the partial trace; GitHub serves a
+	// log only once the job completed).
+	CILogWhileRunning() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
 	// a PR/MR body or review comment, through the user's own CLI login.
 	// A body larger than maxBytes is an error, not a truncation. See
@@ -304,9 +312,11 @@ func (nullForge) SetThreadResolved(string, string, int, string, bool) error {
 	return ErrUnsupportedForge
 }
 
-func (nullForge) ListPRCIJobs(string, string, int) (CIPipeline, error) {
+func (nullForge) ListPRCIJobs(string, string, int, *CIPipeline, []string) (CIPipeline, error) {
 	return CIPipeline{}, ErrUnsupportedForge
 }
+
+func (nullForge) CILogWhileRunning() bool { return false }
 
 func (nullForge) GetCIJobLog(string, string, string) (string, error) {
 	return "", ErrUnsupportedForge
@@ -422,8 +432,14 @@ func (c *Core) SetThreadResolved(cwd string, ref PRReference, threadID string, r
 	return c.ForgeByID(ref.Forge).SetThreadResolved(cwd, ref.Project(), ref.Number, threadID, resolved)
 }
 
-func (c *Core) ListPRCIJobs(cwd string, ref PRReference) (CIPipeline, error) {
-	return c.ForgeByID(ref.Forge).ListPRCIJobs(cwd, ref.Project(), ref.Number)
+func (c *Core) ListPRCIJobs(cwd string, ref PRReference, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+	return c.ForgeByID(ref.Forge).ListPRCIJobs(cwd, ref.Project(), ref.Number, prev, stepsFor)
+}
+
+// CILogWhileRunning reports whether ref's forge serves a running job's
+// log (see Forge.CILogWhileRunning).
+func (c *Core) CILogWhileRunning(ref PRReference) bool {
+	return c.ForgeByID(ref.Forge).CILogWhileRunning()
 }
 
 func (c *Core) GetCIJobLog(cwd string, ref PRReference, jobID string) (string, error) {

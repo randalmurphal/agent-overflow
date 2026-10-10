@@ -252,6 +252,15 @@ type harnessTiming struct {
 	// PRUpdateRetry is the first retry delay after a pull request poll
 	// fails (app.IsolationConfig.PRUpdateRetryBase).
 	PRUpdateRetry time.Duration
+	// PRCILive and PRCIFollow are the pull request pipeline poll cadences
+	// while a job is live and while a job log is followed
+	// (app.IsolationConfig.PRCILiveInterval / PRCIFollowInterval).
+	PRCILive   time.Duration
+	PRCIFollow time.Duration
+	// PRCILogWait is how often a followed job's log the forge has still not
+	// published is asked for once the quick retries ran out
+	// (app.IsolationConfig.PRCILogWaitInterval).
+	PRCILogWait time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -265,6 +274,9 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"thread-poll":     &timing.ThreadPoll,
 		"transfer-retry":  &timing.TransferRetry,
 		"pr-update-retry": &timing.PRUpdateRetry,
+		"pr-ci-live":      &timing.PRCILive,
+		"pr-ci-follow":    &timing.PRCIFollow,
+		"pr-ci-log-wait":  &timing.PRCILogWait,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -358,6 +370,9 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		ThreadRequestPoll:    opts.Timing.ThreadPoll,
 		TransferPendingRetry: opts.Timing.TransferRetry,
 		PRUpdateRetryBase:    opts.Timing.PRUpdateRetry,
+		PRCILiveInterval:     opts.Timing.PRCILive,
+		PRCIFollowInterval:   opts.Timing.PRCIFollow,
+		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

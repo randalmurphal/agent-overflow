@@ -10,22 +10,39 @@ import (
 )
 
 // GitHub CI: Actions has no stage concept, so the "stage" grouping is
-// the workflow name. The PR's statusCheckRollup names the current check
-// runs and their run/job ids (via detailsUrl); `gh run view --json jobs`
-// then supplies per-job steps. External checks (StatusContext, or check
-// runs from non-Actions apps) have no log API and group under
-// "External" as link-only entries. Verified shapes 2026-07.
+// the workflow name. The PR's statusCheckRollup carries every check run
+// with its status, times and details URL (which names the run and job
+// ids); every Actions job has exactly one check run, so the rollup alone
+// lists the jobs. Steps are the one thing it lacks: they come from the
+// REST jobs list of a run, read only for the runs that hold a job the
+// caller shows the steps of. External checks (StatusContext, or check
+// runs from non-Actions apps) have no log API and group under "External"
+// as link-only entries. Verified shapes 2026-10.
 
-// githubCIMaxRuns bounds the per-run `gh run view` fan-out. A PR
-// referencing more workflows than this gets the first N in rollup
-// order; the rest still appear as link-only external entries.
+// githubCIMaxRuns bounds the workflow runs listed. A PR referencing more
+// runs than this lists the first N in rollup order.
 const githubCIMaxRuns = 20
+
+// githubCIJobsPerPage is the REST jobs list page size, the API's maximum.
+const githubCIJobsPerPage = 100
 
 const githubCIExternalStage = "External"
 
 var githubActionsJobURLPattern = regexp.MustCompile(`/actions/runs/(\d+)/job/(\d+)`)
 
-func (f *githubForge) ListPRCIJobs(cwd, project string, number int) (CIPipeline, error) {
+// githubCIRun is one workflow run's jobs as the rollup lists them.
+type githubCIRun struct {
+	id       string
+	workflow string
+	jobs     []CIJob
+}
+
+// ListPRCIJobs builds the pipeline from the rollup, one GraphQL request
+// per poll. Steps cost one REST request (more only for a run past 100
+// jobs) per run holding a stepsFor job whose steps can still change: a job
+// prev observed terminal with settled steps keeps them. Jobs outside
+// stepsFor carry no steps.
+func (f *githubForge) ListPRCIJobs(cwd, project string, number int, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
 	if strings.TrimSpace(project) == "" {
 		return CIPipeline{}, errors.New("project (owner/repo) is required")
 	}
@@ -53,22 +70,25 @@ func (f *githubForge) ListPRCIJobs(cwd, project string, number int) (CIPipeline,
 	}
 	summary := parseGitHubCheckSummary(raw.StatusCheckRollup)
 
-	runIDs, external := splitGitHubChecks(summary.Checks)
-	stages := make([]CIStage, 0, len(runIDs)+1)
+	runs, external := splitGitHubChecks(summary.Checks)
+	if len(runs) > githubCIMaxRuns {
+		runs = runs[:githubCIMaxRuns]
+	}
+	if err := f.fillGitHubSteps(cwd, project, runs, prev, stepsFor); err != nil {
+		return CIPipeline{}, err
+	}
+	stages := make([]CIStage, 0, len(runs)+1)
 	indexByWorkflow := make(map[string]int)
-	for i, runID := range runIDs {
-		if i >= githubCIMaxRuns {
-			break
+	for _, run := range runs {
+		name := run.workflow
+		if name == "" {
+			name = "Workflow " + run.id
 		}
-		run, err := f.githubRunJobs(cwd, project, runID)
-		if err != nil {
-			return CIPipeline{}, err
-		}
-		index, ok := indexByWorkflow[run.name]
+		index, ok := indexByWorkflow[name]
 		if !ok {
 			index = len(stages)
-			indexByWorkflow[run.name] = index
-			stages = append(stages, CIStage{Name: run.name})
+			indexByWorkflow[name] = index
+			stages = append(stages, CIStage{Name: name})
 		}
 		stages[index].Jobs = append(stages[index].Jobs, run.jobs...)
 	}
@@ -94,18 +114,31 @@ func (f *githubForge) ListPRCIJobs(cwd, project string, number int) (CIPipeline,
 	}, nil
 }
 
-// splitGitHubChecks separates Actions-backed check runs (returning
-// their distinct workflow-run ids in rollup order) from external
-// checks that can only link out.
-func splitGitHubChecks(checks []CheckStatus) (runIDs []string, external []CIJob) {
-	seenRuns := make(map[string]bool)
+// splitGitHubChecks separates Actions-backed check runs, grouped into
+// their workflow runs in rollup order, from external checks that can only
+// link out.
+func splitGitHubChecks(checks []CheckStatus) (runs []githubCIRun, external []CIJob) {
+	indexByRun := make(map[string]int)
 	for _, check := range checks {
 		if check.Kind == "CheckRun" {
 			if match := githubActionsJobURLPattern.FindStringSubmatch(check.DetailsURL); match != nil {
-				if !seenRuns[match[1]] {
-					seenRuns[match[1]] = true
-					runIDs = append(runIDs, match[1])
+				index, ok := indexByRun[match[1]]
+				if !ok {
+					index = len(runs)
+					indexByRun[match[1]] = index
+					runs = append(runs, githubCIRun{id: match[1], workflow: check.Workflow})
 				}
+				status := NormalizeCIStatus(check.Status, check.Conclusion)
+				runs[index].jobs = append(runs[index].jobs, CIJob{
+					ID:              match[2],
+					Name:            check.Name,
+					Status:          status,
+					DurationSeconds: ciDurationSeconds(check.StartedAt, check.CompletedAt),
+					URL:             check.DetailsURL,
+					// Logs exist once a job has started: queued jobs 404, and so
+					// does a job cancelled before it started, for good.
+					LogsAvailable: status != CIStatusPending && status != CIStatusSkipped && check.StartedAt != "",
+				})
 				continue
 			}
 		}
@@ -117,7 +150,7 @@ func splitGitHubChecks(checks []CheckStatus) (runIDs []string, external []CIJob)
 			LogsAvailable:   false,
 		})
 	}
-	return runIDs, external
+	return runs, external
 }
 
 func checkDisplayName(check CheckStatus) string {
@@ -127,73 +160,121 @@ func checkDisplayName(check CheckStatus) string {
 	return check.Name
 }
 
-type githubRunJobsResult struct {
-	name string
-	jobs []CIJob
+// fillGitHubSteps sets the steps of every stepsFor job. A job that prev
+// already observed terminal, with steps that were settled then, keeps
+// prev's: they cannot change again. Any other stepsFor job has its run's
+// jobs read once.
+func (f *githubForge) fillGitHubSteps(cwd, project string, runs []githubCIRun, prev *CIPipeline, stepsFor []string) error {
+	if len(stepsFor) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(stepsFor))
+	for _, jobID := range stepsFor {
+		want[jobID] = true
+	}
+	for i := range runs {
+		run := &runs[i]
+		pending := make(map[string]bool)
+		for j := range run.jobs {
+			job := &run.jobs[j]
+			if !want[job.ID] {
+				continue
+			}
+			if steps, ok := settledGitHubSteps(prev, *job); ok {
+				job.Steps = steps
+				continue
+			}
+			pending[job.ID] = true
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		steps, err := f.githubRunSteps(cwd, project, run.id, pending)
+		if err != nil {
+			return err
+		}
+		for j := range run.jobs {
+			if jobSteps, ok := steps[run.jobs[j].ID]; ok {
+				run.jobs[j].Steps = jobSteps
+			}
+		}
+	}
+	return nil
 }
 
-func (f *githubForge) githubRunJobs(cwd, project, runID string) (githubRunJobsResult, error) {
-	result, err := f.core.runBinary(
-		"gh", cwd,
-		"run", "view", runID,
-		"--repo", project,
-		"--json", "jobs,workflowName",
-	)
-	if err != nil {
-		return githubRunJobsResult{}, normalizeGitHubCLIError(err)
+// settledGitHubSteps returns prev's steps for job when they can no longer
+// change: the job is terminal now and was terminal in prev, and none of
+// prev's steps was live (the jobs list can trail the rollup by a poll). A
+// re-run puts the check back in progress, which fails the first test.
+func settledGitHubSteps(prev *CIPipeline, job CIJob) ([]CIStep, bool) {
+	if prev == nil || CIJobLive(job.Status) {
+		return nil, false
 	}
-	if result.exitCode != 0 {
-		return githubRunJobsResult{}, githubCommandFailure("gh run view failed", result)
+	seen := FindCIJob(*prev, job.ID)
+	if seen == nil || seen.Steps == nil || CIJobLive(seen.Status) {
+		return nil, false
 	}
-	var raw struct {
-		WorkflowName string `json:"workflowName"`
-		Jobs         []struct {
-			DatabaseID  int64  `json:"databaseId"`
-			Name        string `json:"name"`
-			Status      string `json:"status"`
-			Conclusion  string `json:"conclusion"`
-			StartedAt   string `json:"startedAt"`
-			CompletedAt string `json:"completedAt"`
-			URL         string `json:"url"`
-			Steps       []struct {
-				Number     int    `json:"number"`
-				Name       string `json:"name"`
-				Status     string `json:"status"`
-				Conclusion string `json:"conclusion"`
-			} `json:"steps"`
-		} `json:"jobs"`
-	}
-	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
-		return githubRunJobsResult{}, fmt.Errorf("gh run view returned malformed JSON: %w", err)
-	}
-
-	name := raw.WorkflowName
-	if name == "" {
-		name = "Workflow " + runID
-	}
-	jobs := make([]CIJob, 0, len(raw.Jobs))
-	for _, job := range raw.Jobs {
-		status := NormalizeCIStatus(job.Status, job.Conclusion)
-		steps := make([]CIStep, 0, len(job.Steps))
-		for _, step := range job.Steps {
-			steps = append(steps, CIStep{
-				Number: step.Number,
-				Name:   step.Name,
-				Status: NormalizeCIStatus(step.Status, step.Conclusion),
-			})
+	for _, step := range seen.Steps {
+		if CIJobLive(step.Status) {
+			return nil, false
 		}
-		jobs = append(jobs, CIJob{
-			ID:              strconv.FormatInt(job.DatabaseID, 10),
-			Name:            job.Name,
-			Status:          status,
-			DurationSeconds: ciDurationSeconds(zeroTimeToEmpty(job.StartedAt), zeroTimeToEmpty(job.CompletedAt)),
-			URL:             job.URL,
-			// Logs exist once a job has started; queued jobs 404.
-			LogsAvailable: status != CIStatusPending && status != CIStatusSkipped,
-			Steps:         steps,
-		})
 	}
-	return githubRunJobsResult{name: name, jobs: jobs}, nil
+	return seen.Steps, true
+}
+
+// githubRunSteps reads a run's jobs from the REST API (one request per 100
+// jobs, stopping once every wanted job was seen) and returns their steps
+// by job id. A job the answer lacks is absent from the map.
+func (f *githubForge) githubRunSteps(cwd, project, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
+	steps := make(map[string][]CIStep, len(wanted))
+	seen := 0
+	for page := 1; ; page++ {
+		endpoint := "repos/" + project + "/actions/runs/" + runID + "/jobs?per_page=" + strconv.Itoa(githubCIJobsPerPage)
+		if page > 1 {
+			endpoint += "&page=" + strconv.Itoa(page)
+		}
+		result, err := f.core.runBinary("gh", cwd, "api", endpoint)
+		if err != nil {
+			return nil, normalizeGitHubCLIError(err)
+		}
+		if result.exitCode != 0 {
+			return nil, githubCommandFailure("gh api run jobs failed", result)
+		}
+		var raw struct {
+			TotalCount int `json:"total_count"`
+			Jobs       []struct {
+				ID    int64 `json:"id"`
+				Steps []struct {
+					Number     int    `json:"number"`
+					Name       string `json:"name"`
+					Status     string `json:"status"`
+					Conclusion string `json:"conclusion"`
+				} `json:"steps"`
+			} `json:"jobs"`
+		}
+		if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
+			return nil, fmt.Errorf("gh api run jobs returned malformed JSON: %w", err)
+		}
+		for _, job := range raw.Jobs {
+			jobID := strconv.FormatInt(job.ID, 10)
+			if !wanted[jobID] {
+				continue
+			}
+			jobSteps := make([]CIStep, 0, len(job.Steps))
+			for _, step := range job.Steps {
+				jobSteps = append(jobSteps, CIStep{
+					Number: step.Number,
+					Name:   step.Name,
+					Status: NormalizeCIStatus(step.Status, step.Conclusion),
+				})
+			}
+			steps[jobID] = jobSteps
+		}
+		seen += len(raw.Jobs)
+		if len(steps) == len(wanted) || len(raw.Jobs) < githubCIJobsPerPage || seen >= raw.TotalCount {
+			return steps, nil
+		}
+	}
 }
 
 func (f *githubForge) GetCIJobLog(cwd, project, jobID string) (string, error) {
@@ -209,8 +290,13 @@ func (f *githubForge) GetCIJobLog(cwd, project, jobID string) (string, error) {
 		return "", normalizeGitHubCLIError(err)
 	}
 	if result.exitCode != 0 {
-		return "", githubCommandFailure("gh api job logs failed", result)
+		return "", ciJobLogFailure(githubCommandFailure("gh api job logs failed", result), result)
 	}
 	// The log endpoint prepends a UTF-8 BOM.
 	return strings.TrimPrefix(result.stdout, "\ufeff"), nil
 }
+
+// CILogWhileRunning is false: the Actions log endpoint answers 404 until
+// the job completes, and for a while after; the live log is only the
+// website's own stream.
+func (f *githubForge) CILogWhileRunning() bool { return false }

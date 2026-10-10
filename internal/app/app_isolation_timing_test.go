@@ -18,9 +18,19 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	const retry = 40 * time.Millisecond
 	f := newRequestFixture(t)
 	const prRetry = 25 * time.Millisecond
-	ConfigureIsolation(f.app, IsolationConfig{ThreadRequestPoll: poll, TransferPendingRetry: retry, PRUpdateRetryBase: prRetry})
+	const ciLive, ciFollow = 70 * time.Millisecond, 35 * time.Millisecond
+	ConfigureIsolation(f.app, IsolationConfig{
+		ThreadRequestPoll: poll, TransferPendingRetry: retry,
+		PRUpdateRetryBase: prRetry, PRCILiveInterval: ciLive, PRCIFollowInterval: ciFollow,
+	})
 	if got := f.app.prUpdateRetryBase(); got != prRetry {
 		t.Fatalf("pr update retry base = %s, want %s", got, prRetry)
+	}
+	if got := f.app.prCILiveInterval(); got != ciLive {
+		t.Fatalf("pr ci live interval = %s, want %s", got, ciLive)
+	}
+	if got := f.app.prCIFollowInterval(); got != ciFollow {
+		t.Fatalf("pr ci follow interval = %s, want %s", got, ciFollow)
 	}
 	computer := uuid.NewString()
 

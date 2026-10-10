@@ -74,6 +74,15 @@ Gap recovery belongs to `transportRecovery.ts`. Register snapshot reads with
 mutations that existed when replay ended. A gap snapshot must not overtake older
 queued replay, and later live events must not extend that recovery wait.
 
+A PR's `pr:updated` and `pr:ci_updated` frames carry its pump's one
+sequence, so both rank against one watermark per PR key, seeded by the
+`SubscribePRUpdates` result, and a join replays buffered frames in sequence
+order. CI is sourced only by that subscription; the frontend never polls it.
+`pr:ci_log` frames are deltas against the UTF-16 length held for a followed
+job: a frame that does not fit re-sends `SetPRCILogFollows`, whose reply
+carries the full text. The follow set lives on the subscription handle, so
+it is restated after every subscribe.
+
 Live turn, approval, user-input, compacting and sends-pending state is
 backend state, never derived from items or rows. Sends pending
 (`provider:sends_pending`, capability `sends-pending.v1`) covers a queued or

@@ -6,9 +6,9 @@ import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
-import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
+import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
-import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
+import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { adoptDiffSpanOwner, evictDiffSpansForThread, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
@@ -1083,17 +1083,20 @@ function pushTo(headSHA: string): void {
 }
 
 /** Renders the pane on a PR thread and enters pr scope at head `sha-a`. */
-async function renderPRScope() {
+async function renderPRScope(ci: CIPipeline | null = null) {
   setBindingMock('SubscribePRUpdates', async () => ({
     id: 'sub-1',
     prKey: 'github:owner/repo:5',
     detail: prDetailFor('sha-a'),
     threads: [],
     headSHA: 'sha-a',
+    seq: 3,
+    ci,
+    ciError: '',
   }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setBindingMock('ListPRReviewThreads', async () => []);
-  setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
+  setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   seedSourcePanePR();
   const view = render(ReviewPane, {
     ctx: makeCtx(),
@@ -1410,6 +1413,99 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
     release();
     await waitFor(() => {
       expectOwnColors(view.container);
+    });
+  });
+});
+
+describe('<ReviewPane> CI', () => {
+  const PR = 'github:owner/repo:5';
+
+  function pipelineWith(jobStatus: string, stepStatus: string): CIPipeline {
+    return {
+      status: jobStatus,
+      stages: [{
+        name: 'test',
+        status: jobStatus,
+        jobs: [{
+          id: '20',
+          name: 'unit',
+          status: jobStatus,
+          logsAvailable: true,
+          steps: [{ number: 1, name: 'build', status: stepStatus }],
+        }],
+      }],
+    };
+  }
+
+  it('shows Loading checks until the first pipeline frame, then the chips', async () => {
+    const view = await renderPRScope(null);
+    expect(view.getByText('Loading checks…')).toBeInTheDocument();
+    expect(view.queryByTestId('review-ci-chip')).toBeNull();
+
+    applyPRReviewCIUpdated({ prKey: PR, pipeline: pipelineWith('running', 'running'), seq: 4 });
+    await waitFor(() => {
+      expect(view.getByTestId('review-ci-chip')).toBeInTheDocument();
+    });
+    expect(view.queryByText('Loading checks…')).toBeNull();
+  });
+
+  it('spins the refresh button while RefreshPRCI runs and keeps the chips', async () => {
+    let finish!: () => void;
+    const refresh = setBindingMock('RefreshPRCI', () => new Promise<void>((resolve) => {
+      finish = resolve;
+    }));
+    const view = await renderPRScope(pipelineWith('running', 'running'));
+    const button = view.getByRole('button', { name: 'Refresh CI status' });
+    expect(button).not.toBeDisabled();
+
+    await fireEvent.click(button);
+    expect(refresh).toHaveBeenCalledWith('sub-1');
+    await waitFor(() => {
+      expect(button).toBeDisabled();
+    });
+    expect(view.getByTestId('review-ci-chip')).toBeInTheDocument();
+    expect(view.queryByText('Loading checks…')).toBeNull();
+
+    finish();
+    await waitFor(() => {
+      expect(button).not.toBeDisabled();
+    });
+  });
+
+  it('follows an opened job: the pending line while the log is unavailable, live steps, then the log', async () => {
+    const view = await renderPRScope(pipelineWith('running', 'running'));
+    const follows = setBindingMock('SetPRCILogFollows', async () => ({
+      logs: { 20: { text: '', truncated: false, totalBytes: 0, available: false, error: '', seq: 5 } },
+    }));
+
+    await fireEvent.click(view.getByTestId('review-ci-chip'));
+    await fireEvent.click(await view.findByTestId('review-ci-job'));
+    await waitFor(() => {
+      expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The log is available when the job completes.');
+    });
+    expect(follows).toHaveBeenCalledWith('sub-1', ['20']);
+    expect(view.queryByTestId('review-ci-log-empty')).toBeNull();
+    expect(view.getByTitle('build: running')).toBeInTheDocument();
+
+    applyPRReviewCIUpdated({ prKey: PR, pipeline: pipelineWith('failed', 'failed'), seq: 6 });
+    await waitFor(() => {
+      expect(view.getByTitle('build: failed')).toBeInTheDocument();
+    });
+    // Completed, and the forge has not published the log yet.
+    expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The job finished; the forge has not published its log yet.');
+
+    applyPRReviewCILog({
+      prKey: PR, jobId: '20', seq: 7, prevLen: 0, base: 0, append: 'error: boom\n',
+      truncated: false, totalBytes: 12, available: true,
+    });
+    await waitFor(() => {
+      expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('error: boom');
+    });
+    expect(view.queryByTestId('review-ci-log-pending')).toBeNull();
+
+    await fireEvent.click(view.getByRole('button', { name: 'Back' }));
+    await waitFor(() => {
+      expect(follows).toHaveBeenLastCalledWith('sub-1', []);
     });
   });
 });

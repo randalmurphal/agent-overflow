@@ -9,19 +9,22 @@
 // merge-conflict tree is computed in a local clone, so it is shared per
 // PR and checkout.
 //
-// This module owns the POLLED snapshot. The two caches derived from the
-// same entity but sourced separately — the CI pipeline
-// (`prReviewCI.svelte.ts`) and the merge-conflict tree
-// (`prReviewConflicts.svelte.ts`) — live next door and are dropped from
-// here through the entity store's `onDrop`, so neither runs a second
+// This module owns the POLLED snapshot and the subscription behind it. The
+// CI pipeline and followed job logs (`prReviewCI.svelte.ts`) ride the same
+// subscription: this module seeds them from the subscribe result and
+// routes their frames, which live next door so the snapshot code stays
+// about the snapshot. The merge-conflict tree
+// (`prReviewConflicts.svelte.ts`) is computed separately. Both are dropped
+// from here through the entity store's `onDrop`, so neither runs a second
 // refcount beside the primitive's.
 //
 // What stays with the pane: the diff it loaded, the head it loaded that
 // diff AT (staleness is derived from the two — see `prStale` in
 // reviewPane.svelte.ts), collapse/expansion, drafts, and the CI log view.
 //
-// The backend pumps one `pr:updated` stream per PR key and addresses its
-// events by that key, so nothing here has to route by subscription id.
+// The backend pumps one `pr:updated`, `pr:ci_updated` and `pr:ci_log`
+// stream per PR key and addresses its events by that key, so nothing here
+// has to route by subscription id.
 
 import { SvelteMap } from 'svelte/reactivity';
 import {
@@ -34,7 +37,27 @@ import { withBackendTarget } from '../transport/backends';
 import { composeWorkspaceKey, workspaceKeyBackend, workspaceKeyPath } from '../utils/workspaceKey';
 import { createEntityStore } from './entityStore.svelte';
 import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
-import { __resetPRCIForTest, dropPRCI, hasPRCI, loadPRCIJobs } from './prReviewCI.svelte';
+import {
+  __resetPRCIForTest,
+  applyPRCIUpdated,
+  dropPRCI,
+  ensurePRCI,
+  seedPRCI,
+  type PRCILogEvent,
+  type PRCIUpdatedEvent,
+} from './prReviewCI.svelte';
+import {
+  __resetPRCIFollowsForTest,
+  applyPRCILogFrame,
+  dropPRCIFollows,
+  resendPRCILogFollows,
+} from './prReviewCIFollows.svelte';
+import {
+  __resetPRSubscriptionsForTest,
+  clearPRSubscriptionId,
+  prSubscriptions,
+  setPRSubscriptionId,
+} from './prReviewSubscriptions';
 import {
   __resetPRConflictsForTest,
   dropPRConflicts,
@@ -42,7 +65,7 @@ import {
 } from './prReviewConflicts.svelte';
 import { documentHidden } from '../utils/pageVisibility';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import type { PRDetail, ReviewThread } from '../types/models';
+import type { CIPipeline, PRDetail, ReviewThread } from '../types/models';
 
 /** The polled half of a PR: what `SubscribePRUpdates` observes. */
 export interface PRSnapshot {
@@ -87,8 +110,8 @@ export interface PRUpdatedEvent {
 // makes the two disagree (`github:repo:5` vs `github:/repo:5`). Rather
 // than assume byte-identity between two independently-written formatters,
 // the subscribe result's key is recorded as an ALIAS of the local key and
-// `pr:updated` routes through the map — the same shape gitStatusStore uses
-// for canonical cwds.
+// every `pr:*` frame routes through the map, the same shape gitStatusStore
+// uses for canonical cwds.
 //
 // The owner stamp is what makes it safe under re-sourcing: a superseded
 // run (invalidate, reconnect, retry) resolves late and then runs its own
@@ -118,14 +141,9 @@ function removeAlias(wireKey: string, key: string, owner: AliasOwner): void {
 // The polled snapshot
 // ---------------------------------------------------------------------------
 
-// The ref every key was attached with, so pump-driven refreshes (CI) and
-// conflict recomputes can issue their own calls without an attacher
-// handing one in.
+// The ref every key was attached with, so conflict recomputes can issue
+// their own calls without an attacher handing one in.
 const refByKey = new Map<string, PRRef>();
-// Live subscription id per key — at most one, because the entity store
-// sources a key once however many panes hold it. Visibility flips address
-// these, not the panes.
-const subscriptionIdByKey = new Map<string, string>();
 
 // ---------------------------------------------------------------------------
 // The join → push handoff
@@ -146,17 +164,24 @@ const subscriptionIdByKey = new Map<string, string>();
 // in that result; only a strictly greater seq is a frame the join provably
 // missed.
 //
-// One slot per wireKey holds BOTH kinds of frame, because they carry
+// One slot per wireKey holds every kind of frame, because they carry
 // different things and a snapshot must not be lost under a later error: the
 // backend emits either a snapshot frame or an error-only one, so keeping
 // just the newest replayed the error over the join's stale snapshot and left
-// the observed data unstated until the PR next changed.
+// the observed data unstated until the PR next changed. `pr:ci_updated` has
+// the same two kinds (a pipeline, or a CI poll failure over the pipeline
+// shown) and shares the PR's sequence, so its frames are buffered beside
+// the snapshot's and the replay runs in sequence order: the watermark is
+// shared, and a snapshot replayed ahead of an older CI frame would make the
+// watermark refuse it.
 //
 // Buffered only while a subscribe is in flight — steady state holds nothing,
 // so a thread's payloads never linger past the window that could need them.
 interface BufferedFrames {
   snapshot: PRUpdatedEvent | null;
   error: PRUpdatedEvent | null;
+  ciPipeline: PRCIUpdatedEvent | null;
+  ciError: PRCIUpdatedEvent | null;
 }
 const bufferedFrameByWireKey = new Map<string, BufferedFrames>();
 let joinsInFlight = 0;
@@ -179,12 +204,17 @@ function endPRUpdateJoin(): void {
   bufferedFrameByWireKey.clear();
 }
 
-function bufferPRUpdateFrame(wireKey: string, event: PRUpdatedEvent): void {
+function bufferSlot(wireKey: string): BufferedFrames {
   let slot = bufferedFrameByWireKey.get(wireKey);
   if (!slot) {
-    slot = { snapshot: null, error: null };
+    slot = { snapshot: null, error: null, ciPipeline: null, ciError: null };
     bufferedFrameByWireKey.set(wireKey, slot);
   }
+  return slot;
+}
+
+function bufferPRUpdateFrame(wireKey: string, event: PRUpdatedEvent): void {
+  const slot = bufferSlot(wireKey);
   if (event.error) {
     slot.error = event;
     return;
@@ -194,6 +224,35 @@ function bufferPRUpdateFrame(wireKey: string, event: PRUpdatedEvent): void {
   // live routing would have left on the key.
   slot.snapshot = event;
   slot.error = null;
+}
+
+function bufferPRCIFrame(wireKey: string, event: PRCIUpdatedEvent): void {
+  const slot = bufferSlot(wireKey);
+  if (event.error) {
+    slot.ciError = event;
+    return;
+  }
+  // As above: the pump clears its CI failure before emitting a pipeline.
+  slot.ciPipeline = event;
+  slot.ciError = null;
+}
+
+// Replays the frames a join may have missed into one key, oldest first.
+// Which of them the subscribe result already accounts for is decided by
+// the watermark chokepoints, as for a live frame. Unstamped frames keep
+// the order they were observed in.
+function replayBufferedFrames(key: string, missed: BufferedFrames | undefined): void {
+  if (!missed) return;
+  const frames: { seq: number; apply: () => void }[] = [];
+  const add = <E extends { seq?: number }>(event: E | null, apply: (key: string, event: E) => void): void => {
+    if (event) frames.push({ seq: event.seq ?? 0, apply: () => apply(key, event) });
+  };
+  add(missed.snapshot, applyPRUpdateToKey);
+  add(missed.error, applyPRUpdateToKey);
+  add(missed.ciPipeline, applyPRCIToKey);
+  add(missed.ciError, applyPRCIToKey);
+  frames.sort((a, b) => a.seq - b.seq);
+  for (const frame of frames) frame.apply();
 }
 
 const store = createEntityStore<PRSnapshot, PRCtx>({
@@ -224,7 +283,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       const wireKey = composeWorkspaceKey(backend, String(result.prKey || workspaceKeyPath(key)));
       const cleanup = async (): Promise<void> => {
         removeAlias(wireKey, key, owner);
-        if (subscriptionIdByKey.get(key) === id) subscriptionIdByKey.delete(key);
+        clearPRSubscriptionId(key, id);
         try {
           await withBackendTarget(backend, () => UnsubscribePRUpdates(id));
         } catch (err) {
@@ -241,7 +300,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       // runs it as soon as it sees the stale generation.
       if (signal.aborted) return cleanup;
       addAlias(wireKey, key, owner);
-      subscriptionIdByKey.set(key, id);
+      setPRSubscriptionId(key, id);
       // The result IS this key's applied state, so it is the watermark every
       // frame from here on is ranked against — the replay below included.
       appliedSeqByKey.set(key, Number(result.seq ?? 0));
@@ -262,15 +321,17 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       // not fail the load: stale data plus an error banner is what every
       // holder already on the key sees, and a joiner must see the same.
       if (result.error) store.applyError(key, new Error(String(result.error)));
-      // Frames the join may have missed, applied to THIS key alone — any
-      // sibling key routing the same wireKey already had them. Which of them
-      // the result already accounts for is not decided here: they go through
-      // the same watermark chokepoint as a live frame, seeded a few lines up
-      // with the result's own seq. Snapshot before error, the order they
-      // were observed in.
-      const missed = bufferedFrameByWireKey.get(wireKey);
-      if (missed?.snapshot) applyPRUpdateToKey(key, missed.snapshot);
-      if (missed?.error) applyPRUpdateToKey(key, missed.error);
+      // The pump's CI as of the same seq, with its active failure: like the
+      // snapshot error, no frame restates a deduped failure to a joiner.
+      seedPRCI(key, (result.ci ?? null) as CIPipeline | null, String(result.ciError ?? ''));
+      // The backend keeps the log follow set on the handle, and this one
+      // is new.
+      resendPRCILogFollows(key);
+      // Frames the join may have missed, applied to THIS key alone (any
+      // sibling key routing the same wireKey already had them) through the
+      // same watermark chokepoints as a live frame, seeded a few lines up
+      // with the result's own seq.
+      replayBufferedFrames(key, bufferedFrameByWireKey.get(wireKey));
       resolveReady(key, snapshot);
       return cleanup;
     } finally {
@@ -281,10 +342,10 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     reconcileConflictsWithHead(key, refByKey.get(key), value.detail, value.headSHA);
     reconcileResolveOverrides(key, value.threads);
   },
-  // The two caches derived from this entity but not sourced by it. They
-  // hang off the primitive's one teardown hook instead of a second
-  // refcount beside it — a hand-rolled one is a thing to keep in sync,
-  // and the copy that drifts is the one that leaks.
+  // The state kept beside the snapshot: CI (with the log follows) and the
+  // merge-conflict tree. They hang off the primitive's one teardown hook
+  // instead of a second refcount beside it: a hand-rolled one is a thing
+  // to keep in sync, and the copy that drifts is the one that leaks.
   //
   // `onDrop` fires when an entry LEAVES the store, which is the last
   // release: suspend and resetAll only drop entries nobody holds. A
@@ -296,6 +357,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     refByKey.delete(key);
     appliedSeqByKey.delete(key);
     resolveOverridesByKey.delete(key);
+    dropPRCIFollows(key);
     dropPRCI(key);
     dropPRConflicts(key);
     rejectReady(key, new Error('PR updates released'));
@@ -499,7 +561,7 @@ async function drainPumpVotes(key: string, vote: PumpVote): Promise<void> {
  */
 export function handlePRVisibilityChange(): void {
   const active = !documentHidden();
-  for (const [key, id] of subscriptionIdByKey) setPumpActive(workspaceKeyBackend(key), id, active);
+  for (const [key, id] of prSubscriptions()) setPumpActive(workspaceKeyBackend(key), id, active);
 }
 
 if (typeof document !== 'undefined') {
@@ -520,34 +582,61 @@ export function applyPRUpdatedEvent(event: PRUpdatedEvent, backend: BackendKey =
   if (!event.prKey) return;
   const wireKey = composeWorkspaceKey(backend, event.prKey);
   if (joinsInFlight > 0) bufferPRUpdateFrame(wireKey, event);
-  const keys = localKeysByWireKey.get(wireKey);
-  if (!keys) return;
-  for (const key of keys.keys()) applyPRUpdateToKey(key, event);
+  for (const key of localKeysFor(wireKey)) applyPRUpdateToKey(key, event);
 }
 
-// The one place a frame reaches a key, live or replayed, and therefore the
-// one place ordering is decided. A frame that lost a race with the subscribe
-// result already accounting for it — or with a later frame — must not
-// regress the entity: the pump emits only on CHANGE, so nothing restates
-// what a stale frame overwrote until the PR itself moves.
-//
-// An unstamped frame applies unguarded. That is transition safety only —
-// every frame the backend emits today carries a seq.
+/** Route a `pr:ci_updated` push to its PR, as `applyPRUpdatedEvent` does. */
+export function applyPRCIUpdatedEvent(event: PRCIUpdatedEvent, backend: BackendKey = HOME_BACKEND): void {
+  if (!event.prKey) return;
+  const wireKey = composeWorkspaceKey(backend, event.prKey);
+  if (joinsInFlight > 0) bufferPRCIFrame(wireKey, event);
+  for (const key of localKeysFor(wireKey)) applyPRCIToKey(key, event);
+}
+
+/**
+ * Route a `pr:ci_log` push to its PR. Log frames carry a per-job sequence
+ * and a delta against the text held, so they need neither the PR watermark
+ * nor the join buffer: a frame that does not fit asks for the full text.
+ */
+export function applyPRCILogEvent(event: PRCILogEvent, backend: BackendKey = HOME_BACKEND): void {
+  if (!event.prKey || !event.jobId) return;
+  const wireKey = composeWorkspaceKey(backend, event.prKey);
+  for (const key of localKeysFor(wireKey)) applyPRCILogFrame(key, event);
+}
+
+function localKeysFor(wireKey: string): string[] {
+  const keys = localKeysByWireKey.get(wireKey);
+  return keys ? [...keys.keys()] : [];
+}
+
 /** The wire's PRDetail, or null when it is the zero value (no snapshot). */
 function wireDetail(detail: unknown): PRDetail | null {
   const candidate = (detail ?? null) as PRDetail | null;
   return candidate && Number(candidate.number) > 0 ? candidate : null;
 }
 
+// The one place a PR-sequenced frame (pr:updated or pr:ci_updated) is
+// ranked, live or replayed, and therefore the one place ordering is
+// decided. A frame that lost a race with the subscribe result already
+// accounting for it, or with a later frame, must not regress the entity:
+// the pump emits only on CHANGE, so nothing restates what a stale frame
+// overwrote until the PR itself moves. Both channels carry the pump's one
+// sequence, so they share the watermark.
+//
+// An unstamped frame applies unguarded. That is transition safety only:
+// every frame the backend emits today carries a seq.
+function admitPRFrame(key: string, seq: number | undefined): boolean {
+  if (typeof seq !== 'number') return true;
+  const applied = appliedSeqByKey.get(key);
+  if (applied !== undefined && seq <= applied) return false;
+  appliedSeqByKey.set(key, seq);
+  return true;
+}
+
 function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
-  const seq = typeof event.seq === 'number' ? event.seq : null;
-  if (seq !== null) {
-    const applied = appliedSeqByKey.get(key);
-    if (applied !== undefined && seq <= applied) return;
-  }
+  if (!admitPRFrame(key, event.seq)) return;
   if (event.error) {
     store.applyError(key, new Error(event.error));
-    if (seq !== null) appliedSeqByKey.set(key, seq);
     return;
   }
   const detail = wireDetail(event.detail);
@@ -556,11 +645,11 @@ function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
     threads: (event.threads ?? []) as ReviewThread[],
     headSHA: String(event.headSHA || detail?.headSHA || ''),
   });
-  if (seq !== null) appliedSeqByKey.set(key, seq);
-  // The pump only fires on snapshot change, so this tracks check/pipeline
-  // movement without a poll of its own — once per PR, not once per pane.
-  const ref = refByKey.get(key);
-  if (ref && hasPRCI(key)) void loadPRCIJobs(key, ref);
+}
+
+function applyPRCIToKey(key: string, event: PRCIUpdatedEvent): void {
+  if (!admitPRFrame(key, event.seq)) return;
+  applyPRCIUpdated(key, event);
 }
 
 /** Apply a freshly fetched detail + threads pair (comments-only refresh). */
@@ -617,6 +706,8 @@ export interface PRAttachment {
 
 export function attachPR(key: string, ctx: PRCtx): PRAttachment {
   refByKey.set(key, ctx.ref);
+  // Before the attach can source the key: the subscribe result seeds it.
+  ensurePRCI(key);
   const handle = store.attach(key, ctx);
   let released = false;
   return {
@@ -686,15 +777,16 @@ export function __resetPRReviewStoreForTest(): void {
   store.resetAll();
   for (const key of [...readyByKey.keys()]) rejectReady(key, new Error('store reset'));
   refByKey.clear();
-  subscriptionIdByKey.clear();
+  __resetPRSubscriptionsForTest();
   localKeysByWireKey.clear();
   resolveOverridesByKey.clear();
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
   pumpVotes.clear();
   // onDrop clears these for every key an entry existed for; a test that
-  // loaded CI or opened conflicts without ever attaching has no entry to
+  // seeded CI or opened conflicts without ever attaching has no entry to
   // drop, so the caches are reset directly too.
+  __resetPRCIFollowsForTest();
   __resetPRCIForTest();
   __resetPRConflictsForTest();
 }

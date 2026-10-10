@@ -1,6 +1,12 @@
 // Shared presentation helpers for normalized CI statuses
 // (internal/git/ci.go vocabulary): chip dots, text tints, durations.
 
+/** Whether a job in this status can still change on its own: queued or
+ * running (gitops.CIJobLive). */
+export function ciJobLive(status: string): boolean {
+  return status === 'running' || status === 'pending';
+}
+
 export function ciStatusDotClass(status: string): string {
   switch (status) {
     case 'success':

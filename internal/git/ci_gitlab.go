@@ -32,7 +32,11 @@ func gitLabJobTraceEndpoint(project, jobID string) string {
 	return "projects/" + url.PathEscape(project) + "/jobs/" + jobID + "/trace"
 }
 
-func (f *gitlabForge) ListPRCIJobs(cwd, project string, number int) (CIPipeline, error) {
+// ListPRCIJobs ignores prev: the pipeline id and status come from the MR
+// view and the jobs list is one paginated read, neither of which the
+// previous observation can stand in for. It ignores stepsFor: GitLab jobs
+// have no steps.
+func (f *gitlabForge) ListPRCIJobs(cwd, project string, number int, _ *CIPipeline, _ []string) (CIPipeline, error) {
 	if strings.TrimSpace(project) == "" {
 		return CIPipeline{}, errors.New("project (namespace/repo) is required")
 	}
@@ -161,7 +165,7 @@ func (f *gitlabForge) GetCIJobLog(cwd, project, jobID string) (string, error) {
 		return "", normalizeGitLabCLIError(err)
 	}
 	if result.exitCode != 0 {
-		return "", gitlabCommandFailure("glab api job trace failed", result)
+		return "", ciJobLogFailure(gitlabCommandFailure("glab api job trace failed", result), result)
 	}
 	return cleanGitLabTrace(result.stdout), nil
 }
@@ -217,3 +221,7 @@ func cleanGitLabTrace(raw string) string {
 	}
 	return strings.Join(cleaned, "\n")
 }
+
+// CILogWhileRunning is true: the trace endpoint returns what the runner
+// has uploaded so far for a running job.
+func (f *gitlabForge) CILogWhileRunning() bool { return true }

@@ -182,7 +182,7 @@ import {
   type DiscussionMessageEvent,
   type DiscussionStateEvent,
 } from './eventsDiscussion';
-import { applyPRReviewUpdated } from './eventsPRReview';
+import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -750,6 +750,10 @@ export function setupEventListeners(): () => void {
     applyDiscussionState,
   );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
+  // The PR pump's CI: pipeline frames under the PR's sequence, and log
+  // deltas for the jobs this client follows.
+  const cancelPRCIUpdated = wailsEventOn('pr:ci_updated', applyPRReviewCIUpdated);
+  const cancelPRCILog = wailsEventOn('pr:ci_log', applyPRReviewCILog);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -856,6 +860,8 @@ export function setupEventListeners(): () => void {
     cancelDiscussionMessage();
     cancelDiscussionState();
     cancelPRUpdated();
+    cancelPRCIUpdated();
+    cancelPRCILog();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

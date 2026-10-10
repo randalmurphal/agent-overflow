@@ -60,6 +60,37 @@ export interface ForgePull {
   comments?: ForgeComment[];
   threads?: ForgeThread[];
   reviews?: ForgeReview[];
+  /** The head pipeline (GitLab) or workflow run (GitHub Actions). */
+  ci?: ForgePipeline;
+}
+
+export interface ForgePipeline {
+  /** GitLab pipeline id or GitHub run id; generated when omitted. Give one to re-seed the same pipeline. */
+  id?: number;
+  /** GitHub workflow name. Defaults to "CI". */
+  name?: string;
+  status?: ForgeJobStatus;
+  jobs: ForgeJob[];
+}
+
+export type ForgeJobStatus = 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled';
+
+export interface ForgeJob {
+  /** Generated when omitted. Give one to re-seed the same job. */
+  id?: number;
+  name: string;
+  /** GitLab stage; defaults to "test". */
+  stage?: string;
+  status: ForgeJobStatus;
+  allowFailure?: boolean;
+  startedAt?: string;
+  completedAt?: string;
+  /** The job log. GitHub serves it only once the job completed; GitLab serves it while running. */
+  log?: string;
+  /** The forge answers the log with a 404, as for a completed job whose log it has not published yet. */
+  logWithheld?: boolean;
+  /** GitHub Actions steps. */
+  steps?: { name: string; status: ForgeJobStatus }[];
 }
 
 /** A GitHub attachment by `url`, or a GitLab upload by `secret` and `filename`. */
@@ -155,7 +186,7 @@ export async function publishPullRequest(
   workspace: string,
   repo: ForgeRepo,
   files: Record<string, string> = { 'feature.md': 'Feature work.\n' },
-): Promise<void> {
+): Promise<ForgeRepo> {
   const [pull, ...rest] = repo.pulls ?? [];
   if (!pull) throw new Error(`publishPullRequest: ${repo.project} has no pull request to publish`);
   const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -179,9 +210,14 @@ export async function publishPullRequest(
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
   git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);
 
-  await seedForge(harness, [{ ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha }, ...rest] }]);
+  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha }, ...rest] };
+  await seedForge(harness, [seeded]);
   git(workspace, 'config', 'core.gitProxy', proxy);
   git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);
+  // Returned so a spec can re-seed the same repository with the forge
+  // state moved (a CI job finishing, its log growing): seedForge replaces
+  // the repository under the same forge and project.
+  return seeded;
 }
 
 /**

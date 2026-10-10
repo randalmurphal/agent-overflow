@@ -552,12 +552,6 @@ export interface CIStep {
   status: string;
 }
 
-export interface CIJobLogResult {
-  text: string;
-  truncated: boolean;
-  totalBytes: number;
-}
-
 /** One PR discussion: a file-anchored review thread (path set) or a
  * PR-level conversation thread (path empty). */
 export interface ReviewThread {

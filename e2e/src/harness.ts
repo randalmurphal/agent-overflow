@@ -52,7 +52,7 @@ const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 // routes' per-peer budget (internal/transport/ratelimit.go). A spec that
 // needs product timing, or a further interval, passes its own
 // AO_HARNESS_TIMING in `env`.
-export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms';
+export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms';
 
 // macOS exposes /var and /tmp as root-owned aliases under /private. Normalize
 // only those system prefixes; resolving arbitrary descendants would follow a

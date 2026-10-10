@@ -26,6 +26,10 @@ import {
   resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
+import { attachPR } from './prReviewStore.svelte';
+import { peekPRCI } from './prReviewCI.svelte';
+import { setPRCILogFollow } from './prReviewCIFollows.svelte';
+import { prKey } from '../utils/prReference';
 import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -152,6 +156,44 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('workflow:error')).toBe(0);
     expect(wailsListenerCount('notification:sound')).toBe(0);
 
+    cleanup = setupEventListeners();
+  });
+
+  it('routes the PR CI channels to the PR they name', async () => {
+    expect(wailsListenerCount('pr:ci_updated')).toBe(1);
+    expect(wailsListenerCount('pr:ci_log')).toBe(1);
+    const ref = { forge: 'gitlab', namespace: 'group', repo: 'repo', number: 5 } as const;
+    const key = prKey(ref);
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1', prKey: key, detail: null, threads: [], headSHA: '', error: '', seq: 1, ci: null, ciError: '',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('SetPRUpdatesActive', async () => undefined);
+    setBindingMock('SetPRCILogFollows', async () => ({
+      logs: { 20: { text: 'a\n', truncated: false, totalBytes: 2, available: true, error: '', seq: 3 } },
+    }));
+    const pr = attachPR(key, { ref });
+    try {
+      await pr.ready();
+      emitWailsEvent('pr:ci_updated', { prKey: key, pipeline: { status: 'running', stages: [] }, seq: 2 });
+      expect(peekPRCI(key).pipeline?.status).toBe('running');
+
+      setPRCILogFollow(key, Symbol('pane'), '20');
+      await vi.waitFor(() => {
+        expect(peekPRCI(key).logs.get('20')?.text).toBe('a\n');
+      });
+      emitWailsEvent('pr:ci_log', {
+        prKey: key, jobId: '20', seq: 4, prevLen: 2, base: 2, append: 'b\n',
+        truncated: false, totalBytes: 4, available: true,
+      });
+      expect(peekPRCI(key).logs.get('20')?.text).toBe('a\nb\n');
+    } finally {
+      pr.release();
+    }
+
+    cleanup();
+    expect(wailsListenerCount('pr:ci_updated')).toBe(0);
+    expect(wailsListenerCount('pr:ci_log')).toBe(0);
     cleanup = setupEventListeners();
   });
 

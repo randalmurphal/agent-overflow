@@ -356,7 +356,7 @@ func glabJobTrace(e *Engine, c *call, m []string) response {
 	}
 	id, _ := strconv.ParseInt(m[2], 10, 64)
 	job := r.job(id)
-	if job == nil || job.StartedAt == "" {
+	if job == nil || job.StartedAt == "" || job.LogWithheld {
 		return glabNotFound("Job")
 	}
 	return glabOK(c, response{stdout: []byte(job.Log)}, "Content-Type: text/plain")

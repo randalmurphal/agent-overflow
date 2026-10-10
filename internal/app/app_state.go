@@ -104,7 +104,17 @@ type appPRUpdateState struct {
 	wg        sync.WaitGroup
 	interval  time.Duration
 	retryBase time.Duration
-	fetchFn   func(gitops.PRReference) (prUpdateSnapshot, error)
+	// ciLiveInterval, ciFollowInterval and ciLogWaitInterval are the CI
+	// phase cadences (see prCIInterval); zero keeps the defaults.
+	ciLiveInterval    time.Duration
+	ciFollowInterval  time.Duration
+	ciLogWaitInterval time.Duration
+	fetchFn           func(gitops.PRReference) (prUpdateSnapshot, error)
+	// ciFetchFn and ciLogFetchFn stand in for the forge in tests, like
+	// fetchFn; ciLogWhileRunning overrides the forge's answer when set.
+	ciFetchFn         func(pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+	ciLogFetchFn      func(pr gitops.PRReference, jobID string) (string, error)
+	ciLogWhileRunning *bool
 }
 
 // appSessionImportState is the session-import concern

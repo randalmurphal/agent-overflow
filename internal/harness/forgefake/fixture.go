@@ -149,8 +149,11 @@ type Job struct {
 	StartedAt    string `json:"startedAt,omitempty"`
 	CompletedAt  string `json:"completedAt,omitempty"`
 	// Log is the job log. An empty log on a started job is served empty.
-	Log   string `json:"log,omitempty"`
-	Steps []Step `json:"steps,omitempty"`
+	Log string `json:"log,omitempty"`
+	// LogWithheld answers the job's log with the forge's 404, as a forge
+	// does for a completed job whose log it has not published yet.
+	LogWithheld bool   `json:"logWithheld,omitempty"`
+	Steps       []Step `json:"steps,omitempty"`
 }
 
 // Step is one GitHub Actions job step.

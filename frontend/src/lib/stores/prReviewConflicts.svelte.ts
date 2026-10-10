@@ -7,11 +7,10 @@ import { workspaceKeyBackend } from '../utils/workspaceKey';
 // of file reads serve every pane on that PR in that checkout. Panes in
 // different checkouts get separate entries, so each computes against a
 // clone it can address and none depends on another's checkout staying
-// registered. Like the CI cache next door it is not SOURCED by the PR
-// subscription (nothing computes a tree until a pane opens the conflict
-// view), so it lives beside the snapshot store, and every checkout's entry
-// is dropped through that store's `onDrop` when the last holder of the PR
-// goes.
+// registered. It is not SOURCED by the PR subscription (nothing computes a
+// tree until a pane opens the conflict view), so it lives beside the
+// snapshot store, and every checkout's entry is dropped through that
+// store's `onDrop` when the last holder of the PR goes.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { GetMergeConflictFile, GetPRMergeConflicts } from './bindings';

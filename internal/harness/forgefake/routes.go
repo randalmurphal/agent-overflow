@@ -45,7 +45,6 @@ var commands = []command{
 		{long: "target-branch", short: "b", value: true}, {long: "draft"},
 		{long: "yes", short: "y"}, {long: "no-editor"},
 	}, run: glabMRCreate},
-	{cli: "gh", path: []string{"run", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghRunView},
 	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, githubAPI) }},
 	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, gitlabAPI) }},
 }
@@ -68,6 +67,7 @@ var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
 	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"jq"}, run: ghAPIUser},
 	{name: "gh api graphql", method: "POST", pattern: regexp.MustCompile(`^graphql$`), flags: []string{"raw-field"}, run: ghGraphQL},
+	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), run: ghRunJobs},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), run: ghJobLogs},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), flags: []string{"header", "allow-escape-sequences"}, run: ghAttachment},
 }

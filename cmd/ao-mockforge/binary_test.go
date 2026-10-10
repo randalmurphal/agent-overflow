@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -118,6 +119,7 @@ func githubFixture() forgefake.Fixture {
 					{ID: 901, Name: "unit", Status: "success", Log: "all green", Steps: []forgefake.Step{{Name: "checkout", Status: "success"}}},
 					{ID: 902, Name: "lint", Status: "failed", Log: "lint failed"},
 					{ID: 903, Name: "deploy", Status: "pending"},
+					{ID: 904, Name: "package", Status: "success", Log: "packaged", LogWithheld: true},
 				}},
 			},
 			{Number: 5, Title: "Old", State: "merged", HeadRef: "old-branch", HeadSHA: strings.Repeat("b", 40)},
@@ -141,6 +143,7 @@ func gitlabFixture() forgefake.Fixture {
 			CI: &forgefake.Pipeline{ID: 777, Jobs: []forgefake.Job{
 				{ID: 11, Name: "build", Stage: "build", Status: "success", Log: "built"},
 				{ID: 12, Name: "test", Stage: "test", Status: "running", StartedAt: "2026-01-01T00:00:00Z"},
+				{ID: 13, Name: "package", Stage: "build", Status: "success", Log: "packaged", LogWithheld: true},
 			}},
 		}, {Number: 2, Title: "Merged", State: "merged", HeadRef: "done", HeadSHA: strings.Repeat("e", 40)}},
 	}}}
@@ -158,7 +161,7 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		!detail.ViewerIsAuthor || !detail.Draft || detail.State != "open" || detail.HeadSHA != strings.Repeat("a", 40) ||
 		detail.Additions != 2 || detail.Deletions != 1 || detail.ChangedFiles != 1 || detail.Mergeability != gitops.MergeabilityConflicts ||
 		detail.ReviewDecision != "CHANGES_REQUESTED" || len(detail.LatestReviews) != 1 || detail.LatestReviews[0].Body != "fix" ||
-		detail.Checks.Total != 3 || detail.Checks.Success != 1 || detail.Checks.Failure != 1 || detail.Checks.Pending != 1 {
+		detail.Checks.Total != 4 || detail.Checks.Success != 2 || detail.Checks.Failure != 1 || detail.Checks.Pending != 1 {
 		t.Fatalf("GetPRDetail = %+v", detail)
 	}
 	// gh reports the PR author's name; its review list carries logins only.
@@ -194,13 +197,15 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("last conversation comment = %+v", last)
 	}
 
-	pipeline, err := r.core.ListPRCIJobs("", ref)
+	// Steps are read for the followed job only, through the REST jobs list.
+	pipeline, err := r.core.ListPRCIJobs("", ref, nil, []string{"901"})
 	if err != nil {
 		t.Fatalf("ListPRCIJobs: %v", err)
 	}
-	if len(pipeline.Stages) != 1 || pipeline.Stages[0].Name != "Build" || len(pipeline.Stages[0].Jobs) != 3 ||
+	if len(pipeline.Stages) != 1 || pipeline.Stages[0].Name != "Build" || len(pipeline.Stages[0].Jobs) != 4 ||
 		pipeline.Stages[0].Jobs[0].ID != "901" || len(pipeline.Stages[0].Jobs[0].Steps) != 1 || !pipeline.Stages[0].Jobs[0].LogsAvailable ||
-		pipeline.Stages[0].Jobs[2].LogsAvailable {
+		pipeline.Stages[0].Jobs[0].Steps[0].Name != "checkout" || pipeline.Stages[0].Jobs[0].Steps[0].Status != gitops.CIStatusSuccess ||
+		pipeline.Stages[0].Jobs[1].Steps != nil || pipeline.Stages[0].Jobs[2].LogsAvailable {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
 	if log, err := r.core.GetCIJobLog("", ref, "902"); err != nil || log != "lint failed" {
@@ -208,6 +213,9 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if _, err := r.core.GetCIJobLog("", ref, "903"); err == nil {
 		t.Fatal("a queued job served a log")
+	}
+	if _, err := r.core.GetCIJobLog("", ref, "904"); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+		t.Fatalf("withheld log error = %v, want ErrCIJobLogNotFound", err)
 	}
 
 	data, name, err := r.core.FetchAttachment("", ref, "https://github.com/user-attachments/assets/1a2b", 1<<20)
@@ -265,7 +273,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("last note = %+v", last)
 	}
 
-	pipeline, err := r.core.ListPRCIJobs("", ref)
+	pipeline, err := r.core.ListPRCIJobs("", ref, nil, nil)
 	if err != nil {
 		t.Fatalf("ListPRCIJobs: %v", err)
 	}
@@ -275,6 +283,9 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if log, err := r.core.GetCIJobLog("", ref, "11"); err != nil || log != "built" {
 		t.Fatalf("GetCIJobLog = %q, %v", log, err)
+	}
+	if _, err := r.core.GetCIJobLog("", ref, "13"); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+		t.Fatalf("withheld trace error = %v, want ErrCIJobLogNotFound", err)
 	}
 
 	svg := "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"

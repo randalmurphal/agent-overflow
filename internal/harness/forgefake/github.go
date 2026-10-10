@@ -152,54 +152,66 @@ func ghPRList(e *Engine, c *call) response {
 	return jsonResponse(out)
 }
 
-func ghRunView(e *Engine, c *call) response {
-	project := c.flag("repo")
-	if project == "" || len(c.positional) != 1 {
-		return unhandled("expected a run id and --repo OWNER/REPO")
+// ghRunJobs answers the REST jobs list of a workflow run: snake_case,
+// lowercase states, null for an absent time, paginated by per_page (30 by
+// default, at most 100) and page.
+func ghRunJobs(e *Engine, _ *call, m []string) response {
+	query, perPage, page, err := glabPage(m[3])
+	if err != nil {
+		return unhandled("%v", err)
 	}
-	r := e.repo("github", project)
+	if query.Get("per_page") == "" {
+		perPage = 30
+	}
+	r := e.repo("github", m[1])
 	if r == nil {
-		return ghNotFoundRepo(project)
+		return ghHTTPNotFound()
 	}
-	runID, _ := strconv.ParseInt(c.positional[0], 10, 64)
+	runID, _ := strconv.ParseInt(m[2], 10, 64)
 	pipeline := r.pipeline(runID)
 	if pipeline == nil {
-		return response{exit: 1, stderr: fmt.Sprintf("could not find any workflow run with ID %s\n", c.positional[0])}
+		return ghHTTPNotFound()
 	}
-	fields := map[string]func() any{
-		"workflowName": func() any { return pipeline.Name },
-		"jobs": func() any {
-			jobs := make([]map[string]any, 0, len(pipeline.Jobs))
-			for _, job := range pipeline.Jobs {
-				status, conclusion := githubCheckState(job.Status)
-				steps := make([]map[string]any, 0, len(job.Steps))
-				for i, step := range job.Steps {
-					stepStatus, stepConclusion := githubCheckState(step.Status)
-					steps = append(steps, map[string]any{"number": i + 1, "name": step.Name, "status": stepStatus, "conclusion": stepConclusion})
-				}
-				jobs = append(jobs, map[string]any{
-					"databaseId":  job.ID,
-					"name":        job.Name,
-					"status":      status,
-					"conclusion":  conclusion,
-					"startedAt":   githubTime(job.StartedAt),
-					"completedAt": githubTime(job.CompletedAt),
-					"url":         githubJobURL(r, pipeline, job),
-					"steps":       steps,
-				})
-			}
-			return jobs
-		},
-	}
-	out := make(map[string]any)
-	for _, field := range strings.Split(c.flag("json"), ",") {
-		value, ok := fields[field]
-		if !ok {
-			return unhandled("--json field %q is not implemented for run view", field)
+	jobs := make([]map[string]any, 0, len(pipeline.Jobs))
+	for _, job := range pipeline.Jobs {
+		status, conclusion := githubRESTState(job.Status)
+		steps := make([]map[string]any, 0, len(job.Steps))
+		for i, step := range job.Steps {
+			stepStatus, stepConclusion := githubRESTState(step.Status)
+			steps = append(steps, map[string]any{"number": i + 1, "name": step.Name, "status": stepStatus, "conclusion": stepConclusion})
 		}
-		out[field] = value()
+		jobs = append(jobs, map[string]any{
+			"id":           job.ID,
+			"run_id":       pipeline.ID,
+			"name":         job.Name,
+			"status":       status,
+			"conclusion":   conclusion,
+			"started_at":   githubRESTTime(job.StartedAt),
+			"completed_at": githubRESTTime(job.CompletedAt),
+			"html_url":     githubJobURL(r, pipeline, job),
+			"steps":        steps,
+		})
 	}
-	return jsonResponse(out)
+	items, _ := paginate(jobs, perPage, page)
+	return jsonResponse(map[string]any{"total_count": len(jobs), "jobs": items})
+}
+
+// githubRESTState spells a job status as the REST API's (status,
+// conclusion): lowercase, conclusion null until completed.
+func githubRESTState(status string) (string, any) {
+	state, conclusion := githubCheckState(status)
+	if conclusion == "" {
+		return strings.ToLower(state), nil
+	}
+	return strings.ToLower(state), strings.ToLower(conclusion)
+}
+
+// githubRESTTime is the REST API's spelling of a time: null when absent.
+func githubRESTTime(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (r *Repo) pipeline(id int64) *Pipeline {
@@ -481,7 +493,9 @@ func ghJobLogs(e *Engine, _ *call, m []string) response {
 	if r != nil {
 		job = r.job(id)
 	}
-	if job == nil || job.StartedAt == "" {
+	// The real endpoint answers 404 until the job has completed (a running
+	// job's log is only the website's own stream), and for a while after.
+	if job == nil || job.StartedAt == "" || job.Status == "running" || job.Status == "pending" || job.LogWithheld {
 		return ghHTTPNotFound()
 	}
 	// The real endpoint prepends a UTF-8 byte order mark.

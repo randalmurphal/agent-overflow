@@ -8,7 +8,6 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetDiffContextLines,
   GetEditDiffContextLines,
-  GetPRCIJobLog,
   GetPRDetail,
   SavePRCIJobLog,
   ListPRReviewThreads,
@@ -45,7 +44,8 @@ import {
   type PRAttachment,
   type PRSnapshot,
 } from './prReviewStore.svelte';
-import { loadPRCIJobs, peekPRCI } from './prReviewCI.svelte';
+import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
+import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import {
   ensurePRConflictFile,
   openPRConflicts,
@@ -77,7 +77,6 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import type { BranchCommit, WorkspaceRef } from '../types/git';
 import type {
   CIJob,
-  CIJobLogResult,
   CIPipeline,
   DiffReviewComment,
   DiffReviewScope,
@@ -202,12 +201,22 @@ export interface ReviewPaneState {
   readonly paintedSpans: PaintedSpans;
   readonly conflictPaintedSpans: PaintedSpans;
   readonly ciPipeline: CIPipeline | null;
+  /** Subscribed and no pipeline or failure observed yet. */
   readonly ciLoading: boolean;
+  /** A manual CI refresh is in flight. */
+  readonly ciRefreshing: boolean;
   readonly ciError: string | null;
+  /** The open job log. Its job is the live pipeline's row for that id. */
   readonly ciLogView: CILogView | null;
-  readonly ciLog: CIJobLogResult | null;
+  /** The followed log; null until the first state arrives. */
+  readonly ciLog: PRCILogState | null;
+  /** A follow call (open or refresh) is in flight. */
   readonly ciLogLoading: boolean;
   readonly ciLogError: string | null;
+  /** False while the forge cannot serve the log: the job is live on a
+   * forge that serves logs only after completion, or the forge has not
+   * published a completed job's log yet. */
+  readonly ciLogAvailable: boolean;
   readonly ciLogSavedPath: string | null;
   readonly submitTarget: 'agent' | 'pr';
   /** submitTarget with single-commit view forced to 'agent': drafts on a
@@ -335,10 +344,12 @@ export interface ReviewPaneState {
   closeConflictView(): void;
   toggleConflictCollapsed(path: string): Promise<void>;
   expandConflictFold(path: string, foldId: number): void;
-  loadCIJobs(): Promise<void>;
-  openCIJobLog(stageName: string, job: CIJob): Promise<void>;
+  /** Has the PR's pump poll the pipeline now. */
+  refreshCI(): Promise<void>;
+  openCIJobLog(stageName: string, job: CIJob): void;
   closeCILogView(): void;
-  refreshCILog(): Promise<void>;
+  /** Fetches the open job's log again. */
+  refreshCILog(): void;
   saveCILog(): Promise<string | null>;
   sendCILogToChat(): Promise<void>;
   /** Fetches hidden hunk-gap context and merges it into the diff. */
@@ -355,6 +366,7 @@ export interface ReviewPaneState {
 
 export interface CILogView {
   stageName: string;
+  jobId: string;
   job: CIJob;
 }
 
@@ -507,12 +519,15 @@ function createReviewPaneState(
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
   const conflictExpandedFolds = new SvelteMap<string, ReadonlySet<number>>();
-  let ciLogView: CILogView | null = $state(null);
-  let ciLog: CIJobLogResult | null = $state(null);
-  let ciLogLoading = $state(false);
-  let ciLogError: string | null = $state(null);
+  // The job log this pane opened, as captured at open; `ciLogView` derives
+  // the live row from the pipeline. The log itself is the PR's (shared by
+  // every pane following that job); this pane holds a follow on it under
+  // its own token, against the PR key it was opened on.
+  let ciLogOpen = $state<{ key: string; stageName: string; job: CIJob & { id: string } } | null>(null);
+  const ciFollowToken = Symbol('review-ci-log');
+  // Save and send failures; the log's own failures are on its state.
+  let ciLogLocalError: string | null = $state(null);
   let ciLogSavedPath: string | null = $state(null);
-  let ciLogSeq = 0;
   let submitTarget: 'agent' | 'pr' = $state('agent');
   let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
   let summaryBody = $state('');
@@ -690,6 +705,27 @@ function createReviewPaneState(
     return count;
   });
   const ciState = $derived(peekPRCI(prEntityKey));
+  // The open job as the pipeline lists it now, so status, steps and
+  // duration move while the log is watched. A job the pipeline no longer
+  // lists (the head moved on) keeps the row captured at open.
+  //
+  // Both read the PR the log was opened on: a PR switch moves
+  // `prEntityKey` before the reload that releases the old PR closes the
+  // view, and in between this pane must not show one PR's job against
+  // another's pipeline.
+  const ciLogView = $derived.by<CILogView | null>(() => {
+    const open = ciLogOpen;
+    if (!open) return null;
+    const live = findCIJob(peekPRCI(open.key).pipeline, open.job.id);
+    return {
+      stageName: live?.stageName ?? open.stageName,
+      jobId: open.job.id,
+      job: live?.job ?? open.job,
+    };
+  });
+  const ciLog = $derived<PRCILogState | null>(
+    ciLogOpen ? (peekPRCI(ciLogOpen.key).logs.get(ciLogOpen.job.id) ?? null) : null,
+  );
   const conflictsState = $derived(peekPRConflicts(prEntityKey, workspace));
   // The loaded head, but only while it still describes the PR on screen.
   // Everything anchored to the diff — the stale banner, span context,
@@ -924,6 +960,8 @@ function createReviewPaneState(
   }
 
   function releasePR(): void {
+    // The log view belongs to the PR being released, and so does its follow.
+    closeCILogView();
     prAttachment?.release();
     prAttachment = null;
     // The anchor `prStale` is measured from describes a diff of THAT PR.
@@ -1163,9 +1201,6 @@ function createReviewPaneState(
         // head it computed the diff at, which its fetch can move past the
         // snapshot's.
         loadedPRHead = { key: loadingPRKey, sha: read.headSha || (loaded.prHeadSHA ?? loadedPRHeadSHA) };
-        // The fast path didn't refresh the PR snapshot, so CI state
-        // hasn't moved either — the subscription pump covers it.
-        if (!selectionOnly) void loadPRCIJobs(loadingPRKey, loadingPRRef);
       }
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -1926,79 +1961,68 @@ function createReviewPaneState(
     conflictExpandedFolds.set(path, next);
   }
 
-  async function loadCIJobs(): Promise<void> {
+  async function refreshCI(): Promise<void> {
     const key = prEntityKey;
-    if (!key || !prRef) return;
-    await loadPRCIJobs(key, prRef);
+    if (!key) return;
+    await refreshPRCI(key);
   }
 
-  async function openCIJobLog(stageName: string, job: CIJob): Promise<void> {
-    if (!prRef || !job.logsAvailable || !job.id) return;
+  function openCIJobLog(stageName: string, job: CIJob): void {
+    const key = prEntityKey;
+    const jobId = job.id;
+    if (!key || !job.logsAvailable || !jobId) return;
     // The log view and the conflict view both replace the diff body.
     setConflictView(false);
-    ciLogView = { stageName, job };
+    if (ciLogOpen && ciLogOpen.key !== key) closeCILogView();
+    ciLogOpen = { key, stageName, job: { ...job, id: jobId } };
+    ciLogLocalError = null;
     ciLogSavedPath = null;
-    await fetchCILog(job);
+    setPRCILogFollow(key, ciFollowToken, jobId);
   }
 
-  async function refreshCILog(): Promise<void> {
-    const job = ciLogView?.job;
-    if (!job) return;
-    await fetchCILog(job);
-  }
-
-  async function fetchCILog(job: CIJob): Promise<void> {
-    if (!prRef || !job.id) return;
-    const jobId = job.id;
-    const ref = prReferenceWire(prRef);
-    const seq = ++ciLogSeq;
-    ciLogLoading = true;
-    ciLogError = null;
-    try {
-      const result = (await withBackendTarget(backend, () => GetPRCIJobLog(ref, jobId))) as CIJobLogResult;
-      if (seq !== ciLogSeq || disposed) return;
-      ciLog = result;
-    } catch (err) {
-      if (seq !== ciLogSeq || disposed) return;
-      ciLog = null;
-      ciLogError = userFacingError(err);
-    } finally {
-      if (seq === ciLogSeq) ciLogLoading = false;
-    }
+  // Re-sending the follow is the backend's refetch.
+  function refreshCILog(): void {
+    if (!ciLogOpen) return;
+    ciLogLocalError = null;
+    refreshPRCILogFollows(ciLogOpen.key);
   }
 
   function closeCILogView(): void {
-    ciLogSeq += 1;
-    ciLogView = null;
-    ciLog = null;
-    ciLogLoading = false;
-    ciLogError = null;
+    if (ciLogOpen) setPRCILogFollow(ciLogOpen.key, ciFollowToken, null);
+    ciLogOpen = null;
+    ciLogLocalError = null;
     ciLogSavedPath = null;
   }
 
   async function saveCILog(): Promise<string | null> {
-    const view = ciLogView;
-    if (!prRef || !view?.job.id) return null;
-    const jobId = view.job.id;
+    // The open record, not the derived view: a pipeline frame landing
+    // during the save re-derives the view but leaves the same log open.
+    const open = ciLogOpen;
+    if (!prRef || !open) return null;
+    const jobId = open.job.id;
+    const jobName = ciLogView?.job.name ?? open.job.name;
     const ref = prReferenceWire(prRef);
     try {
-      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(ref, jobId, view.job.name)));
-      if (ciLogView === view) ciLogSavedPath = path;
+      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(ref, jobId, jobName)));
+      if (ciLogOpen === open) ciLogSavedPath = path;
       return path;
     } catch (err) {
-      if (ciLogView === view) ciLogError = userFacingError(err);
+      if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
       return null;
     }
   }
 
   async function sendCILogToChat(): Promise<void> {
-    const view = ciLogView;
-    if (!prRef || !view) return;
+    const open = ciLogOpen;
+    const opened = ciLogView;
+    if (!prRef || !open || !opened) return;
     const path = await saveCILog();
     if (!path) return;
+    // The job's status as of the send, while its log is still the one open.
+    const view = (ciLogOpen === open ? ciLogView : null) ?? opened;
     const draft = getComposerDraftForPane(sourcePaneId);
     if (!draft) {
-      ciLogError = 'The source chat pane is not available.';
+      ciLogLocalError = 'The source chat pane is not available.';
       return;
     }
     const message = [
@@ -2095,11 +2119,13 @@ function createReviewPaneState(
     conflictPaintedSpans,
     get ciPipeline() { return ciState.pipeline; },
     get ciLoading() { return ciState.loading; },
+    get ciRefreshing() { return ciState.refreshing; },
     get ciError() { return ciState.error; },
     get ciLogView() { return ciLogView; },
     get ciLog() { return ciLog; },
-    get ciLogLoading() { return ciLogLoading; },
-    get ciLogError() { return ciLogError; },
+    get ciLogLoading() { return ciLogOpen !== null && prCILogFollowPending(ciLogOpen.key); },
+    get ciLogError() { return ciLogLocalError ?? ciLog?.error ?? null; },
+    get ciLogAvailable() { return ciLog?.available ?? true; },
     get ciLogSavedPath() { return ciLogSavedPath; },
     get submitTarget() { return submitTarget; },
     get effectiveSubmitTarget() { return effectiveSubmitTarget; },
@@ -2215,7 +2241,7 @@ function createReviewPaneState(
     closeConflictView,
     toggleConflictCollapsed,
     expandConflictFold,
-    loadCIJobs,
+    refreshCI,
     openCIJobLog,
     closeCILogView,
     refreshCILog,
@@ -2238,6 +2264,17 @@ function createReviewPaneState(
     setIgnoreWhitespace,
     dispose,
   };
+}
+
+function findCIJob(
+  pipeline: CIPipeline | null,
+  jobId: string,
+): { stageName: string; job: CIJob } | null {
+  for (const stage of pipeline?.stages ?? []) {
+    const job = stage.jobs.find((candidate) => candidate.id === jobId);
+    if (job) return { stageName: stage.name, job };
+  }
+  return null;
 }
 
 function userFacingError(err: unknown): string {

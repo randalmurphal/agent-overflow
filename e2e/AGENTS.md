@@ -12,7 +12,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   tree and its own, so a fake dev server must listen in the worker or a
   descendant of it. Every launch passes `HARNESS_TIMING`
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
-  not wait out; a spec that needs another value passes its own through `env`.
+  not wait out (pairing probe, thread poll, transfer retry, PR update retry,
+  PR CI live, follow and log wait polls); a spec that needs another value passes its
+  own through `env`.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.

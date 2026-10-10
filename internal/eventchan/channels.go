@@ -121,9 +121,12 @@ const (
 	PowerKeepAwake Channel = "power:keepawake"
 )
 
-// pr:* — pull-request detail and review-thread pushes.
+// pr:* — pull-request detail and review-thread pushes, the head
+// pipeline's job rows, and followed job logs.
 const (
-	PRUpdated Channel = "pr:updated"
+	PRUpdated   Channel = "pr:updated"
+	PRCIUpdated Channel = "pr:ci_updated"
+	PRCILog     Channel = "pr:ci_log"
 )
 
 // project:* — one frame per project row a persisted write moved, carrying

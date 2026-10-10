@@ -125,8 +125,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1632984917: 'selected', // GetModelsForProvider
 	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
-	2411810578: 'selected', // GetPRCIJobLog
-	2370852281: 'selected', // GetPRCIJobs
 	2443547196: 'selected', // GetPRDetail
 	106351482: 'workspace', // GetPRMergeConflicts
 	73280836: 'thread', // GetPayloadChunk
@@ -292,6 +290,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	878560845: 'thread', // ReconnectMcpServer
 	1420075138: 'thread', // ReconnectSession
 	2215279661: 'selected', // RefreshMcpServerStatus
+	3232577070: 'home', // RefreshPRCI
 	2745242207: 'project', // RefreshProjectIdentity
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
@@ -359,6 +358,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2755315818: 'home', // SetDeviceName
 	3655340267: 'selected', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
+	1675722685: 'home', // SetPRCILogFollows
 	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
 	322092470: 'project', // SetProjectWorktreeSetup

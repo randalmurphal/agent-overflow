@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -65,6 +66,29 @@ type CIStep struct {
 	Number int    `json:"number"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+}
+
+// ErrCIJobLogNotFound is a job log request the forge answered with HTTP
+// 404: the job has not started, or the forge has not published the log of
+// a job that ran. GitHub answers it for a running job and for a while
+// after the job completed.
+var ErrCIJobLogNotFound = errors.New("ci job log not found")
+
+// ciJobLogFailure is the error of a failed job log command: failure (the
+// forge's command failure) wrapped in ErrCIJobLogNotFound when the forge
+// answered 404. An authentication failure stays as it is.
+func ciJobLogFailure(failure error, result commandResult) error {
+	if _, setup := errors.AsType[*ForgeSetupError](failure); setup || !forgeCommandNotFound(result) {
+		return failure
+	}
+	return fmt.Errorf("%w: %s", ErrCIJobLogNotFound, failure.Error())
+}
+
+// forgeCommandNotFound reports whether a failed gh or glab api call was
+// answered HTTP 404. Both CLIs end their error line with the status:
+// "gh: Not Found (HTTP 404)", "glab: 404 Not found (HTTP 404)".
+func forgeCommandNotFound(result commandResult) bool {
+	return result.exitCode != 0 && strings.Contains(result.stderr, "(HTTP 404)")
 }
 
 var ciJobIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)
@@ -175,4 +199,35 @@ func ciDurationSeconds(startedAt, completedAt string) float64 {
 		return 0
 	}
 	return d
+}
+
+// CIJobLive reports whether a normalized job status can still change on
+// its own: queued or running. Every other status is terminal until the
+// pipeline is re-run, which shows up as a new job id.
+func CIJobLive(status string) bool {
+	return status == CIStatusRunning || status == CIStatusPending
+}
+
+// CIPipelineLive reports whether any job of the pipeline is live.
+func CIPipelineLive(pipeline CIPipeline) bool {
+	for _, stage := range pipeline.Stages {
+		for _, job := range stage.Jobs {
+			if CIJobLive(job.Status) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// FindCIJob returns the job with the given id, or nil.
+func FindCIJob(pipeline CIPipeline, jobID string) *CIJob {
+	for i := range pipeline.Stages {
+		for j := range pipeline.Stages[i].Jobs {
+			if pipeline.Stages[i].Jobs[j].ID == jobID {
+				return &pipeline.Stages[i].Jobs[j]
+			}
+		}
+	}
+	return nil
 }

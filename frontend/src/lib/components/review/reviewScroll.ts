@@ -1,12 +1,14 @@
 import type { ReadingAnchor } from '../../utils/reviewAnchor';
 
-// The review pane's scroll owner. The review surface is a static document
-// (no streaming, no bottom pin, no springs), so unlike chat it does NOT use
+// The diff surface's scroll owner. A diff is a static document (no
+// streaming, no bottom pin, no springs), so unlike chat it does NOT use
 // utils/scroll/ — engine compensations and imperative jumps write scrollTop
-// directly. This module exists so the review pane still has exactly ONE
+// directly. This module exists so the diff surface still has exactly ONE
 // scrollTop writer (the frontend-scroll.md ownership rule), not so writes
 // can be arbitrated: with a stationary reading anchor as the only policy,
-// every compensation is applied verbatim.
+// every compensation is applied verbatim. The CI log view is the review
+// pane's one live surface; it has its own scroller and follows its tail
+// with the shared controller (ReviewCILogView.svelte).
 //
 // Reading positions are remembered per (threadId, scope, viewMode,
 // wordWrap) for the session, as reading anchors rather than pixels: a

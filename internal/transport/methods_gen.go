@@ -159,8 +159,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate", Route: "selected"},                               // main.App.GetModelsForProvider
 	{Name: "GetNativeNetworkConfig", ID: 652617244, Scope: "host", Route: "home"},                                             // main.App.GetNativeNetworkConfig
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                                        // main.App.GetNetworkSettings
-	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate", Route: "selected"},                                          // main.App.GetPRCIJobLog
-	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRCIJobs
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRDetail
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                           // main.App.GetPayloadChunk
@@ -326,6 +324,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReconnectMcpServer", ID: 878560845, Scope: "settings:write", Route: "thread"},                                     // main.App.ReconnectMcpServer
 	{Name: "ReconnectSession", ID: 1420075138, Scope: "threads:operate", Route: "thread"},                                     // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661, Scope: "settings:write", Route: "selected"},                              // main.App.RefreshMcpServerStatus
+	{Name: "RefreshPRCI", ID: 3232577070, Scope: "git:operate", Route: "home"},                                                // main.App.RefreshPRCI
 	{Name: "RefreshProjectIdentity", ID: 2745242207, Scope: "threads:read", Route: "project"},                                 // main.App.RefreshProjectIdentity
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                               // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                                       // main.App.RefreshTerminal
@@ -393,6 +392,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetDeviceName", ID: 2755315818, Scope: "access:admin", Route: "home"},                                             // main.App.SetDeviceName
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "selected"},                                   // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},                        // main.App.SetNetworkSettings
+	{Name: "SetPRCILogFollows", ID: 1675722685, Scope: "git:operate", Route: "home"},                                          // main.App.SetPRCILogFollows
 	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                                    // main.App.SetPRThreadResolved
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                         // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},               // main.App.SetProjectWorktreeSetup

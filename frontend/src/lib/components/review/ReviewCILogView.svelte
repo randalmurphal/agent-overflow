@@ -5,17 +5,25 @@
   import AnsiText from '../chat/AnsiText.svelte';
   import Icon from '../primitives/Icon.svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
-  import { createReviewScrollOwner } from './reviewScroll';
   import { OpenExternalURL } from '../../stores/bindings';
-  import type { CIJobLogResult } from '../../types/models';
   import type { CILogView } from '../../stores/reviewPane.svelte';
-  import { ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
+  import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
+  import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import type { RowEstimate } from '../../utils/virtual/types';
 
   // CI job log view — replaces the diff body (same pattern as the
   // conflict viewer). The log is chunked into fixed line blocks and
   // virtualized; each block renders through AnsiText (CI traces are
-  // ANSI-heavy). Bottom-anchored on load: failures live at the tail.
+  // ANSI-heavy). A job's log opens at its tail: failures live there. A
+  // followed log grows while the job runs, and the view follows the
+  // growth for a reader at the bottom while one who scrolled up keeps
+  // their place. That bottom-follow is the shared scroll controller's,
+  // wired as chat wires it over the same virtualizer: the virtualizer
+  // places (scrollToIndex) and reports its content geometry, and the
+  // controller owns every scrollTop write and the reader's intent (a
+  // wheel, key, touch or scrollbar gesture away from the bottom escapes).
+  // The virtualizer's own align-end convergence deliberately excludes the
+  // destination row's growth, so a jump alone cannot follow a tail.
 
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
@@ -23,11 +31,21 @@
   const CHUNK_LINES = 200;
   const LINE_ESTIMATE_PX = 18;
 
+  interface LogText {
+    text: string;
+    truncated: boolean;
+    totalBytes: number;
+  }
+
   interface Props {
     view: CILogView;
-    log: CIJobLogResult | null;
+    log: LogText | null;
     loading: boolean;
     error: string | null;
+    /** False while the forge cannot serve the log: the job is live on a
+     * forge that serves logs only after completion, or the forge has not
+     * published a completed job's log yet. */
+    available?: boolean;
     savedPath: string | null;
     onBack: () => void;
     onRefresh: () => void;
@@ -35,7 +53,18 @@
     onSend: () => void;
   }
 
-  let { view, log, loading, error, savedPath, onBack, onRefresh, onSave, onSend }: Props = $props();
+  let {
+    view,
+    log,
+    loading,
+    error,
+    available = true,
+    savedPath,
+    onBack,
+    onRefresh,
+    onSave,
+    onSend,
+  }: Props = $props();
 
   interface LogChunk {
     id: number;
@@ -65,18 +94,57 @@
   const getKey = (chunk: LogChunk) => chunk.id;
 
   let scrollEl: HTMLElement | undefined = $state();
+  let contentEl: HTMLDivElement | undefined = $state();
   let listRef: LongListHandle | undefined = $state();
-  const scroll = createReviewScrollOwner(() => scrollEl);
 
-  // Bottom-anchor each newly loaded log exactly once (per log identity):
-  // failures are at the tail. Manual scrolling afterwards stays put.
-  let anchoredLog: CIJobLogResult | null = null;
+  const stick = createUseStickToBottomController({
+    externalContentGeometry: true,
+    onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
+  });
+
+  // The scroller exists only while there is text, so unlike chat's it
+  // comes and goes: each detaches the controller on its way out.
   $effect(() => {
-    const current = log;
+    const scroll = scrollEl;
+    const content = contentEl;
+    if (!scroll || !content) return;
+    stick.attach(scroll, content);
+    return () => stick.detach();
+  });
+  // After the attach effect: the subscription replays the virtualizer's
+  // current sample, and a sample the controller gets before it has an
+  // element is dropped and never offered again.
+  $effect(() => {
+    const list = listRef;
+    if (!list) return;
+    return list.subscribeContentGeometry(stick.deliverContentGeometry);
+  });
+
+  // A job's log is placed at its tail the first time it has text. The
+  // placement is a jump, not a bottom write: a log past the held limit
+  // has a tail the DOM does not hold. Claiming clears an escape left on
+  // the previous job, and the fresh warm-up keeps the new log's
+  // measurement cascade pinned instead of gliding. The view object is
+  // re-derived on every pipeline frame, so only the job id is read.
+  const jobId = $derived(view.jobId);
+  let anchoredJobId: string | null = null;
+  $effect(() => {
     const ref = listRef;
-    if (!current || !ref || chunks.length === 0 || anchoredLog === current) return;
-    anchoredLog = current;
-    untrack(() => ref.scrollToIndex(chunks.length - 1));
+    const count = chunks.length;
+    const job = jobId;
+    if (!ref || count === 0) return;
+    untrack(() => {
+      if (anchoredJobId === job) return;
+      anchoredJobId = job;
+      stick.armWarmup();
+      stick.requestBottom({
+        takeover: 'claim',
+        write: () => {
+          ref.scrollToIndex(count - 1, { align: 'end' });
+          stick.markAtBottom();
+        },
+      });
+    });
   });
 
   const totalMB = $derived(((log?.totalBytes ?? 0) / (1024 * 1024)).toFixed(1));
@@ -166,10 +234,20 @@
     </div>
   {/if}
 
+  {#if !available && !error}
+    <div class="border-b border-border-subtle px-4 py-3 text-xs text-fg-muted" data-testid="review-ci-log-pending">
+      {#if ciJobLive(view.job.status)}
+        The log is available when the job completes.
+      {:else}
+        The job finished; the forge has not published its log yet.
+      {/if}
+    </div>
+  {/if}
   {#if loading && !log}
     <div class="px-4 py-3 text-xs text-fg-muted">Loading log…</div>
   {:else if !log || chunks.length === 0}
-    {#if !error}
+    <!-- An unavailable log has nothing to show yet; the pending line says why. -->
+    {#if !error && available}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-ci-log-empty">Log is empty.</div>
     {/if}
   {:else}
@@ -187,13 +265,15 @@
     >
       <LongListVirtualizer
         bind:this={listRef}
+        bind:renderPlane={contentEl}
         data={chunks}
         {getKey}
         scrollRef={scrollEl}
         {estimate}
         renderAll={IS_TEST}
-        applyScrollTarget={scroll.applyScrollTarget}
-        onCompensation={scroll.applyCompensation}
+        applyScrollTarget={stick.applyScrollTarget}
+        onCompensation={stick.applyEngineCompensation}
+        trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
       >
         {#snippet children(chunk: LogChunk)}
           <AnsiText source={chunk.text} class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" />

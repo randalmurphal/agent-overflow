@@ -39,6 +39,7 @@ import { getThreads } from './threads.svelte';
 import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
+import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
@@ -278,12 +279,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       }
       return;
     }
-    // The entity channels (git:status / pr:updated / mcp:status). Each
-    // emits exactly ONE frame per state change, so a dropped frame is
-    // terminal for every consumer of that entity: no later frame happens
-    // to repair it, and the stale value is indistinguishable from a
-    // correct one (a clean worktree that isn't, a PR head that has moved
-    // on, an MCP server shown connected after it dropped).
+    // The entity channels (git:status / pr:updated / pr:ci_updated /
+    // mcp:status). Each emits exactly ONE frame per state change, so a
+    // dropped frame is terminal for every consumer of that entity: no
+    // later frame happens to repair it, and the stale value is
+    // indistinguishable from a correct one (a clean worktree that isn't, a
+    // PR head that has moved on, an MCP server shown connected after it
+    // dropped).
     //
     // Recovery is deliberately blanket — every live key of the store, not
     // one. The gap payload carries no entity key and cannot: the frames
@@ -298,7 +300,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       resyncGitStatusAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'pr:updated':
+    case 'pr:ci_updated':
       resyncPRReviewAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    // Log frames are deltas against the text held: re-sending the follow
+    // set answers every followed job's full text.
+    case 'pr:ci_log':
+      resendPRCILogFollowsForBackend(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));

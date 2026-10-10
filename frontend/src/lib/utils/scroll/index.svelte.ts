@@ -1,5 +1,5 @@
-// Sticky-bottom controller, shared by chat MessageTimeline and
-// Discussion ChannelView.
+// Sticky-bottom controller, shared by chat MessageTimeline, Discussion
+// ChannelView and the review pane's ReviewCILogView.
 //
 // Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
 // the user's intent ("glued to bottom" or "free") and the content-

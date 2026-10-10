@@ -587,6 +587,28 @@ var channelPolicies = []ChannelPolicy{
 			"a new comment presents a stale review as a live one.",
 	},
 	{
+		Channel:   eventchan.PRCIUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "The pull request's head pipeline as job rows: workflow and job " +
+			"names, statuses, step names and job URLs of a private repository, " +
+			"plus a poll-failure summary. Same gate and the same reasoning as " +
+			"pr:updated, whose pump emits it: the subscribe call answers with " +
+			"the same pipeline.",
+	},
+	{
+		Channel:   eventchan.PRCILog,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "Appended text of a CI job log somebody is following: build output " +
+			"of a private repository, which can echo secrets a job printed. " +
+			"Gated like pr:updated; only sessions that called SetPRCILogFollows " +
+			"(git:operate) have a pump emitting it, and the frames are deltas " +
+			"against the text that call answered with.",
+	},
+	{
 		Channel:   eventchan.ProjectUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

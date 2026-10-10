@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,53 +16,74 @@ import (
 // keeps the head off the wire; SavePRCIJobLog writes the full fetch.
 const ciLogDisplayTailBytes = 2 * 1024 * 1024
 
-type PRCIJobLogResult struct {
-	Text string `json:"text"`
-	// Truncated reports that Text is the tail of a longer log. The full
-	// content is available via SavePRCIJobLog.
-	Truncated  bool `json:"truncated"`
-	TotalBytes int  `json:"totalBytes"`
+// PRCILogState is one followed job's log as the pump currently holds it.
+// Text is the cleaned, tail-capped trace. Available is false while the
+// forge cannot serve the log: the job is live on a forge that serves logs
+// only after completion (GitHub), or it completed and the forge has not
+// published its log yet. Text is then unchanged (empty on GitHub) and the
+// frontend says why. Error is the caller-safe summary of the last fetch
+// failure.
+type PRCILogState struct {
+	Text       string `json:"text"`
+	Truncated  bool   `json:"truncated"`
+	TotalBytes int    `json:"totalBytes"`
+	Available  bool   `json:"available"`
+	Error      string `json:"error"`
+	Seq        uint64 `json:"seq"`
 }
 
-//ao:scope git:operate
-//ao:route selected
-func (a *App) GetPRCIJobs(pr gitops.PRReference) (gitops.CIPipeline, error) {
-	if a.shuttingDown.Load() {
-		return gitops.CIPipeline{}, ErrShuttingDown
-	}
-	if err := validatePRReference(pr); err != nil {
-		return gitops.CIPipeline{}, err
-	}
-	return a.gitCore().ListPRCIJobs("", pr)
+// PRCILogFollowResult answers SetPRCILogFollows with the current state of
+// every job the call asked to follow, keyed by job id.
+type PRCILogFollowResult struct {
+	Logs map[string]PRCILogState `json:"logs"`
 }
 
+// SetPRCILogFollows replaces the set of CI job logs one subscription
+// follows. The pump polls every requested job now, so the reply carries
+// each job's current log; from then on the pump keeps a live job's log
+// moving through "pr:ci_log" frames until the job completes and its final
+// log is in hand. An empty list stops following. The call is the manual
+// "refresh log" too: re-sending a job id fetches it again.
+//
 //ao:scope git:operate
-//ao:route selected
-func (a *App) GetPRCIJobLog(pr gitops.PRReference, jobID string) (PRCIJobLogResult, error) {
+//ao:route home
+func (a *App) SetPRCILogFollows(ctx context.Context, subscriptionID string, jobIDs []string) (PRCILogFollowResult, error) {
 	if a.shuttingDown.Load() {
-		return PRCIJobLogResult{}, ErrShuttingDown
+		return PRCILogFollowResult{}, ErrShuttingDown
 	}
-	if err := validatePRReference(pr); err != nil {
-		return PRCIJobLogResult{}, err
+	for _, jobID := range jobIDs {
+		if err := gitops.ValidateCIJobID(jobID); err != nil {
+			return PRCILogFollowResult{}, err
+		}
 	}
-	log, err := a.gitCore().GetCIJobLog("", pr, jobID)
-	if err != nil {
-		return PRCIJobLogResult{}, err
+	return a.setPRCILogFollows(ctx, subscriptionID, jobIDs)
+}
+
+// RefreshPRCI polls a subscribed pull request's pipeline now. The result
+// reaches every subscriber through "pr:ci_updated" when it changed; the
+// error is the fetch failure, so the caller can show it on the button
+// that asked.
+//
+//ao:scope git:operate
+//ao:route home
+func (a *App) RefreshPRCI(ctx context.Context, subscriptionID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
 	}
-	tail, truncated := tailCapLog(log, ciLogDisplayTailBytes)
-	return PRCIJobLogResult{
-		Text:       tail,
-		Truncated:  truncated,
-		TotalBytes: len(log),
-	}, nil
+	return a.refreshPRCI(ctx, subscriptionID)
 }
 
 // SavePRCIJobLog fetches the full job log and writes it under the
 // app-managed ci-logs directory, returning the absolute path. The path
 // is stable per (pr, job), so a re-save refreshes the same file.
 //
+// errCIJobLogUnpublished is the save's answer to a forge 404: the job has
+// not started, or the forge has not published its log yet.
+//
 //ao:scope git:operate
 //ao:route selected
+var errCIJobLogUnpublished = errors.New("the forge has not published this job's log yet")
+
 func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
@@ -76,6 +98,9 @@ func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (stri
 		return "", errors.New("app data directory is not initialised")
 	}
 	log, err := a.gitCore().GetCIJobLog("", pr, jobID)
+	if errors.Is(err, gitops.ErrCIJobLogNotFound) {
+		return "", errCIJobLogUnpublished
+	}
 	if err != nil {
 		return "", err
 	}

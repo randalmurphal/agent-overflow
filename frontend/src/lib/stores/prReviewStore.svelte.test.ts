@@ -4,6 +4,7 @@ import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import {
+  applyPRCIUpdatedEvent,
   applyPRThreads,
   applyPRUpdatedEvent,
   attachPR,
@@ -15,7 +16,7 @@ import {
   prReviewKeys,
   setPRThreadResolveOverride,
 } from './prReviewStore.svelte';
-import { loadPRCIJobs, peekPRCI } from './prReviewCI.svelte';
+import { peekPRCI } from './prReviewCI.svelte';
 import {
   ensurePRConflictFile,
   openPRConflicts,
@@ -105,7 +106,7 @@ function installConflictMocks(paths = ['main.go'], treeOID = 'tree-1') {
 
 beforeEach(() => {
   setBindingMock('SetPRUpdatesActive', async () => undefined);
-  setBindingMock('GetPRCIJobs', async () => ({ status: 'success', stages: [] }));
+  setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
 });
 
 describe('prReviewStore — one entity, many holders', () => {
@@ -766,60 +767,6 @@ describe('prReviewStore — applying pushes', () => {
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
     expect(a.error).toBeNull();
     a.release();
-  });
-
-  it('refreshes CI on a push only for a PR whose CI was loaded', async () => {
-    installSubscribeMock();
-    const ci = setBindingMock('GetPRCIJobs', async () => ({ status: 'success', stages: [] }));
-    const a = attachPR(KEY, { ref: REF });
-    await flush();
-
-    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
-    await flush();
-    // Nothing asked for CI yet, so the poll must not invent the work.
-    expect(ci).not.toHaveBeenCalled();
-
-    await loadPRCIJobs(KEY, REF);
-    expect(peekPRCI(KEY).pipeline?.status).toBe('success');
-    expect(ci).toHaveBeenCalledTimes(1);
-
-    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
-    await flush();
-    expect(ci).toHaveBeenCalledTimes(2);
-    a.release();
-  });
-
-  it('drops CI state when the last holder leaves', async () => {
-    installSubscribeMock();
-    const a = attachPR(KEY, { ref: REF });
-    await flush();
-    await loadPRCIJobs(KEY, REF);
-    expect(peekPRCI(KEY).pipeline).not.toBeNull();
-
-    a.release();
-    await flush();
-    expect(peekPRCI(KEY).pipeline).toBeNull();
-  });
-
-  it('does not let a CI fetch in flight when the holder left resurrect the entry', async () => {
-    installSubscribeMock();
-    let resolveCI!: (value: unknown) => void;
-    setBindingMock('GetPRCIJobs', () => new Promise((resolve) => {
-      resolveCI = resolve;
-    }));
-    const a = attachPR(KEY, { ref: REF });
-    await flush();
-    const loading = loadPRCIJobs(KEY, REF);
-
-    a.release();
-    await flush();
-    // The fetch still holds the entry object; without the token bump its
-    // result would land in an entry that is out of the map, where nothing
-    // can clear it — the same trap dropConflicts has always guarded.
-    resolveCI({ status: 'success', stages: [] });
-    await loading;
-    expect(peekPRCI(KEY).pipeline).toBeNull();
-    expect(peekPRCI(KEY).loading).toBe(false);
   });
 });
 
@@ -1554,10 +1501,17 @@ it('isolates one PR’s subscriptions, pushes and CI by computer even when subsc
   setBindingMock('SubscribePRUpdates', async () => {
     const backend = takePinnedBackend()!;
     issued.push(backend);
-    return { id: 'same-subscription-id', prKey: KEY, detail: detailStub(), threads: [], headSHA: backend || 'home' };
+    return {
+      id: 'same-subscription-id',
+      prKey: KEY,
+      detail: detailStub(),
+      threads: [],
+      headSHA: backend || 'home',
+      ci: { status: backend || 'home', stages: [] },
+      ciError: '',
+    };
   });
   setBindingMock('UnsubscribePRUpdates', async () => { released.push(takePinnedBackend()!); });
-  setBindingMock('GetPRCIJobs', async () => ({ status: takePinnedBackend() || 'home', stages: [] }));
   const homeKey = composeWorkspaceKey('', KEY);
   const remoteKey = composeWorkspaceKey('laptop', KEY);
   const home = attachPR(homeKey, { ref: REF });
@@ -1568,9 +1522,11 @@ it('isolates one PR’s subscriptions, pushes and CI by computer even when subsc
     applyPRUpdatedEvent({ prKey: KEY, headSHA: 'remote-push', detail: detailStub() }, 'laptop');
     expect(home.snapshot?.headSHA).toBe('home');
     expect(laptop.snapshot?.headSHA).toBe('remote-push');
-    await Promise.all([loadPRCIJobs(homeKey, REF), loadPRCIJobs(remoteKey, REF)]);
     expect(peekPRCI(homeKey).pipeline?.status).toBe('home');
     expect(peekPRCI(remoteKey).pipeline?.status).toBe('laptop');
+    applyPRCIUpdatedEvent({ prKey: KEY, pipeline: { status: 'remote-ci', stages: [] } }, 'laptop');
+    expect(peekPRCI(homeKey).pipeline?.status).toBe('home');
+    expect(peekPRCI(remoteKey).pipeline?.status).toBe('remote-ci');
     remote.setStatus('disconnected');
     expect(home.snapshot?.headSHA).toBe('home');
     expect(laptop.snapshot).toBeNull();

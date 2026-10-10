@@ -1,11 +1,17 @@
 <script lang="ts" module>
-  import type { ScrollToIndexAlign } from '../../utils/virtual/types';
+  import type { ContentGeometrySample, ScrollToIndexAlign } from '../../utils/virtual/types';
 
   /** The handle of a LongListVirtualizer. Indices are indices of `data`;
    * offsets are scroll offsets of the rows the DOM holds. */
   export interface LongListHandle {
     scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
     revalidate(): void;
+    /** The virtualizer's content geometry, for a scroll controller that
+     * follows the bottom (`TimelineVirtualizerHandle.subscribeContentGeometry`).
+     * The height is that of the held rows. */
+    subscribeContentGeometry(onSample: (sample: ContentGeometrySample) => void): () => void;
+    /** A scroll controller wrote scrollTop (`TimelineVirtualizerHandle.noteScrollTopWritten`). */
+    noteScrollTopWritten(top: number): void;
     /** The row at a scroll offset. */
     findItemIndex(offset: number): number;
     /** Whether the row is held, and so has a scroll offset. */
@@ -51,8 +57,11 @@
     estimate: RowEstimate;
     scrollRef?: HTMLElement;
     renderAll?: boolean;
+    /** The virtualizer's mounted-row plane: a scroll controller's content element. */
+    renderPlane?: HTMLDivElement;
     applyScrollTarget: (top: number) => void;
     onCompensation?: (compensation: EngineCompensation) => void;
+    trackReadingAnchor?: () => boolean;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     /** Test seam: smaller limits so a test list can pass them. */
@@ -66,8 +75,10 @@
     estimate,
     scrollRef,
     renderAll = false,
+    renderPlane = $bindable(),
     applyScrollTarget,
     onCompensation,
+    trackReadingAnchor,
     onscroll,
     onscrollend,
     limits = HELD_LIMITS,
@@ -214,6 +225,18 @@
     list?.revalidate();
   }
 
+  export function subscribeContentGeometry(
+    onSample: (sample: ContentGeometrySample) => void,
+  ): () => void {
+    const inner = list;
+    if (!inner) throw new Error('LongListVirtualizer: subscribeContentGeometry before mount');
+    return inner.subscribeContentGeometry(onSample);
+  }
+
+  export function noteScrollTopWritten(top: number): void {
+    list?.noteScrollTopWritten(top);
+  }
+
   export function findItemIndex(offset: number): number {
     const local = current()?.findItemIndex(offset) ?? 0;
     return local + heldStart;
@@ -232,6 +255,7 @@
 
 <TimelineVirtualizer
   bind:this={list}
+  bind:renderPlane
   data={held}
   getKey={localKey}
   {scrollRef}
@@ -239,6 +263,7 @@
   {renderAll}
   {applyScrollTarget}
   {onCompensation}
+  {trackReadingAnchor}
   onscroll={handleScroll}
   {onscrollend}
 >

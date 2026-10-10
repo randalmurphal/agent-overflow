@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -79,5 +80,27 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 
 	if _, err := app.SavePRCIJobLog(pr, "not-a-number", "build"); err == nil {
 		t.Fatal("expected error for invalid job id")
+	}
+}
+
+func TestSavePRCIJobLogNamesAnUnpublishedLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+	app := newTestAppWithStore(t)
+	app.configDir = t.TempDir()
+
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nprintf '{\"message\":\"Not Found\"}'\necho 'gh: Not Found (HTTP 404)' 1>&2\nexit 1\n"
+	mockexec.Write(t, filepath.Join(binDir, "gh"), script)
+	app.forgeCLIs.fake = filepath.Join(binDir, "gh")
+
+	pr := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "widgets", Number: 7}
+	_, err := app.SavePRCIJobLog(pr, "901", "build")
+	if !errors.Is(err, errCIJobLogUnpublished) {
+		t.Fatalf("SavePRCIJobLog error = %v, want the unpublished-log answer", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(app.configDir, "ci-logs")); len(entries) != 0 {
+		t.Fatalf("a file was written for a log the forge does not have: %v", entries)
 	}
 }
