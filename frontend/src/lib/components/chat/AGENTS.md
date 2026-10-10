@@ -95,6 +95,10 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   preserve extend-only visible text and selection until genuine divergence.
 - Keep completed Markdown blocks stable. Do not rebuild sealed DOM when only the
   volatile tail changes.
+- `markdown/MarkdownImage.svelte` paints a local or forge image at the display
+  tier `utils/imageTiers.ts` picks for its box and opens the app-level
+  lightbox; `StreamdownImageHost.svelte` and `ForgeAttachmentHost.svelte`
+  only decide which source it gets.
 
 Use differential tests for both renderer paths and browser tests for DOM
 identity, selection, geometry, or actual scroll behavior.
