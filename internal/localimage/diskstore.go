@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/attachment"
 )
 
 // DiskCacheBytes bounds the derivative files kept on disk. A 2160 tier of a
@@ -35,11 +35,6 @@ const (
 	// renamed into place. The scan removes such files: they are writes a
 	// previous process never finished.
 	tempPrefix = ".tmp-"
-	// derivativeFormat names what attachment.Derive produces and is hashed
-	// into every file name. Bump it when Derive changes its output for the
-	// same source and tier, so files the previous derivation wrote are never
-	// found again and age out of the bound instead of being served.
-	derivativeFormat = 1
 )
 
 // diskExtensions maps the types attachment.Derive encodes to the extension
@@ -61,7 +56,7 @@ var (
 type diskKey [sha256.Size]byte
 
 func diskKeyFor(sourceKey string) diskKey {
-	return sha256.Sum256([]byte(strconv.Itoa(derivativeFormat) + "\x00" + sourceKey))
+	return sha256.Sum256([]byte(strconv.Itoa(attachment.DeriveFormat) + "\x00" + sourceKey))
 }
 
 // diskFile is one indexed derivative. charge is its size rounded up to
@@ -171,7 +166,7 @@ func (s *diskStore) scan() error {
 	slices.SortFunc(files, func(a, b found) int { return a.modTime.Compare(b.modTime) })
 	for _, f := range files {
 		// One key under two extensions means Derive changed its output
-		// type without a derivativeFormat bump; the newer file wins.
+		// type without a DeriveFormat bump; the newer file wins.
 		if older, ok := s.index[f.file.key]; ok {
 			s.dropLocked(older)
 		}
@@ -303,7 +298,7 @@ func (s *diskStore) bytes() int64 {
 // one of diskExtensions. Anything else is not the store's.
 func parseDiskName(name string) (diskKey, string, bool) {
 	ext := filepath.Ext(name)
-	if !slices.Contains(slices.Collect(maps.Values(diskExtensions)), ext) {
+	if !storedExtension(ext) {
 		return diskKey{}, "", false
 	}
 	stem := strings.TrimSuffix(name, ext)
@@ -369,4 +364,14 @@ func innermost(err error) error {
 		}
 		err = next
 	}
+}
+
+// storedExtension reports whether ext is one diskExtensions maps to.
+func storedExtension(ext string) bool {
+	for _, known := range diskExtensions {
+		if known == ext {
+			return true
+		}
+	}
+	return false
 }

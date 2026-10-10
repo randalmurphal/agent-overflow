@@ -8,7 +8,7 @@
 // and the wheel zooms. The derivative is a file in the boot's own data
 // directory (internal/localimage). Decision: docs/decisions.md, "Images in
 // chat".
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator } from '@playwright/test';
 import { solidPng } from './attachment-fixture.js';
@@ -166,4 +166,60 @@ test('a local image paints at its box tier, upgrades in place as the window wide
   await expect.poll(() => zoomPercent(dialog)).toBeGreaterThan(fit);
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
+});
+
+// The backend's memory cache names a derivative file for 30 minutes. One
+// deleted behind its back (a user clearing the cache directory) answers the
+// byte route a 404; the client mints once more, the backend derives the
+// tier again under the same name, and the image paints. The file name is
+// the digest of the source version and tier, so its return proves the
+// derivation ran, not a cached answer.
+test('a derivative deleted from the cache is derived again on the next paint', async ({ harness, page }) => {
+  const title = 'Local image cache recovery';
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'image-cache-recovery',
+        repo: {},
+        threads: [{ title, provider: 'claude', turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  const workspace = seed.projects[0].path;
+  const reference = `shots/${NAME}`;
+  await mkdir(path.join(workspace, 'shots'), { recursive: true });
+  await writeFile(path.join(workspace, reference), solidPng(WIDTH, HEIGHT, [120, 40, 80]));
+  await setScenario(
+    harness,
+    workspace,
+    plainScenario({ name: 'image-cache-recovery', provider: 'claude', texts: [`The panorama:\n\n![panorama](${reference})\n`] }),
+  );
+  const cacheDir = path.join(harness.bootstrap.dataDir, 'cache', 'images');
+  const cachedBefore = await cachedDerivatives(harness.bootstrap.dataDir);
+
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: title }).click();
+  await page.getByLabel('Message Input').fill('show me');
+  const completed = harness.waitForEvent('provider:turn_completed');
+  await page.getByTestId('composer-send').click();
+  await completed;
+  const painted = page.locator('img[data-markdown-image-src]');
+  await expect.poll(async () => (await readPainted(painted)).natural).toBeGreaterThan(0);
+  const first = await readPainted(painted);
+  expect(TIERS, JSON.stringify(first)).toContain(first.natural);
+  const stored = (await cachedDerivatives(harness.bootstrap.dataDir)).filter((name) => !cachedBefore.includes(name));
+  expect(stored.length).toBeGreaterThan(0);
+
+  for (const name of stored) await rm(path.join(cacheDir, name));
+  expect((await cachedDerivatives(harness.bootstrap.dataDir)).filter((name) => stored.includes(name))).toEqual([]);
+
+  // The reload drops the client's bytes, so the next paint goes back to the
+  // backend, whose first answer names the deleted file.
+  await page.reload();
+  await page.getByTestId('thread-row').filter({ hasText: title }).click();
+  await expect.poll(async () => (await readPainted(painted)).natural, 'the image paints again').toBe(first.natural);
+  await expect(page.locator('[data-streamdown-image-loading]')).toHaveCount(0);
+  await expect
+    .poll(async () => (await cachedDerivatives(harness.bootstrap.dataDir)).filter((name) => stored.includes(name)).sort(), 'the same files are written again')
+    .toEqual([...stored].sort());
 });

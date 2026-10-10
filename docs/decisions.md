@@ -481,6 +481,11 @@ and anti-changes that live only here:
   (the text the agent wrote, written back as CommonMark that parses) and
   Save Image (the owning computer's Downloads, or a browser download).
   Bytes cross on the ticketed byte routes, never inside a WebSocket frame.
+  Local derivatives are files under the data directory's `cache/images`
+  (256 MiB, least recently used out), reused across restarts; the backend
+  holds no derivative bytes in memory, so a screenshot is reduced once per
+  tier, not once per pane or boot. Deleting the directory is the whole
+  cleanup.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
 - Wide blocks pan inside their own box on every layout: markdown tables,

@@ -14,17 +14,26 @@ import (
 // this list.
 var DeriveWidths = []int{320, 480, 720, 1080, 1440, 2160, 2880, 3840, 5120}
 
+// DeriveFormat names what Derive produces for a source and tier. A caller
+// that keeps derivatives across restarts hashes it into their names, so bump
+// it whenever Derive's output changes for the same source and tier (the
+// resampler, the encoders, deriveJPEGQuality, the output type rules);
+// otherwise files the previous derivation wrote are served until they age
+// out.
+const DeriveFormat = 1
+
 // deriveJPEGQuality is the quality a derivative of a lossy source is
 // re-encoded at. High because the derivative is what the timeline shows at
 // full size, not a preview tile.
 const deriveJPEGQuality = 90
 
 // deriveMaxPixels caps a derivative's pixel count at 4096x4096, which bounds
-// what a client decodes, what one derivative holds in a caller's byte cache
-// and what it costs to encode. It admits the 5120 tier up to 16:10
-// (5120x3200) and the 3840 tier at every landscape aspect and square (up to
-// 3840x4369). A taller derivative steps down the ladder, and a source over
-// the cap is derived rather than served (derivedTier).
+// what a client decodes, what one derivative costs its caller's cache (bytes
+// in the forge cache, a file in the local image cache) and what it costs to
+// encode. It admits the 5120 tier up to 16:10 (5120x3200) and the 3840 tier
+// at every landscape aspect and square (up to 3840x4369). A taller
+// derivative steps down the ladder, and a source over the cap is derived
+// rather than served (derivedTier).
 const deriveMaxPixels = 16 << 20
 
 // deriveGroup dedupes concurrent derivations of the same source and tier, so
