@@ -32,6 +32,13 @@ updates:
       npm:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # happy-dom 20.12 added Element.animate() and its Animation.cancel()
+      # leaves a rejected promise unhandled, which fails every Svelte
+      # transition torn down mid-animation (capricorn86/happy-dom#2339,
+      # fix in #2340). Lift when a release carries the fix.
+      - dependency-name: happy-dom
+        versions: [">=20.12.0"]
   - package-ecosystem: gradle
     directory: /mobile/android
     schedule:
