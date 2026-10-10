@@ -77,7 +77,7 @@ commands for completion: the Go Make targets apply platform flags and
 The provider smoke uses authenticated real CLIs and spends tokens; it needs
 an explicit request. The import smoke reads only supplied copies of provider
 homes and refuses overlap with live homes. Neither belongs in ordinary tests.
-The system-Chromium launch test is also manual, through
+The system-Chromium launch and page-operation test is also manual, through
 `AO_HEADLESS_CHROMIUM_SMOKE=1` and `TestHeadlessChromiumReal`; it downloads
 nothing. `make verify` is the hermetic release check, including compilation
 of the real-provider smoke tests.
