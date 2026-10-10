@@ -92,10 +92,12 @@ and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
-`make e2e` in eight Playwright shards with two workers each (`E2E_ARGS`,
+`make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
 `AO_E2E_WORKERS`).
 `.github/actions/setup` owns the toolchain pins, caches and the runner
-preparation the network namespace needs. `codeql.yml` scans Go and
+preparation the network namespace needs. Go build caches are saved only by
+pushes to `main`; a pull request restores the newest `main` cache for its
+job slot, so it rebuilds and retests what it changed. `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
 `dependency-review-action` checks pull request dependency changes.
 

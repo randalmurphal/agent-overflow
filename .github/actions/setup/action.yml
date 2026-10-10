@@ -69,11 +69,33 @@ runs:
         restore-keys: |
           go-mod-${{ runner.os }}-
 
-    - name: Restore the Go build cache
+    # The build cache holds compiled packages and passed test results, so a
+    # warm job rebuilds and retests only what a change touched. Its path
+    # differs per OS (Library/Caches on macOS). Each slot's cache is several
+    # hundred megabytes against a 10 GB repository budget, so only pushes to
+    # main save one; a pull request restores the newest main cache for its
+    # slot through the prefix key.
+    - name: Locate the Go build cache
       if: inputs.go == 'true'
+      id: go-cache
+      shell: bash
+      run: echo "path=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore and save the Go build cache
+      if: inputs.go == 'true' && github.event_name == 'push'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cache/go-build
+        path: ${{ steps.go-cache.outputs.path }}
+        key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+          go-build-${{ inputs.cache-name }}-${{ runner.os }}-
+
+    - name: Restore the Go build cache
+      if: inputs.go == 'true' && github.event_name != 'push'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.go-cache.outputs.path }}
         key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
         restore-keys: |
           go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-
