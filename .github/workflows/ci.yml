@@ -11,6 +11,11 @@ permissions:
   contents: read
   packages: read
 
+# Container jobs would otherwise get sh as the default step shell.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,7 +27,10 @@ concurrency:
 # anything a change moved past the image. The macOS job runs on the bare
 # runner. Jobs that start the isolated test network namespace run the
 # container privileged with the host's kernel modules mounted, so the
-# namespace and the dummy link module reach the host kernel.
+# namespace and the dummy link module reach the host kernel. Every container
+# runs with an init process so orphaned children are reaped; the runner's
+# own PID 1 in a container never reaps, which leaves zombies the process
+# group sweeps would otherwise wait on.
 jobs:
   toolchain:
     name: Toolchain image
@@ -55,6 +63,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
+      options: --init
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -97,6 +106,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
+      options: --init
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -135,6 +145,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
+      options: --init
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -175,7 +186,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
-      options: --privileged -v /lib/modules:/lib/modules:ro
+      options: --init --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:
@@ -214,7 +225,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
-      options: --privileged -v /lib/modules:/lib/modules:ro
+      options: --init --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:
@@ -250,7 +261,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
-      options: --privileged -v /lib/modules:/lib/modules:ro
+      options: --init --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:
