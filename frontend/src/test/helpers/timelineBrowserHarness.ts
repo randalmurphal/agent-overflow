@@ -16,6 +16,7 @@ import MessageTimeline from '../../lib/components/chat/MessageTimeline.svelte';
 import { loadSettings } from '../../lib/stores/settings.svelte';
 import type { ThreadPane } from '../../lib/stores/thread.svelte';
 import type { Item } from '../../lib/types/models';
+import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from './chat';
 import { raf, waitFor } from './browserFrames';
@@ -277,8 +278,11 @@ export async function mountTimeline(
   // Provider-sensitive scenarios (Codex detached-launch shapes) override the
   // thread; the id always comes from `threadId`.
   thread?: Partial<Parameters<typeof makeThread>[0]>,
+  // The page's activity run stubs, for a run whose members the page did not
+  // all ship.
+  runs: ActivityRunStub[] = [],
 ): Promise<MountedTimeline> {
-  const pane = await buildPane(makeThread({ ...thread, id: threadId }), items);
+  const pane = await buildPane(makeThread({ ...thread, id: threadId }), items, 'main', runs);
   const host = document.createElement('div');
   // Fixed, definite size: MessageTimeline's root is `h-full`, so the host is
   // the viewport. position:fixed keeps document scrollbars out of the test.
