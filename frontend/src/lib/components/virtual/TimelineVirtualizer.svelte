@@ -75,8 +75,16 @@
   const WHEEL_CONTINUATION_MIN_MS = 50;
   const WHEEL_CONTINUATION_MAX_MS = 150;
   // An imperative index scroll re-converges while destination rows
-  // measure; each pass renews a 150ms settle window (upstream timing).
+  // measure; each pass renews a 150ms settle window (upstream timing),
+  // which then also waits out INDEX_SCROLL_SETTLE_FRAMES rendered frames.
   const INDEX_SCROLL_SETTLE_MS = 150;
+  // The measurement a pass's write causes lands in the first frame rendered
+  // after it: the write's scroll event mounts rows, and their
+  // ResizeObserver delivery follows that frame's rAF callbacks. The second
+  // rAF is the first point where that delivery has run. A main thread too
+  // busy to render for 150ms otherwise ended the navigation before the
+  // measurement that moved its destination, which then stayed off screen.
+  const INDEX_SCROLL_SETTLE_FRAMES = 2;
   const INDEX_SCROLL_MAX_PASSES = 8;
   // How far the live position may sit from where a pending index scroll
   // left it before a convergence pass treats the viewport as taken over.
@@ -1171,14 +1179,42 @@
     destinationSizeBaseline: number;
     passesLeft: number;
     settleTimer: ReturnType<typeof setTimeout> | undefined;
+    settleFrame: number | undefined;
   }
   let pendingIndexScroll: PendingIndexScroll | undefined;
 
+  function cancelIndexScrollSettle(pending: PendingIndexScroll): void {
+    if (pending.settleTimer !== undefined) clearTimeout(pending.settleTimer);
+    if (pending.settleFrame !== undefined) cancelAnimationFrame(pending.settleFrame);
+    pending.settleTimer = undefined;
+    pending.settleFrame = undefined;
+  }
+
   function clearIndexScroll(): void {
-    if (pendingIndexScroll?.settleTimer !== undefined) {
-      clearTimeout(pendingIndexScroll.settleTimer);
-    }
+    if (pendingIndexScroll) cancelIndexScrollSettle(pendingIndexScroll);
     pendingIndexScroll = undefined;
+  }
+
+  // The settle window: the floor of real time, then rendered frames. A
+  // hidden document renders no frames, so its navigation stays pending until
+  // the document is shown; the takeover guard and the pass budget, not this
+  // window, keep a pending navigation from fighting other motion.
+  function armIndexScrollSettle(pending: PendingIndexScroll): void {
+    cancelIndexScrollSettle(pending);
+    pending.settleTimer = setTimeout(() => {
+      pending.settleTimer = undefined;
+      let frames = 0;
+      const frame = () => {
+        frames++;
+        if (frames < INDEX_SCROLL_SETTLE_FRAMES) {
+          pending.settleFrame = requestAnimationFrame(frame);
+          return;
+        }
+        pending.settleFrame = undefined;
+        if (pendingIndexScroll === pending) clearIndexScroll();
+      };
+      pending.settleFrame = requestAnimationFrame(frame);
+    }, INDEX_SCROLL_SETTLE_MS);
   }
 
   function noteCompensationForIndexScroll(delta: number): void {
@@ -1277,8 +1313,7 @@
     }
     pending.passesLeft--;
     pending.lastTarget = target;
-    if (pending.settleTimer !== undefined) clearTimeout(pending.settleTimer);
-    pending.settleTimer = setTimeout(clearIndexScroll, INDEX_SCROLL_SETTLE_MS);
+    armIndexScrollSettle(pending);
     applyScrollTarget(target);
     if (
       pending.align === 'end' &&
@@ -1322,6 +1357,7 @@
       destinationSizeBaseline: Number.NaN,
       passesLeft: INDEX_SCROLL_MAX_PASSES,
       settleTimer: undefined,
+      settleFrame: undefined,
     };
     convergeIndexScroll();
   }

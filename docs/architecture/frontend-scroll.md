@@ -528,8 +528,13 @@ hydrating), and an absolute index would re-fire onto whichever row then sat at
 it, a page above the target (the rail's "latest" jump landing rows early,
 bug-report-20260918T143935Z; regression: the prepend-mid-convergence test in
 `timelineVirtualizer.browser.test.ts`). A destination the data dropped ends
-the navigation. The pending navigation outlives the transaction by
-settle windows of real time, so it carries a takeover guard: a pass only
+the navigation. Each pass renews a settle window of 150ms followed by two
+rendered frames: the measurement a pass's write causes lands in the first
+frame rendered after it, and a main thread too busy to render for 150ms
+otherwise ended the navigation before that measurement moved its destination
+(regression: the settle-floor test in `timelineVirtualizer.browser.test.ts`).
+The pending navigation outlives the transaction by these windows, so it
+carries a takeover guard: a pass only
 continues while the viewport still sits where the navigation's own writes (and
 compensations delivered on its behalf, and the browser's clamp when the
 content under it shrinks) left it. Each pass reads where its write landed
