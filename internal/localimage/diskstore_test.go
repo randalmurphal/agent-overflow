@@ -447,3 +447,53 @@ func TestAnUnwritableCacheServesFromMemoryAndLogsOnce(t *testing.T) {
 		}
 	}
 }
+
+// Resolves of one source that all missed the memory cache each store the
+// derivative: the directory ends with one file charged once, no temp file
+// behind, and every resolve answers the same content id.
+func TestConcurrentResolvesStoreOneFile(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "images")
+	workspace := t.TempDir()
+	payload := pngBytes(t, 641, 480)
+	path := writeFile(t, workspace, "shot.png", payload)
+	s := newService(dir, DiskCacheBytes, t.Logf)
+	const resolvers = 4
+	var arrived sync.WaitGroup
+	arrived.Add(resolvers)
+	s.derive = func(key string, src []byte, mime string, maxWidth int) (attachment.Derived, error) {
+		// Every resolver has missed the memory cache before any stores.
+		arrived.Done()
+		arrived.Wait()
+		return attachment.Derive(key, src, mime, maxWidth)
+	}
+
+	ids := make([]string, resolvers)
+	errs := make([]error, resolvers)
+	var done sync.WaitGroup
+	for i := range resolvers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			got, err := s.Resolve(path, workspace, 300)
+			ids[i], errs[i] = got.ContentID, err
+		}()
+	}
+	done.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("resolver %d: %v", i, err)
+		}
+		if ids[i] != ids[0] {
+			t.Fatalf("resolvers answered ids %v, want one", ids)
+		}
+	}
+	if names := dirNames(t, dir); len(names) != 1 || !strings.HasSuffix(names[0], ".png") {
+		t.Fatalf("cache holds %v, want one derivative", names)
+	}
+	if held, want := s.disk.bytes(), derivativeCharge(t, payload); held != want {
+		t.Fatalf("cache charges %d bytes, want one file's %d", held, want)
+	}
+	_, served := readAll(t, s, ids[0])
+	assertPNG(t, served, 320, 240)
+}
