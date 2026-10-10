@@ -27,9 +27,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Go is analyzed without a build so the job needs no GTK headers.
           - language: go
-            build-mode: none
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
     steps:
@@ -44,6 +43,19 @@ jobs:
               - frontend/dist
               - "**/node_modules"
               - e2e/test-results
+      # The Go extractor compiles the module, which needs the cgo webview
+      # headers and the embedded frontend bundle.
+      - uses: ./.github/actions/setup
+        if: matrix.language == 'go'
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-dist: "true"
+          cache-name: codeql
+      - name: Build for the Go extractor
+        if: matrix.language == 'go'
+        run: go build ./...
       - uses: github/codeql-action/analyze@d208ec71e39ae46397cbf6569bef8439b9aab974 # codeql-bundle-v2.27.2
         with:
           category: /language:${{ matrix.language }}

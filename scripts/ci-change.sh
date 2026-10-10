@@ -1,15 +1,17 @@
 #!/usr/bin/env sh
-# Writes the change under test as a unified diff and a file list, from the
-# GitHub API rather than git history, so a shallow checkout is enough.
+# Writes the change under test as a unified diff and a file list, so a
+# shallow checkout is enough: the base commit comes from the GitHub API and
+# is fetched by itself.
 #
 #   scripts/ci-change.sh OUT_DIR
 #
 # Reads GITHUB_EVENT_NAME, GITHUB_REPOSITORY and the event payload
-# (GITHUB_EVENT_PATH); needs GH_TOKEN. Produces OUT_DIR/change.diff and
+# (GITHUB_EVENT_PATH); needs GH_TOKEN and an origin remote for the
+# repository. Produces OUT_DIR/base (the commit), OUT_DIR/change.diff and
 # OUT_DIR/files (one path per line, repository-relative, added, copied,
 # modified or renamed files only). A pull request diffs against its merge
-# base; a push diffs the pushed range. Any other event is an error: the
-# lint gates only run where a base exists.
+# base with the base branch; a push diffs the pushed range. Any other event
+# is an error: the lint gates only run where a base exists.
 set -eu
 
 out=${1:?usage: ci-change.sh OUT_DIR}
@@ -17,23 +19,18 @@ mkdir -p "$out"
 
 case "${GITHUB_EVENT_NAME:-}" in
 pull_request|pull_request_target)
-	number=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-	gh api -H 'Accept: application/vnd.github.diff' "repos/$GITHUB_REPOSITORY/pulls/$number" > "$out/change.diff"
-	gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$number/files?per_page=100" \
-		--jq '.[] | select(.status != "removed") | .filename' > "$out/files"
+	base_sha=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
+	head_sha=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
+	base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$base_sha...$head_sha" --jq '.merge_base_commit.sha')
 	;;
 push)
-	before=$(jq -r '.before' "$GITHUB_EVENT_PATH")
-	after=$(jq -r '.after' "$GITHUB_EVENT_PATH")
-	case "$before" in
+	base=$(jq -r '.before' "$GITHUB_EVENT_PATH")
+	case "$base" in
 	0000000000000000000000000000000000000000)
 		echo "ci-change.sh: push of a new branch has no base" >&2
 		exit 2
 		;;
 	esac
-	gh api -H 'Accept: application/vnd.github.diff' "repos/$GITHUB_REPOSITORY/compare/$before...$after" > "$out/change.diff"
-	gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$before...$after?per_page=100" \
-		--jq '.files[] | select(.status != "removed") | .filename' > "$out/files"
 	;;
 *)
 	echo "ci-change.sh: no base for event ${GITHUB_EVENT_NAME:-unset}" >&2
@@ -41,4 +38,16 @@ push)
 	;;
 esac
 
-printf 'ci-change.sh: %s changed files, %s diff bytes\n' "$(wc -l < "$out/files")" "$(wc -c < "$out/change.diff")"
+case "$base" in
+*[!0-9a-f]*|"")
+	echo "ci-change.sh: no base commit resolved" >&2
+	exit 2
+	;;
+esac
+
+printf '%s\n' "$base" > "$out/base"
+git fetch --no-tags --depth=1 --quiet origin "$base"
+git diff --no-color --no-ext-diff "$base" HEAD > "$out/change.diff"
+git diff --name-only --no-renames --diff-filter=ACM "$base" HEAD > "$out/files"
+
+printf 'ci-change.sh: base %s, %s changed files, %s diff bytes\n' "$base" "$(wc -l < "$out/files")" "$(wc -c < "$out/change.diff")"
