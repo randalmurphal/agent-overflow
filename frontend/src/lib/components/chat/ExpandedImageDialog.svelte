@@ -11,8 +11,9 @@
    * original's pixel size from the start, so the swap changes pixels, not
    * geometry, and the view the person set stays put. Originals are held by
    * this dialog alone: fetched on demand per image, aborted when the image
-   * or the dialog goes away, revoked on close. They never enter the
-   * timeline's media cache, whose budget is for what is on screen.
+   * or the dialog goes away, kept only for the image on screen and its two
+   * neighbours, revoked when they leave that window or on close. They never
+   * enter the timeline's media cache, whose budget is for what is on screen.
    *
    * Zoom and pan are `utils/panZoom.svelte.ts`, shared with the diagram
    * modal: wheel, drag, pinch, keys, and a double click between fit and
@@ -60,9 +61,11 @@
     | { kind: 'loading' }
     | { kind: 'ready'; url: string }
     | { kind: 'failed'; reason: string };
-  // Per image id, for the dialog's lifetime: moving back to an image does
-  // not fetch it twice, and close revokes every URL at once.
+  // Per image id, for the image on screen and its neighbours: stepping back
+  // does not fetch again, and a long set costs three originals, not all of
+  // them. Close revokes whatever is left.
   let originals = $state<Record<string, OriginalState>>({});
+  const RETAINED_NEIGHBOURS = 1;
   // The size the painted bytes decoded to, for an image whose original size
   // the opener did not know.
   let decoded = $state<Record<string, ContentSize>>({});
@@ -76,15 +79,40 @@
     return decoded[image.id] ?? null;
   });
 
-  // Fetch the original when an image comes up, and stop fetching the one
-  // that went away. The effect tracks only `image`: the map it writes is
-  // read untracked, or its own write would re-run it and abort the fetch
-  // it just started.
+  // Fetch the original when an image comes up, release the ones that fell
+  // out of the retained window, and stop fetching the one that went away.
+  // The effect tracks only `image`: the map it writes is read untracked, or
+  // its own write would re-run it and abort the fetch it just started.
   $effect(() => {
     const current = image;
-    const controller = untrack(() => startOriginal(current));
+    const controller = untrack(() => {
+      retainAround(index);
+      return startOriginal(current);
+    });
     return () => controller?.abort();
   });
+
+  // Drops every held original outside the window around `center`, wrapping
+  // as the arrows do, and revokes the ones that had loaded.
+  function retainAround(center: number): void {
+    const count = preview.images.length;
+    const keep = new Set<string>();
+    for (let delta = -RETAINED_NEIGHBOURS; delta <= RETAINED_NEIGHBOURS; delta++) {
+      const neighbour = preview.images[(((center + delta) % count) + count) % count];
+      if (neighbour) keep.add(neighbour.id);
+    }
+    const kept: Record<string, OriginalState> = {};
+    let dropped = false;
+    for (const [id, state] of Object.entries(originals)) {
+      if (keep.has(id)) {
+        kept[id] = state;
+        continue;
+      }
+      if (state.kind === 'ready') URL.revokeObjectURL(state.url);
+      dropped = true;
+    }
+    if (dropped) originals = kept;
+  }
 
   function startOriginal(current: ImagePreviewItem | undefined): AbortController | null {
     if (!current?.original || originals[current.id]) return null;

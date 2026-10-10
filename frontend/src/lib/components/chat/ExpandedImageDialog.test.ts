@@ -139,6 +139,43 @@ describe('ExpandedImageDialog', () => {
     expect(picture()!.getAttribute('src')).toBe(created[0]);
   });
 
+  it('holds only the originals around the image on screen, revoking the rest as it moves', async () => {
+    const images = ['a', 'b', 'c', 'd', 'e'].map((id) =>
+      item(id, { original: () => Promise.resolve(new Blob([new Uint8Array(id.charCodeAt(0))])) }),
+    );
+    const { dialog, picture } = open(images);
+    // The nth original fetched has landed on the picture.
+    const swappedTo = async (nth: number) =>
+      waitFor(() => {
+        expect(created).toHaveLength(nth + 1);
+        expect(picture()!.getAttribute('src')).toBe(created[nth]);
+      });
+    await swappedTo(0);
+
+    await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    await swappedTo(1);
+    expect(revoked).toEqual([]);
+
+    // c on screen keeps b and d; a leaves the window.
+    await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    await swappedTo(2);
+    expect(revoked).toEqual([created[0]]);
+
+    await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    await swappedTo(3);
+    expect(revoked).toEqual([created[0], created[1]]);
+
+    // Back to c: still held, nothing fetched.
+    await fireEvent.keyDown(dialog, { key: 'ArrowLeft' });
+    expect(picture()!.getAttribute('src')).toBe(created[2]);
+    expect(created).toHaveLength(4);
+
+    // Back to b: fetched again, and d leaves the window.
+    await fireEvent.keyDown(dialog, { key: 'ArrowLeft' });
+    await swappedTo(4);
+    expect(revoked).toEqual([created[0], created[1], created[3]]);
+  });
+
   it('gives the arrows to panning once the person has zoomed, and Escape closes', async () => {
     const { dialog, onClose, picture } = open([item('a'), item('b')]);
     await fireEvent.keyDown(dialog, { key: '+' });
