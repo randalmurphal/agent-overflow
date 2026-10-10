@@ -142,7 +142,7 @@ func TestResolveStepsDownOverThePixelCap(t *testing.T) {
 		t.Fatalf("encode png: %v", err)
 	}
 	path := writeFile(t, workspace, "tall.png", buf.Bytes())
-	s := New()
+	s := newTestService(t)
 
 	got, err := s.Resolve(path, workspace, 400)
 	if err != nil {
