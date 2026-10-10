@@ -3,12 +3,14 @@
 engineStrict: true
 
 overrides:
-  # katex: mermaid pins ^0.16 while the app is on 0.18, which ships TWO
+  # katex: mermaid pins ^0.16 while the app is on 0.19, which ships TWO
   # lazily-loaded katex chunks (+258 kB raw / +77 kB gzip of dead weight).
   # Forcing one copy is safe for mermaid: it invokes katex only for `$$`
   # labels and defaults to MathML output, which the 0.18 CSS class renames
-  # do not touch. Drop when mermaid's own range reaches 0.18.
-  katex: '0.18.9'
+  # and the 0.19 `strict` reporting of missing character metrics (an HTML
+  # output path that still only warns at mermaid's default `strict`) do not
+  # touch. Drop when mermaid's own range reaches 0.19.
+  katex: '0.19.0'
 
 patchedDependencies:
   '@lucide/svelte@1.28.0': patches/@lucide__svelte@1.28.0.patch
