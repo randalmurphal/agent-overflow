@@ -22,6 +22,17 @@ updates:
       npm:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # svelte-check supports TypeScript ^5 || ^6; the packages keep one
+      # TypeScript pin, so it moves when svelte-check does.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # @types/node follows the Node major the packages run on.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # The runtime must match the Go Wails fork in go.mod (its replace
+      # line); bump both together by hand.
+      - dependency-name: "@wailsio/runtime"
   - package-ecosystem: gradle
     directory: /mobile/android
     schedule:
