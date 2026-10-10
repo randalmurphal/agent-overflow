@@ -255,20 +255,43 @@ func TestWriterLeavesTheWALToTheCheckpointer(t *testing.T) {
 	}
 }
 
-// Under writes with no gap every commit lands while the checkpointer
-// copies, so nothing restarts the WAL until the writer's own checkpoint at
-// its bound copies the last frames. The bound here is 64 frames.
+// Under writes with no gap no checkpointer round restarts the WAL, so the
+// writer's own checkpoint at its bound restarts it on its own. That
+// checkpoint is skipped while a round holds the checkpoint lock, and how
+// many commits a round spans depends on the scheduler, so no round runs
+// during the burst. One round before it proves a finished round leaves
+// nothing that keeps the WAL from restarting. The bound here is 64 frames.
 func TestWriterBoundKeepsTheWALShortUnderSustainedWrites(t *testing.T) {
-	s := newCheckpointedStore(t, time.Millisecond)
-	mustExec(t, s.db, "PRAGMA wal_autocheckpoint = 64")
+	const bound = 64
+	s := newCheckpointedStore(t, time.Hour)
+	mustExec(t, s.db, "PRAGMA wal_autocheckpoint = "+strconv.Itoa(bound))
 	blob := strings.Repeat("x", 4096)
-	for i := range 1500 {
+	write := func(i int) {
+		t.Helper()
 		if err := s.SetUIState("client:wal", map[string]string{"k": blob + strconv.Itoa(i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if wal := walSize(t, s.path); wal > 2<<20 {
-		t.Fatalf("WAL after 1500 back-to-back commits with a 64-frame writer bound = %d bytes, want at most 2 MiB", wal)
+	write(0)
+	if res, err := s.checkpointWAL(context.Background()); err != nil {
+		t.Fatal(err)
+	} else if res.WALFrames == 0 || res.Busy {
+		t.Fatalf("checkpointer round before the burst = %+v, want it to copy frames", res)
+	}
+	for i := 1; i < 1500; i++ {
+		write(i)
+	}
+	var pageSize int64
+	if err := s.db.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		t.Fatal(err)
+	}
+	// The WAL file keeps its high-water length. The writer checkpoints
+	// once a commit leaves at least bound frames and the next commit
+	// restarts the WAL, so it peaks below bound plus one commit's frames.
+	const walHeader, frameHeader = 32, 24
+	frames := (walSize(t, s.path) - walHeader) / (pageSize + frameHeader)
+	if frames > 2*bound {
+		t.Fatalf("WAL after 1500 back-to-back commits with a %d-frame writer bound peaked at %d frames, want at most %d", bound, frames, 2*bound)
 	}
 }
 
