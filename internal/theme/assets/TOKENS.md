@@ -94,6 +94,7 @@ skipped, per token, and everything else still applies.
 | `--text-sm` | type scale |
 | `--text-base` | type scale |
 | `--text-lg` | type scale |
+| `--review-slab-inset` | a length: the inset the review pane shares between its overview sections and file slabs |
 
 These are structure rather than palette. Shadows are already mixed from the
 palette, and letting a theme move radii or type sizes turns "pick a palette"
