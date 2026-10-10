@@ -196,6 +196,11 @@ func (a *App) DeleteAttachment(threadID, attachmentID string) error {
 type AttachmentThumbnail struct {
 	Data     string `json:"data"`
 	MimeType string `json:"mimeType"`
+	// Width and Height are the ORIGINAL image's pixel size, read from its
+	// header, so the full-size view opens at its final box; 0 when the
+	// header does not read.
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // GetAttachmentThumbnail returns a small, inline-grid-sized version of the
@@ -220,9 +225,15 @@ func (a *App) GetAttachmentThumbnail(threadID, attachmentID string) (AttachmentT
 	if err != nil {
 		return AttachmentThumbnail{}, err
 	}
+	width, height, err := a.attachments.OriginalSize(threadID, attachmentID)
+	if err != nil {
+		return AttachmentThumbnail{}, err
+	}
 	return AttachmentThumbnail{
 		Data:     base64.StdEncoding.EncodeToString(data),
 		MimeType: mime,
+		Width:    width,
+		Height:   height,
 	}, nil
 }
 

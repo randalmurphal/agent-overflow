@@ -129,6 +129,42 @@ func TestResolveServesATierDerivative(t *testing.T) {
 	}
 }
 
+// corruptPixels flips a byte inside a PNG's image data. The header still
+// reads; the decode fails.
+func corruptPixels(t *testing.T, src []byte) []byte {
+	t.Helper()
+	out := bytes.Clone(src)
+	out[len(out)/2] ^= 0xFF
+	if _, err := png.DecodeConfig(bytes.NewReader(out)); err != nil {
+		t.Fatalf("the corrupted header no longer reads: %v", err)
+	}
+	if _, err := png.Decode(bytes.NewReader(out)); err == nil {
+		t.Fatal("the corrupted pixels still decode")
+	}
+	return out
+}
+
+// A file Go cannot decode behind a valid header is served as it is when a
+// tier is asked for, as it was before derivatives existed.
+func TestResolveServesTheFileWhenItsPixelsDoNotDecode(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	payload := corruptPixels(t, pngBytes(t, 641, 480))
+	path := writeFile(t, workspace, "shot.png", payload)
+	s := New()
+
+	got, err := s.Resolve(path, workspace, 300)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Derived || got.MimeType != "image/png" || got.Width != 641 || got.Height != 480 || got.OriginalBytes != int64(len(payload)) {
+		t.Fatalf("Resolve = %+v, want the 641x480 file itself", got)
+	}
+	if _, data := readAll(t, s, got.ContentID); !bytes.Equal(data, payload) {
+		t.Fatal("the route would not serve the file's bytes")
+	}
+}
+
 // A held derivative answers without reading the file again: identity is
 // path, size and mtime, so same-size bytes written under a restored mtime are
 // still the version that was derived.

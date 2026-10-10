@@ -106,6 +106,43 @@ func TestGetLocalImageServesADerivedTier(t *testing.T) {
 	}
 }
 
+// undecodablePNG is a width x height PNG whose header reads and whose image
+// data does not decode: one byte inside it flipped.
+func undecodablePNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	data := sizedPNG(t, width, height)
+	data[len(data)/2] ^= 0xFF
+	if _, err := png.DecodeConfig(bytes.NewReader(data)); err != nil {
+		t.Fatalf("the header no longer reads: %v", err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err == nil {
+		t.Fatal("the pixels still decode")
+	}
+	return data
+}
+
+// A tier of a file Go cannot decode answers the file itself.
+func TestGetLocalImageServesTheFileWhenItsPixelsDoNotDecode(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	payload := undecodablePNG(t, 641, 480)
+	if err := os.WriteFile(filepath.Join(workspace, "shot.png"), payload, 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	app, base := forgeAttachmentApp(t)
+
+	got, err := app.GetLocalImage("shot.png", workspace, 300)
+	if err != nil {
+		t.Fatalf("GetLocalImage: %v", err)
+	}
+	if got.Derived || got.Width != 641 || got.Height != 480 || got.OriginalBytes != int64(len(payload)) {
+		t.Fatalf("GetLocalImage = %+v, want the 641x480 file itself", got)
+	}
+	if resp, body := getBytes(t, base, got.URL); resp.StatusCode != http.StatusOK || !bytes.Equal(body, payload) {
+		t.Fatalf("GET = %d with %d bytes, want the file", resp.StatusCode, len(body))
+	}
+}
+
 func TestGetLocalImageReportsTheReasonAndNeedsATransport(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()

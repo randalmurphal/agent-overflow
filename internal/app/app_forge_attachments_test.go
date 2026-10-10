@@ -330,6 +330,24 @@ func TestFetchForgeAttachmentServesADerivedTier(t *testing.T) {
 	}
 }
 
+// A tier of an attachment Go cannot decode answers the attachment itself.
+func TestFetchForgeAttachmentServesTheOriginalWhenItsPixelsDoNotDecode(t *testing.T) {
+	payload := undecodablePNG(t, 641, 480)
+	stubGlab(t, "cat "+shellQuote(writeTempFile(t, payload))+"\n")
+	app, base := forgeAttachmentApp(t)
+
+	got, err := app.FetchForgeAttachment(testGitLabPR, testUploadHref(), 300)
+	if err != nil {
+		t.Fatalf("FetchForgeAttachment: %v", err)
+	}
+	if got.Derived || got.Kind != "image" || got.Width != 641 || got.Height != 480 || got.SizeBytes != int64(len(payload)) {
+		t.Fatalf("FetchForgeAttachment = %+v, want the 641x480 attachment itself", got)
+	}
+	if resp, body := getBytes(t, base, got.URL); resp.StatusCode != http.StatusOK || !bytes.Equal(body, payload) {
+		t.Fatalf("GET = %d with %d bytes, want the attachment", resp.StatusCode, len(body))
+	}
+}
+
 // A derivative is keyed by its original's content id, so once the original
 // expires and the forge serves different bytes, the tier is derived from the
 // new bytes instead of answering a derivative of the old ones.

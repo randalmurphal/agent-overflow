@@ -76,10 +76,10 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
  * that URL — a blob URL pins decoded image data for as long as it lives,
  * which is the whole reason the lightbox refetches instead of caching.
  */
-export async function fetchAttachmentBytes(threadId: string, attachmentId: string): Promise<Blob> {
+export async function fetchAttachmentBytes(threadId: string, attachmentId: string, signal?: AbortSignal): Promise<Blob> {
   const backend = requireEntityBackend(resolveThreadBackend(threadId));
   const url = await withBackendTarget(backend, () => MintAttachmentDownloadTicket(threadId, attachmentId));
-  return fetchTicketedBytes(backend, url);
+  return fetchTicketedBytes(backend, url, signal);
 }
 
 /**

@@ -7,7 +7,7 @@
 // would be a revoked blob: dead <img>, the "image.png placeholder"
 // symptom from the 2026-08-22 agent-pane incident).
 import { flushSync } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createAttachmentPreviews,
@@ -18,7 +18,7 @@ import {
 } from './attachmentPreview.svelte';
 import { attachmentImageMenuTag } from './imageMenuActions';
 import type { AttachmentPreviewSource } from './userMessageMeta';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { mockAttachmentDownload, TEST_PNG_BYTES } from '../../test/mocks/attachmentTransfer';
 
 const ATTACHMENT: AttachmentPreviewSource = {
@@ -51,12 +51,18 @@ async function settled(): Promise<void> {
 
 let loads = 0;
 
+/** The original pixel size GetAttachmentThumbnail reports per attachment. */
+const ORIGINAL_SIZES: Record<string, { width: number; height: number }> = {
+  'att-1': { width: 640, height: 480 },
+  'att-2': { width: 1920, height: 1080 },
+};
+
 beforeEach(() => {
   resetBindingMocks();
   loads = 0;
-  setBindingMock('GetAttachmentThumbnail', async () => {
+  setAttachmentThumbnailMock((_threadId, attachmentId) => {
     loads += 1;
-    return { data: 'iVBORw0KGgo=', mimeType: 'image/png' };
+    return ORIGINAL_SIZES[attachmentId] ?? {};
   });
 });
 
@@ -184,6 +190,7 @@ describe('loadExpandedPreview', () => {
     const opened = previews.loadExpandedPreview('att-1');
     expect(opened!.index).toBe(0);
     expect(opened!.images.map((image) => image.url)).toEqual(['', '']);
+    expect(opened!.images.map((image) => [image.width, image.height])).toEqual([[0, 0], [0, 0]]);
     cleanup();
   });
 
@@ -198,8 +205,8 @@ describe('loadExpandedPreview', () => {
         id: 'att-1',
         filename: 'image.png',
         mimeType: 'image/png',
-        width: 0,
-        height: 0,
+        width: 640,
+        height: 480,
         originalBytes: 10,
         menuTag: attachmentImageMenuTag(ATTACHMENT),
       },
@@ -207,8 +214,8 @@ describe('loadExpandedPreview', () => {
         id: 'att-2',
         filename: 'second.jpg',
         mimeType: 'image/jpeg',
-        width: 0,
-        height: 0,
+        width: 1920,
+        height: 1080,
         originalBytes: 2048,
         menuTag: attachmentImageMenuTag(SECOND),
       },
@@ -230,6 +237,26 @@ describe('loadExpandedPreview', () => {
     cleanup();
   });
 
+  it("hands the lightbox's abort to the transfer", async () => {
+    setBindingMock('MintAttachmentDownloadTicket', () => '/attachments/thread-1/att-1?ticket=t');
+    vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) return Promise.reject(new Error('the request carried no signal'));
+      if (signal.aborted) return Promise.reject(signal.reason);
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const { previews, cleanup } = mountPreviews([ATTACHMENT]);
+    const controller = new AbortController();
+
+    const pending = previews.loadExpandedPreview('att-1')!.images[0].original!(controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toBe(controller.signal.reason);
+    cleanup();
+  });
+
   it('lists the images only, and opens on nothing that is not one', () => {
     const { previews, cleanup } = mountPreviews([ATTACHMENT, FILE, SECOND]);
 
@@ -243,15 +270,15 @@ describe('loadExpandedPreview', () => {
 });
 
 describe('loadAttachmentPreview', () => {
-  it('paints the thumbnail and leaves the original to an explicit fetch', async () => {
+  it("paints the thumbnail at the original's size and leaves the original to an explicit fetch", async () => {
     const download = mockAttachmentDownload();
     const item = await loadAttachmentPreview(ATTACHMENT);
     expect(item).toMatchObject({
       id: 'att-1',
       filename: 'image.png',
       mimeType: 'image/png',
-      width: 0,
-      height: 0,
+      width: 640,
+      height: 480,
       originalBytes: 10,
       menuTag: attachmentImageMenuTag(ATTACHMENT),
     });

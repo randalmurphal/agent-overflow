@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"sync/atomic"
 
 	"golang.org/x/image/draw"
@@ -30,13 +31,24 @@ const thumbPixelBudget = 50 * 1024 * 1024
 // decodeMemoryBudget bounds the transient memory all concurrent decode +
 // resample + encode jobs hold together. A count of jobs cannot bound it:
 // draw.CatmullRom.Scale allocates a [4]float64 scratch of destination width
-// times SOURCE height, so one 8K screenshot derived to a 5120-wide tier holds
-// ~700 MB of scratch on top of its decoded pixels, while a thumbnail of the
+// times SOURCE height, so one 8K screenshot derived to the 2880 tier holds
+// ~400 MB of scratch on top of its decoded pixels, while a thumbnail of the
 // same image holds ~35 MB. Each job therefore acquires its estimated cost
-// (resampleCost). 1 GiB lets about four thumbnails of the largest image the
+// (resampleCost). 1 GiB lets several thumbnails of the largest image the
 // pixel budget admits run at once, and makes a large derivation wait for
-// room instead of stacking on others. A job costlier than the whole budget
-// takes all of it and runs alone, so the bound is max(budget, largest job).
+// room instead of stacking on others.
+//
+// Every admissible job fits by construction. The worst derivation is a
+// 16-bit source at the pixel budget (400 MiB decoded) whose derivative is
+// at deriveMaxPixels: tier x source height is then at most
+// sqrt((deriveMaxPixels + 2560) x thumbPixelBudget), about 17.3 Mi, so
+// 554 MiB of scratch, plus 48 MiB of destination and encoding: about
+// 1002 MiB. A thumbnail's scratch is at most 256 x sqrt(thumbPixelBudget)
+// x 32 bytes, about 57 MiB, unless the source is over 256 times taller than
+// wide, where the box floors its width at one pixel and the scratch is the
+// source height x 32 bytes. acquireDecodeMemory refuses an estimate above
+// the budget, so only such a sliver, over 22 million pixels tall, is
+// refused instead of waiting for room that cannot exist.
 const decodeMemoryBudget int64 = 1 << 30
 
 var (
@@ -51,16 +63,15 @@ var (
 )
 
 // acquireDecodeMemory blocks until cost bytes of the budget are free and
-// returns the release. Acquire with a background context cannot fail; the
-// error check is the contract with the semaphore, not a reachable path.
+// returns the release. An estimate above the whole budget is refused as
+// ErrPixelBudget: the semaphore would otherwise wait for it forever.
 func acquireDecodeMemory(cost int64) (release func(), err error) {
 	sem, limit := decodeMemory, decodeMemoryLimit
 	if cost > limit {
-		cost = limit
+		return nil, fmt.Errorf("%w: decoding needs about %d bytes, more than the %d-byte decode budget", ErrPixelBudget, cost, limit)
 	}
-	if cost < 1 {
-		cost = 1
-	}
+	// Acquire with a background context cannot fail; the check is the
+	// contract with the semaphore, not a reachable path.
 	if err := sem.Acquire(context.Background(), cost); err != nil {
 		return nil, fmt.Errorf("acquire decode memory: %w", err)
 	}
@@ -106,7 +117,13 @@ var ErrPixelBudget = errors.New("image exceeds the pixel budget")
 // or a full Go decode, so a tiny file with hostile dimensions cannot force
 // either process to allocate a multi-gigabyte pixel buffer.
 func imageConfig(src []byte) (image.Config, error) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(src))
+	return imageConfigFrom(bytes.NewReader(src))
+}
+
+// imageConfigFrom is imageConfig over a reader, which it reads only as far
+// as the header.
+func imageConfigFrom(r io.Reader) (image.Config, error) {
+	cfg, _, err := image.DecodeConfig(r)
 	if err != nil {
 		return image.Config{}, fmt.Errorf("decode image config: %w", err)
 	}

@@ -19,6 +19,14 @@ var DeriveWidths = []int{320, 480, 720, 1080, 1440, 2160, 2880, 3840, 5120}
 // full size, not a preview tile.
 const deriveJPEGQuality = 90
 
+// deriveMaxPixels caps a derivative's pixel count, about 2508x2508. Above it
+// the source is served and the browser downsamples it. The cap is what
+// keeps the largest derivation inside the decode memory budget: the
+// resampler's scratch grows with tier x source height, and this cap with the
+// source pixel budget bounds that product (imagecodec.go has the numbers).
+// It admits a 16:9 derivative up to the 2880 tier and a 4:3 one at 2880x2160.
+const deriveMaxPixels = 6 << 20
+
 // deriveGroup dedupes concurrent derivations of the same source and tier, so
 // two panes asking for one width decode once.
 var deriveGroup singleflight.Group
@@ -56,7 +64,10 @@ func DeriveTier(maxWidth int) int {
 //
 //   - svg, ico and avif, which Go cannot decode;
 //   - an animated GIF, whose derivative would silently drop the animation;
-//   - a source no wider than the tier.
+//   - a source no wider than the tier;
+//   - a derivative over deriveMaxPixels;
+//   - a source whose header reads but whose pixel data Go cannot decode,
+//     which a browser's decoder may still show.
 //
 // A derivative is exactly the tier wide with the height rounded to keep the
 // aspect ratio. PNG, GIF, BMP and TIFF sources derive to PNG (lossless, so
@@ -78,7 +89,7 @@ func Derive(key string, src []byte, mime string, maxWidth int) (Derived, error) 
 	}
 	original.Width, original.Height = cfg.Width, cfg.Height
 	tier := DeriveTier(maxWidth)
-	if tier == 0 || cfg.Width <= tier {
+	if tier == 0 || cfg.Width <= tier || !withinDerivedPixels(cfg.Width, cfg.Height, tier) {
 		return original, nil
 	}
 	if mime == "image/gif" && gifIsAnimated(src) {
@@ -95,6 +106,12 @@ func Derive(key string, src []byte, mime string, maxWidth int) (Derived, error) 
 		return original, nil
 	}
 	return derived, nil
+}
+
+// withinDerivedPixels reports whether the tier's derivative of a width x
+// height source stays within deriveMaxPixels.
+func withinDerivedPixels(width, height, tier int) bool {
+	return int64(tier)*int64(scaledHeight(width, height, tier)) <= deriveMaxPixels
 }
 
 func decodableDisplayMIME(mime string) bool {
@@ -114,7 +131,9 @@ func deriveAt(src []byte, mime string, cfg image.Config, tier int) (Derived, err
 
 	img, err := decodeImage(src)
 	if err != nil {
-		return Derived{}, err
+		// The header passed, so the bytes reach the browser either way;
+		// its decoder may show what Go's could not.
+		return Derived{}, nil
 	}
 	bounds := img.Bounds()
 	// A GIF's first frame can be narrower than its logical screen, which

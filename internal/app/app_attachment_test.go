@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"image"
@@ -386,6 +387,30 @@ func TestGetAttachmentThumbnailReturnsThumb(t *testing.T) {
 	}
 	if again.Data != got.Data || again.MimeType != got.MimeType {
 		t.Fatal("expected cached thumbnail to round-trip identically")
+	}
+}
+
+// The thumbnail answer carries the ORIGINAL's size, on the generating call
+// and on the cached one, so the full-size view opens at its final box.
+func TestGetAttachmentThumbnailReportsTheOriginalSize(t *testing.T) {
+	t.Parallel()
+	app := newAttachmentTestApp(t)
+	record := uploadTestAttachment(t, app, "thr-a", "shot.png", "image/png", sizedPNG(t, 641, 480))
+	for _, call := range []string{"generating", "cached"} {
+		got, err := app.GetAttachmentThumbnail(record.ThreadID, record.ID)
+		if err != nil {
+			t.Fatalf("%s GetAttachmentThumbnail: %v", call, err)
+		}
+		if got.Width != 641 || got.Height != 480 {
+			t.Fatalf("%s call reported %dx%d, want the original's 641x480", call, got.Width, got.Height)
+		}
+		data, err := base64.StdEncoding.DecodeString(got.Data)
+		if err != nil {
+			t.Fatalf("decode thumbnail: %v", err)
+		}
+		if cfg, err := png.DecodeConfig(bytes.NewReader(data)); err != nil || cfg.Width != 256 {
+			t.Fatalf("%s thumbnail is %dx%d (%v), want 256 wide", call, cfg.Width, cfg.Height, err)
+		}
 	}
 }
 

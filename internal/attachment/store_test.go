@@ -334,6 +334,9 @@ func TestFileKindRefusesByteAccessors(t *testing.T) {
 	if _, _, err := attStore.ReadThreadBytes("t1", record.ID); !errors.Is(err, ErrNotAnImage) {
 		t.Errorf("ReadThreadBytes: got %v want ErrNotAnImage", err)
 	}
+	if _, _, err := attStore.OriginalSize("t1", record.ID); !errors.Is(err, ErrNotAnImage) {
+		t.Errorf("OriginalSize: got %v want ErrNotAnImage", err)
+	}
 	if _, _, err := attStore.Thumbnail("t1", record.ID); !errors.Is(err, ErrNotAnImage) {
 		t.Errorf("Thumbnail: got %v want ErrNotAnImage", err)
 	}
