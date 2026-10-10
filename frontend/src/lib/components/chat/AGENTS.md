@@ -39,6 +39,8 @@ in `MessageTimeline`. Generic measurement and windowing belong to
 - Heavy output, diffs, thinking, and subagent bodies load on expansion. Keep
   collapsed rows cheap and accessible.
 - A settled row must stop timers, observers, and live-only rendering work.
+  The shared image box observer (`utils/imageTiers.ts`) is layout, not
+  liveness: it stays for as long as the image is mounted.
 - Model-authored repeated list keys use `utils/uniqueEachKeys.ts`; unexpected
   duplicate entity keys remain reportable defects.
 - New row families need settled, streaming, error, expansion, and remount

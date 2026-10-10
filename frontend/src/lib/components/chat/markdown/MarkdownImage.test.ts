@@ -15,6 +15,12 @@ import {
 } from '../../../utils/imageTiers';
 import type { MarkdownImageSource, MarkdownImageVariant } from '../../../utils/markdownImageSource';
 import type { MediaHandle } from '../../../utils/mediaBlobCache';
+import { reportFrontendDiagnostic } from '../../../utils/frontendErrorCapture';
+
+vi.mock('../../../utils/frontendErrorCapture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../utils/frontendErrorCapture')>()),
+  reportFrontendDiagnostic: vi.fn(),
+}));
 
 const KEY = '["local","gpu","/w","/w/shot.png"]';
 const ORIGINAL = { originalWidth: 3000, originalHeight: 1500, originalBytes: 900_000 };
@@ -295,13 +301,26 @@ describe('<MarkdownImage>', () => {
     expect(fake.tiers()).toEqual([720, 1440]);
   });
 
-  it("paints a host's held tier at once and prefers it to the remembered one", () => {
+  it("paints a host's held tier at once, prefers it to the remembered one, and owns that claim", async () => {
     const fake = fakeSource();
     rememberImageTier(KEY, 1440);
     void fake.settle(480);
-    const { container } = mount(fake.source, { initialTier: 480 });
+    const handle = fake.source.acquire(480);
+    const { container } = mount(fake.source, { initial: { tier: 480, handle } });
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:tier-480');
+    // The host's own acquire is the only one; the picture made no second claim.
     expect(fake.tiers()).toEqual([480]);
+    expect(fake.retained(480)).toBe(1);
+
+    // An upgrade releases the host's claim, so nothing stays behind the
+    // sharper variant; the host's own release later is a no-op.
+    __reportImageBoxForTest(700);
+    await fake.settle(720);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:tier-720');
+    expect(fake.retained(480)).toBe(0);
+    handle.release();
+    expect(fake.retained(480)).toBe(0);
+    expect(fake.retained(720)).toBe(1);
   });
 
   it('opens the lightbox on the painted variant and fetches the original only behind a derivative', async () => {
@@ -391,6 +410,13 @@ describe('<MarkdownImage>', () => {
       __reportImageBoxForTest(700, paragraph);
       expect(fake.tiers()).toEqual([720]);
       await fake.settle(720);
+      await tick();
+      // The anchor is the control: the picture has no role, no tab stop and
+      // no zoom cursor of its own.
+      const picture = container.querySelector<HTMLElement>('[data-streamdown-image]')!;
+      expect(picture.getAttribute('role')).toBeNull();
+      expect(picture.hasAttribute('tabindex')).toBe(false);
+      expect(picture.classList.contains('cursor-zoom-in')).toBe(false);
       await fireEvent.click(container.querySelector('img')!);
       expect(imageLightbox()).toBeNull();
     } finally {
@@ -432,9 +458,8 @@ describe('<MarkdownImage>', () => {
     expect(fake.retained(720)).toBe(0);
   });
 
-  it('keeps the painted variant when a sharper one fails, and stops asking', async () => {
+  it('keeps the painted variant when a sharper one fails, records it, and asks again only for a higher tier', async () => {
     const fake = fakeSource();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
     const { container } = mount(fake.source);
     __reportImageBoxForTest(700);
     await fake.settle(720);
@@ -442,8 +467,13 @@ describe('<MarkdownImage>', () => {
     await fake.fail(1440, 'derive failed');
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:tier-720');
     expect(container.querySelector('[data-streamdown-image-error]')).toBeNull();
-    __reportImageBoxForTest(2000);
+    expect(reportFrontendDiagnostic).toHaveBeenCalledWith('Markdown image: a sharper variant failed to load', 'derive failed');
+    expect(fake.retained(1440)).toBe(0);
+    // The refused tier is not asked for again; the next one up is.
+    __reportImageBoxForTest(1300);
     expect(fake.tiers()).toEqual([720, 1440]);
+    __reportImageBoxForTest(2000);
+    expect(fake.tiers()).toEqual([720, 1440, 2160]);
   });
 
   it('reports a decode failure in its own chip, or hands it to the host that asked', async () => {

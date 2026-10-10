@@ -556,7 +556,8 @@ describe('local images', () => {
       expect(writeText).toHaveBeenCalledWith('docs/shot one.png');
       await path;
       const markdown = copyLocalImageMarkdown(LOCAL);
-      expect(writeText).toHaveBeenLastCalledWith('![the diagram](docs/shot one.png)');
+      // A destination with a space only parses inside angle brackets.
+      expect(writeText).toHaveBeenLastCalledWith('![the diagram](<docs/shot one.png>)');
       await markdown;
 
       expect(toasts).toEqual([
@@ -572,7 +573,19 @@ describe('local images', () => {
       await copyLocalImageMarkdown(bare);
       expect(writeText.mock.calls).toEqual([
         ['/repo/docs/shot one.png'],
-        ['![the diagram](/repo/docs/shot one.png)'],
+        ['![the diagram](</repo/docs/shot one.png>)'],
+      ]);
+    });
+
+    it('write markdown that parses back to the same image, whatever the alt and path hold', async () => {
+      const writeText = clipboardText();
+      await copyLocalImageMarkdown({ ...LOCAL, alt: 'see [fig 2] in C:\\shots', sourceHref: '/repo/docs/shot.png' });
+      await copyLocalImageMarkdown({ ...LOCAL, alt: '', sourceHref: '/repo/docs/(draft) <v2>.png' });
+      await copyLocalImageMarkdown({ ...LOCAL, alt: 'plain', sourceHref: 'C:\\Users\\me\\shot.png' });
+      expect(writeText.mock.calls).toEqual([
+        ['![see \\[fig 2\\] in C:\\\\shots](/repo/docs/shot.png)'],
+        ['![](</repo/docs/(draft) \\<v2\\>.png>)'],
+        ['![plain](C:\\Users\\me\\shot.png)'],
       ]);
     });
 

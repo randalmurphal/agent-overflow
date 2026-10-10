@@ -12,10 +12,10 @@
   // (utils/imageTiers.ts), so an image is fetched once, not once for its
   // kind and again for its size: the tier the page last asked for this
   // attachment, or else the one the loading chip's container measures. A
-  // picture is then handed to `MarkdownImage` at that tier, which this host
-  // still holds, so it paints in the frame it mounts; later tiers are
-  // MarkdownImage's. This host's claim on the first tier lasts as long as
-  // it is mounted, so after an upgrade one smaller variant stays retained.
+  // picture is then handed to `MarkdownImage` with this host's claim on
+  // that tier, so it paints in the frame it mounts and owns the claim from
+  // then on: an upgrade releases it, and this host's release on unmount is
+  // a no-op after that. A player or a chip keeps the claim here.
   //
   // The URL is never the ticketed one. A ticket is spent by the first
   // request that presents it and a browser issues range requests for media,
@@ -39,6 +39,7 @@
   import {
     acquireForgeAttachment,
     forgeAttachmentCacheKey,
+    type ForgeAttachmentHandle,
     type ResolvedForgeAttachment,
   } from '../../../utils/forgeAttachmentCache';
   import {
@@ -78,7 +79,8 @@
   // `rememberDecodedSize` writes the decoded size INTO it for the next
   // mount. A deep $state proxy would keep that write to itself.
   let resolved = $state.raw<ResolvedForgeAttachment | null>(null);
-  let resolvedTier = $state(0);
+  // This host's claim on the first tier, handed to the picture with it.
+  let held = $state.raw<{ tier: number; handle: ForgeAttachmentHandle } | null>(null);
   let error = $state('');
   let loading = $state(false);
   let decodeFailed = $state(false);
@@ -102,8 +104,8 @@
     }
     let disposed = false;
     rememberImageTier(forgeAttachmentCacheKey(target.backend, target.pr, target.href), at);
-    resolvedTier = at;
     const handle = acquireForgeAttachment(target.backend, target.pr, target.href, at);
+    held = { tier: at, handle };
     if (handle.settled) {
       // Painted in this same frame: no placeholder, no height change.
       resolved = handle.settled;
@@ -189,7 +191,7 @@
     {alt}
     title={browserUrl ?? undefined}
     markdownImageSrc={parsed?.href}
-    initialTier={resolvedTier}
+    initial={held ?? undefined}
     ondecodeerror={handleDecodeError}
   />
 {:else if resolved.kind === 'video'}

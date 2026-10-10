@@ -144,9 +144,24 @@ describe('<ForgeAttachmentHost>', () => {
     expect(img.hasAttribute('loading')).toBe(false);
     expect(acquire).toHaveBeenCalledWith('gpu', MR, RAW, 1080);
 
-    // The host's claim on the first tier and the picture's own.
+    // One claim, the host's, handed to the picture; both release it on
+    // unmount and the second release is a no-op.
+    expect(acquire).toHaveBeenCalledTimes(1);
     unmount();
-    expect(release).toHaveBeenCalledTimes(acquire.mock.calls.length);
+    expect(release).toHaveBeenCalled();
+  });
+
+  it("releases its claim on the first tier once the picture upgrades, so nothing stays behind the sharper one", async () => {
+    resolves({ width: 720, height: 360, originalWidth: 3000, originalHeight: 1500, derived: true });
+    const { container } = render(ForgeAttachmentHost, { props: { token: token(hrefFor()) } });
+    __reportImageBoxForTest(700);
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
+    expect(tiers()).toEqual([720]);
+    expect(release).not.toHaveBeenCalled();
+
+    __reportImageBoxForTest(1400);
+    await waitFor(() => expect(tiers()).toEqual([720, 1440]));
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('measures before its first fetch, and that fetch is the one the picture paints', async () => {
@@ -157,8 +172,8 @@ describe('<ForgeAttachmentHost>', () => {
 
     __reportImageBoxForTest(700);
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
-    // Every claim is on the one tier the first fetch asked for.
-    expect(tiers()).toEqual([720, 720]);
+    // The one claim is on the tier the first fetch asked for.
+    expect(tiers()).toEqual([720]);
     expect(container.querySelector('[data-streamdown-image-loading]')).toBeNull();
     const img = container.querySelector('img')!;
     expect(img.getAttribute('width')).toBe('3000');
@@ -173,7 +188,7 @@ describe('<ForgeAttachmentHost>', () => {
     rememberImageTier(KEY, 1440);
     settle(attachment({ width: 720, height: 360, originalWidth: 3000, originalHeight: 1500, derived: true }));
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
-    expect(tiers()).toEqual([720, 720]);
+    expect(tiers()).toEqual([720]);
   });
 
   it('skips the measurement when the page already asked for this attachment', () => {

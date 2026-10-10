@@ -174,9 +174,21 @@ export function localImagePathText(image: LocalMenuImage): string {
   return image.sourceHref || image.path;
 }
 
-/** The image reference Copy Markdown puts on the clipboard. */
+/**
+ * The image reference Copy Markdown puts on the clipboard, as CommonMark
+ * that parses back to the same image: brackets and backslashes in the alt
+ * are escaped, and a destination with whitespace, parentheses or angle
+ * brackets is written in angle brackets, where only `<` and `>` need
+ * escaping. A plain path is copied as the agent wrote it.
+ */
 export function localImageMarkdownText(image: LocalMenuImage): string {
-  return `![${image.alt}](${localImagePathText(image)})`;
+  const alt = image.alt.replace(/[\\[\]]/g, (char) => `\\${char}`);
+  return `![${alt}](${markdownDestination(localImagePathText(image))})`;
+}
+
+function markdownDestination(destination: string): string {
+  if (destination !== '' && !/[\s()<>\u0000-\u001f]/.test(destination)) return destination;
+  return `<${destination.replace(/[<>]/g, (char) => `\\${char}`)}>`;
 }
 
 /**
