@@ -109,7 +109,7 @@ func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string)
 	staged := DesktopStagedPath(install, id)
 	// Staging beside the install path also proves the folder is writable,
 	// which the publish needs.
-	if err := movePath(downloaded, staged); err != nil {
+	if err := movePath(downloaded, staged, os.Rename); err != nil {
 		return fmt.Errorf("stage the update beside %s: %w", install, err)
 	}
 	discard := func() {
@@ -284,13 +284,10 @@ func (h DesktopHandoff) logf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-// moveRename is movePath's rename.
-var moveRename = os.Rename
-
-// movePath renames src to dst, copying across filesystems: the download
-// lands in the temp directory, which is often another one.
-func movePath(src, dst string) error {
-	err := moveRename(src, dst)
+// movePath renames src to dst with rename, copying across filesystems: the
+// download lands in the temp directory, which is often another one.
+func movePath(src, dst string, rename func(oldpath, newpath string) error) error {
+	err := rename(src, dst)
 	if err == nil || !crossDevice(err) {
 		return err
 	}

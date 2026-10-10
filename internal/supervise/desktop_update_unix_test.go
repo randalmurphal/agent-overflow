@@ -902,9 +902,12 @@ func TestMovePathCopiesAcrossFilesystems(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(t.TempDir(), ".agent-overflow-update-x.app")
-	moveRename = func(string, string) error { return &os.LinkError{Op: "rename", Err: syscall.EXDEV} }
-	t.Cleanup(func() { moveRename = os.Rename })
-	if err := movePath(src, dst); err != nil {
+	renames := 0
+	crossDeviceRename := func(string, string) error {
+		renames++
+		return &os.LinkError{Op: "rename", Err: syscall.EXDEV}
+	}
+	if err := movePath(src, dst, crossDeviceRename); err != nil {
 		t.Fatal(err)
 	}
 	if exists(src) {
@@ -922,11 +925,14 @@ func TestMovePathCopiesAcrossFilesystems(t *testing.T) {
 	src2 := filepath.Join(t.TempDir(), "agent-overflow")
 	writeExecutable(t, src2, "new")
 	dst2 := filepath.Join(t.TempDir(), "missing", "agent-overflow")
-	if err := movePath(src2, dst2); err == nil {
+	if err := movePath(src2, dst2, crossDeviceRename); err == nil {
 		t.Fatal("a copy into a missing folder succeeded")
 	}
 	if !exists(src2) || exists(dst2) {
 		t.Fatal("a failed copy lost the source or left a partial copy")
+	}
+	if renames != 2 {
+		t.Fatalf("the moves tried their rename %d times, want 2", renames)
 	}
 }
 

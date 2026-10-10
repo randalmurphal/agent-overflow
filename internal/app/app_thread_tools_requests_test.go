@@ -2502,9 +2502,14 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		if err := f.app.SendMessage(f.caller.ID, "look into the backfill", nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
+		// Mid-turn means the turn is open in the store, not only that the
+		// session is live: the dispatch reads the open turn to place the
+		// wake. Before the provider event worker records it, a wake takes
+		// the no-open-turn placement, whose row is written only when the
+		// provider echoes it, and this mock never echoes.
 		waitUntil(t, 10*time.Second, func() bool {
-			_, live := f.app.sessionManager().get(f.caller.ID)
-			return live
+			_, open, err := f.app.store.GetActiveTurn(f.caller.ID)
+			return err == nil && open
 		})
 		ack := f.runningRequest(t, "how many rows did the backfill touch?")
 		if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{

@@ -619,7 +619,7 @@ func (s *Supervisor) rollBack(state State, reason string) (State, error) {
 		updateID = state.Update.ID
 	}
 	s.config.Log("supervise: rolling back update %s: %s", updateID, reason)
-	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now(), nil); err != nil {
+	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now(), RestoreOptions{}); err != nil {
 		// A restore that cannot complete is the one failure this supervisor
 		// must not paper over: the database is the trial's, and starting the
 		// previous version against it would be worse than not starting.
