@@ -104,6 +104,15 @@ func TestGetLocalImageServesADerivedTier(t *testing.T) {
 	if err != nil || cfg.Width != 320 || cfg.Height != 240 {
 		t.Fatalf("served %v %dx%d, want a 320x240 png", err, cfg.Width, cfg.Height)
 	}
+	// The derivative is kept in the data directory's image cache, which is
+	// what the route served.
+	stored, err := filepath.Glob(filepath.Join(app.configDir, "cache", "images", "*.png"))
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("image cache holds %v (%v), want the one derivative", stored, err)
+	}
+	if onDisk, err := os.ReadFile(stored[0]); err != nil || !bytes.Equal(onDisk, body) {
+		t.Fatalf("the stored derivative (%v) is not the served bytes", err)
+	}
 }
 
 // undecodablePNG is a width x height PNG whose header reads and whose image

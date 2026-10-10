@@ -165,6 +165,18 @@ func (c *Cache[V]) Lookup(key string) (Entry[V], bool) {
 	return c.touchLocked(c.byKey[key])
 }
 
+// Remove drops the entry id names, if one is held. A caller removes an entry
+// it found it can no longer serve, so the next Lookup of its key misses.
+// Removing by id rather than key leaves alone an entry a concurrent caller
+// already stored under the same key.
+func (c *Cache[V]) Remove(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if element, ok := c.byID[id]; ok {
+		c.removeLocked(element)
+	}
+}
+
 // Bytes reports the currently retained total, after reclaiming anything
 // expired. Tests and diagnostics only.
 func (c *Cache[V]) Bytes() int64 {

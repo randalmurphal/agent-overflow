@@ -82,10 +82,17 @@ func (a *App) SaveLocalImage(path, workspacePath string) (string, error) {
 }
 
 // localImages is the lazily constructed service behind both methods and the
-// byte route.
+// byte route. Its derivatives live in <data dir>/cache/images, under the
+// same root as the attachment store, so an isolated boot keeps them in its
+// own data directory. An App with no data directory (a fixture) passes no
+// directory, and the service holds derivatives in memory.
 func (a *App) localImages() *localimage.Service {
 	a.localImageOnce.Do(func() {
-		a.localImageService = localimage.New()
+		dir := ""
+		if a.configDir != "" {
+			dir = filepath.Join(a.configDir, "cache", "images")
+		}
+		a.localImageService = localimage.New(dir)
 	})
 	return a.localImageService
 }

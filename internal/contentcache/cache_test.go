@@ -151,6 +151,35 @@ func TestCachePutKeepsALiveEntryUnderTheSameKey(t *testing.T) {
 	}
 }
 
+// Remove retires one id: its key misses afterwards, its bytes are released,
+// and a stale id does not reach the entry a later Put stored under the key.
+func TestCacheRemoveDropsOneEntryByID(t *testing.T) {
+	cache, _ := newTestCache(1_000, time.Hour)
+	first := put(t, cache, "k", 10)
+	other := put(t, cache, "other", 5)
+	cache.Remove(first.ID)
+	if _, ok := cache.Get(first.ID); ok {
+		t.Fatal("the removed id still resolves")
+	}
+	if _, ok := cache.Lookup("k"); ok {
+		t.Fatal("the removed entry's key still resolves")
+	}
+	if got := cache.Bytes(); got != 5 {
+		t.Fatalf("Bytes() = %d after Remove, want 5", got)
+	}
+	replaced := put(t, cache, "k", 20)
+	cache.Remove(first.ID)
+	cache.Remove("never-stored")
+	for _, kept := range []Entry[[]byte]{replaced, other} {
+		if _, ok := cache.Get(kept.ID); !ok {
+			t.Fatalf("Remove of a stale id dropped %q", kept.Key)
+		}
+	}
+	if got := cache.Bytes(); got != 25 {
+		t.Fatalf("Bytes() = %d, want 25", got)
+	}
+}
+
 // Pins the character class the routes' path segment and the frontend's
 // transfer-URL check both admit.
 func TestCacheIDsAreURLSafe(t *testing.T) {

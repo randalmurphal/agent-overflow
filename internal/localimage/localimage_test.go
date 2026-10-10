@@ -60,7 +60,7 @@ func TestResolveServesTheFileItself(t *testing.T) {
 	workspace := t.TempDir()
 	payload := pngBytes(t, 8, 6)
 	path := writeFile(t, workspace, "diagram.png", payload)
-	s := New()
+	s := newTestService(t)
 
 	got, err := s.Resolve(path, workspace, 0)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestResolveServesATierDerivative(t *testing.T) {
 	workspace := t.TempDir()
 	payload := pngBytes(t, 641, 480)
 	path := writeFile(t, workspace, "shot.png", payload)
-	s := New()
+	s := newTestService(t)
 
 	got, err := s.Resolve(path, workspace, 300)
 	if err != nil {
@@ -151,7 +151,7 @@ func TestResolveServesTheFileWhenItsPixelsDoNotDecode(t *testing.T) {
 	workspace := t.TempDir()
 	payload := corruptPixels(t, pngBytes(t, 641, 480))
 	path := writeFile(t, workspace, "shot.png", payload)
-	s := New()
+	s := newTestService(t)
 
 	got, err := s.Resolve(path, workspace, 300)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestResolveAnswersAHeldDerivativeWithoutReading(t *testing.T) {
 	workspace := t.TempDir()
 	payload := pngBytes(t, 641, 480)
 	path := writeFile(t, workspace, "shot.png", payload)
-	s := New()
+	s := newTestService(t)
 	first, err := s.Resolve(path, workspace, 320)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -221,7 +221,7 @@ func TestOpenRefusesAnOriginalThatChanged(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
 	path := writeFile(t, workspace, "shot.png", pngBytes(t, 8, 8))
-	s := New()
+	s := newTestService(t)
 	got, err := s.Resolve(path, workspace, 0)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -262,7 +262,7 @@ func TestResolveServesTheFileWhenNoDerivativeApplies(t *testing.T) {
 	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4000" height="4"></svg>`)
 	svgPath := writeFile(t, workspace, "diagram.svg", svg)
 	smallPath := writeFile(t, workspace, "small.png", pngBytes(t, 300, 10))
-	s := New()
+	s := newTestService(t)
 
 	got, err := s.Resolve(svgPath, workspace, 320)
 	if err != nil {
@@ -286,7 +286,7 @@ func TestResolveServesTheFileWhenNoDerivativeApplies(t *testing.T) {
 func TestResolveReadsAnExistingImageOutsideTheWorkspace(t *testing.T) {
 	t.Parallel()
 	path := writeFile(t, t.TempDir(), "diagram.png", pngBytes(t, 8, 8))
-	if _, err := New().Resolve(path, t.TempDir(), 0); err != nil {
+	if _, err := newTestService(t).Resolve(path, t.TempDir(), 0); err != nil {
 		t.Fatalf("Resolve outside the workspace: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestResolveNamesTheReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		for _, maxWidth := range []int{0, 320} {
-			_, err := New().Resolve(tc.path, workspace, maxWidth)
+			_, err := newTestService(t).Resolve(tc.path, workspace, maxWidth)
 			if err == nil || !strings.HasPrefix(err.Error(), tc.reason) {
 				t.Fatalf("%s at %d: Resolve error = %v, want prefix %q", tc.name, maxWidth, err, tc.reason)
 			}

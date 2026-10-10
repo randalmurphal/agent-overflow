@@ -22,8 +22,9 @@ import (
 // Everything forgeattachmentroutes.go argues about admission applies
 // unchanged: the ticket is the whole credential, single-use and bound to
 // one content id the path is compared against, and an id the bounded cache
-// expired (or an original whose file changed since it was resolved)
-// answers the same 404 a spent ticket does. The Content-Type is the image
+// expired (or an original whose file changed since it was resolved, or a
+// derivative whose cached file was evicted or deleted) answers the same
+// 404 a spent ticket does. The Content-Type is the image
 // type the backend sniffed from the bytes; nothing that is not an image can
 // reach this route.
 

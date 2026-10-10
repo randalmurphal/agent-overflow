@@ -3402,12 +3402,19 @@ frame.**
   (`internal/transport/localimageroutes.go`), a fourth ticket book with
   the same TTL and cap. `GetLocalImage` (files:read, route `selected`)
   gates the path, validates the bytes as a displayable image, and holds
-  either the file's identity (path, size, mtime) or a display-size
-  derivative in a bounded LRU (`internal/localimage`, 192 MiB, 30 min).
-  An original is re-opened per request and answers 404 when its size or
-  mtime changed since it was resolved. The response carries the sniffed
-  image type, and an SVG an attachment disposition. `SaveLocalImage`
-  copies the original file to the host's Downloads directory.
+  what the content id serves in a bounded memory LRU
+  (`internal/localimage`, 192 MiB, 30 min): the file's identity (path,
+  size, mtime) for an original, or the path of a display-size derivative.
+  Derivatives are files under `<data dir>/cache/images`, named by a
+  digest of the source identity and tier, reused across restarts and
+  bounded at 256 MiB with least-recently-used eviction; one the directory
+  cannot take is held in the memory LRU instead. An original is re-opened
+  per request and answers 404 when its size or mtime changed since it was
+  resolved; a derivative whose file was evicted or deleted answers 404,
+  and the client's re-mint derives it again. The response carries the
+  sniffed image type, and an SVG an attachment disposition.
+  `SaveLocalImage` copies the original file to the host's Downloads
+  directory.
 
 **Initial wire budgets** — starting targets, revised by measurement,
 never by feel; a harness scenario counts actual bytes on the wire and

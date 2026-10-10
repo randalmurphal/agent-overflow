@@ -5,8 +5,10 @@
 // swaps a sharper tier into the same element and the row never reflows
 // through a placeholder; narrowing keeps what is painted. A click opens the
 // lightbox on the painted bytes, loads the file behind it and swaps it in,
-// and the wheel zooms. Decision: docs/decisions.md, "Images in chat".
-import { mkdir, writeFile } from 'node:fs/promises';
+// and the wheel zooms. The derivative is a file in the boot's own data
+// directory (internal/localimage). Decision: docs/decisions.md, "Images in
+// chat".
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator } from '@playwright/test';
 import { solidPng } from './attachment-fixture.js';
@@ -52,6 +54,15 @@ function readPainted(painted: Locator): Promise<PaintedImage> {
 const NARROW = { width: 960, height: 720 };
 const WIDE = { width: 1280, height: 720 };
 
+/** The derivative files in the backend's image cache. */
+async function cachedDerivatives(dataDir: string): Promise<string[]> {
+  const names = await readdir(path.join(dataDir, 'cache', 'images')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  return names.filter((name) => /^[0-9a-f]{64}\.png$/.test(name));
+}
+
 function zoomPercent(dialog: Locator): Promise<number> {
   return dialog.locator('[data-lightbox-zoom]').evaluate((element) => Number.parseInt(element.textContent ?? '', 10));
 }
@@ -80,6 +91,7 @@ test('a local image paints at its box tier, upgrades in place as the window wide
     plainScenario({ name: 'image-tiers', provider: 'claude', texts: [`The panorama:\n\n![panorama](${reference})\n`] }),
   );
 
+  const cachedBefore = await cachedDerivatives(harness.bootstrap.dataDir);
   await page.setViewportSize(NARROW);
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
@@ -102,6 +114,9 @@ test('a local image paints at its box tier, upgrades in place as the window wide
   // The box is the file's pixel size whatever is painted.
   expect(narrow.width).toBe(String(WIDTH));
   expect(narrow.height).toBe(String(HEIGHT));
+  // The painted tier was written to this boot's image cache.
+  const cachedAfter = await cachedDerivatives(harness.bootstrap.dataDir);
+  expect(cachedAfter.filter((name) => !cachedBefore.includes(name)).length, cachedAfter.join(', ')).toBeGreaterThan(0);
   await painted.evaluate((element) => {
     (element as HTMLImageElement & { __tierMark?: true }).__tierMark = true;
   });
