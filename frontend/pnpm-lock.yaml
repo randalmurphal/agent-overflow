@@ -196,8 +196,8 @@ importers:
         specifier: 1.28.0
         version: 1.28.0(patch_hash=c8fd03d5c2f518e82a86b3f90d235bd49380138e87bc2e60b3a7fa2600cdbd61)(svelte@5.57.0(patch_hash=6476be36665934d002361eeaca503cd0d94b60678de1e96b49c39234e68dbb92))
       '@wailsio/runtime':
-        specifier: 3.0.0-beta.1
-        version: 3.0.0-beta.1
+        specifier: 3.0.0-beta.28
+        version: 3.0.0-beta.28
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -911,8 +911,8 @@ packages:
   '@vitest/utils@5.0.3':
     resolution: {integrity: sha512-77fDTZv8eu1CzlIfgPU2yrl5MXSUaUAOvgdZEeVm3X3WIxUubIX2SforqS6176lT32HCF6uBVMYVqfHxw7o6eg==}
 
-  '@wailsio/runtime@3.0.0-beta.1':
-    resolution: {integrity: sha512-y0FFOONsaWyRbQItjERV9sjUFmO4M5XGrHE8aX+rdYQG3YclTfYkMrpalMQcdxEh1CUrrpyvLabHt/2zCFnv+Q==}
+  '@wailsio/runtime@3.0.0-beta.28':
+    resolution: {integrity: sha512-IPl7WIsu0uQni9qgYAGm47G1WKNV/YFQannb/1r8orA81+wswJmCt/TS6GNb/U/coIRYyQ3ruO1FNMVwUVDvQQ==}
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -2319,7 +2319,7 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
 
-  '@wailsio/runtime@3.0.0-beta.1': {}
+  '@wailsio/runtime@3.0.0-beta.28': {}
 
   '@xterm/addon-fit@0.11.0': {}
 
