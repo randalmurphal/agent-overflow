@@ -9,6 +9,16 @@ updates:
       go:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # Upstream commits the generated parser only to its gh-pages branch,
+      # so tagged releases do not compile; go.mod pins a gh-pages commit.
+      - dependency-name: github.com/DerekStride/tree-sitter-sql
+      # chromedp v0.20 replaced the event API with per-event subscriptions
+      # and lost cross-event ordering internal/browser relies on; move both
+      # by hand once the handlers tolerate any order or upstream exports an
+      # ordered subscription.
+      - dependency-name: github.com/chromedp/chromedp
+      - dependency-name: github.com/chromedp/cdproto
   - package-ecosystem: npm
     directories:
       - /
