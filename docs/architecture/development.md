@@ -94,10 +94,25 @@ in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
 `AO_E2E_WORKERS`).
-`.github/actions/setup` owns the toolchain pins, caches and the runner
-preparation the network namespace needs. Go build caches are saved only by
-pushes to `main`; a pull request restores the newest `main` cache for its
-job slot, so it rebuilds and retests what it changed. `codeql.yml` scans Go and
+The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
+built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
+browsers with their OS libraries, the Wails CLI, golangci-lint, the Go
+module cache and the pnpm store, all at the repository's pins. A job pulls
+that one image instead of apt, the Go download site, the npm registry and
+the Playwright CDN. `ci/toolchain-inputs.sh` lists the pins that name a
+tag; the `toolchain` job (`.github/actions/toolchain-image`) resolves it at
+the start of every run, builds and publishes it when it is missing and the
+token may push, and otherwise runs the jobs on the newest `main` image
+while `.github/actions/setup` installs what the change moved past it. A
+fork or Dependabot token cannot publish, so a pin bump from one runs on
+that fallback until it merges. `toolchain-image.yml` publishes on pushes to
+`main` that touch a pin or a manifest and weekly, refreshing the base
+image, module cache and package store. The macOS job runs on the bare
+runner; the setup action installs its toolchains from the same pins.
+
+Go build caches are saved only by pushes to `main`; a pull request restores
+the newest `main` cache for its job slot, so it rebuilds and retests what
+it changed. `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
 `dependency-review-action` checks pull request dependency changes.
 

@@ -164,15 +164,17 @@ go-test: netns-tool
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
-# same way here. go-lint builds golangci-lint from source at the pinned
-# version so it is compiled with this repo's Go toolchain (a release binary
-# built with an older Go refuses a newer go.mod); the build is cached after
-# the first run. GO_LINT_FLAGS carries extra flags, such as
-# --new-from-rev=origin/main for the new-issues gate.
+# same way here. go-lint runs golangci-lint at the pinned version through
+# `go run`, so it is compiled with this repo's Go toolchain (a release
+# binary built with an older Go refuses a newer go.mod); the build is cached
+# after the first run. GOLANGCI_LINT names a prebuilt binary instead, which
+# the CI toolchain image carries at the same pin. GO_LINT_FLAGS carries
+# extra flags, such as --new-from-patch for the new-issues gate.
 GOLANGCI_LINT_VERSION := v2.14.0
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_LINT_FLAGS ?=
 go-lint:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout 20m $(GO_LINT_FLAGS) ./...
+	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)

@@ -9,21 +9,52 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job calls a Make target so a local run is the same check
-# (docs/architecture/development.md, Continuous integration). The composite
-# action in .github/actions/setup owns toolchain pins and caches.
+# (docs/architecture/development.md, Continuous integration). The Linux
+# jobs run in the toolchain image (ci/Dockerfile), which the toolchain job
+# resolves first; .github/actions/setup prepares the runner and installs
+# anything a change moved past the image. The macOS job runs on the bare
+# runner. Jobs that start the isolated test network namespace run the
+# container privileged with the host's kernel modules mounted, so the
+# namespace and the dummy link module reach the host kernel.
 jobs:
-  # The Linux Go checks share one job: each needs the same toolchain, GTK
-  # headers and frontend bundle, which cost more than the checks themselves.
+  toolchain:
+    name: Toolchain image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolchain-image
+        id: image
+        with:
+          # A fork or Dependabot token cannot publish; the action then runs
+          # the jobs on the newest main image.
+          push: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+          token: ${{ github.token }}
+
+  # The Linux Go checks share one job: each needs the same toolchain and
+  # frontend bundle, which cost more than the checks themselves.
   go-checks:
     name: gofmt, go vet, go build and bindings
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -58,8 +89,14 @@ jobs:
 
   go-lint:
     name: golangci-lint (new issues) and govulncheck
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -76,13 +113,28 @@ jobs:
         run: scripts/ci-change.sh "$RUNNER_TEMP/change"
       - name: golangci-lint on the change
         if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
+        run: |
+          set -euo pipefail
+          # The image carries golangci-lint at the Makefile's pin; a pin
+          # the image has not caught up with falls back to `go run`.
+          lint=""
+          if golangci-lint version 2>/dev/null | grep -q "version v$(sed -n 's/^GOLANGCI_LINT_VERSION *:= *v//p' Makefile) "; then
+            lint="GOLANGCI_LINT=golangci-lint"
+          fi
+          # shellcheck disable=SC2086
+          make go-lint $lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
       - run: make go-vuln
 
   frontend:
     name: svelte-check, build and oxlint
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -115,8 +167,15 @@ jobs:
   # candidate script test rides with the rest.
   go-test:
     name: Go tests (${{ matrix.shard }})
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      options: --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:
@@ -147,8 +206,15 @@ jobs:
 
   vitest:
     name: Vitest (${{ matrix.project }})
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      options: --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:
@@ -176,8 +242,15 @@ jobs:
 
   e2e:
     name: Playwright harness suite (shard ${{ matrix.shard }} of 8)
+    needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      options: --privileged -v /lib/modules:/lib/modules:ro
     strategy:
       fail-fast: false
       matrix:

@@ -1,0 +1,11 @@
+# The CI toolchain image (ci/Dockerfile) copies only the dependency
+# manifests; the checkout is mounted into jobs, never baked.
+*
+!go.mod
+!go.sum
+!frontend/package.json
+!frontend/pnpm-lock.yaml
+!frontend/pnpm-workspace.yaml
+!frontend/patches
+!e2e/package.json
+!e2e/pnpm-lock.yaml
