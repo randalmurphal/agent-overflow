@@ -2,6 +2,7 @@ package replay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -141,7 +142,8 @@ func (m *Manager) startLoops() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.queue = make(chan Record, m.queueSize)
 	m.cancel = cancel
-	m.loopWG.Go(func() { m.drain(ctx) })
+	queue := m.queue
+	m.loopWG.Go(func() { m.drain(ctx, queue) })
 	m.loopWG.Go(func() { m.reap(ctx) })
 }
 
@@ -277,6 +279,11 @@ func (m *Manager) QueueLen() int {
 // Shutdown drains the queue (bounded by ctx), closes all writers, and stops
 // background goroutines. Subsequent Enqueue calls return false and
 // subsequent SetEnabled(true) calls are no-ops.
+//
+// When ctx ends before the drain finishes, Shutdown still closes every
+// writer and returns an error wrapping ctx.Err(). The abandoned drain can
+// open no writer after that, so each record it still holds counts toward
+// LostCount instead of reaching disk.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -289,6 +296,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 	m.enabled.Store(false)
 
+	var drainErr error
 	if m.queue != nil {
 		m.cancel()
 		done := make(chan struct{})
@@ -300,6 +308,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		case <-done:
 		case <-ctx.Done():
 			// Loops didn't exit in time; fall through and close writers anyway.
+			drainErr = fmt.Errorf("replay: shutdown before the queue drained: %w", ctx.Err())
 		}
 		m.cancel = nil
 		m.queue = nil
@@ -312,9 +321,10 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		if err := w.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("replay: close writer %s: %w", id, err)
 		}
-		delete(m.writers, id)
 	}
-	return firstErr
+	// A nil map tells writerFor the manager is shut down.
+	m.writers = nil
+	return errors.Join(drainErr, firstErr)
 }
 
 // drain pulls records off the queue and writes them to the per-thread file.
@@ -326,11 +336,10 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 // inflight == 0 implies "every enqueued record has been written" — the
 // invariant waitForDrain depends on.
 //
-// The queue is captured in a local so a concurrent SetEnabled cannot nil
-// out m.queue mid-loop: we always read from the channel we were handed
-// at startLoops time, even if the field has since been reset.
-func (m *Manager) drain(ctx context.Context) {
-	queue := m.queue
+// startLoops hands drain its queue rather than drain reading m.queue when
+// the goroutine first runs: a Shutdown or SetEnabled(false) that resets the
+// field before then would otherwise leave every accepted record stranded.
+func (m *Manager) drain(ctx context.Context, queue <-chan Record) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -360,6 +369,10 @@ func (m *Manager) writeRecord(rec Record) {
 	w, err := m.writerFor(rec.ThreadID)
 	if err != nil {
 		m.lost.Add(1)
+		if errors.Is(err, errShutDown) {
+			// Shutdown reported the abandoned drain once.
+			return
+		}
 		log.Printf("replay: open writer for thread %s: %v", rec.ThreadID, err)
 		return
 	}
@@ -369,10 +382,16 @@ func (m *Manager) writeRecord(rec Record) {
 	}
 }
 
+// errShutDown refuses a writer to a drain that Shutdown abandoned.
+var errShutDown = errors.New("replay: manager is shut down")
+
 // writerFor returns an open Writer for the thread, creating one if needed.
 func (m *Manager) writerFor(threadID string) (*Writer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.writers == nil {
+		return nil, errShutDown
+	}
 	if w, ok := m.writers[threadID]; ok {
 		return w, nil
 	}

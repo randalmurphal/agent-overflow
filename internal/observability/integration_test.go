@@ -449,11 +449,12 @@ func TestObs_ReplayDisabledIsNoGoroutines(t *testing.T) {
 func TestObs_ReplayWriterConcurrentEnqueuesSafe(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    4096,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  10 * time.Second,
-		Enabled:      true,
+		RootDir:   dir,
+		QueueSize: 4096,
+		// The default fsync batching: this case is about concurrent
+		// enqueues, and a sync per record makes the drain disk-bound.
+		IdleTimeout: 10 * time.Second,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = m.Shutdown(context.Background())
@@ -478,10 +479,9 @@ func TestObs_ReplayWriterConcurrentEnqueuesSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Shutdown drains the queue synchronously; after it returns, every
-	// accepted record is guaranteed to be on disk. This is more reliable
-	// than polling because we remove the "wait long enough for the
-	// scheduler" race that flakes under -race.
+	// Shutdown drains the queue synchronously. A nil error means every
+	// accepted record is on disk; one that ran out of time says so rather
+	// than leaving the drain writing behind it.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.Shutdown(shutdownCtx); err != nil {

@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -331,6 +332,78 @@ func TestManagerShutdownHonoursContextTimeout(t *testing.T) {
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
 	_ = m.WaitForDrain(drainCtx)
+}
+
+// A Shutdown whose context ends before the drain does reports it, and the
+// abandoned drain cannot reopen a writer: every accepted record is either
+// on disk or counted lost, and no file stays open.
+func TestManagerShutdownPastItsDeadlineAccountsForEveryRecord(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    64,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	w, err := m.writerFor("t")
+	if err != nil {
+		t.Fatalf("writerFor: %v", err)
+	}
+	// Holding the writer parks the drain on its first record, so the
+	// deadline passes while the queue is still full.
+	w.mu.Lock()
+	const records = 32
+	for i := range records {
+		rec, _ := NewRecord(time.Now(), "t", "k", map[string]int{"i": i})
+		if !m.Enqueue(rec) {
+			w.mu.Unlock()
+			t.Fatalf("Enqueue %d refused", i)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := make(chan error, 1)
+	go func() { result <- m.Shutdown(ctx) }()
+	// Shutdown reaches the held writer only after it gave up on the drain.
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(goroutineStacks(), "(*Writer).Close") {
+		if time.Now().After(deadline) {
+			w.mu.Unlock()
+			t.Fatal("Shutdown never reached the writers")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	w.mu.Unlock()
+	select {
+	case err = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Shutdown = %v, want the drain deadline reported", err)
+	}
+
+	m.loopWG.Wait()
+	if got := m.openCount(); got != 0 {
+		t.Errorf("openCount after the abandoned drain = %d, want 0", got)
+	}
+	contents, err := os.ReadFile(filepath.Join(dir, "t.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := int64(strings.Count(string(contents), "\n"))
+	if lines > 1 {
+		t.Errorf("%d records reached disk after Shutdown gave up, want at most the one in flight", lines)
+	}
+	if lines+m.LostCount() != records {
+		t.Errorf("lines %d + lost %d, want %d accepted", lines, m.LostCount(), records)
+	}
+}
+
+func goroutineStacks() string {
+	buf := make([]byte, 1<<20)
+	return string(buf[:runtime.Stack(buf, true)])
 }
 
 func TestManagerEnqueueRoundTrip(t *testing.T) {

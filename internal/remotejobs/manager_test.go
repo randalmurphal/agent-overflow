@@ -29,9 +29,13 @@ func manager(t *testing.T, run Run) (*Manager, *store.Store) {
 	t.Cleanup(m.Close)
 	return m, st
 }
+
+// settled waits for the receipt to leave running and the slot to free. Its
+// bound covers a leftover sweep, which may wait out terminateGrace before the
+// kill and drainGrace for the pipe, plus scheduling margin.
 func settled(t *testing.T, m *Manager, id string) store.RemoteJob {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(terminateGrace + drainGrace + 5*time.Second)
 	for time.Now().Before(deadline) {
 		r, err := m.Get("owner", id)
 		if err != nil {

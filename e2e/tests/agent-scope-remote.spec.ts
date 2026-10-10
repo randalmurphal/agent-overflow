@@ -2,6 +2,7 @@
 import type { WebSocketRoute } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
+import { waitForScrollSettle } from '../src/scroll.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock,
@@ -58,6 +59,10 @@ test('a remote agent pane retains loaded run history through a disconnected comp
       await expect(pane.getByTestId('command-output-row')).toHaveCount(55);
       await expect(pane.getByTestId('activity-run-earlier')).toContainText('35 earlier');
       const clip = pane.getByTestId('activity-run-clip');
+      // The live run follows its last row, and paging in the earlier rows
+      // can leave that follow gliding back to the bottom for several frames.
+      // A position read mid-glide is not where the wheel starts from.
+      await waitForScrollSettle(clip);
       const priorTop = await clip.evaluate(element => element.scrollTop);
       await clip.hover();
       await page.mouse.wheel(0, -200);

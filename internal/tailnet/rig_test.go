@@ -134,6 +134,13 @@ func startControl(t *testing.T) (string, *testcontrol.Server) {
 		DNSConfig:      &tailcfg.DNSConfig{Proxied: true},
 		MagicDNSDomain: "test-tailnet.ts.net",
 		Logf:           logf,
+		// testcontrol tracks no presence. AllOnline publishes every peer
+		// online in its ordinary map responses, standing in for the
+		// production presence update. Injecting the update with
+		// AddRawMapResponse instead suppresses all later automatic map
+		// responses to that node, so it never learns a peer's home DERP
+		// or endpoints reported afterwards.
+		AllOnline: true,
 	}
 	// A local port-discovery probe is not a control request. testcontrol
 	// deliberately panics on unknown routes, so keep GET / outside it.

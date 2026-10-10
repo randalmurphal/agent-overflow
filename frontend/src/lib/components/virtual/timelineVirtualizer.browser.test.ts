@@ -1205,6 +1205,48 @@ describe('scrollToIndex', () => {
       Math.abs(row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
     ).toBeLessThanOrEqual(2);
   });
+
+  it('a navigation stays pending past its settle floor until frames render', async () => {
+    // A loaded machine can render no frame for longer than the settle
+    // floor, and the measurement that moves the destination arrives with
+    // the first frame after that. Held animation frames stand in for the
+    // frames that machine has not rendered yet once the time floor passed.
+    const { harness, scrollEl } = mountHarness({ estimate: { at: () => ROW_PX } });
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+
+    const nativeRequest = window.requestAnimationFrame;
+    const nativeCancel = window.cancelAnimationFrame;
+    const held = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    const releaseFrames = () => {
+      window.requestAnimationFrame = nativeRequest;
+      window.cancelAnimationFrame = nativeCancel;
+      for (const callback of held.values()) nativeRequest(callback);
+      held.clear();
+    };
+    onTestFinished(releaseFrames);
+
+    handle.scrollToIndex(30, { align: 'center' });
+    window.requestAnimationFrame = (callback) => {
+      held.set(nextFrame, callback);
+      return nextFrame++;
+    };
+    window.cancelAnimationFrame = (id) => {
+      held.delete(id);
+    };
+    // The settle timer's own delay, registered after it, so this resumes
+    // once that timer has fired.
+    await waitMs(150);
+    // Between the viewport top and the destination, so it pushes the
+    // destination down when it measures.
+    harness.resizeRow('row-28', ROW_PX + 300);
+    await waitMs(100);
+    releaseFrames();
+    await waitForStableGeometry(scrollEl, 'late measurement settle');
+
+    expect(Math.abs(rowCenterInViewport(scrollEl, 'row-30') - VIEWPORT_PX / 2)).toBeLessThanOrEqual(2);
+  });
 });
 
 function rowCenterInViewport(scrollEl: HTMLElement, id: string): number {

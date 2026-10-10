@@ -99,18 +99,30 @@ func TestCarrierRenewsBeforeItsWindowClosesAndReportsTheVerdict(t *testing.T) {
 }
 
 // TestRemovingACarrierStopsItsRenewal — a removed pairing presents nothing
-// again, so the renewal that was due never runs.
+// again, so its renewal loop ends and no rotation ever comes due. The window
+// is far off so the assertion is the loop's end, not a race against the
+// clock between the carrier's start and the removal.
 func TestRemovingACarrierStopsItsRenewal(t *testing.T) {
 	manager, dir := newManager(t)
 	p := newPeer(t)
-	seedExpiring(t, dir, p, renewMargin+200*time.Millisecond)
+	seedExpiring(t, dir, p, time.Hour)
 	if _, err := manager.carrier("peer"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, "the renewal loop starts", func() bool { return renewalRunning() })
 	if err := manager.Remove("peer"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(400 * time.Millisecond)
+	stopped := make(chan struct{})
+	go func() {
+		manager.renewals.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the removed carrier's renewal loop is still running")
+	}
 	if p.rotations.Load() != 0 {
 		t.Fatalf("rotations = %d after removal, want none", p.rotations.Load())
 	}

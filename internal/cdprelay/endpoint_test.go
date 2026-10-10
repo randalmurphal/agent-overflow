@@ -451,36 +451,55 @@ func TestBrowserWebSocketURLDiscoversThroughTheTunnelAndRewrites(t *testing.T) {
 	f := newFixture(t)
 	p := f.connect()
 
+	// Discovery runs beside the fake launcher, which stays on the test
+	// goroutine: its last frame must be written before the test returns and
+	// its cleanup closes the tunnel, and the discovery can finish as soon as
+	// the response body arrives, before that frame is sent.
+	type discovery struct {
+		url string
+		err error
+	}
+	discovered := make(chan discovery, 1)
 	go func() {
-		id := p.acceptOpen()
-		request := make([]byte, 0, 512)
-		for !bytes.Contains(request, []byte("\r\n\r\n")) {
-			select {
-			case frame := <-p.data:
-				request = append(request, frame.payload...)
-			case <-time.After(testDeadline):
-				return
-			}
-		}
-		if !bytes.HasPrefix(request, []byte("GET /json/version ")) {
-			t.Errorf("launcher saw %q", string(request[:min(len(request), 64)]))
-		}
-		body := `{"webSocketDebuggerUrl":"ws://127.0.0.1:9333/devtools/browser/abc-123"}`
-		response := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-			strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body
-		p.sendData(id, []byte(response))
-		p.send(webview2host.TunnelControl{Op: webview2host.TunnelClose, StreamID: id})
+		ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
+		defer cancel()
+		url, err := f.endpoint.BrowserWebSocketURL(ctx)
+		discovered <- discovery{url: url, err: err}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
-	defer cancel()
-	url, err := f.endpoint.BrowserWebSocketURL(ctx)
-	if err != nil {
-		t.Fatalf("discover: %v", err)
+	id := p.acceptOpen()
+	request := make([]byte, 0, 512)
+	for !bytes.Contains(request, []byte("\r\n\r\n")) {
+		select {
+		case frame := <-p.data:
+			request = append(request, frame.payload...)
+		case err := <-p.readErr:
+			t.Fatalf("tunnel read: %v", err)
+		case <-time.After(testDeadline):
+			t.Fatalf("timed out with request %q", request)
+		}
+	}
+	if !bytes.HasPrefix(request, []byte("GET /json/version ")) {
+		t.Errorf("launcher saw %q", string(request[:min(len(request), 64)]))
+	}
+	body := `{"webSocketDebuggerUrl":"ws://127.0.0.1:9333/devtools/browser/abc-123"}`
+	response := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+		strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+	p.sendData(id, []byte(response))
+	p.send(webview2host.TunnelControl{Op: webview2host.TunnelClose, StreamID: id})
+
+	var result discovery
+	select {
+	case result = <-discovered:
+	case <-time.After(2 * testDeadline):
+		t.Fatal("discovery did not return")
+	}
+	if result.err != nil {
+		t.Fatalf("discover: %v", result.err)
 	}
 	want := "ws://" + f.endpoint.Addr() + "/devtools/browser/abc-123"
-	if url != want {
-		t.Fatalf("discovered %q, want %q", url, want)
+	if result.url != want {
+		t.Fatalf("discovered %q, want %q", result.url, want)
 	}
 }
 
