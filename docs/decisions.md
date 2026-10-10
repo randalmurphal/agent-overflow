@@ -464,15 +464,23 @@ and anti-changes that live only here:
   PNG for lossless sources and JPEG only for sources that were already
   lossy, so a screenshot loses nothing visible. The `<img>` box is the
   original's pixel size whichever bytes are painted, so a resize or the
-  original's arrival never moves a row. A click opens the one app-level
-  lightbox on what the timeline shows and loads the original behind a
-  visible "Loading full size (N MB)" line, with wheel, drag, pinch, keys
-  and a double-click between fit and 1:1; the same lightbox serves message
-  attachments, which open on their thumbnail. A right-click (long press on
-  compact) offers Copy Image (always the original bytes), Copy Path and
-  Copy Markdown (the text the agent wrote) and Save Image (the owning
-  computer's Downloads, or a browser download). Bytes cross on the
-  ticketed byte routes, never inside a WebSocket frame.
+  original's arrival never moves a row. A derivative is made only when it
+  is under two thirds of the original's width (closer than that it costs a
+  full decode for little), except that a derivative never exceeds 16
+  megapixels and an original over that is always reduced, stepping down
+  the ladder as needed, because the cap bounds what a client decodes. A
+  click opens the one app-level lightbox on what the timeline shows and
+  loads the original behind a visible "Loading full size (N MB)" line,
+  with wheel, drag, pinch, keys and a double-click between fit and 1:1;
+  the same lightbox serves message attachments, which open on their
+  thumbnail. On a compact layout the lightbox and Copy Image stop at the
+  widest ladder tier (so a phone's webview never decodes a file past the
+  cap) and the line reads "Loading sharper image"; Save always takes the
+  file. A right-click (long press on compact) offers Copy Image (the
+  original bytes, or that tier on compact), Copy Path and Copy Markdown
+  (the text the agent wrote, written back as CommonMark that parses) and
+  Save Image (the owning computer's Downloads, or a browser download).
+  Bytes cross on the ticketed byte routes, never inside a WebSocket frame.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
 - Wide blocks pan inside their own box on every layout: markdown tables,

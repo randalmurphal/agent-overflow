@@ -333,7 +333,7 @@ test('a local image an agent wrote offers its path and markdown, and copies and 
 }) => {
   // Wider than any column at this viewport, so the timeline paints a
   // derivative and only the file itself is this wide.
-  const width = 1600;
+  const width = 2400;
   const height = 400;
   const title = 'Local image menu';
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
