@@ -143,7 +143,8 @@ to the attachments root and referenced by path in the prompt.
   otherwise `SaveAttachment` on the owning computer. The menu sits in the
   transient layer above the lightbox, and closing it leaves the lightbox
   open. File chips have no menu. The same menu serves forge images in PR
-  and MR content (`docs/specs/remote-access-boundaries.md`).
+  and MR content and images an agent wrote as a local path
+  (`docs/specs/remote-access-boundaries.md`).
 
 ### Transfer carrier
 

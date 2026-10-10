@@ -52,7 +52,11 @@ src on a surface with a workspace is rewritten to the local image scheme
 during parsing and the bytes come from the thread's machine over the
 transport (`GetLocalImage`, route `selected`, `files:read`, then the
 ticketed `GET /attachments/image/{contentID}`), so a paired browser sees
-them too. A forge attachment referenced by PR/MR
+them too. A local image has the image menu with Copy Path and Copy
+Markdown, which copy the reference as the agent wrote it; Copy Image and
+a browser download read the original (`maxWidth` 0), and Save elsewhere
+is `SaveLocalImage` on the thread's computer (`files:read`). A forge
+attachment referenced by PR/MR
 content (a GitLab `/uploads/<hex>/` path, a GitHub user-attachment URL,
 an `<img>` or `<video>` src, including one inside an HTML wrapper the
 sanitizer handles, where the element is emitted without its `src` and
@@ -66,7 +70,8 @@ rendered, only saved to the owning computer, downloaded by the browser
 or opened on the forge, and `image/svg+xml` uses a `data:` URL rather
 than a blob URL so a navigated-to SVG cannot run script on the app
 origin. A forge `image` has the image menu (`utils/imageMenuActions.ts`):
-Copy Image rasterises the bytes the page already holds to PNG, and the
+Copy Image rasterises the original to PNG (the bytes the page holds, or
+a fetch of the original when it painted a display-size derivative), and the
 save row runs the same activation as a file chip, labelled "Open on
 GitHub" or "Open on GitLab" where that activation opens the forge page
 instead of saving. The element is found by the nonce-gated href it
