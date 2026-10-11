@@ -90,3 +90,9 @@ e2e/fixtures/
 /ao-stutter*/
 /ao-stutter*.md
 /ao-perfprobe/
+
+# Verification evidence for a pull request (screenshots, spec logs, mutation
+# logs) is published to a secret gist on the author's account and linked from
+# the pull request body. It is never committed: the files carry local paths
+# and the repository is public.
+.evidence/
