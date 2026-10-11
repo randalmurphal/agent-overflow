@@ -67,6 +67,15 @@
       {:else if request.recurringJobsError}
         <p class="break-words text-xs text-warning">Could not check this conversation’s recurring jobs: {request.recurringJobsError}</p>
       {/if}
+      {#if request.standingAgent}
+        <p class="text-xs text-warning" data-testid="transfer-standing-agent">
+          {kind === 'move'
+            ? 'This conversation is a standing agent. Its home stays on this computer and the move ends its loops and watches, so it arrives as an ordinary conversation.'
+            : 'This conversation is a standing agent. Its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.'}
+        </p>
+      {:else if request.standingAgentError}
+        <p class="break-words text-xs text-warning">Could not check whether this conversation is a standing agent: {request.standingAgentError}</p>
+      {/if}
       <label class="flex flex-col gap-1.5 text-xs text-fg-muted">
         Computer
         <select class={fieldClass} value={destination} disabled={locked} onchange={(event) => selectDestination(event.currentTarget.value)}>

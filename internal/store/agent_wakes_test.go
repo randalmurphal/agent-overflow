@@ -336,6 +336,55 @@ func TestPromoteStandingAgentIsIdempotent(t *testing.T) {
 	}
 }
 
+// A move retires its thread when it commits, and the agent row goes in the
+// same write; a copy, and a move cancelled before it commits, keep the row.
+func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"moved", "copied", "cancelled"} {
+		mustCreateThread(t, s, id)
+		if _, _, err := s.PromoteStandingAgent(id, "/home/"+id, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	isAgent := func(id string) bool {
+		t.Helper()
+		_, found, err := s.GetStandingAgent(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	transfer := func(threadID, kind string, phases ...string) {
+		t.Helper()
+		row, err := s.CreateThreadTransfer(transferRequest(threadID, kind, "outgoing"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		advanceTransfer(t, s, row.ID, phases...)
+	}
+
+	transfer("moved", "move", "prepared")
+	if !isAgent("moved") {
+		t.Fatal("a prepared move dropped the agent")
+	}
+	row, err := s.ListRecentThreadTransfers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, row[0].ID, "committed")
+	if isAgent("moved") {
+		t.Fatal("a committed move kept the agent")
+	}
+	advanceTransfer(t, s, row[0].ID, "complete")
+
+	transfer("copied", "copy", "prepared", "committed", "complete")
+	transfer("cancelled", "move", "prepared", "canceled")
+	if !isAgent("copied") || !isAgent("cancelled") {
+		t.Fatalf("copy kept the agent: %v, cancelled move kept it: %v", isAgent("copied"), isAgent("cancelled"))
+	}
+}
+
 // A watch's undelivered wake keeps its body until a later undelivered wake
 // replaces it or the label is registered again; a delivery leaves it, a loop
 // keeps none, and an output past the cap is refused.

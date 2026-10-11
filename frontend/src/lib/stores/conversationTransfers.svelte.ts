@@ -4,7 +4,7 @@ import {
   BeginThreadTransfer, BindThreadTransferDestination, CreateThreadTransferOffer,
   GetThreadTransfers, GetThreadTransferIntent, RetryThreadTransfer,
   CancelThreadTransfer, DiscardUnpreparedThreadTransfer,
-  GetThreadTransferDestinationProject, GetThread, ListThreadRecurringJobs,
+  GetThreadTransferDestinationProject, GetThread, GetStandingAgent, ListThreadRecurringJobs,
 } from './bindings';
 import type { Thread } from '../types/models';
 import { type BackendKey } from '../transport/backendKey';
@@ -42,6 +42,9 @@ export interface TransferRequest {
   /** Recurring jobs the source session holds; the transfer ends them. */
   recurringJobs?: RecurringJob[];
   recurringJobsError?: string;
+  /** Whether the source thread is a standing agent, once the source answered. */
+  standingAgent?: boolean;
+  standingAgentError?: string;
 }
 
 interface ComputerTransfers { rows: readonly ConversationTransfer[]; error: string }
@@ -64,6 +67,7 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
   }
   pending = { operationID: randomId(), thread, source: threadMachine(thread.id, thread.projectId), destination, open: true, submitted: false, submitting: false, error: '' };
   void loadRecurringJobs(pending);
+  void loadStandingAgent(pending);
 }
 // A transfer stops the source session, so the recurring jobs it holds end
 // rather than holding the transfer. The dialog names them before the user
@@ -75,6 +79,18 @@ async function loadRecurringJobs(request: TransferRequest): Promise<void> {
   } catch (error) {
     if (error instanceof TransportError && error.code === 'method_not_found') return;
     patchRequest(request.operationID, { recurringJobsError: userFacingError(error) });
+  }
+}
+// A standing agent's home and schedules belong to its computer, so the
+// dialog says what a transfer leaves behind before the user commits. A
+// source too old to answer has no standing agents.
+async function loadStandingAgent(request: TransferRequest): Promise<void> {
+  try {
+    const agent = await withBackendTarget(request.source, () => GetStandingAgent(request.thread.id));
+    patchRequest(request.operationID, { standingAgent: agent !== null });
+  } catch (error) {
+    if (error instanceof TransportError && error.code === 'method_not_found') return;
+    patchRequest(request.operationID, { standingAgentError: userFacingError(error) });
   }
 }
 export function canOfferConversationTransfer(thread: Thread): boolean {

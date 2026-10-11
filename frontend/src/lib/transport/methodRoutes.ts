@@ -138,6 +138,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2554697378: 'home', // GetSettings
 	3138117849: 'home', // GetSoundFiles
 	2622552651: 'home', // GetSpinnerFiles
+	634025932: 'thread', // GetStandingAgent
 	2329592604: 'home', // GetTerminalReplay
 	2000462111: 'home', // GetThemeFiles
 	1098302047: 'thread', // GetThread

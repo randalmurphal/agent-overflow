@@ -143,6 +143,7 @@ export const DeleteThread = dispatch('DeleteThread');
 export const ForkThread = dispatch('ForkThread');
 export const ForkSideChat = dispatch('ForkSideChat');
 export const PromoteScratchThread = dispatch('PromoteScratchThread');
+export const GetStandingAgent = dispatch('GetStandingAgent');
 export const BeginThreadTransfer = dispatch('BeginThreadTransfer');
 export const CreateThreadTransferOffer = dispatch('CreateThreadTransferOffer');
 export const BindThreadTransferDestination = dispatch('BindThreadTransferDestination');
