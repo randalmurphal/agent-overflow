@@ -50,8 +50,8 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		updateSchema(shape),
 		groupSchema(shape),
 		remindSchema(),
-		loopSchema(),
-		watchSchema(),
+		loopSchema(s.wakeFloor),
+		watchSchema(s.wakeFloor),
 	}
 }
 
