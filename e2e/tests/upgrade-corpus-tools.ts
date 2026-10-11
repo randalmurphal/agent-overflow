@@ -1,7 +1,7 @@
-// The candidate build's own tools, as the upgrade corpus checks use them:
-// the binary `make harness-build` wrote (or AO_HARNESS_BIN), its siblings,
-// its stamped version, and a read-only query of a database through
-// `ao-harness db`.
+// The build's tools, as the upgrade corpus checks use them: the candidate
+// binary (`make harness-build`'s, or AO_HARNESS_BIN for a release's own
+// bytes), the harness tools beside the default, the stamped version, and a
+// read-only query of a database through `ao-harness db`.
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -14,9 +14,9 @@ export const candidateBinary = process.env.AO_HARNESS_BIN ?? path.join(repoRoot,
 const UPDATE_PREFIX = '__AO_UPDATE__:';
 const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
 
-/** A sibling of the candidate binary (ao-harness, ao-mockprovider). */
-export function candidateSibling(name: string): string {
-  return path.join(path.dirname(candidateBinary), name);
+/** A tool `make harness-build` wrote beside the default candidate (ao-harness, ao-mockprovider). */
+export function harnessTool(name: string): string {
+  return path.join(repoRoot, 'bin', name);
 }
 
 /** The version `make harness-build` stamps into the candidate. */
@@ -37,7 +37,7 @@ export async function timed<T>(fn: () => Promise<T>): Promise<{ value: T; ms: nu
 export async function dbQuery<T>(dbPath: string, sql: string, attach?: string): Promise<T[]> {
   const args = ['-o', 'json', 'db', '--file', dbPath];
   if (attach) args.push('--attach', `snap=${attach}`);
-  const { stdout } = await run(candidateSibling('ao-harness'), [...args, sql], {
+  const { stdout } = await run(harnessTool('ao-harness'), [...args, sql], {
     timeout: 10 * 60_000,
     maxBuffer: 256 * 1024 * 1024,
   });

@@ -5,6 +5,8 @@
 // it still writes what the schema can hold. The steps are fixed: one thread
 // per library scenario in topUpScenarios, driven through the mock provider
 // the way a user's turn runs, then the sidebar and workflow operations.
+import { randomBytes } from 'node:crypto';
+import * as path from 'node:path';
 import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
@@ -69,19 +71,13 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   const library = await harness.rpc<{ library: LibraryEntry[] }>('HarnessListScenarios');
   const providers = new Map(library.library.map((entry) => [entry.name, entry.provider]));
 
-  const project = await timed(() => seedWorkflowProject(
-    harness,
-    `topup-v${version}`,
-    [
-      { name: 'topup-flow', yaml: singlePhaseWorkflow('topup-flow', '        - to: done', 'write') },
-      { name: 'topup-gate', yaml: humanGateWorkflow('topup-gate') },
-    ],
-    [],
-    '',
-    { 'README.md': `# Top-up v${version}\n` },
-  ));
+  // One project per candidate version, reused when a run at the same
+  // version already made it (a re-run, or a pull request before the
+  // version bump).
+  const project = await timed(() => ensureTopUpProject(harness, version));
   ms.project = project.ms;
-  const projectId = project.value.projectId;
+  const { projectId } = project.value;
+  const nonce = randomBytes(3).toString('hex');
 
   const scenarioThreads: Record<string, string> = {};
   const threadIds: string[] = [];
@@ -100,7 +96,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
       const fork = await harness.rpc<{ id: string }>('ForkThread', scenarioThreads[forked], null);
       threadIds.push(fork.id);
     }
+    // A side chat lives until it is promoted or the next boot sweeps it;
+    // promoted, it stays a thread of the corpus.
     const sideChat = await harness.rpc<{ id: string }>('ForkSideChat', scenarioThreads['streaming-text']);
+    await harness.rpc('PromoteScratchThread', sideChat.id);
     threadIds.push(sideChat.id);
 
     // A draft with an image, a file and a terminal capture attached.
@@ -127,7 +126,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('PinThread', scenarioThreads['tool-call']);
     await harness.rpc('PinThread', scenarioThreads['file-edit']);
     await harness.rpc('SetThreadPinGroup', scenarioThreads['file-edit'], 1);
-    const group = await harness.rpc<{ id: string }>('CreateThreadGroup', projectId, `Top-up v${version}`);
+    const group = await harness.rpc<{ id: string }>('CreateThreadGroup', projectId, `Top-up v${version} ${nonce}`);
     await harness.rpc('SetThreadGroup', [scenarioThreads['codex-basic'], scenarioThreads['codex-approval']], group.id);
     await harness.rpc('ArchiveThread', scenarioThreads['session-death']);
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
@@ -141,6 +140,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
         provider: variant.provider ?? 'claude',
         model: variant.model ?? MODEL[variant.provider ?? 'claude'],
         ...variant.options,
+        ...(variant.options.worktreeBranch ? { worktreeBranch: `${variant.options.worktreeBranch as string}-${nonce}` } : {}),
       });
       threadIds.push(thread.id);
     }
@@ -192,7 +192,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
 
   const projects = await timed(async () => {
     await harness.rpc('SetProjectWorktreeSetup', projectId, { copy: ['README.md'], run: [['true']], timeout: '1m' });
-    const archived = await seedWorkflowProject(harness, `topup-archived-v${version}`, [], [], '', { 'README.md': '# archived\n' });
+    const archived = await seedWorkflowProject(harness, `topup-archived-v${version}-${nonce}`, [], [], '', { 'README.md': '# archived\n' });
     await harness.rpc('RenameProject', archived.projectId, `Top-up archived v${version}`);
     await harness.rpc('UpdateProjectSortPositions', [archived.projectId, projectId]);
     await harness.rpc('ArchiveProject', archived.projectId);
@@ -203,7 +203,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors.
   const growth: CensusGrowth = {
-    exact: { projects: 1, archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: project.value.created ? 1 : 0, archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };
@@ -218,6 +218,26 @@ const THREAD_VARIANTS: Array<{ title: string; provider?: 'claude' | 'codex'; mod
   { title: 'codex ultra effort', provider: 'codex', model: ULTRA_CODEX_MODEL, options: { reasoningEffort: 'ultra' } },
   { title: 'codex worktree', provider: 'codex', options: { worktreeBranch: 'topup/worktree', worktreeBaseLocal: true } },
 ];
+
+/** The top-up's project, seeded with its workflow definitions, or found from an earlier run at this version. */
+async function ensureTopUpProject(harness: HarnessApp, version: string): Promise<{ projectId: string; created: boolean }> {
+  const name = `topup-v${version}`;
+  const rows = (await harness.rpc<Array<{ project: { id: string; path: string } }> | null>('ListProjects')) ?? [];
+  const existing = rows.find((row) => path.basename(row.project.path) === name);
+  if (existing) return { projectId: existing.project.id, created: false };
+  const seeded = await seedWorkflowProject(
+    harness,
+    name,
+    [
+      { name: 'topup-flow', yaml: singlePhaseWorkflow('topup-flow', '        - to: done', 'write') },
+      { name: 'topup-gate', yaml: humanGateWorkflow('topup-gate') },
+    ],
+    [],
+    '',
+    { 'README.md': `# Top-up v${version}\n` },
+  );
+  return { projectId: seeded.projectId, created: true };
+}
 
 async function uploadAttachment(harness: HarnessApp, threadId: string, name: string, mime: string, bytes: Buffer): Promise<string> {
   const ticket = await harness.rpc<string>('MintAttachmentUploadTicket', threadId, name, mime, bytes.length);

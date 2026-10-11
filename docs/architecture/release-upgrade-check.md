@@ -17,21 +17,41 @@ boundary and, on Linux, the isolated network namespace.
 
 ## Where the old-schema data comes from
 
-There is no migration manager and no down migration. The previous release's
-own binary is the only generator of data at its schema: the check boots that
-release's headless Linux binary in harness mode on a fresh data root and
-seeds the corpus through its `HarnessSeed`, so the database is at that
-release's schema by construction, written by the code that owned it.
+There is no migration manager and no down migration, so data at the
+previous release's schema comes from the previous release. Each release
+publishes `upgrade-corpus.tar.zst`: the data root its own check migrated,
+served and topped up, at its schema, made by its bytes. The next release's
+check restores that archive, migrates it, serves it, tops it up and
+archives the result as its own asset. Every release's writes stay in the
+corpus from the release that first made them, so a migration two releases
+later still meets the rows of a feature that landed in between, without
+any release re-seeding anything.
 
-The synthetic corpus is deterministic: a function of its scale and nothing
-else. Its shape is a measured year of real use (474 threads over 6 projects,
-41% Codex, 5 archived, thread groups and pins; items per thread p50 119, p90
-1024, p99 26883, max 160710; turns per thread p50 1, p99 179, max 619;
-payload bytes per item p50 640, p90 6 KiB, p99 25 KiB, max 1 MiB). Thread
-sizes are stratified quantiles of those distributions, so a smoke slice and
-a full corpus carry the same shape. Scale 1 is about 2 GB. The generator
-needs the `repeat` and `padBefore` seed fields, which every release from
-v0.0.16 on has.
+The lineage starts, and restarts, from a synthetic seed: when the previous
+release publishes no corpus asset (or with `--bootstrap`), its headless
+Linux binary boots in harness mode on a fresh data root and seeds the
+corpus through its `HarnessSeed`, written by the code that owned that
+schema. The synthetic corpus is deterministic: a function of its scale and
+nothing else. Its shape is a measured year of real use (474 threads over 6
+projects, 41% Codex, 5 archived, thread groups and pins; items per thread
+p50 119, p90 1024, p99 26883, max 160710; turns per thread p50 1, p99 179,
+max 619; payload bytes per item p50 640, p90 6 KiB, p99 25 KiB, max 1 MiB).
+Thread sizes are stratified quantiles of those distributions, so a smoke
+slice and a full corpus carry the same shape. Scale 1 is about 2 GB. The
+generator needs the `repeat` and `padBefore` seed fields, which every
+release from v0.0.16 on has.
+
+The archive (`e2e/tests/upgrade-corpus-archive.ts`) is the data root
+(`agent-overflow/` with the database, settings, attachments, workflow runs
+and worktrees; `workspaces/` with the project repositories) minus the
+instance's runtime state (locks, control and port files, logs, the binary,
+the update snapshot), packed with `tar --zstd` beside a manifest naming the
+release, the schema version and the root it was made at. Project paths are
+absolute in the store, so the sandbox root is fixed
+(`/tmp/ao-upgrade-corpus`; `AO_RELEASE_UPGRADE_ROOT` is its parent) and a
+restore at another root fails naming both. After a restore every project
+path is checked to lie under the restored `workspaces/`. Filler payloads
+compress about seventeen to one: the 2.7 GB corpus is a 160 MB asset.
 
 What the seed cannot write, the top-up does. After the migration the
 candidate boots on the migrated root and runs `topUp`
@@ -127,6 +147,8 @@ made it: never commit it, attach it to a run, or publish it.
     exactly the projects, archived project, pins and group the top-up adds,
     at least its threads, and no table shrunk; the report carries every
     delta (`topUpDeltas`) and the top-up's step timings.
+11. With `--archive-out`, the root is archived for the next release. A
+    real data root is never archived.
 
 Every phase's duration lands in the JSON report (`durations`), beside the
 versions, the corpus figures, the gate's answer, the command cadences, the
@@ -142,28 +164,32 @@ names the entry to add.
 ## Running it
 
 ```sh
-make release-upgrade-check                                   # newest release, scale 1
-make release-upgrade-check RELEASE_UPGRADE_SCALE=0.02        # smoke slice, seconds
-make release-upgrade-check PREVIOUS_RELEASE=v0.0.16          # a named release
-make release-upgrade-check RELEASE_UPGRADE_CORPUS=/clone     # a real data root
+make release-upgrade-check                                      # the newest release's corpus
+make release-upgrade-check RELEASE_UPGRADE_ARCHIVE_OUT=c.tar.zst # and archive the result
+make release-upgrade-check PREVIOUS_RELEASE=v0.0.16             # a named release
+make release-upgrade-check RELEASE_UPGRADE_BOOTSTRAP=1          # seed with its binary instead
+make release-upgrade-check RELEASE_UPGRADE_BOOTSTRAP=1 RELEASE_UPGRADE_SCALE=0.02  # smoke slice
+make release-upgrade-check RELEASE_UPGRADE_CORPUS=/clone        # a real data root, never archived
 ```
 
-At scale 1 from v0.0.16 (474 threads, 649k items, a 2.7 GB database) a
-run takes about two minutes on a developer laptop: about 105 s to seed,
-4 s for the launcher's snapshot, under a second for the trial boot's
-migrations from v139 to v141, 11 s for the fingerprint, under a second for
-the candidate boot, and under a second until the 130k-row thread paints
-its first row. The smoke slice takes about ten seconds.
+At scale 1 (474 threads, 649k items, a 2.7 GB database) a run from the
+archive takes about 40 s on a developer laptop, a bootstrap about three
+minutes: 4 s to restore the archive (or 110 s to seed one), 4 s for the
+launcher's snapshot, under a second for the trial boot's migrations from
+v139 to v141, 13 s for the fingerprint, under a second for the candidate
+boot, under a second until the 130k-row thread paints its first row, 22 s
+for the top-up and 3 s to archive. The smoke slice takes about 35 s.
 
-The previous release's `agent-overflow-headless-linux-amd64` is downloaded
-once to `bin/releases/<tag>/` and verified against the release's
-`SHASUMS256`, so the check runs on Linux (a developer's WSL or a CI runner).
-The migration and store code is platform-neutral; the macOS and Windows
-release legs are covered by their own smokes. The sandbox lives under the
-system temp dir (`AO_RELEASE_UPGRADE_ROOT` moves it) and needs roughly three
+The previous release's assets are downloaded once to `bin/releases/<tag>/`
+and verified against the release's `SHASUMS256`, so the check runs on
+Linux (a developer's WSL or a CI runner). The migration and store code is
+platform-neutral; the macOS and Windows release legs are covered by their
+own smokes. The sandbox is replaced on every run and needs roughly three
 times the corpus size while the launcher's snapshot exists.
 `AO_RELEASE_UPGRADE_KEEP=1` keeps it; the Playwright annotation names the
-path.
+path. The candidate is `bin/agent-overflow` from `make harness-build`, or
+`AO_HARNESS_BIN`: the release workflow points it at the release's own
+headless binary.
 
 ## Reading a failure
 
@@ -188,7 +214,10 @@ path.
   thread; a shrunken table names the `countIgnoredTables` or
   `rowsMayShrink` entry that would cover it.
 - The config names a stale exception: its migration is already in the
-  corpus, so remove the entry.
+  corpus, so remove the entry. This surfaces on the pull request that bumps
+  the version, which runs the check against the newest release's corpus.
+- The archive was made at another root: run with the same
+  `AO_RELEASE_UPGRADE_ROOT`, or bootstrap a new corpus.
 - The deferred phase records a failure: `HarnessStoreStatus` reports the
   version, title and first error. The phase skips a failing item and the
   next boot retries it, so this is a defect even when the boot looked fine.

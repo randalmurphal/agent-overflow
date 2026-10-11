@@ -41,6 +41,7 @@ import {
   UPDATE_COMMAND_CEILING_MS,
   UPDATE_COMMAND_STALL_WINDOW_MS,
 } from './upgrade-corpus-config.js';
+import { archiveCorpus, assertRelocated, restoreCorpus, type CorpusManifest } from './upgrade-corpus-archive.js';
 import { corpusPlan, seedCorpus } from './upgrade-corpus-generator.js';
 import {
   assertExceptionsCurrent,
@@ -68,11 +69,13 @@ import {
   type Cadence,
   type HeadlessBackend,
 } from './upgrade-corpus-launcher.js';
-import { buildVersion, candidateSibling, timed } from './upgrade-corpus-tools.js';
+import { buildVersion, harnessTool, timed } from './upgrade-corpus-tools.js';
 import { topUp } from './upgrade-corpus-topup.js';
 
 const previousBinary = process.env.AO_RELEASE_UPGRADE_PREVIOUS_BIN;
 const corpusRoot = process.env.AO_RELEASE_UPGRADE_CORPUS;
+const archivePath = process.env.AO_RELEASE_UPGRADE_ARCHIVE;
+const archiveOut = process.env.AO_RELEASE_UPGRADE_ARCHIVE_OUT;
 const scale = Number(process.env.AO_RELEASE_UPGRADE_SCALE ?? '1');
 const MINUTE = 60_000;
 
@@ -84,8 +87,8 @@ interface PendingRefusal {
 }
 
 interface Report {
-  mode: 'synthetic' | 'corpus';
-  previous: { binary?: string; version?: string; schemaVersion: number };
+  mode: 'synthetic' | 'corpus' | 'archive';
+  previous: { binary?: string; archive?: string; version?: string; schemaVersion: number };
   candidate: { version: string; schemaVersion: number };
   corpus: { scale?: number; threads: number; archived: number; groups: number; pinned: number; items: number; payloadBytes: number; dbBytes: number };
   gate: { status: number; pending?: PendingRefusal };
@@ -112,11 +115,17 @@ interface Report {
   topUp: { steps: Record<string, number>; threads: number; projectId: string };
   /** Every census count after the top-up minus before it. */
   topUpDeltas: Record<string, number>;
+  /** The archive written for the next release, when one was asked for. */
+  archive?: CorpusManifest & { path: string; bytes: number };
   cliCalls: string[];
 }
 
 test('the candidate migrates a large previous-release database and boots on it', async ({ page }) => {
-  test.skip(!previousBinary && !corpusRoot, 'set AO_RELEASE_UPGRADE_PREVIOUS_BIN or AO_RELEASE_UPGRADE_CORPUS');
+  test.skip(!previousBinary && !corpusRoot && !archivePath,
+    'set AO_RELEASE_UPGRADE_ARCHIVE, AO_RELEASE_UPGRADE_PREVIOUS_BIN or AO_RELEASE_UPGRADE_CORPUS');
+  if (corpusRoot && archiveOut) {
+    throw new Error('a real data root is never archived; AO_RELEASE_UPGRADE_ARCHIVE_OUT is for archive and synthetic runs');
+  }
   test.setTimeout(4 * 60 * MINUTE);
   const rig = await prepareRig(process.env.AO_RELEASE_UPGRADE_ROOT);
   const durations: Record<string, number | number[]> = {};
@@ -127,7 +136,18 @@ test('the candidate migrates a large previous-release database and boots on it',
   try {
     // 1. The database the previous release wrote.
     let before: Census;
-    if (corpusRoot) {
+    if (archivePath) {
+      // The corpus the previous release published: its own migrated,
+      // topped-up root, restored at the root it was made at.
+      report.mode = 'archive';
+      const restored = await timed(() => restoreCorpus(rig, archivePath));
+      durations.restoreMs = restored.ms;
+      await assertRelocated(rig);
+      before = await census(rig.dbPath);
+      expect(before.schemaVersion).toBe(restored.value.schemaVersion);
+      report.previous = { archive: archivePath, version: restored.value.release, schemaVersion: before.schemaVersion };
+      report.corpus = { ...corpusCounts(before), dbBytes: (await stat(rig.dbPath)).size };
+    } else if (corpusRoot) {
       report.mode = 'corpus';
       const source = path.join(corpusRoot, 'agent-overflow');
       await stat(path.join(source, 'agent-overflow.db'));
@@ -142,7 +162,7 @@ test('the candidate migrates a large previous-release database and boots on it',
       const boot = await timed(() => launchHarness({
         binary: previousBinary,
         savedRelease: true,
-        mockProvider: candidateSibling('ao-mockprovider'),
+        mockProvider: harnessTool('ao-mockprovider'),
         mockForge: '',
         dataDir: rig.dataRoot,
         timeoutMs: 2 * MINUTE,
@@ -238,7 +258,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     expect(migrated.schemaVersion).toBe(report.gate.pending?.build ?? before.schemaVersion);
 
     // 5. The candidate boots on the migrated root and answers the reads.
-    const boot = await timed(() => launchHarness({ dataDir: rig.dataRoot, timeoutMs: 30 * MINUTE }));
+    const boot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: harnessTool('ao-mockprovider'), mockForge: harnessTool('ao-mockforge'), timeoutMs: 30 * MINUTE }));
     candidate = boot.value;
     durations.candidateBootMs = boot.ms;
     const atBoot = await candidate.rpc<StoreStatus>('HarnessStoreStatus');
@@ -329,7 +349,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     // 10. The top-up: the candidate writes its own slice of use into the
     // migrated store, natively at its schema, so the corpus the next
     // release inherits carries rows of everything this release writes.
-    const reboot = await timed(() => launchHarness({ dataDir: rig.dataRoot, timeoutMs: 30 * MINUTE }));
+    const reboot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: harnessTool('ao-mockprovider'), mockForge: harnessTool('ao-mockforge'), timeoutMs: 30 * MINUTE }));
     candidate = reboot.value;
     durations.topUpBootMs = reboot.ms;
     const topped = await timed(() => topUp(candidate!, candidateVersion));
@@ -342,6 +362,21 @@ test('the candidate migrates a large previous-release database and boots on it',
     const final = await census(rig.dbPath);
     report.topUpDeltas = compareCensus(after, final, after.schemaVersion, final.schemaVersion, topped.value.growth);
     report.cliCalls = await cliCalls(rig);
+
+    // 11. The corpus the next release inherits: this root, as the candidate
+    // left it, at the candidate's schema.
+    if (archiveOut) {
+      const dbBytes = (await stat(rig.dbPath)).size;
+      const packed = await timed(() => archiveCorpus(rig, archiveOut, {
+        release: candidateVersion,
+        schemaVersion: final.schemaVersion,
+        threads: final.threads + final.archived,
+        items: final.items,
+        dbBytes,
+      }));
+      durations.archiveMs = packed.ms;
+      report.archive = { ...packed.value, path: archiveOut, bytes: (await stat(archiveOut)).size };
+    }
   } finally {
     for (const b of headless) {
       await stopHeadless(b).catch(() => killGroup(b.child));

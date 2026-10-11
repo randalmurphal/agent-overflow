@@ -6,13 +6,12 @@
 // holds them to.
 import { type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawnContained } from '../src/harness-process.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
-import { candidateBinary, candidateSibling } from './upgrade-corpus-tools.js';
+import { candidateBinary } from './upgrade-corpus-tools.js';
 
 const UPDATE_PREFIX = '__AO_UPDATE__:';
 const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
@@ -35,9 +34,17 @@ export interface Rig {
 // reaches a backend. The login-shell PATH probe runs a stand-in shell that
 // skips login files, where a system profile could put a real provider CLI
 // ahead of the fakes.
+/** The rig root under its parent: fixed, because a corpus archive is relocatable only to the root it was made at. */
+export const RIG_NAME = 'ao-upgrade-corpus';
+
+/**
+ * prepareRig builds the sandbox at `<parent>/ao-upgrade-corpus` (parent
+ * defaults to /tmp), replacing what a previous run left there.
+ */
 export async function prepareRig(parent: string | undefined): Promise<Rig> {
-  if (parent) await mkdir(parent, { recursive: true });
-  const root = await mkdtemp(path.join(parent ?? tmpdir(), 'ao-release-upgrade-'));
+  const root = path.join(parent ?? '/tmp', RIG_NAME);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
   const dataRoot = path.join(root, 'data');

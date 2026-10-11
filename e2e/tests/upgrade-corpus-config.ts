@@ -182,7 +182,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'channels', reason: 'a discussion or coordination channel an agent opens' },
   { table: 'channel_messages', reason: 'messages on a discussion or coordination channel' },
-  { table: 'scratch_threads', columns: ['request_token'], values: { return_mode: ['plan', 'discussion', 'terminal', 'workflow', 'workflow-studio', 'workflow-triage'] }, reason: 'a side chat forked from a thread in that mode, or one an agent request opened' },
+  { table: 'scratch_threads', reason: 'a side chat not yet promoted; the next boot sweeps every one, so the corpus keeps none' },
   { table: 'work_item_effects', reason: "an agent's workflow tool calls on a run" },
 
   // Imports from a provider home.
@@ -196,7 +196,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
 
   // Discussions, plans and reviews.
   { table: 'discussion_definitions', reason: 'a discussion definition the project provides' },
-  { table: 'threads', columns: ['discussion_id'], values: { mode: ['discussion', 'terminal', 'workflow-studio', 'workflow-triage', 'holder'], provider: ['claude-tui'] }, reason: 'threads their owning saga creates (a discussion, a terminal, the workflow studio and triage, a fork holder) and the claude-tui provider, which no mock speaks' },
+  { table: 'threads', columns: ['discussion_id'], values: { mode: ['discussion', 'terminal', 'workflow-studio', 'workflow-triage', 'holder', 'scratch'], provider: ['claude-tui'] }, reason: 'threads their owning saga creates (a discussion, a terminal, the workflow studio and triage, a fork holder, an unpromoted side chat) and the claude-tui provider, which no mock speaks' },
   { table: 'proposed_plans', reason: 'a plan a Claude turn proposes through ExitPlanMode, which no library scenario emits' },
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
