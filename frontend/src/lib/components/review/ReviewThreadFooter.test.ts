@@ -39,12 +39,17 @@ function renderFooter(overrides: Record<string, unknown> = {}) {
   });
 }
 
+// happy-dom has no clipboard; the stub is an own property the shared-worker
+// guard expects gone (not present as undefined) when the file ends.
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
 function stubClipboard(writeText: (text: string) => Promise<void>) {
-  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
 }
 
 afterEach(() => {
-  Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+  delete (navigator as { clipboard?: unknown }).clipboard;
+  if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
 });
 
 describe('threadClipboardText', () => {
