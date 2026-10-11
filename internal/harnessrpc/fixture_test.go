@@ -34,6 +34,7 @@ type testHost struct {
 	browserScroll     func(string, string, float64, float64) error
 	browserScreenshot func(string, string) ([]byte, error)
 	pushSent          []PushMessage
+	updateWorkReason  string
 	droppedRetained   int
 	broadcastRows     []string
 }
@@ -97,6 +98,9 @@ func (h *testHost) Notify(string, string, notify.Target) error { return nil }
 // push configured looks like.
 func (h *testHost) PushSent() []PushMessage { return h.pushSent }
 func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
+func (h *testHost) UpdateWorkReason() (string, error) {
+	return h.updateWorkReason, nil
+}
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }

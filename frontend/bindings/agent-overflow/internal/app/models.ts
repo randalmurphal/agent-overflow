@@ -6366,6 +6366,35 @@ export class ThreadPeerResolve {
 }
 
 /**
+ * ThreadRecurringJob is one recurring scheduled job armed in a thread's live
+ * provider session (Claude CronCreate).
+ */
+export class ThreadRecurringJob {
+    "id": string;
+    "cron": string;
+
+    /** Creates a new ThreadRecurringJob instance. */
+    constructor($$source: Partial<ThreadRecurringJob> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("cron" in $$source)) {
+            this["cron"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadRecurringJob instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadRecurringJob {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadRecurringJob($$parsedSource as Partial<ThreadRecurringJob>);
+    }
+}
+
+/**
  * ThreadTransferIntent is a public challenge, not authority to resume a thread.
  * The source keeps the activation secret until its retirement is durable.
  */

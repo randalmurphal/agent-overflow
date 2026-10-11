@@ -1,0 +1,34 @@
+{
+  "what": "Shape and timing summary for the cron captures (claude-wire.md §E11): cron_create_fire_20261010.ndjson and cron_loop_midturn_20261010.ndjson, claude 2.1.284, model claude-sonnet-5, AO's stream-json flag set with --session-mirror. Scheduler constants were read from the 2.1.284 bundle text (not executed).",
+  "source": {
+    "captured": "2026-10-10",
+    "cli_version": "2.1.284",
+    "sessions": ["00000000-0000-4000-8000-00000000c201", "00000000-0000-4000-8000-00000000c202"]
+  },
+  "acks": {
+    "CronCreate_input": { "cron": "* * * * *", "prompt": "Reply with exactly the text CRON-FIRED and call no tools." },
+    "CronCreate_tool_use_result_recurring": { "id": "6ae146b0", "humanSchedule": "Every minute", "recurring": true, "durable": false },
+    "CronCreate_text_recurring": "Scheduled recurring job 6ae146b0 (Every minute). Session-only (not written to disk, dies when Claude exits). Auto-expires after 7 days. Use CronDelete to cancel sooner.",
+    "CronCreate_tool_use_result_one_shot": { "id": "718ab791", "humanSchedule": "17 3 1 1 *", "recurring": false, "durable": false },
+    "CronList_tool_use_result": { "jobs": [{ "id": "6ae146b0", "cron": "* * * * *", "humanSchedule": "Every minute", "prompt": "Reply with exactly the text CRON-FIRED and call no tools.", "recurring": true, "durable": false }] },
+    "CronList_empty": { "jobs": [] },
+    "CronDelete_tool_use_result": { "id": "6ae146b0" },
+    "CronDelete_unknown_id": { "is_error": true, "tool_use_result": "Error: No scheduled job with id 'nonexistent0'" },
+    "notes": "The CronCreate ack carries no cron expression; only the tool_use input and a later CronList do. No key overlaps the E2/E5/E7/E8 background signals."
+  },
+  "fires": {
+    "wire": "command_lifecycle started (CLI-minted command_uuid), system/status, transcript_mirror [queue-operation enqueue (content = prompt), queue-operation dequeue, user row], assistant, result, command_lifecycle completed. No queued state, no system/init, no user envelope on stdout, no task lifecycle.",
+    "mirror_user_row_keys": { "type": "user", "isSidechain": false, "isMeta": true, "promptSource": "system", "turnOrigin": "scheduled", "uuid": "= command_uuid" },
+    "idle_fire_timestamps": ["2026-10-11T02:07:13.207Z", "2026-10-11T02:08:13.214Z", "2026-10-11T02:09:13.228Z"],
+    "idle_fire_offset_note": "Job 6ae146b0 fires 13s past each minute: 0x6ae146b0 / 2^32 = 0.4175, x recurringFrac 0.5 x 60s period = 12.5s.",
+    "held_fire": "Job b919c533 armed 02:12:49; an 80s foreground Bash turn ran 02:13:06 to 02:14:31; the fire due during it ran once at 02:14:33, right after that turn's result."
+  },
+  "scheduler_2_1_284": {
+    "config_defaults": { "recurringFrac": 0.5, "recurringCapMs": 1800000, "oneShotMaxMs": 90000, "oneShotFloorMs": 0, "oneShotMinuteMod": 30, "recurringMaxAgeMs": 604800000, "cacheLeadMs": 15000 },
+    "config_override": "tengu_kairos_cron_config feature flag may replace the defaults at runtime.",
+    "recurring_next_fire": "i = next match after anchor (createdAt, then each fire time); o = next match after i minus i; if cron matches ^\\*/\\d+ \\* \\* \\* \\*$ and 15s < o, o >= 5min and o - 15s < 5min: anchor + o - 15s; else i + min(frac(id) x recurringFrac x o, recurringCapMs), frac(id) = first 8 hex chars of the id / 2^32.",
+    "one_shot_fire": "the next match, or up to oneShotMaxMs earlier when its minute is a multiple of oneShotMinuteMod.",
+    "age_out": "a recurring job is deleted after its first fire at or past recurringMaxAgeMs since creation.",
+    "cron_grammar": "5 whitespace-separated fields (minute 0-59, hour 0-23, day of month 1-31, month 1-12, day of week 0-6 with 7 = 0); each a comma list of *, */n, a-b, a-b/n or n; no names. Matching uses local time; day of month and day of week are ORed when both are restricted, and a field whose set covers its whole range counts as unrestricted."
+  }
+}

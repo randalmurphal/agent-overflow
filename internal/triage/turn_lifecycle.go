@@ -1932,7 +1932,11 @@ func (r *Router) isThreadStopped(threadID string) bool {
 // before anything init-like, and those must route. Clearing pre-spawn
 // is safe: the prior subprocess's read loop is fully drained before a
 // start proceeds (provider Close blocks on read-loop exit), so no
-// stale frame can slip through the freshly-cleared gate. No wire event
+// stale frame can slip through the freshly-cleared gate. That holds only
+// while the host's drain of the thread's event worker completes: the
+// drain gives up once the worker handles nothing for its stall bound, so
+// a stalled worker can hand the dead session's queued frames to Handle
+// after this call, and Handle has no session-token gate. No wire event
 // may clear this flag — see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
@@ -1968,12 +1972,11 @@ func (r *Router) MarkThreadActive(threadID string) {
 		st.settledTurns = nil
 		hadEffectiveModel = st.effectiveModelSet
 		st.effectiveModel, st.effectiveModelSet = "", false
-		// A pending harness wakeup is in-process state of the PREVIOUS
-		// CLI process; the replacement session this call commits to
-		// never inherits the timer. Without it a stale future fire time
-		// would shield the fresh session from the idle reaper for up to
-		// the wakeup clamp (60 min).
-		st.pendingWakeupAt, st.pendingWakeupSet = 0, false
+		// A pending harness wakeup and armed cron jobs are in-process
+		// state of the PREVIOUS CLI process; the replacement session this
+		// call commits to never inherits them. Without this a stale
+		// deadline would shield the fresh session from the idle reaper.
+		st.clearProcessSchedule()
 		// The ticks belong to the provider PROCESS: a dead process will
 		// never deliver the terminal that would consume them.
 		st.subagentProgress = nil

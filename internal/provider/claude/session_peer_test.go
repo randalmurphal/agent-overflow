@@ -92,65 +92,83 @@ func TestIssuedCommandUUIDsRefusesAtCapAndLatchesOverflow(t *testing.T) {
 // Mislabelling OUR turn as a peer's puts "another Claude session sent
 // this" on a message the user typed, which is the transcript lying about
 // who asked for what. The classifier is biased accordingly.
-func TestCommandUUIDIsPeerOriginatedFailsSafe(t *testing.T) {
+func TestCommandUUIDIsForeignFailsSafe(t *testing.T) {
 	s := &Session{}
-	if s.commandUUIDIsPeerOriginated("") {
-		t.Fatal("empty uuid classified as peer-originated")
+	if s.commandUUIDIsForeign("") {
+		t.Fatal("empty uuid classified as foreign")
 	}
-	if !s.commandUUIDIsPeerOriginated("cli-minted") {
-		t.Fatal("a uuid this app never issued must classify as peer-originated")
+	if !s.commandUUIDIsForeign("cli-minted") {
+		t.Fatal("a uuid this app never issued must classify as foreign")
 	}
 	s.noteIssuedCommandUUID("ours")
-	if s.commandUUIDIsPeerOriginated("ours") {
-		t.Fatal("an AO-issued uuid classified as peer-originated")
+	if s.commandUUIDIsForeign("ours") {
+		t.Fatal("an AO-issued uuid classified as foreign")
 	}
 	// Under overflow nothing can be PROVEN unissued, so every unknown
 	// uuid reverts to "ours".
 	for i := 0; i <= maxTrackedIssuedCommandUUIDs; i++ {
 		s.noteIssuedCommandUUID(uuidLike(i))
 	}
-	if s.commandUUIDIsPeerOriginated("cli-minted") {
+	if s.commandUUIDIsForeign("cli-minted") {
 		t.Fatal("an overflowed ledger still claimed a uuid was unissued")
 	}
 }
 
-// The parser stamps the origin on EVERY frame of the bracket, and
-// releases only on the terminal one — so a consumer reading `completed`
-// reaches the same verdict as one reading `started`.
-func TestParseCommandLifecycleStampsPeerOriginAcrossTheBracket(t *testing.T) {
+// A bracket's opening frame cannot say who started a foreign turn; the
+// turn's own user row does (the peer echo, or the scheduled mirror row),
+// and the frames after it carry that origin. An AO uuid never takes one,
+// and the terminal frame releases both the ledger entry and the evidence.
+func TestParseCommandLifecycleStampsTheEvidencedOriginOnLaterFrames(t *testing.T) {
 	sess := &Session{}
 	sess.noteIssuedCommandUUID("ours-1")
 	p := NewParser()
 	p.peerTurns = sess
 
+	peerEcho := `{"type":"user","isReplay":true,"isSynthetic":true,"uuid":"peer-1",` +
+		`"message":{"role":"user","content":"hello"},"origin":{"kind":"peer","from":"uds:/tmp/a.sock","name":"BETA","body":"hello"}}`
+	scheduledRow := `{"type":"transcript_mirror","filePath":"/p/s.jsonl","entries":[{"type":"user","isSidechain":false,"isMeta":true,` +
+		`"promptSource":"system","turnOrigin":"scheduled","uuid":"cron-1","message":{"role":"user","content":"tick"}}]}`
+	// A row claiming the AO uuid is ignored: the ledger says it is ours.
+	oursRow := `{"type":"transcript_mirror","filePath":"/p/s.jsonl","entries":[{"type":"user","isSidechain":false,` +
+		`"turnOrigin":"scheduled","uuid":"ours-1","message":{"role":"user","content":"typed"}}]}`
+
 	for _, tc := range []struct {
 		commandUUID string
+		evidence    string
 		wantOrigin  string
 	}{
-		{"ours-1", ""},
-		{"peer-1", PeerTurnOrigin},
+		{"ours-1", oursRow, ""},
+		{"peer-1", peerEcho, PeerTurnOrigin},
+		{"cron-1", scheduledRow, ScheduledTurnOrigin},
 	} {
-		for _, state := range []string{"queued", "started", "completed"} {
+		frame := func(state string) string {
 			line := []byte(`{"type":"command_lifecycle","command_uuid":"` + tc.commandUUID + `","state":"` + state + `"}`)
 			events, err := p.ParseLine(testThread, line)
 			if err != nil {
 				t.Fatalf("ParseLine(%s/%s): %v", tc.commandUUID, state, err)
 			}
-			if len(events) != 1 {
-				t.Fatalf("ParseLine(%s/%s) = %d events, want 1", tc.commandUUID, state, len(events))
-			}
 			var meta provider.CommandLifecycleMeta
-			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+			if err := json.Unmarshal(events[len(events)-1].Meta, &meta); err != nil {
 				t.Fatalf("unmarshal meta: %v", err)
 			}
-			if meta.Origin != tc.wantOrigin {
-				t.Fatalf("%s/%s origin = %q, want %q", tc.commandUUID, state, meta.Origin, tc.wantOrigin)
-			}
+			return meta.Origin
+		}
+		if got := frame("started"); got != "" {
+			t.Fatalf("%s started origin = %q before any evidence, want none", tc.commandUUID, got)
+		}
+		if _, err := p.ParseLine(testThread, []byte(tc.evidence)); err != nil {
+			t.Fatalf("ParseLine(evidence for %s): %v", tc.commandUUID, err)
+		}
+		if got := frame("completed"); got != tc.wantOrigin {
+			t.Fatalf("%s completed origin = %q, want %q", tc.commandUUID, got, tc.wantOrigin)
+		}
+		if _, held := p.commandOrigins[tc.commandUUID]; held {
+			t.Fatalf("%s: terminal frame did not release the origin evidence", tc.commandUUID)
 		}
 	}
 
 	// The terminal frame released the AO entry, so the ledger is not a
-	// leak. (A later frame for the same uuid would now read as a peer's —
+	// leak. (A later frame for the same uuid would now read as foreign,
 	// which cannot happen, because a bracket terminates once.)
 	if sess.issuedCommands.issued("ours-1") {
 		t.Fatal("terminal lifecycle state did not release the ledger entry")
@@ -302,7 +320,7 @@ done
 	}
 	// Registered BEFORE the write, so the bracket the CLI is about to emit
 	// cannot be mistaken for a peer's.
-	if s.commandUUIDIsPeerOriginated(envelope.UUID) {
+	if s.commandUUIDIsForeign(envelope.UUID) {
 		t.Fatal("the rename's own uuid classifies as peer-originated")
 	}
 	// The write is not the rename. The registry moves when the CLI's own

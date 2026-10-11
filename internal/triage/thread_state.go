@@ -229,13 +229,19 @@ type threadState struct {
 
 	// pendingWakeupAt is the fire time (epoch ms) of the Claude harness's
 	// pending ScheduleWakeup timer. The timer is in-process CLI state with
-	// no task lifecycle, so this field is the only record that an
-	// idle-looking session will resume itself; the idle-session reaper
+	// no task lifecycle, so this field and scheduledJobs are the only
+	// record that an idle-looking session will resume itself; the
+	// idle-session reaper
 	// reads it via PendingWakeupAt. Session-scoped: cleared at teardown
 	// AND by MarkThreadActive (a replacement process never inherits the
 	// timer). See session_wakeup.go.
 	pendingWakeupAt  int64
 	pendingWakeupSet bool
+	// scheduledJobs is the provider's latest list of armed scheduled jobs
+	// (Claude CronCreate), each with the latest time it can next fire.
+	// Same in-process lifetime and same sweeps as pendingWakeupAt; the
+	// provider bounds the list. See session_wakeup.go.
+	scheduledJobs []provider.ScheduledJob
 
 	// subagentProgress is the latest live progress tick per launch
 	// tool_use, keyed by itemID. Live UI state only; the terminal path

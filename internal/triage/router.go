@@ -452,6 +452,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleCompactionStatus(evt)
 	case provider.EventSessionWakeup:
 		return r.handleSessionWakeup(evt)
+	case provider.EventScheduledJobs:
+		return r.handleScheduledJobs(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
 	case provider.EventSubagentStatus:

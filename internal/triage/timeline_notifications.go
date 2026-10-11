@@ -330,6 +330,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addModelFallbackNotificationMeta(meta, raw)
 	case permissionDeniedNotificationKind, permissionRetryNotificationKind:
 		addPermissionNoticeMeta(meta, raw)
+	case backgroundWakeNotificationKind:
+		addBackgroundWakeNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -337,6 +339,38 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		return `{}`
 	}
 	return string(encoded)
+}
+
+// backgroundWakeNotificationKind is the row for a background task report
+// that started a turn on an idle session (Claude, claude-wire.md §E7): the
+// summary names the task, `detail` holds its report or event line.
+const backgroundWakeNotificationKind = "background_wake"
+
+// maxBackgroundWakeDetailRunes bounds `detail` here too: the provider
+// truncates it, but the row is persisted from wire input.
+const maxBackgroundWakeDetailRunes = 2000
+
+func addBackgroundWakeNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var wake struct {
+		Detail string `json:"detail"`
+		TaskID string `json:"taskId"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(raw, &wake) != nil {
+		return
+	}
+	if value := truncateRunes(strings.TrimSpace(wake.Detail), maxBackgroundWakeDetailRunes); value != "" {
+		meta["detail"] = value
+	}
+	if value := strings.TrimSpace(wake.TaskID); value != "" {
+		meta["taskId"] = value
+	}
+	if value := strings.TrimSpace(wake.Status); value != "" {
+		meta["status"] = value
+	}
 }
 
 func addModelFallbackNotificationMeta(meta map[string]any, raw json.RawMessage) {

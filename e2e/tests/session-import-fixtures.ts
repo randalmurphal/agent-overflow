@@ -31,6 +31,7 @@ const CLAUDE_LINEAR_SESSION = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const CLAUDE_BRANCHED_SESSION = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
 const CLAUDE_BROKEN_SESSION = 'dddddddd-4444-4444-8444-dddddddddddd';
 const CLAUDE_FORK_SESSION = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
+const CLAUDE_SCHEDULED_SESSION = 'ffffffff-6666-4666-8666-ffffffffffff';
 const CODEX_THREAD = 'cccccccc-3333-4333-8333-cccccccccccc';
 
 /** A fixed wall time in the past, so a row restamped with now() is off by
@@ -60,6 +61,8 @@ export const BRANCH_B_THINKING_PREFIX = 'BRANCH B PRIVATE REASONING PREFIX';
 export const FORK_SHARED_ANSWER = 'Added the retry helper with a backoff test.';
 export const FORK_CHILD_PROMPT = 'Adapt the retry helper for jitter';
 export const FORK_CHILD_ANSWER = 'Added bounded jitter to the imported fork.';
+export const SCHEDULED_PROMPT = 'Reply with exactly the text CRON-FIRED and call no tools.';
+export const SCHEDULED_ANSWER = 'CRON-FIRED';
 
 const branchThinking = (prefix: string, detail: string): string =>
   `${prefix}\n${`${detail} `.repeat(32)}\n${detail} conclusion.`;
@@ -84,6 +87,8 @@ export interface ImportFixtures {
   claudeBroken?: FixtureSession;
   /** Present only when `seedImportFixtures` was asked for an explicit fork. */
   claudeFork?: FixtureSession;
+  /** Present only when `seedImportFixtures` was asked for a scheduled turn. */
+  claudeScheduled?: FixtureSession;
   codex: FixtureSession;
 }
 
@@ -100,6 +105,10 @@ export interface SeedImportOptions {
   /** Also write a second Claude provider session explicitly forked from the
    * linear session, including the shared prefix and its own continuation. */
   withForkedSession?: boolean;
+  /** Also write a Claude session holding a turn the CLI started from a
+   * CronCreate job: its prompt is an `isMeta` row with
+   * `turnOrigin:"scheduled"` (claude-wire.md §E11). */
+  withScheduledSession?: boolean;
 }
 
 function session(provider: 'claude' | 'codex', id: string, title: string): FixtureSession {
@@ -158,6 +167,10 @@ export async function seedImportFixtures(
   if (opts.withForkedSession) {
     await writeForkedClaudeSession(claudeDir, workspace);
     fixtures.claudeFork = session('claude', CLAUDE_FORK_SESSION, FORK_CHILD_PROMPT);
+  }
+  if (opts.withScheduledSession) {
+    await writeScheduledClaudeSession(claudeDir, workspace);
+    fixtures.claudeScheduled = session('claude', CLAUDE_SCHEDULED_SESSION, 'Schedule a minute ping');
   }
   if (opts.withFailingSession) {
     await writeBrokenClaudeSession(claudeDir, workspace);
@@ -320,6 +333,27 @@ const linearClaudeRows = (workspace: string): Array<Record<string, unknown>> => 
   ),
   lastPrompt('lin-a3', 'Add the retry helper'),
 ];
+
+/** A typed prompt and its answer, then one cron fire: the CLI's own turn,
+ *  whose prompt row is `isMeta` with `turnOrigin:"scheduled"`, as the
+ *  2.1.284 capture writes it. */
+async function writeScheduledClaudeSession(dir: string, workspace: string): Promise<void> {
+  await writeFile(
+    path.join(dir, `${CLAUDE_SCHEDULED_SESSION}.jsonl`),
+    jsonl([
+      userRow(workspace, 'sch-u1', null, 'Schedule a minute ping', 0),
+      assistantTextRow(workspace, 'sch-a1', 'sch-u1', 'msg-sch-1', 'Scheduled job 6ae146b0.', 1_000),
+      {
+        ...userRow(workspace, 'sch-u2', 'sch-a1', SCHEDULED_PROMPT, 60_000),
+        isMeta: true,
+        promptSource: 'system',
+        turnOrigin: 'scheduled',
+      },
+      assistantTextRow(workspace, 'sch-a2', 'sch-u2', 'msg-sch-2', SCHEDULED_ANSWER, 61_000),
+      lastPrompt('sch-a2', 'Schedule a minute ping'),
+    ]),
+  );
+}
 
 async function writeForkedClaudeSession(dir: string, workspace: string): Promise<void> {
   const shared = linearClaudeRows(workspace);

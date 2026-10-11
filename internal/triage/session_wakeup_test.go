@@ -114,3 +114,128 @@ func TestPendingWakeupAtNilSafety(t *testing.T) {
 		t.Fatal("empty thread id must report no pending wakeup")
 	}
 }
+
+func scheduledJobsEvent(t *testing.T, threadID string, jobs ...provider.ScheduledJob) provider.ProviderEvent {
+	t.Helper()
+	meta, err := json.Marshal(provider.ScheduledJobsMeta{Jobs: jobs})
+	if err != nil {
+		t.Fatalf("marshal scheduled jobs: %v", err)
+	}
+	return provider.ProviderEvent{Kind: provider.EventScheduledJobs, ThreadID: threadID, Meta: meta, Timestamp: time.Now()}
+}
+
+// The armed-job list replaces itself on every report, and the thread's
+// wake deadline is the latest of the ScheduleWakeup time and every job's
+// next-fire deadline, so neither record can hide the other.
+func TestScheduledJobsExtendThePendingWakeup(t *testing.T) {
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
+	const threadID = "thread-cron"
+	wakeAt := time.Now().Add(10 * time.Minute).UnixMilli()
+	jobLate := time.Now().Add(40 * time.Minute).UnixMilli()
+	jobEarly := time.Now().Add(5 * time.Minute).UnixMilli()
+
+	if err := r.Handle(scheduledJobsEvent(t, threadID,
+		provider.ScheduledJob{ID: "a", Cron: "* * * * *", Recurring: true, FireByUnixMs: jobEarly},
+		provider.ScheduledJob{ID: "b", Cron: "0 * * * *", Recurring: true, FireByUnixMs: jobLate},
+	)); err != nil {
+		t.Fatalf("handle jobs: %v", err)
+	}
+	if at, ok := r.PendingWakeupAt(threadID); !ok || at.UnixMilli() != jobLate {
+		t.Fatalf("PendingWakeupAt = (%v, %v), want the latest job deadline %d", at.UnixMilli(), ok, jobLate)
+	}
+	if err := r.Handle(wakeupEvent(t, threadID, wakeAt)); err != nil {
+		t.Fatalf("handle wakeup: %v", err)
+	}
+	if at, _ := r.PendingWakeupAt(threadID); at.UnixMilli() != jobLate {
+		t.Fatalf("a nearer ScheduleWakeup hid a later job deadline: %d", at.UnixMilli())
+	}
+	// A replacement list drops the later job.
+	if err := r.Handle(scheduledJobsEvent(t, threadID,
+		provider.ScheduledJob{ID: "a", Cron: "* * * * *", Recurring: true, FireByUnixMs: jobEarly})); err != nil {
+		t.Fatalf("handle replacement: %v", err)
+	}
+	if at, _ := r.PendingWakeupAt(threadID); at.UnixMilli() != wakeAt {
+		t.Fatalf("PendingWakeupAt = %d after the list shrank, want the wakeup %d", at.UnixMilli(), wakeAt)
+	}
+	// An empty list clears the jobs; the wakeup stays its own record.
+	if err := r.Handle(scheduledJobsEvent(t, threadID)); err != nil {
+		t.Fatalf("handle empty: %v", err)
+	}
+	if err := r.Handle(wakeupEvent(t, threadID, 0)); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	if _, ok := r.PendingWakeupAt(threadID); ok {
+		t.Fatal("an empty job list and a stopped wakeup left a deadline")
+	}
+}
+
+// Armed jobs and the wakeup timer live in the CLI process, so every end
+// of that process drops both: the host's close (CleanupThread), a
+// replacement start (MarkThreadActive) and the process's own exit
+// (ClearProcessSchedule).
+func TestScheduledJobsClearedBySessionLifecycle(t *testing.T) {
+	job := provider.ScheduledJob{ID: "a", Cron: "0 9 * * 1", FireByUnixMs: time.Now().Add(6 * 24 * time.Hour).UnixMilli()}
+	for name, sweep := range map[string]func(*Router, string){
+		"CleanupThread":        func(r *Router, id string) { r.CleanupThread(id) },
+		"MarkThreadActive":     func(r *Router, id string) { r.MarkThreadActive(id) },
+		"ClearProcessSchedule": func(r *Router, id string) { r.ClearProcessSchedule(id) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewRouter(nil, func(eventchan.Channel, any) {})
+			const threadID = "thread-cron-sweep"
+			if err := r.Handle(scheduledJobsEvent(t, threadID, job)); err != nil {
+				t.Fatalf("handle jobs: %v", err)
+			}
+			if err := r.Handle(wakeupEvent(t, threadID, time.Now().Add(30*time.Minute).UnixMilli())); err != nil {
+				t.Fatalf("handle wakeup: %v", err)
+			}
+			sweep(r, threadID)
+			if _, ok := r.PendingWakeupAt(threadID); ok {
+				t.Fatalf("%s left the previous process's wakeup or jobs armed", name)
+			}
+			if r.AnyUnfinishedWork(time.Minute) {
+				t.Fatalf("%s left unfinished work behind", name)
+			}
+		})
+	}
+}
+
+// Recurring jobs keep the idle reaper away but never hold a transfer or
+// an update: both end the session and its jobs either way. A one-shot
+// job and the ScheduleWakeup timer are turns the session still owes.
+func TestRecurringJobsProtectOnlyAgainstTheReaper(t *testing.T) {
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
+	const threadID = "thread-cron-recurring"
+	recurringAt := time.Now().Add(50 * time.Minute).UnixMilli()
+	oneShotAt := time.Now().Add(20 * time.Minute).UnixMilli()
+	recurring := provider.ScheduledJob{ID: "loop", Cron: "*/30 * * * *", Recurring: true, FireByUnixMs: recurringAt}
+	if err := r.Handle(scheduledJobsEvent(t, threadID, recurring)); err != nil {
+		t.Fatalf("handle jobs: %v", err)
+	}
+	if at, ok := r.PendingWakeupAt(threadID); !ok || at.UnixMilli() != recurringAt {
+		t.Fatalf("reaper deadline = (%d, %v), want the recurring job's %d", at.UnixMilli(), ok, recurringAt)
+	}
+	if at, ok := r.PendingScheduledWorkAt(threadID); ok {
+		t.Fatalf("a recurring job counted as scheduled work until %d", at.UnixMilli())
+	}
+	if r.AnyUnfinishedWork(time.Minute) {
+		t.Fatal("a recurring job blocked updates")
+	}
+	if got := r.RecurringScheduledJobs(threadID); len(got) != 1 || got[0] != recurring {
+		t.Fatalf("RecurringScheduledJobs = %+v, want the armed loop", got)
+	}
+
+	oneShot := provider.ScheduledJob{ID: "once", Cron: "0 9 * * 1", FireByUnixMs: oneShotAt}
+	if err := r.Handle(scheduledJobsEvent(t, threadID, recurring, oneShot)); err != nil {
+		t.Fatalf("handle jobs: %v", err)
+	}
+	if at, ok := r.PendingScheduledWorkAt(threadID); !ok || at.UnixMilli() != oneShotAt {
+		t.Fatalf("scheduled work = (%d, %v), want the one-shot's %d", at.UnixMilli(), ok, oneShotAt)
+	}
+	if !r.AnyUnfinishedWork(time.Minute) {
+		t.Fatal("a pending one-shot job did not block updates")
+	}
+	if got := r.RecurringScheduledJobs(threadID); len(got) != 1 || got[0].ID != "loop" {
+		t.Fatalf("RecurringScheduledJobs = %+v, want only the loop", got)
+	}
+}

@@ -4,7 +4,7 @@ import {
   BeginThreadTransfer, BindThreadTransferDestination, CreateThreadTransferOffer,
   GetThreadTransfers, GetThreadTransferIntent, RetryThreadTransfer,
   CancelThreadTransfer, DiscardUnpreparedThreadTransfer,
-  GetThreadTransferDestinationProject, GetThread,
+  GetThreadTransferDestinationProject, GetThread, ListThreadRecurringJobs,
 } from './bindings';
 import type { Thread } from '../types/models';
 import { type BackendKey } from '../transport/backendKey';
@@ -24,6 +24,7 @@ import { randomId } from '../utils/randomId';
 
 export type ConversationTransfer = Awaited<ReturnType<typeof GetThreadTransfers>>[number];
 type TransferIntent = Awaited<ReturnType<typeof BeginThreadTransfer>>;
+export type RecurringJob = Awaited<ReturnType<typeof ListThreadRecurringJobs>>[number];
 export type TransferKind = 'move' | 'copy';
 export interface TransferRequest {
   operationID: string;
@@ -38,6 +39,9 @@ export interface TransferRequest {
   kind?: TransferKind;
   includeWorkspace?: boolean;
   intent?: TransferIntent;
+  /** Recurring jobs the source session holds; the transfer ends them. */
+  recurringJobs?: RecurringJob[];
+  recurringJobsError?: string;
 }
 
 interface ComputerTransfers { rows: readonly ConversationTransfer[]; error: string }
@@ -59,6 +63,19 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
     if (!previous || !terminal(previous)) { pending = { ...pending, open: true }; return; }
   }
   pending = { operationID: randomId(), thread, source: threadMachine(thread.id, thread.projectId), destination, open: true, submitted: false, submitting: false, error: '' };
+  void loadRecurringJobs(pending);
+}
+// A transfer stops the source session, so the recurring jobs it holds end
+// rather than holding the transfer. The dialog names them before the user
+// commits. A source too old to answer refuses such a transfer itself.
+async function loadRecurringJobs(request: TransferRequest): Promise<void> {
+  try {
+    const recurringJobs = await withBackendTarget(request.source, () => ListThreadRecurringJobs(request.thread.id));
+    patchRequest(request.operationID, { recurringJobs });
+  } catch (error) {
+    if (error instanceof TransportError && error.code === 'method_not_found') return;
+    patchRequest(request.operationID, { recurringJobsError: userFacingError(error) });
+  }
 }
 export function canOfferConversationTransfer(thread: Thread): boolean {
   if (!remoteAccessAvailable()) return false;

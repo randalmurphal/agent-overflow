@@ -80,6 +80,11 @@
           testid: 'user-message-peer-origin',
           label: peerSessionOriginLabel(userMeta),
         };
+      case 'scheduled':
+        return {
+          testid: 'user-message-scheduled-origin',
+          label: 'Scheduled',
+        };
       case 'agent-thread': {
         // An agent in another thread wrote this row. The chip carries that
         // thread through: its title, the computer when that is a different

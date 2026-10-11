@@ -45,16 +45,18 @@ import (
 // its absence as a failure; see docs/references/claude-wire.md
 // §command_lifecycle.
 //
-// PEER-STARTED TURNS. A `command_uuid` AO never minted is the CLI's own,
-// and on a session with cross-session messaging on that means one thing:
-// another Claude session's `SendMessage` was accepted and opened a turn
-// here. The bracket is the FIRST observable of such a turn (spike
-// 2026-08-21, 2.1.237: `started` precedes even the `system/init` the turn
-// re-emits), so it is where the origin is decided; `Meta.origin` then
-// carries `peer-session` for consumers that would otherwise attribute the
-// turn to the reader. `session_peer.go` owns the ledger that answers
-// "did we issue this", and answers conservatively — an unknown session
-// or an overflowed ledger reads as OURS, never as a peer.
+// TURNS THE APP DID NOT START. A `command_uuid` AO never minted is the
+// CLI's own: another Claude session's `SendMessage` (spike 2026-08-21,
+// 2.1.237), a CronCreate job's fire or a ScheduleWakeup wake (2.1.284,
+// claude-wire.md §E11). `started` is the first observable of each and
+// says nothing about which, so it carries no origin. The turn's own user
+// row names the cause shortly after: the peer delivery echo
+// (`origin.kind:"peer"`) or the main-transcript mirror row
+// (`turnOrigin:"scheduled"`), both under the bracket's uuid. Later frames
+// carry that `Meta.origin` (`peer-session` or `scheduled`) once
+// noteCommandOrigin recorded it. `session_peer.go` owns the ledger that
+// answers "did we issue this", and answers conservatively: an unknown
+// session or an overflowed ledger reads as OURS, so no evidence attaches.
 //
 // This is a Parser method for one piece of wire-level correlation the
 // envelope order makes safe: a provider-executed command's `<synthetic>`
@@ -75,13 +77,11 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 	if !ok {
 		return nil, nil
 	}
-	// Resolved for EVERY frame of the bracket, not just `started`: a
-	// consumer reading only the terminal frame must reach the same verdict
-	// as one reading the opening frame, and `issued` is deliberately
-	// non-consuming so it does.
+	// Resolved for every frame from the evidence seen so far; `issued` is
+	// deliberately non-consuming so an AO uuid never takes a foreign origin.
 	origin := ""
-	if p.peerTurns != nil && p.peerTurns.commandUUIDIsPeerOriginated(commandUUID) {
-		origin = PeerTurnOrigin
+	if p.peerTurns != nil && p.peerTurns.commandUUIDIsForeign(commandUUID) {
+		origin = p.commandOrigins[commandUUID]
 	}
 
 	var mirroredEvents []provider.ProviderEvent
@@ -98,9 +98,10 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 		if p.activeCommandUUID == commandUUID {
 			p.activeCommandUUID = ""
 		}
+		delete(p.commandOrigins, commandUUID)
 		// The bracket is over, so the ledger entry has nothing left to
 		// answer for. Released AFTER the origin resolution above, or the
-		// terminal frame would classify differently from its own `started`.
+		// terminal frame of an AO send would read as a foreign turn's.
 		if p.peerTurns != nil {
 			mirroredEvents = p.finishMirroredCommand(threadID, commandUUID, state, now)
 			p.peerTurns.releaseIssuedCommandUUID(commandUUID)

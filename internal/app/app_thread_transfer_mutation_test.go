@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transferwire"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"github.com/google/uuid"
 )
 
@@ -89,6 +93,46 @@ func TestThreadTransferRefusesHistoryWithoutNativeResume(t *testing.T) {
 	}
 	if err := a.checkTransferIdle(thread); err == nil || !strings.Contains(err.Error(), "no saved provider session") {
 		t.Fatalf("lost native history accepted: %v", err)
+	}
+}
+
+// A recurring job never holds a transfer: the transfer ends the session
+// and its jobs either way, so the dialog names the job instead. A one-shot
+// job is a turn the session still owes, and it refuses the transfer.
+func TestThreadTransferNamesRecurringJobsInsteadOfRefusing(t *testing.T) {
+	a := newTestAppWithStore(t)
+	a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
+	thread := testThread(uuid.NewString())
+	if err := a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	arm := func(jobs ...provider.ScheduledJob) {
+		t.Helper()
+		meta, err := json.Marshal(provider.ScheduledJobsMeta{Jobs: jobs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.triage.Handle(provider.ProviderEvent{Kind: provider.EventScheduledJobs, ThreadID: thread.ID, Meta: meta}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop := provider.ScheduledJob{ID: "6ae146b0", Cron: "*/5 * * * *", Recurring: true, FireByUnixMs: time.Now().Add(10 * time.Minute).UnixMilli()}
+	stale := provider.ScheduledJob{ID: "0dd0dd00", Cron: "0 9 * * *", Recurring: true, FireByUnixMs: time.Now().Add(-time.Hour).UnixMilli()}
+	arm(loop, stale)
+	if err := a.checkTransferIdle(thread); err != nil {
+		t.Fatalf("a recurring job refused the transfer: %v", err)
+	}
+	jobs, err := a.ListThreadRecurringJobs(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ThreadRecurringJob{{ID: "6ae146b0", Cron: "*/5 * * * *"}}; !reflect.DeepEqual(jobs, want) {
+		t.Fatalf("ListThreadRecurringJobs = %+v, want %+v (a job past its deadline is no longer counted)", jobs, want)
+	}
+
+	arm(loop, provider.ScheduledJob{ID: "718ab791", Cron: "0 9 * * 1", FireByUnixMs: time.Now().Add(24 * time.Hour).UnixMilli()})
+	if err := a.checkTransferIdle(thread); err == nil || !strings.Contains(err.Error(), "one-time scheduled jobs") {
+		t.Fatalf("a pending one-shot job did not refuse the transfer: %v", err)
 	}
 }
 

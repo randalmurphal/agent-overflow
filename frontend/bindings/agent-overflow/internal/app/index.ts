@@ -143,6 +143,7 @@ export {
     ThreadPeerReply,
     ThreadPeerRequest,
     ThreadPeerResolve,
+    ThreadRecurringJob,
     ThreadTransferIntent,
     TimelinePageOptions,
     UpdateAvailability,

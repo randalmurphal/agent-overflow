@@ -47,6 +47,38 @@ const (
 	wakeupReapGrace = 2 * time.Minute
 )
 
+// idleReapTiming is an isolated test boot's replacement for the three
+// constants above (IsolationConfig). A zero field keeps the product value.
+type idleReapTiming struct {
+	threshold   time.Duration
+	interval    time.Duration
+	wakeupGrace time.Duration
+}
+
+func (a *App) idleReapThreshold() time.Duration {
+	if a.idleReap.threshold > 0 {
+		return a.idleReap.threshold
+	}
+	return idleReapThreshold
+}
+
+func (a *App) idleReapInterval() time.Duration {
+	if a.idleReap.interval > 0 {
+		return a.idleReap.interval
+	}
+	return idleReapInterval
+}
+
+// wakeupReapGrace is the grace every consumer of a scheduled-wakeup
+// deadline applies: the reaper, the update admission check and the
+// conversation transfer guard.
+func (a *App) wakeupReapGrace() time.Duration {
+	if a.idleReap.wakeupGrace > 0 {
+		return a.idleReap.wakeupGrace
+	}
+	return wakeupReapGrace
+}
+
 // startIdleSessionReaper kicks off the background sweeper goroutine.
 // Idempotent: a second call while a reaper is already running is a
 // no-op so test fixtures that exercise ServiceStartup repeatedly can't
@@ -66,7 +98,7 @@ func (a *App) startIdleSessionReaper() {
 
 	go func() {
 		defer a.sessionManager().runtime.IdleReaperDone()
-		ticker := time.NewTicker(idleReapInterval)
+		ticker := time.NewTicker(a.idleReapInterval())
 		defer ticker.Stop()
 		for {
 			select {
@@ -104,7 +136,7 @@ func (a *App) reaperNow() time.Time {
 // eligibility check under the thread locks. Query or teardown failures remain
 // observable in the log; a query failure must never authorize eviction.
 func (a *App) reapIdleSessions(now time.Time) {
-	cutoffNano := now.Add(-idleReapThreshold).UnixNano()
+	cutoffNano := now.Add(-a.idleReapThreshold()).UnixNano()
 
 	for _, threadID := range a.sessionManager().idleCandidates(cutoffNano) {
 		if a.shuttingDown.Load() {
@@ -145,8 +177,8 @@ func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
 	if a.pendingFlushWorkCount(threadID) > 0 {
 		return nil
 	}
-	now := time.Unix(0, cutoffNano).Add(idleReapThreshold)
-	if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(wakeupReapGrace)) {
+	now := time.Unix(0, cutoffNano).Add(a.idleReapThreshold())
+	if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(a.wakeupReapGrace())) {
 		return nil
 	}
 	running, err := a.store.ListRunningBackgroundToolCalls(threadID)

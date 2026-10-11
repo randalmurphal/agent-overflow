@@ -60,6 +60,13 @@
         {/each}
       </fieldset>
       <p class="text-xs text-fg-muted">{kind === 'move' ? 'Continue the same conversation on another computer. It stays in your sidebar and follows its new home.' : 'Create an independent conversation on another computer. Keep using the original here.'}</p>
+      {#if request.recurringJobs?.length}
+        <p class="break-words text-xs text-warning" data-testid="transfer-recurring-jobs">
+          The transfer stops this conversation’s running session, which ends {request.recurringJobs.length === 1 ? 'its recurring job' : `its ${request.recurringJobs.length} recurring jobs`}: {request.recurringJobs.map((job) => `${job.cron} (${job.id})`).join(', ')}.
+        </p>
+      {:else if request.recurringJobsError}
+        <p class="break-words text-xs text-warning">Could not check this conversation’s recurring jobs: {request.recurringJobsError}</p>
+      {/if}
       <label class="flex flex-col gap-1.5 text-xs text-fg-muted">
         Computer
         <select class={fieldClass} value={destination} disabled={locked} onchange={(event) => selectDestination(event.currentTarget.value)}>

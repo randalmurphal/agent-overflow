@@ -86,7 +86,8 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	// Checked BEFORE the pop rather than inside it because provenance is a
 	// property of the ECHO; the registry has no way to see it.
 	_, isPeerEcho := meta.crossSessionPeer()
-	foreignEcho := isPeerEcho || meta.text("origin") == externalQueueOrigin
+	origin := meta.text("origin")
+	foreignEcho := isPeerEcho || origin == externalQueueOrigin || origin == scheduledTurnOrigin
 
 	if eventParentID(evt) == "" && !foreignEcho {
 		// Pop and handle under the thread's flush anchor lock so the popped snapshot's
@@ -199,7 +200,13 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// "Injected provider context".
 		return r.persistPeerSessionMessage(evt, providerItemID, peer)
 	}
-	if meta.text("origin") == externalQueueOrigin {
+	if origin == scheduledTurnOrigin {
+		// The prompt of a turn the provider started from its own schedule
+		// (a Claude cron job's fire or ScheduleWakeup wake). The model
+		// stored it when it scheduled the turn; nobody typed it now.
+		return r.persistExternalOriginMessage(evt, providerItemID, "scheduled", scheduledTurnOrigin, nil)
+	}
+	if origin == externalQueueOrigin {
 		// The user echo of a turn another Codex process queued onto this
 		// thread (`codex queue --thread`). AO never sent it, so no
 		// pending-send entry matches, but the session stamped its origin
@@ -458,6 +465,12 @@ const userEchoClientIDMetaKey = "client_id"
 // pinned against the original by
 // `TestPeerMessageOriginMatchesTheProviderConstant`.
 const crossSessionMessageOrigin = "peer-session"
+
+// scheduledTurnOrigin mirrors `claude.ScheduledTurnOrigin`: the user row
+// of a turn the provider started from its own schedule. Duplicated for the
+// same reason as crossSessionMessageOrigin and pinned by
+// `TestScheduledTurnOriginMatchesTheProviderConstant`.
+const scheduledTurnOrigin = "scheduled"
 
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the
 // existing AO-persisted user row's meta and re-emits the upsert. The

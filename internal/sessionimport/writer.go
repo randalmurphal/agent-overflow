@@ -442,7 +442,7 @@ func (b *builder) providerMeta(evt importir.Event) json.RawMessage {
 }
 
 func (b *builder) encodeProviderMetaObject(evt importir.Event, obj map[string]json.RawMessage, extra map[string]string) json.RawMessage {
-	shaped := make(map[string]json.RawMessage, len(obj)+len(extra))
+	shaped := make(map[string]json.RawMessage, len(obj))
 	for key, value := range obj {
 		shaped[key] = value
 	}
@@ -526,6 +526,22 @@ func metaBool(raw json.RawMessage, key string) bool {
 // validJSONObjectString.
 func (b *builder) providerMetaString(evt importir.Event) string {
 	return string(b.providerMeta(evt))
+}
+
+// mergeMetaWireOnly sets `wire_only: true` on an item meta object.
+func mergeMetaWireOnly(existing string) (string, error) {
+	merged := map[string]any{}
+	if strings.TrimSpace(existing) != "" {
+		if err := json.Unmarshal([]byte(existing), &merged); err != nil {
+			return "", fmt.Errorf("decode item meta: %w", err)
+		}
+	}
+	merged["wire_only"] = true
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 // mergeMetaKeys sets top-level keys on a meta object, preserving the

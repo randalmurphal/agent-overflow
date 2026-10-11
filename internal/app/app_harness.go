@@ -71,6 +71,8 @@ func (h *harnessHost) PushSent() []harnessrpc.PushMessage { return h.app.harness
 
 func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
 
+func (h *harnessHost) UpdateWorkReason() (string, error) { return h.app.updateWorkReason() }
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }

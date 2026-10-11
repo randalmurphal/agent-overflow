@@ -14,7 +14,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
   PR CI live, follow and log wait polls); a spec that needs another value,
-  or the PR update poll cadence (`pr-update`), passes its own through `env`.
+  the PR update poll cadence (`pr-update`) or a shortened idle-session
+  reaper (`idle-reap`, `idle-reap-sweep`, `wakeup-grace`), passes its own
+  through `env`.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`.
   The process inherits only the variables `src/harness-env.ts` allows, never

@@ -11,6 +11,25 @@ import (
 	"agent-overflow/internal/triage"
 )
 
+// armProcessSchedule gives the thread a ScheduleWakeup timer and a one-shot
+// cron job, both state of the live CLI process.
+func armProcessSchedule(t *testing.T, router *triage.Router, threadID string) {
+	t.Helper()
+	wakeup, _ := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: time.Now().Add(30 * time.Minute).UnixMilli()})
+	jobs, _ := json.Marshal(provider.ScheduledJobsMeta{Jobs: []provider.ScheduledJob{{ID: "once", Cron: "0 9 * * 1", FireByUnixMs: time.Now().Add(6 * 24 * time.Hour).UnixMilli()}}})
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventSessionWakeup, ThreadID: threadID, Meta: wakeup},
+		{Kind: provider.EventScheduledJobs, ThreadID: threadID, Meta: jobs},
+	} {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("arm %s: %v", evt.Kind, err)
+		}
+	}
+	if _, ok := router.PendingScheduledWorkAt(threadID); !ok {
+		t.Fatal("the armed schedule did not register")
+	}
+}
+
 // TestUnregisterSessionRemovesSessionForMatchingToken covers the normal
 // disconnect path: the session stored with the same token is dropped.
 func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
@@ -33,6 +52,7 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed model fallback: %v", err)
 	}
+	armProcessSchedule(t, app.triage, thread.ID)
 
 	app.unregisterSession(thread.ID, "token-live")
 
@@ -42,6 +62,13 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	}
 	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "" {
 		t.Fatalf("effective model after unregister = %q", got)
+	}
+	// The wakeup timer and the job died with the process.
+	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
+		t.Fatalf("schedule after the process exited = %v", at)
+	}
+	if app.triage.AnyUnfinishedWork(time.Minute) {
+		t.Fatal("an exited process's schedule still blocks updates")
 	}
 }
 
@@ -70,6 +97,7 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed model fallback: %v", err)
 	}
+	armProcessSchedule(t, app.triage, thread.ID)
 
 	app.unregisterSession(thread.ID, "token-previous")
 
@@ -82,6 +110,41 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}
 	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "claude-opus-4-8" {
 		t.Fatalf("effective model after stale unregister = %q", got)
+	}
+	if _, ok := app.triage.PendingScheduledWorkAt(thread.ID); !ok {
+		t.Fatal("a stale exit dropped the replacement session's schedule")
+	}
+}
+
+// TestUnregisterSessionEndsTheScheduleOfATakenSession covers every host
+// stop (a transfer, an idle reap, StopSession, a replacement start): the
+// stop takes the session out of the registry before closing it, so the
+// session's "disconnected" finds no entry, and its schedule still ends.
+func TestUnregisterSessionEndsTheScheduleOfATakenSession(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	thread := testThread("thread-unregister-taken")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "token-taken"})
+	armProcessSchedule(t, app.triage, thread.ID)
+	recurring, _ := json.Marshal(provider.ScheduledJobsMeta{Jobs: []provider.ScheduledJob{{ID: "loop", Cron: "*/5 * * * *", Recurring: true, FireByUnixMs: time.Now().Add(10 * time.Minute).UnixMilli()}}})
+	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventScheduledJobs, ThreadID: thread.ID, Meta: recurring}); err != nil {
+		t.Fatalf("arm recurring job: %v", err)
+	}
+	if _, ok := app.sessionManager().take(thread.ID); !ok {
+		t.Fatal("take() found no session")
+	}
+
+	app.unregisterSession(thread.ID, "token-taken")
+
+	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
+		t.Fatalf("schedule after a stop ended the process = %v", at)
+	}
+	if jobs, err := app.ListThreadRecurringJobs(thread.ID); err != nil || len(jobs) != 0 {
+		t.Fatalf("recurring jobs after a stop ended the process = %v, %v", jobs, err)
 	}
 }
 
@@ -324,84 +387,88 @@ func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
 	}
 }
 
-// TestAutoReconnectSingleShotAcrossDeathsThroughHandler exercises the
-// loop guard end-to-end: two abnormal-death sequences without an
-// intervening EventTurnStart must produce exactly one ReconnectSession
-// attempt. Then EventTurnStart clears the guard and a subsequent death
-// must produce a fresh attempt. Drives everything through the public
-// event handler so the test would fail if attemptAutoReconnect stopped
-// gating on markAutoReconnectAttempted, or if EventTurnStart stopped
-// clearing the flag.
-func TestAutoReconnectSingleShotAcrossDeathsThroughHandler(t *testing.T) {
+// TestAutoReconnectRearmsOnlyAfterAServedTurn takes two deaths' reconnect
+// decisions with one event from the replacement session between them,
+// delivered through the public event handler. The second death earns a
+// reconnect only when that event proves the replacement served a turn, for
+// each provider in the form it reports one. Everything else, including
+// init, leaves the single attempt spent, so a session that dies before
+// serving cannot reconnect forever.
+func TestAutoReconnectRearmsOnlyAfterAServedTurn(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-loop-guard")
-	thread.SessionRef = "claude-resume-loopguard"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
+	result := func(meta provider.WireTurnCompleteMeta) provider.ProviderEvent {
+		return provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &meta}
 	}
-
-	startCalls := make(chan string, 8)
-	app.stopSessionFn = func(string) error { return nil }
-	app.startSessionFn = func(threadID string) error {
-		startCalls <- threadID
-		return nil
+	failed := result(provider.WireTurnCompleteMeta{StopReason: "end_turn"})
+	failed.Failure = &provider.FailureMeta{Class: provider.FailureTransient}
+	subagent := result(provider.WireTurnCompleteMeta{StopReason: "end_turn"})
+	subagent.ParentToolUseID = "toolu_parent"
+	cases := []struct {
+		name     string
+		provider provider.ProviderKind
+		served   *provider.ProviderEvent
+		rearmed  bool
+	}{
+		{name: "claude nothing", provider: provider.Claude},
+		{name: "claude init", provider: provider.Claude, served: &provider.ProviderEvent{Kind: provider.EventInit}},
+		{name: "claude result", provider: provider.Claude, served: ptr(result(provider.WireTurnCompleteMeta{StopReason: "end_turn"})), rearmed: true},
+		{name: "claude interrupted result", provider: provider.Claude, served: ptr(result(provider.WireTurnCompleteMeta{Aborted: true})), rearmed: true},
+		{name: "claude error result", provider: provider.Claude, served: ptr(result(provider.WireTurnCompleteMeta{StopReason: "error", ErrorMessage: "boom"}))},
+		{name: "claude failed result", provider: provider.Claude, served: &failed},
+		{name: "claude subagent result", provider: provider.Claude, served: &subagent},
+		{name: "claude soft round close", provider: provider.Claude, served: &provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}}},
+		{name: "codex turn start", provider: provider.Codex, served: &provider.ProviderEvent{Kind: provider.EventTurnStart}, rearmed: true},
+		{name: "codex completed turn", provider: provider.Codex, served: ptr(result(provider.WireTurnCompleteMeta{StopReason: "end_turn"})), rearmed: true},
+		{name: "codex failed turn", provider: provider.Codex, served: ptr(result(provider.WireTurnCompleteMeta{StopReason: "error", ErrorMessage: "boom"}))},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-rearm")
+			thread.SessionRef = "resume-rearm"
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			startCalls := make(chan string, 8)
+			app.stopSessionFn = func(string) error { return nil }
+			app.startSessionFn = func(threadID string) error {
+				startCalls <- threadID
+				return nil
+			}
+			// attemptAutoReconnect is the hook the handler runs after each
+			// death (TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath).
+			// Called directly, its reconnect has started the replacement or
+			// declined by the time it returns.
+			reconnected := func() bool {
+				app.attemptAutoReconnect(thread.ID)
+				select {
+				case <-startCalls:
+					return true
+				default:
+					return false
+				}
+			}
 
-	fireDeath := func(token string) {
-		handler := app.sessionEventHandler(thread.ID, token, string(provider.Claude))
-		app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: token})
-		handler(provider.ProviderEvent{
-			Kind:      provider.EventSessionStatus,
-			ThreadID:  thread.ID,
-			Content:   "error",
-			Timestamp: time.Now(),
+			if !reconnected() {
+				t.Fatal("first death did not reconnect")
+			}
+			app.sessionManager().put(thread.ID, session{Provider: string(tc.provider), Token: "tok-2"})
+			if tc.served != nil {
+				evt := *tc.served
+				evt.ThreadID = thread.ID
+				evt.Timestamp = time.Now()
+				app.sessionEventHandler(thread.ID, "tok-2", string(tc.provider))(evt)
+				waitProviderEvents(t, app, thread.ID)
+			}
+			if got := reconnected(); got != tc.rearmed {
+				t.Fatalf("second death reconnected = %v, want %v", got, tc.rearmed)
+			}
 		})
-		handler(provider.ProviderEvent{
-			Kind:      provider.EventSessionStatus,
-			ThreadID:  thread.ID,
-			Content:   "disconnected",
-			Timestamp: time.Now(),
-		})
-		waitProviderEvents(t, app, thread.ID)
-	}
-
-	// First death: auto-reconnect fires.
-	fireDeath("tok-death-1")
-	select {
-	case <-startCalls:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first death did not trigger auto-reconnect startSession")
-	}
-
-	// Second death without intervening turn_started: must be suppressed
-	// by the single-shot guard.
-	fireDeath("tok-death-2")
-	select {
-	case got := <-startCalls:
-		t.Fatalf("second death triggered a duplicate auto-reconnect (start=%q); loop guard failed", got)
-	case <-time.After(150 * time.Millisecond):
-		// expected — guard held
-	}
-
-	// EventTurnStart clears the guard. Use a fresh handler matching the
-	// most recent session; the live session is what the wire-event source
-	// would actually emit turn_started under.
-	resumeHandler := app.sessionEventHandler(thread.ID, "tok-death-2", string(provider.Claude))
-	resumeHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	})
-
-	// Third death after a real turn_started: fresh attempt allowed.
-	fireDeath("tok-death-3")
-	select {
-	case <-startCalls:
-	case <-time.After(2 * time.Second):
-		t.Fatal("post-turn_started death failed to trigger a fresh auto-reconnect")
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
 
 // TestAttemptAutoReconnectSkippedDuringShutdown pins the shutdown-race
 // safety check: a death arriving concurrently with a.Stop() must not

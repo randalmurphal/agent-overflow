@@ -140,3 +140,27 @@ it('offers and opens no transfer in a build without remote access', () => {
   openConversationTransfer(thread);
   expect(pendingConversationTransfer()).toBeNull();
 });
+
+it('names the source session\'s recurring jobs when the dialog opens', async () => {
+  const list = setBindingMock('ListThreadRecurringJobs', async (threadId: string) => {
+    expect(takePinnedBackend()).toBe('tower');
+    return threadId === thread.id ? [{ id: '6ae146b0', cron: '*/5 * * * *' }] : [];
+  });
+  openConversationTransfer(thread);
+  await tick();
+  expect(list).toHaveBeenCalledTimes(1);
+  expect(pendingConversationTransfer()?.recurringJobs).toEqual([{ id: '6ae146b0', cron: '*/5 * * * *' }]);
+});
+
+it('reports a failed recurring-job check and stays quiet for a source without the method', async () => {
+  setBindingMock('ListThreadRecurringJobs', async () => { throw new Error('Database is locked'); });
+  openConversationTransfer(thread);
+  await tick();
+  expect(pendingConversationTransfer()?.recurringJobsError).toContain('Database is locked');
+
+  setBindingMock('ListThreadRecurringJobs', async () => { throw new TransportError('method_not_found', 'unknown method'); });
+  openConversationTransfer(thread);
+  await tick();
+  expect(pendingConversationTransfer()?.recurringJobs).toBeUndefined();
+  expect(pendingConversationTransfer()?.recurringJobsError).toBeUndefined();
+});

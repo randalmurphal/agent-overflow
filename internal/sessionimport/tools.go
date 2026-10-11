@@ -539,7 +539,7 @@ func (b *builder) shapeItemToolMeta(item *store.Item, now int64) *store.Payload 
 // with `is_background` pinned to false, so the merge onto a launch row
 // that was flagged at launch overwrites the stale hint in `items.meta`.
 func cloneWithIsBackgroundFalse(metaObject map[string]json.RawMessage) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(metaObject)+1)
+	out := make(map[string]json.RawMessage, len(metaObject))
 	for key, value := range metaObject {
 		out[key] = value
 	}
