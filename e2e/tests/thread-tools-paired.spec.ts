@@ -98,6 +98,22 @@ test.afterAll(async () => {
   }
 });
 
+/** Resolves once `app` reports ready; a held boot's launch returns before that. */
+async function waitUntilReady(app: HarnessApp): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const resp = await fetch(`http://127.0.0.1:${app.bootstrap.port}/bootstrap.json`, {
+          headers: { authorization: `Bearer ${app.bootstrap.token}` },
+        });
+        await resp.body?.cancel();
+        return resp.status;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(200);
+}
+
 interface SeededProject {
   projectId: string;
   path: string;
@@ -1598,6 +1614,9 @@ test('a reply written while the calling computer was off arrives when it comes b
   );
   expect(wake.report.input).toContain('The nightly finished at 03:14.');
   expect(wake.report.input).toContain('GPU computer');
+  // The wake can arrive while the released boot is still finishing, and
+  // the next case calls this computer at once.
+  await waitUntilReady(home);
 });
 
 test('a thread of 38k items on the other computer is windowed, paged and exported here', async () => {
