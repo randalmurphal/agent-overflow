@@ -2,9 +2,11 @@
 
 `make release-upgrade-check` proves that the candidate build takes a large
 database the previous release wrote, migrates it through the launcher's real
-update path, boots on it, and serves its sidebar and threads. It is a release
-gate and an operator tool; it never runs per pull request, because the corpus
-is gigabytes and a run takes minutes.
+update path, boots on it, serves its sidebar and threads, and writes its own
+slice of use into it. It is a release gate and an operator tool; it never
+runs per pull request, because the corpus is gigabytes and a run takes
+minutes. What runs per pull request is the coverage gate below, which keeps
+the corpus representative of the schema.
 
 The check is `e2e/tests/upgrade-corpus.manual.spec.ts` under the manual
 Playwright config, with its helpers and the corpus generator in
@@ -31,10 +33,35 @@ a full corpus carry the same shape. Scale 1 is about 2 GB. The generator
 needs the `repeat` and `padBefore` seed fields, which every release from
 v0.0.16 on has.
 
-What the corpus cannot carry: subagent rows (59% of real items have a
-parent, which `HarnessSeed` does not write), workflow runs, forge state,
-transfers, attachments and imports. The report names every table the corpus
-leaves empty. A real database covers those, locally:
+What the seed cannot write, the top-up does. After the migration the
+candidate boots on the migrated root and runs `topUp`
+(`e2e/tests/upgrade-corpus-topup.ts`): one live turn per mock scenario in
+`topUpScenarios` (text, thinking, tool calls, allowed and denied approvals,
+file edits with persisted diffs, Claude and Codex subagents, usage limits, a
+session death, a Codex revert), then forks, a side chat, a draft with image
+and file attachments, pins, a group, an archive, a rename, a favorite,
+threads at every chat-bar setting, a worktree, project settings and an
+archived project, and workflow runs (finished, gated, questioned, cancelled,
+fired by an automation). Those rows are written by the candidate's own code
+paths at its own schema, which is what a corpus handed to the next release
+needs: rows of every feature that existed when they were written.
+
+The coverage gate, `e2e/tests/upgrade-corpus-coverage.spec.ts` in `make e2e`,
+holds the seed and the top-up to the schema on every pull request: it
+seeds a smoke-scale corpus, runs the top-up on the current build, then
+reads `sqlite_master` and fails on any table with no rows, any column no row
+sets to a non-default value, and any `CHECK (column IN (...))` value no row
+carries, unless `coverageAllowlist` in `upgrade-corpus-config.ts` declares
+it with the reason it cannot be reached (a paired device, a second backend,
+a provider home to import, a scenario the library lacks). An entry that has
+become covered, or that names something the schema no longer has, fails the
+gate as stale, so the list cannot rot. The gate also fails on a mock
+scenario that is neither a top-up turn nor excluded with a reason. A
+schema or scenario change therefore lands with the top-up step or the
+config entry that keeps the corpus representative; the failure names which.
+
+Forge state, transfers, imports and paired devices stay allowlisted; a real
+database covers those, locally:
 
 ```sh
 bin/ao-harness clone --from ~/.config/agent-overflow --data-dir /path/to/clone
@@ -96,6 +123,10 @@ made it: never commit it, attach it to a run, or publish it.
    the report carries every count's delta, tables included, so an
    addition is visible.
 9. `__update-discard` commits the update, as the launcher does.
+10. The candidate boots again and runs the top-up. A third census must show
+    exactly the projects, archived project, pins and group the top-up adds,
+    at least its threads, and no table shrunk; the report carries every
+    delta (`topUpDeltas`) and the top-up's step timings.
 
 Every phase's duration lands in the JSON report (`durations`), beside the
 versions, the corpus figures, the gate's answer, the command cadences, the
@@ -164,3 +195,10 @@ path.
 - The timeline never paints or the frontend error log is non-empty: the
   migrated rows render into a client error. The Playwright trace carries
   the page.
+- A top-up step fails on the migrated root: the failure names the step
+  (a scenario turn that never rested, a workflow run and the state it is
+  in). The same step passes on a fresh store in the coverage gate, so the
+  difference is the migrated data.
+- The coverage gate fails: the message lists what the corpus never writes
+  and the allowlist entries that no longer hold, each with the instruction
+  it needs.

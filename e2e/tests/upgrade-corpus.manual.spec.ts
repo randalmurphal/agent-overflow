@@ -41,35 +41,35 @@ import {
   UPDATE_COMMAND_CEILING_MS,
   UPDATE_COMMAND_STALL_WINDOW_MS,
 } from './upgrade-corpus-config.js';
+import { corpusPlan, seedCorpus } from './upgrade-corpus-generator.js';
 import {
-  assertCadence,
   assertExceptionsCurrent,
   awaitDeferredSettled,
-  buildVersion,
-  candidateSibling,
   census,
-  cliCalls,
   compareCensus,
-  corpusPlan,
   fingerprint,
-  killGroup,
   largestThread,
-  newUpdateID,
   openThreadByTitle,
+  type Census,
+  type Fingerprint,
+  type StoreStatus,
+} from './upgrade-corpus-helpers.js';
+import {
+  assertCadence,
+  cliCalls,
+  killGroup,
+  newUpdateID,
   prepareRig,
   runUpdateCommand,
-  seedCorpus,
   settledBootstrap,
   startHeadless,
   stopHeadless,
-  timed,
   updateResult,
   type Cadence,
-  type Census,
-  type Fingerprint,
   type HeadlessBackend,
-  type StoreStatus,
-} from './upgrade-corpus-helpers.js';
+} from './upgrade-corpus-launcher.js';
+import { buildVersion, candidateSibling, timed } from './upgrade-corpus-tools.js';
+import { topUp } from './upgrade-corpus-topup.js';
 
 const previousBinary = process.env.AO_RELEASE_UPGRADE_PREVIOUS_BIN;
 const corpusRoot = process.env.AO_RELEASE_UPGRADE_CORPUS;
@@ -108,6 +108,10 @@ interface Report {
   /** Every census count after the run minus before it, tables included. */
   censusDeltas: Record<string, number>;
   emptyTables: string[];
+  /** The top-up's step timings and what it added. */
+  topUp: { steps: Record<string, number>; threads: number; projectId: string };
+  /** Every census count after the top-up minus before it. */
+  topUpDeltas: Record<string, number>;
   cliCalls: string[];
 }
 
@@ -321,6 +325,22 @@ test('the candidate migrates a large previous-release database and boots on it',
       const discard = await runUpdateCommand(rig, ['__update-discard', '--id', updateID], 10 * MINUTE);
       expect(updateResult(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
     }
+
+    // 10. The top-up: the candidate writes its own slice of use into the
+    // migrated store, natively at its schema, so the corpus the next
+    // release inherits carries rows of everything this release writes.
+    const reboot = await timed(() => launchHarness({ dataDir: rig.dataRoot, timeoutMs: 30 * MINUTE }));
+    candidate = reboot.value;
+    durations.topUpBootMs = reboot.ms;
+    const topped = await timed(() => topUp(candidate!, candidateVersion));
+    durations.topUpMs = topped.ms;
+    report.topUp = { steps: topped.value.ms, threads: topped.value.threadIds.length, projectId: topped.value.projectId };
+    const stopTopped = await timed(() => candidate!.stop());
+    expect(stopTopped.value, 'the candidate did not stop after the top-up').toBe(true);
+    durations.topUpStopMs = stopTopped.ms;
+    candidate = undefined;
+    const final = await census(rig.dbPath);
+    report.topUpDeltas = compareCensus(after, final, after.schemaVersion, final.schemaVersion, topped.value.growth);
     report.cliCalls = await cliCalls(rig);
   } finally {
     for (const b of headless) {
