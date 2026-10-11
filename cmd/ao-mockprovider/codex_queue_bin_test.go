@@ -208,6 +208,49 @@ func TestCodexSteerEchoesTheClientMessageID(t *testing.T) {
 	}
 }
 
+// TestCodexSteerWithNoTurnIsRefused pins upstream's NoActiveTurn refusal: a
+// steer that reaches the server after its turn ended is an error the app
+// recovers from with a fresh turn, never a message echoed into no turn.
+func TestCodexSteerWithNoTurnIsRefused(t *testing.T) {
+	// The first turn lingers after its turn/completed, so the mock is still
+	// running it when the late steer arrives.
+	sc := queueScenario()
+	sc.Turns[0].Steps = append(sc.Turns[0].Steps, scenario.Step{WaitSignal: &scenario.WaitSignalStep{Name: "linger"}})
+	p, advance := startControlledMock(t, sc, []string{"app-server"})
+	defer advance("linger")
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLine(testTimeout)
+	p.send(`{"jsonrpc":"2.0","method":"initialized"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
+	p.expectLine(testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"late"}],"clientUserMessageId":"user:0"}}`)
+	got := p.expectLineContaining(`"id":3`, testTimeout)
+	if !strings.Contains(got, `"code":-32600`) || !strings.Contains(got, "no active turn to steer") {
+		t.Fatalf("steer with no turn = %s, want the -32600 no active turn refusal", got)
+	}
+
+	// A turn that has begun takes a steer again.
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"threadId":"th-q","input":[{"type":"text","text":"first"}],"clientUserMessageId":"user:1"}}`)
+	p.expectLine(testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"steered"}],"clientUserMessageId":"user:1:flush:1"}}`)
+	if echo := p.expectLineContaining(`"type":"userMessage"`, testTimeout); !strings.Contains(echo, `"steered"`) {
+		t.Fatalf("steer echo = %s, want the steered text", echo)
+	}
+
+	// Once the turn's turn/completed is on the wire the turn has ended, even
+	// while the mock is still running its steps: a steer naming it is
+	// refused, never echoed after the completion.
+	advance("hold")
+	p.expectLineContaining(`"method":"turn/completed"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":6,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"too late"}],"clientUserMessageId":"user:1:flush:2"}}`)
+	if got := p.expectLineContaining(`"id":6`, testTimeout); !strings.Contains(got, "no active turn to steer") {
+		t.Fatalf("steer after turn/completed = %s, want the no active turn refusal", got)
+	}
+}
+
 // userMessageItemID pulls `params.item.id` out of an `item/completed` line.
 func userMessageItemID(t *testing.T, line string) string {
 	t.Helper()
