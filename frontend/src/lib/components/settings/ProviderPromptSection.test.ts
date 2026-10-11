@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProviderPromptSection from './ProviderPromptSection.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -10,6 +10,7 @@ import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app
 import { makeSettings } from '../../../test/helpers/settings';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { getProviderDefinition } from '../../providers/catalog';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import type { ModelInfo, PromptOverride, Settings } from '../../types/settings';
 
 const CLAUDE = getProviderDefinition('claude');
@@ -52,6 +53,7 @@ function claudeEntries(): PromptOverride[] {
 }
 
 const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
+  id: '',
   enabled: true,
   models: ['claude-fable-5'],
   prompt: 'You are a helpful agent.',
@@ -95,7 +97,7 @@ describe('<ProviderPromptSection>', () => {
     await fireEvent.click(getByTestId('settings-prompt-add-claude'));
 
     await waitFor(() => {
-      expect(claudeEntries()).toEqual([{ enabled: false, models: [], prompt: '' }]);
+      expect(claudeEntries()).toEqual([{ id: '', enabled: false, models: [], prompt: '' }]);
     });
   });
 
@@ -215,7 +217,7 @@ describe('<ProviderPromptSection>', () => {
 
     await waitFor(() =>
       expect(claudeEntries()).toEqual([
-        { enabled: true, models: ['claude-fable-5'], prompt: 'edited second' },
+        { id: '', enabled: true, models: ['claude-fable-5'], prompt: 'edited second' },
       ]),
     );
   });
@@ -359,5 +361,54 @@ describe('<ProviderPromptSection> placeholder legend', () => {
     const codex = render(ProviderPromptSection, { props: { provider: CODEX } });
     expect(codex.getByTestId('settings-prompt-token-codex-WORKDIR')).toBeTruthy();
     expect(codex.queryByTestId('settings-prompt-token-codex-MEMORY_DIR')).toBeNull();
+  });
+});
+
+describe('<ProviderPromptSection> prompt file', () => {
+  const ID = '0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c';
+  const PATH = `/home/u/.config/agent-overflow/prompts/${ID}.md`;
+
+  beforeEach(() => {
+    resetProviderModelsForTest();
+    setPageGrantsFromBootstrap(false);
+  });
+
+  afterEach(() => {
+    setPageGrantsFromBootstrap(false);
+  });
+
+  it('shows a saved entry\'s file path and opens it in the editor', async () => {
+    const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH })] });
+    const { getByTestId, getByLabelText } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+
+    const path = getByTestId('settings-prompt-path-claude-0');
+    expect(path.textContent).toBe(PATH);
+    expect(path.getAttribute('title')).toBe(PATH);
+    await fireEvent.click(getByLabelText('Open prompt file in editor'));
+    await waitFor(() => expect(open).toHaveBeenCalledWith(PATH, 0, 0, '', ''));
+  });
+
+  it('hides the file row for an entry not yet saved', async () => {
+    await seed({ claudePromptOverrides: [ENTRY()] });
+    const { queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    expect(queryByTestId('settings-prompt-file-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-open-claude-0')).toBeNull();
+  });
+
+  it('keeps the path but offers no open where the page is not on the computer', async () => {
+    setPageGrantsFromBootstrap(true);
+    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH })] });
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    expect(getByTestId('settings-prompt-path-claude-0').textContent).toBe(PATH);
+    expect(queryByTestId('settings-prompt-open-claude-0')).toBeNull();
+  });
+
+  it('shows the problem in place of the empty-prompt warning', async () => {
+    const problem = `${PATH} is 70000 bytes, over the 64000-byte limit for one prompt; the entry is not applied until the file is shortened`;
+    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH, prompt: '', problem })] });
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    expect(getByTestId('settings-prompt-problem-claude-0').textContent?.trim()).toBe(problem);
+    expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
   });
 });

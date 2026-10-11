@@ -1,6 +1,7 @@
 <script lang="ts">
-  // One system-prompt override: enable switch, the models it applies to, and
-  // the prompt itself. Purely presentational — every mutation goes back to
+  // One system-prompt override: enable switch, the models it applies to, the
+  // prompt itself, and the file on the computer that stores it. Purely
+  // presentational: every mutation and the open go back to
   // ProviderPromptSection, which owns the list and the settings write.
   //
   // The prompt commits on `change`, i.e. when the textarea loses focus with a
@@ -8,6 +9,9 @@
   // so clicking Remove / Add / a chip commits the typing first rather than
   // discarding it.
 
+  import FilePen from '@lucide/svelte/icons/file-pen';
+  import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import PromptModelSelectChips from './PromptModelSelectChips.svelte';
   import { CONTROL_BASE, GHOST_BUTTON_CLASS } from './styles';
@@ -25,6 +29,7 @@
     onPatch,
     onRemove,
     onEditorFocus,
+    onOpenFile,
   }: {
     provider: ProviderID;
     entry: PromptOverride;
@@ -34,6 +39,9 @@
     onPatch: (patch: Partial<PromptOverride>) => void;
     onRemove: () => void;
     onEditorFocus: (el: HTMLTextAreaElement, index: number) => void;
+    /** Opens the entry's prompt file in the editor; null hides the control
+     *  (the page cannot act on the computer's desktop). */
+    onOpenFile: ((path: string) => void) | null;
   } = $props();
 
   let idBase = $derived(`prompt-override-${provider}-${index}`);
@@ -120,7 +128,36 @@
       placeholder="Replaces the default system prompt for the selected models."
       class="{CONTROL_BASE} min-h-[9rem] w-full resize-y px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed"
     ></textarea>
-    {#if inert.noPrompt}
+    {#if entry.path}
+      <div class="flex min-w-0 items-center gap-1.5" data-testid="settings-prompt-file-{provider}-{index}">
+        <!-- Truncated from the left: the file name is the end worth
+             keeping. The inner span keeps the path's own direction. -->
+        <span
+          class="min-w-0 flex-1 truncate text-left font-mono text-[0.6875rem] text-fg-hint"
+          dir="rtl"
+          title={entry.path}
+          data-testid="settings-prompt-path-{provider}-{index}"
+        ><span dir="ltr">{entry.path}</span></span>
+        {#if onOpenFile}
+          <IconButton
+            label="Open prompt file in editor"
+            size="xs"
+            onClick={() => onOpenFile(entry.path ?? '')}
+            testId="settings-prompt-open-{provider}-{index}"
+          >
+            <Icon icon={FilePen} size={12} strokeWidth={2} />
+          </IconButton>
+        {/if}
+      </div>
+    {/if}
+    {#if entry.problem}
+      <p
+        class="text-[0.71875rem] text-warning"
+        data-testid="settings-prompt-problem-{provider}-{index}"
+      >
+        {entry.problem}
+      </p>
+    {:else if inert.noPrompt}
       <p
         class="text-[0.71875rem] text-warning"
         data-testid="settings-prompt-noprompt-{provider}-{index}"

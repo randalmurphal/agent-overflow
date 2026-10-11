@@ -145,7 +145,7 @@ describe('settings store', () => {
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await updateSetting('claudePromptOverrides', [
-        { enabled: true, models: ['m'], prompt: 'p' },
+        { id: '', enabled: true, models: ['m'], prompt: 'p' },
       ]);
 
       expect(getSettings().claudePromptOverrides).toBeUndefined();
@@ -211,10 +211,10 @@ describe('settings store', () => {
 
       await Promise.all([
         updateSetting('claudePromptOverrides', [
-          { enabled: true, models: ['m'], prompt: 'one' },
+          { id: '', enabled: true, models: ['m'], prompt: 'one' },
         ]),
         updateSetting('claudePromptOverrides', [
-          { enabled: true, models: ['m'], prompt: 'two' },
+          { id: '', enabled: true, models: ['m'], prompt: 'two' },
         ]),
       ]);
 

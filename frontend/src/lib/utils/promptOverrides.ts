@@ -243,9 +243,9 @@ export function exposedTodoTools(disabled: readonly string[]): string[] {
   return CLAUDE_TODO_TOOL_GROUP.filter((name) => !disabled.includes(name));
 }
 
-/** A fresh, disabled, empty entry — appended by the Add control. */
+/** A fresh, disabled, empty entry, appended by the Add control. The backend mints its id. */
 export function newPromptOverride(): PromptOverride {
-  return { enabled: false, models: [], prompt: '' };
+  return { id: '', enabled: false, models: [], prompt: '' };
 }
 
 /** The list with `patch` applied to entry `index` (no-op for a bad index). */

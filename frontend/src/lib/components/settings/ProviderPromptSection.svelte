@@ -13,7 +13,10 @@
 
   import { tick } from 'svelte';
   import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSettingsPatch, backend } = settingsComputer();
+  const { getSettings, updateSettingsPatch, backend, hasScope } = settingsComputer();
+  import { openInEditor } from '../../stores/openInEditor';
+  import { addErrorToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import {
     ensureProviderModels,
     getProviderModels,
@@ -118,6 +121,19 @@
     void writeEntries(withEntryAdded(entries));
   }
 
+  // The prompt file lives on the computer these settings belong to, and the
+  // editor opens on that computer's desktop, so the control is offered only
+  // where the page can act there.
+  let canOpenFiles = $derived(hasScope('host'));
+
+  async function openPromptFile(path: string): Promise<void> {
+    try {
+      await openInEditor(backend, path, 0, 0, '', '');
+    } catch (err) {
+      addErrorToast(errString(err), err);
+    }
+  }
+
   async function insertToken(token: string): Promise<void> {
     const target = insertTarget();
     if (!target) {
@@ -154,7 +170,7 @@
   <SettingsField
     id={fieldId}
     label="System prompt overrides"
-    hint="Replaces the provider's default system prompt. The first enabled entry whose models include the session's model wins."
+    hint="Replaces the provider's default system prompt. The first enabled entry whose models include the session's model wins. Edit a prompt here or in its file: a saved file applies to the next session start and to running Claude sessions. A .md file in the folder without an entry is ignored."
     align="start"
     stacked
   >
@@ -179,6 +195,7 @@
                 onPatch={(patch) => void patchEntry(row.index, patch)}
                 onRemove={() => removeEntry(row.index)}
                 onEditorFocus={noteEditorFocus}
+                onOpenFile={canOpenFiles ? (path) => void openPromptFile(path) : null}
               />
             </li>
           {/each}

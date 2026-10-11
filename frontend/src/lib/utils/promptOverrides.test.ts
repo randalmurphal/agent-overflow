@@ -34,6 +34,7 @@ import type { PromptOverride } from '../types/settings';
 // an entry with an empty prompt is inert and a fixture built on it would be
 // asking a different question than the one under test.
 const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
+  id: '',
   enabled: true,
   models: [],
   prompt: 'p',
@@ -89,7 +90,7 @@ describe('prompt override list edits', () => {
   it('patches one entry and leaves the array immutable', () => {
     const list = [ENTRY({ prompt: 'a' }), ENTRY({ prompt: 'b' })];
     const next = withEntryPatch(list, 1, { enabled: false });
-    expect(next[1]).toEqual({ enabled: false, models: [], prompt: 'b' });
+    expect(next[1]).toEqual({ id: '', enabled: false, models: [], prompt: 'b' });
     expect(list[1].enabled).toBe(true);
   });
 

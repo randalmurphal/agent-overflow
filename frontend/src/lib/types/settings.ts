@@ -136,11 +136,20 @@ export interface ProviderEnvVar {
  * contains the session's model, so order is meaningful. `prompt` may embed
  * the `{{TOKEN}}` placeholders the backend renders at spawn — unknown text
  * inside braces stays literal.
+ *
+ * The text lives in `<configDir>/prompts/<id>.md` on the backend, so it can
+ * be edited here or in that file. `id` names the file: `''` for an entry not
+ * yet saved, and the backend mints it. `path` and `problem` are computed by
+ * the backend on every read and ignored on a write: the file's absolute
+ * path, and why its text is not applied (it is over a size limit).
  */
 export interface PromptOverride {
+  id: string;
   enabled: boolean;
   models: string[];
   prompt: string;
+  path?: string;
+  problem?: string;
 }
 
 /** Claude Code's four built-in output styles. `''` means "no style selected". */
@@ -415,8 +424,9 @@ export interface Settings {
   /**
    * System-prompt replacements, in precedence order: the first enabled
    * entry whose `models` contains the session's model replaces the
-   * provider's default prompt (Claude `--system-prompt`, Codex
-   * `baseInstructions`). Read at spawn, so edits reach new sessions only.
+   * provider's default prompt (Claude `--system-prompt-file`, Codex
+   * `baseInstructions`). Read at spawn; a changed text also reaches running
+   * headless Claude sessions, and Codex picks it up at its next start.
    * Like claudeHiddenModels, the Claude list covers claude-tui too: the
    * interactive TUI is the same binary and honors `--system-prompt-file`
    * exactly as headless does (spike-verified on 2.1.234 — full body
