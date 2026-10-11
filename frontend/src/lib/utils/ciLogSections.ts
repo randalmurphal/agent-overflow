@@ -77,8 +77,9 @@ function stepOwnLine(name: string): (body: string) => boolean {
 
 const GITLAB_MARKER = /^section_(start|end):(\d+):([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?$/;
 const LEADING_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /;
-// SGR and erase sequences; the trace cleaner already resolved overwrites.
-const ANSI_SEQUENCE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+// SGR and erase sequences (ESC is the one control character that opens
+// one); the trace cleaner already resolved overwrites.
+const ANSI_SEQUENCE = /\p{Cc}\[[0-9;?]*[A-Za-z]/gu;
 
 export function segmentCILog(text: string, truncated: boolean, job: CIJob): CILogSegments {
   const raw = text ? text.split('\n') : [];
@@ -115,7 +116,7 @@ function utcSecond(time: string): string | null {
 function githubSections(lines: string[], truncated: boolean, steps: CIStep[], job: CIJob): CILogSection[] {
   // Each line's second; a line without its own time (a cut first line,
   // a blank) takes the one before it, or the first one after it.
-  const second: string[] = new Array(lines.length);
+  const second: string[] = Array.from({ length: lines.length }, () => '');
   let last = '';
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
