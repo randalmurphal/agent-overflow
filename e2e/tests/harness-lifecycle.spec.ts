@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { test, expect } from '@playwright/test';
 import { HARNESS_TIMING, launchHarness, type HarnessLaunchRecord } from '../src/harness.js';
 import { BackendConsoleLog } from '../src/harness-console-log.js';
+import { launchEnvironment } from '../src/harness-env.js';
 import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
@@ -200,16 +201,7 @@ async function descriptorsOn(file: string): Promise<number> {
 // the worker backend. This pins what lands beside the trace.
 test('writes a backend console, launch record and own logs as diagnostics', async ({}, testInfo) => {
   const marker = `diagnostics-probe-${process.pid}-${Date.now()}`;
-  // An agent session running the suite exports its live token under AO_*.
-  const inheritedToken = process.env.AO_TOKEN;
-  process.env.AO_TOKEN = 'inherited-token-probe';
-  let harness: Awaited<ReturnType<typeof launchHarness>>;
-  try {
-    harness = await launchHarness({ env: { DIAGNOSTICS_PROBE: marker } });
-  } finally {
-    if (inheritedToken === undefined) delete process.env.AO_TOKEN;
-    else process.env.AO_TOKEN = inheritedToken;
-  }
+  const harness = await launchHarness({ env: { DIAGNOSTICS_PROBE: marker } });
   try {
     // An RPC error is logged with its text, so the marker reaches stderr
     // only after a backend call.
@@ -238,13 +230,7 @@ test('writes a backend console, launch record and own logs as diagnostics', asyn
     expect(record.env.AO_HARNESS_TIMING).toBe(HARNESS_TIMING);
     expect(record.env.DIAGNOSTICS_PROBE).toBe(marker);
     expect(record.env.AO_E2E_CONTAINED).toBe('1');
-    // Other inherited values are named, never written.
-    expect(record.otherEnvNames).toEqual(expect.arrayContaining(['PATH', 'AO_TOKEN']));
-    expect(record.env.AO_TOKEN).toBeUndefined();
-    expect(JSON.stringify(record)).not.toContain('inherited-token-probe');
-    expect(
-      Object.keys(record.env).filter((name) => !/^AO_(HARNESS_|E2E_|MOCK)/.test(name) && name !== 'DIAGNOSTICS_PROBE'),
-    ).toEqual([]);
+    expect(record.env.PATH).toBe(process.env.PATH);
 
     const ownLogs = await readdir(path.join(dir, 'backend-logs'));
     expect(ownLogs).toContainEqual(expect.stringMatching(/^engine-\d{4}-\d{2}-\d{2}\.ndjson$/));
@@ -255,6 +241,77 @@ test('writes a backend console, launch record and own logs as diagnostics', asyn
   }
   await expect(access(harness.bootstrap.dataRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   if (process.platform === 'linux') expect(await descriptorsOn(consoleLogPath(harness.bootstrap.dataRoot))).toBe(0);
+});
+
+// An agent session running the suite exports its live AO_TOKEN, and a
+// developer's shell holds provider and service keys. None may reach a
+// backend the suite starts.
+test('a launched backend inherits only the allowlisted environment', async ({}, testInfo) => {
+  const canaries = { AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret' };
+  const previous = Object.fromEntries(Object.keys(canaries).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, canaries);
+  let harness: Awaited<ReturnType<typeof launchHarness>>;
+  try {
+    harness = await launchHarness();
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  try {
+    if (process.platform === 'linux') {
+      // The backend's own exec-time environment, not the launcher's intent.
+      const environ = (await readFile(`/proc/${harness.bootstrap.pid}/environ`, 'utf8')).split('\0');
+      expect(environ.filter((entry) => entry.includes('canary'))).toEqual([]);
+      expect(environ).toContain(`AO_HARNESS_TIMING=${HARNESS_TIMING}`);
+      expect(environ).toContain(`PATH=${process.env.PATH}`);
+    }
+    const dir = testInfo.outputPath('diagnostics');
+    await harness.writeDiagnostics(dir);
+    const record = await readFile(path.join(dir, 'backend-launch.json'), 'utf8');
+    expect(record).not.toContain('canary');
+  } finally {
+    await harness.close();
+  }
+});
+
+test('the launch environment keeps the allowlist and every override', async () => {
+  const source = {
+    PATH: '/bin',
+    HOME: '/home/dev',
+    LC_ALL: 'C.UTF-8',
+    AO_E2E_WORKERS: '2',
+    AO_HARNESS_KEEP_HOME: '1',
+    AO_MOCKPROVIDER: '/mock',
+    AO_TOKEN: 'canary',
+    AO_ENDPOINT: 'canary',
+    AO_THREAD_ID: 'canary',
+    AO_PROJECT: 'canary',
+    ATLASSIAN_API_TOKEN: 'canary',
+    ANTHROPIC_API_KEY: 'canary',
+    SHELL: '/bin/zsh',
+    WSL_DISTRO_NAME: 'canary',
+    XDG_CONFIG_HOME: '/home/dev/.config',
+    AGENT_OVERFLOW_WIN_APPDATA: 'canary',
+    SystemRoot: 'C:\\Windows',
+  };
+  expect(launchEnvironment({ AO_PID_FILE: '/pid', HOME: '/harness-home' }, source, 'linux')).toEqual({
+    PATH: '/bin',
+    HOME: '/harness-home',
+    LC_ALL: 'C.UTF-8',
+    AO_E2E_WORKERS: '2',
+    AO_HARNESS_KEEP_HOME: '1',
+    AO_MOCKPROVIDER: '/mock',
+    AO_PID_FILE: '/pid',
+  });
+  // Windows names fold case and keep the spelling Node reports.
+  const windows = launchEnvironment(
+    { PATH: 'C:\\fixture;C:\\Windows' },
+    { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', Temp: 'C:\\Temp', AO_TOKEN: 'canary' },
+    'win32',
+  );
+  expect(windows).toEqual({ SystemRoot: 'C:\\Windows', Temp: 'C:\\Temp', PATH: 'C:\\fixture;C:\\Windows' });
 });
 
 test('a launch that cannot spawn closes its console log', async () => {

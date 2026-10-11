@@ -28,13 +28,8 @@ export interface HarnessLaunchRecord {
   args: string[];
   /** The effective AO_HARNESS_TIMING. */
   harnessTiming: string;
-  /** The launch's `env` overrides and inherited AO_HARNESS_*, AO_E2E_* and AO_MOCK* values. */
+  /** The whole environment the backend was started with (harness-env.ts). */
   env: Record<string, string>;
-  /**
-   * Names of the other inherited variables. Their values stay out of test
-   * results because the developer's environment can hold credentials.
-   */
-  otherEnvNames: string[];
 }
 
 export interface LaunchOptions {

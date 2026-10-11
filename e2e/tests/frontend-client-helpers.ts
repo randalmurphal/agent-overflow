@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
+import { launchEnvironment } from '../src/harness-env.js';
 import { spawnContained } from '../src/harness-process.js';
 
 /** Owns only a frontend controller. Both execution hosts are independent
@@ -8,9 +9,9 @@ import { spawnContained } from '../src/harness-process.js';
 export async function launchFrontendClient(profiles: string, config: string, computer: string, port = 0) {
   const child = spawnContained(fileURLToPath(new URL('../../bin/ao-frontendclient-test', import.meta.url)), [], {
     stdio: ['pipe', 'pipe', 'pipe'], memoryLimitBytes: 512 * 1024 * 1024,
-    env: { ...process.env, AO_TEST_FRONTEND_FIXTURE: '1', AO_TEST_FRONTEND_PROFILES: profiles,
+    env: launchEnvironment({ AO_TEST_FRONTEND_FIXTURE: '1', AO_TEST_FRONTEND_PROFILES: profiles,
       AO_TEST_FRONTEND_CONFIG: config, AO_TEST_FRONTEND_COMPUTER: computer, AO_TEST_FRONTEND_PORT: String(port),
-      AO_TEST_FRONTEND_ASSETS: fileURLToPath(new URL('../../frontend/dist', import.meta.url)) },
+      AO_TEST_FRONTEND_ASSETS: fileURLToPath(new URL('../../frontend/dist', import.meta.url)) }),
   });
   const lines = createInterface({ input: child.stdout! });
   const iterator = lines[Symbol.asyncIterator]();

@@ -32,6 +32,7 @@ import {
 } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
 import { BackendConsoleLog } from './harness-console-log.ts';
+import { launchEnvironment } from './harness-env.ts';
 import { terminateHarness } from './harness-teardown.ts';
 import type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 import { HarnessApp } from './harness-app.ts';
@@ -99,8 +100,8 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     if (ownsDataDir) await removeOwnedRoot(dataDir, undefined, 'after console log error');
     throw new Error(`harness console log could not be opened under ${dataDir}: ${(error as Error).message}`);
   }
-  const env = { ...process.env, AO_HARNESS_TIMING: HARNESS_TIMING, ...opts.env };
-  const launch = launchRecord(binary, args, env, opts.env ?? {});
+  const env = launchEnvironment({ AO_HARNESS_TIMING: HARNESS_TIMING, ...opts.env });
+  const launch: HarnessLaunchRecord = { binary, args, harnessTiming: env.AO_HARNESS_TIMING ?? '', env };
 
   let child: ChildProcess;
   try {
@@ -295,37 +296,6 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     }
     throw error;
   }
-}
-
-// The suite's own variables, which steer a harness backend. Other inherited
-// values stay out of the record, including other AO_* names: an agent
-// session running the suite exports its live AO_TOKEN, and test results
-// are uploaded by CI and copied into evidence.
-const RECORDED_ENV_PREFIXES = ['AO_HARNESS_', 'AO_E2E_', 'AO_MOCK'];
-
-function launchRecord(
-  binary: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  overrides: Record<string, string>,
-): HarnessLaunchRecord {
-  const recorded: Record<string, string> = {};
-  const otherEnvNames: string[] = [];
-  for (const [name, value] of Object.entries(env)) {
-    if (value === undefined) continue;
-    if (Object.hasOwn(overrides, name) || RECORDED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-      recorded[name] = value;
-    } else {
-      otherEnvNames.push(name);
-    }
-  }
-  return {
-    binary,
-    args,
-    harnessTiming: env.AO_HARNESS_TIMING ?? '',
-    env: recorded,
-    otherEnvNames: otherEnvNames.sort(),
-  };
 }
 
 async function closeConsoleLog(log: BackendConsoleLog): Promise<void> {

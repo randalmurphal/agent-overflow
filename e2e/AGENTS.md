@@ -15,6 +15,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
   PR CI live, follow and log wait polls); a spec that needs another value,
   or the PR update poll cadence (`pr-update`), passes its own through `env`.
+  A launched backend or frontend client inherits only the variables
+  `src/harness-env.ts` allows, never the developer's credentials or
+  settings; a spec that needs another variable passes it through `env`.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.
@@ -59,12 +62,12 @@ off-host peer skip. See
 
 A test that fails while holding the worker backend, including in the
 per-test reset, gets `backend.log` (the backend's stdout and stderr since
-launch), `backend-launch.json` (binary, args, roots, `AO_HARNESS_TIMING`,
-the launch's `env` and inherited `AO_HARNESS_*`, `AO_E2E_*` and `AO_MOCK*`
-values; other inherited variables by name only) and `backend-logs/` (the backend's own log files) beside its trace
-in `test-results`. The worker data root is still deleted at teardown unless
-`AO_E2E_KEEP_FAILED_ROOT=1`, which leaves it at the `dataRoot` the launch
-record names. A backend a spec launches itself keeps its console in
+launch), `backend-launch.json` (binary, args, roots, `AO_HARNESS_TIMING` and
+the whole environment the backend started with) and `backend-logs/` (the
+backend's own log files) beside its trace in `test-results`. The worker
+data root is still deleted at teardown unless `AO_E2E_KEEP_FAILED_ROOT=1`,
+which leaves it at the `dataRoot` the launch record names. A backend a spec
+launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
