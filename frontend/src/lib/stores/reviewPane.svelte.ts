@@ -39,12 +39,14 @@ import {
   clearPRThreadResolveOverride,
   overriddenPRThreads,
   peekPRError,
+  peekPRFailure,
   peekPRSnapshot,
   setPRThreadResolveOverride,
   type PRAttachment,
   type PRSnapshot,
 } from './prReviewStore.svelte';
 import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
+import type { ForgeFailure } from '../utils/forgeFailure';
 import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import {
   ensurePRConflictFile,
@@ -176,6 +178,9 @@ export interface ReviewPaneState {
    * Separate from `error`, which owns the diff — the diff on screen is
    * still valid, only what surrounds it stopped updating. */
   readonly prUpdateError: string | null;
+  /** The pump's kind of prUpdateError (rate limited, a login to fix,
+   * ...); null when the error has no kind or there is none. */
+  readonly prUpdateFailure: ForgeFailure | null;
   /** Scope fields for parse-priming span requests — the same triple
    * the diff-context expansion sends (`app_review_diffs.go` scopes). */
   readonly spanContext: PatchScopeContext;
@@ -206,6 +211,8 @@ export interface ReviewPaneState {
   /** A manual CI refresh is in flight. */
   readonly ciRefreshing: boolean;
   readonly ciError: string | null;
+  /** The kind of ciError; null for a refresh's own failure or none. */
+  readonly ciFailure: ForgeFailure | null;
   /** The open job log. Its job is the live pipeline's row for that id. */
   readonly ciLogView: CILogView | null;
   /** The followed log; null until the first state arrives. */
@@ -213,6 +220,8 @@ export interface ReviewPaneState {
   /** A follow call (open or refresh) is in flight. */
   readonly ciLogLoading: boolean;
   readonly ciLogError: string | null;
+  /** The kind of ciLogError; null for a local failure or none. */
+  readonly ciLogFailure: ForgeFailure | null;
   /** False while the forge cannot serve the log: the job is live on a
    * forge that serves logs only after completion, or the forge has not
    * published a completed job's log yet. */
@@ -616,6 +625,7 @@ function createReviewPaneState(
   // deliberately NOT `error` (which owns the diff): the rendered diff is
   // still valid, only the live PR data behind it went stale.
   const prUpdateError = $derived(peekPRError(prEntityKey));
+  const prUpdateFailure = $derived(peekPRFailure(prEntityKey));
   // The snapshot's threads through the optimistic resolve overrides.
   // A $derived, not a getter, for identity stability: ReviewDiffBody
   // re-anchors the reader on prThreads identity change, so a fresh
@@ -2102,6 +2112,7 @@ function createReviewPaneState(
     get pendingConversationThreadId() { return pendingConversationThreadId; },
     get prHeadSHA() { return loadedPRHeadSHA; },
     get prUpdateError() { return prUpdateError; },
+    get prUpdateFailure() { return prUpdateFailure; },
     get spanContext(): PatchScopeContext {
       return patchScopeContext();
     },
@@ -2121,10 +2132,12 @@ function createReviewPaneState(
     get ciLoading() { return ciState.loading; },
     get ciRefreshing() { return ciState.refreshing; },
     get ciError() { return ciState.error; },
+    get ciFailure() { return ciState.failure; },
     get ciLogView() { return ciLogView; },
     get ciLog() { return ciLog; },
     get ciLogLoading() { return ciLogOpen !== null && prCILogFollowPending(ciLogOpen.key); },
     get ciLogError() { return ciLogLocalError ?? ciLog?.error ?? null; },
+    get ciLogFailure() { return ciLogLocalError === null ? (ciLog?.failure ?? null) : null; },
     get ciLogAvailable() { return ciLog?.available ?? true; },
     get ciLogSavedPath() { return ciLogSavedPath; },
     get submitTarget() { return submitTarget; },

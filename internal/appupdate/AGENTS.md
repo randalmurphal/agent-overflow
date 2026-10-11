@@ -39,18 +39,19 @@ checksummed artifact. Latest means the newest listing entry installable by this
 target.
 
 The release host sits behind `releaseFeed` (feed.go). A build linked with
-`gitlabProject` reads that GitLab project through the injected `GlabRunner`
-and the user's glab login (gitlab.go); otherwise the GitHub feed and stock
-provider serve it. glab sends the user's token to any absolute URL, so a
-release link is fetched only as a path relative to `https://HOST/api/v4/` on
-the configured host. A build without remote access targets `wsl-noremote`.
+`gitlabProject` reads that GitLab project over HTTPS through the injected
+`GitLabClient`, which the app backs with its forge API transport and the
+token of the user's glab login (gitlab.go); otherwise the GitHub feed and
+stock provider serve it. Every request carries that token, so a release
+link is fetched only as a path relative to `https://HOST/api/v4/` on the
+configured host. A build without remote access targets `wsl-noremote`.
 
 Fetch streams through SHA-256 while writing and rejects mismatches. Cap reported
 and streamed download size before disk growth. The caller owns cleanup of a
 partially written destination and any platform-specific archive handling.
 
-Tests use mock release servers, a fake glab run through an isolated git Core,
-and fake hosts. Cover checksum refusal, asset collisions, size limits,
-concurrent-operation exclusion, WSL marker cleanup, acknowledgement and timeout
-races, relaunch argv, and event ordering. The release script drift test must
+Tests use mock release servers, an httptest GitLab read through an isolated
+forge API transport, and fake hosts. Cover checksum refusal, asset
+collisions, size limits, concurrent-operation exclusion, WSL marker cleanup,
+acknowledgement and timeout races, relaunch argv, and event ordering. The release script drift test must
 continue to prove that every produced artifact has exactly one target.

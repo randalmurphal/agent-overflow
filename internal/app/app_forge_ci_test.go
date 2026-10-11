@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
 
@@ -20,13 +21,19 @@ import (
 // test currently publishes, the log fetch answers the test's current text
 // per job. Counters tell a test what the pump actually asked for.
 type prCIFixture struct {
-	app          *App
-	mu           sync.Mutex
-	pipeline     gitops.CIPipeline
-	pipelineErr  error
-	stepsFor     [][]string
-	logs         map[string]string
-	logErrs      map[string]error
+	app         *App
+	mu          sync.Mutex
+	pipeline    gitops.CIPipeline
+	pipelineErr error
+	stepsFor    [][]string
+	logs        map[string]string
+	logErrs     map[string]error
+	// ciInteractive and logInteractive record, per fetch, whether its
+	// context carried the interactive mark.
+	ciInteractive  []bool
+	logInteractive []bool
+	// logETags is the If-None-Match each log fetch carried.
+	logETags     []string
 	ciFetches    atomic.Int32
 	logFetches   atomic.Int32
 	snapshotHead atomic.Pointer[string]
@@ -49,24 +56,33 @@ func newPRCIFixture(t *testing.T, whileRunning bool) *prCIFixture {
 	f.app.prUpdates.ciLiveInterval = 5 * time.Millisecond
 	f.app.prUpdates.ciFollowInterval = 5 * time.Millisecond
 	f.app.prUpdates.ciLogWhileRunning = &whileRunning
-	f.app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	f.app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: *f.snapshotHead.Load()}}, nil
 	}
-	f.app.prUpdates.ciFetchFn = func(_ gitops.PRReference, _ *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
+	f.app.prUpdates.ciFetchFn = func(ctx context.Context, _ gitops.PRReference, _ *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.ciInteractive = append(f.ciInteractive, forgeapi.IsInteractive(ctx))
 		f.stepsFor = append(f.stepsFor, slices.Sorted(slices.Values(stepsFor)))
 		f.ciFetches.Add(1)
 		return f.pipeline, f.pipelineErr
 	}
-	f.app.prUpdates.ciLogFetchFn = func(_ gitops.PRReference, jobID string) (string, error) {
+	f.app.prUpdates.ciLogFetchFn = func(ctx context.Context, _ gitops.PRReference, req gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
 		f.logFetches.Add(1)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := f.logErrs[jobID]; err != nil {
-			return "", err
+		f.logInteractive = append(f.logInteractive, forgeapi.IsInteractive(ctx))
+		f.logETags = append(f.logETags, req.ETag)
+		if err := f.logErrs[req.JobID]; err != nil {
+			return gitops.CIJobLog{}, err
 		}
-		return f.logs[jobID], nil
+		// The log's ETag is its text: a fetch that names the text it holds
+		// is answered 304.
+		etag := strconv.Quote(f.logs[req.JobID])
+		if req.ETag == etag {
+			return gitops.CIJobLog{ETag: etag, NotModified: true}, nil
+		}
+		return gitops.CIJobLog{Text: f.logs[req.JobID], ETag: etag}, nil
 	}
 	f.app.testEmitHook = func(name string, data any) {
 		switch name {
@@ -343,7 +359,7 @@ func TestPRCILogFollowWaitsForCompletionWhereLogsNeedIt(t *testing.T) {
 	f := newPRCIFixture(t, false)
 	f.app.prUpdates.ciLogWaitInterval = 5 * time.Millisecond
 	f.publish(pipelineWith(gitops.CIStatusRunning, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusRunning, LogsAvailable: true}), nil)
-	f.setLog("7", "", fmt.Errorf("%w: gh: Not Found (HTTP 404)", gitops.ErrCIJobLogNotFound))
+	f.setLog("7", "", fmt.Errorf("%w: forge GET repos/o/r/actions/jobs/7/logs: HTTP 404 Not Found", gitops.ErrCIJobLogNotFound))
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "running pipeline frame")
 
@@ -429,7 +445,7 @@ func TestPRCILogUnpublishedFinalLogIsAWaitNotAFailure(t *testing.T) {
 	}
 	awaitLogEvent(t, f.logEvents, "first log frame")
 
-	f.setLog("7", "", fmt.Errorf("%w: gh: Not Found (HTTP 404)", gitops.ErrCIJobLogNotFound))
+	f.setLog("7", "", fmt.Errorf("%w: forge GET repos/o/r/actions/jobs/7/logs: HTTP 404 Not Found", gitops.ErrCIJobLogNotFound))
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
 	waiting := awaitLogEvent(t, f.logEvents, "waiting frame")
@@ -684,4 +700,144 @@ func TestCILogDelta(t *testing.T) {
 			t.Errorf("%s: ciLogDelta = (%d, %d, %q), want (%d, %d, %q)", tc.name, prevLen, base, appended, tc.prevLen, tc.base, tc.appended)
 		}
 	}
+}
+
+// TestPRPumpMarksOnlyRequestedPollsInteractive: the pump's own polls are
+// background work, and the polls a person's Refresh or follow asked for
+// carry the interactive mark (forgeapi.WithInteractive).
+func TestPRPumpMarksOnlyRequestedPollsInteractive(t *testing.T) {
+	t.Parallel()
+	f := newPRCIFixture(t, true)
+	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
+	f.setLog("7", "ok\n", nil)
+	sub := f.subscribe(t)
+	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	if err := f.app.RefreshPRCI(t.Context(), sub.ID); err != nil {
+		t.Fatalf("RefreshPRCI: %v", err)
+	}
+	if _, err := f.app.SetPRCILogFollows(t.Context(), sub.ID, []string{"7"}); err != nil {
+		t.Fatalf("SetPRCILogFollows: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.ciInteractive) < 2 || f.ciInteractive[0] || !f.ciInteractive[1] {
+		t.Fatalf("pipeline fetch marks = %v, want the start poll unmarked and the Refresh poll marked", f.ciInteractive)
+	}
+	if len(f.logInteractive) != 1 || !f.logInteractive[0] {
+		t.Fatalf("log fetch marks = %v, want the follow's forced fetch marked", f.logInteractive)
+	}
+}
+
+// TestPRPumpCancelsItsForgeCallWhenTheLastSubscriberLeaves: a pump that
+// dies cancels the forge request it has in flight instead of leaving it
+// to run out its timeout.
+func TestPRPumpCancelsItsForgeCallWhenTheLastSubscriberLeaves(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(context.Context, gitops.PRReference) (prUpdateSnapshot, error) {
+		return prUpdateSnapshot{}, nil
+	}
+	entered := make(chan struct{})
+	released := make(chan error, 1)
+	app.prUpdates.ciFetchFn = func(ctx context.Context, _ gitops.PRReference, _ *gitops.CIPipeline, _ []string) (gitops.CIPipeline, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			released <- ctx.Err()
+		case <-time.After(5 * time.Second):
+			released <- errors.New("the pump's context outlived its last subscriber")
+		}
+		return gitops.CIPipeline{}, ctx.Err()
+	}
+	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
+		return gitops.CIJobLog{}, nil
+	}
+	whileRunning := true
+	app.prUpdates.ciLogWhileRunning = &whileRunning
+
+	sub, err := app.SubscribePRUpdates(t.Context(), testPR)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pump never polled CI")
+	}
+	if err := app.UnsubscribePRUpdates(t.Context(), sub.ID); err != nil {
+		t.Fatalf("UnsubscribePRUpdates: %v", err)
+	}
+	if err := <-released; !errors.Is(err, context.Canceled) {
+		t.Fatalf("in-flight fetch ended with %v, want context.Canceled", err)
+	}
+	app.prUpdates.wg.Wait()
+}
+
+// TestSubscribePRUpdatesAbandonedCallCreatesNoPump: the first fetch runs
+// under the subscribe call's context, and a call that was cancelled
+// mid-fetch must not leave a pump carrying its cancellation as the PR's
+// failure.
+func TestSubscribePRUpdatesAbandonedCallCreatesNoPump(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	stubPRCIFetch(app)
+	ctx, cancel := context.WithCancel(t.Context())
+	app.prUpdates.fetchFn = func(fetchCtx context.Context, _ gitops.PRReference) (prUpdateSnapshot, error) {
+		cancel()
+		<-fetchCtx.Done()
+		return prUpdateSnapshot{}, fetchCtx.Err()
+	}
+	if _, err := app.SubscribePRUpdates(ctx, testPR); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SubscribePRUpdates error = %v, want context.Canceled", err)
+	}
+	app.prUpdates.mu.Lock()
+	pumps, handles := len(app.prUpdates.pumps), len(app.prUpdates.handles)
+	app.prUpdates.mu.Unlock()
+	if pumps != 0 || handles != 0 {
+		t.Fatalf("abandoned subscribe left %d pumps and %d handles", pumps, handles)
+	}
+	app.prUpdates.wg.Wait()
+}
+
+// TestSubscribePRUpdatesMarksOnlyTheFirstFetchInteractive: opening the
+// pane is the user's action, so the subscribe call's fetch is marked; the
+// pump's own detail polls after it are not.
+func TestSubscribePRUpdatesMarksOnlyTheFirstFetchInteractive(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	app.prUpdates.interval = time.Millisecond
+	marks := make(chan bool, 64)
+	app.prUpdates.fetchFn = func(ctx context.Context, _ gitops.PRReference) (prUpdateSnapshot, error) {
+		select {
+		case marks <- forgeapi.IsInteractive(ctx):
+		default:
+		}
+		return prUpdateSnapshot{}, nil
+	}
+	app.prUpdates.ciFetchFn = func(context.Context, gitops.PRReference, *gitops.CIPipeline, []string) (gitops.CIPipeline, error) {
+		return gitops.CIPipeline{}, nil
+	}
+	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
+		return gitops.CIJobLog{}, nil
+	}
+
+	sub, err := app.SubscribePRUpdates(t.Context(), testPR)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	for i := range 2 {
+		select {
+		case marked := <-marks:
+			if want := i == 0; marked != want {
+				t.Fatalf("detail fetch %d interactive = %v, want %v", i, marked, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("detail fetch %d never ran", i)
+		}
+	}
+	if err := app.UnsubscribePRUpdates(t.Context(), sub.ID); err != nil {
+		t.Fatalf("UnsubscribePRUpdates: %v", err)
+	}
+	app.prUpdates.wg.Wait()
 }

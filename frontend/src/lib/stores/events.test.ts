@@ -162,7 +162,7 @@ describe('setupEventListeners', () => {
   it('routes the PR CI channels to the PR they name', async () => {
     expect(wailsListenerCount('pr:ci_updated')).toBe(1);
     expect(wailsListenerCount('pr:ci_log')).toBe(1);
-    const ref = { forge: 'gitlab', namespace: 'group', repo: 'repo', number: 5 } as const;
+    const ref = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'repo', number: 5 } as const;
     const key = prKey(ref);
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1', prKey: key, detail: null, threads: [], headSHA: '', error: '', seq: 1, ci: null, ciError: '',

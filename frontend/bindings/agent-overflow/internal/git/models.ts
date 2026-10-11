@@ -559,6 +559,13 @@ export class PRReference {
     "Forge": string;
 
     /**
+     * Host is the forge host the PR lives on, spelled as its URL's
+     * URL.host (lowercase, a non-default port kept; see ParsePRURL).
+     * Required.
+     */
+    "Host": string;
+
+    /**
      * "owner" or "group/sub/..."
      */
     "Namespace": string;
@@ -569,6 +576,9 @@ export class PRReference {
     constructor($$source: Partial<PRReference> = {}) {
         if (!("Forge" in $$source)) {
             this["Forge"] = "";
+        }
+        if (!("Host" in $$source)) {
+            this["Host"] = "";
         }
         if (!("Namespace" in $$source)) {
             this["Namespace"] = "";

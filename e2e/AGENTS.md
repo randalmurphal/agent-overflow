@@ -13,8 +13,8 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   descendant of it. Every launch passes `HARNESS_TIMING`
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
-  PR CI live, follow and log wait polls); a spec that needs another value passes its
-  own through `env`.
+  PR CI live, follow and log wait polls); a spec that needs another value,
+  or the PR update poll cadence (`pr-update`), passes its own through `env`.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.
@@ -23,10 +23,11 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   only the intended disposable device profile.
 - Shared provider frames, pairing flows, and result narrowing belong in the
   relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
-- `forge-helpers.ts` seeds the fake `gh`/`glab` (`HarnessForgeSeed`),
-  publishes a seeded workspace's branch as a PR through a local origin,
-  reads the recorded calls and opens a PR's review pane through the UI. A forge
-  call the fake does not answer is added to the fake first:
+- `forge-helpers.ts` seeds the fake `gh`/`glab` and forge API
+  (`HarnessForgeSeed`), publishes a seeded workspace's branch as a PR
+  through a local origin, reads the recorded calls (a union on `via`: `cli`
+  or `http`) and opens a PR's review pane through the UI. A forge call the
+  fake does not answer is added to the fake first:
   [forgefake/AGENTS.md](../internal/harness/forgefake/AGENTS.md).
 - `rigs/` contains manual performance tools outside release gates. Follow
   [rigs/README.md](rigs/README.md) for their data and scenario rules.

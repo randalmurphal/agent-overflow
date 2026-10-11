@@ -37,6 +37,7 @@ import { withBackendTarget } from '../transport/backends';
 import { composeWorkspaceKey, workspaceKeyBackend, workspaceKeyPath } from '../utils/workspaceKey';
 import { createEntityStore } from './entityStore.svelte';
 import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
+import { forgeFailureFrom, type ForgeFailure, type ForgeFailureWire } from '../utils/forgeFailure';
 import {
   __resetPRCIForTest,
   applyPRCIUpdated,
@@ -90,6 +91,12 @@ export interface PRUpdatedEvent {
   headSHA?: string;
   /** A fetch failure on the pump: user-facing state, not a log line. */
   error?: string;
+  /** The failure's kind: transient, rate_limited, setup or forge. */
+  errorKind?: string;
+  /** A rate limit kept for the user's own actions (rate_limited only). */
+  reserve?: boolean;
+  /** When polling resumes, RFC 3339 (rate_limited only). */
+  resumeAt?: string;
   /**
    * The pump-state sequence this frame was stamped with, comparable against
    * the one a `SubscribePRUpdates` result carries. See the join replay
@@ -320,10 +327,14 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       // side, so no frame will ever restate it for this subscriber. It does
       // not fail the load: stale data plus an error banner is what every
       // holder already on the key sees, and a joiner must see the same.
-      if (result.error) store.applyError(key, new Error(String(result.error)));
+      if (result.error) applyPRFailure(key, String(result.error), result);
       // The pump's CI as of the same seq, with its active failure: like the
       // snapshot error, no frame restates a deduped failure to a joiner.
-      seedPRCI(key, (result.ci ?? null) as CIPipeline | null, String(result.ciError ?? ''));
+      seedPRCI(key, (result.ci ?? null) as CIPipeline | null, String(result.ciError ?? ''), {
+        errorKind: result.ciErrorKind,
+        reserve: result.ciReserve,
+        resumeAt: result.ciResumeAt,
+      });
       // The backend keeps the log follow set on the handle, and this one
       // is new.
       resendPRCILogFollows(key);
@@ -355,6 +366,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   // below rather than here.
   onDrop: (key) => {
     refByKey.delete(key);
+    failureByKey.delete(key);
     appliedSeqByKey.delete(key);
     resolveOverridesByKey.delete(key);
     dropPRCIFollows(key);
@@ -423,7 +435,7 @@ function reconcileResolveOverrides(key: string, threads: readonly ReviewThread[]
   const overrides = resolveOverridesByKey.get(key);
   if (!overrides || overrides.size === 0) return;
   const resolvedById = new Map(threads.map((thread) => [thread.id, thread.isResolved]));
-  for (const [threadId, want] of [...overrides]) {
+  for (const [threadId, want] of overrides) {
     const observed = resolvedById.get(threadId);
     if (observed === undefined || observed === want) overrides.delete(threadId);
   }
@@ -492,7 +504,7 @@ onBackendStatusChange((backend, status) => {
   for (const key of bufferedFrameByWireKey.keys()) {
     if (workspaceKeyBackend(key) === backend) bufferedFrameByWireKey.delete(key);
   }
-  for (const key of [...readyByKey.keys()]) {
+  for (const key of readyByKey.keys()) {
     if (workspaceKeyBackend(key) !== backend) continue;
     rejectReady(key, new Error('Disconnected from the backend.'));
   }
@@ -636,7 +648,7 @@ function admitPRFrame(key: string, seq: number | undefined): boolean {
 function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
   if (!admitPRFrame(key, event.seq)) return;
   if (event.error) {
-    store.applyError(key, new Error(event.error));
+    applyPRFailure(key, event.error, event);
     return;
   }
   const detail = wireDetail(event.detail);
@@ -682,6 +694,30 @@ export function applyPRThreads(key: string, threads: readonly ReviewThread[]): v
 
 export function applyPRError(key: string, err: unknown): void {
   store.applyError(key, err);
+}
+
+// The kind of each PR's pump failure, beside the entity store's error
+// text. An entry describes the error only while that text is the one it
+// was recorded with: any other error (a local one, or a later failure)
+// reads as having no kind.
+const failureByKey = new SvelteMap<string, { message: string; failure: ForgeFailure }>();
+
+function applyPRFailure(key: string, message: string, wire: ForgeFailureWire): void {
+  const failure = forgeFailureFrom(wire);
+  if (failure) failureByKey.set(key, { message, failure });
+  else failureByKey.delete(key);
+  store.applyError(key, new Error(message));
+}
+
+/**
+ * The kind of a PR's current pump failure without attaching. Reactive;
+ * null when healthy or when the error shown is not a pump failure.
+ */
+export function peekPRFailure(key: string | null): ForgeFailure | null {
+  if (key === null) return null;
+  const error = store.peekError(key);
+  const recorded = failureByKey.get(key);
+  return recorded && error === recorded.message ? recorded.failure : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -775,8 +811,9 @@ export function resyncPRReviewAfterGap(backend: BackendKey = HOME_BACKEND): void
 export function __resetPRReviewStoreForTest(): void {
   store.suspend();
   store.resetAll();
-  for (const key of [...readyByKey.keys()]) rejectReady(key, new Error('store reset'));
+  for (const key of readyByKey.keys()) rejectReady(key, new Error('store reset'));
   refByKey.clear();
+  failureByKey.clear();
   __resetPRSubscriptionsForTest();
   localKeysByWireKey.clear();
   resolveOverridesByKey.clear();

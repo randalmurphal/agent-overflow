@@ -184,7 +184,7 @@ describe('externalURLForEventTarget', () => {
       externalURLForEventTarget(
         target(`<a data-hit href="${buildForgeAttachmentHref({
           href: '/uploads/0123456789abcdef0123456789abcdef/x.pdf',
-          pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+          pr: { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 },
           backend: 'gpu',
           webBase: '',
         })}">a</a>`),

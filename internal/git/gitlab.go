@@ -1,19 +1,22 @@
 package git
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/forgeapi"
 )
 
-// gitlabForge implements Forge using the glab CLI. All operations
-// route through the owning Core's runBinary for timeout + size-cap
-// discipline.
+// gitlabForge implements Forge over the GitLab REST API through the
+// Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
 }
@@ -26,7 +29,7 @@ func (f *gitlabForge) BinaryName() string { return "glab" }
 // default "use the current branch" behaviour rather than reading
 // HEAD ourselves — same model gh uses, and avoids a hard dep on git
 // being on PATH inside tests that exercise the missing-glab path.
-func (f *gitlabForge) CreatePR(cwd, title, body, base string, draft bool) (string, error) {
+func (f *gitlabForge) CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error) {
 	if strings.TrimSpace(title) == "" {
 		return "", errors.New("merge request title is required")
 	}
@@ -46,12 +49,15 @@ func (f *gitlabForge) CreatePR(cwd, title, body, base string, draft bool) (strin
 	// Interactive for the same reason as `gh pr create`: glab pushes the
 	// source branch itself when the remote does not have it yet, and that
 	// nested `git push` inherits our environment.
-	result, err := f.core.runBinaryInteractive("glab", cwd, args...)
+	result, err := f.core.runBinaryInteractive(ctx, "glab", cwd, args...)
 	if err != nil {
-		return "", normalizeGitLabCLIError(err)
+		if _, ok := errors.AsType[*exec.Error](err); ok || errors.Is(err, exec.ErrNotFound) {
+			return "", forgeapi.MissingCLIError(forgeapi.ForgeGitLab, err)
+		}
+		return "", err
 	}
 	if result.exitCode != 0 {
-		return "", fmt.Errorf("glab mr create failed: %s", commandOutputMessage(result.stdout, result.stderr))
+		return "", commandFailure("glab mr create", result)
 	}
 
 	url := extractMRCreateURL(result.stdout)
@@ -61,216 +67,226 @@ func (f *gitlabForge) CreatePR(cwd, title, body, base string, draft bool) (strin
 	return url, nil
 }
 
-// ListOpenPRs returns open merge requests for the given source branch.
-// The implementation uses `glab api` instead of `glab mr list --output json`:
-// older glab builds support `api` but do not expose JSON formatting on
-// `mr list`, and the header badge needs this lookup to work across both.
-func (f *gitlabForge) ListOpenPRs(cwd, head string) ([]GitPR, error) {
+// gitlabOriginProject is the GitLab project cwd's origin names, as an
+// API path, and the API client of its host.
+func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string, error) {
+	forge, host, project, err := f.core.originCoordinates(cwd)
+	if err != nil {
+		return nil, "", err
+	}
+	if forge != "gitlab" {
+		return nil, "", &OriginUnknownError{Cwd: cwd, Reason: "the origin is not a GitLab repository"}
+	}
+	client, err := f.core.gitlabAPI(host)
+	if err != nil {
+		return nil, "", err
+	}
+	return client, gitlabProjectPath(project), nil
+}
+
+// ListOpenPRs returns the open merge request whose source is the given
+// branch of cwd's origin project.
+func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	sourceBranch := strings.TrimSpace(head)
 	if sourceBranch == "" {
 		return nil, errors.New("merge request source branch is required")
 	}
-	result, err := f.core.runBinary("glab", cwd, "api", gitLabOpenMRsEndpoint(sourceBranch))
+	client, project, err := f.gitlabOriginProject(cwd)
 	if err != nil {
-		return nil, normalizeGitLabCLIError(err)
+		return nil, err
 	}
-	if result.exitCode != 0 {
-		return nil, fmt.Errorf("glab api merge request list failed: %s", commandOutputMessage(result.stdout, result.stderr))
-	}
-	stdout := strings.TrimSpace(result.stdout)
-	if stdout == "" || stdout == "[]" || stdout == "null" {
-		return nil, nil
-	}
-
-	// The GitLab REST API exposes web_url and iid (project-internal MR number),
-	// which map onto the forge-agnostic GitPR shape. Accept webUrl as a
-	// defensive compatibility alias for CLI-shaped JSON.
 	var raw []struct {
-		WebURL      string `json:"web_url"`
-		WebURLCamel string `json:"webUrl"`
-		IID         int    `json:"iid"`
-		Title       string `json:"title"`
-		State       string `json:"state"`
+		WebURL string `json:"web_url"`
+		IID    int    `json:"iid"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
-		return nil, fmt.Errorf("decode glab api merge request list output: %w", err)
+	request := forgeapi.Request{
+		Path:  project + "/merge_requests",
+		Query: url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {"1"}, "view": {"simple"}},
+	}
+	if _, err := client.JSON(ctx, request, &raw); err != nil {
+		return nil, err
 	}
 	pulls := make([]GitPR, 0, len(raw))
 	for _, r := range raw {
-		webURL := r.WebURL
-		if webURL == "" {
-			webURL = r.WebURLCamel
-		}
-		pulls = append(pulls, GitPR{
-			URL:    webURL,
-			Number: r.IID,
-			Title:  r.Title,
-			State:  NormalizePRState(r.State),
-		})
+		pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State)})
 	}
 	return pulls, nil
 }
 
-// ListMergedPRHeads fetches recently merged MRs' source-branch heads.
-// `sha` is the source branch's last commit before merge — exactly the
-// pre-squash tip prune needs. GitLab caps per_page at 100, so the limit
-// is honored by paging; a short page means the history is exhausted.
-func (f *gitlabForge) ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error) {
+// gitlabPageSize is the page size of every list the forge reads, the
+// REST API's maximum.
+const gitlabPageSize = 100
+
+// ListMergedPRHeads fetches up to limit recently merged MRs' source-branch
+// heads, most recently updated first. `sha` is the source branch's last
+// commit before merge, exactly the pre-squash tip prune needs.
+func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error) {
 	if limit <= 0 {
 		return nil, errors.New("merged MR list limit must be positive")
 	}
-	var heads []MergedPRHead
-	for page := 1; len(heads) < limit; page++ {
-		perPage := min(limit-len(heads), 100)
-		endpoint := fmt.Sprintf(
-			"projects/:fullpath/merge_requests?state=merged&per_page=%d&page=%d&order_by=updated_at&sort=desc",
-			perPage, page,
-		)
-		result, err := f.core.runBinary("glab", cwd, "api", endpoint)
-		if err != nil {
-			return nil, normalizeGitLabCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return nil, fmt.Errorf("glab api merged MR list failed: %s", commandOutputMessage(result.stdout, result.stderr))
-		}
-		stdout := strings.TrimSpace(result.stdout)
-		if stdout == "" || stdout == "[]" || stdout == "null" {
-			break
-		}
-
+	client, project, err := f.gitlabOriginProject(cwd)
+	if err != nil {
+		return nil, err
+	}
+	perPage := min(limit, gitlabPageSize)
+	request := forgeapi.Request{
+		Path: project + "/merge_requests",
+		Query: url.Values{
+			"state": {"merged"}, "per_page": {strconv.Itoa(perPage)},
+			"order_by": {"updated_at"}, "sort": {"desc"},
+		},
+	}
+	heads := make([]MergedPRHead, 0, perPage)
+	page := 1
+	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw []struct {
 			SourceBranch string `json:"source_branch"`
 			SHA          string `json:"sha"`
 			WebURL       string `json:"web_url"`
 		}
-		if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
-			return nil, fmt.Errorf("decode glab api merged MR list output: %w", err)
+		if err := json.Unmarshal(resp.Body, &raw); err != nil {
+			return false, fmt.Errorf("GitLab merged merge requests: decode response: %w", err)
 		}
 		for _, r := range raw {
-			heads = append(heads, MergedPRHead{
-				HeadRefName: r.SourceBranch,
-				HeadOid:     r.SHA,
-				URL:         r.WebURL,
-			})
+			if len(heads) == limit {
+				break
+			}
+			heads = append(heads, MergedPRHead{HeadRefName: r.SourceBranch, HeadOid: r.SHA, URL: r.WebURL})
 		}
-		if len(raw) < perPage {
-			break
-		}
+		return len(heads) < limit && len(raw) == perPage && advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return heads, nil
 }
 
-func gitLabOpenMRsEndpoint(sourceBranch string) string {
-	return "projects/:fullpath/merge_requests?state=opened&source_branch=" +
-		url.QueryEscape(sourceBranch) +
-		"&per_page=1&view=simple"
-}
-
-func gitLabMREndpoint(project string, number int) string {
-	return "projects/" + url.PathEscape(project) + "/merge_requests/" + strconv.Itoa(number)
-}
-
-func gitLabApprovalsEndpoint(project string, number int) string {
-	return gitLabMREndpoint(project, number) + "/approvals"
-}
-
-func gitLabDiscussionsEndpoint(project string, number, page int) string {
-	return gitLabMREndpoint(project, number) + "/discussions?per_page=50&page=" + strconv.Itoa(page)
-}
-
-func gitLabDraftNotesEndpoint(project string, number int) string {
-	return gitLabMREndpoint(project, number) + "/draft_notes"
-}
-
-func gitLabBulkPublishEndpoint(project string, number int) string {
-	return gitLabDraftNotesEndpoint(project, number) + "/bulk_publish"
-}
-
-func gitLabApproveEndpoint(project string, number int) string {
-	return gitLabMREndpoint(project, number) + "/approve"
-}
-
-func gitLabDiscussionEndpoint(project string, number int, discussionID string) string {
-	return gitLabMREndpoint(project, number) + "/discussions/" + url.PathEscape(discussionID)
-}
-
-func gitLabDiscussionNotesEndpoint(project string, number int, discussionID string) string {
-	return gitLabDiscussionEndpoint(project, number, discussionID) + "/notes"
-}
-
-func (f *gitlabForge) GetPRDetail(cwd, project string, number int) (PRDetail, error) {
-	if strings.TrimSpace(project) == "" {
-		return PRDetail{}, errors.New("project (namespace/repo) is required")
+// advanceGitLabPage reports whether resp names a next page past *page,
+// the one it answered, and moves *page to it. A next page that does not
+// advance ends the read rather than looping on it.
+func advanceGitLabPage(resp *forgeapi.Response, page *int) bool {
+	next, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-Next-Page")))
+	if err != nil || next <= *page {
+		return false
 	}
-	if number <= 0 {
-		return PRDetail{}, fmt.Errorf("MR number must be positive, got %d", number)
-	}
-	result, err := f.core.runBinary("glab", cwd, "api", gitLabMREndpoint(project, number))
+	*page = next
+	return true
+}
+
+// gitlabProjectPath is the REST path of a project, its full path escaped
+// into one segment.
+func gitlabProjectPath(project string) string {
+	return "projects/" + url.PathEscape(project)
+}
+
+func gitlabMRPath(ref PRReference) string {
+	return gitlabProjectPath(ref.Project()) + "/merge_requests/" + strconv.Itoa(ref.Number)
+}
+
+func gitlabDiscussionPath(ref PRReference, discussionID string) string {
+	return gitlabMRPath(ref) + "/discussions/" + url.PathEscape(discussionID)
+}
+
+// ReadPR reads the merge request once and derives every wanted part from
+// it: the detail adds the approvals, the threads the discussions (paged),
+// CI the head pipeline's jobs (paged). A part not wanted costs no request.
+// prev and stepsFor are unused: the pipeline's jobs list is one read the
+// previous observation cannot stand in for, and GitLab jobs have no steps.
+func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, _ *CIPipeline, _ []string) (PRRead, error) {
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return PRDetail{}, normalizeGitLabCLIError(err)
+		return PRRead{}, err
 	}
-	if result.exitCode != 0 {
-		return PRDetail{}, gitlabCommandFailure("glab api merge request view failed", result)
-	}
-	approvals, err := f.gitlabApprovals(cwd, project, number)
+	mr, err := readGitLabMR(ctx, client, ref)
 	if err != nil {
-		return PRDetail{}, err
+		return PRRead{}, err
 	}
-	detail, err := parseGitLabPRDetail(result.stdout, approvals)
-	if err != nil {
-		return PRDetail{}, fmt.Errorf("glab api merge request view returned malformed JSON: %w", err)
+	var out PRRead
+	if want.Detail {
+		var approvals gitlabApprovalsRaw
+		if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
+			return PRRead{}, err
+		}
+		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 	}
-	return detail, nil
+	if want.Threads {
+		if out.Threads, err = readGitLabThreads(ctx, client, ref, mr.headSHA()); err != nil {
+			return PRRead{}, err
+		}
+	}
+	if want.CI {
+		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {
+			return PRRead{}, err
+		}
+		out.HasCI = true
+	}
+	return out, nil
 }
 
-func (f *gitlabForge) gitlabApprovals(cwd, project string, number int) ([]ReviewVerdict, error) {
-	result, err := f.core.runBinary("glab", cwd, "api", gitLabApprovalsEndpoint(project, number))
-	if err != nil {
-		return nil, normalizeGitLabCLIError(err)
+// readGitLabMR reads the merge request itself. The single-MR endpoint is
+// the one that carries diff_refs and head_pipeline; the list omits both.
+func readGitLabMR(ctx context.Context, client *forgeapi.Client, ref PRReference) (gitlabMRRaw, error) {
+	var mr gitlabMRRaw
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref)}, &mr); err != nil {
+		return gitlabMRRaw{}, err
 	}
-	if result.exitCode != 0 {
-		return nil, gitlabCommandFailure("glab api merge request approvals failed", result)
-	}
-	reviews, err := parseGitLabApprovals(result.stdout)
-	if err != nil {
-		return nil, fmt.Errorf("glab api merge request approvals returned malformed JSON: %w", err)
-	}
-	return reviews, nil
+	return mr, nil
 }
 
-func parseGitLabPRDetail(stdout string, approvals []ReviewVerdict) (PRDetail, error) {
-	var raw struct {
-		IID                 int             `json:"iid"`
-		Title               string          `json:"title"`
-		Description         string          `json:"description"`
-		SourceBranch        string          `json:"source_branch"`
-		TargetBranch        string          `json:"target_branch"`
-		SHA                 string          `json:"sha"`
-		WebURL              string          `json:"web_url"`
-		State               string          `json:"state"`
-		Draft               bool            `json:"draft"`
-		WorkInProgress      bool            `json:"work_in_progress"`
-		ChangesCount        string          `json:"changes_count"`
-		HasConflicts        bool            `json:"has_conflicts"`
-		DetailedMergeStatus string          `json:"detailed_merge_status"`
-		Author              gitlabAuthorRaw `json:"author"`
-		DiffRefs            struct {
-			BaseSHA  string `json:"base_sha"`
-			HeadSHA  string `json:"head_sha"`
-			StartSHA string `json:"start_sha"`
-		} `json:"diff_refs"`
-		HeadPipeline *struct {
-			Status string `json:"status"`
-			WebURL string `json:"web_url"`
-		} `json:"head_pipeline"`
+// gitlabMRRaw is the subset of a GitLab merge request the forge reads.
+type gitlabMRRaw struct {
+	IID                 int             `json:"iid"`
+	Title               string          `json:"title"`
+	Description         string          `json:"description"`
+	SourceBranch        string          `json:"source_branch"`
+	TargetBranch        string          `json:"target_branch"`
+	SHA                 string          `json:"sha"`
+	WebURL              string          `json:"web_url"`
+	State               string          `json:"state"`
+	Draft               bool            `json:"draft"`
+	WorkInProgress      bool            `json:"work_in_progress"`
+	ChangesCount        string          `json:"changes_count"`
+	HasConflicts        bool            `json:"has_conflicts"`
+	DetailedMergeStatus string          `json:"detailed_merge_status"`
+	Author              gitlabAuthorRaw `json:"author"`
+	DiffRefs            struct {
+		BaseSHA  string `json:"base_sha"`
+		HeadSHA  string `json:"head_sha"`
+		StartSHA string `json:"start_sha"`
+	} `json:"diff_refs"`
+	HeadPipeline *gitlabPipelineRaw `json:"head_pipeline"`
+}
+
+// gitlabPipelineRaw is a merge request's head pipeline.
+type gitlabPipelineRaw struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+	WebURL string `json:"web_url"`
+}
+
+// headSHA is the merge request's head commit: the diff's head, else the
+// source branch's.
+func (m gitlabMRRaw) headSHA() string {
+	if m.DiffRefs.HeadSHA != "" {
+		return m.DiffRefs.HeadSHA
 	}
-	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
-		return PRDetail{}, err
-	}
-	headSHA := raw.DiffRefs.HeadSHA
-	if headSHA == "" {
-		headSHA = raw.SHA
-	}
+	return m.SHA
+}
+
+func (m gitlabMRRaw) diffRefs() *PRDiffRefs {
+	return &PRDiffRefs{BaseSHA: m.DiffRefs.BaseSHA, HeadSHA: m.DiffRefs.HeadSHA, StartSHA: m.DiffRefs.StartSHA}
+}
+
+type gitlabApprovalsRaw struct {
+	ApprovedBy []struct {
+		ApprovedAt string          `json:"approved_at"`
+		User       gitlabAuthorRaw `json:"user"`
+	} `json:"approved_by"`
+}
+
+func gitlabPRDetail(raw gitlabMRRaw, approvals []ReviewVerdict) PRDetail {
 	return PRDetail{
 		Number:         raw.IID,
 		Title:          raw.Title,
@@ -281,19 +297,15 @@ func parseGitLabPRDetail(stdout string, approvals []ReviewVerdict) (PRDetail, er
 		Draft:          raw.Draft || raw.WorkInProgress,
 		HeadRefName:    raw.SourceBranch,
 		BaseRefName:    raw.TargetBranch,
-		HeadSHA:        headSHA,
+		HeadSHA:        raw.headSHA(),
 		URL:            raw.WebURL,
 		ChangedFiles:   parseGitLabChangesCount(raw.ChangesCount),
 		ReviewDecision: gitlabReviewDecision(approvals),
 		LatestReviews:  approvals,
 		Checks:         gitlabCheckSummary(raw.HeadPipeline),
 		Mergeability:   normalizeGitLabMergeability(raw.HasConflicts, raw.DetailedMergeStatus),
-		DiffRefs: &PRDiffRefs{
-			BaseSHA:  raw.DiffRefs.BaseSHA,
-			HeadSHA:  raw.DiffRefs.HeadSHA,
-			StartSHA: raw.DiffRefs.StartSHA,
-		},
-	}, nil
+		DiffRefs:       raw.diffRefs(),
+	}
 }
 
 func parseGitLabChangesCount(value string) int {
@@ -302,10 +314,7 @@ func parseGitLabChangesCount(value string) int {
 	return n
 }
 
-func gitlabCheckSummary(pipeline *struct {
-	Status string `json:"status"`
-	WebURL string `json:"web_url"`
-}) CheckSummary {
+func gitlabCheckSummary(pipeline *gitlabPipelineRaw) CheckSummary {
 	if pipeline == nil || pipeline.Status == "" {
 		return CheckSummary{}
 	}
@@ -315,19 +324,7 @@ func gitlabCheckSummary(pipeline *struct {
 	return summary
 }
 
-func parseGitLabApprovals(stdout string) ([]ReviewVerdict, error) {
-	var raw struct {
-		ApprovedBy []struct {
-			ApprovedAt string          `json:"approved_at"`
-			User       gitlabAuthorRaw `json:"user"`
-		} `json:"approved_by"`
-	}
-	if strings.TrimSpace(stdout) == "" {
-		return nil, nil
-	}
-	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
-		return nil, err
-	}
+func gitlabApprovalVerdicts(raw gitlabApprovalsRaw) []ReviewVerdict {
 	out := make([]ReviewVerdict, 0, len(raw.ApprovedBy))
 	for _, approval := range raw.ApprovedBy {
 		if approval.User.Username == "" {
@@ -340,7 +337,7 @@ func parseGitLabApprovals(stdout string) ([]ReviewVerdict, error) {
 			SubmittedAt: approval.ApprovedAt,
 		})
 	}
-	return out, nil
+	return out
 }
 
 func gitlabReviewDecision(approvals []ReviewVerdict) string {
@@ -364,46 +361,30 @@ func normalizeGitLabMergeability(hasConflicts bool, detailed string) string {
 	}
 }
 
-func (f *gitlabForge) ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error) {
-	detail, err := f.GetPRDetail(cwd, project, number)
+// readGitLabThreads reads every page of the merge request's discussions,
+// normalized against the MR's current head commit.
+func readGitLabThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) ([]ReviewThread, error) {
+	request := forgeapi.Request{
+		Path:  gitlabMRPath(ref) + "/discussions",
+		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+	}
+	var threads []ReviewThread
+	page := 1
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var discussions []gitlabDiscussionRaw
+		if err := json.Unmarshal(resp.Body, &discussions); err != nil {
+			return false, fmt.Errorf("GitLab merge request discussions: decode response: %w", err)
+		}
+		threads = append(threads, gitlabReviewThreads(discussions, headSHA)...)
+		return advanceGitLabPage(resp, &page), nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	headSHA := detail.HeadSHA
-	var all []ReviewThread
-	page := 1
-	for {
-		endpoint := gitLabDiscussionsEndpoint(project, number, page)
-		result, err := f.core.runBinary("glab", cwd, "api", "--include", endpoint)
-		if err != nil {
-			return nil, normalizeGitLabCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return nil, gitlabCommandFailure("glab api merge request discussions failed", result)
-		}
-		headers, body := splitGitLabIncludedResponse(result.stdout)
-		threads, err := parseGitLabReviewThreads(body, headSHA)
-		if err != nil {
-			return nil, fmt.Errorf("glab api merge request discussions returned malformed JSON: %w", err)
-		}
-		all = append(all, threads...)
-		next := gitLabHeader(headers, "X-Next-Page")
-		if next == "" {
-			return all, nil
-		}
-		nextPage, err := strconv.Atoi(next)
-		if err != nil || nextPage <= page {
-			return all, nil
-		}
-		page = nextPage
-	}
+	return threads, nil
 }
 
-func parseGitLabReviewThreads(stdout, currentHeadSHA string) ([]ReviewThread, error) {
-	var discussions []gitlabDiscussionRaw
-	if err := json.Unmarshal([]byte(stdout), &discussions); err != nil {
-		return nil, err
-	}
+func gitlabReviewThreads(discussions []gitlabDiscussionRaw, currentHeadSHA string) []ReviewThread {
 	threads := make([]ReviewThread, 0, len(discussions))
 	for _, discussion := range discussions {
 		thread, ok := normalizeGitLabDiscussion(discussion, currentHeadSHA)
@@ -412,7 +393,7 @@ func parseGitLabReviewThreads(stdout, currentHeadSHA string) ([]ReviewThread, er
 		}
 		threads = append(threads, thread)
 	}
-	return threads, nil
+	return threads
 }
 
 type gitlabDiscussionRaw struct {
@@ -544,48 +525,40 @@ func normalizeGitLabPosition(position *gitlabPositionRaw) (string, *int, *int, s
 	return path, line, startLine, side
 }
 
-func (f *gitlabForge) SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	detail, err := f.GetPRDetail(cwd, project, number)
+func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	diffRefs := detail.DiffRefs
-	if diffRefs == nil {
-		return SubmitReviewResult{}, errors.New("GitLab review submission requires MR diff_refs")
+	// The draft notes are positioned on the MR's current diff, and an
+	// approval names the head it approves; the MR alone carries both.
+	mr, err := readGitLabMR(ctx, client, ref)
+	if err != nil {
+		return SubmitReviewResult{}, err
 	}
+	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
-	endpoint := gitLabDraftNotesEndpoint(project, number)
+	mrPath := gitlabMRPath(ref)
 	for _, note := range notes {
 		body, err := gitlabDraftNoteBody(note, diffRefs)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
-		result, err := f.core.runBinaryInput("glab", cwd, string(body), "api", endpoint, "-X", "POST", "-H", "Content-Type: application/json", "--input", "-")
-		if err != nil {
-			return SubmitReviewResult{}, normalizeGitLabCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return SubmitReviewResult{}, gitlabCommandFailure("glab api create draft note failed", result)
+		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, nil); err != nil {
+			return SubmitReviewResult{}, err
 		}
 	}
 	out := SubmitReviewResult{}
 	if len(notes) > 0 {
-		result, err := f.core.runBinary("glab", cwd, "api", gitLabBulkPublishEndpoint(project, number), "-X", "POST")
-		if err != nil {
-			return SubmitReviewResult{}, normalizeGitLabCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return SubmitReviewResult{}, gitlabCommandFailure("glab api publish draft notes failed", result)
+		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish"}, nil); err != nil {
+			return SubmitReviewResult{}, err
 		}
 		out.PostedReview = true
 	}
 	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
-		result, err := f.core.runBinary("glab", cwd, "api", gitLabApproveEndpoint(project, number), "-X", "POST", "-f", "sha="+detail.HeadSHA)
-		if err != nil {
-			return out, gitlabApproveFailure(out, normalizeGitLabCLIError(err))
-		}
-		if result.exitCode != 0 {
-			return out, gitlabApproveFailure(out, gitlabCommandFailure("glab api approve merge request failed", result))
+		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": mr.headSHA()}}
+		if _, err := client.JSON(ctx, approve, nil); err != nil {
+			return out, gitlabApproveFailure(out, err)
 		}
 		out.PostedReview = true
 	}
@@ -620,25 +593,26 @@ func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
 	return notes
 }
 
-func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) ([]byte, error) {
-	payload := struct {
-		Note     string             `json:"note"`
-		Position *gitlabPositionRaw `json:"position,omitempty"`
-	}{
-		Note: comment.Body,
-	}
+// gitlabDraftNoteIn is the REST body of one draft note.
+type gitlabDraftNoteIn struct {
+	Note     string             `json:"note"`
+	Position *gitlabPositionRaw `json:"position,omitempty"`
+}
+
+func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDraftNoteIn, error) {
+	payload := gitlabDraftNoteIn{Note: comment.Body}
 	if strings.TrimSpace(payload.Note) == "" {
-		return nil, errors.New("draft note body is required")
+		return gitlabDraftNoteIn{}, errors.New("draft note body is required")
 	}
 	if strings.EqualFold(comment.Side, "summary") {
-		return json.Marshal(payload)
+		return payload, nil
 	}
 	position, err := gitlabPositionForComment(comment, refs)
 	if err != nil {
-		return nil, err
+		return gitlabDraftNoteIn{}, err
 	}
 	payload.Position = position
-	return json.Marshal(payload)
+	return payload, nil
 }
 
 func gitlabPositionForComment(comment ReviewLineComment, refs *PRDiffRefs) (*gitlabPositionRaw, error) {
@@ -693,53 +667,36 @@ func gitlabLineCode(path string, oldLine, newLine int) string {
 	return fmt.Sprintf("%x_%d_%d", sum, oldLine, newLine)
 }
 
-func (f *gitlabForge) ReplyToThread(cwd, project string, number int, threadID string, _ int64, body string) error {
+func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, threadID string, _ int64, body string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitLab review reply requires a discussion id")
 	}
 	if strings.TrimSpace(body) == "" {
 		return errors.New("reply body is required")
 	}
-	result, err := f.core.runBinary(
-		"glab",
-		cwd,
-		"api",
-		gitLabDiscussionNotesEndpoint(project, number, threadID),
-		"-X", "POST",
-		"-f", "body="+body,
-	)
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return normalizeGitLabCLIError(err)
+		return err
 	}
-	if result.exitCode != 0 {
-		return gitlabCommandFailure("glab api reply failed", result)
-	}
-	return nil
+	request := forgeapi.Request{Method: http.MethodPost, Path: gitlabDiscussionPath(ref, threadID) + "/notes", Body: map[string]string{"body": body}}
+	_, err = client.JSON(ctx, request, nil)
+	return err
 }
 
-// SetThreadResolved resolves (or reopens) one MR discussion. GitLab takes
-// the new state as a query parameter on the discussion itself; a
-// discussion with no resolvable notes answers 400, which surfaces as the
-// CLI failure it is rather than a silent no-op.
-func (f *gitlabForge) SetThreadResolved(cwd, project string, number int, threadID string, resolved bool) error {
-	if strings.TrimSpace(project) == "" {
-		return errors.New("project (namespace/repo) is required")
-	}
-	if number <= 0 {
-		return fmt.Errorf("MR number must be positive, got %d", number)
-	}
+// SetThreadResolved resolves (or reopens) one MR discussion. A discussion
+// with no resolvable notes answers 400, which surfaces as the forge's
+// error rather than a silent no-op.
+func (f *gitlabForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitLab thread resolution requires a discussion id")
 	}
-	endpoint := gitLabDiscussionEndpoint(project, number, threadID) + "?resolved=" + strconv.FormatBool(resolved)
-	result, err := f.core.runBinary("glab", cwd, "api", endpoint, "-X", "PUT")
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return normalizeGitLabCLIError(err)
+		return err
 	}
-	if result.exitCode != 0 {
-		return gitlabCommandFailure("glab api resolve discussion failed", result)
-	}
-	return nil
+	request := forgeapi.Request{Method: http.MethodPut, Path: gitlabDiscussionPath(ref, threadID), Body: map[string]bool{"resolved": resolved}}
+	_, err = client.JSON(ctx, request, nil)
+	return err
 }
 
 // extractMRCreateURL pulls the WebURL from glab's `mr create` stdout.
@@ -771,63 +728,4 @@ func extractMRCreateURL(stdout string) string {
 
 func isURLLike(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
-}
-
-func normalizeGitLabCLIError(err error) error {
-	if _, ok := errors.AsType[*exec.Error](err); ok || errors.Is(err, exec.ErrNotFound) {
-		return &ForgeSetupError{
-			Forge:   "gitlab",
-			Binary:  "glab",
-			Kind:    "missing",
-			Message: "GitLab CLI (`glab`) is not installed or not on PATH. Install from https://gitlab.com/gitlab-org/cli and run 'glab auth login' to continue",
-			Err:     err,
-		}
-	}
-	return err
-}
-
-func gitlabCommandFailure(prefix string, result commandResult) error {
-	message := commandOutputMessage(result.stdout, result.stderr)
-	if isGitLabAuthMessage(message) {
-		return &ForgeSetupError{
-			Forge:   "gitlab",
-			Binary:  "glab",
-			Kind:    "unauthenticated",
-			Message: "GitLab CLI (`glab`) is not authenticated. Run 'glab auth login' to continue",
-		}
-	}
-	return fmt.Errorf("%s: %s", prefix, message)
-}
-
-func isGitLabAuthMessage(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "glab auth login") ||
-		strings.Contains(lower, "unauthorized") ||
-		strings.Contains(lower, "authentication required") ||
-		strings.Contains(lower, "requires authentication")
-}
-
-func splitGitLabIncludedResponse(stdout string) (headers, body string) {
-	if idx := strings.LastIndex(stdout, "\r\n\r\n"); idx >= 0 {
-		return stdout[:idx], stdout[idx+4:]
-	}
-	if idx := strings.LastIndex(stdout, "\n\n"); idx >= 0 {
-		return stdout[:idx], stdout[idx+2:]
-	}
-	return "", stdout
-}
-
-func gitLabHeader(headers, name string) string {
-	name = strings.ToLower(name)
-	for _, line := range strings.Split(headers, "\n") {
-		line = strings.TrimSpace(line)
-		key, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		if strings.ToLower(strings.TrimSpace(key)) == name {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }

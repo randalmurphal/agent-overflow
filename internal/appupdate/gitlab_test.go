@@ -7,125 +7,62 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
-	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/forgeapi"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
-// The GitLab feed is tested through the production runner: a git.Core
-// whose isolated forge CLI policy runs this test binary as glab. That is
-// the same path an isolated boot takes, and it can never reach a glab on
-// PATH or the developer's glab login.
+// The GitLab feed is tested over HTTP: an httptest GitLab REST API, read
+// through an isolated forge API transport with a fixed token, as an
+// isolated boot reads its fake forge. Nothing here can reach a real forge
+// or the developer's glab login.
 
 const (
-	fakeGlabEnv       = "AO_APPUPDATE_FAKE_GLAB"
-	fakeGlabRoutesEnv = "AO_APPUPDATE_FAKE_GLAB_ROUTES"
-	fakeGlabCallsEnv  = "AO_APPUPDATE_FAKE_GLAB_CALLS"
-
 	testGitLabHost     = "gitlab.example.com"
 	testGitLabProject  = testGitLabHost + "/grp/app"
 	testGitLabListPath = "projects/grp%2Fapp/releases?order_by=released_at&sort=desc&per_page=30"
-
-	// The update notice glab prints after a command that succeeded; the
-	// fake prints it on every success so every test proves stderr never
-	// reaches the data.
-	fakeGlabUpdateNotice = "A new version of glab has been released: v9.9.9"
+	testGitLabToken    = "fake-gitlab-token"
 
 	noremoteAssetName = "agent-overflow-wsl-noremote-amd64.exe"
 	standardAssetName = "agent-overflow-wsl-amd64.exe"
 )
 
-func TestMain(m *testing.M) {
-	if os.Getenv(fakeGlabEnv) == "1" {
-		os.Exit(runFakeGlab())
-	}
-	os.Exit(m.Run())
+// fakeRoute is the fake's answer for one API path. A zero status is 200.
+// Chunked sends the body without a Content-Length.
+type fakeRoute struct {
+	status  int
+	body    []byte
+	chunked bool
 }
 
-// fakeGlabRoute is the fake's answer for one API path.
-type fakeGlabRoute struct {
-	Stdout []byte `json:"stdout"`
-	Stderr string `json:"stderr"`
-	Exit   int    `json:"exit"`
+// fakeCall is one request the fake served.
+type fakeCall struct {
+	Method string
+	Path   string // relative to /api/v4/, with the raw query
+	Host   string
+	Token  string
+	Accept string
 }
 
-// fakeGlabCall is what one fake invocation saw.
-type fakeGlabCall struct {
-	Argv0       string   `json:"argv0"`
-	Args        []string `json:"args"`
-	CLI         string   `json:"cli"`
-	CheckUpdate string   `json:"checkUpdate"`
-	DebugHTTP   string   `json:"debugHTTP"`
-}
-
-func (c fakeGlabCall) path() string {
-	if len(c.Args) == 0 {
-		return ""
-	}
-	return c.Args[len(c.Args)-1]
-}
-
-// runFakeGlab answers `glab api --hostname HOST -- PATH` from the routes
-// file, like glab does: the body on stdout, glab's message on stderr.
-func runFakeGlab() int {
-	call := fakeGlabCall{
-		Argv0:       os.Args[0],
-		Args:        os.Args[1:],
-		CLI:         os.Getenv(gitops.ForgeCLINameEnv),
-		CheckUpdate: os.Getenv("GLAB_CHECK_UPDATE"),
-		DebugHTTP:   os.Getenv("GLAB_DEBUG_HTTP"),
-	}
-	line, _ := json.Marshal(call)
-	if f, err := os.OpenFile(os.Getenv(fakeGlabCallsEnv), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-		_, _ = f.Write(append(line, '\n'))
-		_ = f.Close()
-	}
-	args := os.Args[1:]
-	if len(args) != 5 || args[0] != "api" || args[1] != "--hostname" || args[3] != "--" {
-		fmt.Fprintf(os.Stderr, "fake glab: unexpected argv %q\n", args)
-		return 2
-	}
-	raw, err := os.ReadFile(os.Getenv(fakeGlabRoutesEnv))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "fake glab:", err)
-		return 2
-	}
-	var routes map[string]fakeGlabRoute
-	if err := json.Unmarshal(raw, &routes); err != nil {
-		fmt.Fprintln(os.Stderr, "fake glab:", err)
-		return 2
-	}
-	route, ok := routes[args[4]]
-	if !ok {
-		_, _ = os.Stdout.WriteString(`{"message":"404 Not Found"}`)
-		fmt.Fprintln(os.Stderr, "glab: 404 Not Found (HTTP 404)")
-		return 1
-	}
-	_, _ = os.Stdout.Write(route.Stdout)
-	if route.Stderr != "" {
-		fmt.Fprintln(os.Stderr, route.Stderr)
-	}
-	if route.Exit == 0 {
-		// glab prints its notices after a command that succeeded.
-		fmt.Fprintln(os.Stderr, fakeGlabUpdateNotice)
-	}
-	return route.Exit
-}
-
-// fakeGitLab is one project's releases as the fake glab serves them.
+// fakeGitLab is one project's releases, served over GitLab's REST API.
 type fakeGitLab struct {
 	t        *testing.T
-	dir      string
-	routes   map[string]fakeGlabRoute
+	mu       sync.Mutex
+	routes   map[string]fakeRoute
+	served   []fakeCall
 	releases []map[string]any
+	svc      *forgeapi.Service
 }
 
 // fakeAsset is one release link. An empty link is the project's generic
@@ -139,9 +76,53 @@ type fakeAsset struct {
 
 func newFakeGitLab(t *testing.T) *fakeGitLab {
 	t.Helper()
-	f := &fakeGitLab{t: t, dir: t.TempDir(), routes: map[string]fakeGlabRoute{}}
-	f.flush()
+	f := &fakeGitLab{t: t, routes: map[string]fakeRoute{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(srv.Close)
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: srv.URL, Token: testGitLabToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	f.svc = svc
 	return f
+}
+
+func (f *fakeGitLab) serve(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.EscapedPath(), "/gitlab/api/v4/")
+	if r.URL.RawQuery != "" {
+		path += "?" + r.URL.RawQuery
+	}
+	f.mu.Lock()
+	f.served = append(f.served, fakeCall{Method: r.Method, Path: path, Host: r.Host, Token: r.Header.Get("Private-Token"), Accept: r.Header.Get("Accept")})
+	route, ok := f.routes[path]
+	f.mu.Unlock()
+	if !ok || r.Method != http.MethodGet {
+		route = fakeRoute{status: http.StatusNotFound, body: []byte(`{"message":"404 Not Found"}`)}
+	}
+	if !route.chunked {
+		w.Header().Set("Content-Length", strconv.Itoa(len(route.body)))
+	}
+	if route.status != 0 {
+		w.WriteHeader(route.status)
+	}
+	_, _ = w.Write(route.body)
+	if route.chunked {
+		w.(http.Flusher).Flush()
+	}
+}
+
+// gitlab is the feed's client: the transport's GitLab client for host, as
+// internal/app adapts it.
+func (f *fakeGitLab) gitlab(host string) GitLabClient {
+	return transportGitLab{client: f.svc.GitLab(host)}
+}
+
+type transportGitLab struct{ client *forgeapi.Client }
+
+func (c transportGitLab) Stream(ctx context.Context, path string, dst io.Writer, limit int64) error {
+	_, err := c.client.Stream(ctx, forgeapi.Request{Path: path, Header: http.Header{"Accept": {"*/*"}}}, dst, limit)
+	return err
 }
 
 func packageLink(tag, name string) string {
@@ -161,7 +142,7 @@ func (f *fakeGitLab) publish(tag string, assets ...fakeAsset) {
 		link := asset.link
 		if link == "" {
 			link = packageLink(tag, asset.name)
-			f.routes[packagePath(tag, asset.name)] = fakeGlabRoute{Stdout: asset.body}
+			f.set(packagePath(tag, asset.name), fakeRoute{body: asset.body})
 		}
 		links = append(links, map[string]any{"name": asset.name, "url": link, "link_type": "package"})
 	}
@@ -178,65 +159,24 @@ func (f *fakeGitLab) publish(tag string, assets ...fakeAsset) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.routes["projects/grp%2Fapp/releases/"+tag] = fakeGlabRoute{Stdout: byTag}
+	f.set("projects/grp%2Fapp/releases/"+tag, fakeRoute{body: byTag})
 	listing, err := json.Marshal(f.releases)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.routes[testGitLabListPath] = fakeGlabRoute{Stdout: listing}
-	f.flush()
+	f.set(testGitLabListPath, fakeRoute{body: listing})
 }
 
-func (f *fakeGitLab) set(path string, route fakeGlabRoute) {
+func (f *fakeGitLab) set(path string, route fakeRoute) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.routes[path] = route
-	f.flush()
 }
 
-func (f *fakeGitLab) flush() {
-	f.t.Helper()
-	raw, err := json.Marshal(f.routes)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.dir, "routes.json"), raw, 0o600); err != nil {
-		f.t.Fatal(err)
-	}
-}
-
-// runner is the production runner over an isolated Core whose only glab
-// is this test binary.
-func (f *fakeGitLab) runner() GlabRunner {
-	f.t.Helper()
-	self, err := os.Executable()
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	core := gitops.NewCore(gitops.WithIsolatedForgeCLIs(self, []string{
-		fakeGlabEnv + "=1",
-		fakeGlabRoutesEnv + "=" + filepath.Join(f.dir, "routes.json"),
-		fakeGlabCallsEnv + "=" + filepath.Join(f.dir, "calls.jsonl"),
-	}))
-	return core.StreamGitLabAPI
-}
-
-func (f *fakeGitLab) calls() []fakeGlabCall {
-	f.t.Helper()
-	raw, err := os.ReadFile(filepath.Join(f.dir, "calls.jsonl"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	var out []fakeGlabCall
-	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
-		var call fakeGlabCall
-		if err := json.Unmarshal([]byte(line), &call); err != nil {
-			f.t.Fatalf("decode call %q: %v", line, err)
-		}
-		out = append(out, call)
-	}
-	return out
+func (f *fakeGitLab) calls() []fakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeCall(nil), f.served...)
 }
 
 func (f *fakeGitLab) source(t *testing.T, platform, current string) *ReleaseSource {
@@ -245,7 +185,7 @@ func (f *fakeGitLab) source(t *testing.T, platform, current string) *ReleaseSour
 		CurrentVersion: current,
 		Platform:       platform,
 		Arch:           "amd64",
-		GlabRunner:     f.runner(),
+		GitLab:         f.gitlab,
 	}, testGitLabProject)
 	if err != nil {
 		t.Fatalf("newReleaseSource: %v", err)
@@ -345,23 +285,17 @@ func TestGitLabFeedListsResolvesAndFetchesVerified(t *testing.T) {
 
 	calls := f.calls()
 	if len(calls) == 0 {
-		t.Fatal("the fake glab never ran")
+		t.Fatal("the fake GitLab was never asked")
 	}
 	for _, call := range calls {
-		if call.Argv0 != "glab" || call.CLI != "glab" {
-			t.Errorf("call ran as %q (%s=%q), want glab", call.Argv0, gitops.ForgeCLINameEnv, call.CLI)
+		if call.Method != http.MethodGet || call.Host != testGitLabHost || call.Token != testGitLabToken || call.Accept != "*/*" {
+			t.Errorf("request = %+v, want a GET on %s with the token, accepting any type", call, testGitLabHost)
 		}
-		if len(call.Args) != 5 || call.Args[0] != "api" || call.Args[1] != "--hostname" || call.Args[2] != testGitLabHost || call.Args[3] != "--" {
-			t.Errorf("argv = %q, want api --hostname %s -- PATH", call.Args, testGitLabHost)
+		if strings.Contains(call.Path, "://") {
+			t.Errorf("an absolute URL reached the API: %q", call.Path)
 		}
-		if strings.Contains(call.path(), "://") {
-			t.Errorf("glab was handed an absolute URL: %q", call.path())
-		}
-		if call.CheckUpdate != "false" || call.DebugHTTP != "false" {
-			t.Errorf("GLAB_CHECK_UPDATE=%q GLAB_DEBUG_HTTP=%q, want both false", call.CheckUpdate, call.DebugHTTP)
-		}
-		if strings.Contains(call.path(), standardAssetName) {
-			t.Errorf("the noremote feed requested the standard launcher: %q", call.path())
+		if strings.Contains(call.Path, standardAssetName) {
+			t.Errorf("the noremote feed requested the standard launcher: %q", call.Path)
 		}
 	}
 }
@@ -400,7 +334,7 @@ func newGitLabService(t *testing.T, f *fakeGitLab, current string) *Service {
 		CurrentVersion: current,
 		Platform:       "wsl-noremote",
 		Arch:           "amd64",
-		GlabRunner:     f.runner(),
+		GitLab:         f.gitlab,
 	}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -408,7 +342,7 @@ func newGitLabService(t *testing.T, f *fakeGitLab, current string) *Service {
 }
 
 // The passive check and the framework download go through gitlabProvider,
-// which reads latest off the listing and streams the link through glab.
+// which reads latest off the listing and streams the link from the API.
 func TestGitLabProviderServesTheLatestCheckAndDownload(t *testing.T) {
 	f := newFakeGitLab(t)
 	publishTypical(f)
@@ -520,8 +454,10 @@ func TestGitLabDownloadIsCapped(t *testing.T) {
 	}
 
 	var got bytes.Buffer
+	// The writer's refusal is the error itself, not a failed body read the
+	// transport would report as an unreachable forge.
 	err = downloadBoundedArtifact(context.Background(), src.targetable, rel, &got, nil, 1024)
-	if !errors.Is(err, errDownloadTooLarge) {
+	if err != errDownloadTooLarge {
 		t.Fatalf("download error = %v, want errDownloadTooLarge", err)
 	}
 	if got.Len() > 1024 {
@@ -543,18 +479,25 @@ func TestGitLabSidecarIsCapped(t *testing.T) {
 	}
 }
 
+// The cap holds whether the response declares its length, which the
+// transport refuses unread, or streams past it, which the writer refuses.
 func TestGitLabListingIsCapped(t *testing.T) {
-	f := newFakeGitLab(t)
-	f.set(testGitLabListPath, fakeGlabRoute{Stdout: bytes.Repeat([]byte(" "), maxReleaseListBytes+1)})
-	src := f.source(t, "wsl-noremote", "0.1.0")
-	if _, err := src.List(context.Background()); !errors.Is(err, errGitLabResponseTooLarge) {
-		t.Fatalf("List error = %v, want the listing refused for size", err)
+	for _, chunked := range []bool{false, true} {
+		t.Run("chunked="+strconv.FormatBool(chunked), func(t *testing.T) {
+			f := newFakeGitLab(t)
+			f.set(testGitLabListPath, fakeRoute{body: bytes.Repeat([]byte(" "), maxReleaseListBytes+1), chunked: chunked})
+			src := f.source(t, "wsl-noremote", "0.1.0")
+			_, err := src.List(context.Background())
+			if _, transient := errors.AsType[*forgeapi.TransientError](err); !errors.Is(err, errGitLabResponseTooLarge) || transient {
+				t.Fatalf("List error = %v, want the listing refused for size", err)
+			}
+		})
 	}
 }
 
-// A release link is data. glab sends the user's token to any absolute URL,
-// so a link off the configured host's REST API must be refused before glab
-// runs.
+// A release link is data, and every request carries the user's token, so
+// a link off the configured host's REST API must be refused before any
+// request is made.
 func TestGitLabFeedRefusesLinksOffTheAPI(t *testing.T) {
 	cases := map[string]string{
 		"foreign host":     "https://evil.example.net/api/v4/projects/7/packages/generic/agent-overflow/0.2.0/" + noremoteAssetName,
@@ -574,8 +517,8 @@ func TestGitLabFeedRefusesLinksOffTheAPI(t *testing.T) {
 				t.Fatalf("Fetch error = %v, want the link refused", err)
 			}
 			for _, call := range f.calls() {
-				if strings.Contains(call.path(), noremoteAssetName) {
-					t.Fatalf("glab was asked for the refused link: %q", call.Args)
+				if strings.Contains(call.Path, noremoteAssetName) {
+					t.Fatalf("the API was asked for the refused link: %q", call.Path)
 				}
 			}
 
@@ -589,8 +532,8 @@ func TestGitLabFeedRefusesLinksOffTheAPI(t *testing.T) {
 				t.Fatalf("resolve error = %v, want the sidecar link refused", err)
 			}
 			for _, call := range sideFeed.calls() {
-				if strings.Contains(call.path(), "SHASUMS256") {
-					t.Fatalf("glab was asked for the refused sidecar: %q", call.Args)
+				if strings.Contains(call.Path, "SHASUMS256") {
+					t.Fatalf("the API was asked for the refused sidecar: %q", call.Path)
 				}
 			}
 		})
@@ -644,37 +587,38 @@ func TestGitLabAPIPath(t *testing.T) {
 
 func TestGitLabErrorsAreMapped(t *testing.T) {
 	cases := []struct {
-		name   string
-		stderr string
-		want   error
-		text   string
+		name     string
+		route    fakeRoute
+		setup    string // the SetupError kind, if one
+		noAccess bool
+		text     string
 	}{
-		{name: "signed out", stderr: "glab: 401 Unauthorized (HTTP 401)", want: ErrGlabSignedOut, text: "sign in with glab"},
-		{name: "unauthenticated", stderr: "Unauthenticated.", want: ErrGlabSignedOut, text: "glab auth login --hostname " + testGitLabHost},
-		{name: "no access", stderr: "glab: 404 Project Not Found (HTTP 404)", want: ErrGitLabNoAccess, text: "no access to " + testGitLabProject},
-		{name: "other", stderr: "glab: 500 Internal Server Error (HTTP 500)", text: "500 Internal Server Error"},
+		{name: "signed out", route: fakeRoute{status: 401, body: []byte(`{"message":"401 Unauthorized"}`)}, setup: forgeapi.SetupUnauthenticated,
+			text: "sign in with glab to check for updates: run `glab auth login --hostname " + testGitLabHost + "`"},
+		{name: "no access", route: fakeRoute{status: 404, body: []byte(`{"message":"404 Project Not Found"}`)}, noAccess: true, text: "no access to " + testGitLabProject},
+		{name: "other not found", route: fakeRoute{status: 404, body: []byte(`{"message":"404 Not Found"}`)}, text: "HTTP 404"},
+		{name: "other", route: fakeRoute{status: 500, body: []byte(`{"message":"500 Internal Server Error"}`)}, text: "HTTP 500"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeGitLab(t)
-			f.set(testGitLabListPath, fakeGlabRoute{Stdout: []byte(`{"message":"x"}`), Stderr: tc.stderr, Exit: 1})
+			f.set(testGitLabListPath, tc.route)
 			_, err := f.source(t, "wsl-noremote", "0.1.0").List(context.Background())
 			if err == nil {
-				t.Fatal("List succeeded on a failed glab call")
+				t.Fatal("List succeeded on a failed API call")
 			}
-			if tc.want != nil && !errors.Is(err, tc.want) {
-				t.Errorf("error = %v, want %v", err, tc.want)
+			setup, isSetup := errors.AsType[*forgeapi.SetupError](err)
+			if isSetup != (tc.setup != "") || (isSetup && (setup.Kind != tc.setup || setup.Binary != "glab")) {
+				t.Errorf("error = %#v, want setup kind %q", err, tc.setup)
 			}
-			for _, other := range []error{ErrGlabSignedOut, ErrGitLabNoAccess, ErrGlabNotInstalled} {
-				if other != tc.want && errors.Is(err, other) {
-					t.Errorf("error = %v also matches %v", err, other)
-				}
+			if errors.Is(err, ErrGitLabNoAccess) != tc.noAccess {
+				t.Errorf("error = %v, ErrGitLabNoAccess = %v", err, !tc.noAccess)
 			}
 			if !strings.Contains(err.Error(), tc.text) {
 				t.Errorf("error %q does not say %q", err, tc.text)
 			}
-			if strings.Contains(err.Error(), fakeGlabUpdateNotice) {
-				t.Errorf("error %q carries glab's update notice", err)
+			if strings.Contains(err.Error(), testGitLabToken) {
+				t.Errorf("error %q carries the token", err)
 			}
 		})
 	}
@@ -683,7 +627,7 @@ func TestGitLabErrorsAreMapped(t *testing.T) {
 // The user-facing state for a signed-out glab: the check's result says so.
 func TestGitLabSignedOutReachesTheCheckResult(t *testing.T) {
 	f := newFakeGitLab(t)
-	f.set(testGitLabListPath, fakeGlabRoute{Stderr: "glab: 401 Unauthorized (HTTP 401)", Exit: 1})
+	f.set(testGitLabListPath, fakeRoute{status: 401, body: []byte(`{"message":"401 Unauthorized"}`)})
 	a := newGitLabService(t, f, "0.1.0")
 	availability, err := a.CheckForUpdate()
 	if err != nil {
@@ -694,25 +638,35 @@ func TestGitLabSignedOutReachesTheCheckResult(t *testing.T) {
 	}
 }
 
+// missingGlab is a token source whose glab is not installed.
+type missingGlab struct{}
+
+func (missingGlab) Token(_ context.Context, forge, _ string) ([]byte, forgeapi.SourceInfo, error) {
+	return nil, forgeapi.SourceInfo{}, forgeapi.MissingCLIError(forge, nil)
+}
+
 func TestGitLabMissingGlabIsReported(t *testing.T) {
-	// An ordinary Core with nothing on PATH: glab cannot resolve, so the
-	// real one cannot run either.
-	t.Setenv("PATH", t.TempDir())
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: missingGlab{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
 	src, err := newReleaseSource(Config{
 		CurrentVersion: "0.1.0",
 		Platform:       "wsl-noremote",
 		Arch:           "amd64",
-		GlabRunner:     gitops.NewCore().StreamGitLabAPI,
+		GitLab:         func(host string) GitLabClient { return transportGitLab{client: svc.GitLab(host)} },
 	}, testGitLabProject)
 	if err != nil {
 		t.Fatalf("newReleaseSource: %v", err)
 	}
 	_, err = src.List(context.Background())
-	if !errors.Is(err, ErrGlabNotInstalled) {
-		t.Fatalf("List error = %v, want ErrGlabNotInstalled", err)
+	setup, ok := errors.AsType[*forgeapi.SetupError](err)
+	if !ok || setup.Kind != forgeapi.SetupMissing || setup.Binary != "glab" {
+		t.Fatalf("List error = %#v, want a missing-glab SetupError", err)
 	}
-	if !strings.Contains(err.Error(), "glab is not installed") {
-		t.Fatalf("error %q does not say glab is not installed", err)
+	if want := "glab is not installed: install the GitLab CLI and run `glab auth login --hostname " + testGitLabHost + "` to receive updates"; !strings.HasSuffix(err.Error(), want) {
+		t.Fatalf("error %q, want it to end %q", err, want)
 	}
 }
 
@@ -752,10 +706,14 @@ func TestParseGitLabProject(t *testing.T) {
 
 func TestGitLabSourceConfigurationIsValidated(t *testing.T) {
 	config := Config{CurrentVersion: "0.1.0", Platform: "wsl-noremote", Arch: "amd64"}
-	if _, err := newReleaseSource(config, testGitLabProject); err == nil || !strings.Contains(err.Error(), "glab runner") {
-		t.Fatalf("source without a runner = %v, want refused", err)
+	if _, err := newReleaseSource(config, testGitLabProject); err == nil || !strings.Contains(err.Error(), "GitLab client") {
+		t.Fatalf("source without a client = %v, want refused", err)
 	}
-	config.GlabRunner = newFakeGitLab(t).runner()
+	config.GitLab = func(string) GitLabClient { return nil }
+	if _, err := newReleaseSource(config, testGitLabProject); err == nil || !strings.Contains(err.Error(), "no GitLab client for "+testGitLabHost) {
+		t.Fatalf("source with a nil client = %v, want refused", err)
+	}
+	config.GitLab = newFakeGitLab(t).gitlab
 	if _, err := newReleaseSource(config, "gitlab.com/only-one"); err == nil || !strings.Contains(err.Error(), "HOST/NAMESPACE/PROJECT") {
 		t.Fatalf("malformed project = %v, want refused", err)
 	}

@@ -2,6 +2,7 @@ package forgefake
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"sort"
@@ -10,8 +11,9 @@ import (
 	"time"
 )
 
-// GitLab handlers. Output shapes follow the GitLab REST API as glab
-// prints it; the fields emitted are the ones internal/git parses.
+// GitLab handlers, served over HTTP at /gitlab/api/v4/. Output shapes
+// follow the GitLab REST API; the fields emitted are the ones
+// internal/git parses.
 
 var (
 	gitlabStates      = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
@@ -21,49 +23,39 @@ var (
 func glabNotFound(what string) response {
 	return response{
 		stdout: []byte(fmt.Sprintf(`{"message":"404 %s Not Found"}`, what)),
-		stderr: "glab: 404 Not Found (HTTP 404)\n",
-		exit:   1,
+		stderr: "404 " + what + " Not Found",
+		status: http.StatusNotFound,
+		header: http.Header{"Content-Type": {"application/json"}},
 	}
 }
 
-// glabOK answers a JSON body, with the status line and headers first when
-// the caller passed --include.
-func glabOK(c *call, body response, headers ...string) response {
-	if !c.has("include") || body.exit != 0 {
-		return body
-	}
-	contentType := "application/json"
-	var extra []string
+// glabOK answers a body with the given response headers ("Name: value")
+// and a JSON content type unless one of them names another.
+func glabOK(body response, headers ...string) response {
+	body.header = http.Header{"Content-Type": {"application/json"}}
 	for _, header := range headers {
-		if value, ok := strings.CutPrefix(header, "Content-Type: "); ok {
-			contentType = value
-			continue
-		}
-		extra = append(extra, header)
+		name, value, _ := strings.Cut(header, ": ")
+		body.header.Set(name, value)
 	}
-	head := "HTTP/2.0 200 OK\nContent-Type: " + contentType + "\n"
-	for _, header := range extra {
-		head += header + "\n"
-	}
-	body.stdout = append([]byte(head+"\n"), body.stdout...)
 	return body
 }
 
-// glabProject resolves an escaped project path or numeric id.
-func (e *Engine) glabProject(escaped string) (*Repo, response, bool) {
+// glabProject resolves an escaped project path or numeric id on the
+// request's host.
+func (e *Engine) glabProject(c *call, escaped string) (*Repo, response, bool) {
 	project, err := url.PathUnescape(escaped)
 	if err != nil {
 		return nil, unhandled("project %q is not path-escaped", escaped), false
 	}
-	r := e.repo("gitlab", project)
+	r := e.repoOn("gitlab", c.http.host, project)
 	if r == nil {
 		return nil, glabNotFound("Project"), false
 	}
 	return r, response{}, true
 }
 
-func (e *Engine) glabMRFrom(m []string) (*Repo, *Pull, response, bool) {
-	r, fail, ok := e.glabProject(m[1])
+func (e *Engine) glabMRFrom(c *call, m []string) (*Repo, *Pull, response, bool) {
+	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return nil, nil, fail, false
 	}
@@ -80,7 +72,7 @@ func gitlabMRURL(r *Repo, p *Pull) string {
 }
 
 func glabMR(e *Engine, c *call, m []string) response {
-	r, p, fail, ok := e.glabMRFrom(m)
+	r, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
 	}
@@ -92,7 +84,7 @@ func glabMR(e *Engine, c *call, m []string) response {
 			"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
 		}
 	}
-	return glabOK(c, jsonResponse(map[string]any{
+	return glabOK(jsonResponse(map[string]any{
 		"id":                    r.ID*1000 + int64(p.Number),
 		"iid":                   p.Number,
 		"project_id":            r.ID,
@@ -115,7 +107,7 @@ func glabMR(e *Engine, c *call, m []string) response {
 }
 
 func glabApprovals(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(m)
+	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
 	}
@@ -126,7 +118,7 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 			"approved_at": review.SubmittedAt,
 		})
 	}
-	return glabOK(c, jsonResponse(map[string]any{"approved": len(approved) > 0, "approved_by": approved}))
+	return glabOK(jsonResponse(map[string]any{"approved": len(approved) > 0, "approved_by": approved}))
 }
 
 // glabPage reads per_page and page, refusing any other query parameter
@@ -167,7 +159,7 @@ func paginate[T any](items []T, perPage, page int) ([]T, string) {
 }
 
 func glabDiscussions(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(m)
+	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
 	}
@@ -177,7 +169,7 @@ func glabDiscussions(e *Engine, c *call, m []string) response {
 	}
 	discussions := gitlabDiscussions(p)
 	items, next := paginate(discussions, perPage, page)
-	return glabOK(c, jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
 }
 
 func gitlabDiscussions(p *Pull) []map[string]any {
@@ -249,15 +241,15 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	return note
 }
 
-// glabMRList answers the two `:fullpath` lists the app makes: the open MR
-// for a source branch and recently merged MRs. glab resolves :fullpath
-// from the checkout's origin remote.
+// glabMRList answers the two merge request lists the app makes: the open
+// MR for a source branch and recently merged MRs, of the project the path
+// names.
 func glabMRList(e *Engine, c *call, m []string) response {
-	r, err := e.repoForCheckout("gitlab", c.cwd)
-	if err != nil {
-		return response{exit: 1, stderr: err.Error() + "\n"}
+	r, fail, ok := e.glabProject(c, m[1])
+	if !ok {
+		return fail
 	}
-	query, perPage, page, err := glabPage(m[1], "state", "source_branch", "view", "order_by", "sort")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "view", "order_by", "sort")
 	if err != nil {
 		return unhandled("%v", err)
 	}
@@ -297,11 +289,11 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if items == nil {
 		items = []map[string]any{}
 	}
-	return glabOK(c, jsonResponse(items), "X-Next-Page: "+next)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
 func glabPipelineJobs(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(m[1])
+	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
@@ -337,7 +329,7 @@ func glabPipelineJobs(e *Engine, c *call, m []string) response {
 	// The API lists jobs newest first.
 	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i]["id"].(int64) > jobs[j]["id"].(int64) })
 	items, next := paginate(jobs, perPage, page)
-	return glabOK(c, jsonResponse(items), "X-Next-Page: "+next)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
 func jobSeconds(job Job) (float64, bool) {
@@ -350,7 +342,7 @@ func jobSeconds(job Job) (float64, bool) {
 }
 
 func glabJobTrace(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(m[1])
+	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
@@ -359,11 +351,11 @@ func glabJobTrace(e *Engine, c *call, m []string) response {
 	if job == nil || job.StartedAt == "" || job.LogWithheld {
 		return glabNotFound("Job")
 	}
-	return glabOK(c, response{stdout: []byte(job.Log)}, "Content-Type: text/plain")
+	return glabOK(response{stdout: []byte(job.Log)}, "Content-Type: text/plain")
 }
 
 func glabUpload(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(m[1])
+	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
@@ -373,7 +365,7 @@ func glabUpload(e *Engine, c *call, m []string) response {
 	}
 	for _, attachment := range r.Attachments {
 		if attachment.Secret == m[2] && attachment.Filename == name {
-			return glabOK(c, response{stdout: slices.Clone(attachment.content)}, "Content-Type: "+attachment.ContentType)
+			return glabOK(response{stdout: slices.Clone(attachment.content)}, "Content-Type: "+attachment.ContentType)
 		}
 	}
 	return glabNotFound("File")

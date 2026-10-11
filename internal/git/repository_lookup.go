@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/repoidentity"
 )
 
@@ -30,7 +30,7 @@ type repositoryLookups struct {
 
 // ResolveRepository enriches local Git coordinates using the owning computer's
 // forge login. Failures remain visible; the transient origin is discarded.
-// No response body or CLI stderr enters the returned identity, which is stored
+// No response body enters the returned identity, which is stored
 // and sent to paired clients. A failed forge call logs one redacted line on
 // this computer instead.
 func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoIdentity) RepoIdentity {
@@ -113,7 +113,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 		pending := make(chan struct{})
 		c.repositoryLookups.pending[key] = pending
 		c.repositoryLookups.mu.Unlock()
-		result := c.lookupRepository(ctx, cwd, forge, host, project)
+		result := c.lookupRepository(ctx, forge, host, project)
 		c.repositoryLookups.mu.Lock()
 		if caller.Err() == nil && (result.id != "" || result.problem != "") {
 			if c.repositoryLookups.cache == nil {
@@ -146,7 +146,7 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 	}
 }
 
-func (c *Core) lookupRepository(ctx context.Context, cwd, forge, host, project string) repositoryLookupResult {
+func (c *Core) lookupRepository(ctx context.Context, forge, host, project string) repositoryLookupResult {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	// A GitHub subresource can also carry an `id`, but it is not a repository.
@@ -164,71 +164,78 @@ func (c *Core) lookupRepository(ctx context.Context, cwd, forge, host, project s
 			return repositoryLookupResult{problem: "The origin URL does not name a valid forge repository."}
 		}
 	}
-	binary, endpoint := "gh", "repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])
-	if forge == "gitlab" {
-		binary, endpoint = "glab", "projects/"+url.PathEscape(decoded)
+	binary, client, path := "glab", (*forgeapi.Client)(nil), gitlabProjectPath(decoded)
+	if forge == "github" {
+		binary, path = "gh", "repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])
+		client, err = c.githubAPI(host)
+	} else {
+		client, err = c.gitlabAPI(host)
 	}
-	result, err := c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, args: []string{"api", "--hostname", host, endpoint}})
-	if err != nil || result.exitCode != 0 {
-		problem := fmt.Sprintf("Could not verify repository identity with %s on %s. Check its login and network connection, then retry.", binary, host)
-		if ctx.Err() != nil {
-			problem = "Repository identity lookup timed out or was cancelled. Retry when the computer is available."
-		}
-		if !errors.Is(ctx.Err(), context.Canceled) {
-			log.Printf("repository identity: %s api on %s failed: %s", binary, host, lookupFailureDetail(ctx, err, result))
-		}
-		// A CLI this computer cannot run stays missing until someone installs
-		// it; only a CLI that ran and failed is worth retrying.
-		_, unavailable := errors.AsType[*ForgeCLIUnavailableError](err)
-		missing := unavailable || errors.Is(err, exec.ErrNotFound)
-		return repositoryLookupResult{problem: problem, retryable: !missing}
+	var resp *forgeapi.Response
+	if err == nil {
+		resp, err = client.Do(ctx, forgeapi.Request{Path: path})
+	}
+	if err != nil {
+		return lookupFailure(ctx, binary, host, err, forgeAPIFailureDetail(err))
 	}
 	var body struct {
 		ID json.Number `json:"id"`
 	}
-	if err := json.Unmarshal([]byte(result.stdout), &body); err != nil {
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		return repositoryLookupResult{problem: "The forge returned an invalid repository identity."}
 	}
-	id, err := body.ID.Int64()
+	return repositoryIDResult(forge, host, body.ID)
+}
+
+// lookupFailure is the result of a forge identity read that failed: a
+// caller-safe problem, retryable unless the forge's CLI, whose login the
+// transport borrows, is missing (it stays missing until someone installs
+// it). detail goes to the local log
+// only, redacted and bounded; it never carries a response body.
+func lookupFailure(ctx context.Context, binary, host string, err error, detail string) repositoryLookupResult {
+	problem := fmt.Sprintf("Could not verify repository identity with %s on %s. Check its login and network connection, then retry.", binary, host)
+	if ctx.Err() != nil {
+		problem = "Repository identity lookup timed out or was cancelled. Retry when the computer is available."
+		detail = "timed out"
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		log.Printf("repository identity: lookup with the %s login on %s failed: %s", binary, host, boundLookupDetail(detail))
+	}
+	setup, isSetup := errors.AsType[*forgeapi.SetupError](err)
+	missing := isSetup && setup.Kind == forgeapi.SetupMissing
+	return repositoryLookupResult{problem: problem, retryable: !missing}
+}
+
+// forgeAPIFailureDetail is a transport error for the local log: a status
+// error by its method, redacted URL and status, without the body it
+// carries.
+func forgeAPIFailureDetail(err error) string {
+	if status, ok := errors.AsType[*forgeapi.StatusError](err); ok {
+		return fmt.Sprintf("%s %s: HTTP %d", status.Method, status.URL, status.Status)
+	}
+	return err.Error()
+}
+
+// repositoryIDResult validates a forge's repository id.
+func repositoryIDResult(forge, host string, raw json.Number) repositoryLookupResult {
+	id, err := raw.Int64()
 	if err != nil || id <= 0 {
 		return repositoryLookupResult{problem: "The forge returned no repository ID."}
 	}
 	return repositoryLookupResult{id: fmt.Sprintf("%s:%s:%d", forge, host, id)}
 }
 
-// lookupFailureDetailRunes bounds the CLI message a failed lookup logs.
+// lookupFailureDetailRunes bounds the failure detail a lookup logs.
 const lookupFailureDetailRunes = 300
 
-// lookupFailureDetail says why a forge lookup failed, for the local log only:
-// the timeout, the start failure, or the exit status with the first line of
-// stderr. Remote URLs are redacted and the response body is never included.
-func lookupFailureDetail(ctx context.Context, err error, result commandResult) string {
-	var detail string
-	switch {
-	case ctx.Err() != nil:
-		detail = "timed out"
-	case err != nil:
-		detail = err.Error()
-	default:
-		detail = fmt.Sprintf("exit status %d", result.exitCode)
-		if line := firstNonEmptyLine(result.stderr); line != "" {
-			detail += ": " + line
-		}
-	}
+// boundLookupDetail redacts remote URLs from a failure detail and bounds
+// it to lookupFailureDetailRunes.
+func boundLookupDetail(detail string) string {
 	detail = repoidentity.RedactText(detail)
 	if runes := []rune(detail); len(runes) > lookupFailureDetailRunes {
 		detail = string(runes[:lookupFailureDetailRunes]) + "..."
 	}
 	return detail
-}
-
-func firstNonEmptyLine(text string) string {
-	for line := range strings.Lines(text) {
-		if line = strings.TrimSpace(line); line != "" {
-			return line
-		}
-	}
-	return ""
 }
 
 var sshIdentityHost = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

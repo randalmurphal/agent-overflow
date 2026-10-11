@@ -1,5 +1,5 @@
 // A pull request's CI keeps itself current in the review pane, through the
-// shipped UI, the real backend and the fake forge CLI. Covered: the chips
+// shipped UI, the real backend and the fake forge. Covered: the chips
 // and an open job log follow a running GitLab job without a click, the
 // polling stops once every job is terminal; a running GitHub job shows its
 // steps live (read only while its log is open) and says the log arrives on
@@ -202,6 +202,18 @@ test('a running GitHub job shows its steps live, says the log arrives on complet
   expect(countRoute(await forgeInvocations(harness), 'gh api job logs')).toBe(0);
   // The steps are polled while the job runs.
   await expect.poll(async () => countRoute(await forgeInvocations(harness), 'gh api run jobs')).toBeGreaterThan(1);
+  // The CI cadence reads the rollup alone: its PRTick asks for the checks
+  // and neither the detail nor the threads.
+  const ciOnlyTicks = async () =>
+    (await forgeInvocations(harness)).filter(
+      (call) =>
+        call.via === 'http' &&
+        call.route === 'gh graphql PRTick' &&
+        call.variables?.wantChecks === true &&
+        call.variables?.wantDetail === false &&
+        call.variables?.wantThreads === false,
+    ).length;
+  await expect.poll(ciOnlyTicks).toBeGreaterThan(0);
 
   // The job completes, but the forge has not published its log yet: a
   // wait, not an error.

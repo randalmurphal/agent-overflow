@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
 
@@ -56,14 +57,18 @@ const maxPRCILogFollowsPerHandle = 16
 var ErrTooManyPRCILogFollows = fmt.Errorf("pr updates: too many CI log follows (limit %d)", maxPRCILogFollowsPerHandle)
 
 // PRCIUpdatedEvent is the "pr:ci_updated" frame: the PR's pipeline when
-// it changed, or a fetch failure (caller-safe, see prUpdateErrorMessage)
-// when that changed. Seq is the same per-PR pump sequence pr:updated
-// frames carry, so the frontend ranks both against one watermark.
+// it changed, or a fetch failure when that changed, with the same kind
+// fields PRUpdatedEvent carries. Seq is the same per-PR pump sequence
+// pr:updated frames carry, so the frontend ranks both against one
+// watermark.
 type PRCIUpdatedEvent struct {
-	PRKey    string             `json:"prKey"`
-	Pipeline *gitops.CIPipeline `json:"pipeline,omitempty"`
-	Error    string             `json:"error,omitempty"`
-	Seq      uint64             `json:"seq"`
+	PRKey     string             `json:"prKey"`
+	Pipeline  *gitops.CIPipeline `json:"pipeline,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	ErrorKind string             `json:"errorKind,omitempty"`
+	Reserve   bool               `json:"reserve,omitempty"`
+	ResumeAt  string             `json:"resumeAt,omitempty"`
+	Seq       uint64             `json:"seq"`
 }
 
 // PRCILogEvent is the "pr:ci_log" frame for one followed job. A delta
@@ -73,7 +78,8 @@ type PRCIUpdatedEvent struct {
 // SetPRCILogFollows. Available false means the forge cannot serve the log
 // yet: the job is live on a forge that serves logs only after completion,
 // or it completed and its log is not published yet; the text is
-// unchanged. Error is a fetch failure, text unchanged.
+// unchanged. Error is a fetch failure with its kind fields (see
+// PRUpdatedEvent), text unchanged.
 type PRCILogEvent struct {
 	PRKey      string `json:"prKey"`
 	JobID      string `json:"jobId"`
@@ -85,6 +91,9 @@ type PRCILogEvent struct {
 	TotalBytes int    `json:"totalBytes"`
 	Available  bool   `json:"available"`
 	Error      string `json:"error,omitempty"`
+	ErrorKind  string `json:"errorKind,omitempty"`
+	Reserve    bool   `json:"reserve,omitempty"`
+	ResumeAt   string `json:"resumeAt,omitempty"`
 }
 
 // prCILogFollow is one followed job's log state, refcounted across the
@@ -98,10 +107,10 @@ type prCILogFollow struct {
 	text       string
 	truncated  bool
 	totalBytes int
-	// err is the raw dedup key, wireErr the caller-safe summary (as the
-	// pump's lastErr / lastWireErr).
-	err     string
-	wireErr string
+	// etag validates text: the next fetch sends it, and a 304 keeps text.
+	etag string
+	// fail is the active fetch failure, as the pump's fail.
+	fail prForgeFailure
 	// wasLive is the job's liveness at the last poll; pendingFinal marks
 	// the live-to-terminal transition until the final log is in hand.
 	wasLive       bool
@@ -120,18 +129,19 @@ type prPumpRequest struct {
 	err    error
 }
 
-func (a *App) fetchPRCI(pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
+func (a *App) fetchPRCI(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
 	if a.prUpdates.ciFetchFn != nil {
-		return a.prUpdates.ciFetchFn(pr, prev, stepsFor)
+		return a.prUpdates.ciFetchFn(ctx, pr, prev, stepsFor)
 	}
-	return a.gitCore().ListPRCIJobs("", pr, prev, stepsFor)
+	read, err := a.gitCore().ReadPR(ctx, pr, gitops.PRReadParts{CI: true}, prev, stepsFor)
+	return read.CI, err
 }
 
-func (a *App) fetchPRCILog(pr gitops.PRReference, jobID string) (string, error) {
+func (a *App) fetchPRCILog(ctx context.Context, pr gitops.PRReference, req gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
 	if a.prUpdates.ciLogFetchFn != nil {
-		return a.prUpdates.ciLogFetchFn(pr, jobID)
+		return a.prUpdates.ciLogFetchFn(ctx, pr, req)
 	}
-	return a.gitCore().GetCIJobLog("", pr, jobID)
+	return a.gitCore().GetCIJobLog(ctx, pr, req)
 }
 
 func (a *App) prCILogWhileRunning(pr gitops.PRReference) bool {
@@ -174,14 +184,19 @@ func prCIStamp(snapshot prUpdateSnapshot) string {
 // prCIInterval is the delay until the next CI poll, 0 for none: the
 // shortest cadence anything still changing asks for. retry is the loop's
 // doubling delay while the pipeline fetch fails, reset here once it
-// succeeds. A live followed job on a forge that serves logs only after
-// completion asks nothing of its own: the pipeline's live cadence carries
-// its steps.
+// succeeds. A rate-limited pipeline or log waits for its failure's
+// release instead. A live followed job on a forge that serves logs only
+// after completion asks nothing of its own: the pipeline's live cadence
+// carries its steps.
 func (a *App) prCIInterval(pump *prUpdatePump, retry *time.Duration) time.Duration {
 	whileRunning := a.prCILogWhileRunning(pump.pr)
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	if pump.ciErr != "" {
+	if pump.ciFail.rateLimited() {
+		*retry = 0
+		return heldUntil(pump.ciFail.release)
+	}
+	if pump.ciFail.failing() {
 		if *retry == 0 {
 			*retry = a.prCILiveInterval()
 		} else {
@@ -198,6 +213,8 @@ func (a *App) prCIInterval(pump *prUpdatePump, retry *time.Duration) time.Durati
 	}
 	for _, follow := range pump.follows {
 		switch {
+		case follow.fail.rateLimited():
+			consider(heldUntil(follow.fail.release))
 		case follow.pendingFinal && follow.finalAttempts < prCILogFinalAttempts:
 			consider(a.prCIFollowInterval())
 		case follow.pendingFinal:
@@ -221,10 +238,12 @@ func (a *App) prCIWantsPoll(pump *prUpdatePump) bool {
 // pollPRCI fetches the pipeline and folds it into the pump's CI state,
 // the same way pollPRUpdate folds a snapshot: compare and store under the
 // lock, emit only on change, dedup identical failures, store nothing on a
-// dead pump.
-func (a *App) pollPRCI(pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
+// dead pump. A background poll before a rate limit's release asks
+// nothing; a person's request (an interactive ctx) still goes to the
+// transport, whose gate decides.
+func (a *App) pollPRCI(ctx context.Context, pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
 	a.prUpdates.mu.Lock()
-	if pump.dead {
+	if pump.dead || (!forgeapi.IsInteractive(ctx) && time.Now().Before(pump.ciFail.release)) {
 		a.prUpdates.mu.Unlock()
 		return PRCIUpdatedEvent{}, false
 	}
@@ -242,7 +261,7 @@ func (a *App) pollPRCI(pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
 	}
 	a.prUpdates.mu.Unlock()
 
-	pipeline, err := a.fetchPRCI(pump.pr, prev, stepsFor)
+	pipeline, err := a.fetchPRCI(ctx, pump.pr, prev, stepsFor)
 	if err == nil {
 		var encoded []byte
 		encoded, err = json.Marshal(pipeline)
@@ -252,14 +271,13 @@ func (a *App) pollPRCI(pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
 				a.prUpdates.mu.Unlock()
 				return PRCIUpdatedEvent{}, false
 			}
-			unchanged := pump.ciKnown && string(encoded) == string(pump.ciLast) && pump.ciErr == ""
+			unchanged := pump.ciKnown && string(encoded) == string(pump.ciLast) && !pump.ciFail.failing()
 			var seq uint64
 			if !unchanged {
 				pump.ci = pipeline
 				pump.ciKnown = true
 				pump.ciLast = encoded
-				pump.ciErr = ""
-				pump.ciWireErr = ""
+				pump.ciFail = prForgeFailure{}
 				pump.seq = a.nextPRUpdateSeqLocked()
 				seq = pump.seq
 			}
@@ -270,17 +288,16 @@ func (a *App) pollPRCI(pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
 			return PRCIUpdatedEvent{PRKey: pump.prKey, Pipeline: &pipeline, Seq: seq}, true
 		}
 	}
-	message, correlationID, wireErr := mintPRUpdateFailure(err)
+	fail := a.newPRForgeFailure(err)
 	a.prUpdates.mu.Lock()
 	if pump.dead {
 		a.prUpdates.mu.Unlock()
 		return PRCIUpdatedEvent{}, false
 	}
-	duplicate := pump.ciErr == message
+	duplicate := pump.ciFail.key == fail.key
 	var seq uint64
 	if !duplicate {
-		pump.ciErr = message
-		pump.ciWireErr = wireErr
+		pump.ciFail = fail
 		pump.seq = a.nextPRUpdateSeqLocked()
 		seq = pump.seq
 	}
@@ -288,8 +305,15 @@ func (a *App) pollPRCI(pump *prUpdatePump) (PRCIUpdatedEvent, bool) {
 	if duplicate {
 		return PRCIUpdatedEvent{}, false
 	}
-	log.Printf("pr updates: ci poll failed for pr=%s (id: %s): %v", pump.prKey, correlationID, err)
-	return PRCIUpdatedEvent{PRKey: pump.prKey, Error: wireErr, Seq: seq}, true
+	log.Printf("pr updates: ci poll failed for pr=%s (id: %s): %v", pump.prKey, fail.correlationID, err)
+	return PRCIUpdatedEvent{
+		PRKey:     pump.prKey,
+		Error:     fail.wire,
+		ErrorKind: fail.kind,
+		Reserve:   fail.reserve,
+		ResumeAt:  fail.resumeAt,
+		Seq:       seq,
+	}, true
 }
 
 // prCILogPlan is one job's decision for this tick, taken under the lock
@@ -302,13 +326,18 @@ type prCILogPlan struct {
 	unavailable bool
 	// live is the job's liveness the plan was made from.
 	live bool
+	// etag is the validator of the text the follow holds, sent with the
+	// fetch so an unchanged log answers 304.
+	etag string
 }
 
 // pollPRCILogs advances every followed job: decides under the lock what
 // each needs, fetches outside it, and folds the results in. forced jobs
-// (an RPC's) are fetched whatever their state.
-func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILogEvent {
+// (an RPC's) are fetched whatever their state; any other job held by a
+// rate limit waits for its release.
+func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[string]bool) []PRCILogEvent {
 	whileRunning := a.prCILogWhileRunning(pump.pr)
+	now := time.Now()
 	a.prUpdates.mu.Lock()
 	if pump.dead || len(pump.follows) == 0 {
 		a.prUpdates.mu.Unlock()
@@ -325,18 +354,24 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 			follow.finalAttempts = 0
 		}
 		follow.wasLive = live
+		etag := ""
+		if follow.fetched && follow.available {
+			etag = follow.etag
+		}
+		held := !forced[jobID] && now.Before(follow.fail.release)
 		switch {
 		case live && !whileRunning:
 			// Nothing to fetch; record the state once (and over an error
 			// a fetch made before the pipeline said the job was live).
-			if !follow.fetched || follow.available || follow.err != "" {
+			if !follow.fetched || follow.available || follow.fail.failing() {
 				plans = append(plans, prCILogPlan{jobID: jobID, unavailable: true, live: true})
 			}
+		case held:
 		case live:
-			plans = append(plans, prCILogPlan{jobID: jobID, fetch: true, live: true})
+			plans = append(plans, prCILogPlan{jobID: jobID, fetch: true, live: true, etag: etag})
 		default:
-			if forced[jobID] || !follow.fetched || follow.pendingFinal {
-				plans = append(plans, prCILogPlan{jobID: jobID, fetch: true})
+			if forced[jobID] || !follow.fetched || follow.pendingFinal || follow.fail.rateLimited() {
+				plans = append(plans, prCILogPlan{jobID: jobID, fetch: true, etag: etag})
 			}
 		}
 	}
@@ -344,14 +379,14 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 
 	type fetched struct {
 		plan prCILogPlan
-		text string
+		log  gitops.CIJobLog
 		err  error
 	}
 	results := make([]fetched, 0, len(plans))
 	for _, plan := range plans {
 		result := fetched{plan: plan}
 		if plan.fetch {
-			result.text, result.err = a.fetchPRCILog(pump.pr, plan.jobID)
+			result.log, result.err = a.fetchPRCILog(ctx, pump.pr, gitops.CIJobLogRequest{JobID: plan.jobID, ETag: plan.etag})
 		}
 		results = append(results, result)
 	}
@@ -374,24 +409,39 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 		case result.plan.unavailable:
 			follow.fetched = true
 			follow.available = false
-			follow.err = ""
-			follow.wireErr = ""
+			follow.fail = prForgeFailure{}
 			follow.seq = a.nextPRUpdateSeqLocked()
 			frame.PrevLen = utf16Len(follow.text)
 			frame.Base = frame.PrevLen
+		case result.err == nil && result.log.NotModified:
+			// The log is the text the follow holds; only a failure or an
+			// unavailable state it showed over that text changes.
+			changed := !follow.available || follow.fail.failing()
+			follow.fetched = true
+			follow.available = true
+			follow.pendingFinal = false
+			follow.finalAttempts = 0
+			follow.fail = prForgeFailure{}
+			if !changed {
+				continue
+			}
+			follow.seq = a.nextPRUpdateSeqLocked()
+			frame.PrevLen = utf16Len(follow.text)
+			frame.Base = frame.PrevLen
+			frame.Available = true
 		case result.err == nil:
-			tail, truncated := tailCapLog(result.text, ciLogDisplayTailBytes)
-			changed := !follow.fetched || !follow.available || tail != follow.text || follow.err != ""
+			tail, truncated := tailCapLog(result.log.Text, ciLogDisplayTailBytes)
+			changed := !follow.fetched || !follow.available || tail != follow.text || follow.fail.failing()
 			prevLen, base, appended := ciLogDelta(follow.text, tail)
 			follow.fetched = true
 			follow.available = true
 			follow.pendingFinal = false
 			follow.finalAttempts = 0
-			follow.err = ""
-			follow.wireErr = ""
+			follow.fail = prForgeFailure{}
 			follow.text = tail
+			follow.etag = result.log.ETag
 			follow.truncated = truncated
-			follow.totalBytes = len(result.text)
+			follow.totalBytes = len(result.log.Text)
 			if !changed {
 				continue
 			}
@@ -403,11 +453,10 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 			// is a wait, not a failure: the follow keeps asking at the pace
 			// prCIInterval sets, a forced fetch included, and shows the job
 			// as waiting for its log.
-			shown := follow.fetched && !follow.available && follow.err == ""
+			shown := follow.fetched && !follow.available && !follow.fail.failing()
 			follow.fetched = true
 			follow.available = false
-			follow.err = ""
-			follow.wireErr = ""
+			follow.fail = prForgeFailure{}
 			follow.pendingFinal = true
 			follow.finalAttempts++
 			if shown {
@@ -417,7 +466,8 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 			frame.PrevLen = utf16Len(follow.text)
 			frame.Base = frame.PrevLen
 		default:
-			if follow.pendingFinal {
+			fail := a.newPRForgeFailure(result.err)
+			if follow.pendingFinal && !fail.rateLimited() {
 				follow.finalAttempts++
 				if follow.finalAttempts >= prCILogFinalAttempts {
 					follow.pendingFinal = false
@@ -428,20 +478,22 @@ func (a *App) pollPRCILogs(pump *prUpdatePump, forced map[string]bool) []PRCILog
 				}
 			}
 			// A failed fetch is an answer: a terminal job is not asked again
-			// until someone re-sends the follow (the Refresh button).
+			// until someone re-sends the follow (the Refresh button), or a
+			// rate limit's release.
 			follow.fetched = true
-			message, correlationID, wireErr := mintPRUpdateFailure(result.err)
-			if follow.err == message {
+			if follow.fail.key == fail.key {
 				continue
 			}
-			follow.err = message
-			follow.wireErr = wireErr
+			follow.fail = fail
 			follow.seq = a.nextPRUpdateSeqLocked()
-			log.Printf("pr updates: ci log fetch failed for pr=%s job=%s (id: %s): %v", pump.prKey, jobID, correlationID, result.err)
+			log.Printf("pr updates: ci log fetch failed for pr=%s job=%s (id: %s): %v", pump.prKey, jobID, fail.correlationID, result.err)
 			frame.PrevLen = utf16Len(follow.text)
 			frame.Base = frame.PrevLen
 			frame.Available = follow.available
-			frame.Error = wireErr
+			frame.Error = fail.wire
+			frame.ErrorKind = fail.kind
+			frame.Reserve = fail.reserve
+			frame.ResumeAt = fail.resumeAt
 		}
 		frame.Seq = follow.seq
 		frame.Truncated = follow.truncated
@@ -458,7 +510,10 @@ func prCILogStateLocked(follow *prCILogFollow) PRCILogState {
 		Truncated:  follow.truncated,
 		TotalBytes: follow.totalBytes,
 		Available:  follow.available,
-		Error:      follow.wireErr,
+		Error:      follow.fail.wire,
+		ErrorKind:  follow.fail.kind,
+		Reserve:    follow.fail.reserve,
+		ResumeAt:   follow.fail.resumeAt,
 		Seq:        follow.seq,
 	}
 }
@@ -586,17 +641,18 @@ func (a *App) requestPRPump(ctx context.Context, pump *prUpdatePump, req *prPump
 
 // servePRPumpRequest runs on the pump goroutine: polls what the request
 // asks for and emits what changed. Returns the pipeline poll's active
-// failure when the request asked for one.
-func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runCI func(forced map[string]bool, pollPipeline bool)) {
+// failure when the request asked for one. The polls run under the pump's
+// context, marked interactive: a person asked for them.
+func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
 	forced := make(map[string]bool, len(req.jobIDs))
 	for _, jobID := range req.jobIDs {
 		forced[jobID] = true
 	}
-	runCI(forced, req.ci)
+	runCI(forgeapi.WithInteractive(pump.ctx), forced, req.ci)
 	if req.ci {
 		a.prUpdates.mu.Lock()
-		if pump.ciWireErr != "" {
-			req.err = errors.New(pump.ciWireErr)
+		if pump.ciFail.failing() {
+			req.err = errors.New(pump.ciFail.wire)
 		}
 		a.prUpdates.mu.Unlock()
 	}

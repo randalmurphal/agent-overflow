@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -109,12 +110,15 @@ type appPRUpdateState struct {
 	ciLiveInterval    time.Duration
 	ciFollowInterval  time.Duration
 	ciLogWaitInterval time.Duration
-	fetchFn           func(gitops.PRReference) (prUpdateSnapshot, error)
+	fetchFn           func(context.Context, gitops.PRReference) (prUpdateSnapshot, error)
 	// ciFetchFn and ciLogFetchFn stand in for the forge in tests, like
 	// fetchFn; ciLogWhileRunning overrides the forge's answer when set.
-	ciFetchFn         func(pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
-	ciLogFetchFn      func(pr gitops.PRReference, jobID string) (string, error)
+	ciFetchFn         func(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+	ciLogFetchFn      func(ctx context.Context, pr gitops.PRReference, req gitops.CIJobLogRequest) (gitops.CIJobLog, error)
 	ciLogWhileRunning *bool
+	// staggerFn replaces the random delay added to a rate limit's resume
+	// time (prUpdateStagger), for tests.
+	staggerFn func() time.Duration
 }
 
 // appSessionImportState is the session-import concern

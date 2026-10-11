@@ -13,7 +13,14 @@ import type { Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
-import { expectEveryForgeCallHandled, forgeInvocations, publishBranch, seedForge, type ForgeRepo } from './forge-helpers.js';
+import {
+  expectEveryForgeCallHandled,
+  forgeInvocations,
+  publishBranch,
+  seedForge,
+  type ForgeCLIInvocation,
+  type ForgeRepo,
+} from './forge-helpers.js';
 import { errorToasts, harnessGit } from './worktree-removal-helpers.js';
 
 export interface CreatePRSurface {
@@ -80,8 +87,8 @@ async function openFromMenu(page: Page, surface: CreatePRSurface): Promise<void>
   await item.click();
 }
 
-async function createCalls(harness: HarnessApp) {
-  return (await forgeInvocations(harness)).filter((call) => call.args[1] === 'create');
+async function createCalls(harness: HarnessApp): Promise<ForgeCLIInvocation[]> {
+  return (await forgeInvocations(harness)).filter((call): call is ForgeCLIInvocation => call.via === 'cli' && call.args[1] === 'create');
 }
 
 export function createPRFlow(surface: CreatePRSurface): void {

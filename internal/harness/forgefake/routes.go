@@ -1,6 +1,9 @@
 package forgefake
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,11 +17,15 @@ type command struct {
 	run   func(e *Engine, c *call) response
 }
 
-// apiRoute is one `api` endpoint. The endpoint (path plus query, as the
-// app passes it) must match pattern in full; flags lists the optional
-// `api` flags the handler honors. A flag outside that list is refused,
-// because a handler that ignores a flag answers a different question
-// than the one asked.
+// apiRoute is one REST endpoint. The endpoint (path plus query relative
+// to the forge's REST base, as the app sends it) must match pattern in
+// full; flags lists the request properties httpCall synthesizes as flags
+// that the handler honors. A flag outside that list is refused, because a
+// handler that ignores one answers a different question than the one
+// asked. A route that lists if-none-match answers its 200s with an ETag
+// and a request naming the current one with 304 (conditional); only the
+// endpoints whose real counterparts send an ETag the app revalidates list
+// it.
 type apiRoute struct {
 	name    string
 	method  string
@@ -31,11 +38,6 @@ type apiRoute struct {
 // handlers lives in AGENTS.md; keep the two in step.
 var commands = []command{
 	{cli: "ssh", flags: []flagDef{{long: "config", short: "G"}, {long: "option", short: "o", value: true}, {long: "user", short: "l", value: true}}, run: repositorySSHConfig},
-	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
-	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{
-		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
-		{long: "state", short: "s", value: true}, {long: "limit", short: "L", value: true}, {long: "json", value: true},
-	}, run: ghPRList},
 	{cli: "gh", path: []string{"pr", "create"}, flags: []flagDef{
 		{long: "title", short: "t", value: true}, {long: "body", short: "b", value: true},
 		{long: "base", short: "B", value: true}, {long: "draft", short: "d"},
@@ -45,57 +47,36 @@ var commands = []command{
 		{long: "target-branch", short: "b", value: true}, {long: "draft"},
 		{long: "yes", short: "y"}, {long: "no-editor"},
 	}, run: glabMRCreate},
-	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, githubAPI) }},
-	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: func(e *Engine, c *call) response { return e.api(c, gitlabAPI) }},
 }
 
-// apiFlags is the `api` flag vocabulary the two CLIs share.
-var apiFlags = []flagDef{
-	{long: "hostname", value: true},
-	{long: "method", short: "X", value: true},
-	{long: "header", short: "H", value: true},
-	{long: "raw-field", short: "f", value: true},
-	{long: "field", short: "F", value: true},
-	{long: "input", value: true},
-	{long: "jq", short: "q", value: true},
-	{long: "include", short: "i"},
-	{long: "allow-escape-sequences"},
-	{long: "paginate"},
-}
-
+// githubAPI is GitHub's REST surface, served over HTTP only; GitHub's
+// GraphQL operations are githubGraphQL.
 var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
-	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"jq"}, run: ghAPIUser},
-	{name: "gh api graphql", method: "POST", pattern: regexp.MustCompile(`^graphql$`), flags: []string{"raw-field"}, run: ghGraphQL},
-	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), run: ghRunJobs},
-	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), run: ghJobLogs},
-	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), flags: []string{"header", "allow-escape-sequences"}, run: ghAttachment},
+	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
+	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match"}, run: ghJobLogs},
+	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
 }
 
 var gitlabAPI = []apiRoute{
 	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
-	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"include"}, run: glabMR},
-	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"include"}, run: glabApprovals},
-	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"include"}, run: glabDiscussions},
-	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/:fullpath/merge_requests(?:\?(.*))?$`), flags: []string{"include"}, run: glabMRList},
-	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"include"}, run: glabPipelineJobs},
-	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"include"}, run: glabJobTrace},
-	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"include"}, run: glabUpload},
+	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
+	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
+	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
+	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
+	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
+	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match"}, run: glabJobTrace},
+	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
 }
 
-// api dispatches `<cli> api <endpoint>`. Callers hold mu.
+// api dispatches a REST request, mapped by httpCall onto its endpoint,
+// method and host. Callers hold mu.
 func (e *Engine) api(c *call, routes []apiRoute) response {
 	if len(c.positional) != 1 {
 		return unhandled("api takes exactly one endpoint, got %d", len(c.positional))
 	}
 	endpoint := c.positional[0]
 	method := strings.ToUpper(c.flag("method"))
-	if method == "" {
-		method = "GET"
-		if c.has("raw-field") || c.has("field") || c.has("input") {
-			method = "POST"
-		}
-	}
 	for _, route := range routes {
 		match := route.pattern.FindStringSubmatch(endpoint)
 		if match == nil || route.method != method {
@@ -110,7 +91,30 @@ func (e *Engine) api(c *call, routes []apiRoute) response {
 		if resp.route == "" {
 			resp.route = route.name
 		}
+		if slices.Contains(route.flags, "if-none-match") {
+			resp = conditional(resp, c.flag("if-none-match"))
+		}
 		return resp
 	}
 	return unhandled("no %s api route for %s %s", c.cli, method, endpoint)
+}
+
+// conditional gives a route's 200 its ETag, a hash of the body, and
+// answers 304 with no body when ifNoneMatch names it. Any other answer
+// passes through.
+func conditional(resp response, ifNoneMatch string) response {
+	if resp.unhandled != "" || (resp.status != 0 && resp.status != http.StatusOK) || resp.exit != 0 {
+		return resp
+	}
+	sum := sha256.Sum256(resp.stdout)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	if ifNoneMatch == etag {
+		return response{route: resp.route, status: http.StatusNotModified, header: http.Header{"Etag": {etag}}}
+	}
+	resp.header = resp.header.Clone()
+	if resp.header == nil {
+		resp.header = http.Header{}
+	}
+	resp.header.Set("ETag", etag)
+	return resp
 }

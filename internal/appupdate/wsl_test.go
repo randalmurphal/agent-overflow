@@ -1483,5 +1483,5 @@ func wslTestProvider(t *testing.T) Config {
 		return Config{}
 	}
 	setGitLabProject(t, testGitLabProject)
-	return Config{GlabRunner: newFakeGitLab(t).runner()}
+	return Config{GitLab: newFakeGitLab(t).gitlab}
 }

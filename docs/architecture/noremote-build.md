@@ -56,9 +56,10 @@ the tag, links the GitLab project into the updater, checks with
 ## Updates and installation
 
 The linked project selects the GitLab feed in `internal/appupdate`
-(`gitlab.go`). Every request runs `glab api --hostname HOST`, so the user's
-glab login authenticates it and the app stores no token. A signed-out or
-missing glab is reported as the update check's error. The WSL updater of a
+(`gitlab.go`). The feed is read over HTTPS from HOST's REST API with the
+token of the user's glab login, which the app's forge API transport reads
+from glab when it needs it and never stores. A signed-out or missing glab
+is reported as the update check's error. The WSL updater of a
 noremote build installs only `agent-overflow-wsl-noremote-amd64.exe` and has
 no feed when no project was linked; it never reads GitHub.
 

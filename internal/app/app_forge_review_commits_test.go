@@ -41,7 +41,7 @@ func prCloneFixture(t *testing.T, app *App) (ref WorkspaceRef, clone string, prS
 }
 
 func prRef() gitops.PRReference {
-	return gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 5}
+	return gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 5}
 }
 
 func TestListPRCommitsFromLocalClone(t *testing.T) {

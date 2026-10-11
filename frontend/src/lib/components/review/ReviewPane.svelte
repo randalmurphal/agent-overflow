@@ -32,6 +32,7 @@
   import type { DiffReviewComment } from '../../types/models';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
+  import { rateLimitMessage } from '../../utils/forgeFailure';
   import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import Icon from '../primitives/Icon.svelte';
@@ -549,9 +550,22 @@
       </div>
     {/if}
     {#if review.prUpdateError}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
-        Retrying: {review.prUpdateError}
-      </div>
+      {@const failure = review.prUpdateFailure}
+      {#if failure?.kind === 'rate_limited'}
+        <div class="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-rate-limited">
+          {rateLimitMessage(review.prRef?.forge, failure)}
+        </div>
+      {:else if failure?.kind === 'setup'}
+        <!-- A login to fix outside the app: the message names it, and no
+             retry will change it until the user does. -->
+        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-setup">
+          {review.prUpdateError}
+        </div>
+      {:else}
+        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
+          Retrying: {review.prUpdateError}
+        </div>
+      {/if}
     {/if}
     {#if review.prStale}
       <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
@@ -568,6 +582,8 @@
         ciLoading={review.ciLoading}
         ciRefreshing={review.ciRefreshing}
         ciError={review.ciError}
+        ciFailure={review.ciFailure}
+        forge={review.prRef?.forge}
         onOpenCIJob={(stageName, job) => review?.openCIJobLog(stageName, job)}
         onRefreshCI={() => { void review?.refreshCI(); }}
         {review}
@@ -580,6 +596,8 @@
         log={review.ciLog}
         loading={review.ciLogLoading}
         error={review.ciLogError}
+        failure={review.ciLogFailure}
+        forge={review.prRef?.forge}
         available={review.ciLogAvailable}
         savedPath={review.ciLogSavedPath}
         onBack={() => review?.closeCILogView()}

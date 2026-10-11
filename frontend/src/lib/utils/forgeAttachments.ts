@@ -41,11 +41,12 @@ export interface ForgeAttachmentSource {
 // ---------------------------------------------------------------------------
 // Shape detection
 // ---------------------------------------------------------------------------
-
 // WHATWG URL parsing strips leading and trailing C0 controls and spaces
-// before reading a scheme; the checks below see the same string the render
-// layer's `parseUrl` would.
-const C0_OR_SPACE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g;
+// before reading a scheme; trimHref drops the same bytes so the checks
+// below see the string the render layer's `parseUrl` would.
+function isC0OrSpace(code: number): boolean {
+  return code <= 0x20;
+}
 
 const GITHUB_HOST = 'github.com';
 // The signed redirect target GitHub hands a logged-in browser. Its plain
@@ -77,7 +78,11 @@ interface ForgeHrefShape {
 }
 
 function trimHref(href: string): string {
-  return href.replace(C0_OR_SPACE, '');
+  let start = 0;
+  let end = href.length;
+  while (start < end && isC0OrSpace(href.charCodeAt(start))) start++;
+  while (end > start && isC0OrSpace(href.charCodeAt(end - 1))) end--;
+  return href.slice(start, end);
 }
 
 function decodeSegment(raw: string): string {
@@ -240,6 +245,7 @@ export function buildForgeAttachmentHref(
   const params = new URLSearchParams();
   params.set('href', args.href);
   params.set('forge', args.pr.forge);
+  params.set('host', args.pr.host);
   params.set('ns', args.pr.namespace);
   params.set('repo', args.pr.repo);
   params.set('n', String(args.pr.number));
@@ -260,14 +266,15 @@ export function parseForgeAttachmentHref(
   }
   const raw = url.searchParams.get('href');
   const forge = url.searchParams.get('forge');
+  const host = url.searchParams.get('host');
   const repo = url.searchParams.get('repo');
   const number = Number(url.searchParams.get('n') ?? '');
-  if (!raw || !repo) return null;
+  if (!raw || !repo || !host) return null;
   if (forge !== 'github' && forge !== 'gitlab') return null;
   if (!Number.isSafeInteger(number) || number <= 0) return null;
   return {
     href: raw,
-    pr: { forge, namespace: url.searchParams.get('ns') ?? '', repo, number },
+    pr: { forge, host, namespace: url.searchParams.get('ns') ?? '', repo, number },
     backend: url.searchParams.get('backend') ?? '',
     webBase: url.searchParams.get('web') ?? '',
   };

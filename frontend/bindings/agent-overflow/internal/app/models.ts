@@ -3297,7 +3297,7 @@ export class PRCILogFollowResult {
  * only after completion (GitHub), or it completed and the forge has not
  * published its log yet. Text is then unchanged (empty on GitHub) and the
  * frontend says why. Error is the caller-safe summary of the last fetch
- * failure.
+ * failure, with its kind fields (see PRUpdatedEvent).
  */
 export class PRCILogState {
     "text": string;
@@ -3305,6 +3305,9 @@ export class PRCILogState {
     "totalBytes": number;
     "available": boolean;
     "error": string;
+    "errorKind": string;
+    "reserve": boolean;
+    "resumeAt": string;
     "seq": number;
 
     /** Creates a new PRCILogState instance. */
@@ -3323,6 +3326,15 @@ export class PRCILogState {
         }
         if (!("error" in $$source)) {
             this["error"] = "";
+        }
+        if (!("errorKind" in $$source)) {
+            this["errorKind"] = "";
+        }
+        if (!("reserve" in $$source)) {
+            this["reserve"] = false;
+        }
+        if (!("resumeAt" in $$source)) {
+            this["resumeAt"] = "";
         }
         if (!("seq" in $$source)) {
             this["seq"] = 0;
@@ -3412,13 +3424,14 @@ export class PRMergeConflictsResult {
  * to report visibility; PRKey is the entity key "pr:updated" events are
  * addressed by, which the frontend routes on.
  * 
- * Error carries the pump's ACTIVE failure — the same caller-safe summary
- * the last "pr:updated" frame carried, never the forge CLI's own stderr.
- * The pump dedups identical failures, so a subscriber joining an outage
- * gets no frame of its own; without this it would show the pump's stale
- * snapshot with no banner until the forge recovered or failed differently.
- * Seq stamps the pump state this result was read from, so the caller can
- * tell a frame it missed during the join from one already folded in.
+ * Error carries the pump's ACTIVE failure: the same caller-safe summary
+ * the last "pr:updated" frame carried, never the forge's own text, with
+ * its ErrorKind, Reserve and ResumeAt (see PRUpdatedEvent). The pump dedups
+ * identical failures, so a subscriber joining an outage gets no frame of
+ * its own; without this it would show the pump's stale snapshot with no
+ * banner until the forge recovered or failed differently. Seq stamps the
+ * pump state this result was read from, so the caller can tell a frame it
+ * missed during the join from one already folded in.
  */
 export class PRUpdateSubscriptionResult {
     "id": string;
@@ -3427,15 +3440,22 @@ export class PRUpdateSubscriptionResult {
     "threads": git$0.ReviewThread[];
     "headSHA": string;
     "error": string;
+    "errorKind": string;
+    "reserve": boolean;
+    "resumeAt": string;
     "seq": number;
 
     /**
      * CI is the pump's pipeline, nil until its first CI poll has answered
      * (the frame then follows on pr:ci_updated); CIError is the CI poll's
-     * active failure, the same caller-safe summary as Error.
+     * active failure, the same caller-safe summary as Error, with its kind
+     * in CIErrorKind, CIReserve and CIResumeAt.
      */
     "ci": git$0.CIPipeline | null;
     "ciError": string;
+    "ciErrorKind": string;
+    "ciReserve": boolean;
+    "ciResumeAt": string;
 
     /** Creates a new PRUpdateSubscriptionResult instance. */
     constructor($$source: Partial<PRUpdateSubscriptionResult> = {}) {
@@ -3457,6 +3477,15 @@ export class PRUpdateSubscriptionResult {
         if (!("error" in $$source)) {
             this["error"] = "";
         }
+        if (!("errorKind" in $$source)) {
+            this["errorKind"] = "";
+        }
+        if (!("reserve" in $$source)) {
+            this["reserve"] = false;
+        }
+        if (!("resumeAt" in $$source)) {
+            this["resumeAt"] = "";
+        }
         if (!("seq" in $$source)) {
             this["seq"] = 0;
         }
@@ -3465,6 +3494,15 @@ export class PRUpdateSubscriptionResult {
         }
         if (!("ciError" in $$source)) {
             this["ciError"] = "";
+        }
+        if (!("ciErrorKind" in $$source)) {
+            this["ciErrorKind"] = "";
+        }
+        if (!("ciReserve" in $$source)) {
+            this["ciReserve"] = false;
+        }
+        if (!("ciResumeAt" in $$source)) {
+            this["ciResumeAt"] = "";
         }
 
         Object.assign(this, $$source);
@@ -3476,7 +3514,7 @@ export class PRUpdateSubscriptionResult {
     static createFrom($$source: any = {}): PRUpdateSubscriptionResult {
         const $$createField2_0 = $$createType54;
         const $$createField3_0 = $$createType56;
-        const $$createField7_0 = $$createType58;
+        const $$createField10_0 = $$createType58;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
             $$parsedSource["detail"] = $$createField2_0($$parsedSource["detail"]);
@@ -3485,7 +3523,7 @@ export class PRUpdateSubscriptionResult {
             $$parsedSource["threads"] = $$createField3_0($$parsedSource["threads"]);
         }
         if ("ci" in $$parsedSource) {
-            $$parsedSource["ci"] = $$createField7_0($$parsedSource["ci"]);
+            $$parsedSource["ci"] = $$createField10_0($$parsedSource["ci"]);
         }
         return new PRUpdateSubscriptionResult($$parsedSource as Partial<PRUpdateSubscriptionResult>);
     }

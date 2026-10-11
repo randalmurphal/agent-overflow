@@ -8,7 +8,7 @@
 // MR: the chat header's Thread actions menu carries the MR row. The seeded
 // workspace's branch is published as that MR through a local origin
 // (`publishPullRequest`), which the review pane's diff fetches from, and
-// the fake forge answers `glab` for its project.
+// the fake forge answers its GitLab API requests for its project.
 
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -126,6 +126,6 @@ test('a long press on a forge image in the review pane opens its menu, and Copy 
 
   const calls = await forgeInvocations(harness);
   expect(calls.some((call) => call.route === 'glab api merge request list')).toBe(true);
-  expect(calls.some((call) => call.route === 'glab api upload' && call.args[1].endsWith(`/uploads/${secret.png}/${name.png}`))).toBe(true);
+  expect(calls.some((call) => call.via === 'http' && call.route === 'glab api upload' && call.path.endsWith(`/uploads/${secret.png}/${name.png}`))).toBe(true);
   await expectEveryForgeCallHandled(harness);
 });

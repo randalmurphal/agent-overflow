@@ -1518,7 +1518,7 @@ describe('reviewPane store — PR scope', () => {
     await flushPane();
     // A second pane on the same PR keeps the PR subscribed, so the clear
     // has a live handle to reach.
-    const other = attachPR(PR_KEY, { ref: { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 } });
+    const other = attachPR(PR_KEY, { ref: { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 } });
     try {
       disposeReviewStateForPane('pane-1', state);
       await flushPane();
@@ -1623,7 +1623,7 @@ describe('reviewPane store — PR scope', () => {
       await sending;
 
       expect(save).toHaveBeenCalledWith(
-        { Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
         '20',
         'unit',
       );
@@ -1671,7 +1671,7 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
 
     await vi.waitFor(() => {
-      expect(state.prRef).toEqual({ forge: 'github', namespace: 'acme', repo: 'widgets', number: 7 });
+      expect(state.prRef).toEqual({ forge: 'github', host: 'github.com', namespace: 'acme', repo: 'widgets', number: 7 });
     });
     // Detection only surfaces the option; it never hijacks the scope.
     expect(state.scope).toBe('workspace');
@@ -1694,7 +1694,7 @@ describe('reviewPane store — PR scope', () => {
     });
 
     await vi.waitFor(() => {
-      expect(state.prRef).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 3 });
+      expect(state.prRef).toEqual({ forge: 'gitlab', host: 'gitlab.com', namespace: 'group/sub', repo: 'repo', number: 3 });
     });
   });
 

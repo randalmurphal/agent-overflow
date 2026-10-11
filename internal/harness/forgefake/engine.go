@@ -1,24 +1,28 @@
-// Package forgefake answers forge CLI calls and SSH configuration reads
-// from a fixture a test seeds.
+// Package forgefake answers forge CLI calls, forge API requests and SSH
+// configuration reads from a fixture a test seeds.
 //
-// The app never talks to this package directly. internal/git runs every
-// forge CLI through one seam that, under --harness and --soak, executes
-// cmd/ao-mockforge instead; that binary forwards its argv, cwd and stdin
-// over the harness control channel (internal/harness/control, POST
-// /forge) and prints whatever Engine.Handle answers. Routing, state and
-// the invocation log therefore live in the harness process, where the
-// test can seed and inspect them through the harness wire.
+// internal/git runs every forge CLI through one seam that, under --harness
+// and --soak, executes cmd/ao-mockforge instead; that binary forwards its
+// argv, cwd and stdin over the harness control channel
+// (internal/harness/control, POST /forge) and prints whatever
+// Engine.Handle answers. The forge API transport of an isolated boot
+// sends its requests to the harness's own listener, which Engine.ServeHTTP
+// answers from the same route tables. Routing, state and the invocation
+// log therefore live in the harness process, where the test can seed and
+// inspect them through the harness wire.
 //
 // Every invocation is recorded. One no handler claims, or one carrying a
-// flag, JSON field, query parameter or GraphQL query shape its handler
-// does not implement, fails with the full argv on stderr, so a change to
-// what the app asks a forge CLI surfaces as a failing spec rather than a
-// plausible empty answer. See AGENTS.md beside this file for how to add
+// flag, JSON field, query parameter or GraphQL operation signature its
+// handler does not implement, fails with the full argv or request, so a
+// change to what the app asks a forge surfaces as a failing spec rather
+// than a plausible empty answer. See AGENTS.md beside this file for how to add
 // an endpoint.
 package forgefake
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -36,23 +40,89 @@ const maxInvocations = 4096
 // defaultViewer is the signed-in user when the fixture names none.
 const defaultViewer = "ao-viewer"
 
-// Invocation is one recorded forge CLI call and its outcome.
+// Invocation is one recorded forge call and its outcome: a CLI
+// invocation ao-mockforge forwarded (Via "cli") or a request to the HTTP
+// mounts (Via "http"). Each serializes only its own variant's fields; see
+// MarshalJSON.
 type Invocation struct {
-	Seq  int      `json:"seq"`
-	CLI  string   `json:"cli"`
-	Args []string `json:"args"`
-	Cwd  string   `json:"cwd"`
-	// Stdin is what the app wrote to the CLI, as text.
-	Stdin string `json:"stdin,omitempty"`
+	Seq int    `json:"seq"`
+	Via string `json:"via"`
 	// Route names the handler that answered. Empty when Unhandled.
 	Route string `json:"route,omitempty"`
-	// Unhandled marks an invocation no handler implements. Stderr then
-	// carries the reason and the full argv.
-	Unhandled   bool      `json:"unhandled,omitempty"`
-	ExitCode    int       `json:"exitCode"`
-	Stderr      string    `json:"stderr,omitempty"`
-	StdoutBytes int       `json:"stdoutBytes"`
-	At          time.Time `json:"at"`
+	// Unhandled marks an invocation no handler implements. Stderr (CLI) or
+	// Detail (HTTP) then carries the reason and the call.
+	Unhandled bool      `json:"unhandled,omitempty"`
+	At        time.Time `json:"at"`
+
+	// CLI variant.
+	CLI  string   `json:"cli,omitempty"`
+	Args []string `json:"args,omitempty"`
+	Cwd  string   `json:"cwd,omitempty"`
+	// Stdin is what the app wrote to the CLI, as text.
+	Stdin       string `json:"stdin,omitempty"`
+	ExitCode    int    `json:"exitCode"`
+	Stderr      string `json:"stderr,omitempty"`
+	StdoutBytes int    `json:"stdoutBytes"`
+
+	// HTTP variant. Host is the forge host the request addressed (its
+	// Host header, port included) or an attachment's host. Path is the
+	// request path and query relative to the forge base
+	// ("repos/o/r/pulls/1", "graphql"), or an attachment's absolute URL
+	// without its query.
+	Forge  string `json:"forge,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Method string `json:"method,omitempty"`
+	Path   string `json:"path,omitempty"`
+	// Operation and Variables are a GraphQL request's operationName and
+	// variables as sent.
+	Operation string          `json:"operation,omitempty"`
+	Variables json.RawMessage `json:"variables,omitempty"`
+	Status    int             `json:"status,omitempty"`
+	Detail    string          `json:"detail,omitempty"`
+}
+
+// Invocation variants.
+const (
+	ViaCLI  = "cli"
+	ViaHTTP = "http"
+)
+
+// MarshalJSON writes the union the e2e helpers narrow on via:
+// {seq, route, unhandled, via: "cli", cli, args, cwd, stdin, exitCode,
+// stderr, ...} or {seq, route, unhandled, via: "http", forge, host,
+// method, path, operation, variables, status, detail}.
+func (inv Invocation) MarshalJSON() ([]byte, error) {
+	type common struct {
+		Seq       int       `json:"seq"`
+		Via       string    `json:"via"`
+		Route     string    `json:"route,omitempty"`
+		Unhandled bool      `json:"unhandled,omitempty"`
+		At        time.Time `json:"at"`
+	}
+	head := common{Seq: inv.Seq, Via: inv.Via, Route: inv.Route, Unhandled: inv.Unhandled, At: inv.At}
+	if inv.Via == ViaHTTP {
+		return json.Marshal(struct {
+			common
+			Forge     string          `json:"forge"`
+			Host      string          `json:"host"`
+			Method    string          `json:"method"`
+			Path      string          `json:"path"`
+			Operation string          `json:"operation,omitempty"`
+			Variables json.RawMessage `json:"variables,omitempty"`
+			Status    int             `json:"status"`
+			Detail    string          `json:"detail,omitempty"`
+		}{head, inv.Forge, inv.Host, inv.Method, inv.Path, inv.Operation, inv.Variables, inv.Status, inv.Detail})
+	}
+	return json.Marshal(struct {
+		common
+		CLI         string   `json:"cli"`
+		Args        []string `json:"args"`
+		Cwd         string   `json:"cwd"`
+		Stdin       string   `json:"stdin,omitempty"`
+		ExitCode    int      `json:"exitCode"`
+		Stderr      string   `json:"stderr,omitempty"`
+		StdoutBytes int      `json:"stdoutBytes"`
+	}{head, inv.CLI, inv.Args, inv.Cwd, inv.Stdin, inv.ExitCode, inv.Stderr, inv.StdoutBytes})
 }
 
 // InvocationLog is a window of the recorded invocations.
@@ -71,13 +141,17 @@ type Options struct {
 	OnInvocation func(Invocation)
 	// Origin answers a working directory's origin remote URL, for the
 	// invocations that name no repository and let the CLI infer it from
-	// the checkout (`gh pr list`, glab's `:fullpath`). Defaults to asking
-	// git.
+	// the checkout (`gh pr create`, `glab mr create`). Defaults to
+	// asking git.
 	Origin func(cwd string) (string, error)
 	// Head answers a working directory's current branch and commit, for
 	// the create calls that open a pull or merge request from the
 	// checkout. Defaults to asking git.
 	Head func(cwd string) (CheckoutHead, error)
+	// APIToken is the fixed token every request to the HTTP mounts must
+	// carry (Authorization: Bearer or Private-Token). Empty refuses every
+	// request.
+	APIToken string
 }
 
 // Engine is the fake forge: seeded state, the route table's host and the
@@ -94,9 +168,11 @@ type Engine struct {
 	// offline answers every call as a forge the network cannot reach,
 	// the way gh and glab fail when DNS or the link is down.
 	offline bool
-	log     []Invocation
-	seq     int
-	dropped int
+	// rateLimits are the pools under a limit (SetRateLimit).
+	rateLimits map[rateLimitKey]RateLimit
+	log        []Invocation
+	seq        int
+	dropped    int
 }
 
 // New builds an empty engine. Every invocation against it answers "not
@@ -151,7 +227,8 @@ func (e *Engine) Seed(fixture Fixture) (Fixture, error) {
 	return fixture.clone(), nil
 }
 
-// Reset drops the seeded state and the invocation log. Ids keep counting
+// Reset drops the seeded state, the rate limits and the invocation log.
+// Ids keep counting
 // so none repeats across tests.
 func (e *Engine) Reset() {
 	e.mu.Lock()
@@ -160,14 +237,16 @@ func (e *Engine) Reset() {
 	clear(e.repos)
 	clear(e.sshHosts)
 	e.offline = false
+	clear(e.rateLimits)
 	e.log = nil
 	e.dropped = 0
 }
 
 // SetOffline makes the forge unreachable (or reachable again). While
 // offline every gh and glab invocation exits 1 with the CLI's own
-// connection failure on stderr and nothing on stdout, recorded under
-// route "offline"; ssh is answered as usual. Seeded state is kept, so a
+// connection failure on stderr and nothing on stdout, and every HTTP
+// request is dropped without a reply, both recorded under route
+// "offline"; ssh is answered as usual. Seeded state is kept, so a
 // forge that comes back answers what it answered before.
 func (e *Engine) SetOffline(offline bool) {
 	e.mu.Lock()
@@ -196,6 +275,7 @@ func (e *Engine) Invocations(since int) InvocationLog {
 	for _, inv := range e.log {
 		if inv.Seq > since {
 			inv.Args = slices.Clone(inv.Args)
+			inv.Variables = slices.Clone(inv.Variables)
 			out.Invocations = append(out.Invocations, inv)
 		}
 	}
@@ -220,9 +300,8 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 			c.cli, resp.unhandled, formatArgv(c.cli, c.args))
 		resp.exit = 1
 	}
-	e.seq++
 	inv := Invocation{
-		Seq:         e.seq,
+		Via:         ViaCLI,
 		CLI:         c.cli,
 		Args:        slices.Clone(c.args),
 		Cwd:         c.cwd,
@@ -232,8 +311,17 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 		ExitCode:    resp.exit,
 		Stderr:      resp.stderr,
 		StdoutBytes: len(resp.stdout),
-		At:          time.Now().UTC(),
 	}
+	e.record(inv)
+	return control.ForgeResult{Stdout: resp.stdout, Stderr: resp.stderr, ExitCode: resp.exit}
+}
+
+// record appends inv to the log and hands it to OnInvocation. Callers hold
+// mu; record releases it.
+func (e *Engine) record(inv Invocation) {
+	e.seq++
+	inv.Seq = e.seq
+	inv.At = time.Now().UTC()
 	if inv.Unhandled {
 		inv.Route = ""
 	}
@@ -246,9 +334,9 @@ func (e *Engine) Handle(fc control.ForgeCall) control.ForgeResult {
 
 	if e.opts.OnInvocation != nil {
 		inv.Args = slices.Clone(inv.Args)
+		inv.Variables = slices.Clone(inv.Variables)
 		e.opts.OnInvocation(inv)
 	}
-	return control.ForgeResult{Stdout: resp.stdout, Stderr: resp.stderr, ExitCode: resp.exit}
 }
 
 // dispatch finds the command whose path is the longest prefix of the
@@ -274,17 +362,21 @@ func (e *Engine) dispatch(c *call) response {
 	c.flags, c.positional = flags, positional
 	resp := best.run(e, c)
 	if resp.route == "" {
-		resp.route = best.cli + " " + strings.Join(best.path, " ")
+		resp.route = strings.Join(append([]string{best.cli}, best.path...), " ")
 	}
 	return resp
 }
 
-// response is a handler's answer.
+// response is a handler's answer. A CLI call renders stdout, stderr and
+// exit; an HTTP request renders status (0 means 200 for exit 0 and 500
+// otherwise), header and stdout as the body.
 type response struct {
 	route     string
 	stdout    []byte
 	stderr    string
 	exit      int
+	status    int
+	header    http.Header
 	unhandled string
 }
 
@@ -318,6 +410,19 @@ func (e *Engine) repo(forge, project string) *Repo {
 		}
 	}
 	return nil
+}
+
+// repoOn returns the seeded repository when it lives on host, the forge
+// host an HTTP request addressed (its Host header, port included), which
+// must match the seeded host exactly. A repository seeded on another host
+// is as absent as an unknown one: the request asked a host that does not
+// have it. Callers hold mu.
+func (e *Engine) repoOn(forge, host, project string) *Repo {
+	r := e.repo(forge, project)
+	if r == nil || !strings.EqualFold(r.Host, host) {
+		return nil
+	}
+	return r
 }
 
 func (r *Repo) pull(number int) *Pull {

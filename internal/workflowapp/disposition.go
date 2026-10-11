@@ -1,6 +1,7 @@
 package workflowapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,19 +26,23 @@ const (
 	dispositionAutoMerge = "auto-merge"
 )
 
-func (s *Service) MergeItem(itemID string) (DispositionReceipt, error) {
-	return s.runDisposition(itemID, dispositionMerge, dispositionManual)
+// The disposition entry points take the context of their owner: the
+// caller's for a person's action, the service's lifetime for AutoDispose.
+// It bounds the forge calls a PR disposition makes.
+
+func (s *Service) MergeItem(ctx context.Context, itemID string) (DispositionReceipt, error) {
+	return s.runDisposition(ctx, itemID, dispositionMerge, dispositionManual)
 }
 
-func (s *Service) CreateItemPR(itemID string) (DispositionReceipt, error) {
-	return s.runDisposition(itemID, dispositionPR, dispositionManual)
+func (s *Service) CreateItemPR(ctx context.Context, itemID string) (DispositionReceipt, error) {
+	return s.runDisposition(ctx, itemID, dispositionPR, dispositionManual)
 }
 
-func (s *Service) DiscardItem(itemID string) (DispositionReceipt, error) {
-	return s.runDisposition(itemID, dispositionDiscard, dispositionManual)
+func (s *Service) DiscardItem(ctx context.Context, itemID string) (DispositionReceipt, error) {
+	return s.runDisposition(ctx, itemID, dispositionDiscard, dispositionManual)
 }
 
-func (s *Service) runDisposition(itemID string, action dispositionAction, policy string) (DispositionReceipt, error) {
+func (s *Service) runDisposition(ctx context.Context, itemID string, action dispositionAction, policy string) (DispositionReceipt, error) {
 	s.dispositionMu.Lock()
 	defer s.dispositionMu.Unlock()
 
@@ -67,7 +72,7 @@ func (s *Service) runDisposition(itemID string, action dispositionAction, policy
 		return DispositionReceipt{}, fmt.Errorf("workflow disposition %s: item already has a receipt", itemID)
 	}
 
-	receipt, dispositionErr := s.applyDisposition(item, action, policy)
+	receipt, dispositionErr := s.applyDisposition(ctx, item, action, policy)
 	if dispositionErr != nil && receipt.Action == "" && item.State == string(engine.StateDone) {
 		var parkErr error
 		if s.deps.ParkDisposition == nil {
@@ -113,7 +118,7 @@ func validateDispositionState(item store.WorkItem, action dispositionAction) err
 	return nil
 }
 
-func (s *Service) applyDisposition(item store.WorkItem, action dispositionAction, policy string) (DispositionReceipt, error) {
+func (s *Service) applyDisposition(ctx context.Context, item store.WorkItem, action dispositionAction, policy string) (DispositionReceipt, error) {
 	receipt := DispositionReceipt{Action: string(action), Policy: policy, At: s.deps.Now().UnixMilli()}
 	cleanupAuto := false
 	if action == dispositionDiscard {
@@ -131,7 +136,7 @@ func (s *Service) applyDisposition(item store.WorkItem, action dispositionAction
 		if err != nil {
 			return DispositionReceipt{}, err
 		}
-		if err := s.landDisposition(&receipt, item, project, action); err != nil {
+		if err := s.landDisposition(ctx, &receipt, item, project, action); err != nil {
 			return DispositionReceipt{}, err
 		}
 	}
@@ -200,7 +205,7 @@ func (s *Service) emitDispositionState(itemID string) {
 	})
 }
 
-func (s *Service) landDisposition(receipt *DispositionReceipt, item store.WorkItem, project store.Project, action dispositionAction) error {
+func (s *Service) landDisposition(ctx context.Context, receipt *DispositionReceipt, item store.WorkItem, project store.Project, action dispositionAction) error {
 	base, err := s.dispositionBase(item)
 	if err != nil {
 		return err
@@ -227,7 +232,7 @@ func (s *Service) landDisposition(receipt *DispositionReceipt, item store.WorkIt
 			return fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
 		}
 		prRef, err := client.CreatePR(
-			item.WorktreePath, item.Goal,
+			ctx, item.WorktreePath, item.Goal,
 			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), base, false,
 		)
 		if err != nil {
@@ -356,6 +361,6 @@ func (s *Service) AutoDispose(itemID string) error {
 		s.deps.Logf("workflow auto-disposition %s: unsupported policy %q", itemID, projectProfile.Disposition)
 		return nil
 	}
-	_, err = s.runDisposition(itemID, action, projectProfile.Disposition)
+	_, err = s.runDisposition(s.deps.Context(), itemID, action, projectProfile.Disposition)
 	return err
 }

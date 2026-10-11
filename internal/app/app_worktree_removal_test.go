@@ -591,7 +591,7 @@ func TestWorkflowDiscardReattachesThreadsWithoutANotice(t *testing.T) {
 		t.Fatalf("CreateWorkItem: %v", err)
 	}
 
-	if _, err := f.app.WorkflowDiscardItem(item.ID); err != nil {
+	if _, err := f.app.WorkflowDiscardItem(t.Context(), item.ID); err != nil {
 		t.Fatalf("WorkflowDiscardItem: %v", err)
 	}
 

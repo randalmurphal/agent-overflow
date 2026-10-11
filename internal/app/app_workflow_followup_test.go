@@ -1,6 +1,8 @@
 package app
 
 import (
+	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -12,9 +14,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +29,7 @@ func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
 	app, item := newWorkflowPRTestApp(t)
 	installWorkflowPRFakeGitHub(t, app)
 
-	comments, err := app.WorkflowFetchPRReviewComments(item.ID)
+	comments, err := app.WorkflowFetchPRReviewComments(t.Context(), item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,11 +52,11 @@ func TestWorkflowPRReviewCommentsAndDiscussionReuseLinkedThread(t *testing.T) {
 			Summary: content, CreatedAt: int64(index), UpdatedAt: int64(index),
 		})
 	}
-	reviewThread, err := app.WorkflowSendPRReviewCommentsToThread(item.ID)
+	reviewThread, err := app.WorkflowSendPRReviewCommentsToThread(t.Context(), item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	discussThread, err := app.WorkflowDiscussPR(item.ID)
+	discussThread, err := app.WorkflowDiscussPR(t.Context(), item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,33 +102,43 @@ func TestWorkflowPRReviewCommentErrorsAreReturned(t *testing.T) {
 		if err := app.store.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "no PR disposition receipt") {
+		if _, err := app.WorkflowFetchPRReviewComments(t.Context(), item.ID); err == nil || !strings.Contains(err.Error(), "no PR disposition receipt") {
 			t.Fatalf("no-receipt error = %v", err)
 		}
 	})
 
-	t.Run("forge binary missing", func(t *testing.T) {
+	t.Run("forge login missing", func(t *testing.T) {
 		app, item := newWorkflowPRTestApp(t)
-		t.Setenv("PATH", t.TempDir())
-		app.forgeCLIs.fake = "ao-test-missing-gh"
-		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "GitHub CLI") {
-			t.Fatalf("missing-binary error = %v", err)
+		svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: missingGitHubLogin{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(svc.Close)
+		app.git = gitops.NewCore(gitops.WithForgeAPI(svc))
+		if _, err := app.WorkflowFetchPRReviewComments(t.Context(), item.ID); err == nil || !strings.Contains(err.Error(), "GitHub CLI") {
+			t.Fatalf("missing-login error = %v", err)
 		}
 	})
 
 	t.Run("forge fetch failure", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("fake gh shim assumes a POSIX shell")
-		}
 		app, item := newWorkflowPRTestApp(t)
-		binDir := t.TempDir()
-		binary := filepath.Join(binDir, "gh")
-		mockexec.Write(t, binary, "#!/bin/sh\necho 'review service unavailable' 1>&2\nexit 1\n")
-		app.forgeCLIs.fake = binary
-		if _, err := app.WorkflowFetchPRReviewComments(item.ID); err == nil || !strings.Contains(err.Error(), "review service unavailable") {
+		app.git = githubAPITestCore(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"message":"review service unavailable"}`)
+		})
+		if _, err := app.WorkflowFetchPRReviewComments(t.Context(), item.ID); err == nil || !strings.Contains(err.Error(), "review service unavailable") {
 			t.Fatalf("fetch-failure error = %v", err)
 		}
 	})
+}
+
+// missingGitHubLogin is a computer without gh: the token read fails
+// before any request is built.
+type missingGitHubLogin struct{}
+
+func (missingGitHubLogin) Token(_ context.Context, forge, _ string) ([]byte, forgeapi.SourceInfo, error) {
+	return nil, forgeapi.SourceInfo{}, forgeapi.MissingCLIError(forge, nil)
 }
 
 func newWorkflowPRTestApp(t *testing.T) (*App, store.WorkItem) {
@@ -150,7 +164,7 @@ func newWorkflowPRTestApp(t *testing.T) (*App, store.WorkItem) {
 		t.Fatal(err)
 	}
 	receipt, err := json.Marshal(WorkflowDispositionReceipt{
-		Action: string(workflowDispositionPR), PRRef: "https://github.com/owner/repo/pull/9", Policy: "manual", At: 1,
+		Action: string(workflowDispositionPR), PRRef: "https://ghe.example/owner/repo/pull/9", Policy: "manual", At: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,40 +187,85 @@ func newWorkflowPRTestApp(t *testing.T) (*App, store.WorkItem) {
 	return app, item
 }
 
+// installWorkflowPRFakeGitHub answers PR 9 on ghe.example, the receipt's
+// PR, whatever the item worktree's remote says: two unresolved review
+// threads beside a resolved one, two shown conversation comments beside a
+// minimized one, an approved review decision and nine passing checks.
 func installWorkflowPRFakeGitHub(t *testing.T, app *App) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake gh shim assumes a POSIX shell")
+	app.git = githubAPITestCore(t, func(w http.ResponseWriter, r *http.Request) {
+		req := readGitHubGraphQL(t, r)
+		if req == nil || req.OperationName != "PRTick" || req.Host != "ghe.example" ||
+			req.Variables["owner"] != "owner" || req.Variables["name"] != "repo" || req.Variables["number"] != float64(9) {
+			t.Errorf("unexpected forge request %s %s: %+v", r.Method, r.URL, req)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": workflowPRTick(req.Variables)}); err != nil {
+			t.Errorf("encode PRTick: %v", err)
+		}
+	})
+}
+
+// workflowPRTick is the PRTick data for installWorkflowPRFakeGitHub's PR,
+// with the parts its @include variables leave out absent.
+func workflowPRTick(vars map[string]any) map[string]any {
+	pull := map[string]any{}
+	data := map[string]any{"repository": map[string]any{"pullRequest": pull}}
+	if vars["wantDetail"] == true {
+		data["viewer"] = map[string]any{"login": "viewer"}
+		maps.Copy(pull, map[string]any{
+			"number": 9, "title": "Harden deployment workflow", "body": "Adds a dry-run mode.", "state": "OPEN", "isDraft": false,
+			"baseRefName": "trunk", "headRefName": "workflow/pr", "headRefOid": strings.Repeat("a", 40), "url": "https://ghe.example/owner/repo/pull/9",
+			"additions": 223, "deletions": 79, "changedFiles": 5, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+			"reviewDecision": "APPROVED", "author": map[string]any{"login": "niik", "name": "Markus Olsson"},
+			"latestReviews": map[string]any{"nodes": []any{map[string]any{
+				"author": map[string]any{"login": "babakks", "name": "Babak K. Shandiz"}, "body": "", "submittedAt": "2026-07-03T12:10:00Z",
+				"state": "APPROVED", "commit": map[string]any{"oid": strings.Repeat("a", 40)},
+			}}},
+		})
 	}
-	reviewFixture, err := filepath.Abs("internal/git/testdata/github-review-threads.json")
-	if err != nil {
-		t.Fatal(err)
+	if vars["wantChecks"] == true {
+		contexts := make([]any, 0, 9)
+		for i := range 9 {
+			contexts = append(contexts, map[string]any{
+				"__typename": "CheckRun", "databaseId": 100 + i, "name": fmt.Sprintf("job %d", i), "status": "COMPLETED", "conclusion": "SUCCESS",
+				"startedAt": "2026-07-03T12:00:00Z", "completedAt": "2026-07-03T12:05:00Z",
+				"detailsUrl": fmt.Sprintf("https://ghe.example/owner/repo/actions/runs/7/job/%d", 100+i),
+				"checkSuite": map[string]any{"workflowRun": map[string]any{"databaseId": 7, "url": "https://ghe.example/owner/repo/actions/runs/7", "workflow": map[string]any{"name": "Deployment"}}},
+			})
+		}
+		pull["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{
+			"id": "C_9", "statusCheckRollup": map[string]any{"contexts": map[string]any{"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": contexts}},
+		}}}}
 	}
-	commentsFixture, err := filepath.Abs("internal/git/testdata/github-pr-comments.json")
-	if err != nil {
-		t.Fatal(err)
+	if vars["wantThreads"] == true {
+		thread := func(id string, resolved bool, body string) map[string]any {
+			return map[string]any{
+				"id": id, "isResolved": resolved, "isOutdated": false, "path": ".github/workflows/deployment.yml", "line": 172, "startLine": nil,
+				"diffSide": "RIGHT", "startDiffSide": nil, "subjectType": "LINE",
+				"comments": map[string]any{"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": []any{map[string]any{
+					"id": id + "-c", "databaseId": len(id), "author": map[string]any{"login": "babakks", "name": "Babak K. Shandiz"},
+					"body": body, "createdAt": "2026-07-03T10:34:13Z", "replyTo": nil,
+				}}},
+			}
+		}
+		comment := func(id, login, body string, minimized bool) map[string]any {
+			return map[string]any{"id": id, "databaseId": len(id) + 100, "author": map[string]any{"login": login}, "body": body, "createdAt": "2026-06-26T22:47:39Z", "isMinimized": minimized}
+		}
+		pull["reviewThreads"] = map[string]any{"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": []any{
+			thread("PRRT_resolved", true, "Quote the keychain path."),
+			thread("PRRT_nice", false, "Nice comment."),
+			thread("PRRT_default", false, "I like this default for safety reasons."),
+		}}
+		pull["comments"] = map[string]any{"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": []any{
+			comment("IC_first", "coderabbitai", "First pass done, see inline notes.", false),
+			comment("IC_thanks", "user", "Thanks, addressing the config comment now.", false),
+			comment("IC_spam", "spam-bot", "Off-topic.", true),
+		}}
 	}
-	detailFixture, err := filepath.Abs("internal/git/testdata/github-pr-detail.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "gh")
-	script := `#!/bin/sh
-set -eu
-case "$*" in
-  *reviewThreads*) cat "$AO_GH_REVIEW_FIXTURE" ;;
-  *comments*) cat "$AO_GH_COMMENTS_FIXTURE" ;;
-  "pr view "*) cat "$AO_GH_DETAIL_FIXTURE" ;;
-  "api user --jq .login") echo "viewer" ;;
-  *) echo "unexpected gh command: $*" 1>&2; exit 2 ;;
-esac
-`
-	mockexec.Write(t, binary, script)
-	t.Setenv("AO_GH_REVIEW_FIXTURE", reviewFixture)
-	t.Setenv("AO_GH_COMMENTS_FIXTURE", commentsFixture)
-	t.Setenv("AO_GH_DETAIL_FIXTURE", detailFixture)
-	app.forgeCLIs.fake = binary
+	return data
 }
 
 func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {

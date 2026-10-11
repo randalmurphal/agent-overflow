@@ -1,7 +1,7 @@
-// The fake forge from a spec: seed the pull or merge requests `gh` and
-// `glab` answer from, publish a seeded workspace's branch as one, read back
-// what the app asked the CLIs, and reach a PR's review pane the way a user
-// does. The fixture and invocation shapes are internal/harness/forgefake's
+// The fake forge from a spec: seed the pull or merge requests the fake
+// GitHub and GitLab answer from, publish a seeded workspace's branch as
+// one, read back what the app asked the forges, and reach a PR's review
+// pane the way a user does. The fixture and invocation shapes are internal/harness/forgefake's
 // (fixture.go, engine.go); its AGENTS.md lists which invocations have
 // handlers.
 
@@ -112,17 +112,46 @@ export interface ForgeRepo {
   attachments?: ForgeAttachment[];
 }
 
-export interface ForgeInvocation {
+interface ForgeInvocationCommon {
   seq: number;
+  route?: string;
+  unhandled?: boolean;
+  /** When the fake answered, RFC 3339. */
+  at: string;
+}
+
+/** A gh, glab or ssh invocation ao-mockforge forwarded. */
+export interface ForgeCLIInvocation extends ForgeInvocationCommon {
+  via: 'cli';
   cli: 'gh' | 'glab' | 'ssh';
   args: string[];
   cwd: string;
   stdin?: string;
-  route?: string;
-  unhandled?: boolean;
   exitCode: number;
   stderr?: string;
 }
+
+/**
+ * A request to the fake's HTTP mounts. `host` is the forge host the
+ * request addressed (its Host header, port included) or an attachment's
+ * host. `path` is relative to the forge base (`repos/o/r/pulls/1`,
+ * `graphql`), or an attachment's absolute URL without its query. A
+ * GraphQL request also carries its `operation` and `variables`; its
+ * route is `gh graphql <operation>`.
+ */
+export interface ForgeHTTPInvocation extends ForgeInvocationCommon {
+  via: 'http';
+  forge: 'github' | 'gitlab';
+  host: string;
+  method: string;
+  path: string;
+  operation?: string;
+  variables?: Record<string, unknown>;
+  status: number;
+  detail?: string;
+}
+
+export type ForgeInvocation = ForgeCLIInvocation | ForgeHTTPInvocation;
 
 export async function seedForge(harness: HarnessApp, repos: ForgeRepo[]): Promise<void> {
   await harness.rpc('HarnessForgeSeed', { repos });
@@ -133,17 +162,32 @@ export async function setForgeOffline(harness: HarnessApp, offline: boolean): Pr
   await harness.rpc('HarnessForgeOffline', offline);
 }
 
+/**
+ * Put one quota pool of the fake forge under a rate limit until `reset`
+ * (unix seconds): with `remaining` 0 the pool refuses every request as the
+ * forge does (route `rate limited`); otherwise it answers and reports
+ * `remaining` of 5000. GitHub's pools are `core` (REST) and `graphql`,
+ * GitLab's `throttle_authenticated_api`. Lifts at `reset`; HarnessReset
+ * clears it.
+ */
+export async function setForgeRateLimit(
+  harness: HarnessApp,
+  limit: { forge: 'github' | 'gitlab'; pool: string; remaining: number; reset: number },
+): Promise<void> {
+  await harness.rpc('HarnessForgeRateLimit', limit);
+}
+
 export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
   const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', 0);
   return log.invocations;
 }
 
-/** Fail on any invocation the fake has no handler for, naming its argv. */
+/** Fail on any invocation the fake has no handler for, naming the call. */
 export async function expectEveryForgeCallHandled(harness: HarnessApp): Promise<void> {
   const unhandled = (await forgeInvocations(harness)).filter((call) => call.unhandled);
   expect(
-    unhandled.map((call) => call.stderr),
-    'the app made forge CLI calls the fake does not implement',
+    unhandled.map((call) => (call.via === 'cli' ? call.stderr : call.detail)),
+    'the app made forge calls the fake does not implement',
   ).toEqual([]);
 }
 
@@ -177,9 +221,9 @@ exec git upload-pack --strict '${root}'"$repo"
  * `git://<forge host>/<project>.git`, so forge detection sees the forge's
  * own host, and the workspace's `core.gitProxy` answers every connection
  * from a bare repository under the harness data root: git opens no socket.
- * The forge is seeded before the origin is added because the app looks
- * the branch's PR up as soon as the workspace has a forge origin, and
- * caches a miss. Git runs with the harness home, never the developer's.
+ * The forge is seeded and the remote-tracking refs written before the
+ * origin is added because the app looks the branch's PR up as soon as the
+ * workspace has a forge origin, and caches a miss. Git runs with the harness home, never the developer's.
  */
 export async function publishPullRequest(
   harness: HarnessApp,
@@ -209,6 +253,13 @@ export async function publishPullRequest(
   const headSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
   git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);
+
+  // The remote-tracking refs a push to origin leaves: the app asks the
+  // forge for a branch's PR only once origin has the branch. Written
+  // before the origin exists, for the same reason the forge is seeded
+  // first.
+  git(workspace, 'update-ref', 'refs/remotes/origin/main', baseSha);
+  git(workspace, 'update-ref', 'refs/remotes/origin/feature', headSha);
 
   const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha }, ...rest] };
   await seedForge(harness, [seeded]);

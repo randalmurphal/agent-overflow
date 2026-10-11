@@ -1,4 +1,3 @@
-| `HarnessForgeOffline(offline)` | Make the fake forge unreachable or reachable again. While offline every `gh`/`glab` call exits 1 with the CLI's own connection failure (route `offline`); the seeded state waits for the forge to come back. `HarnessReset` brings it back. |
 # Agent Test Harness
 
 The harness boots the **real backend and the real SPA** headless, on an
@@ -333,7 +332,9 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
 | `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code), `login_complete` (settle a Codex device-code sign-in; `error` empty succeeds and writes the credential, set fails with that text). |
 | `HarnessForgeSeed(fixture)` | **Strictly decoded.** Add repositories, pull or merge requests, comments, review threads, CI and attachments to the fake forge (`forgefake.Fixture`). Reseeding a forge and project replaces it. Returns the fixture with generated ids filled in. |
-| `HarnessForgeInvocations(since)` | Every recorded `gh`/`glab` call after sequence `since`: argv, cwd, stdin, the route that answered or `unhandled`, exit status. Each call is also a `harness:forge` event. |
+| `HarnessForgeInvocations(since)` | Every recorded forge call after sequence `since`, a union on `via`: a `gh`/`glab` invocation (`cli`: argv, cwd, stdin, exit status) or a forge API request (`http`: forge, host, method, path, status, detail), each with the route that answered or `unhandled`. Each call is also a `harness:forge` event. |
+| `HarnessForgeOffline(offline)` | Make the fake forge unreachable or reachable again. While offline every `gh`/`glab` call exits 1 with the CLI's own connection failure and every forge API request is dropped without a reply (route `offline`); the seeded state waits for the forge to come back. `HarnessReset` brings it back. |
+| `HarnessForgeRateLimit(limit)` | Put one quota pool of the fake forge (`forge`, `pool`: GitHub `core` or `graphql`, GitLab `throttle_authenticated_api`) under a rate limit until `reset` (unix seconds). With `remaining` 0 the pool refuses every forge API request as the forge does (route `rate limited`); otherwise it answers and reports the remaining quota of 5000 in its rate-limit headers. The limit lifts at `reset`; `HarnessReset` clears it. |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
 | `HarnessReplayBundle(name, opts)` | Restore a bundle's DB snapshot and replay its events with original timing. Refused while another replay is active (checked before the destructive restore). |
 | `HarnessListBundles()` | Enumerate saved bundles. |
@@ -764,9 +765,13 @@ listener and token as the mock provider, injected through
 `HarnessForgeSeed` installed, records every call, and publishes it as a
 loopback-only `harness:forge` event. A call it has no handler for fails
 with its full argv, so a spec sees a changed invocation as a failure
-rather than an empty PR. Specs use `e2e/tests/forge-helpers.ts`; the
-route table, the handled and unhandled invocations and how to add an
-endpoint are in [forgefake/AGENTS.md](../../internal/harness/forgefake/AGENTS.md).
+rather than an empty PR. The same engine answers the forge API
+transport over HTTP on its own loopback listener, started beside the
+control server and handed to the boot as its isolated forge base and
+fixed token ([forge transport](forge-transport.md#isolation)). Specs use
+`e2e/tests/forge-helpers.ts`; the route table, the handled and unhandled
+invocations and how to add an endpoint are in
+[forgefake/AGENTS.md](../../internal/harness/forgefake/AGENTS.md).
 
 ## Record / replay bundles
 
@@ -1391,9 +1396,11 @@ publishes a seeded workspace's branch as a GitHub PR or GitLab MR: the
 origin is `git://github.com/<project>.git` or `git://gitlab.com/...`, so
 forge detection sees the forge's own host, and the workspace's
 `core.gitProxy` answers every connection from a bare repository under the
-harness data root, so git opens no socket. It seeds the fake forge before
-adding the origin because git status caches a branch's PR lookup by
-workspace path and branch for 30 seconds; give each case its own project
+harness data root, so git opens no socket. It seeds the fake forge and
+writes the `origin/main` and `origin/feature` remote-tracking refs (git
+status asks the forge only for a branch origin has) before adding the
+origin, because git status caches a branch's PR lookup by workspace path
+and branch for 30 seconds; give each case its own project
 so it does not read an earlier case's lookup.
 `e2e/tests/forge-image-menu.spec.ts` is the worked example. An
 `insteadOf` rewrite cannot replace the proxy: `remote get-url` applies

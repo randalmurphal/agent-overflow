@@ -504,6 +504,23 @@ var Listeners = []Listener{
 			"distinguish a wrong token from a wrong port.",
 	},
 	{
+		Name:       "harness fake forge API",
+		Package:    "internal/harnessrpc",
+		Binding:    BindLoopback,
+		Credential: CredBearerToken,
+		Posture:    PostureStructured,
+		Sites:      []string{"internal/harnessrpc/forge.go"},
+		Why: "The fake forge's HTTP listener: what an isolated boot's " +
+			"forge API transport (internal/forgeapi, Options.Isolated) " +
+			"talks to instead of GitHub and GitLab. Present only in a " +
+			"--harness or --soak boot. Behind the token is the seeded " +
+			"forge fixture, read-only apart from the invocation log. The " +
+			"token is per-process random, travels as a header a browser " +
+			"navigation cannot send, and is compared in constant time; a " +
+			"failed check answers 401 as a forge would, because the app's " +
+			"handling of that answer is what the fake exists to exercise.",
+	},
+	{
 		Name:       "built-in MCP endpoints",
 		Package:    "internal/threadmcp",
 		Binding:    BindLoopback,
@@ -1481,6 +1498,16 @@ var Origins = []Origin{
 		Author:   AuthorRuntime,
 		Posture:  PostureStructured,
 		Why:      "JSON this process writes about scenario state and fake forge answers. Read by mock providers and ao-mockforge only.",
+	},
+	{
+		Name:     "harness fake forge API",
+		Listener: "harness fake forge API",
+		Author:   AuthorAgentOrUser,
+		Posture:  PostureStructured,
+		Why: "Forge JSON, job logs and attachment bytes a test seeded " +
+			"through HarnessForgeSeed, served with nosniff to one reader: " +
+			"the backend's own forge transport, which parses them as data " +
+			"and never as a document.",
 	},
 	{
 		Name:     "built-in MCP endpoints",

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
 
@@ -22,13 +23,16 @@ const ciLogDisplayTailBytes = 2 * 1024 * 1024
 // only after completion (GitHub), or it completed and the forge has not
 // published its log yet. Text is then unchanged (empty on GitHub) and the
 // frontend says why. Error is the caller-safe summary of the last fetch
-// failure.
+// failure, with its kind fields (see PRUpdatedEvent).
 type PRCILogState struct {
 	Text       string `json:"text"`
 	Truncated  bool   `json:"truncated"`
 	TotalBytes int    `json:"totalBytes"`
 	Available  bool   `json:"available"`
 	Error      string `json:"error"`
+	ErrorKind  string `json:"errorKind"`
+	Reserve    bool   `json:"reserve"`
+	ResumeAt   string `json:"resumeAt"`
 	Seq        uint64 `json:"seq"`
 }
 
@@ -83,11 +87,11 @@ var errCIJobLogUnpublished = errors.New("the forge has not published this job's 
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (string, error) {
+func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
-	if err := validatePRReference(pr); err != nil {
+	if err := pr.Validate(); err != nil {
 		return "", err
 	}
 	if err := gitops.ValidateCIJobID(jobID); err != nil {
@@ -96,7 +100,7 @@ func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (stri
 	if a.configDir == "" {
 		return "", errors.New("app data directory is not initialised")
 	}
-	log, err := a.gitCore().GetCIJobLog("", pr, jobID)
+	log, err := a.gitCore().GetCIJobLog(forgeapi.WithInteractive(ctx), pr, gitops.CIJobLogRequest{JobID: jobID})
 	if errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		return "", errCIJobLogUnpublished
 	}
@@ -108,7 +112,7 @@ func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (stri
 		return "", fmt.Errorf("create ci-logs directory: %w", err)
 	}
 	path := filepath.Join(dir, ciLogFileName(pr, jobID, jobName))
-	if err := os.WriteFile(path, []byte(log), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(log.Text), 0o600); err != nil {
 		return "", fmt.Errorf("write CI log: %w", err)
 	}
 	return path, nil

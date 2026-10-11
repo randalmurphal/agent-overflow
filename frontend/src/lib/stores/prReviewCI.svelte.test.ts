@@ -15,7 +15,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { DisconnectedError } from '../transport/wsClient';
 
-const REF: PRRef = { forge: 'gitlab', namespace: 'group', repo: 'repo', number: 5 };
+const REF: PRRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'repo', number: 5 };
 const KEY = prKey(REF);
 
 async function flush(n = 8): Promise<void> {
@@ -431,10 +431,19 @@ describe('prReviewCI: followed logs', () => {
     expect(logText()).toBe('hello\nthere\n');
     expect(peekPRCI(KEY).logs.get('20')?.error).toBe('failed to fetch job log (id: x)');
 
-    applyPRCILogEvent(logFrame({ seq: 9, prevLen: 12, base: 12, available: false }));
+    expect(peekPRCI(KEY).logs.get('20')?.failure).toBeNull();
+
+    // A rate limit carries its kind and resume time beside the text.
+    const resumeAt = '2026-10-10T12:30:00Z';
+    applyPRCILogEvent(logFrame({ seq: 9, prevLen: 12, base: 12, error: 'failed (id: y)', errorKind: 'rate_limited', resumeAt }));
+    expect(logText()).toBe('hello\nthere\n');
+    expect(peekPRCI(KEY).logs.get('20')?.failure).toEqual({ kind: 'rate_limited', reserve: false, resumeAt });
+
+    applyPRCILogEvent(logFrame({ seq: 10, prevLen: 12, base: 12, available: false }));
     expect(logText()).toBe('hello\nthere\n');
     expect(peekPRCI(KEY).logs.get('20')?.available).toBe(false);
     expect(peekPRCI(KEY).logs.get('20')?.error).toBeNull();
+    expect(peekPRCI(KEY).logs.get('20')?.failure).toBeNull();
     a.release();
     await flush();
   });

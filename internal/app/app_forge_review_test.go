@@ -67,9 +67,9 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 	}
 }
 
-// SetPRThreadResolved refuses a bad argument before it can reach a forge
-// CLI. PATH holds no gh/glab here, so a call that shelled out would fail
-// with a different error than the one asserted.
+// SetPRThreadResolved refuses a bad argument before it can reach a forge;
+// a call that went on would fail with a different error than the one
+// asserted.
 func TestSetPRThreadResolvedValidatesItsArguments(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	app := &App{}
@@ -78,13 +78,13 @@ func TestSetPRThreadResolvedValidatesItsArguments(t *testing.T) {
 		pr       gitops.PRReference
 		threadID string
 	}{
-		{name: "zero number", pr: gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo"}, threadID: "PRRT_1"},
-		{name: "unsplittable project", pr: gitops.PRReference{Forge: "github", Repo: "repo", Number: 9}, threadID: "PRRT_1"},
+		{name: "zero number", pr: gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo"}, threadID: "PRRT_1"},
+		{name: "unsplittable project", pr: gitops.PRReference{Forge: "github", Host: "github.com", Repo: "repo", Number: 9}, threadID: "PRRT_1"},
 		{name: "blank thread id", pr: testPR, threadID: "   "},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := app.SetPRThreadResolved(tt.pr, tt.threadID, true); err == nil {
+			if err := app.SetPRThreadResolved(t.Context(), tt.pr, tt.threadID, true); err == nil {
 				t.Fatal("SetPRThreadResolved returned nil")
 			}
 		})
@@ -95,25 +95,27 @@ func TestSetPRThreadResolvedRefusedDuringShutdown(t *testing.T) {
 	t.Parallel()
 	app := &App{}
 	app.shuttingDown.Store(true)
-	if err := app.SetPRThreadResolved(testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
+	if err := app.SetPRThreadResolved(t.Context(), testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("error = %v, want ErrShuttingDown", err)
 	}
 }
 
 // testPR is the reference every pump test polls; prUpdateKey(testPR) is the
 // wire key its events carry.
-var testPR = gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
+var testPR = gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
 
 // capturePRUpdates routes "pr:updated" emissions into a channel. Buffered
 // deep enough that a pump ticking during an assertion cannot block.
 // stubPRCIFetch gives a bare App a forge-free CI phase: an empty pipeline
 // and empty logs. Every pump polls CI on start, and a test about the
-// snapshot half must not reach for gh/glab to answer that poll.
+// snapshot half must not reach for a forge to answer that poll.
 func stubPRCIFetch(app *App) {
-	app.prUpdates.ciFetchFn = func(gitops.PRReference, *gitops.CIPipeline, []string) (gitops.CIPipeline, error) {
+	app.prUpdates.ciFetchFn = func(context.Context, gitops.PRReference, *gitops.CIPipeline, []string) (gitops.CIPipeline, error) {
 		return gitops.CIPipeline{}, nil
 	}
-	app.prUpdates.ciLogFetchFn = func(gitops.PRReference, string) (string, error) { return "", nil }
+	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
+		return gitops.CIJobLog{}, nil
+	}
 	whileRunning := true
 	app.prUpdates.ciLogWhileRunning = &whileRunning
 }
@@ -172,7 +174,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	calls := 0
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls++
 		head := "head-a"
 		if calls >= 2 {
@@ -212,7 +214,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 
 // TestPRUpdatePumpIsSharedPerPRKey pins the refcount: a pull request is one
 // entity, so N callers share ONE poller, ONE change-detection state, and get
-// ONE wire event per change — not N pollers spawning N gh/glab processes and
+// ONE wire event per change, not N pollers sending N forge requests and
 // N copies of the same event.
 func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	t.Parallel()
@@ -220,7 +222,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var changed atomic.Bool
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		head := "head-a"
 		if changed.Load() {
 			head = "head-b"
@@ -290,7 +292,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 }
 
 // TestSubscribePRUpdatesJoinerDoesNotFetch: one PR is one poll stream AND
-// one snapshot. A joiner that fetched its own doubled the gh/glab traffic
+// one snapshot. A joiner that fetched its own doubled the forge traffic
 // for every second pane, and — worse — could be handed an observation
 // nobody else on that pump has, which is exactly the divergence the shared
 // pump exists to prevent.
@@ -300,7 +302,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		fetches.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{
 			Number:  got.Number,
@@ -347,7 +349,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
@@ -363,7 +365,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded, "", "")
+	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded, prForgeFailure{})
 	if err != nil {
 		t.Fatalf("createPRUpdatePump: %v", err)
 	}
@@ -393,7 +395,7 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 	// Mimics the per-connection ctx the transport layer installs: when the
@@ -425,7 +427,7 @@ func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 	var prKey string
@@ -452,7 +454,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
 	var changed atomic.Bool
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		head := "head-a"
 		if changed.Load() {
@@ -507,7 +509,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
@@ -599,7 +601,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 400 * time.Millisecond
 	var changed atomic.Bool
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		head := "head-a"
 		if changed.Load() {
 			head = "head-b"
@@ -649,7 +651,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
@@ -731,7 +733,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	app.prUpdates.interval = time.Hour
 	var fetchErr error
 	head := "head-a"
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		if fetchErr != nil {
 			return prUpdateSnapshot{}, fetchErr
 		}
@@ -771,8 +773,8 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 		if string(pump.last) != last {
 			t.Fatalf("%s: dead pump stored a snapshot: %s", phase, pump.last)
 		}
-		if pump.lastErr != "" || pump.lastWireErr != "" {
-			t.Fatalf("%s: dead pump stored an error: %q / %q", phase, pump.lastErr, pump.lastWireErr)
+		if pump.fail.failing() {
+			t.Fatalf("%s: dead pump stored an error: %+v", phase, pump.fail)
 		}
 	}
 
@@ -797,7 +799,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 }
 
 // TestSubscribePRUpdatesCapsOutstandingHandles: every distinct PR behind a
-// handle costs a goroutine that spawns gh/glab every tick, so the handle map
+// handle costs a goroutine that sends forge requests every tick, so the handle map
 // is bounded rather than trusting callers to unsubscribe. The refusal is
 // typed — retrying the same call never fixes it.
 func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
@@ -806,7 +808,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		fetches.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
@@ -831,9 +833,9 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 
 	// The refusal costs nothing. A cold PR at the cap must be turned away
 	// before the forge fetch, not after: the fetch is the expensive part
-	// (a gh/glab process per call), so checking capacity afterwards would
+	// (a forge request per call), so checking capacity afterwards would
 	// let a capped caller keep paying full price on every retry.
-	fresh := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 10}
+	fresh := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 10}
 	before := fetches.Load()
 	if _, err := app.SubscribePRUpdates(context.Background(), fresh); !errors.Is(err, ErrTooManyPRUpdateSubscriptions) {
 		t.Fatalf("cold subscribe past the cap = %v, want ErrTooManyPRUpdateSubscriptions", err)
@@ -861,7 +863,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 300 * time.Millisecond
 	var calls atomic.Int32
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		return prUpdateSnapshot{
 			Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a", Mergeability: gitops.MergeabilityChecking},
@@ -905,7 +907,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		if failing.Load() {
 			return prUpdateSnapshot{}, errors.New("gh: could not reach github.com")
 		}
@@ -927,13 +929,12 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	if evt.PRKey != sub.PRKey || evt.Error == "" {
 		t.Fatalf("failure event = %+v", evt)
 	}
-	// The forge CLI's own stderr never reaches the wire: it is whatever gh
-	// or glab chose to print — remote URLs, a token echoed back by a failed
-	// auth call, local clone paths — and this frame goes to every
+	// The forge's own error text never reaches the wire: it can carry
+	// request URLs and response bodies, and this frame goes to every
 	// subscriber of the PR. Only a caller-safe summary plus the correlation
 	// id that finds the full text in the server log.
 	if strings.Contains(evt.Error, "could not reach github.com") {
-		t.Fatalf("raw forge stderr reached the wire: %q", evt.Error)
+		t.Fatalf("raw forge error reached the wire: %q", evt.Error)
 	}
 	if !strings.HasPrefix(evt.Error, "failed to refresh pull request (id: ") {
 		t.Fatalf("failure message = %q, want the caller-safe summary + correlation id", evt.Error)
@@ -960,7 +961,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		if failing.Load() {
 			return prUpdateSnapshot{}, errors.New("gh: could not reach github.com")
 		}
@@ -988,7 +989,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 		t.Fatalf("joined error = %q, want the emitted %q", joined.Error, evt.Error)
 	}
 	if strings.Contains(joined.Error, "could not reach github.com") {
-		t.Fatalf("raw forge stderr reached the wire: %q", joined.Error)
+		t.Fatalf("raw forge error reached the wire: %q", joined.Error)
 	}
 	// The failure does not blank what the pump last observed.
 	if joined.HeadSHA != "head-a" {
@@ -1029,7 +1030,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	app.prUpdates.interval = 5 * time.Millisecond
 	var head atomic.Value
 	head.Store("head-a")
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{
 			Number:  got.Number,
 			HeadSHA: head.Load().(string),
@@ -1096,8 +1097,10 @@ func TestPRUpdateKeyMatchesTheFrontendSourceKey(t *testing.T) {
 		pr   gitops.PRReference
 		want string
 	}{
-		{gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 5}, "github:owner/repo:5"},
-		{gitops.PRReference{Forge: "gitlab", Namespace: "group/sub", Repo: "repo", Number: 12}, "gitlab:group/sub/repo:12"},
+		{gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 5}, "github:owner/repo:5"},
+		{gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo", Number: 12}, "gitlab:group/sub/repo:12"},
+		{gitops.PRReference{Forge: "github", Host: "ghe.example.com", Namespace: "owner", Repo: "repo", Number: 5}, "github@ghe.example.com:owner/repo:5"},
+		{gitops.PRReference{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "group/sub", Repo: "repo", Number: 12}, "gitlab@gitlab.example.com:8443:group/sub/repo:12"},
 	}
 	for _, tt := range cases {
 		if got := prUpdateKey(tt.pr); got != tt.want {
@@ -1120,7 +1123,7 @@ func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 	app.prUpdates.retryBase = 5 * time.Millisecond
 	var failing atomic.Bool
 	failing.Store(true)
-	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		if failing.Load() {
 			return prUpdateSnapshot{}, errors.New("glab: lookup gitlab.com: i/o timeout")
 		}
@@ -1140,7 +1143,7 @@ func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 		t.Fatalf("subscribe result = %+v, want the caller-safe failure and no snapshot", sub)
 	}
 	if strings.Contains(sub.Error, "i/o timeout") {
-		t.Fatalf("raw forge stderr reached the wire: %q", sub.Error)
+		t.Fatalf("raw forge error reached the wire: %q", sub.Error)
 	}
 	// Identical failures on the retries emit nothing.
 	expectNoPRUpdate(t, events, "repeated identical first failure")

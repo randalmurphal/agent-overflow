@@ -2,11 +2,11 @@ package app
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
+	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,11 +69,39 @@ func TestProjectIdentityRefreshAnnouncesAnOriginAddedAfterCreation(t *testing.T)
 	}
 }
 
+// mockRepositoryIdentity answers every repository identity read with id
+// 123: GitHub's through the forge API transport, an SSH alias through the
+// fake ssh.
 func mockRepositoryIdentity(t *testing.T, app *App) {
 	t.Helper()
 	fake := filepath.Join(t.TempDir(), "identity-tool")
-	mockexec.Write(t, fake, "#!/bin/sh\nif [ \"$AO_FORGE_CLI\" = ssh ]; then for host do :; done; printf 'hostname %s\\n' \"$host\"; else printf '{\"id\":123}'; fi\n")
+	mockexec.Write(t, fake, "#!/bin/sh\nif [ \"$AO_FORGE_CLI\" = ssh ]; then for host do :; done; printf 'hostname %s\\n' \"$host\"; else exit 1; fi\n")
 	app.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: fake}
+	identityForge(t, app, 0)
+}
+
+// identityForge gives app a git core whose GitHub fails the first n
+// repository reads, all of them when n is negative, and answers id 123
+// after. It counts every read.
+func identityForge(t *testing.T, app *App, n int32) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	svc := githubAPITestService(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/github/rest/repos/") {
+			t.Errorf("unexpected forge request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if call := calls.Add(1); n < 0 || call <= n {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"forge unavailable"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":123}`)
+	})
+	app.git = app.buildGitCore(svc)
+	return &calls
 }
 
 // A row whose forge was unavailable during the boot pass is retried on the
@@ -82,10 +110,10 @@ func mockRepositoryIdentity(t *testing.T, app *App) {
 func TestProjectIdentityRefreshRetriesAnUnavailableForge(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	calls := filepath.Join(t.TempDir(), "calls")
-	// Creation and the boot pass both find the forge unavailable; only a
-	// retry can resolve the row.
-	failForgeLookups(t, app, calls, 2)
+	// Creation finds the forge unavailable and the boot pass shares that
+	// failure while the Core keeps it; only a retry after it expires can
+	// resolve the row.
+	calls := failForgeLookups(t, app, 1)
 	app.maintenance.identityRetry = 50 * time.Millisecond
 	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/me/app")
@@ -119,8 +147,8 @@ func TestProjectIdentityRefreshRetriesAnUnavailableForge(t *testing.T) {
 		t.Fatal("the retry never resolved the row")
 	}
 	app.projectIdentityWG.Wait()
-	if got := forgeCalls(t, calls); got != 3 {
-		t.Fatalf("forge calls = %d, want creation, the pass and one retry", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("forge calls = %d, want creation and the retry that resolved the row", got)
 	}
 }
 
@@ -130,14 +158,15 @@ func TestProjectIdentityRetryStopsWithTheApp(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
-	calls := filepath.Join(t.TempDir(), "calls")
-	failForgeLookups(t, app, calls, -1)
 	app.maintenance.identityRetry = time.Hour
 	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/me/app")
+	// Created before the app has a forge transport, so the boot pass makes
+	// the first forge call instead of sharing a failure creation left.
 	if _, err := app.CreateProject(repo); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
+	calls := failForgeLookups(t, app, -1)
 	app.startProjectIdentityRefresh()
 	if _, err := app.ListProjects(); err != nil {
 		t.Fatalf("ListProjects: %v", err)
@@ -145,11 +174,11 @@ func TestProjectIdentityRetryStopsWithTheApp(t *testing.T) {
 	if _, err := app.ListThreads(); err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	// Creation and the boot pass made two calls; the loop now waits an hour.
+	// The boot pass made its call; the loop now waits an hour.
 	deadline := time.Now().Add(30 * time.Second)
-	for forgeCalls(t, calls) < 2 {
+	for calls.Load() < 1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("forge calls = %d, want creation and the pass", forgeCalls(t, calls))
+			t.Fatal("the boot pass made no forge call")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -166,22 +195,9 @@ func TestProjectIdentityRetryStopsWithTheApp(t *testing.T) {
 }
 
 // failForgeLookups makes the first n forge lookups fail, all of them when n
-// is negative, counting every call in the calls file.
-func failForgeLookups(t *testing.T, app *App, calls string, n int) {
+// is negative, and returns the count of every call.
+func failForgeLookups(t *testing.T, app *App, n int32) *atomic.Int32 {
 	t.Helper()
-	fake := filepath.Join(t.TempDir(), "identity-tool")
-	mockexec.Write(t, fake, fmt.Sprintf("#!/bin/sh\nprintf 'call\\n' >> %q\nn=$(wc -l < %q)\nif [ %d -lt 0 ] || [ \"$n\" -le %d ]; then echo 'forge unavailable' >&2; exit 1; fi\nprintf '{\"id\":123}'\n", calls, calls, n, n))
-	app.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: fake}
-}
-
-func forgeCalls(t *testing.T, calls string) int {
-	t.Helper()
-	data, err := os.ReadFile(calls)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		t.Fatalf("read forge calls: %v", err)
-	}
-	return strings.Count(string(data), "\n")
+	app.forgeCLIs = isolatedForgeCLIs{isolated: true}
+	return identityForge(t, app, n)
 }

@@ -14,6 +14,7 @@ import (
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
@@ -368,10 +369,20 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 		)
 	}
 	a.storeIdentity.Store(&identity)
-	a.git = a.newGitCore()
+	core, err := a.newGitCore()
+	if err != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to build the git core: %w", err),
+			errorsx.WrapLifecycle("close store after git core failure", closeErr),
+		)
+	}
+	a.git = core
 	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
-		StatusFn:     a.git.Status,
-		FastStatusFn: a.git.StatusFast,
+		StatusFn: a.git.Status,
+		// StatusFast reads only the PR cache, so it has nothing for a
+		// context to bound.
+		FastStatusFn: func(_ context.Context, cwd string) (gitops.GitStatus, error) { return a.git.StatusFast(cwd) },
 		WatchRootsFn: a.git.WatchRoots,
 	})
 	// The worktree registry watcher, built here because nothing that can

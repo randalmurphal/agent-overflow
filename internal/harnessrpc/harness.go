@@ -11,6 +11,7 @@
 package harnessrpc
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -71,9 +72,13 @@ type Harness struct {
 	recording     *harnessRecording     // the one in-flight bundle capture
 	control       *control.Server       // mock-provider control channel
 	scenarioRules []harnessScenarioRule // mock → scenario assignment
-	// forge answers ao-mockforge through the control channel. Built in
-	// New and never replaced; it carries its own lock.
-	forge *forgefake.Engine
+	// forge answers ao-mockforge through the control channel and the
+	// forge API transport through forgeAPI. Built in New and never
+	// replaced; it carries its own lock. forgeToken is the fixed token
+	// its HTTP mounts accept.
+	forge      *forgefake.Engine
+	forgeToken string
+	forgeAPI   *ForgeAPIServer // set once by StartForgeAPI
 	// soakAutopilot latches how the --autopilot arming went. Empty means
 	// this boot has no autopilot at all; see soakAutopilotState.
 	soakAutopilot string
@@ -127,8 +132,8 @@ func New(config Config) *Harness {
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 10 * time.Second
 	}
-	h := &Harness{config: config, pageMarker: newHarnessPageMarker()}
-	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation})
+	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text()}
+	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation, APIToken: h.forgeToken})
 	return h
 }
 

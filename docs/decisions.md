@@ -439,6 +439,12 @@ and anti-changes that live only here:
   `<details>` body), which PR templates use routinely. Do not
   reintroduce direct third-party `<img>` fetches for private forge
   assets, and do not hide a reference the browser could open.
+- Forge reads and writes go directly over HTTPS with the token of the
+  user's `gh`/`glab` login, read from the CLI at runtime and held in memory
+  only: never on disk, in settings, in logs, in argv or environment, in
+  diagnostics or on the wire. `gh`/`glab` stay the login, the token
+  handoff and `pr create`/`mr create`. No token of our own, no stored
+  token, no OAuth app. `docs/architecture/forge-transport.md`.
 
 ## Miscellany
 

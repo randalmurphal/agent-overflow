@@ -379,7 +379,7 @@ func TestStatusUntrackedSymlinkNotFollowed(t *testing.T) {
 		t.Skipf("symlinks unsupported on this platform: %v", err)
 	}
 
-	status, err := core.Status(repo)
+	status, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestStatusInsertionsNoHeadRepo(t *testing.T) {
 	writeRepoFile(t, repo, "a.txt", "one\ntwo\n") // 2 lines
 	writeRepoFile(t, repo, "b.txt", "x\ny\nz\n")  // 3 lines
 
-	status, err := core.Status(repo)
+	status, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status on no-HEAD repo returned error: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestStatusInsertionsIncludeUntracked(t *testing.T) {
 	writeRepoFile(t, repo, filepath.Join("sub", "nested.txt"), "n1\nn2\n")  // 2 lines, nested dir
 	writeRepoFile(t, repo, filepath.Join("sub", "nested2.txt"), "m1\nm2\n") // 2 lines, same wholly-untracked dir
 
-	status, err := core.Status(repo)
+	status, err := core.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}

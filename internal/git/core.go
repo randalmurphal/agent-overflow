@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/procutil"
 )
 
@@ -32,15 +33,19 @@ const (
 	// prLookupTTL is how long an open-PR lookup result stays cached.
 	// PR state changes slowly (the user creates / closes / merges via
 	// explicit actions), and our hot path (gitwatch refresh on every
-	// fs-event-debounce) would otherwise shell `gh pr list` 4×/sec
+	// fs-event-debounce) would otherwise ask the forge 4×/sec
 	// during continuous file activity. A 30s ceiling caps that at ≤1
 	// network round-trip per branch per 30s; explicit invalidation
 	// after CreatePR keeps the freshly-opened PR visible immediately.
 	prLookupTTL = 30 * time.Second
-	// prLookupErrorTTL dampens watcher retry storms without making the user
-	// wait after fixing auth/version problems; explicit refreshes invalidate
-	// the cwd cache before re-checking.
-	prLookupErrorTTL = 5 * time.Second
+	// prLookupErrorBase and prLookupErrorMax bound how long a failed
+	// open-PR lookup is cached: the first failure for a (cwd, branch) for
+	// the base, doubling per consecutive failure up to the max, so a forge
+	// that keeps failing (an outage, a rate limit, a missing login) is
+	// asked less and less often. A success resets it, and explicit
+	// refreshes invalidate the cwd cache before re-checking.
+	prLookupErrorBase = 20 * time.Second
+	prLookupErrorMax  = 15 * time.Minute
 	// prStickyRetention is how long past its own expiry a cache entry is
 	// kept so a failed lookup can still serve the last PR it saw (see
 	// lookupOpenPR). It only widens the sweep horizon: the entry is never
@@ -214,6 +219,11 @@ type Core struct {
 	// NewCore's options; see WithIsolatedForgeCLIs.
 	forgeCLIs forgeCLIPolicy
 
+	// forgeAPI is the forge HTTP transport the Core's owner built, nil
+	// when it installed none. Set once by NewCore's options; see
+	// WithForgeAPI.
+	forgeAPI *forgeapi.Service
+
 	// fetchFn runs the actual background `git fetch` for a repository.
 	// Production wires fetchOriginQuiet; tests substitute it to count
 	// and sequence invocations (single-flight has no observable effect
@@ -227,6 +237,9 @@ type prCacheEntry struct {
 	number      int
 	lookupError string
 	expiresAt   time.Time
+	// failures counts the consecutive failed lookups this entry's
+	// expiresAt backs off over (prLookupErrorDelay); zero after a success.
+	failures int
 	// origin is the origin-remote identity observed when url/number were
 	// last read from the forge. A failed lookup carries the previous PR
 	// forward only while this still matches (see lookupOpenPR), so a
@@ -238,6 +251,39 @@ type prCacheEntry struct {
 
 func prCacheKey(cwd, branch string) string {
 	return cwd + "\x00" + branch
+}
+
+// WithForgeAPI hands the Core the process's forge API transport. The
+// owner that built svc closes it; the Core never does. A transport the
+// owner cannot build fails the owner, not the Core.
+func WithForgeAPI(svc *forgeapi.Service) CoreOption {
+	return func(c *Core) { c.forgeAPI = svc }
+}
+
+// ForgeAPI returns the transport WithForgeAPI installed, nil when the
+// owner installed none.
+func (c *Core) ForgeAPI() *forgeapi.Service { return c.forgeAPI }
+
+// ErrNoForgeAPI is a forge request through a Core whose owner installed
+// no forge API transport (WithForgeAPI).
+var ErrNoForgeAPI = errors.New("forge API transport is not available")
+
+// githubAPI returns the forge API client of a GitHub host, spelled as
+// PRReference.Host.
+func (c *Core) githubAPI(host string) (*forgeapi.Client, error) {
+	if c.forgeAPI == nil {
+		return nil, ErrNoForgeAPI
+	}
+	return c.forgeAPI.GitHub(host), nil
+}
+
+// gitlabAPI returns the forge API client of a GitLab host, spelled as
+// PRReference.Host.
+func (c *Core) gitlabAPI(host string) (*forgeapi.Client, error) {
+	if c.forgeAPI == nil {
+		return nil, ErrNoForgeAPI
+	}
+	return c.forgeAPI.GitLab(host), nil
 }
 
 // NewCore returns a Core configured with the default timeout and output
@@ -314,12 +360,13 @@ func (c *Core) executeInteractive(cwd string, args ...string) (stdout, stderr st
 	return c.executeSpec(commandSpec{binary: "git", cwd: cwd, allowCredentialPrompt: true, args: args})
 }
 
-// runBinaryInteractive is runBinary for a forge-CLI command that shells out
-// to `git push` on the user's behalf (`gh pr create`, `glab mr create`).
+// runBinaryInteractive runs a forge-CLI command under ctx, the forge
+// operation's owner, for a command that shells out to `git push` on the
+// user's behalf (`gh pr create`, `glab mr create`).
 // The nested git inherits our environment, so the opt-out has to be made
 // here rather than at a git call site we never see.
-func (c *Core) runBinaryInteractive(binary, cwd string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{binary: binary, cwd: cwd, allowCredentialPrompt: true, args: args})
+func (c *Core) runBinaryInteractive(ctx context.Context, binary, cwd string, args ...string) (commandResult, error) {
+	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, args: args})
 }
 
 func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) {
@@ -574,18 +621,6 @@ func (c *Core) revParsePathContext(ctx context.Context, cwd string, arg string) 
 // because GNU gettext ignores it once the locale is C/POSIX.
 func (c *Core) runLocaleC(cwd string, args ...string) (commandResult, error) {
 	return c.runSpec(commandSpec{binary: "git", cwd: cwd, extraEnv: localeCEnv, args: args})
-}
-
-func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{binary: binary, cwd: cwd, args: args})
-}
-
-func (c *Core) runBinaryWithLimit(binary, cwd string, maxBytes int64, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{binary: binary, cwd: cwd, maxBytes: maxBytes, args: args})
-}
-
-func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{binary: binary, cwd: cwd, stdin: stdin, args: args})
 }
 
 // commandSpec fully describes one subprocess run. Every runner in this

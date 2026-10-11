@@ -29,12 +29,12 @@ const GITHUB_ASSET = `https://github.com/user-attachments/assets/${UUID}`;
 const GITLAB_UPLOAD = `/uploads/${HEX}/a.png`;
 
 const GITHUB: ForgeAttachmentSource = {
-  pr: { forge: 'github', namespace: 'octo', repo: 'widget', number: 7 },
+  pr: { forge: 'github', host: 'github.com', namespace: 'octo', repo: 'widget', number: 7 },
   backend: 'gpu',
   webBase: 'https://github.com/octo/widget/pull/7',
 };
 const GITLAB: ForgeAttachmentSource = {
-  pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+  pr: { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'widget', number: 3 },
   backend: 'gpu',
   webBase: 'https://gitlab.example.test/group/widget/-/merge_requests/3',
 };

@@ -74,7 +74,7 @@ esac
 	t.Setenv("AO_TREE_OID", treeOID)
 	app.git = gitops.NewCore()
 
-	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
 	result, err := app.GetPRMergeConflicts(ref, pr, "main", "feature-branch")
 	if err != nil {
 		t.Fatalf("GetPRMergeConflicts: %v", err)
@@ -125,7 +125,7 @@ func readAppTestFile(t *testing.T, path string) string {
 func TestGetPRMergeConflictsRequiresAGitWorkspace(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
+	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
 	// A zero ref names no project, so resolution refuses it outright.
 	if _, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, "main", ""); err == nil {
 		t.Fatal("zero ref: expected a workspace resolution error")

@@ -2,11 +2,13 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
@@ -42,16 +44,16 @@ type ForgeAttachment struct {
 }
 
 // FetchForgeAttachment resolves one attachment reference found in a PR/MR
-// body or comment through the forge CLI (`gh api` / `glab api`), caches the
-// bytes, and mints the ticket that serves them. For an image, a positive
+// body or comment through the forge API transport, caches the bytes, and
+// mints the ticket that serves them. For an image, a positive
 // maxWidth (device pixels) serves a derivative at the next ladder width when
 // that is smaller than the original (attachment.Derive); 0 serves the
 // original.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) FetchForgeAttachment(pr gitops.PRReference, href string, maxWidth int) (ForgeAttachment, error) {
-	original, err := a.resolveForgeAttachment(pr, href)
+func (a *App) FetchForgeAttachment(ctx context.Context, pr gitops.PRReference, href string, maxWidth int) (ForgeAttachment, error) {
+	original, err := a.resolveForgeAttachment(ctx, pr, href)
 	if err != nil {
 		return ForgeAttachment{}, err
 	}
@@ -118,8 +120,8 @@ func (a *App) forgeAttachmentAt(original forgeattach.Entry, maxWidth int) (forge
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SaveForgeAttachment(pr gitops.PRReference, href string) (string, error) {
-	entry, err := a.resolveForgeAttachment(pr, href)
+func (a *App) SaveForgeAttachment(ctx context.Context, pr gitops.PRReference, href string) (string, error) {
+	entry, err := a.resolveForgeAttachment(ctx, pr, href)
 	if err != nil {
 		return "", err
 	}
@@ -129,13 +131,15 @@ func (a *App) SaveForgeAttachment(pr gitops.PRReference, href string) (string, e
 // resolveForgeAttachment is the one fetch path both bound methods use.
 //
 // The cache is consulted first and populated after, so a body that
-// references the same image in three comments spawns one gh / glab rather
-// than three, and a save of something already on screen costs nothing.
-func (a *App) resolveForgeAttachment(pr gitops.PRReference, href string) (forgeattach.Entry, error) {
+// references the same image in three comments makes one forge request
+// rather than three, and a save of something already on screen costs nothing.
+// The fetch is the user's: a body renders an attachment because they
+// opened it.
+func (a *App) resolveForgeAttachment(ctx context.Context, pr gitops.PRReference, href string) (forgeattach.Entry, error) {
 	if a.shuttingDown.Load() {
 		return forgeattach.Entry{}, ErrShuttingDown
 	}
-	if err := validatePRReference(pr); err != nil {
+	if err := pr.Validate(); err != nil {
 		return forgeattach.Entry{}, err
 	}
 	cache := a.forgeAttachments()
@@ -143,7 +147,7 @@ func (a *App) resolveForgeAttachment(pr gitops.PRReference, href string) (forgea
 	if entry, ok := cache.Lookup(key); ok {
 		return entry, nil
 	}
-	data, filename, err := a.gitCore().FetchAttachment("", pr, href, forgeattach.MaxBytes)
+	data, filename, err := a.gitCore().FetchAttachment(forgeapi.WithInteractive(ctx), pr, href, forgeattach.MaxBytes)
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}

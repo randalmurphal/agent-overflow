@@ -1,10 +1,12 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	gitops "agent-overflow/internal/git"
@@ -28,7 +30,7 @@ func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	status, err := app.GetGitStatus(workspaceRefForThread(thread))
+	status, err := app.GetGitStatus(t.Context(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GetGitStatus() error = %v", err)
 	}
@@ -41,23 +43,34 @@ func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 }
 
 func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping PATH override in short mode")
-	}
-
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	app.git = gitops.NewCore()
+	var calls atomic.Int32
+	app.git = githubAPITestCore(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/github/rest/repos/owner/repo" {
+			_, _ = io.WriteString(w, `{"id":1}`)
+			return
+		}
+		req := readGitHubGraphQL(t, r)
+		if req == nil || req.OperationName != "OpenPRsByHead" {
+			t.Errorf("unexpected forge request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"bad gateway"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/owner/repo/pull/9","number":9,"title":"Demo","state":"OPEN"}]}}}}`)
+	})
 	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
+	// main is on origin, so it can head a PR and the lookup asks the forge.
+	testutil.RunGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
 
-	binDir := t.TempDir()
-	counterFile := filepath.Join(binDir, "calls")
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\ncount=0\nif [ -f " + counterFile + " ]; then count=$(wc -c < " + counterFile + "); fi\nprintf x >> " + counterFile + "\nif [ \"$count\" = \"0\" ]; then echo 'auth required' 1>&2; exit 1; fi\necho '[{\"url\":\"https://github.com/owner/repo/pull/9\",\"number\":9,\"title\":\"Demo\",\"state\":\"OPEN\"}]'\n"
-	mockexec.Write(t, ghPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	seeded, err := app.git.Status(repo)
+	seeded, err := app.git.Status(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("seed Status() error = %v", err)
 	}
@@ -76,7 +89,7 @@ func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	status, err := app.GetGitStatus(workspaceRefForThread(thread))
+	status, err := app.GetGitStatus(t.Context(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GetGitStatus() error = %v", err)
 	}
@@ -1236,7 +1249,7 @@ func TestGitListBranchPruneCandidatesClassifiesAndWarns(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := pruneTestFixture(t, app)
 
-	res, err := app.GitListBranchPruneCandidates(workspaceRefForThread(thread))
+	res, err := app.GitListBranchPruneCandidates(t.Context(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GitListBranchPruneCandidates() error = %v", err)
 	}
@@ -1265,7 +1278,7 @@ func TestGitListBranchPruneCandidatesClassifiesAndWarns(t *testing.T) {
 // tip it shows for branch — the value user consent is pinned to.
 func prunePreviewTip(t *testing.T, app *App, ref WorkspaceRef, branch string) string {
 	t.Helper()
-	preview, err := app.GitListBranchPruneCandidates(ref)
+	preview, err := app.GitListBranchPruneCandidates(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("GitListBranchPruneCandidates() error = %v", err)
 	}

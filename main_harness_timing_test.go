@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond}
+	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond}
 	if got != want {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -61,6 +61,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`HarnessTiming:\s+timing,`,
 			`ThreadRequestPoll:\s+opts\.Timing\.ThreadPoll,`,
 			`TransferPendingRetry:\s+opts\.Timing\.TransferRetry,`,
+			`PRUpdateInterval:\s+opts\.Timing\.PRUpdate,`,
 			`PRUpdateRetryBase:\s+opts\.Timing\.PRUpdateRetry,`,
 			`PRCILiveInterval:\s+opts\.Timing\.PRCILive,`,
 			`PRCIFollowInterval:\s+opts\.Timing\.PRCIFollow,`,

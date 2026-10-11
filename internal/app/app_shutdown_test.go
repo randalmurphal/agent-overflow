@@ -80,7 +80,7 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// calls), but Close() still records the "close gitwatch" step, so
 	// we wire it for parity with production.
 	app.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
-		StatusFn: func(string) (gitops.GitStatus, error) {
+		StatusFn: func(context.Context, string) (gitops.GitStatus, error) {
 			return gitops.GitStatus{}, nil
 		},
 	})

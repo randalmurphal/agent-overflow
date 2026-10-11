@@ -69,7 +69,7 @@ func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatu
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
-	result, err := a.gitApplication().Subscribe(ws)
+	result, err := a.gitApplication().Subscribe(ctx, ws)
 	if err != nil {
 		if errors.Is(err, gitapp.ErrTooManyStatusSubscriptions) {
 			return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions

@@ -1,6 +1,7 @@
 package gitwatch
 
 import (
+	"context"
 	"errors"
 	"log"
 	"sync"
@@ -11,10 +12,11 @@ import (
 	gitops "agent-overflow/internal/git"
 )
 
-// StatusFn returns the GitStatus for cwd. The Manager calls this on
-// every debounce trailing edge and on each polling-fallback tick.
-// Production wires gitops.Core.Status; tests can stub.
-type StatusFn func(cwd string) (gitops.GitStatus, error)
+// StatusFn returns the GitStatus for cwd under ctx: the watcher's
+// lifetime, or the Subscribe caller's for the initial read. The Manager
+// calls this on every debounce trailing edge and on each polling-fallback
+// tick. Production wires gitops.Core.Status; tests can stub.
+type StatusFn func(ctx context.Context, cwd string) (gitops.GitStatus, error)
 
 // WatchRootsFn returns the filesystem roots that should trigger status
 // refreshes for cwd: the pruned workspace subtrees and their ancestors,
@@ -96,8 +98,9 @@ func NewManager(config ManagerConfig) *Manager {
 //
 // Slow path: when there's no existing watcher, the initial fetch runs
 // BEFORE the watcher is installed so a bad path / non-repo / git binary
-// error fails fast without leaving a stray watcher behind.
-func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
+// error fails fast without leaving a stray watcher behind. ctx bounds that
+// initial fetch only; the watcher lives until its last subscriber leaves.
+func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, error) {
 	if cwd == "" {
 		return nil, errors.New("gitwatch: empty cwd")
 	}
@@ -135,7 +138,7 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	if initialFn == nil {
 		initialFn = m.statusFn
 	}
-	initial, err := initialFn(canon)
+	initial, err := initialFn(ctx, canon)
 	if err != nil {
 		return nil, err
 	}

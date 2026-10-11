@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,74 +10,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // GitLab CI: the MR's head pipeline is one pipeline of staged jobs.
-// Jobs come from /pipelines/:id/jobs; per-job traces from
-// /jobs/:id/trace. Verified shapes (2026-07): jobs carry id, name,
+// The pipeline comes from the MR read, its jobs from
+// /pipelines/:id/jobs; per-job traces from /jobs/:id/trace. Verified shapes (2026-07): jobs carry id, name,
 // stage, status, duration, web_url, allow_failure, started_at; the
 // jobs list is ordered newest-first, so stage order is recovered by
 // first-seen over ascending job id.
 
-const (
-	gitlabCIJobsPerPage  = 100
-	gitlabCIJobsMaxPages = 5
-)
-
-func gitLabPipelineJobsEndpoint(project string, pipelineID int, page int) string {
-	return "projects/" + url.PathEscape(project) + "/pipelines/" + strconv.Itoa(pipelineID) +
-		"/jobs?per_page=" + strconv.Itoa(gitlabCIJobsPerPage) + "&page=" + strconv.Itoa(page)
-}
-
-func gitLabJobTraceEndpoint(project, jobID string) string {
-	return "projects/" + url.PathEscape(project) + "/jobs/" + jobID + "/trace"
-}
-
-// ListPRCIJobs ignores prev: the pipeline id and status come from the MR
-// view and the jobs list is one paginated read, neither of which the
-// previous observation can stand in for. It ignores stepsFor: GitLab jobs
-// have no steps.
-func (f *gitlabForge) ListPRCIJobs(cwd, project string, number int, _ *CIPipeline, _ []string) (CIPipeline, error) {
-	if strings.TrimSpace(project) == "" {
-		return CIPipeline{}, errors.New("project (namespace/repo) is required")
-	}
-	if number <= 0 {
-		return CIPipeline{}, fmt.Errorf("MR number must be positive, got %d", number)
-	}
-
-	// The single-MR endpoint carries head_pipeline (the list endpoint
-	// omits it), so resolve the pipeline id from the MR first.
-	result, err := f.core.runBinary("glab", cwd, "api", gitLabMREndpoint(project, number))
-	if err != nil {
-		return CIPipeline{}, normalizeGitLabCLIError(err)
-	}
-	if result.exitCode != 0 {
-		return CIPipeline{}, gitlabCommandFailure("glab api merge request view failed", result)
-	}
-	var mr struct {
-		HeadPipeline *struct {
-			ID     int    `json:"id"`
-			Status string `json:"status"`
-			WebURL string `json:"web_url"`
-		} `json:"head_pipeline"`
-	}
-	if err := json.Unmarshal([]byte(result.stdout), &mr); err != nil {
-		return CIPipeline{}, fmt.Errorf("glab api merge request view returned malformed JSON: %w", err)
-	}
-	if mr.HeadPipeline == nil || mr.HeadPipeline.ID <= 0 {
-		return CIPipeline{}, nil
-	}
-
-	jobs, err := f.gitlabPipelineJobs(cwd, project, mr.HeadPipeline.ID)
-	if err != nil {
-		return CIPipeline{}, err
-	}
-	return CIPipeline{
-		Status: NormalizeCIStatus(mr.HeadPipeline.Status, ""),
-		URL:    mr.HeadPipeline.WebURL,
-		Stages: groupGitLabJobsByStage(jobs),
-	}, nil
-}
+// gitlabCIJobsMaxPages bounds the jobs pages read of one pipeline. A
+// pipeline past it shows its newest gitlabCIJobsMaxPages*gitlabPageSize
+// jobs.
+const gitlabCIJobsMaxPages = 5
 
 type gitlabCIJobRaw struct {
 	ID           int64    `json:"id"`
@@ -89,26 +37,36 @@ type gitlabCIJobRaw struct {
 	StartedAt    *string  `json:"started_at"`
 }
 
-func (f *gitlabForge) gitlabPipelineJobs(cwd, project string, pipelineID int) ([]gitlabCIJobRaw, error) {
+// readGitLabPipeline reads the jobs of the merge request's head pipeline,
+// which the MR read already named. A merge request with no pipeline costs
+// no request.
+func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, ref PRReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
+	if pipeline == nil || pipeline.ID <= 0 {
+		return CIPipeline{}, nil
+	}
+	request := forgeapi.Request{
+		Path:  gitlabProjectPath(ref.Project()) + "/pipelines/" + strconv.FormatInt(pipeline.ID, 10) + "/jobs",
+		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+	}
 	var jobs []gitlabCIJobRaw
-	for page := 1; page <= gitlabCIJobsMaxPages; page++ {
-		result, err := f.core.runBinary("glab", cwd, "api", gitLabPipelineJobsEndpoint(project, pipelineID, page))
-		if err != nil {
-			return nil, normalizeGitLabCLIError(err)
-		}
-		if result.exitCode != 0 {
-			return nil, gitlabCommandFailure("glab api pipeline jobs failed", result)
-		}
+	page, pages := 1, 0
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var pageJobs []gitlabCIJobRaw
-		if err := json.Unmarshal([]byte(result.stdout), &pageJobs); err != nil {
-			return nil, fmt.Errorf("glab api pipeline jobs returned malformed JSON: %w", err)
+		if err := json.Unmarshal(resp.Body, &pageJobs); err != nil {
+			return false, fmt.Errorf("GitLab pipeline %d jobs: decode response: %w", pipeline.ID, err)
 		}
 		jobs = append(jobs, pageJobs...)
-		if len(pageJobs) < gitlabCIJobsPerPage {
-			break
-		}
+		pages++
+		return len(pageJobs) == gitlabPageSize && pages < gitlabCIJobsMaxPages && advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
+		return CIPipeline{}, err
 	}
-	return jobs, nil
+	return CIPipeline{
+		Status: NormalizeCIStatus(pipeline.Status, ""),
+		URL:    pipeline.WebURL,
+		Stages: groupGitLabJobsByStage(jobs),
+	}, nil
 }
 
 func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
@@ -152,22 +110,35 @@ func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
 	return stages
 }
 
-func (f *gitlabForge) GetCIJobLog(cwd, project, jobID string) (string, error) {
-	if strings.TrimSpace(project) == "" {
-		return "", errors.New("project (namespace/repo) is required")
+// GetCIJobLog reads a job's trace, keeping its last maxCILogBytes: a
+// longer trace is read from its tail and starts at the first whole line.
+// A 404 (the job has not started, or does not exist) is
+// ErrCIJobLogNotFound. GitLab honors If-None-Match on a trace, running or
+// completed.
+func (f *gitlabForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
+	if err := ValidateCIJobID(req.JobID); err != nil {
+		return CIJobLog{}, err
 	}
-	if err := ValidateCIJobID(jobID); err != nil {
-		return "", err
-	}
-	result, err := f.core.runBinaryWithLimit("glab", cwd, maxCILogBytes,
-		"api", gitLabJobTraceEndpoint(project, jobID))
+	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return "", normalizeGitLabCLIError(err)
+		return CIJobLog{}, err
 	}
-	if result.exitCode != 0 {
-		return "", ciJobLogFailure(gitlabCommandFailure("glab api job trace failed", result), result)
+	tail := forgeapi.NewTailBuffer(maxCILogBytes)
+	request := ciLogRequest(gitlabProjectPath(ref.Project())+"/jobs/"+req.JobID+"/trace", req.ETag)
+	// The trace is plain text.
+	request.Header.Set("Accept", "*/*")
+	resp, err := client.Stream(ctx, request, tail, ciLogReadLimit)
+	if err != nil {
+		if errors.Is(err, forgeapi.ErrNotFound) {
+			return CIJobLog{}, fmt.Errorf("%w: %w", ErrCIJobLogNotFound, err)
+		}
+		return CIJobLog{}, err
 	}
-	return cleanGitLabTrace(result.stdout), nil
+	if resp.NotModified {
+		return CIJobLog{ETag: req.ETag, NotModified: true}, nil
+	}
+	text, _ := ciLogText(resp, tail)
+	return CIJobLog{Text: cleanGitLabTrace(string(text)), ETag: resp.Header.Get("ETag")}, nil
 }
 
 var (

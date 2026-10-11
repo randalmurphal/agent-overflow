@@ -5,7 +5,11 @@ package app
 // surface — nothing here deletes anything the user did not see listed
 // at the exact tip they confirmed.
 
-import "agent-overflow/internal/gitapp"
+import (
+	"context"
+
+	"agent-overflow/internal/gitapp"
+)
 
 // BranchPruneCandidate is one local branch the prune preview offers for
 // deletion. Safe=true rows pre-check in the dialog: either the tip is
@@ -56,8 +60,8 @@ type BranchPruneResult struct {
 // refs/remotes/* only; classification is read-only.
 //
 //ao:scope git:operate
-func (a *App) GitListBranchPruneCandidates(ws WorkspaceRef) (BranchPruneCandidates, error) {
-	result, err := a.gitApplication().ListBranchPruneCandidates(ws)
+func (a *App) GitListBranchPruneCandidates(ctx context.Context, ws WorkspaceRef) (BranchPruneCandidates, error) {
+	result, err := a.gitApplication().ListBranchPruneCandidates(ctx, ws)
 	if err != nil {
 		return BranchPruneCandidates{}, err
 	}

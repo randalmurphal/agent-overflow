@@ -479,7 +479,7 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool, err error) {
 	if w.isSuppressed() {
 		return false, nil
 	}
-	status, err := w.statusFn(w.cwd)
+	status, err := w.statusFn(w.ctx, w.cwd)
 	if err != nil {
 		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
 		return false, err
@@ -524,7 +524,7 @@ func (w *workspaceWatcher) probeLiveness() bool {
 	if fn == nil {
 		fn = w.statusFn
 	}
-	status, err := fn(w.cwd)
+	status, err := fn(w.ctx, w.cwd)
 	if err != nil {
 		return false
 	}

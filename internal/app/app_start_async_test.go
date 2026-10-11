@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -104,6 +106,13 @@ func newBootTestApp(t *testing.T) *App {
 		UseFileKeychain:   true,
 		MockBrowserEngine: true,
 	})
+	// An isolated boot needs a fake forge API; a boot sends it nothing.
+	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a boot sent a forge request: %s %s", r.Method, r.URL)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(forge.Close)
+	SetForgeAPI(a, ForgeAPI{BaseURL: forge.URL, Token: "boot-test-token"})
 	return a
 }
 

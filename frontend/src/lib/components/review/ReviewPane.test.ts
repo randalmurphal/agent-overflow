@@ -9,6 +9,7 @@ import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from '../../stores/eventsPRReview';
+import { formatTimeOfDay } from '../../utils/format';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { adoptDiffSpanOwner, evictDiffSpansForThread, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
@@ -920,6 +921,40 @@ describe('<ReviewPane>', () => {
     // the diff: the header and the rendered patch stay put.
     expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+
+    // The failure's kind picks the banner. A rate limit is a pause in the
+    // warning tone, named for the PR's forge, resuming at a local time.
+    const resumeAt = '2026-10-10T12:30:00Z';
+    const at = formatTimeOfDay(Date.parse(resumeAt));
+    applyPRReviewUpdated({ prKey: 'github:owner/repo:5', error: 'failed (id: 1)', errorKind: 'rate_limited', resumeAt });
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-rate-limited').textContent?.trim()).toBe(`GitHub rate limit reached. Updates resume at ${at}.`);
+    });
+    expect(view.getByTestId('review-pr-rate-limited').className).toContain('text-warning');
+    expect(view.queryByTestId('review-pr-update-error')).not.toBeInTheDocument();
+
+    applyPRReviewUpdated({ prKey: 'github:owner/repo:5', error: 'failed (id: 2)', errorKind: 'rate_limited', reserve: true, resumeAt });
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-rate-limited').textContent?.trim()).toBe(
+        `GitHub rate limit nearly used up. Updates pause until ${at} so your own actions still go through.`,
+      );
+    });
+
+    // A login to fix: its own message, no "Retrying".
+    applyPRReviewUpdated({ prKey: 'github:owner/repo:5', error: 'GitHub CLI is not logged in. Run gh auth login.', errorKind: 'setup' });
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-setup').textContent?.trim()).toBe('GitHub CLI is not logged in. Run gh auth login.');
+    });
+    expect(view.queryByTestId('review-pr-rate-limited')).not.toBeInTheDocument();
+    expect(view.queryByTestId('review-pr-update-error')).not.toBeInTheDocument();
+
+    for (const kind of ['transient', 'forge']) {
+      applyPRReviewUpdated({ prKey: 'github:owner/repo:5', error: `failed (${kind})`, errorKind: kind });
+      await waitFor(() => {
+        expect(view.getByTestId('review-pr-update-error').textContent?.trim()).toBe(`Retrying: failed (${kind})`);
+      });
+      expect(view.queryByTestId('review-pr-setup')).not.toBeInTheDocument();
+    }
   });
 });
 

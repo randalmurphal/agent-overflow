@@ -6,6 +6,7 @@
   import type { CIJob, CIPipeline } from '../../types/models';
   import { ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
+  import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
 
   // Git-style pipeline chips: one per stage (GitLab) / workflow
   // (GitHub), rendered on the PR header's meta line. Hover shows the
@@ -17,10 +18,14 @@
     pipeline: CIPipeline | null;
     loading: boolean;
     error: string | null;
+    /** The kind of error; a rate limit reads as paused, not failed. */
+    failure?: ForgeFailure | null;
+    /** The PR's forge, which names the rate limit. */
+    forge?: string;
     onOpenJob: (stageName: string, job: CIJob) => void;
   }
 
-  let { pipeline, loading, error, onOpenJob }: Props = $props();
+  let { pipeline, loading, error, failure = null, forge = '', onOpenJob }: Props = $props();
 
   let openStageIndex: number | null = $state(null);
   let chipEls: (HTMLElement | undefined)[] = $state([]);
@@ -94,6 +99,8 @@
   </div>
 {:else if loading}
   <span class="text-fg-subtle">Loading checks…</span>
+{:else if error && failure?.kind === 'rate_limited'}
+  <span class="text-warning" title={rateLimitMessage(forge, failure)} data-testid="review-ci-rate-limited">Checks paused</span>
 {:else if error}
   <span class="text-error" title={error}>Checks unavailable</span>
 {/if}

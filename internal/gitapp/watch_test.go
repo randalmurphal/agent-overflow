@@ -1,6 +1,7 @@
 package gitapp
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	manager := gitwatch.NewManager(gitwatch.ManagerConfig{
-		StatusFn: func(string) (gitops.GitStatus, error) {
+		StatusFn: func(context.Context, string) (gitops.GitStatus, error) {
 			return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
 		},
 	})
@@ -33,7 +34,7 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 
 func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	service, _ := newWatchTestService(t)
-	first, err := service.Subscribe(WorkspaceRef{ProjectID: "project"})
+	first, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Subscribe first: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	dying.dead = true
 	service.status.mu.Unlock()
 
-	second, err := service.Subscribe(WorkspaceRef{ProjectID: "project"})
+	second, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Subscribe second: %v", err)
 	}

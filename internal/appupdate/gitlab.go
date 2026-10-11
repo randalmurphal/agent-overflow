@@ -5,15 +5,15 @@ package appupdate
 // A build linked with -X agent-overflow/internal/appupdate.gitlabProject=
 // HOST/NAMESPACE/PROJECT (scripts/build-release-noremote.sh) reads its
 // releases from that project instead of GitHub. The project is private, so
-// every request goes through the user's own `glab` login: `glab api
-// --hostname HOST` attaches the token for HOST, and this package never sees,
-// stores or logs it.
+// every request is an HTTPS call to HOST's REST API through the injected
+// GitLabClient, which the app backs with its forge API transport and the
+// token of the user's own `glab` login. This package never sees, stores or
+// logs the token.
 //
-// glab sends that token to any absolute URL it is handed. Release links are
-// data from the release, so a link is only fetched after it is reduced to a
-// path relative to https://HOST/api/v4/ (gitlabAPIPath); a link to another
-// host, another scheme or anything outside the REST API is refused before
-// glab runs.
+// Release links are data from the release, so a link is only fetched after
+// it is reduced to a path relative to https://HOST/api/v4/ (apiPath); a
+// link to another host, another scheme or anything outside the REST API is
+// refused before any request is made.
 
 import (
 	"bytes"
@@ -22,12 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/forgeapi"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"golang.org/x/mod/semver"
@@ -52,18 +54,20 @@ const gitlabAssetURLKey = "gitlab.asset.url"
 // gitlabAPIPrefix is the REST API root every fetched link must sit under.
 const gitlabAPIPrefix = "/api/v4/"
 
-// GlabRunner runs `glab api ARGS...`, streaming the response body into dst.
-// It fails once more than limit bytes arrive and wraps an error dst returns.
-// A missing glab wraps exec.ErrNotFound. A non-zero exit is reported through
-// exitCode and the bounded stderr, not err. The ctx deadline bounds the run.
-// internal/git's Core.StreamGitLabAPI is the production runner.
-type GlabRunner func(ctx context.Context, args []string, dst io.Writer, limit int64) (exitCode int, stderr string, err error)
+// GitLabClient reads one GitLab host's REST API with the user's glab
+// login. Stream GETs path, relative to the host's /api/v4/ root and
+// accepting any content type, and writes the body to dst. It fails with an
+// error wrapping forgeapi.ErrBodyTooLarge once more than limit bytes
+// arrive, and with the transport's errors otherwise: a *forgeapi.SetupError
+// when glab is missing or has no login for the host, a
+// *forgeapi.StatusError for an answer outside 2xx. The ctx deadline bounds
+// the whole call, body included. internal/app backs it with the forge API
+// transport's Service.GitLab(host).
+type GitLabClient interface {
+	Stream(ctx context.Context, path string, dst io.Writer, limit int64) error
+}
 
 var (
-	// ErrGlabNotInstalled reports that the GitLab feed cannot run glab.
-	ErrGlabNotInstalled = errors.New("glab is not installed")
-	// ErrGlabSignedOut reports that glab has no usable login for the host.
-	ErrGlabSignedOut = errors.New("sign in with glab to check for updates")
 	// ErrGitLabNoAccess reports that the release project is missing or not
 	// readable by the signed-in account.
 	ErrGitLabNoAccess = errors.New("no access to the release project")
@@ -83,8 +87,8 @@ type gitlabSource struct {
 }
 
 // parseGitLabProject validates HOST/NAMESPACE.../PROJECT. The host is a
-// bare DNS name, which is all `glab api --hostname` accepts, and each path
-// segment is a plain GitLab path.
+// bare DNS name, which is how glab keys its logins, and each path segment
+// is a plain GitLab path.
 func parseGitLabProject(raw string) (gitlabSource, error) {
 	parts := strings.Split(raw, "/")
 	if len(parts) < 3 {
@@ -107,10 +111,14 @@ func newGitLabTargetable(project string, config Config, req updater.CheckRequest
 	if err != nil {
 		return nil, err
 	}
-	if config.GlabRunner == nil {
-		return nil, errors.New("updater: the GitLab release feed needs a glab runner")
+	if config.GitLab == nil {
+		return nil, errors.New("updater: the GitLab release feed needs a GitLab client")
 	}
-	feed := &gitlabFeed{host: source.host, project: source.project, run: config.GlabRunner}
+	client := config.GitLab(source.host)
+	if client == nil {
+		return nil, fmt.Errorf("updater: no GitLab client for %s", source.host)
+	}
+	feed := &gitlabFeed{host: source.host, project: source.project, client: client}
 	inner := &gitlabProvider{feed: feed}
 	targetable := newTargetableProvider(inner, feed, gitlabAssetURLKey, config.ChecksumAsset, req)
 	inner.latest = targetable.resolveLatest
@@ -150,7 +158,7 @@ func (p *gitlabProvider) Download(ctx context.Context, rel *updater.Release, dst
 		return err
 	}
 	out := &progressWriter{dst: dst, total: rel.Artifact.Size, onProgress: onProgress}
-	return p.feed.stream(ctx, path, out, maxDownloadBytes)
+	return p.feed.stream(ctx, path, out, maxDownloadBytes, errDownloadTooLarge)
 }
 
 // progressWriter reports each write to onProgress.
@@ -170,11 +178,11 @@ func (w *progressWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// gitlabFeed reads one project's releases through glab.
+// gitlabFeed reads one project's releases over its host's REST API.
 type gitlabFeed struct {
 	host    string
 	project string
-	run     GlabRunner
+	client  GitLabClient
 }
 
 // gitlabRelease is the subset of GitLab's release API the feed maps.
@@ -244,7 +252,7 @@ func (f *gitlabFeed) readSidecar(ctx context.Context, asset apiAsset, limit int6
 		return nil, err
 	}
 	var body bytes.Buffer
-	if err := f.stream(ctx, path, &cappedWriter{dst: &body, remaining: limit}, limit); err != nil {
+	if err := f.stream(ctx, path, &cappedWriter{dst: &body, remaining: limit}, limit, errGitLabResponseTooLarge); err != nil {
 		return nil, fmt.Errorf("read %s: %w", asset.Name, err)
 	}
 	return body.Bytes(), nil
@@ -252,7 +260,7 @@ func (f *gitlabFeed) readSidecar(ctx context.Context, asset apiAsset, limit int6
 
 func (f *gitlabFeed) getJSON(ctx context.Context, path string, dst any) error {
 	var body bytes.Buffer
-	if err := f.stream(ctx, path, &cappedWriter{dst: &body, remaining: maxReleaseListBytes}, maxReleaseListBytes); err != nil {
+	if err := f.stream(ctx, path, &cappedWriter{dst: &body, remaining: maxReleaseListBytes}, maxReleaseListBytes, errGitLabResponseTooLarge); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(body.Bytes(), dst); err != nil {
@@ -261,67 +269,64 @@ func (f *gitlabFeed) getJSON(ctx context.Context, path string, dst any) error {
 	return nil
 }
 
-// glabStreamSlack is how far past a caller's cap the runner's own limit
-// sits. dst enforces the cap and names the refusal; the runner checks each
-// chunk against its limit before dst sees it, so its limit must clear the
-// cap by more than one pipe read.
-const glabStreamSlack = 1 << 20
-
-// stream runs one `glab api` GET of path, relative to the host's API root,
-// into dst, which enforces limit. "--" ends glab's flags, so a path can
-// never be read as one.
-func (f *gitlabFeed) stream(ctx context.Context, path string, dst io.Writer, limit int64) error {
-	exitCode, stderr, err := f.run(ctx, []string{"--hostname", f.host, "--", path}, dst, limit+glabStreamSlack)
-	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("%w: install the GitLab CLI and run `glab auth login --hostname %s` to receive updates", ErrGlabNotInstalled, f.host)
-		}
-		return err
-	}
-	if exitCode != 0 {
-		return f.exitFailure(exitCode, stderr)
-	}
-	return nil
-}
-
-// exitFailure names a failed glab call in the user's terms. glab prints
-// the API's message on stderr, e.g. "glab: 404 Project Not Found (HTTP
-// 404)". GitLab answers a private project it will not show the caller with
-// 404, so a signed-out user can land on either of the first two.
-func (f *gitlabFeed) exitFailure(exitCode int, stderr string) error {
-	summary := stderrSummary(stderr)
-	lower := strings.ToLower(summary)
+// stream GETs path, relative to the host's API root, into dst, which
+// enforces limit with its own refusal. tooLarge is that refusal, returned
+// as well when the transport refuses a declared length over limit before
+// dst sees a byte. An error dst returns is returned as dst gave it, not as
+// the transport's report of a failed body read.
+func (f *gitlabFeed) stream(ctx context.Context, path string, dst io.Writer, limit int64, tooLarge error) error {
+	out := &firstErrorWriter{dst: dst}
+	err := f.client.Stream(ctx, path, out, limit)
 	switch {
-	case strings.Contains(lower, "unauthenticated") ||
-		strings.Contains(lower, "401") ||
-		strings.Contains(lower, "unauthorized") ||
-		strings.Contains(lower, "glab auth login"):
-		return fmt.Errorf("%w: run `glab auth login --hostname %s`", ErrGlabSignedOut, f.host)
-	case strings.Contains(lower, "project not found"):
-		return fmt.Errorf("%w: no access to %s/%s; sign in with glab as an account that can read it", ErrGitLabNoAccess, f.host, f.project)
-	case summary == "":
-		return fmt.Errorf("glab api exited %d", exitCode)
-	default:
-		return fmt.Errorf("glab api exited %d: %s", exitCode, summary)
+	case err == nil:
+		return nil
+	case out.err != nil:
+		return out.err
+	case errors.Is(err, forgeapi.ErrBodyTooLarge):
+		return tooLarge
 	}
+	if setup, ok := errors.AsType[*forgeapi.SetupError](err); ok {
+		return f.setupFailure(setup)
+	}
+	// GitLab answers a project it will not show the caller, signed in or
+	// not, with 404 Project Not Found.
+	if status, ok := errors.AsType[*forgeapi.StatusError](err); ok && status.Status == http.StatusNotFound &&
+		strings.Contains(strings.ToLower(status.Body), "project not found") {
+		return fmt.Errorf("%w: no access to %s/%s; sign in with glab as an account that can read it", ErrGitLabNoAccess, f.host, f.project)
+	}
+	return err
 }
 
-// stderrSummaryLimit bounds the glab diagnostics carried into an error.
-const stderrSummaryLimit = 512
-
-// stderrSummary is glab's diagnostics as one bounded line.
-func stderrSummary(stderr string) string {
-	summary := strings.Join(strings.Fields(stderr), " ")
-	if len(summary) > stderrSummaryLimit {
-		summary = summary[:stderrSummaryLimit] + "…"
+// setupFailure restates a glab login problem as the step that fixes it for
+// this feed's host.
+func (f *gitlabFeed) setupFailure(setup *forgeapi.SetupError) *forgeapi.SetupError {
+	out := &forgeapi.SetupError{Forge: forgeapi.ForgeGitLab, Binary: "glab", Kind: setup.Kind, Err: setup}
+	if setup.Kind == forgeapi.SetupMissing {
+		out.Message = fmt.Sprintf("glab is not installed: install the GitLab CLI and run `glab auth login --hostname %s` to receive updates", f.host)
+	} else {
+		out.Message = fmt.Sprintf("sign in with glab to check for updates: run `glab auth login --hostname %s`", f.host)
 	}
-	return summary
+	return out
+}
+
+// firstErrorWriter remembers the first error dst returns.
+type firstErrorWriter struct {
+	dst io.Writer
+	err error
+}
+
+func (w *firstErrorWriter) Write(b []byte) (int, error) {
+	n, err := w.dst.Write(b)
+	if err != nil && w.err == nil {
+		w.err = err
+	}
+	return n, err
 }
 
 // apiPath reduces a release link to a path relative to the host's REST API
-// root, or refuses it. glab attaches the user's token to whatever URL it is
-// given, so only https links on the configured host under /api/v4/ are
-// fetched, and the relative form is what reaches glab.
+// root, or refuses it. Every request carries the user's token, so only
+// https links on the configured host under /api/v4/ are fetched, and the
+// relative form is what reaches the client.
 func (f *gitlabFeed) apiPath(link string) (string, error) {
 	u, err := url.Parse(link)
 	if err != nil {
@@ -342,8 +347,8 @@ func (f *gitlabFeed) apiPath(link string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("gitlab: refusing a release link outside %s on %s", gitlabAPIPrefix, f.host)
 	}
-	// ":" would let glab substitute a placeholder such as :id, and an empty
-	// or dot segment would not name the file the link names.
+	// A ":" could make the relative path parse as a URL with a scheme, and
+	// an empty or dot segment would not name the file the link names.
 	if rel == "" || strings.Contains(rel, ":") {
 		return "", errors.New("gitlab: refusing a release link with an unsafe API path")
 	}

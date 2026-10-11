@@ -11,42 +11,8 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-// These tests target the github forge implementation directly via
-// ForgeByID("github") so they isolate the gh-wrapper behaviour from
-// the Core.forgeFor dispatch logic (which depends on origin URL
-// classification — covered separately in forge_detect_test.go).
-
-func TestListOpenPRsParsesJSON(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
-
-	binDir := t.TempDir()
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\necho '[{\"url\":\"https://example.com/pr/7\",\"number\":7,\"title\":\"Feature branch\",\"state\":\"OPEN\"}]'\n"
-	mockexec.Write(t, ghPath, script)
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	core := NewCore()
-	prs, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "feature/demo")
-	if err != nil {
-		t.Fatalf("ListOpenPRs returned error: %v", err)
-	}
-	if len(prs) != 1 {
-		t.Fatalf("len(prs) = %d, want 1", len(prs))
-	}
-	if prs[0].URL != "https://example.com/pr/7" {
-		t.Fatalf("prs[0].URL = %q, want https://example.com/pr/7", prs[0].URL)
-	}
-	if prs[0].Title != "Feature branch" {
-		t.Fatalf("prs[0].Title = %q, want Feature branch", prs[0].Title)
-	}
-	// State is normalized to canonical lowercase: gh's "OPEN" → "open".
-	if prs[0].State != "open" {
-		t.Fatalf("prs[0].State = %q, want open (normalized from gh's OPEN)", prs[0].State)
-	}
-}
+// These tests target the github forge's gh CLI path (CreatePR) directly
+// via ForgeByID("github"); its HTTP reads are in github_api_test.go.
 
 func TestCreatePRReturnsURL(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -62,7 +28,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	url, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Demo PR", "Body", "release", false)
+	url, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "Demo PR", "Body", "release", false)
 	if err != nil {
 		t.Fatalf("CreatePR returned error: %v", err)
 	}
@@ -76,7 +42,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	if argv := string(args); !strings.Contains(argv, "--base release") {
 		t.Fatalf("argv = %q, missing base", argv)
 	}
-	if _, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Default base", "Body", "", false); err != nil {
+	if _, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "Default base", "Body", "", false); err != nil {
 		t.Fatal(err)
 	}
 	args, err = os.ReadFile(argLog)
@@ -92,7 +58,7 @@ func TestCreatePRRequiresTitle(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
 
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "  ", "body", "", false)
+	_, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "  ", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -114,7 +80,7 @@ func TestCreatePRHandlesNonZeroExit(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
+	_, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -136,7 +102,7 @@ func TestCreatePRHandlesEmptyURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
+	_, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty URL output")
 	}
@@ -149,7 +115,7 @@ func TestCreatePRHandlesMissingGH(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
+	_, err := core.ForgeByID("github").CreatePR(t.Context(), t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected missing gh error")
 	}
@@ -162,82 +128,12 @@ func TestListOpenPRsRequiresHead(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
 
-	_, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "  ")
+	_, err := core.ForgeByID("github").ListOpenPRs(t.Context(), t.TempDir(), "  ")
 	if err == nil {
 		t.Fatal("expected error for empty head")
 	}
 	if !strings.Contains(err.Error(), "head branch is required") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestListOpenPRsHandlesNonZeroExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
-
-	binDir := t.TempDir()
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\necho 'no repo' 1>&2\nexit 1\n"
-	mockexec.Write(t, ghPath, script)
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	core := NewCore()
-	_, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "main")
-	if err == nil {
-		t.Fatal("expected error for non-zero exit")
-	}
-	if !strings.Contains(err.Error(), "gh pr list failed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestListOpenPRsReturnsNilForEmptyOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock gh is unix-only")
-	}
-
-	binDir := t.TempDir()
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\n"
-	mockexec.Write(t, ghPath, script)
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	core := NewCore()
-	prs, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "main")
-	if err != nil {
-		t.Fatalf("ListOpenPRs returned error: %v", err)
-	}
-	if prs != nil {
-		t.Fatalf("expected nil prs, got %v", prs)
-	}
-}
-
-func TestCommandOutputMessage(t *testing.T) {
-	t.Parallel()
-	if got := commandOutputMessage("", "stderr msg"); got != "stderr msg" {
-		t.Fatalf("commandOutputMessage with stderr = %q, want stderr msg", got)
-	}
-	if got := commandOutputMessage("stdout msg", ""); got != "stdout msg" {
-		t.Fatalf("commandOutputMessage with stdout = %q, want stdout msg", got)
-	}
-	if got := commandOutputMessage("", ""); got != "command failed" {
-		t.Fatalf("commandOutputMessage with empty = %q, want command failed", got)
-	}
-}
-
-func TestListOpenPRsHandlesMissingGH(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-
-	core := NewCore()
-	_, err := core.ForgeByID("github").ListOpenPRs(t.TempDir(), "main")
-	if err == nil {
-		t.Fatal("expected missing gh error")
-	}
-	if !strings.Contains(err.Error(), "GitHub CLI (`gh`)") {
-		t.Fatalf("expected missing gh message, got %v", err)
 	}
 }
 

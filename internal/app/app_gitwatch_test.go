@@ -28,7 +28,7 @@ type stubGitWatch struct {
 }
 
 func (s *stubGitWatch) fn() gitwatch.StatusFn {
-	return func(cwd string) (gitops.GitStatus, error) {
+	return func(_ context.Context, cwd string) (gitops.GitStatus, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.passes == nil {
@@ -380,7 +380,7 @@ func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
 	// announced — exactly the shape of "another client just committed".
 	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
 
-	if _, err := app.GetGitStatus(workspaceRefForThread(thread)); err != nil {
+	if _, err := app.GetGitStatus(t.Context(), workspaceRefForThread(thread)); err != nil {
 		t.Fatalf("GetGitStatus: %v", err)
 	}
 

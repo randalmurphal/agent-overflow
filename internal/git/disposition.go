@@ -124,7 +124,7 @@ func (c *Core) mergeMode(cwd, base, head string) (string, error) {
 	case 1:
 		return "merge", nil
 	default:
-		return "", fmt.Errorf("git merge-base failed: %s", commandOutputMessage(result.stdout, result.stderr))
+		return "", commandFailure("git merge-base", result)
 	}
 }
 

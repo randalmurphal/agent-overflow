@@ -21,7 +21,7 @@ func configureWSLFromGitLab(t *testing.T) (platform, filename string) {
 		Arch:           "amd64",
 		StagingRoot:    t.TempDir(),
 		MarkerDir:      t.TempDir(),
-		Provider:       Config{GlabRunner: f.runner()},
+		Provider:       Config{GitLab: f.gitlab},
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}

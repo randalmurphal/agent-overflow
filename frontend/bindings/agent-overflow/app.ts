@@ -1014,8 +1014,8 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
 
 /**
  * FetchForgeAttachment resolves one attachment reference found in a PR/MR
- * body or comment through the forge CLI (`gh api` / `glab api`), caches the
- * bytes, and mints the ticket that serves them. For an image, a positive
+ * body or comment through the forge API transport, caches the bytes, and
+ * mints the ticket that serves them. For an image, a positive
  * maxWidth (device pixels) serves a derivative at the next ladder width when
  * that is smaller than the original (attachment.Derive); 0 serves the
  * original.
@@ -1622,6 +1622,9 @@ export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     });
 }
 
+/**
+ * GetPRDetail reads a PR's detail for the user who asked.
+ */
 export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PRDetail> {
     return $Call.ByID(2443547196, pr).then(($result: any) => {
         return $$createType60($result);
@@ -2804,6 +2807,9 @@ export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, bas
     });
 }
 
+/**
+ * ListPRReviewThreads reads a PR's review threads for the user who asked.
+ */
 export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<git$0.ReviewThread[]> {
     return $Call.ByID(763649720, pr).then(($result: any) => {
         return $$createType137($result);
@@ -4779,7 +4785,7 @@ export function SetPRThreadResolved(pr: git$0.PRReference, threadID: string, res
 /**
  * SetPRUpdatesActive reports whether ONE subscriber currently wants its PR
  * polled. The frontend drives it from document visibility so a hidden
- * window stops spawning gh/glab every tick.
+ * window stops sending forge requests every tick.
  * 
  * The reports compose: a PR's pump polls while ANY of its subscribers is
  * active, and pauses only once every one of them has gone quiet. Each
@@ -5221,8 +5227,8 @@ export function SubmitProviderLoginCode(providerName: string, code: string): $Ca
  * cleanup is the safety net for unclean disconnects.
  * 
  * A JOINER DOES NOT FETCH. The pump already holds the PR's current
- * snapshot, so a second pane opening the same PR costs zero gh/glab
- * processes and — more importantly — cannot be handed a DIFFERENT snapshot
+ * snapshot, so a second pane opening the same PR costs zero forge
+ * requests and, more importantly, cannot be handed a DIFFERENT snapshot
  * than the one every other subscriber of that pump is showing. One pump,
  * one snapshot: the fetch happens only on the path that creates a pump, and
  * even there a pump that appeared concurrently wins and its snapshot is

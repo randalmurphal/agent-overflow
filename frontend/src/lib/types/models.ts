@@ -464,6 +464,7 @@ export interface DiffReviewCommentUpdate {
 
 export interface PRReference {
   forge: "github" | "gitlab";
+  host: string;
   namespace: string;
   repo: string;
   number: number;

@@ -2,7 +2,8 @@
 
 Unified, virtualized diff/review surface replacing the RHS sidebar system.
 It covers local agent diffs (turn / session / workspace / vs-branch) and full
-PR/MR review (GitHub via `gh`, GitLab via `glab`) without leaving the app.
+PR/MR review (GitHub and GitLab through their APIs with the token of the
+`gh` or `glab` login) without leaving the app.
 
 Status: designed 2026-07-05; all phases shipped (historical spec:
 details below reflect the design as written, not the current code).
@@ -11,8 +12,10 @@ scopes were removed with the git-checkpoint machinery; the shipped
 scopes are Workspace / Branch / PR, with a per-commit selector on the
 branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`).
 Superseded in part 2026-08-08: PR polling is keyed by PR, not by
-subscription. One refcounted pump per `forge:namespace/repo:number` on
-both sides of the wire, with `pr:updated` addressed by that key. See
+subscription. One refcounted pump per PR key (`PRReference.Key`:
+`forge:namespace/repo:number` on the forge's public host,
+`forge@host:namespace/repo:number` elsewhere) on both sides of the wire,
+with `pr:updated` addressed by that key. See
 `frontend/src/lib/components/review/AGENTS.md` → "PR state is keyed by
 the PR, not by the pane".
 Superseded in part 2026-09-27: standalone PR review (`pr://` threads
@@ -38,8 +41,9 @@ usually linked to a thread. The diff document is virtualized by the existing
 `utils/virtual/` engine, extended with three first-class features
 (mid-splice compensation, exact-height rows, group/range queries) and driven
 by a new `ReviewVirtualizer` adapter. PR data flows through the existing
-`internal/git` forge layer (`gh`/`glab` CLIs), extended with review-thread
-read/write APIs and per-PR-key polling.
+`internal/git` forge layer (the forge API transport for GitHub and
+GitLab), extended with review-thread read/write APIs and per-PR-key
+polling.
 
 ## Success Criteria
 
@@ -97,30 +101,36 @@ read/write APIs and per-PR-key polling.
   to the repo default branch; one new Go method beside the existing three)
   and **PR** (lights up when a PR is detected for the branch, or when the
   pane was opened on a `pr://` thread). All scopes share one frontend diff
-  model via `parsePatchFiles`; PR patch text comes from the existing
-  `Forge.Diff` (`gh pr diff` / `glab mr diff`).
+  model via `parsePatchFiles`.
 - **Forge review APIs.** `internal/git/forge.go` gains `PRDetail`
-  (metadata, body, verdicts, check summary), `ListReviewThreads`,
-  `SubmitReview` (verdict + body + line comments in one call),
-  `ReplyToThread`, `SetThreadResolved`. GitHub: `gh pr view --json` for
-  detail; `gh api graphql` for `reviewThreads` (porcelain can't return
-  line anchors) and for the `resolveReviewThread` /
-  `unresolveReviewThread` mutations; `gh api` REST for review submission
-  (porcelain can't attach line comments). GitLab: `glab api` MR
-  discussions with position objects, and a `PUT` on the discussion itself
-  carrying `?resolved=`.
+  (metadata, body, verdicts, check summary) and review threads, read by
+  part through `ReadPR`, plus `SubmitReview` (verdict + body + line
+  comments in one call), `ReplyToThread` and `SetThreadResolved`. GitHub:
+  one GraphQL `PRTick` request per tick reads the detail, the
+  `reviewThreads` with their line anchors and the head commit's check
+  rollup ([reads per tick](forge-transport.md#reads-per-tick)); one
+  `SetThreadResolved` mutation carries `resolveReviewThread` and
+  `unresolveReviewThread` behind `@include` / `@skip`; review submission,
+  file comments and replies are REST POSTs. GitLab: one merge request
+  read per tick, with its approvals, discussions with position objects and
+  head pipeline jobs as the parts ask; a `PUT` on the discussion itself
+  with a JSON `resolved` body.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (the same pattern `forge.go` already uses, not the
   Claude/Codex unified-abstraction anti-pattern).
 - **Polling is Go-owned and keyed by the PR.** `SubscribePRUpdates` when a
-  pane enters PR scope; the pump is refcounted per
-  `forge:namespace/repo:number`, so N panes on one PR share one poll. Go
+  pane enters PR scope; the pump is refcounted per PR key
+  (`PRReference.Key`), so N panes on one PR share one poll. Go
   polls ~45s, diffs snapshots, `a.emit`s only on change (addressed by that
   same key); the last unsubscribe stops the pump. A failing fetch, the
   first one included, never fails the subscribe: the pump carries the
-  failure (a caller-safe summary with a log id) and retries on a doubling
-  delay from 5s up to the interval, and the pane loads its diff when the
-  recovery frame brings the first snapshot. The pane reads its PR from
+  failure (a caller-safe summary with a log id, and its kind) and retries
+  on a doubling delay from 5s up to the interval, and the pane loads its
+  diff when the recovery frame brings the first snapshot. A rate limit
+  instead holds every poll until its resume time, and one transient
+  failure over a snapshot on screen is not shown unless the retry fails
+  too; each kind has its own surface ([failure
+  presentation](forge-transport.md#failure-presentation)). The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`), and the pane waits on that too rather
   than reading empty PR fields as "no PR". No background polling in v1.
@@ -132,7 +142,7 @@ read/write APIs and per-PR-key polling.
   when the head SHA or the check summary moves). Pipeline frames go out on
   `pr:ci_updated` only on change, under the PR's sequence, and the
   subscribe result carries the current pipeline for a joiner. GitHub reads
-  every job from the rollup (one GraphQL request) and steps, which only
+  every job from the rollup (a `PRTick` that asks for the checks alone) and steps, which only
   the open log view shows, from one REST jobs list per run holding a
   followed job whose steps can still change; GitLab reads the MR view and
   the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
@@ -170,9 +180,9 @@ read/write APIs and per-PR-key polling.
   pass; batching applies to fresh line comments only. Each incoming thread
   gets a **"send to agent"** action handing the thread (file, line, bodies)
   to the linked agent.
-- **Transport classification.** Every new App method shelling to
-  `gh`/`glab`/`git` annotates `//ao:scope git:operate`, so only a session
-  granted that scope reaches it.
+- **Transport classification.** Every new App method that reaches a forge
+  or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
+  session granted that scope reaches it.
 
 ## Edge Cases
 
@@ -187,8 +197,10 @@ read/write APIs and per-PR-key polling.
 - **Context expansion (`···`):** available only when the commit exists
   locally (thread workspace or clone), served by `git show`. Forge-API file
   fetching for pure-remote expansion is an explicit follow-up, not v1.
-- **`gh`/`glab` missing or unauthenticated:** the pane shows an explicit
-  setup state, never a silent empty view.
+- **`gh`/`glab` missing or unauthenticated** (no login to read the
+  forge token from): the failure's kind is `setup` and the pane shows its
+  message, which names the login to fix, in its own banner, never a
+  silent empty view and never "Retrying".
 - **Merge conflicts (added 2026-07-05):** detection is part of PR scope.
   `PRDetail` carries normalized mergeability (GitHub
   `mergeable`/`mergeStateStatus`, GitLab
@@ -223,10 +235,10 @@ read/write APIs and per-PR-key polling.
   `utils/diffSpanCache.svelte.ts` (originally the Shiki worker pool);
   full patch text is parsed but only windowed rows render.
 - SQLite remains a cache: no PR data persistence beyond comment drafts.
-- Per spike policy (`docs/references/spike-policy.md`), the
-  `gh api graphql` reviewThreads shape and the review-submit REST call are
-  verified in an isolated spike before porting, not guessed. Same for the
-  `glab` discussions API.
+- Per spike policy (`docs/references/spike-policy.md`), the GraphQL
+  `reviewThreads` shape and the review-submit REST call are verified in an
+  isolated spike before porting, not guessed. Same for the GitLab
+  discussions API.
 
 ## Phasing (each independently shippable)
 
@@ -262,8 +274,9 @@ read/write APIs and per-PR-key polling.
   the viewport anchor stable; exact-height rows are never measured; group
   queries agree with computed offsets. Same style as existing
   `utils/virtual/` tests.
-- **Forge:** parsing tests against recorded `gh` / `glab` JSON fixtures
-  (from the spike); error-path tests for missing/unauthenticated CLIs.
+- **Forge:** parsing tests against recorded GitHub GraphQL answers
+  (`internal/git/testdata/github-pr-tick-*.json`) and GitLab REST JSON
+  fixtures; error-path tests for a missing or signed-out login.
 - **Prompt builder:** table tests for the lean-vs-rich context rule in
   `internal/diffreview`.
 - **Frontend:** vitest for tree↔scroll mapping, scope switching, draft

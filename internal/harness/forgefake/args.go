@@ -15,15 +15,32 @@ type flagDef struct {
 	value bool
 }
 
-// call is one parsed invocation.
+// call is one parsed invocation. A REST request the HTTP mounts received
+// arrives as the `api` call it stands for, with http set: its endpoint
+// is the one positional, --method and --hostname are synthesized from
+// the request, and handlers answer status and headers through the
+// response instead of exit codes and --include text. A GraphQL request
+// carries graphQL instead of an endpoint.
 type call struct {
-	cli   string
-	args  []string
-	cwd   string
-	stdin []byte
+	cli     string
+	args    []string
+	cwd     string
+	stdin   []byte
+	http    *httpCall
+	graphQL *graphQLRequest
 
 	flags      map[string][]string
 	positional []string
+}
+
+// httpCall is what an HTTP request carries beyond its `api` shape. host
+// is the forge host the request is for (its Host header), spelled as
+// PRReference.Host: a port is allowed and compared as given. base is the
+// fake listener's own URL ("http://[::1]:port"), which a next-page link
+// points at.
+type httpCall struct {
+	host string
+	base string
 }
 
 func (c *call) flag(long string) string {
