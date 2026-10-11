@@ -171,6 +171,7 @@ async function wakeBubble(page: Page, title: string, badge: string, contains: st
     .filter({ hasText: contains });
   await expect(bubble).toHaveCount(1);
   await bubble.scrollIntoViewIfNeeded();
+  await expect(bubble).toBeInViewport();
   await expect(bubble).toContainText(DATA_NOTICE);
   return bubble;
 }
