@@ -39,7 +39,7 @@ func lockProfile(ctx context.Context, dir, name string) (func(), error) {
 			return nil, err
 		}
 		if locked {
-			return func() { _ = f.Close() }, nil
+			return func() { releaseProfile(f) }, nil
 		}
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
@@ -50,6 +50,14 @@ func lockProfile(ctx context.Context, dir, name string) (func(), error) {
 		case <-timer.C:
 		}
 	}
+}
+
+// releaseProfile ends a lock's ownership. flock belongs to the open file
+// description, so a forked child's copy keeps it until exec: unlock rather
+// than rely on the close. A failed unlock leaves the close to release it.
+func releaseProfile(f *os.File) {
+	_ = unlockProfile(f)
+	_ = f.Close()
 }
 
 // WithProfileLock serializes a short catalog transaction across controllers
