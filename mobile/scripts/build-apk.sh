@@ -49,6 +49,8 @@ if [[ ! -x "$JAVA_HOME/bin/java" ]]; then
   echo "no JDK at JAVA_HOME=$JAVA_HOME — install a JDK 21 and export JAVA_HOME" >&2
   exit 1
 fi
+# apksigner runs `java` from PATH, not JAVA_HOME.
+export PATH="$JAVA_HOME/bin:$PATH"
 if [[ ! -d "$ANDROID_HOME/platforms" ]]; then
   echo "no Android SDK at ANDROID_HOME=$ANDROID_HOME — install platform-tools, platforms;android-36 and build-tools;36.0.0" >&2
   exit 1
