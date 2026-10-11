@@ -81,10 +81,11 @@ type Parser struct {
 	// parser yet. See parse_assistant.go appendServerToolUseEvent /
 	// appendAdvisorResultEvent.
 	advisorToolUses map[string]bool
-	// advisorModelScopes holds, per parent_tool_use_id scope ("" for the
-	// main thread), the current API message's advisor calls until their
-	// models arrive. See advisorModelState in parse_assistant.go.
-	advisorModelScopes map[string]*advisorModelState
+	// advisorMessages holds, per parent_tool_use_id scope ("" for the
+	// main thread), the current API message's advisor calls and whether
+	// it holds a client tool_use. See advisorMessageState in
+	// parse_assistant.go.
+	advisorMessages map[string]*advisorMessageState
 	// toolUseParents correlates subagent-emitted tool_use ids back to
 	// their parent Agent/Task tool_use id. Claude's later task_started
 	// envelopes only echo task_id + tool_use_id, so this is the bridge
@@ -418,7 +419,7 @@ func (p *Parser) Close() {
 	p.pendingTaskMutations = nil
 	p.worktreeToolUses = nil
 	p.advisorToolUses = nil
-	p.advisorModelScopes = nil
+	p.advisorMessages = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil
 	p.agentLaunchToolUses = nil

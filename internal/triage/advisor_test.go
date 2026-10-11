@@ -222,3 +222,79 @@ func mustEncodeJSONString(s string) string {
 	}
 	return string(out)
 }
+
+// TestAdvisorCallsTheAPINeverRanAndFailedCalls routes the advisor shapes
+// the API does not run, and a failed call, through the real Claude parser
+// into the store and across turn end:
+//
+//   - a call after a client tool_use in the same message gets no row;
+//   - a call before a client tool_use of its message settles as declined
+//     and turn end leaves it declined;
+//   - a failed call settles as errored with its advisor_error_code.
+func TestAdvisorCallsTheAPINeverRanAndFailedCalls(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t-advisor")
+	parser := claude.NewParser()
+	route := func(line string) {
+		t.Helper()
+		events, err := parser.ParseLine("t-advisor", []byte(line))
+		if err != nil {
+			t.Fatalf("parse %s: %v", line, err)
+		}
+		for _, evt := range events {
+			if err := router.Handle(evt); err != nil {
+				t.Fatalf("route %s: %v", evt.Kind, err)
+			}
+		}
+	}
+	envelope := func(msgID, block string) string {
+		return `{"type":"assistant","message":{"id":"` + msgID + `","role":"assistant","model":"claude-opus-5-5","content":[` + block + `]}}`
+	}
+	advisor := func(id string) string {
+		return `{"type":"server_tool_use","id":"` + id + `","name":"advisor","input":{}}`
+	}
+	bash := func(id string) string {
+		return `{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":"true"}}`
+	}
+
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t-advisor", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	route(envelope("msg-1", bash("toolu_1")))
+	route(envelope("msg-1", advisor("srvtoolu_after")))
+	route(envelope("msg-2", advisor("srvtoolu_before")))
+	route(envelope("msg-2", bash("toolu_2")))
+	route(envelope("msg-3", advisor("srvtoolu_failed")))
+	route(envelope("msg-3", `{"type":"advisor_tool_result","tool_use_id":"srvtoolu_failed","content":{"type":"advisor_tool_result_error","error_code":"too_many_requests"}}`))
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t-advisor",
+		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	if _, ok, err := st.GetThreadItem("t-advisor", "srvtoolu_after"); err != nil || ok {
+		t.Fatalf("call after a client tool_use: ok=%v err=%v, want no row", ok, err)
+	}
+	notRun, ok, err := st.GetThreadItem("t-advisor", "srvtoolu_before")
+	if err != nil || !ok {
+		t.Fatalf("call before a client tool_use: ok=%v err=%v", ok, err)
+	}
+	if notRun.Status != statusDeclined {
+		t.Fatalf("call before a client tool_use: status %q, want %q", notRun.Status, statusDeclined)
+	}
+	failed, ok, err := st.GetThreadItem("t-advisor", "srvtoolu_failed")
+	if err != nil || !ok {
+		t.Fatalf("failed call: ok=%v err=%v", ok, err)
+	}
+	if failed.Status != statusErrored {
+		t.Fatalf("failed call: status %q, want %q", failed.Status, statusErrored)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(failed.Meta), &meta); err != nil {
+		t.Fatalf("failed call meta: %v", err)
+	}
+	if meta["advisor_error_code"] != "too_many_requests" {
+		t.Fatalf("failed call meta.advisor_error_code: got %v, want too_many_requests", meta["advisor_error_code"])
+	}
+}
