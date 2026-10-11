@@ -99,7 +99,7 @@ func (r lineReader) scan(from, to int, fn func(line int, head []byte, length int
 			if errors.Is(err, bufio.ErrBufferFull) {
 				continue
 			}
-			if err != nil && !(errors.Is(err, io.EOF) && length > 0) {
+			if err != nil && (!errors.Is(err, io.EOF) || length == 0) {
 				return unexpectedEnd(err)
 			}
 			break
@@ -151,7 +151,7 @@ func (r lineReader) lines(from, count, budget, lineMax int) ([]string, []int, er
 		for {
 			chunk, err := br.ReadSlice('\n')
 			full := errors.Is(err, bufio.ErrBufferFull)
-			if !full && err != nil && !(errors.Is(err, io.EOF) && len(chunk) > 0) {
+			if !full && err != nil && (!errors.Is(err, io.EOF) || len(chunk) == 0) {
 				return nil, nil, unexpectedEnd(err)
 			}
 			if !full && len(chunk) > 0 && chunk[len(chunk)-1] == '\n' {

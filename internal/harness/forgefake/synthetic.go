@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"strconv"
@@ -266,13 +267,13 @@ func syntheticUnits(forge string, log *SyntheticLog) int {
 // extent is the same log.
 func syntheticETag(forge string, job *Job, units int) string {
 	sum := sha256.New()
-	fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", forge, job.ID, units)
+	writeHash(sum, "%s\x00%d\x00%d\x00", forge, job.ID, units)
 	for _, step := range job.Steps {
-		fmt.Fprintf(sum, "%s\x00%s\x00", step.Status, step.StartedAt)
+		writeHash(sum, "%s\x00%s\x00", step.Status, step.StartedAt)
 	}
-	fmt.Fprintf(sum, "%d\x00", job.Synthetic.LineBytes)
+	writeHash(sum, "%d\x00", job.Synthetic.LineBytes)
 	for _, section := range job.Synthetic.Sections {
-		fmt.Fprintf(sum, "%s\x00%d\x00", section.Name, section.Lines)
+		writeHash(sum, "%s\x00%d\x00", section.Name, section.Lines)
 	}
 	return `"` + hex.EncodeToString(sum.Sum(nil)[:16]) + `"`
 }
@@ -353,4 +354,9 @@ func parseByteRange(spec string) (first, last int64, suffix, ok bool) {
 		return 0, 0, false, false
 	}
 	return first, last, false, true
+}
+
+// writeHash formats into a hash, whose Write never fails.
+func writeHash(sum hash.Hash, format string, args ...any) {
+	_, _ = fmt.Fprintf(sum, format, args...)
 }

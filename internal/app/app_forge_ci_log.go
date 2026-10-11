@@ -227,7 +227,7 @@ func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out p
 		follow.fail = prForgeFailure{}
 	}
 	after := prCILogStateLocked(follow)
-	if !(first && follow.fetched) && reflect.DeepEqual(before, after) {
+	if (!first || !follow.fetched) && reflect.DeepEqual(before, after) {
 		return PRCILogEvent{}, false
 	}
 	follow.seq = a.nextPRUpdateSeqLocked()

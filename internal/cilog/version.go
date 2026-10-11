@@ -252,7 +252,11 @@ func (s *Store) ensureLoaded(key Key, v *version) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			s.reports.report("close CI log", err)
+		}
+	}()
 	b := newBuilder(io.Discard, key.github(), nil)
 	split := &lineSplitter{sink: b, started: true}
 	if _, err := io.Copy(split, file); err != nil {
