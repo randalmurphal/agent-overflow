@@ -1,12 +1,15 @@
 package app
 
 import (
+	"maps"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 // The fires a row has come due for, and the next one after them, at and
@@ -130,5 +133,59 @@ func TestKeptAgentWakeOutputStaysInsideTheCap(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatal("the cut split a rune")
+	}
+}
+
+// A joined message splits into the app's parts, by send id, and the
+// person's text, joined as it was. The bodies are the renderers' own, so a
+// renderer that started writing a blank line, or changed its first line,
+// fails here.
+func TestSplitJoinedAgentPartsTakesOutTheAppParts(t *testing.T) {
+	t.Parallel()
+	sep := usermessage.JoinSeparator
+	loop := renderAgentLoopWake(store.AgentWake{Label: "tick", Note: "look\n\nagain"}, agentWakeFire{missed: 2})
+	watch := renderAgentWatchWake(store.AgentWake{Label: "mrs"}, agentWakeFire{},
+		newCappedText("one\n\n---\n\ntwo\n", agentWakeOutputCap), newCappedText("warn\n", agentWakeStderrCap))
+	send := renderAgentSendWake("deploy\n\n---\n\ndone")
+	prompt := renderWorkerPromptWake("Worker", "w1", &workerPrompt{token: "tok", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "run\n\nit"}})
+	for name, body := range map[string]string{"loop": loop, "watch": watch, "send": send, "prompt": prompt} {
+		if strings.Contains(body, sep) {
+			t.Fatalf("the %s body holds the separator:\n%s", name, body)
+		}
+	}
+	wake, wake2, out, ask := "agent-wake:w:1", "agent-wake:m:2", "agent-send:s", workerPromptSendIDRoot+"tok"
+	own := "my words" + sep + "and more"
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name    string
+		ids     []string
+		content string
+		app     map[string]string
+		person  *string
+		ok      bool
+	}{
+		{"a lone wake", []string{wake}, loop, map[string]string{wake: loop}, nil, true},
+		{"person first", []string{"p1", out, wake}, own + sep + send + sep + loop,
+			map[string]string{out: send, wake: loop}, str(own), true},
+		{"a person without a send id", []string{out, wake}, own + sep + send + sep + loop,
+			map[string]string{out: send, wake: loop}, str(own), true},
+		{"person between and after", []string{wake2, "p1", ask, "p2"}, watch + sep + "first" + sep + prompt + sep + "[Image #1] second",
+			map[string]string{wake2: watch, ask: prompt}, str("first" + sep + "[Image #1] second"), true},
+		{"only the app", []string{wake, out}, loop + sep + send, map[string]string{wake: loop, out: send}, nil, true},
+		{"an empty person part", []string{"p1", wake}, "" + sep + loop, map[string]string{wake: loop}, str(""), true},
+		{"a part of the wrong kind", []string{"p1", wake}, own + sep + send, nil, nil, false},
+		{"a missing part", []string{wake, out}, loop, nil, nil, false},
+	} {
+		app, person, ok := splitJoinedAgentParts(tc.ids, tc.content)
+		if ok != tc.ok || !maps.Equal(app, tc.app) || (person == nil) != (tc.person == nil) || (person != nil && *person != *tc.person) {
+			got, want := "<nil>", "<nil>"
+			if person != nil {
+				got = *person
+			}
+			if tc.person != nil {
+				want = *tc.person
+			}
+			t.Errorf("%s: ok=%v person=%q app=%d parts; want ok=%v person=%q app=%d parts", tc.name, ok, got, len(app), tc.ok, want, len(tc.app))
+		}
 	}
 }
