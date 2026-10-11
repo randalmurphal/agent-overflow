@@ -116,7 +116,7 @@ func (c *session) loop(ctx context.Context, raw json.RawMessage) (any, error) {
 	if utf8.RuneCountInString(note) > MaxNoteRunes {
 		return nil, invalidf("note must be at most %d characters.", MaxNoteRunes)
 	}
-	if err := checkInterval(args.EverySeconds, true); err != nil {
+	if err := checkInterval(args.EverySeconds, c.wakeFloor, true); err != nil {
 		return nil, err
 	}
 	state, err := c.app.Loop(ctx, c.caller, LoopCall{Label: label, Note: note, EverySeconds: args.EverySeconds})
@@ -162,7 +162,7 @@ func (c *session) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 			return nil, invalidf("timeout_seconds bounds one run of an interval watch; a long_running watch is restarted when it exits instead.")
 		}
 	} else {
-		if err := checkInterval(args.EverySeconds, false); err != nil {
+		if err := checkInterval(args.EverySeconds, c.wakeFloor, false); err != nil {
 			return nil, err
 		}
 		if args.TimeoutSeconds != 0 && (args.TimeoutSeconds < 1 || args.TimeoutSeconds > MaxWakeTimeoutSeconds) {
@@ -209,32 +209,32 @@ func wakeLabel(raw string) (string, error) {
 	return label, nil
 }
 
-func checkInterval(seconds int, required bool) error {
+func checkInterval(seconds, floor int, required bool) error {
 	if seconds == 0 && required {
 		return invalidf("every_seconds is required: it is how often the loop fires.")
 	}
-	if seconds < 1 || seconds > MaxWakeIntervalSeconds {
-		return invalidf("every_seconds must be between 1 and %d.", MaxWakeIntervalSeconds)
+	if seconds < floor || seconds > MaxWakeIntervalSeconds {
+		return invalidf("every_seconds must be between %d and %d (30 days): each fire is a turn.", floor, MaxWakeIntervalSeconds)
 	}
 	return nil
 }
 
-func loopSchema() map[string]any {
+func loopSchema(floor int) map[string]any {
 	properties := map[string]any{
 		"label":         map[string]any{"type": "string", "minLength": 1, "maxLength": MaxWakeLabelRunes, "description": "Names this loop in this thread. Registering a label again replaces its note and interval."},
 		"note":          map[string]any{"type": "string", "maxLength": MaxNoteRunes, "description": "What each fire tells you. Write what you need to do the round of work."},
-		"every_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxWakeIntervalSeconds, "description": fmt.Sprintf("Seconds between fires, at least %d and at most %d (30 days).", WakeFloorSeconds, MaxWakeIntervalSeconds)},
+		"every_seconds": map[string]any{"type": "integer", "minimum": floor, "maximum": MaxWakeIntervalSeconds, "description": fmt.Sprintf("Seconds between fires, at least %d and at most %d (30 days).", floor, MaxWakeIntervalSeconds)},
 		"stop":          map[string]any{"type": "boolean", "description": "Cancel the loop with this label instead. Pass only the label."},
 	}
 	description := fmt.Sprintf("Wake this thread every every_seconds with a note, until stopped. One loop per label: registering a label again replaces it, stop cancels it. A thread keeps at most %d loops and watches together. Each fire arrives in this thread as a message badged as this loop, framed as data rather than as the user, and starts a turn, starting the session if none is running. A fire that comes while the previous one is still queued is skipped and counted as missed. Fires missed while the app was closed replay once when it starts, saying how many were missed. Returns the next fire time. thread_status lists your loops; thread_cancel with the label stops one. Use thread_remind for a single wake.", MaxWakesPerThread)
 	return tool("thread_loop", description, properties, "label")
 }
 
-func watchSchema() map[string]any {
+func watchSchema(floor int) map[string]any {
 	properties := map[string]any{
 		"label":           map[string]any{"type": "string", "minLength": 1, "maxLength": MaxWakeLabelRunes, "description": "Names this watch in this thread. Registering a label again replaces it."},
 		"command":         map[string]any{"type": "string", "maxLength": MaxWakeCommandBytes, "description": "Shell command to run, usually a script in your home. It runs as you, with your agent home in AO_AGENT_HOME and no Agent Overflow credentials."},
-		"every_seconds":   map[string]any{"type": "integer", "minimum": 1, "maximum": MaxWakeIntervalSeconds, "description": fmt.Sprintf("Run the command this often, at least every %d seconds and at most every %d (30 days), and wake this thread when its stdout is not empty.", WakeFloorSeconds, MaxWakeIntervalSeconds)},
+		"every_seconds":   map[string]any{"type": "integer", "minimum": floor, "maximum": MaxWakeIntervalSeconds, "description": fmt.Sprintf("Run the command this often, at least every %d seconds and at most every %d (30 days), and wake this thread when its stdout is not empty.", floor, MaxWakeIntervalSeconds)},
 		"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": MaxWakeTimeoutSeconds, "description": fmt.Sprintf("With every_seconds: stop a run that takes longer than this, recording it as timed out. Defaults to %d, at most %d.", DefaultWakeTimeoutSeconds, MaxWakeTimeoutSeconds)},
 		"long_running":    map[string]any{"type": "boolean", "description": "Keep the command running instead, restarting it if it exits, and wake this thread with each stdout line; lines within one second arrive together."},
 		"cwd":             map[string]any{"type": "string", "description": "Directory to run in. Defaults to this thread's workspace."},

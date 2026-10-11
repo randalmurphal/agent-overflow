@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"slices"
 	"sync"
@@ -50,6 +51,7 @@ const threadMCPCallCeiling = 20 * time.Minute
 func (a *App) threadMCPServer() *threadmcp.Server[threadMCPAccess] {
 	a.threadMCP.once.Do(func() {
 		a.threadMCP.tools = threadtools.New(a.threadToolsAdapter())
+		a.threadMCP.tools.SetWakeFloor(int(math.Ceil(a.agentWakeFloor().Seconds())))
 		server := threadmcp.New(threadMCPName, "", a.threadMCPTools, a.callThreadMCP)
 		// The tool list and the guide both follow the shape, which is
 		// recomputed per handshake: pairing a computer changes what a

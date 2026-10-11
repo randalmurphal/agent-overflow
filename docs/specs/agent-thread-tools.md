@@ -539,9 +539,9 @@ sleeping in a loop.
 Wakes the calling thread every `every_seconds` with a `note`, until
 stopped: `label` names it, registering a label again replaces it, and
 `stop: true` with the label cancels it. Any thread may keep loops. The
-computer enforces a floor of 60 seconds and a ceiling of 30 days and
-refuses an interval outside them with the bound; a thread keeps at most
-64 loops and watches together. Returns the next fire time. Never
+tool's schema states a floor of 60 seconds and a ceiling of 30 days, and
+the tool refuses an interval outside them with the bound; a thread keeps
+at most 64 loops and watches together. Returns the next fire time. Never
 forwarded to another computer.
 
 ### `thread_watch`

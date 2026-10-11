@@ -96,8 +96,8 @@ const (
 	// days.
 	MaxWakeIntervalSeconds = 30 * 24 * 60 * 60
 	// WakeFloorSeconds is the shortest interval a loop or watch may
-	// register: each fire is a turn. The App enforces it, because a test
-	// boot lowers it.
+	// register: each fire is a turn. The tools refuse a shorter one and the
+	// App enforces it again; a test boot lowers both (Server.SetWakeFloor).
 	WakeFloorSeconds = 60
 	// MaxWakesPerThread bounds the live loops and watches of one thread;
 	// each long-running watch is a process. The store enforces it.
