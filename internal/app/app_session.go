@@ -146,6 +146,11 @@ func (a *App) startSessionNow(threadID string) error {
 	if err := a.requireIsolatedWorkspace(opts.WorkDir); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// Also before the transcript is settled under the workspace, which would
+	// otherwise report its own failure for a directory that is gone.
+	if err := requireWorkspaceDir(opts.WorkDir); err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
 	// Spawn-only, and the one place the settings-level override is decided
 	// for this session. The resolution travels to ensureClaudeMemoryDir
 	// below so the directory we create and the prompt we rendered come from
