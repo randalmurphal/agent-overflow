@@ -179,8 +179,8 @@ Each connection reads at most `githubReadMaxPages` (10) pages of 100. A
 CI read adds REST requests only for what the rollup lacks: the jobs list
 of a run (`repos/O/R/actions/runs/ID/jobs?per_page=100`, paged by `Link`)
 while a job in `stepsFor` has steps that are not settled in `prev`, and a
-job's log on request (`Stream` into a `TailBuffer`, 404 is
-`ErrCIJobLogNotFound`).
+job's log on request (`StreamCIJobLog`: `Stream` with `NoLimit` into the
+CI log store, 404 is `ErrCIJobLogNotFound`).
 
 | Tick | GitHub requests |
 |---|---|
@@ -195,7 +195,7 @@ adds its approvals, `Threads` its discussions (`per_page=100`, paged by
 `X-Next-Page`, positions normalized against `diff_refs.head_sha`), and `CI`
 the jobs of its `head_pipeline` (`per_page=100`, paged by `X-Next-Page`,
 at most `gitlabCIJobsMaxPages` (5) pages). A job's trace is read on
-request (`Stream` into a `TailBuffer`, 404 is `ErrCIJobLogNotFound`).
+request (`StreamCIJobLog`, as on GitHub).
 
 | Tick | GitLab requests |
 |---|---|
@@ -247,10 +247,10 @@ func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (mo
   beside errors is handed back so a caller can decide what partial data it
   accepts.
 - `Stream` writes the body to `dst` and fails with `ErrBodyTooLarge` once
-  `limit` bytes pass. A `*TailBuffer` as `dst` declares a tail cap instead:
-  the last `limit` bytes are kept and an over-cap body is re-requested from
-  its tail (below). CI logs use it; the head-keeping `limitedBuffer` was
-  not the tail the review pane says it shows. A JSON body is re-encoded for
+  `limit` bytes pass; `NoLimit` streams any size, for a `dst` on disk. A
+  `dst` that implements `StreamStarter` is told the status and headers
+  before the body, so the CI log store can tell a 206 resume from a 200
+  restart. A JSON body is re-encoded for
   the retry after a 401 refresh; a one-shot `io.Reader` body refreshes the
   token and fails with `*TransientError` instead.
 - `Pages` follows GitHub `Link: rel="next"` and GitLab `X-Next-Page` /
@@ -374,19 +374,23 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
   GitLab honors `If-None-Match` on merge requests, their list and job
   traces, not on the pipeline jobs list (200 with the same weak ETag).
 - `Stream` never stores a body; it passes the caller's `If-None-Match`
-  through and exposes the response ETag. A followed job log keeps the ETag
-  of the text it holds and sends it on its next fetch; a 304 keeps the
-  text and sends no frame. A running GitLab trace ignores `Range` (200
-  with the whole body), so growth is never fetched incrementally; a
-  completed trace honors it.
-- Suffix ranges (`bytes=-N`) are refused by GitLab traces (400) and ignored
-  by the GitHub log blob (200 with the whole body). Both send
-  `Content-Length`, so a log over `maxCILogBytes` is not streamed whole: the
-  client reads the headers, closes the body and re-requests
-  `Range: bytes=(total-cap)-` against the URL that answered (for GitHub the
-  blob `Location` of the first hop, not the logs endpoint, which would mint
-  a new signed URL), advanced to the next line boundary by the caller. A
-  server that answers that with 200 falls back to the tail buffer.
+  through and exposes the response ETag, and follows a redirect with the
+  caller's `Range` and `If-None-Match` (a GitHub job log's blob). The CI
+  log store (`internal/cilog`) keeps the ETag of the version it holds and
+  sends it on its next fetch; a 304 keeps the version and sends no frame.
+- A CI log is downloaded whole to disk, of any size, each attempt bounded
+  by `ciLogAttemptTimeout` (2 minutes: GitLab's default 100 MB job log
+  limit at under 1 MB/s). An attempt cut off after it made progress keeps
+  its part file and the next fetch resumes it with `Range: bytes=N-`,
+  where N is the raw bytes taken; the follow shows it as downloading and
+  resumes at the follow cadence, and a Save retries until it is whole. A
+  completed GitLab trace and the GitHub blob answer that with a 206; an
+  answer of 200, or a 206 under another ETag, is another log and the
+  download starts over. A running GitLab trace ignores `Range` (200 with
+  the whole body), so its growth is read whole each time; a completed
+  trace honors it. Suffix ranges (`bytes=-N`) are refused by GitLab traces
+  (400) and ignored by the GitHub log blob (200 with the whole body); the
+  store never sends one.
 
 ## Isolation
 
@@ -426,9 +430,9 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
 - Unit: holder redaction through every formatter, zeroing on replace,
   negative cache expiry, header choice per forge and login kind, 401 refresh
   once then setup error, gate per pool, ETag hit and clear on token change,
-  Range 200/206/416, redirect header drop, absolute URL refusal, tail buffer
-  under growth, every row of the error table.
-- Harness: `review-ci-live`, `review-pr-outage` (its banner now comes from a
+  Range 200/206/416, redirect header drop, absolute URL refusal, a CI log
+  download cut off and resumed, every row of the error table.
+- Harness: `review-ci-live`, `review-ci-large-log`, `review-pr-outage` (its banner now comes from a
   `*TransientError`, shown once the retry also fails), `review-rate-limit`
   (`HarnessForgeRateLimit`), `forge-image-menu`, `compact-forge-image-menu`,
   `create-pr-flow` over the HTTP fake; offline recovery; unhandled route

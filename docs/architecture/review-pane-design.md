@@ -147,8 +147,13 @@ polling.
   the open log view shows, from one REST jobs list per run holding a
   followed job whose steps can still change; GitLab reads the MR view and
   the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
-  the pump fetches each now and streams UTF-16 prefix deltas on
-  `pr:ci_log` while the job runs, revalidating by ETag. GitLab serves a
+  the pump downloads each into the backend's log cache (`internal/cilog`,
+  a disk store bounded at 512 MiB, least recently used out, a followed
+  log pinned) and sends its index on `pr:ci_log` whenever it moves: the
+  version, line and byte totals, how many leading lines the version
+  before it keeps (`stableLines`), the rows below, and whether the forge
+  serves the log yet or a cut download is resuming. It revalidates by
+  ETag while the job runs. The text never rides the frame. GitLab serves a
   running job's trace; GitHub serves a log once its blob exists, in
   practice once the job completed, though the jobs API can still call the
   job running then
@@ -156,36 +161,46 @@ polling.
   the forge answers 404 for is a wait, not an error: asked at the job's
   cadence while it runs (every 10s on GitHub, which answers 404 for a
   running job's whole run), and once it completed every 5s for six tries,
-  then every 45s while the job stays followed. The log keeps what the
-  log view splits it by: each GitHub log line's own RFC 3339 time, beside
-  the steps' `startedAt` and `completedAt` from the jobs list, and a
-  GitLab trace's section markers, each on a line of its own
-  (`cleanGitLabTrace`). The pause, dedup, caller-safe error and
+  then every 45s while the job stays followed. The pause, dedup, caller-safe error and
   connection-cleanup rules of the snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the
   union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
 - **The CI log view** (`ReviewCILogView.svelte`) shows a job's log as one
-  collapsible row per GitHub step or top-level GitLab section, split by
-  `utils/ciLogSections.ts`. A GitHub step's start time is floored to the
-  second and several steps often start in the same one, so the time
-  bounds where a step can begin and the line the runner writes when a
-  step begins (`##[group]Run ...`, `Post job cleanup.` and the like)
-  decides inside that second; skipped steps are not listed, and steps not
-  reached yet are listed as pending. GitLab sections nest; nested ones
-  stay inside their parent's row, lines outside every section form rows
-  of their own, and markers are never shown, saved or sent. Each row
-  shows its status, name and duration (a running one, its line count),
-  and has Copy and Send to chat for its text alone: inline in the
-  composer up to `CI_SECTION_INLINE_MAX_BYTES` (64 KB), otherwise saved
-  by `SavePRCIJobLogSection` and named by path. Nothing expands on its
-  own; the expanded set lives in the pane's review store, per job, and
-  each log open starts collapsed. When the 2 MB display tail starts
-  partway through a row, that row is marked cut at its top. Save to file
-  and Send to chat in the header cover the whole job. The list opens at
-  its end and follows growth through the shared stick-to-bottom
-  controller, wired over `LongListVirtualizer` as chat wires it; a reader
-  who scrolls away keeps their place, and expanding or collapsing a row
-  holds that row where it is.
+  collapsible row per GitHub step or top-level GitLab section, as the
+  backend's index lists them (`internal/cilog/sections.go`). A GitHub
+  step's start time is floored to the second and several steps often
+  start in the same one, so each log line's own RFC 3339 time bounds
+  where a step can begin and the line the runner writes when a step
+  begins (`##[group]Run ...`, `Post job cleanup.` and the like) decides
+  inside that second; skipped steps are not listed, and steps not reached
+  yet are listed as pending, before the log exists too. GitLab sections
+  nest; nested ones stay inside their parent's row, lines outside every
+  section form rows of their own, and markers are never shown, saved or
+  sent. Each row shows its status, name and duration (a running one, its
+  line count), and has Copy and Send to chat for its text alone: read
+  from the backend and inline up to `CI_SECTION_INLINE_MAX_BYTES`
+  (64 KB), otherwise saved whole by `SavePRCIJobLogSection` and named by
+  path. Nothing expands on its own; the expanded set lives in the pane's
+  review store, per job, and each log open starts collapsed. Save to file
+  copies the cached log whole; Send to chat in the header covers the
+  whole job.
+- **The view holds a few viewports of lines, whatever the log's size.**
+  An expanded row's lines are list rows of at most one 200-line block
+  (`CI_LOG_BLOCK_LINES`). A row that mounts in the render window reads
+  its block through `GetPRCILogLines` (at most 2000 lines and 1 MiB a
+  call); until it lands the row is a placeholder of the lines' height,
+  and a failed read shows in place and is read again when the row mounts
+  again. Blocks live in `ciLogBlocks.svelte.ts`, least recently used out
+  past 24 blocks or 8 Mi UTF-16 units, never one a mounted row holds. A
+  new version keeps the blocks inside its `stableLines`, the last block
+  of a growing log reads only its new lines, and any other block keeps
+  showing its old lines while it reloads, so a followed log does not
+  flash. A line over 64 KiB is shown clipped there with an inline mark;
+  Save to file and the section save keep it whole.
+- **Following.** The list opens at its end and follows growth through
+  the shared stick-to-bottom controller, wired over `LongListVirtualizer`
+  as chat wires it; a reader who scrolls away keeps their place, and
+  expanding or collapsing a row holds that row where it is.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,
