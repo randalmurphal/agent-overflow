@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"agent-overflow/internal/gitroot"
 	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -548,4 +550,31 @@ func (a *App) setThreadSystemPrompt(threadID, prompt string) {
 
 func (a *App) clearThreadSystemPrompt(threadID string) {
 	a.sessionManager().runtime.ClearThreadSystemPrompt(threadID)
+}
+
+// renderedPromptDir is <configDir>/cache/prompts, where both Claude
+// transports write a thread's rendered system and append prompts
+// (claude.WriteSystemPromptFile). Empty before the config dir is known, so
+// a spawn carrying a prompt then fails rather than writing beside the
+// working directory.
+func (a *App) renderedPromptDir() string {
+	if a.configDir == "" {
+		return ""
+	}
+	return filepath.Join(a.configDir, "cache", "prompts")
+}
+
+// clearDeletedThreadSystemPrompt is the thread deletion step for system
+// prompts: the in-memory feature prompt, and the rendered prompt files the
+// thread's Claude spawns left under renderedPromptDir. Runs after the
+// session is stopped, so no CLI can still be starting from them.
+func (a *App) clearDeletedThreadSystemPrompt(threadID string) {
+	a.clearThreadSystemPrompt(threadID)
+	dir := a.renderedPromptDir()
+	if dir == "" {
+		return
+	}
+	if err := claude.RemoveSystemPromptFiles(dir, threadID); err != nil {
+		log.Printf("delete thread %s: %v", threadID, err)
+	}
 }

@@ -169,6 +169,10 @@ type App struct {
 	// spinnerWatcher it also suppresses this process's own cue writes,
 	// which are RPCs rather than hand edits.
 	soundWatcher *assetwatch.SoundWatcher
+	// promptWatcher watches <configDir>/prompts so a system prompt override
+	// edited as a file reaches attached screens and live Claude sessions
+	// without a save in the app. Nil on the same terms as themeWatcher.
+	promptWatcher *assetwatch.PromptWatcher
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
 	turnObservers appTurnObserverState

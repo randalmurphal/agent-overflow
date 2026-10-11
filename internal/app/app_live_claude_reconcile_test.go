@@ -49,7 +49,6 @@ func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"claudePromptOverrides": []any{
 			map[string]any{
-				"id":      "override-1",
 				"name":    "House style",
 				"enabled": true,
 				"models":  []any{"claude-fable-5"},
@@ -359,7 +358,6 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"claudePromptOverrides": []any{
 			map[string]any{
-				"id":      "override-1",
 				"name":    "House style",
 				"enabled": true,
 				"models":  []any{"claude-opus-5"},

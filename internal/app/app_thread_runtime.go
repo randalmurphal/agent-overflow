@@ -234,7 +234,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			return a.terminals.CloseThread(threadID)
 		},
 		CloseBrowserPages:  a.closeThreadBrowserPages,
-		ClearSystemPrompt:  a.clearThreadSystemPrompt,
+		ClearSystemPrompt:  a.clearDeletedThreadSystemPrompt,
 		RemoveDiscussion:   a.removeDeliberation,
 		ClearAutoReconnect: a.clearAutoReconnectAttempted,
 		CleanupAttachments: a.cleanupThreadAttachmentFiles,

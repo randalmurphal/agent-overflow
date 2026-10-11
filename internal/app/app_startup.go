@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/assetwatch"
 	"agent-overflow/internal/attachment"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/errorsx"
@@ -405,6 +406,13 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
 	a.settingsAttached.Store(true)
+	// Prompt override texts move out of the user-tier rows into
+	// <configDir>/prompts once the rows are in the store, and before the
+	// prompts watcher starts (initPromptDirectory). A failure leaves the
+	// text inline, where it still applies, and the next save retries.
+	if err := a.settings.MigratePromptFiles(); err != nil {
+		a.bootPhaseFailed(err)
+	}
 	// The phone-push sender, if this backend has one (docs/specs/
 	// remote-access.md §9). Absent is the resting state and costs nothing;
 	// it is read here because the fan-out's own no-credential branch must
@@ -759,6 +767,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.initThemeDirectory()
 	a.initSpinnerDirectory()
 	a.initSoundDirectory()
+	a.initPromptDirectory()
 	a.startDeviceNameWatcher()
 	return nil
 }
@@ -837,4 +846,41 @@ func (a *App) initSoundDirectory() {
 		log.Printf("sound directory setup: %v", err)
 	}
 	a.startSoundWatcher(service.Dir())
+}
+
+// initPromptDirectory creates <configDir>/prompts, the home of the system
+// prompt override texts (internal/settings/promptfiles.go), and arms the
+// watcher over it. Nothing fails boot: without the watcher an edit made
+// outside the app still reaches the next settings read through the cache
+// check, and only the refresh of attached screens and running Claude
+// sessions waits for the next save.
+func (a *App) initPromptDirectory() {
+	if a.settings == nil {
+		return
+	}
+	dir := a.settings.PromptFilesDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("prompt directory unavailable: %v", err)
+		return
+	}
+	a.startPromptWatcher(dir)
+}
+
+// startPromptWatcher arms the prompts-directory watcher. An external edit
+// reloads the prompt texts, which announces both override keys to attached
+// clients, and then reconciles live Claude sessions: a changed override
+// text swaps live through set_model.system_prompt, and Codex converges on
+// its next spawn. The settings service reports its own writes to the
+// watcher's suppression, so a save made in the app does not echo back.
+func (a *App) startPromptWatcher(dir string) {
+	watcher, err := assetwatch.NewPromptWatcher(dir, func() {
+		a.settings.ReloadPromptFiles()
+		a.scheduleLiveClaudeReconcile()
+	})
+	if err != nil {
+		log.Printf("prompt watcher unavailable: %v", err)
+		return
+	}
+	a.promptWatcher = watcher
+	a.settings.SetPromptFileWriteObserver(watcher.Suppress)
 }
