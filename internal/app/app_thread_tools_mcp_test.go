@@ -295,8 +295,58 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 	if guide == "" {
 		t.Fatal("thread/start carried no developerInstructions, so the decision guide never reaches Codex")
 	}
-	if guide != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
-		t.Errorf("developerInstructions is not the thread tools guide:\n%s", guide)
+	// The app guide leads, naming the thread tools as on, and the thread
+	// tools' own guide follows it: Codex reads neither from the handshake.
+	want := agentGuideText(map[string]bool{threadMCPName: true}) + "\n\n" + app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID))
+	if guide != want {
+		t.Errorf("developerInstructions:\n%s\nwant:\n%s", guide, want)
+	}
+}
+
+// With the app guide switched off, Codex still gets the on servers' guides;
+// with the thread tools off too, nothing is sent and the cwd's configured
+// instructions stand unchanged.
+func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath":   writeCodexRequestLogBinary(t, logPath),
+		"agentGuideEnabled": false,
+	}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	params := waitForCodexRequest(t, logPath, "thread/start")
+	if got := params["developerInstructions"]; got != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
+		t.Errorf("guide off: developerInstructions = %v, want the thread tools guide alone", got)
+	}
+
+	// A second, fresh thread: the first one would resume its provider thread.
+	other, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := os.Remove(logPath); err != nil {
+		t.Fatalf("reset request log: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"threadToolsEnabled": false}); err != nil {
+		t.Fatalf("disable thread tools: %v", err)
+	}
+	if err := app.StartSession(other.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	params = waitForCodexRequest(t, logPath, "thread/start")
+	if got, present := params["developerInstructions"]; present {
+		t.Errorf("everything off, yet thread/start carried developerInstructions %v", got)
 	}
 }
 

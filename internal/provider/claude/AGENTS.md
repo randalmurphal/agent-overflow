@@ -7,8 +7,9 @@ parsing or control requests.
 
 ## Spawn and live configuration
 
-Always pass `--forward-subagent-text`. Deliver `Config.SystemPrompt` through
-a 0600 temporary file and remove it on every close and failed-spawn path.
+Always pass `--forward-subagent-text`. Deliver `Config.SystemPrompt` and
+`Config.AppendSystemPrompt` through 0600 temporary files and remove them on
+every close and failed-spawn path.
 Settings that the CLI can override from its own configuration must travel
 through the inline `--settings` payload, with their names reserved from user
 environment overrides.

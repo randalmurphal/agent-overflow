@@ -9,7 +9,7 @@ import (
 // -- Session unit tests (wire format verification) --
 
 func TestBuildArgsDefault(t *testing.T) {
-	args := buildArgs(Config{}, "")
+	args := buildArgs(Config{}, "", "")
 
 	// Baseline flags that every spawn must include. Adding a new flag to
 	// buildArgs should extend this list intentionally.
@@ -46,7 +46,7 @@ func TestBuildArgsDefault(t *testing.T) {
 // supported floor.
 func TestBuildArgsForwardsSubagentText(t *testing.T) {
 	for _, cfg := range []Config{{}, {Resume: "sess-1"}, {Model: "opus"}} {
-		args := buildArgs(cfg, "")
+		args := buildArgs(cfg, "", "")
 		if !slices.Contains(args, "--forward-subagent-text") {
 			t.Fatalf("spawn args omit --forward-subagent-text: %v", args)
 		}
@@ -54,7 +54,7 @@ func TestBuildArgsForwardsSubagentText(t *testing.T) {
 }
 
 func TestBuildArgsOmitsResumeAtWithoutResume(t *testing.T) {
-	args := buildArgs(Config{ResumeAt: "leaf-456"}, "")
+	args := buildArgs(Config{ResumeAt: "leaf-456"}, "", "")
 	for _, arg := range args {
 		if arg == "--resume-session-at" {
 			t.Fatalf("args include --resume-session-at without --resume: %v", args)
@@ -79,7 +79,7 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 		t.Fatalf("WriteSystemPromptFile() error = %v", err)
 	}
 	t.Cleanup(func() { RemoveSystemPromptFile(systemPromptPath) })
-	args := buildArgs(cfg, systemPromptPath)
+	args := buildArgs(cfg, systemPromptPath, "")
 
 	// Check that all flags are present.
 	findFlag := func(flag, value string) bool {
@@ -156,7 +156,7 @@ func TestWriteSystemPromptFile(t *testing.T) {
 		RemoveSystemPromptFile(path)
 		t.Fatalf("WriteSystemPromptFile(\"\") = %q, want no file for a session with no override", path)
 	}
-	if args := buildArgs(Config{}, ""); slices.Contains(args, "--system-prompt-file") {
+	if args := buildArgs(Config{}, "", ""); slices.Contains(args, "--system-prompt-file") {
 		t.Errorf("argv carries --system-prompt-file without a prompt: %v", args)
 	}
 
@@ -182,7 +182,7 @@ func TestWriteSystemPromptFile(t *testing.T) {
 }
 
 func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: nil}, "")
+	args := buildArgs(Config{PermissionFlags: nil}, "", "")
 
 	for _, a := range args {
 		if a == "--permission-mode" || a == "--allow-dangerously-skip-permissions" {
@@ -194,7 +194,7 @@ func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
 // TestBuildArgsDangerousSkipPermissions confirms the full-access flow emits
 // the bypass permission mode plus the bare dangerous-skip allow flag.
 func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}}, "")
+	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}}, "", "")
 	found := false
 	for i, a := range args {
 		if a != "--allow-dangerously-skip-permissions" {
@@ -329,7 +329,7 @@ func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
 	args := buildArgs(Config{
 		AdditionalDirs:  []string{"/var/attachments", "/var/other"},
 		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
-	}, "")
+	}, "", "")
 
 	var dirs []string
 	addDirEnd := -1
@@ -353,7 +353,7 @@ func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
 // The zero value says nothing, so a session with no additional directory
 // keeps the argv it has always had.
 func TestBuildArgsOmitsAddDirWhenUnset(t *testing.T) {
-	if args := buildArgs(Config{}, ""); slices.Contains(args, "--add-dir") {
+	if args := buildArgs(Config{}, "", ""); slices.Contains(args, "--add-dir") {
 		t.Fatalf("expected no --add-dir with no AdditionalDirs; got %v", args)
 	}
 }

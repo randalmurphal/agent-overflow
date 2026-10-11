@@ -194,7 +194,7 @@ func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
 		ContextWindow:              provider.ClaudeStandardContextWindow,
 		AutoCompactStandardPercent: 50,
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
@@ -214,7 +214,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 		ContextWindow:              provider.ClaudeExtendedContextWindow,
 		AutoCompactExtendedPercent: 40,
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
 	if !strings.Contains(joined, want) {
@@ -227,7 +227,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 // still renders the pct override but must not invent a window value.
 func TestBuildArgsAutoCompactOmitsWindowWhenUnresolved(t *testing.T) {
 	cfg := Config{AutoCompactPercent: 50}
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"`) {
 		t.Fatalf("args missing pct override: %v", args)
@@ -245,7 +245,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 		FastMode:                   true,
 		AutoCompactStandardPercent: 50,
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	want := `--settings {"fastMode":true,"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
@@ -262,7 +262,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 // `{}`. The Config is hand-stamped because ConfigFromOptions no longer
 // produces an empty block — see the cross-session refusal below.
 func TestBuildArgsOmitsSettingsFlagWhenNothingSet(t *testing.T) {
-	args := buildArgs(Config{Model: "claude-opus-4-7"}, "")
+	args := buildArgs(Config{Model: "claude-opus-4-7"}, "", "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--settings") {
 		t.Fatalf("expected no --settings flag when no settings-block axis is set, got %v", args)
@@ -286,7 +286,7 @@ func TestBuildArgsAlwaysStatesTheCrossSessionRefusal(t *testing.T) {
 		Provider: "claude",
 		Model:    "claude-opus-4-7",
 	})
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	if !strings.Contains(joined, `--settings {"crossSessionInbound":"refuse"}`) {
 		t.Fatalf("a cross-session-disabled spawn must state the refusal, got %s", joined)
 	}
@@ -312,7 +312,7 @@ func TestCrossSessionOptionsRenderGateNameAndPolicy(t *testing.T) {
 			ClaudePeerSessionName: "AO Thread One",
 		})
 		cfg.PeerSessionName = "AO Thread One"
-		joined := strings.Join(buildArgs(cfg, ""), " ")
+		joined := strings.Join(buildArgs(cfg, "", ""), " ")
 		want := `--settings {"crossSessionInbound":"` + policy + `"}`
 		if !strings.Contains(joined, want) {
 			t.Fatalf("policy %q: got=%s\nwant substring=%q", policy, joined, want)
@@ -340,7 +340,7 @@ func TestCrossSessionOptionsDisabledEmitOnlyTheRefusal(t *testing.T) {
 		ClaudePeerSessionName: "AO Thread One",
 	})
 	cfg.PeerSessionName = "AO Thread One"
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	if !strings.Contains(joined, `"crossSessionInbound":"refuse"`) {
 		t.Fatalf("disabled cross-session must still refuse: %s", joined)
 	}
@@ -362,7 +362,7 @@ func TestCrossSessionNameFlagDroppedWhenNameSanitizesEmpty(t *testing.T) {
 		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
 	})
 	cfg.PeerSessionName = "   \u200b  "
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	if strings.Contains(joined, "--name") {
 		t.Fatalf("empty name rendered a flag: %s", joined)
 	}
@@ -378,14 +378,14 @@ func TestCrossSessionNameFlagDroppedWhenNameSanitizesEmpty(t *testing.T) {
 func TestBuildArgsRendersOutputStyleIntoSettings(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
 	cfg.OutputStyle = "Explanatory"
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	want := `--settings {"crossSessionInbound":"refuse","outputStyle":"Explanatory"}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing output style: got=%s\nwant substring=%q", joined, want)
 	}
 
 	cfg.OutputStyle = "   "
-	joined = strings.Join(buildArgs(cfg, ""), " ")
+	joined = strings.Join(buildArgs(cfg, "", ""), " ")
 	if strings.Contains(joined, "outputStyle") {
 		t.Fatalf("blank output style must not render a key: %s", joined)
 	}
@@ -401,7 +401,7 @@ func TestBuildArgsRendersSubagentAndMemoryEnv(t *testing.T) {
 	cfg.MaxSubagentSpawnDepth = 2
 	cfg.MaxConcurrentSubagents = 6
 	cfg.ToolMemoryLimit = "4G"
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	for _, want := range []string{
 		`"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH":"2"`,
 		`"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS":"6"`,
@@ -422,7 +422,7 @@ func TestBuildArgsOmitsZeroSubagentLimits(t *testing.T) {
 	cfg.MaxSubagentSpawnDepth = 0
 	cfg.MaxConcurrentSubagents = 0
 	cfg.ToolMemoryLimit = "   "
-	joined := strings.Join(buildArgs(cfg, ""), " ")
+	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	for _, name := range []string{
 		"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
 		"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
@@ -509,7 +509,7 @@ func TestBuildArgsRendersAutoPermissionMode(t *testing.T) {
 	args := buildArgs(ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeAuto,
-	}), "")
+	}), "", "")
 	idx := slices.Index(args, "auto")
 	if idx <= 0 || args[idx-1] != "--permission-mode" {
 		t.Errorf("args missing --permission-mode auto: %v", args)
@@ -547,7 +547,7 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 		ContextWindow:   provider.ClaudeExtendedContextWindow,
 		FastMode:        true,
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--model claude-opus-4-6[1m]") {
 		t.Fatalf("args missing suffixed model: %v", args)
@@ -615,7 +615,7 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 			},
 		},
 	}
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--mcp-config") {
 		t.Fatalf("args missing --mcp-config: %v", args)
@@ -676,7 +676,7 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	// directly. A future regression that drops the clamp (or changes
 	// the upper bound) would show up here.
 	cfg := Config{AutoCompactPercent: 150}
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	want := `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90"`
 	if !strings.Contains(joined, want) {
@@ -772,7 +772,7 @@ func TestBuildArgsRendersDisallowedTools(t *testing.T) {
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeReadOnly,
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	for _, tool := range []string{"Write", "Edit", "NotebookEdit"} {
 		idx := slices.Index(args, tool)
 		if idx <= 0 || args[idx-1] != "--disallowedTools" {
@@ -892,7 +892,7 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 func TestBuildArgsRendersAllowedTools(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude"})
 	cfg.AllowedTools = []string{"mcp__ao-thread-tools__*", "Read"}
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	for _, tool := range cfg.AllowedTools {
 		idx := slices.Index(args, tool)
 		if idx <= 0 || args[idx-1] != "--allowedTools" {
@@ -904,7 +904,7 @@ func TestBuildArgsRendersAllowedTools(t *testing.T) {
 	// reshaped: an allow entry is a grant, and a leading dash would be
 	// parsed as a flag.
 	cfg.AllowedTools = []string{"  ", "two words", "-rf", "mcp__ao-thread-tools__*"}
-	args = buildArgs(cfg, "")
+	args = buildArgs(cfg, "", "")
 	var allowed []string
 	for i, arg := range args {
 		if arg == "--allowedTools" && i+1 < len(args) {

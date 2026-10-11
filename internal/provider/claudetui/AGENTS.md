@@ -27,8 +27,9 @@ notification.
 ## Runtime and terminal control
 
 `EnforcesRuntimeMode` is false. Runtime modes must not alter TUI launch
-permissions. System prompt, disallowed tools, and additional directories remain
-spawn-time flags shared with the headless Claude implementation.
+permissions. The system prompt and appended prompt files, the version-gated
+`--system-prompt-snapshot off`, disallowed tools, and additional directories
+remain spawn-time flags shared with the headless Claude implementation.
 
 Terminal input has one attachment-scoped lease holder. Only that attachment may
 write, and normal `Send` is refused while the lease is held. Attach fan-out is

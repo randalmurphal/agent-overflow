@@ -62,7 +62,7 @@ func (s *Session) syncThreadSettings() {
 		if err != nil && !s.closing.Load() {
 			var rejection *RPCError
 			if errors.As(err, &rejection) {
-				s.emitThreadSettingsEchoError(err.Error())
+				s.emitNonFatalError(err.Error())
 			} else {
 				log.Printf("codex: settings sync failed; next turn will reassert the selection: %v", err)
 			}

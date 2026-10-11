@@ -126,6 +126,7 @@ var tierByKey = map[string]Tier{
 	"codexDisabledTools":          TierUser,
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
+	"agentGuideEnabled":           TierUser,
 	// Retiered from device 2026-08-31: both are read by BACKEND behaviour
 	// rather than rendered by a client, and one backend behaviour cannot
 	// be driven by a per-screen value.

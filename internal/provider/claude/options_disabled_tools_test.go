@@ -95,7 +95,7 @@ func TestBuildArgsRendersSettingsDisabledTools(t *testing.T) {
 		RuntimeMode:   provider.RuntimeFullAccess,
 		DisabledTools: []string{"Workflow"},
 	})
-	args := buildArgs(cfg, "")
+	args := buildArgs(cfg, "", "")
 	idx := slices.Index(args, "Workflow")
 	if idx <= 0 || args[idx-1] != "--disallowedTools" {
 		t.Fatalf("args missing --disallowedTools Workflow: %v", args)

@@ -1223,9 +1223,10 @@ client's own text silently replaces whatever the user configured. Read the
 cwd's value first with `config/read {cwd, includeLayers:false}` (the
 response's `config` object is `#[serde(rename_all = "snake_case")]`, so the
 key is `developer_instructions`) and append to it. Agent Overflow does this
-in `internal/provider/codex/developer_instructions.go` to deliver the
-`ao-thread-tools` decision guide, and omits the parameter entirely when it
-has nothing to append or when the read failed.
+in `internal/provider/codex/developer_instructions.go` to deliver its app
+guide and its browser and thread tools server guides, and omits the
+parameter entirely when it has nothing to append or when the read failed; a
+failed read is reported to the thread as a non-fatal error.
 
 Verified against `rust-v0.153.4`.
 

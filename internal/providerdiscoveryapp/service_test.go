@@ -213,7 +213,11 @@ func TestProviderStatusesEmitsOnlyFailures(t *testing.T) {
 		CurrentSettings: func() settings.Settings {
 			return settings.Settings{ClaudeBinaryPath: "claude", CodexBinaryPath: "codex"}
 		},
-		DetectProvider: func(name, _ string) provider.ProviderStatus {
+		ProviderBinary: func(name string) string { return "/mock/" + name },
+		DetectProvider: func(name, binary string) provider.ProviderStatus {
+			if binary != "/mock/"+name {
+				t.Errorf("DetectProvider(%s) probed %q, want the binary a session would spawn", name, binary)
+			}
 			status := "ready"
 			if name == string(provider.Codex) {
 				status = "missing"

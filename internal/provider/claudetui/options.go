@@ -46,6 +46,17 @@ type Config struct {
 	// identity line, this text] (spike-verified 2.1.234 via PTY + wire
 	// capture). Empty means "the CLI keeps its own prompt".
 	SystemPrompt string
+	// AppendSystemPrompt follows the prompt the session otherwise runs with
+	// (the CLI's default body, or SystemPrompt), joined by one blank line,
+	// via `--append-system-prompt-file <path>`: a second temp file from the
+	// same writer, removed with the first. The TUI composes it exactly as
+	// headless does (spike-verified 2.1.284 via PTY + wire capture). The
+	// app stamps its guide here (internal/app/app_agent_guide.go).
+	AppendSystemPrompt string
+	// InstalledCLIVersion is the binary's version as the app last read it,
+	// empty when unknown; gates claude.SystemPromptSnapshotArgs, which the
+	// TUI honors like headless (same 2.1.284 capture).
+	InstalledCLIVersion string
 	// DisallowedTools are the tool names removed from the session outright
 	// via one `--disallowedTools <name>` flag each; their schemas never
 	// reach the request (spike-verified 2.1.234, same capture).

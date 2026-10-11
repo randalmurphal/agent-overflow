@@ -348,12 +348,12 @@ func (s *Session) verifyThreadSettingsEchoLocked(settings ThreadSettings) string
 		strings.Join(mismatches, ", ") + "."
 }
 
-// emitThreadSettingsEchoError surfaces an echo mismatch as thread error
-// state rather than a log line. It is not fatal: the session keeps running
-// and the next turn/start re-asserts every axis, so the user sees what Codex
-// actually chose instead of a silent divergence between the composer and the
-// running thread.
-func (s *Session) emitThreadSettingsEchoError(message string) {
+// emitNonFatalError surfaces a wire-level problem as thread error state
+// rather than a log line, without ending the session: a settings echo
+// mismatch (the next turn/start re-asserts every axis), or a developer
+// instructions read that failed (the session runs without the app's guide).
+// The user sees what Codex actually did instead of a silent divergence.
+func (s *Session) emitNonFatalError(message string) {
 	meta, _ := json.Marshal(map[string]any{"fatal": false})
 	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventError,

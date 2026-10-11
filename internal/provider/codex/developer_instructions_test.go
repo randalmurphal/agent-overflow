@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -197,5 +198,73 @@ func TestCollaborationModeSettingsCarryNoThreadLevelDeveloperInstructions(t *tes
 	if value != nil {
 		t.Fatalf("collaboration mode settings developer_instructions = %v, want null "+
 			"— a non-null value here is the mode's own instructions, not the thread's", value)
+	}
+}
+
+// writeDeveloperInstructionsReadFailureAppServer answers `config/read` with
+// a JSON-RPC error and every other request with a thread.
+func writeDeveloperInstructionsReadFailureAppServer(t *testing.T, dir, requestLog string) string {
+	t.Helper()
+	script := "#!/bin/bash\n" +
+		"while IFS= read -r line; do\n" +
+		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
+		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
+		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
+		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32603,\"message\":\"config unreadable\"}}\\n' \"$id\"\n" +
+		"  else\n" +
+		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"thread\":{\"id\":\"mock-thread\"}}}\\n' \"$id\"\n" +
+		"  fi\n" +
+		"done\n"
+	binary := filepath.Join(dir, "codex")
+	mockexec.Write(t, binary, script)
+	return binary
+}
+
+// A config read that fails keeps the user's configured value by omitting
+// the override, and tells the user so: the session runs without the guide,
+// which is not something a log line reaches them with. Non-fatal, because
+// the thread is otherwise usable.
+func TestThreadStartSurfacesAFailedDeveloperInstructionsRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	requestLog := filepath.Join(dir, "requests.jsonl")
+	binary := writeDeveloperInstructionsReadFailureAppServer(t, dir, requestLog)
+
+	var mu sync.Mutex
+	var errorsSeen []provider.ProviderEvent
+	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Binary:                binary,
+		WorkDir:               dir,
+		DeveloperInstructions: "AO guide",
+	}, func(evt provider.ProviderEvent) {
+		if evt.Kind != provider.EventError {
+			return
+		}
+		mu.Lock()
+		errorsSeen = append(errorsSeen, evt)
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	params := findRequestParams(t, requestLog, "thread/start")
+	if _, present := params["developerInstructions"]; present {
+		t.Fatalf("thread/start carried developerInstructions after a failed config read: %v", params["developerInstructions"])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errorsSeen) != 1 {
+		t.Fatalf("error events = %+v, want exactly one for the failed read", errorsSeen)
+	}
+	evt := errorsSeen[0]
+	if evt.ThreadID != "thread-1" || !strings.Contains(evt.Content, "config unreadable") || !strings.Contains(evt.Content, "guide") {
+		t.Errorf("error event = %+v, want the thread's own, naming the cause and the missing guide", evt)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil || meta["fatal"] != false {
+		t.Errorf("error meta = %s (%v), want fatal=false", evt.Meta, err)
 	}
 }

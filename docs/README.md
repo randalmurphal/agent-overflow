@@ -120,7 +120,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`remote-access-boundaries.md`](specs/remote-access-boundaries.md) | The boundaries and guarantees companion to the remote-access spec. |
 | [`app-update.md`](specs/app-update.md) | In-app updates on macOS, Linux and Windows: database snapshot, trial boot, commit or rollback, recovery after a crash, and no live migration. Implemented. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |
-| [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides and per-provider tool toggles. |
+| [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides, per-provider tool toggles, and the app guide appended to interactive sessions. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows-overlay UI spec (rev 2). Cited as `UI-SPEC §N` across the frontend. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |

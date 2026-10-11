@@ -187,10 +187,27 @@ func flagValues(args []string, flag string) []string {
 // internal/provider/claude/options.go.
 func claudeSessionConfig(args []string) *control.SessionConfig {
 	return &control.SessionConfig{
-		PermissionMode:  flagValue(args, "--permission-mode"),
-		DisallowedTools: flagValues(args, "--disallowedTools"),
-		MCPServers:      claudeMCPServerNames(flagValue(args, "--mcp-config")),
+		PermissionMode:       flagValue(args, "--permission-mode"),
+		DisallowedTools:      flagValues(args, "--disallowedTools"),
+		MCPServers:           claudeMCPServerNames(flagValue(args, "--mcp-config")),
+		AppendSystemPrompt:   promptFileContent(flagValue(args, "--append-system-prompt-file")),
+		SystemPromptSnapshot: flagValue(args, "--system-prompt-snapshot"),
 	}
+}
+
+// promptFileContent reads a prompt file the way the real CLI does, at launch.
+// The app removes the file when the session closes, so it is read here, not
+// when a test later asks for the config. An unreadable path is reported as
+// its error text so the assertion fails on the cause rather than on "".
+func promptFileContent(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "ao-mockprovider: read prompt file: " + err.Error()
+	}
+	return string(data)
 }
 
 func claudeMCPServerNames(raw string) []string {

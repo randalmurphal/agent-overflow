@@ -20,6 +20,7 @@ import CodexSettings from './CodexSettings.svelte';
 import CommitMessageSettings from './CommitMessageSettings.svelte';
 import BrowserSettings from './BrowserSettings.svelte';
 import ThreadToolsSettings from './ThreadToolsSettings.svelte';
+import AgentGuideSettings from './AgentGuideSettings.svelte';
 import DiscussionsSettings from './DiscussionsSettings.svelte';
 import ProjectsSettings from './ProjectsSettings.svelte';
 import GitSettings from './GitSettings.svelte';
@@ -46,6 +47,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   'commit-messages': CommitMessageSettings,
   browser: BrowserSettings,
   'thread-tools': ThreadToolsSettings,
+  'agent-guide': AgentGuideSettings,
   discussions: DiscussionsSettings,
   projects: ProjectsSettings,
   git: GitSettings,

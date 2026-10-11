@@ -27,7 +27,7 @@ func hasArgPair(args []string, flag, value string) bool {
 // is LIVE-confirmed against 2.1.170 in the CLI capture spike thinking_title.
 func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 // reported bug. Same global flag headless passes (provider/claude/session.go).
 func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", ReasoningEffort: "high"}
-	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
 // an empty value.
 func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
 	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
 
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", SystemPrompt: prompt}
-	opts, err := buildLaunchOptions(cfg, path, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, path, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
 // own prompt rather than being handed an empty file path.
 func TestBuildLaunchOptionsOmitsTheSystemPromptFlagWithoutAnOverride(t *testing.T) {
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBuildLaunchOptionsPassesOneDisallowedToolsFlagPerName(t *testing.T) {
 		HookCmd:         "/tmp/ao-exe",
 		DisallowedTools: []string{"Workflow", "WebSearch"},
 	}
-	opts, err := buildLaunchOptions(cfg, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestBuildLaunchOptionsEmitsAddDir(t *testing.T) {
 		Binary:         "claude",
 		WorkDir:        "/tmp/work",
 		AdditionalDirs: []string{"/var/attachments", "/var/other"},
-	}, "", "http://127.0.0.1:1/", "http://127.0.0.1:2/hook", "tok")
+	}, "", "", "http://127.0.0.1:1/", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}

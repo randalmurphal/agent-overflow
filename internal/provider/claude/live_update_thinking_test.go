@@ -329,7 +329,7 @@ func TestBuildArgsThinkingSpawnForm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := liveUpdateBaseOptions()
 			opts.ClaudeThinking = tc.thinking
-			args := buildArgs(ConfigFromOptions(opts), "")
+			args := buildArgs(ConfigFromOptions(opts), "", "")
 			if !hasArgSequence(args, tc.want) {
 				t.Fatalf("args %v missing sequence %v", args, tc.want)
 			}
@@ -354,7 +354,7 @@ func TestConfigFromOptionsRefusesZeroBudget(t *testing.T) {
 	if cfg.Thinking.Mode != ThinkingDefault || cfg.Thinking.BudgetTokens != 0 {
 		t.Fatalf("Thinking = %+v, want the default mode", cfg.Thinking)
 	}
-	if hasArg(buildArgs(cfg, ""), "--max-thinking-tokens") {
+	if hasArg(buildArgs(cfg, "", ""), "--max-thinking-tokens") {
 		t.Fatal("a budget-less budget mode rendered --max-thinking-tokens")
 	}
 }

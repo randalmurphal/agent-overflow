@@ -124,6 +124,13 @@ export const SETTINGS_SECTIONS = [
     description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
   },
   {
+    id: 'agent-guide',
+    label: 'App guide',
+    group: 'Agents',
+    description:
+      "A short guide appended to each chat session's system prompt: what this app renders and which built-in tools are on. Workflow phases are left as their workflow wrote them.",
+  },
+  {
     id: 'discussions',
     label: 'Discussions',
     group: 'Agents',
@@ -258,6 +265,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'thread-tools', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'agent-guide', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage'].includes(section);
 }
