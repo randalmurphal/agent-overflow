@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"strings"
@@ -247,7 +248,7 @@ func (a *App) attemptAutoReconnect(threadID string) {
 	if !a.markAutoReconnectAttempted(threadID) {
 		return
 	}
-	if err := a.ReconnectSession(threadID); err != nil {
+	if err := a.reconnectDeadSession(threadID); err != nil {
 		// The death banner says the session died; this says the recovery
 		// the user did not ask for also failed, and why. Without it the
 		// spawn's own refusal (a workspace that is gone, a resume cursor
@@ -255,6 +256,19 @@ func (a *App) attemptAutoReconnect(threadID string) {
 		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
 		a.emitErrorToThread(threadID, "session could not be resumed automatically: "+err.Error())
 	}
+}
+
+// reconnectDeadSession is the auto-reconnect body. It reconnects only while
+// the thread has no live session: a send or start since the death already
+// replaced the dead one, and stopping that would end its turn and drop its
+// queue. A manual Reconnect still restarts unconditionally.
+func (a *App) reconnectDeadSession(threadID string) error {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if _, live := a.sessionManager().get(threadID); live {
+		return nil
+	}
+	return a.reconnectSessionLocked(context.Background(), threadID)
 }
 
 func (a *App) markAutoReconnectAttempted(threadID string) bool {

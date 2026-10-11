@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -321,6 +322,41 @@ func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
 	app.attemptAutoReconnect(thread.ID)
 	if started {
 		t.Fatal("workflow thread used generic auto-reconnect")
+	}
+}
+
+// TestAutoReconnectLeavesALiveReplacementAlone: a send after the death
+// already started a replacement session before the reconnect reached the
+// thread lock. Stopping it would end its turn and drop its queue, so the
+// reconnect does nothing; with no live session it reconnects.
+func TestAutoReconnectLeavesALiveReplacementAlone(t *testing.T) {
+	t.Parallel()
+	for _, live := range []bool{true, false} {
+		t.Run(fmt.Sprintf("live=%v", live), func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread(fmt.Sprintf("thread-reconnect-live-%v", live))
+			thread.SessionRef = "claude-resume-live"
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			if live {
+				app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "token-replacement"})
+			}
+			stops, starts := 0, 0
+			app.stopSessionFn = func(string) error { stops++; return nil }
+			app.startSessionFn = func(string) error { starts++; return nil }
+
+			app.attemptAutoReconnect(thread.ID)
+
+			want := 1
+			if live {
+				want = 0
+			}
+			if stops != want || starts != want {
+				t.Fatalf("stops=%d starts=%d, want %d each", stops, starts, want)
+			}
+		})
 	}
 }
 
