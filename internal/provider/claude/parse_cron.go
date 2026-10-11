@@ -102,7 +102,8 @@ type cronListedJob struct {
 // appendCronAckEvents applies a cron tool's ack to the job table and
 // emits the new snapshot when the table changed. A refused call
 // (`is_error`, such as CronDelete of an unknown id) changed nothing in
-// the CLI either.
+// the CLI either. An `is_error` that does not decode is read as a
+// refusal: the table only changes on an ack known to be a success.
 func (p *Parser) appendCronAckEvents(
 	events []provider.ProviderEvent,
 	threadID string,
@@ -114,7 +115,10 @@ func (p *Parser) appendCronAckEvents(
 ) []provider.ProviderEvent {
 	var isError bool
 	if v, ok := block["is_error"]; ok {
-		_ = json.Unmarshal(v, &isError)
+		if err := json.Unmarshal(v, &isError); err != nil {
+			log.Printf("claude: %s result %s has an undecodable is_error: %v; treating it as refused", use.name, toolUseID, err)
+			return events
+		}
 	}
 	if isError || len(toolUseResultRaw) == 0 {
 		return events

@@ -126,6 +126,9 @@ func TestCronAcksThatProveNothingLeaveTheTableAlone(t *testing.T) {
 		"delete without id":    {cronDeleteToolName, `{}`, `{"deleted":true}`},
 		"list without jobs":    {cronListToolName, `{}`, `{"items":[]}`},
 		"create without flags": {cronCreateToolName, `{}`, `{"id":"aaaa0000"}`},
+		// A success-shaped ack whose is_error does not decode is a refusal.
+		"undecodable is_error on delete": {cronDeleteToolName, `{"is_error":"false"}`, `{"id":"6ae146b0"}`},
+		"undecodable is_error on create": {cronCreateToolName, `{"is_error":0}`, `{"id":"aaaa0000","recurring":true}`},
 	} {
 		var block map[string]json.RawMessage
 		_ = json.Unmarshal([]byte(tc.block), &block)
