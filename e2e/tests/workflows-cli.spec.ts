@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 import {
   doneResult,
   questionResult,
@@ -30,9 +30,7 @@ import {
 // the CLI's own flag parsing, its HTTP POST to the scoped route, token
 // authentication, grant authorization, and the bound methods.
 
-const repoRoot = nodePath.resolve(import.meta.dirname, '..', '..');
-const appBinary =
-  process.env.AO_HARNESS_BIN ?? nodePath.join(repoRoot, 'bin', 'agent-overflow');
+const appBinary = productBinary('agent-overflow');
 
 interface CommandResult {
   code: number;
@@ -41,11 +39,12 @@ interface CommandResult {
 }
 
 // spawnCLI runs one command and collects its exit code and streams. The
-// environment is deliberately minimal — the session variables under test plus
-// what any process needs to run — because inheriting the suite's environment
-// wholesale would let an ambient AO_* leak decide the outcome of a spec about
-// AO_*. `path` is the PATH the child gets, which is also the lookup PATH Node
-// uses to resolve a bare command name.
+// environment is the launch environment (src/harness-env.ts) plus the
+// session variables under test: inheriting the suite's environment wholesale
+// would let an ambient AO_* leak decide the outcome of a spec about AO_*, and
+// the launch environment carries no AO_TOKEN, AO_ENDPOINT or other session
+// variable. `path` is the PATH the child gets, which is also the lookup PATH
+// that resolves a bare command name.
 async function spawnCLI(
   command: string,
   path: string,
@@ -53,14 +52,15 @@ async function spawnCLI(
   args: string[],
 ): Promise<CommandResult> {
   return await new Promise<CommandResult>((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: { PATH: path, HOME: process.env.HOME ?? '', ...sessionEnv },
+    const child = spawnProduct(command, args, {
+      env: { PATH: path, ...sessionEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
+      memoryLimitBytes: 512 * 1024 * 1024,
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => (stdout += String(chunk)));
-    child.stderr.on('data', (chunk) => (stderr += String(chunk)));
+    child.stdout!.on('data', (chunk) => (stdout += String(chunk)));
+    child.stderr!.on('data', (chunk) => (stderr += String(chunk)));
     child.on('error', reject);
     child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
   });

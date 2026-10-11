@@ -1,14 +1,13 @@
 // The owner console of a separately running harness. The child owns no
 // backend: closing SSH/stdin must leave that host alive.
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { expect } from '@playwright/test';
-import { spawnContained } from '../src/harness-process.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 import type { HarnessApp } from '../src/harness.js';
 import type { PairingInvite } from './offhost-helpers.js';
 
 export async function headlessPairing(harness: HarnessApp) {
-  const child = spawnContained(process.env.AO_HARNESS_BIN ?? fileURLToPath(new URL('../../bin/agent-overflow', import.meta.url)),
+  const child = spawnProduct(productBinary('agent-overflow'),
     ['pair', '--json', '--class', 'desktop', '--config-root', harness.bootstrap.dataDir],
     { stdio: ['pipe', 'pipe', 'pipe'], memoryLimitBytes: 512 * 1024 * 1024 });
   const lines = createInterface({ input: child.stdout! });

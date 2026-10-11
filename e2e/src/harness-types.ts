@@ -22,6 +22,16 @@ export interface HarnessBootstrap {
   startupError?: string;
 }
 
+/** How a backend was started, as a failing test's `backend-launch.json` records it. */
+export interface HarnessLaunchRecord {
+  binary: string;
+  args: string[];
+  /** The effective AO_HARNESS_TIMING. */
+  harnessTiming: string;
+  /** The whole environment the backend was started with (harness-env.ts). */
+  env: Record<string, string>;
+}
+
 export interface LaunchOptions {
   /** Backend binary. Default: $AO_HARNESS_BIN, else <repo>/bin/agent-overflow. */
   binary?: string;
@@ -36,7 +46,7 @@ export interface LaunchOptions {
   mockForge?: string;
   /** Data root. Default: a fresh temp dir, removed on close(). */
   dataDir?: string;
-  /** Extra environment (merged over process.env). */
+  /** Extra environment, over the allowlisted launch environment (harness-env.ts). */
   env?: Record<string, string>;
   /** Boot deadline in ms. Default 30s (first boot migrates the DB). */
   timeoutMs?: number;

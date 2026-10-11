@@ -1,9 +1,13 @@
-import { execFileSync, spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, chmod, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test, expect } from '@playwright/test';
-import { launchHarness } from '../src/harness.js';
+import { HARNESS_TIMING, launchHarness, type HarnessApp, type HarnessLaunchRecord } from '../src/harness.js';
+import { BackendConsoleLog } from '../src/harness-console-log.js';
+import { launchEnvironment } from '../src/harness-env.js';
 import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
@@ -178,4 +182,375 @@ test('reconciles an owned descendant after the bootstrap process exits', async (
 test('the tree snapshot recognises the identity the per-pid capture took', async () => {
   const identity = await captureProcessIdentity(process.pid);
   await expect(processTreeRSS(identity)).resolves.toBeGreaterThan(0);
+});
+
+function consoleLogPath(dataRoot: string): string {
+  return path.join(dataRoot, 'agent-overflow', 'logs', BackendConsoleLog.fileName);
+}
+
+// Descriptors this worker holds on `file`, removed or not. Windows cannot
+// remove a root holding one, so every removal path must close it first.
+async function descriptorsOn(file: string): Promise<number> {
+  let count = 0;
+  for (const fd of await readdir('/proc/self/fd')) {
+    const target = await readlink(`/proc/self/fd/${fd}`).catch(() => '');
+    if (target === file || target === `${file} (deleted)`) count += 1;
+  }
+  return count;
+}
+
+// launchHarness registers the console log's readline on the backend's
+// stderr first. A listener added later sees each chunk after it, so once
+// this one has seen `text` and the newline ending its line, the console log
+// has been handed that line, which need not be in the file yet. `child` is
+// private to HarnessApp; only this spec reaches it.
+function stderrLine(harness: HarnessApp, text: string): Promise<void> {
+  const stderr = (harness as unknown as { child: ChildProcess }).child.stderr!;
+  return new Promise((resolve, reject) => {
+    let pending = '';
+    let seen = false;
+    const finish = (error?: Error) => {
+      stderr.off('data', onData);
+      stderr.off('end', onEnd);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onData = (chunk: Buffer) => {
+      pending += chunk.toString('latin1');
+      if (!seen) {
+        const at = pending.indexOf(text);
+        if (at === -1) {
+          pending = pending.slice(-text.length);
+          return;
+        }
+        seen = true;
+        pending = pending.slice(at + text.length);
+      }
+      if (pending.includes('\n')) finish();
+      else pending = '';
+    };
+    const onEnd = () => finish(new Error(`backend stderr ended before a line holding ${text}`));
+    stderr.on('data', onData);
+    stderr.once('end', onEnd);
+  });
+}
+
+// tests/fixtures.ts calls writeDiagnostics when a test fails while holding
+// the worker backend. This pins what lands beside the trace.
+test('writes a backend console, launch record and own logs as diagnostics', async ({}, testInfo) => {
+  const marker = `diagnostics-probe-${process.pid}-${Date.now()}`;
+  const harness = await launchHarness({ env: { DIAGNOSTICS_PROBE: marker } });
+  try {
+    // An RPC error is logged with its text. Diagnostics start the moment
+    // that line is handed to the console log, before the call's reply, and
+    // a 32 MiB name keeps its write to the file in flight then, so
+    // backend.log holds it only because diagnostics flush first.
+    const dir = testInfo.outputPath('diagnostics');
+    const logged = stderrLine(harness, `/${marker}`);
+    const rejected = expect(harness.rpc('HarnessReplayBundle', `${'x'.repeat(32 << 20)}/${marker}`, {})).rejects.toThrow(marker);
+    await logged;
+    await harness.writeDiagnostics(dir);
+    await rejected;
+
+    const backendLog = await readFile(path.join(dir, 'backend.log'), 'utf8');
+    expect(backendLog).toContain(`/${marker}" must be a plain directory name`);
+    expect(backendLog).toContain(`"pid":${harness.bootstrap.pid}`);
+    expect(backendLog).toMatch(/^\[stdout\] __AO_HARNESS__:/m);
+    expect(backendLog).toContain(`transport: harness mode (data dir ${harness.bootstrap.dataDir})`);
+
+    const record = JSON.parse(await readFile(path.join(dir, 'backend-launch.json'), 'utf8')) as HarnessLaunchRecord & {
+      pid: number;
+      dataRoot: string;
+      dataDir: string;
+    };
+    expect(record.pid).toBe(harness.bootstrap.pid);
+    expect(record.dataRoot).toBe(harness.bootstrap.dataRoot);
+    expect(record.dataDir).toBe(harness.bootstrap.dataDir);
+    expect(record.args).toEqual(expect.arrayContaining(['--harness', '--data-dir', harness.bootstrap.dataRoot]));
+    expect(record.harnessTiming).toBe(HARNESS_TIMING);
+    // The record is the environment the backend was given, not a rebuild.
+    expect(record.env).toEqual(launchEnvironment({ AO_HARNESS_TIMING: HARNESS_TIMING, DIAGNOSTICS_PROBE: marker }));
+    expect(record.env.AO_HARNESS_TIMING).toBe(HARNESS_TIMING);
+    expect(record.env.DIAGNOSTICS_PROBE).toBe(marker);
+    expect(record.env.AO_E2E_CONTAINED).toBe('1');
+    expect(record.env.PATH).toBe(process.env.PATH);
+
+    const ownLogs = await readdir(path.join(dir, 'backend-logs'));
+    expect(ownLogs).toContainEqual(expect.stringMatching(/^engine-\d{4}-\d{2}-\d{2}\.ndjson$/));
+    expect(ownLogs).not.toContain(BackendConsoleLog.fileName);
+    if (process.platform === 'linux') expect(await descriptorsOn(consoleLogPath(harness.bootstrap.dataRoot))).toBe(1);
+  } finally {
+    await harness.close();
+  }
+  await expect(access(harness.bootstrap.dataRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  if (process.platform === 'linux') expect(await descriptorsOn(consoleLogPath(harness.bootstrap.dataRoot))).toBe(0);
+});
+
+// An agent session running the suite exports its live AO_TOKEN, and a
+// developer's shell holds provider and service keys. None may reach a
+// backend the suite starts.
+test('a launched backend inherits only the allowlisted environment', async ({}, testInfo) => {
+  // AO_HARNESS_KEEP_HOME would make the backend keep HOME. HOME is a
+  // throwaway directory here, so even a backend that kept it would never
+  // see the real one.
+  const fakeHome = await mkdtemp(path.join(tmpdir(), 'ao-harness-fake-home-'));
+  const canaries = { AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret', AO_HARNESS_KEEP_HOME: '1', HOME: fakeHome };
+  const previous = Object.fromEntries(Object.keys(canaries).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, canaries);
+  let harness: Awaited<ReturnType<typeof launchHarness>>;
+  try {
+    harness = await launchHarness();
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  try {
+    // The backend isolated its home rather than keeping HOME.
+    expect(harness.bootstrap.homeDir).toBe(path.join(harness.bootstrap.dataRoot, 'home'));
+    if (process.platform === 'linux') {
+      // The backend's own exec-time environment, not the launcher's intent.
+      const environ = (await readFile(`/proc/${harness.bootstrap.pid}/environ`, 'utf8')).split('\0');
+      expect(environ.filter((entry) => entry.includes('canary'))).toEqual([]);
+      expect(environ.filter((entry) => entry.startsWith('AO_HARNESS_KEEP_HOME='))).toEqual([]);
+      expect(environ).toContain(`AO_HARNESS_TIMING=${HARNESS_TIMING}`);
+      expect(environ).toContain(`PATH=${process.env.PATH}`);
+    }
+    const dir = testInfo.outputPath('diagnostics');
+    await harness.writeDiagnostics(dir);
+    const record = await readFile(path.join(dir, 'backend-launch.json'), 'utf8');
+    expect(record).not.toContain('canary');
+    expect((JSON.parse(record) as HarnessLaunchRecord).env.AO_HARNESS_KEEP_HOME).toBeUndefined();
+  } finally {
+    await harness.close();
+    await rm(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test('the launch environment keeps the allowlist and every override', async () => {
+  const source = {
+    PATH: '/bin',
+    HOME: '/home/dev',
+    LC_ALL: 'C.UTF-8',
+    AO_E2E_WORKERS: '2',
+    AO_HARNESS_DEBUG: '1',
+    AO_HARNESS_KEEP_HOME: '1',
+    AO_MOCKPROVIDER: '/mock',
+    AO_TOKEN: 'canary',
+    AO_ENDPOINT: 'canary',
+    AO_THREAD_ID: 'canary',
+    AO_PROJECT: 'canary',
+    ATLASSIAN_API_TOKEN: 'canary',
+    ANTHROPIC_API_KEY: 'canary',
+    SHELL: '/bin/zsh',
+    WSL_DISTRO_NAME: 'canary',
+    XDG_CONFIG_HOME: '/home/dev/.config',
+    AGENT_OVERFLOW_WIN_APPDATA: 'canary',
+    SystemRoot: 'C:\\Windows',
+  };
+  expect(launchEnvironment({ AO_PID_FILE: '/pid', HOME: '/harness-home' }, source, 'linux')).toEqual({
+    PATH: '/bin',
+    HOME: '/harness-home',
+    LC_ALL: 'C.UTF-8',
+    AO_E2E_WORKERS: '2',
+    AO_HARNESS_DEBUG: '1',
+    AO_MOCKPROVIDER: '/mock',
+    AO_PID_FILE: '/pid',
+  });
+  // AO_HARNESS_KEEP_HOME would hand the backend the real HOME, so only a
+  // launcher that names it passes it.
+  expect(launchEnvironment({ AO_HARNESS_KEEP_HOME: '1' }, source, 'linux').AO_HARNESS_KEEP_HOME).toBe('1');
+  // Windows names fold case and keep the spelling Node reports.
+  const windows = launchEnvironment(
+    { PATH: 'C:\\fixture;C:\\Windows' },
+    { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', Temp: 'C:\\Temp', AO_TOKEN: 'canary', Ao_Harness_Keep_Home: '1' },
+    'win32',
+  );
+  expect(windows).toEqual({ SystemRoot: 'C:\\Windows', Temp: 'C:\\Temp', PATH: 'C:\\fixture;C:\\Windows' });
+});
+
+test('a launch that cannot spawn closes its console log', async () => {
+  test.skip(process.platform !== 'linux', 'the 1 KiB floor is checked before spawn only on the Linux rlimit path');
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-console-'));
+  try {
+    await expect(launchHarness({ dataDir: root, memoryLimitBytes: 1 })).rejects.toThrow('at least 1 KiB');
+    expect(await descriptorsOn(consoleLogPath(root))).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('flush puts every written console line in the file', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-console-'));
+  try {
+    const log = await BackendConsoleLog.open(root);
+    const lines = Array.from({ length: 5_000 }, (_, index) => `line ${index}`);
+    for (const line of lines) log.write(line);
+    await log.flush();
+    expect(await readFile(log.path, 'utf8')).toBe(`${lines.join('\n')}\n`);
+    await log.close();
+    log.write('after close');
+    await log.flush();
+    expect(await readFile(log.path, 'utf8')).toBe(`${lines.join('\n')}\n`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ao-harness writes a managed run's outputs to <root>.artifacts/<runId>
+// (internal/harnessrun.ArtifactRoot); harness-bench runs one against the
+// worker's root.
+async function writeRunArtifact(dataRoot: string): Promise<void> {
+  const run = path.join(`${dataRoot}.artifacts`, 'bench-1');
+  await mkdir(run, { recursive: true });
+  await writeFile(path.join(run, 'bench-report.json'), '{}');
+}
+
+test('close removes an owned root and its run artifacts', async () => {
+  const harness = await launchHarness();
+  const artifacts = `${harness.bootstrap.dataRoot}.artifacts`;
+  try {
+    await writeRunArtifact(harness.bootstrap.dataRoot);
+  } finally {
+    await harness.close();
+  }
+  try {
+    await expect(access(harness.bootstrap.dataRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(artifacts)).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await rm(artifacts, { recursive: true, force: true });
+  }
+});
+
+test('close leaves a kept data root, its console and its run artifacts in place', async () => {
+  const kept = await launchHarness();
+  const artifacts = `${kept.bootstrap.dataRoot}.artifacts`;
+  try {
+    await writeRunArtifact(kept.bootstrap.dataRoot);
+    kept.keepDataRoot();
+    await kept.close();
+    const consoleText = await readFile(consoleLogPath(kept.bootstrap.dataRoot), 'utf8');
+    expect(consoleText).toContain(`"pid":${kept.bootstrap.pid}`);
+    expect(consoleText).toContain('received terminated, shutting down');
+    await access(path.join(artifacts, 'bench-1', 'bench-report.json'));
+  } finally {
+    await rm(kept.bootstrap.dataRoot, { recursive: true, force: true });
+    await rm(artifacts, { recursive: true, force: true });
+  }
+});
+
+// close() returns only once the console log has written every line the
+// backend printed and closed its file. Teardown's wait proves only that the
+// process exited; the log's writes can still be queued. A FIFO at the
+// console path holds those writes until the test reads it.
+test('close waits for the console log to write every line and close', async () => {
+  test.skip(process.platform === 'win32', 'holds the console log on a FIFO');
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-drain-'));
+  const fifo = consoleLogPath(root);
+  await mkdir(path.dirname(fifo), { recursive: true });
+  execFileSync('mkfifo', [fifo]);
+  // An open reader lets the console log open the FIFO; nothing reads it yet.
+  const reader = await open(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+  const reported: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    reported.push(args.map(String).join(' '));
+    consoleError(...args);
+  };
+  let harness: HarnessApp | undefined;
+  try {
+    harness = await launchHarness({ dataDir: root });
+    const marker = `drain-probe-${process.pid}-${Date.now()}`;
+    // A line longer than the FIFO's buffer leaves the console's writes waiting.
+    await expect(harness.rpc('HarnessReplayBundle', `${'x'.repeat(1 << 20)}/${marker}`, {})).rejects.toThrow(marker);
+    expect(await harness.stop()).toBe(true);
+    let returned = false;
+    const closing = harness.close().then(() => {
+      returned = true;
+    });
+    // After a completed stop(), everything close() does on a root it does
+    // not own, other than waiting for the console, settles in microtasks.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(returned).toBe(false);
+    const drained = readFile(fifo, 'latin1');
+    await closing;
+    const text = await drained;
+    expect(text).toContain(`/${marker}" must be a plain directory name`);
+    expect(text).toContain('received terminated, shutting down');
+    // launchHarness ends the log when the child's pipes close; without that,
+    // close() waits out its bound and reports the drain as timed out.
+    expect(reported.filter((line) => line.includes('timed out'))).toEqual([]);
+  } finally {
+    console.error = consoleError;
+    await reader.close();
+    await harness?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Runs `body` in a separate Node process that imports the harness, so what
+// happens at that process's exit can be observed. `body` ends by printing
+// one JSON line and calling process.exit, as a Playwright worker exits.
+async function harnessScript(body: string): Promise<{ result: { root: string; pid: number }; stderr: string }> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ao-harness-exit-'));
+  try {
+    const script = path.join(dir, 'script.mts');
+    const harness = pathToFileURL(path.resolve(import.meta.dirname, '..', 'src', 'harness.ts')).href;
+    await writeFile(script, `import { launchHarness } from ${JSON.stringify(harness)};\n${body}\n`);
+    const child = spawn(process.execPath, ['--experimental-transform-types', '--no-warnings', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout!.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr!.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    if (code !== 0) throw new Error(`harness script exited ${code}: ${stderr}`);
+    return { result: JSON.parse(stdout.trim().split('\n').at(-1)!), stderr };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test('an owned root a spec only stopped is removed with its run artifacts when the process exits', async () => {
+  const { result } = await harnessScript(`
+    import { mkdirSync } from 'node:fs';
+    const harness = await launchHarness();
+    mkdirSync(harness.bootstrap.dataRoot + '.artifacts/bench-1', { recursive: true });
+    if (!(await harness.stop())) throw new Error('stop failed');
+    console.log(JSON.stringify({ root: harness.bootstrap.dataRoot, pid: harness.bootstrap.pid }));
+    process.exit(0);
+  `);
+  try {
+    await expect(access(result.root)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(`${result.root}.artifacts`)).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await rm(result.root, { recursive: true, force: true });
+    await rm(`${result.root}.artifacts`, { recursive: true, force: true });
+  }
+});
+
+test('an owned root whose backend was never stopped is left and reported at exit', async () => {
+  test.skip(process.platform === 'win32', 'stops the orphaned backend through its Unix process group');
+  const { result, stderr } = await harnessScript(`
+    const harness = await launchHarness();
+    console.log(JSON.stringify({ root: harness.bootstrap.dataRoot, pid: harness.bootstrap.pid }));
+    process.exit(0);
+  `);
+  try {
+    await access(result.root);
+    expect(stderr).toContain(`harness data root ${result.root} left at exit: backend`);
+  } finally {
+    // The backend outlived the script in its own process group.
+    try {
+      process.kill(-result.pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    await rm(result.root, { recursive: true, force: true });
+  }
 });

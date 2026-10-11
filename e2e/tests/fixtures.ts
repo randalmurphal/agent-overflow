@@ -11,6 +11,7 @@ interface WorkerFixtures {
 
 interface TestFixtures {
   harness: HarnessApp;
+  harnessFailureDiagnostics: { app?: HarnessApp };
 }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
@@ -38,7 +39,25 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     },
     { scope: 'worker' },
   ],
-  harness: async ({ harnessWorker }, use) => {
+  // A test that fails while it holds the worker backend, including in the
+  // reset below, leaves the backend's diagnostics beside its trace
+  // (HarnessApp.writeDiagnostics). Auto fixtures set up first and tear down
+  // last, so this sees failures from every other fixture's teardown too.
+  // It depends on nothing, so a test that never asks for `harness` boots no
+  // worker backend for it.
+  harnessFailureDiagnostics: [
+    async ({}, use, testInfo) => {
+      const holder: { app?: HarnessApp } = {};
+      await use(holder);
+      const failed = testInfo.status !== 'skipped' && testInfo.status !== testInfo.expectedStatus;
+      if (!holder.app || !failed) return;
+      if (process.env.AO_E2E_KEEP_FAILED_ROOT === '1') holder.app.keepDataRoot();
+      await holder.app.writeDiagnostics(testInfo.outputDir);
+    },
+    { auto: true, box: true },
+  ],
+  harness: async ({ harnessWorker, harnessFailureDiagnostics }, use) => {
+    harnessFailureDiagnostics.app = harnessWorker;
     await harnessWorker.awaitNoPages();
     await harnessWorker.reset();
     await use(harnessWorker);

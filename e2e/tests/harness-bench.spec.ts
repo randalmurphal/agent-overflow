@@ -7,25 +7,12 @@
 // join: that a CLI outside the app can reset an instance, reload the page
 // it is holding, seed a fixture, arm the meters, drive a scenario to turn
 // completion, and land a report with numbers a real browser produced.
-import { execFile } from 'node:child_process';
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
 import type { HarnessApp } from '../src/harness.js';
+import { execProduct, productBinary } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
-
-const run = promisify(execFile);
-
-// The bench binary is bin/ao-harness, built beside bin/agent-overflow by
-// `make harness-build` (which `make e2e` depends on). AO_HARNESS_BIN names
-// the backend, so the CLI is resolved as its sibling for the same reason
-// the CLI itself does that: a fresh checkout needs no configuration.
-function benchBinary(): string {
-  const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-  const backend = process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
-  return path.join(path.dirname(backend), 'ao-harness');
-}
 
 interface BenchAggregate {
   runs: number;
@@ -88,8 +75,8 @@ test('bench burst-stream drives a real turn and writes a report', async ({ harne
 
   const outDir = await mkdtemp(path.join(tmpdir(), 'ao-bench-'));
   try {
-    const { stdout } = await run(
-      benchBinary(),
+    const { stdout } = await execProduct(
+      productBinary('ao-harness'),
       ['--instance', harness.bootstrap.dataRoot, 'bench', 'burst-stream', '--out', outDir],
       { timeout: 150_000 },
     );
@@ -147,8 +134,8 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
   await harness.open(page);
   await waitForBridge(harness);
 
-  const { stdout } = await run(
-    benchBinary(),
+  const { stdout } = await execProduct(
+    productBinary('ao-harness'),
     ['--instance', harness.bootstrap.dataRoot, 'health'],
     { timeout: 30_000 },
   );
