@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -35,8 +34,10 @@ import (
 
 // resolveDeveloperInstructions composes what this thread will carry: the
 // cwd's own configured instructions with AO's guide appended. An empty
-// guide, or a config read that failed, yields "" and the caller omits the
-// override entirely rather than replacing a value it could not read.
+// guide yields "", and so does a config read that failed: the caller then
+// omits the override entirely rather than replacing a value it could not
+// read, and the failure reaches the thread as a non-fatal error so the
+// user knows this session runs without the guide.
 func (s *Session) resolveDeveloperInstructions(ctx context.Context, guide string) string {
 	guide = strings.TrimSpace(guide)
 	if guide == "" {
@@ -44,7 +45,8 @@ func (s *Session) resolveDeveloperInstructions(ctx context.Context, guide string
 	}
 	configured, err := s.configuredDeveloperInstructions(ctx)
 	if err != nil {
-		log.Printf("codex: read developer instructions for %s: %v", s.workDir, err)
+		s.emitNonFatalError(fmt.Sprintf(
+			"Could not read this workspace's Codex developer instructions, so Agent Overflow's guide was left out of this session: %v", err))
 		return ""
 	}
 	if configured == "" {

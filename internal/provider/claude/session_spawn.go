@@ -34,6 +34,18 @@ type Config struct {
 	// flags are wire-identical, and the file avoids both MAX_ARG_STRLEN and
 	// /proc exposure. See WriteSystemPromptFile.
 	SystemPrompt string
+	// AppendSystemPrompt follows the system prompt the session otherwise
+	// runs with: the CLI's default body, or SystemPrompt when that replaces
+	// it, joined by one blank line. It reaches the process as
+	// `--append-system-prompt-file <path>`, a second temp file written and
+	// removed beside the replacement's. The app uses it for its guide
+	// (internal/app/app_agent_guide.go). Stamped at spawn like
+	// AdditionalDirs, so PlanLiveUpdate never sees it.
+	AppendSystemPrompt string
+	// InstalledCLIVersion is the version of the binary about to run, as the
+	// app last read it from `claude --version`; empty when unknown. It gates
+	// SystemPromptSnapshotArgs. Spawn-only, same reasoning as AdditionalDirs.
+	InstalledCLIVersion string
 	// OutputSchema is the inline JSON schema passed to --json-schema when
 	// the session process starts. It is sticky for every turn in the session.
 	OutputSchema    string
@@ -360,11 +372,12 @@ func RemoveSystemPromptFile(path string) {
 	}
 }
 
-// buildArgs constructs CLI flags from Config. systemPromptPath is the file
-// WriteSystemPromptFile produced for cfg.SystemPrompt (empty when the
-// session carries no override) — the prompt reaches the CLI by path, never
-// as an argv value.
-func buildArgs(cfg Config, systemPromptPath string) []string {
+// buildArgs constructs CLI flags from Config. systemPromptPath and
+// appendSystemPromptPath are the files WriteSystemPromptFile produced for
+// cfg.SystemPrompt and cfg.AppendSystemPrompt (empty when the session
+// carries neither) — a prompt reaches the CLI by path, never as an argv
+// value.
+func buildArgs(cfg Config, systemPromptPath, appendSystemPromptPath string) []string {
 	args := []string{
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
@@ -444,6 +457,13 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 	if systemPromptPath != "" {
 		args = append(args, "--system-prompt-file", systemPromptPath)
 	}
+	if appendSystemPromptPath != "" {
+		args = append(args, "--append-system-prompt-file", appendSystemPromptPath)
+	}
+	// Off whenever the binary is known to accept the flag, replacement or
+	// not: a session started without it records a snapshot the next resume
+	// would reuse ahead of any later prompt change.
+	args = append(args, SystemPromptSnapshotArgs(cfg.InstalledCLIVersion)...)
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}

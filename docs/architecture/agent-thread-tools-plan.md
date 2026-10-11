@@ -632,16 +632,18 @@ they stay denied, because both act outside the thread
 Claude reads the server `instructions` string at `initialize` and again
 on `ReconnectMcpServer`, so the guide travels with the server. Codex
 never shows the model that string, so a Codex session gets the same text
-as `developerInstructions` on `thread/start`, `thread/resume` and
+inside `developerInstructions` on `thread/start`, `thread/resume` and
 `thread/fork`: `codex.Config` gains `DeveloperInstructions`, and
 `buildThreadParams` sends it. Codex resolves developer instructions from
 its config on a cold start, so AO first reads the thread's cwd-scoped
 `developer_instructions` through `config/read` and sends that value with
-the guide appended, omitting the override entirely when the guide is
-absent (switch off, composer toggle off, phase session) so a user's own
-value is never replaced. The paragraphs follow `Shape` like the server
-string and come from the same `instructions.go`, so the two channels
-cannot drift. A pairing change reaches a live Codex thread only at its
+the app's composed text appended (the app guide, the browser guide and
+this guide, each when present;
+[prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)),
+omitting the override entirely when there is nothing to append so a
+user's own value is never replaced. The guide's paragraphs follow
+`Shape` like the server string and come from the same `instructions.go`,
+so the two channels cannot drift. A pairing change reaches a live Codex thread only at its
 next start or resume, unlike the tool list, which reloads live; the
 `thread_options` result carries the computer list, so a stale guide
 costs one call. The `developer_instructions: null` AO sends in every

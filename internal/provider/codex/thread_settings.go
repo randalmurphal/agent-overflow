@@ -127,7 +127,7 @@ func (s *Session) reconcileThreadSettings(params json.RawMessage) {
 	mismatch := s.verifyThreadSettingsEchoLocked(settings)
 	s.mu.Unlock()
 	if mismatch != "" {
-		s.emitThreadSettingsEchoError(mismatch)
+		s.emitNonFatalError(mismatch)
 	}
 }
 

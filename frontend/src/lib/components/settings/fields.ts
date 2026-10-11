@@ -512,6 +512,15 @@ const STATIC_FIELDS = [
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
+  // --- App guide -----------------------------------------------------------
+  {
+    id: 'agent-guide.enabled',
+    section: 'agent-guide',
+    label: 'Append the app guide',
+    hint: 'Tell Claude and Codex what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
+    keywords: ['system prompt', 'append', 'guide', 'mcp'],
+  },
+
   // --- Projects -----------------------------------------------------------
   {
     id: 'projects.project',

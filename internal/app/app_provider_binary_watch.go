@@ -119,8 +119,23 @@ func (a *App) refreshInstalledProviderVersion(providerName string) {
 		return
 	}
 
-	configured := a.providerBinaryPath(providerName)
-	status := providerBinaryDetectFn(providerName, configured)
+	status := providerBinaryDetectFn(providerName, a.providerBinaryPath(providerName))
+	a.recordProbedProviderVersion(providerName, identity, status)
+}
+
+// recordProbedProviderVersion commits one probe's answer about the binary
+// `identity` describes. Both probe paths end here: the watcher tick above,
+// and GetProviderStatuses, which seeds the baseline at boot so a session
+// spawned before the first tick already knows its binary's version
+// (installedProviderVersion). Resolving identity BEFORE the probe is the
+// caller's job: a binary swapped mid-probe then shows up as a changed
+// identity on the next tick instead of being recorded under the new identity
+// with the old version.
+func (a *App) recordProbedProviderVersion(providerName string, identity providerBinaryIdentity, status provider.ProviderStatus) {
+	previous, known := a.providerBinaries.lookupInstalled(providerName)
+	if known && previous.identity == identity {
+		return
+	}
 	version := providerstatus.VersionToken(status.Version)
 	if version == "" {
 		// Not a version we can compare anything against. Report it and
@@ -353,4 +368,22 @@ func (s *appProviderBinaryWatchState) reconcileStale(
 	}
 	s.stale = current
 	return entered, cleared
+}
+
+// installedProviderVersion is the version token of the binary providerName
+// would spawn right now, or "" when that is not known: no probe has recorded
+// it yet, or the file on disk is no longer the one that was probed (an
+// upgrade the watcher has not ticked past). Two stats and no subprocess, so
+// a spawn can afford to ask every time. Callers gate a flag on the answer
+// and omit the flag when it is "".
+func (a *App) installedProviderVersion(providerName string) string {
+	entry, known := a.providerBinaries.lookupInstalled(providerName)
+	if !known {
+		return ""
+	}
+	identity, ok := a.resolveProviderBinaryIdentity(providerName)
+	if !ok || identity != entry.identity {
+		return ""
+	}
+	return entry.version
 }

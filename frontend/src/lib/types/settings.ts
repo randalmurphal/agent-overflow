@@ -266,6 +266,13 @@ export interface Settings {
    */
   threadToolsEnabled: boolean;
   /**
+   * Append Agent Overflow's guide to every interactive Claude, claude-tui
+   * and Codex session's system prompt: what the chat pane renders and which
+   * built-in tool servers are on. Read at spawn, so a change applies to
+   * sessions started after it.
+   */
+  agentGuideEnabled: boolean;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors

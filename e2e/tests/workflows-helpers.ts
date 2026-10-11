@@ -544,6 +544,9 @@ export interface MockSessionConfig {
   sandbox?: string;
   approvalPolicy?: string;
   mcpServers?: string[];
+  appendSystemPrompt?: string;
+  systemPromptSnapshot?: string;
+  developerInstructions?: string;
 }
 
 export interface MockInfo {

@@ -280,4 +280,14 @@ type SessionConfig struct {
 	// Codex's thread/start config.mcp_servers. URLs, headers and credentials
 	// stay out of harness reports and evidence logs.
 	MCPServers []string `json:"mcpServers,omitempty"`
+	// AppendSystemPrompt is the content of the file Claude's
+	// --append-system-prompt-file named, read the way the CLI reads it ("" when
+	// the flag was omitted). This is the app guide as the model would see it.
+	AppendSystemPrompt string `json:"appendSystemPrompt,omitempty"`
+	// SystemPromptSnapshot is Claude's --system-prompt-snapshot value ("" when
+	// the flag was omitted, which is what an unknown or old CLI version gets).
+	SystemPromptSnapshot string `json:"systemPromptSnapshot,omitempty"`
+	// DeveloperInstructions is Codex's thread/start `developerInstructions`:
+	// the app guide and the on servers' guides, composed by the app.
+	DeveloperInstructions string `json:"developerInstructions,omitempty"`
 }
