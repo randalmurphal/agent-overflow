@@ -114,7 +114,20 @@ user changes it.
     Playwright or harness spec, a screenshot on the pull request, or
     described proof against the real app. Unit tests may exist for the
     few things that are unit-shaped and never stand as a feature's
-    verification.
+    verification. The repository is public: evidence never carries the
+    user's real thread titles, project names, branch names, costs or
+    ticket keys. Evidence comes from harness fixtures, or from a clone
+    of the real database with every such string replaced in the DOM
+    before the capture.
+19. **A worker's question goes to its agent.** A thread spawned by a
+    standing agent never puts a question or approval to the user. Its
+    awaiting-input and approval stops are delivered to the spawning
+    agent as a badged wake, the worker shows `waiting on <agent>` rather
+    than needs-you, and the agent answers through `thread_reply` or
+    escalates by asking the user itself, as one question with the
+    context. The user can still open the worker and answer directly,
+    which settles the wake. This supersedes the thread tools non-goal
+    of not relaying approval requests, for agent-spawned threads only.
 
 ## Non-goals
 
