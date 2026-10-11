@@ -186,6 +186,29 @@ func TestGitLabListPRCIJobs(t *testing.T) {
 	}
 }
 
+func TestStripCISectionMarkers(t *testing.T) {
+	t.Parallel()
+	cleaned := cleanGitLabTrace("Running with gitlab-runner\n" +
+		"section_start:1714557600:step_script\r\x1b[0K\x1b[36;1mExecuting\x1b[0;m\n" +
+		"$ make test\n" +
+		"\x1b[0Ksection_end:1714557605:step_script\r\x1b[0K\n" +
+		"section_start:1714557605:after[collapsed=true]\r\x1b[0Kdone\n" +
+		"section_end:1714557606:after\r\x1b[0K\n" +
+		"section_start without a time stays\n")
+	want := "Running with gitlab-runner\n" +
+		"\x1b[36;1mExecuting\x1b[0;m\n" +
+		"$ make test\n" +
+		"done\n" +
+		"section_start without a time stays\n"
+	if got := StripCISectionMarkers(cleaned); got != want {
+		t.Fatalf("StripCISectionMarkers = %q, want %q", got, want)
+	}
+	plain := "2026-10-11T00:04:31.5805438Z ##[group]Run make\n"
+	if got := StripCISectionMarkers(plain); got != plain {
+		t.Fatalf("a log without markers changed: %q", got)
+	}
+}
+
 func TestCleanGitLabTrace(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

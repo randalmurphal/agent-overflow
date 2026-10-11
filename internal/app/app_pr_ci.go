@@ -82,7 +82,8 @@ var errCIJobLogUnpublished = errors.New("the forge has not published this job's 
 
 // SavePRCIJobLog fetches the full job log and writes it under the
 // app-managed ci-logs directory, returning the absolute path. The path
-// is stable per (pr, job), so a re-save refreshes the same file.
+// is stable per (pr, job), so a re-save refreshes the same file. The file
+// is the log as text: a GitLab trace's section markers are dropped.
 //
 //ao:scope git:operate
 //ao:route selected
@@ -106,12 +107,47 @@ func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, 
 	if err != nil {
 		return "", err
 	}
+	return a.writeCILogFile(ciLogFileName(pr, jobID, jobName), gitops.StripCISectionMarkers(log.Text))
+}
+
+// SavePRCIJobLogSection writes one section of a job's log, as the caller
+// shows it, under the ci-logs directory and returns the absolute path.
+// The text comes from the display tail, so it is at most
+// ciLogDisplayTailBytes. The path is stable per (pr, job, section), so a
+// re-save refreshes the same file.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, jobName, sectionName, text string) (string, error) {
+	if a.shuttingDown.Load() {
+		return "", ErrShuttingDown
+	}
+	if err := pr.Validate(); err != nil {
+		return "", err
+	}
+	if err := gitops.ValidateCIJobID(jobID); err != nil {
+		return "", err
+	}
+	if len(text) > ciLogDisplayTailBytes {
+		return "", fmt.Errorf("CI log section is %d bytes, more than the %d shown", len(text), ciLogDisplayTailBytes)
+	}
+	name := strings.TrimSuffix(ciLogFileName(pr, jobID, jobName), ".log")
+	if segment := sanitizeCIFileSegment(sectionName); segment != "" {
+		name += "-" + segment
+	}
+	return a.writeCILogFile(name+".log", text)
+}
+
+func (a *App) writeCILogFile(name, text string) (string, error) {
+	if a.configDir == "" {
+		return "", errors.New("app data directory is not initialised")
+	}
 	dir := filepath.Join(a.configDir, "ci-logs")
 	if err := ensureAppPrivateDir(dir); err != nil {
 		return "", fmt.Errorf("create ci-logs directory: %w", err)
 	}
-	path := filepath.Join(dir, ciLogFileName(pr, jobID, jobName))
-	if err := os.WriteFile(path, []byte(log.Text), 0o600); err != nil {
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		return "", fmt.Errorf("write CI log: %w", err)
 	}
 	return path, nil

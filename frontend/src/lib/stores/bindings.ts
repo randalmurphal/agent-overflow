@@ -491,6 +491,7 @@ export {
   GetPRMergeConflicts,
   GetMergeConflictFile,
   SavePRCIJobLog,
+  SavePRCIJobLogSection,
   // Forge-hosted attachments referenced by PR/MR content: one mints a
   // single-use ticketed URL for the bytes, the other writes the file into
   // the owning computer's Downloads folder.

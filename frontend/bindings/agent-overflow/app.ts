@@ -4566,10 +4566,22 @@ export function SaveLocalImage(path: string, workspacePath: string): $Cancellabl
 /**
  * SavePRCIJobLog fetches the full job log and writes it under the
  * app-managed ci-logs directory, returning the absolute path. The path
- * is stable per (pr, job), so a re-save refreshes the same file.
+ * is stable per (pr, job), so a re-save refreshes the same file. The file
+ * is the log as text: a GitLab trace's section markers are dropped.
  */
 export function SavePRCIJobLog(pr: git$0.PRReference, jobID: string, jobName: string): $CancellablePromise<string> {
     return $Call.ByID(1537914193, pr, jobID, jobName);
+}
+
+/**
+ * SavePRCIJobLogSection writes one section of a job's log, as the caller
+ * shows it, under the ci-logs directory and returns the absolute path.
+ * The text comes from the display tail, so it is at most
+ * ciLogDisplayTailBytes. The path is stable per (pr, job, section), so a
+ * re-save refreshes the same file.
+ */
+export function SavePRCIJobLogSection(pr: git$0.PRReference, jobID: string, jobName: string, sectionName: string, text: string): $CancellablePromise<string> {
+    return $Call.ByID(1281545488, pr, jobID, jobName, sectionName, text);
 }
 
 export function SavePayloadToFile(threadID: string, payloadID: string): $CancellablePromise<string> {

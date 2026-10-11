@@ -151,6 +151,8 @@ var (
 	// erases the marker in a real terminal. The group is the marker
 	// without the \r.
 	gitlabSectionMarker = regexp.MustCompile(`(section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\]]*\])?)\r?`)
+	// A line of the cleaned trace that is one section marker.
+	gitlabSectionMarkerLine = regexp.MustCompile(`^section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\]]*\])?$`)
 	// CSI erase-in-line (ESC[K / ESC[0K / ESC[1K / ESC[2K); the ANSI
 	// renderer handles colors but not erase controls, so they'd leak
 	// through as visible "[0K" artifacts.
@@ -197,6 +199,22 @@ func cleanGitLabTrace(raw string) string {
 		}
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+// StripCISectionMarkers drops the section marker lines cleanGitLabTrace
+// keeps, for a log written out as plain text. A GitHub log has none.
+func StripCISectionMarkers(text string) string {
+	if !strings.Contains(text, "section_") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !gitlabSectionMarkerLine.MatchString(line) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // cleanGitLabTraceText is one run of trace text with its overwrites
