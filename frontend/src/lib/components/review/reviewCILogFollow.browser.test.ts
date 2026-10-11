@@ -1,6 +1,6 @@
 // The CI log view's tail follow, in real Chromium: a followed log grows
-// in its last chunk, which keeps its key and re-measures through
-// ResizeObserver after the data change. The view must land at the true
+// in its last block's row, which keeps its key and re-measures through
+// ResizeObserver once the block reads its new lines. The view must land at the true
 // bottom after that re-measure, follow further growth for a reader at
 // the bottom, and leave a reader who wheeled away alone. Expanding a
 // section holds its row where it was instead of following to the end.
@@ -11,24 +11,20 @@ import { SvelteSet } from 'svelte/reactivity';
 import '../../../app.css';
 import ReviewCILogView from './ReviewCILogView.svelte';
 import type { CIJob } from '../../types/models';
+import { FakeCILog, numberedLines, section } from '../../../test/helpers/ciLog';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 
 const VIEWPORT_PX = 400;
-// A log of two chunks whose last chunk is partial, so growth re-measures
+// A log of two blocks whose last block is partial, so growth re-measures
 // a mounted row rather than adding one.
-const FIRST_LINES = 390;
+const FIRST_LINES = 350;
 const GROWTH_LINES = 31;
 // The controller's near-bottom band is wider; the pin itself lands exact.
 const AT_BOTTOM_PX = 2;
 
 const JOB: CIJob = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
-
-function logOf(lines: number) {
-  const text = Array.from({ length: lines }, (_, index) => `line ${index + 1}`).join('\n') + '\n';
-  return { text, truncated: false, totalBytes: text.length };
-}
 
 const mounted: { app: object; host: HTMLElement }[] = [];
 
@@ -40,7 +36,7 @@ afterEach(() => {
   resetScrollIntentModuleStateForTest();
 });
 
-function mountLog(log = logOf(FIRST_LINES)) {
+function mountLog(fake = new FakeCILog(numberedLines(FIRST_LINES))) {
   const host = document.createElement('div');
   host.style.cssText = `position:fixed;top:0;left:0;width:800px;height:${VIEWPORT_PX}px;display:flex`;
   document.body.appendChild(host);
@@ -48,10 +44,10 @@ function mountLog(log = logOf(FIRST_LINES)) {
   const openSections = new SvelteSet<string>(['20/job', '21/job']);
   const p = rawProps({
     view: { stageName: 'test', jobId: '20', job: JOB },
-    log,
+    log: fake.state,
+    fetchLines: fake.fetch,
     loading: false,
     error: null as string | null,
-    available: true,
     savedPath: null as string | null,
     openSections,
     onBack: () => {},
@@ -64,13 +60,14 @@ function mountLog(log = logOf(FIRST_LINES)) {
       else openSections.add(full);
     },
     onSetSectionsOpen: () => {},
+    onCopySection: async () => true,
     onSendSection: () => {},
   });
   const app = mount(ReviewCILogView, { target: host, props: p });
   mounted.push({ app, host });
   const scroll = host.querySelector<HTMLElement>('[data-testid="review-ci-log-scroll"]');
   if (!scroll) throw new Error('log scroller did not mount');
-  return { p, scroll };
+  return { p, scroll, fake };
 }
 
 function distanceFromBottom(el: HTMLElement): number {
@@ -84,21 +81,38 @@ async function settledAtBottom(scroll: HTMLElement, label: string): Promise<void
   expect(distanceFromBottom(scroll)).toBeLessThanOrEqual(AT_BOTTOM_PX);
 }
 
+/** GitLab sections of a header and 300 lines each, as the backend lists
+ * them. */
+function sectionedLog(names: string[]): FakeCILog {
+  const lines: string[] = [];
+  const sections = names.map((name, index) => {
+    const start = lines.length;
+    lines.push(`${name} header`, ...numberedLines(300, 1, `${name} line`));
+    return section(`section:${name}:${1700000000 + index * 10}`, name, 'done', start, lines.length, { durationSeconds: 5 });
+  });
+  return new FakeCILog(lines, sections);
+}
+
 describe('ReviewCILogView tail follow', () => {
   it('opens at the tail and follows growth of the last chunk', async () => {
-    const { p, scroll } = mountLog();
+    const { p, scroll, fake } = mountLog();
     // The pane bounds the view: the tail is a scroll position.
     await waitFor(() => scroll.scrollHeight - scroll.clientHeight > 1000, 'the log to lay out');
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
     await settledAtBottom(scroll, 'the opened log at its tail');
 
-    p.log = logOf(FIRST_LINES + GROWTH_LINES);
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
     flushSync();
     await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
     await settledAtBottom(scroll, 'the tail after growth');
+    // The grown block read only its new lines.
+    expect(fake.reads.at(-1)).toEqual([FIRST_LINES, GROWTH_LINES]);
   });
 
   it('leaves a reader who wheeled up alone and re-sticks on a new job', async () => {
-    const { p, scroll } = mountLog();
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
     await settledAtBottom(scroll, 'the opened log at its tail');
 
     // The reader wheels up, past the re-stick band but with the last
@@ -111,15 +125,18 @@ describe('ReviewCILogView tail follow', () => {
     await raf();
     expect(scroll.scrollTop).toBe(readingAt);
 
-    p.log = logOf(FIRST_LINES + GROWTH_LINES);
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
     flushSync();
     await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
     for (let i = 0; i < 12; i += 1) await raf();
     expect(scroll.scrollTop).toBe(readingAt);
 
     // Opening another job's log lands at its tail.
+    const lint = new FakeCILog(numberedLines(FIRST_LINES));
     p.view = { stageName: 'test', jobId: '21', job: { ...JOB, id: '21', name: 'lint' } };
-    p.log = logOf(FIRST_LINES);
+    p.fetchLines = lint.fetch;
+    p.log = lint.state;
     flushSync();
     await settledAtBottom(scroll, 'the new job at its tail');
   });
@@ -127,13 +144,7 @@ describe('ReviewCILogView tail follow', () => {
   it('holds an expanded section at its row instead of following to the end', async () => {
     // Three collapsed sections fit the viewport, so the reader is at the
     // bottom; the first one opens onto more lines than the viewport holds.
-    let text = '';
-    for (const [index, name] of ['prepare', 'script', 'cleanup'].entries()) {
-      text += `section_start:${1700000000 + index * 10}:${name}\n${name} header\n`;
-      for (let line = 1; line <= 300; line += 1) text += `${name} line ${line}\n`;
-      text += `section_end:${1700000005 + index * 10}:${name}\n`;
-    }
-    const { scroll } = mountLog({ text, truncated: false, totalBytes: text.length });
+    const { scroll } = mountLog(sectionedLog(['prepare', 'script', 'cleanup']));
     await waitFor(() => scroll.querySelectorAll('[data-testid="review-ci-section"]').length === 3, 'the section rows');
     expect(scroll.scrollHeight).toBeLessThanOrEqual(scroll.clientHeight);
 
@@ -155,13 +166,7 @@ describe('ReviewCILogView tail follow', () => {
   it('holds an expanded section of a list that opened scrolled to its end', async () => {
     // More collapsed sections than the viewport holds: the open places
     // the list at its end, and the reader expands a row on screen there.
-    let text = '';
-    for (let index = 0; index < 30; index += 1) {
-      text += `section_start:${1700000000 + index * 10}:s${index}\ns${index} header\n`;
-      for (let line = 1; line <= 300; line += 1) text += `s${index} line ${line}\n`;
-      text += `section_end:${1700000005 + index * 10}:s${index}\n`;
-    }
-    const { scroll } = mountLog({ text, truncated: false, totalBytes: text.length });
+    const { scroll } = mountLog(sectionedLog(Array.from({ length: 30 }, (_, index) => `s${index}`)));
     await settledAtBottom(scroll, 'the list at its end');
 
     const rowOf = () => scroll.querySelector<HTMLElement>('[data-key="section:s27:1700000270"]');

@@ -15,17 +15,17 @@
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import AnsiText from '../chat/AnsiText.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
+  import ReviewCILogBlockRow from './ReviewCILogBlockRow.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
+  import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
+  import type { PRCILogState } from '../../stores/prReviewCI.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { addToast } from '../../stores/toast.svelte';
-  import type { CILogSectionSend, CILogView } from '../../stores/reviewPane.svelte';
-  import { copyToClipboard } from '../../utils/clipboard';
-  import { CI_SECTION_DONE, CI_SECTION_OUTPUT, ciSectionText, segmentCILog, type CILogSection } from '../../utils/ciLogSections';
+  import type { CILogView } from '../../stores/reviewPane.svelte';
+  import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import type { RowEstimate } from '../../utils/virtual/types';
@@ -33,11 +33,13 @@
 
   // CI job log view: replaces the diff body (same pattern as the
   // conflict viewer). The log shows as one collapsible row per GitHub
-  // step or GitLab section (utils/ciLogSections.ts). Nothing expands on
-  // its own; the open set is the pane store's, so it outlives row
-  // unmounts and starts empty on each log open. Rows and the lines of
-  // expanded sections, in fixed line blocks, are one virtualized list;
-  // each block renders through AnsiText (CI traces are ANSI-heavy).
+  // step or GitLab section, as the backend's index lists them. Nothing
+  // expands on its own; the open set is the pane store's, so it outlives
+  // row unmounts and starts empty on each log open. Rows and the lines of
+  // expanded sections are one virtualized list. A section's lines are
+  // rows of at most one block of the line cache (ciLogBlocks.svelte.ts),
+  // which a row loads when it mounts in the render window; the view never
+  // holds the whole log, whatever its size.
   //
   // The list opens at its end, and a followed log grows while the job
   // runs: the view follows the growth for a reader at the bottom while
@@ -53,29 +55,20 @@
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
 
-  const CHUNK_LINES = 200;
   const LINE_ESTIMATE_PX = 18;
   const HEADER_ESTIMATE_PX = 28;
-  const CUT_ESTIMATE_PX = 24;
-
-  interface LogText {
-    text: string;
-    truncated: boolean;
-    totalBytes: number;
-  }
 
   interface Props {
     view: CILogView;
-    log: LogText | null;
+    log: PRCILogState | null;
+    /** Reads a window of the open job's cached log. */
+    fetchLines: CILogFetch;
     loading: boolean;
     error: string | null;
     /** The kind of error; a rate limit reads as a pause until its time. */
     failure?: ForgeFailure | null;
     /** The PR's forge, which names a rate limit and the waiting text. */
     forge?: string;
-    /** False while the forge has not published the log: GitHub until the
-     * job's log blob exists, which in practice is once the job completed. */
-    available?: boolean;
     savedPath: string | null;
     /** Expanded sections, as `<job id>/<section key>`. */
     openSections: ReadonlySet<string>;
@@ -85,17 +78,20 @@
     onSend: () => void;
     onToggleSection: (sectionKey: string) => void;
     onSetSectionsOpen: (sectionKeys: readonly string[], open: boolean) => void;
-    onSendSection: (section: CILogSectionSend) => void;
+    /** Copies a section: resolves true once it is on the clipboard or,
+     * past the inline size, saved to a file. */
+    onCopySection: (section: CILogSection) => Promise<boolean>;
+    onSendSection: (section: CILogSection) => void;
   }
 
   let {
     view,
     log,
+    fetchLines,
     loading,
     error,
     failure = null,
     forge = '',
-    available = true,
     savedPath,
     openSections,
     onBack,
@@ -104,39 +100,53 @@
     onSend,
     onToggleSection,
     onSetSectionsOpen,
+    onCopySection,
     onSendSection,
   }: Props = $props();
 
   type LogRow =
     | { kind: 'section'; key: string; section: CILogSection; open: boolean }
-    | { kind: 'cut'; key: string }
-    | { kind: 'chunk'; key: string; text: string; lines: number };
+    | { kind: 'lines'; key: string; from: number; to: number };
 
-  const segments = $derived(segmentCILog(log?.text ?? '', log?.truncated ?? false, view.job));
+  const jobId = $derived(view.jobId);
+  // One cache per open job, dropped with it. The fetch is read when a
+  // block loads, so a new prop never needs a new cache.
+  const blocks = $derived.by(() => {
+    void jobId;
+    return untrack(() => new CILogBlockCache((from, count) => fetchLines(from, count)));
+  });
+  $effect(() => {
+    const cache = blocks;
+    return () => cache.dispose();
+  });
+  $effect(() => {
+    blocks.setIndex(log?.version ?? 0, log?.totalLines ?? 0, log?.stableLines ?? 0);
+  });
+
+  const available = $derived(log?.available ?? true);
+  const sections = $derived(log?.sections ?? []);
   const isOpen = (section: CILogSection) => openSections.has(`${view.jobId}/${section.key}`);
   const hasLines = (section: CILogSection) => section.end > section.start;
 
   const rows = $derived.by(() => {
     const out: LogRow[] = [];
-    for (const section of segments.sections) {
+    for (const section of sections) {
       const open = hasLines(section) && isOpen(section);
       out.push({ kind: 'section', key: `s:${section.key}`, section, open });
       if (!open) continue;
-      if (section.truncatedTop) out.push({ kind: 'cut', key: `x:${section.key}` });
-      for (let start = section.start; start < section.end; start += CHUNK_LINES) {
-        const end = Math.min(start + CHUNK_LINES, section.end);
-        out.push({
-          kind: 'chunk',
-          key: `c:${section.key}:${start - section.start}`,
-          text: segments.lines.slice(start, end).join('\n'),
-          lines: end - start,
-        });
+      // Rows break at block bounds, so each row reads one block; a row
+      // keeps its key while its section grows.
+      for (let from = section.start; from < section.end;) {
+        const block = Math.floor(from / CI_LOG_BLOCK_LINES);
+        const to = Math.min(section.end, (block + 1) * CI_LOG_BLOCK_LINES);
+        out.push({ kind: 'lines', key: `l:${section.key}:${block}`, from, to });
+        from = to;
       }
     }
     return out;
   });
 
-  const expandable = $derived(segments.sections.filter(hasLines));
+  const expandable = $derived(sections.filter(hasLines));
   const anyCollapsed = $derived(expandable.some((section) => !isOpen(section)));
 
   // Stable wrapper reading the current derived: same estimate-coherence
@@ -145,8 +155,7 @@
     at: (index) => {
       const row = rows[index];
       if (!row) return HEADER_ESTIMATE_PX;
-      if (row.kind === 'chunk') return row.lines * LINE_ESTIMATE_PX;
-      return row.kind === 'cut' ? CUT_ESTIMATE_PX : HEADER_ESTIMATE_PX;
+      return row.kind === 'lines' ? (row.to - row.from) * LINE_ESTIMATE_PX : HEADER_ESTIMATE_PX;
     },
     isExact: () => false,
   };
@@ -185,7 +194,6 @@
   // the previous job, and the fresh warm-up keeps the new log's
   // measurement cascade pinned instead of gliding. The view object is
   // re-derived on every pipeline frame, so only the job id is read.
-  const jobId = $derived(view.jobId);
   let anchoredJobId: string | null = null;
   $effect(() => {
     const ref = listRef;
@@ -232,10 +240,7 @@
   });
 
   async function copySection(section: CILogSection): Promise<void> {
-    if (!(await copyToClipboard(ciSectionText(segments, section)))) {
-      addToast('error', 'Failed to copy');
-      return;
-    }
+    if (!(await onCopySection(section))) return;
     copiedKey = section.key;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => {
@@ -244,16 +249,6 @@
     }, 2000);
   }
 
-  function sendSection(section: CILogSection): void {
-    onSendSection({
-      name: section.name,
-      status: section.status,
-      text: ciSectionText(segments, section),
-      truncatedTop: section.truncatedTop,
-    });
-  }
-
-  const totalMB = $derived(((log?.totalBytes ?? 0) / (1024 * 1024)).toFixed(1));
   const animate = $derived(!getSettings().lowPowerMode);
 </script>
 
@@ -268,16 +263,16 @@
     <Icon icon={Circle} size={13} class="shrink-0 text-fg-subtle" />
   {:else if status === 'canceled'}
     <Icon icon={CircleSlash} size={13} class="shrink-0 text-fg-muted" />
-  {:else if status === CI_SECTION_DONE}
+  {:else if status === 'done'}
     <Icon icon={CircleCheck} size={13} class="shrink-0 text-fg-subtle" />
-  {:else if status === CI_SECTION_OUTPUT}
+  {:else if status === 'output'}
     <Icon icon={Dot} size={13} class="shrink-0 text-fg-subtle" />
   {:else}
     <Icon icon={CircleMinus} size={13} class="shrink-0 text-fg-muted" />
   {/if}
 {/snippet}
 
-<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log">
+<div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size}>
   <div class="flex items-center gap-2 border-b border-border bg-surface-1 px-3 py-2 text-xs">
     <span class="h-2 w-2 shrink-0 rounded-full {ciStatusDotClass(view.job.status)}"></span>
     <span class="min-w-0 truncate font-mono text-fg" title={view.job.name}>{view.job.name}</span>
@@ -358,13 +353,11 @@
       {error}
     </div>
   {/if}
-  {#if log?.truncated}
-    <div class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-[0.6875rem] text-warning" data-testid="review-ci-log-truncated">
-      Showing the tail of a {totalMB} MB log. Save to file for the full log.
+  {#if log?.downloading && !error}
+    <div class="border-b border-border-subtle px-4 py-3 text-xs text-fg-muted" data-testid="review-ci-log-downloading">
+      Downloading the log; the forge cut the download off, and it resumes where it stopped.
     </div>
-  {/if}
-
-  {#if !available && !error}
+  {:else if !available && !error}
     <div class="border-b border-border-subtle px-4 py-3 text-xs text-fg-muted" data-testid="review-ci-log-pending">
       {#if !ciJobLive(view.job.status)}
         The job finished; the forge has not published its log yet.
@@ -429,7 +422,7 @@
                 <span class="min-w-0 flex-1"></span>
                 {#if section.status === 'running' && lines}
                   <span class="shrink-0 tabular-nums text-fg-subtle" data-testid="review-ci-section-lines">
-                    {section.end - section.start} {section.end - section.start === 1 ? 'line' : 'lines'}
+                    {section.lines} {section.lines === 1 ? 'line' : 'lines'}
                   </span>
                 {/if}
                 {#if duration}
@@ -447,23 +440,19 @@
                   <ReviewIconButton
                     icon={MessageSquarePlus}
                     label="Send section to chat"
-                    onclick={() => sendSection(section)}
+                    onclick={() => onSendSection(section)}
                     testid="review-ci-section-send"
                   />
                 </span>
               {/if}
             </div>
-          {:else if row.kind === 'cut'}
-            <div class="px-3 py-1 text-[0.6875rem] text-warning" data-testid="review-ci-section-cut">
-              The shown log starts partway through this section.
-            </div>
           {:else}
-            <AnsiText source={row.text} class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" />
+            <ReviewCILogBlockRow {blocks} from={row.from} to={row.to} linePx={LINE_ESTIMATE_PX} />
           {/if}
         {/snippet}
       </LongListVirtualizer>
     </div>
-  {:else if !loading && !error && available}
+  {:else if !loading && !error && available && !log?.downloading}
     <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-ci-log-empty">Log is empty.</div>
   {/if}
 </div>

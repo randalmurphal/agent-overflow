@@ -492,6 +492,9 @@ export {
   GetMergeConflictFile,
   SavePRCIJobLog,
   SavePRCIJobLogSection,
+  // A window of a followed CI job log, read from the backend cache by the
+  // log view's block cache (ciLogBlocks.svelte.ts).
+  GetPRCILogLines,
   // Forge-hosted attachments referenced by PR/MR content: one mints a
   // single-use ticketed URL for the bytes, the other writes the file into
   // the owning computer's Downloads folder.

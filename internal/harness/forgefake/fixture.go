@@ -152,8 +152,11 @@ type Job struct {
 	Log string `json:"log,omitempty"`
 	// LogWithheld answers the job's log with the forge's 404, as a forge
 	// does for a completed job whose log it has not published yet.
-	LogWithheld bool   `json:"logWithheld,omitempty"`
-	Steps       []Step `json:"steps,omitempty"`
+	LogWithheld bool `json:"logWithheld,omitempty"`
+	// Synthetic generates the log on each request instead of Log (see
+	// SyntheticLog), for a log of many megabytes.
+	Synthetic *SyntheticLog `json:"synthetic,omitempty"`
+	Steps     []Step        `json:"steps,omitempty"`
 }
 
 // Step is one GitHub Actions job step.
@@ -415,6 +418,14 @@ func (p *Pipeline) normalize(ids *idSource) error {
 				step.Number = previous + 1
 			} else if step.Number <= previous {
 				return fmt.Errorf("jobs[%d].steps[%d]: number %d does not follow %d", i, j, step.Number, previous)
+			}
+		}
+		if job.Synthetic != nil {
+			if job.Log != "" {
+				return fmt.Errorf("jobs[%d]: log and synthetic are exclusive", i)
+			}
+			if err := job.Synthetic.normalize(); err != nil {
+				return fmt.Errorf("jobs[%d]: %w", i, err)
 			}
 		}
 		if job.ID == 0 {

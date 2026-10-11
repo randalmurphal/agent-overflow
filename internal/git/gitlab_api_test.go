@@ -262,8 +262,8 @@ func TestGitLabWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), ref, allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.GetCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "9"}); !errors.Is(err, ErrNoForgeAPI) {
-		t.Fatalf("GetCIJobLog = %v", err)
+	if _, err := core.StreamCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove}); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("SubmitReview = %v", err)
@@ -394,8 +394,9 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 	}
 }
 
-// A trace is cleaned; a 404 is ErrCIJobLogNotFound carrying the forge's
-// error, and any other failure is not.
+// A trace is streamed raw, as the forge serves it (internal/cilog cleans
+// it); a 404 is ErrCIJobLogNotFound carrying the forge's error, and any
+// other failure is not.
 func TestGitLabJobLog(t *testing.T) {
 	t.Parallel()
 	var status atomic.Int32
@@ -409,15 +410,14 @@ func TestGitLabJobLog(t *testing.T) {
 		}
 		return forgeAPIAnswer{Body: "section_start:1:x\r\x1b[0Kline one\n", Header: http.Header{"Content-Type": {"text/plain"}}}
 	})
-	read, err := core.GetCIJobLog(t.Context(), gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
-	log := read.Text
-	if err != nil || log != "section_start:1:x\nline one\n" {
-		t.Fatalf("GetCIJobLog = %q, %v", log, err)
+	_, log, _, err := streamTestLog(t, core, gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
+	if err != nil || log != "section_start:1:x\r\x1b[0Kline one\n" {
+		t.Fatalf("StreamCIJobLog = %q, %v", log, err)
 	}
 	if accept := calls.all()[0].Header.Get("Accept"); accept != "*/*" {
 		t.Fatalf("trace Accept = %q", accept)
 	}
-	if _, err := core.GetCIJobLog(t.Context(), gitlabTestRef(1), CIJobLogRequest{JobID: "../901"}); err == nil {
+	if _, _, _, err := streamTestLog(t, core, gitlabTestRef(1), CIJobLogRequest{JobID: "../901"}); err == nil {
 		t.Fatal("a non-numeric job id was requested")
 	}
 	for _, tc := range []struct {
@@ -425,17 +425,18 @@ func TestGitLabJobLog(t *testing.T) {
 		notFound bool
 	}{{http.StatusNotFound, true}, {http.StatusInternalServerError, false}, {http.StatusForbidden, false}} {
 		status.Store(int32(tc.status))
-		_, err := core.GetCIJobLog(t.Context(), gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
+		_, _, _, err := streamTestLog(t, core, gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
 		var statusErr *forgeapi.StatusError
 		if errors.Is(err, ErrCIJobLogNotFound) != tc.notFound || !errors.As(err, &statusErr) || statusErr.Status != tc.status {
-			t.Fatalf("HTTP %d: GetCIJobLog = %v, want ErrCIJobLogNotFound %v over the *StatusError", tc.status, err, tc.notFound)
+			t.Fatalf("HTTP %d: StreamCIJobLog = %v, want ErrCIJobLogNotFound %v over the *StatusError", tc.status, err, tc.notFound)
 		}
 	}
 }
 
-// A job log read with the ETag of the text the caller holds is
-// conditional: a matching ETag answers 304, which reports NotModified with
-// no text, and a moved log answers the new text and its ETag. Both forges.
+// A job log read with the ETag of the log the caller holds is
+// conditional: a matching ETag answers 304, reported as notModified with
+// no writer asked for, and a moved log answers the new body and its ETag.
+// Both forges.
 func TestJobLogRevalidatesItsETag(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -458,18 +459,18 @@ func TestJobLogRevalidatesItsETag(t *testing.T) {
 			}
 			return forgeAPIAnswer{Body: "log " + etag + "\n", Header: http.Header{"Content-Type": {"text/plain"}, "ETag": {etag}}}
 		})
-		first, err := core.GetCIJobLog(t.Context(), tc.ref, CIJobLogRequest{JobID: "901"})
-		if err != nil || first.NotModified || first.ETag != `"v1"` || first.Text != `log "v1"`+"\n" {
-			t.Fatalf("%s: unconditional read = %+v, %v", tc.forge, first, err)
+		first, text, notModified, err := streamTestLog(t, core, tc.ref, CIJobLogRequest{JobID: "901"})
+		if err != nil || notModified || first.ETag != `"v1"` || text != `log "v1"`+"\n" {
+			t.Fatalf("%s: unconditional read = %+v %q, %v", tc.forge, first, text, err)
 		}
-		same, err := core.GetCIJobLog(t.Context(), tc.ref, CIJobLogRequest{JobID: "901", ETag: first.ETag})
-		if err != nil || !same.NotModified || same.Text != "" || same.ETag != `"v1"` {
-			t.Fatalf("%s: read with a matching ETag = %+v, %v; want NotModified", tc.forge, same, err)
+		_, text, notModified, err = streamTestLog(t, core, tc.ref, CIJobLogRequest{JobID: "901", ETag: first.ETag})
+		if err != nil || !notModified || text != "" {
+			t.Fatalf("%s: read with a matching ETag = %q, %v; want notModified", tc.forge, text, err)
 		}
 		current.Store(`"v2"`)
-		moved, err := core.GetCIJobLog(t.Context(), tc.ref, CIJobLogRequest{JobID: "901", ETag: first.ETag})
-		if err != nil || moved.NotModified || moved.ETag != `"v2"` || moved.Text != `log "v2"`+"\n" {
-			t.Fatalf("%s: read after the log moved = %+v, %v", tc.forge, moved, err)
+		moved, text, notModified, err := streamTestLog(t, core, tc.ref, CIJobLogRequest{JobID: "901", ETag: first.ETag})
+		if err != nil || notModified || moved.ETag != `"v2"` || text != `log "v2"`+"\n" {
+			t.Fatalf("%s: read after the log moved = %+v %q, %v", tc.forge, moved, text, err)
 		}
 		sent := calls.all()
 		if len(sent) != 3 || sent[0].Header.Get("If-None-Match") != "" || sent[1].Header.Get("If-None-Match") != `"v1"` || sent[2].Header.Get("If-None-Match") != `"v1"` {
@@ -478,27 +479,40 @@ func TestJobLogRevalidatesItsETag(t *testing.T) {
 	}
 }
 
-// A trace over maxCILogBytes keeps its tail from a whole line. A running
-// GitLab trace ignores Range and answers the whole body again, which the
-// tail buffer cuts.
-func TestGitLabJobLogKeepsTheTail(t *testing.T) {
+// A resume asks for the bytes from its offset with a start range and no
+// validator, and the answer's 206 reports where its body starts. A 206
+// without a usable Content-Range is refused. Both forges.
+func TestJobLogResumesWithAStartRange(t *testing.T) {
 	t.Parallel()
-	line := strings.Repeat("y", 99) + "\n"
-	body := strings.Repeat(line, maxCILogBytes/len(line)+50)
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		return forgeAPIAnswer{Body: body, Header: http.Header{"Content-Type": {"text/plain"}, "Content-Length": {strconv.Itoa(len(body))}}}
-	})
-	read, err := core.GetCIJobLog(t.Context(), gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
-	log := read.Text
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(log) > maxCILogBytes || len(log) < maxCILogBytes-len(line) || !strings.HasPrefix(log, "yyy") || !strings.HasSuffix(body, log) || len(log)%len(line) != 0 {
-		t.Fatalf("tail of %d bytes, want whole lines within %d", len(log), maxCILogBytes)
-	}
-	sent := calls.all()
-	if len(sent) != 2 || sent[1].Header.Get("Range") == "" {
-		t.Fatalf("requests = %d, want the probe and the Range", len(sent))
+	body := strings.Repeat("0123456789\n", 100)
+	for _, tc := range []struct {
+		forge string
+		ref   PRReference
+	}{{"gitlab", gitlabTestRef(1)}, {"github", githubTestRef(1)}} {
+		var broken atomic.Bool
+		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			spec := call.Header.Get("Range")
+			from, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(spec, "bytes="), "-"))
+			if err != nil {
+				t.Errorf("%s: Range %q", tc.forge, spec)
+			}
+			header := http.Header{"Content-Type": {"text/plain"}, "ETag": {`"blob"`}}
+			if !broken.Load() {
+				header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", from, len(body)-1, len(body)))
+			}
+			return forgeAPIAnswer{Status: http.StatusPartialContent, Body: body[from:], Header: header}
+		})
+		start, text, _, err := streamTestLog(t, core, tc.ref, CIJobLogRequest{JobID: "901", From: 300, ETag: `"ignored"`})
+		if err != nil || start.Status != http.StatusPartialContent || start.Offset != 300 || start.ETag != `"blob"` || text != body[300:] {
+			t.Fatalf("%s: resume = %+v with %d bytes, %v", tc.forge, start, len(text), err)
+		}
+		if sent := calls.all()[0]; sent.Header.Get("Range") != "bytes=300-" || sent.Header.Get("If-None-Match") != "" {
+			t.Fatalf("%s: resume sent Range %q, If-None-Match %q", tc.forge, sent.Header.Get("Range"), sent.Header.Get("If-None-Match"))
+		}
+		broken.Store(true)
+		if _, _, _, err := streamTestLog(t, core, tc.ref, CIJobLogRequest{JobID: "901", From: 300}); err == nil {
+			t.Fatalf("%s: a 206 without a Content-Range was accepted", tc.forge)
+		}
 	}
 }
 

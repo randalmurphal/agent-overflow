@@ -67,8 +67,10 @@ inspection go through the harness wire with no fixture files.
   current one is a bodiless 304 under the same route. Only routes whose
   real endpoints send an ETag the app revalidates list it
   ([measurements](../../../docs/references/forge-api-measurements.md#conditional-requests));
-  on any other route `If-None-Match` is an unimplemented flag. `Range` has no handler, so a
-  request carrying it is unhandled.
+  on any other route `If-None-Match` is an unimplemented flag. `Range` is
+  likewise a flag only the two job log routes list, each answering it as
+  its forge does (below); on any other route it is unhandled. A log
+  (`body`) is written after the engine's lock is released.
 - A rate limit (`SetRateLimit`) is per forge and pool: GitHub `core`
   (REST) and `graphql`, GitLab `throttle_authenticated_api`. With
   `remaining` 0 every API request to the pool is answered as the forge
@@ -120,14 +122,14 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head)` | open PR lookup (checkout origin) |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
 | GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run; `Link` rel="next" while more pages exist |
-| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists, which for a running job is its whole run; a running job with a log models the jobs API still reporting a completed job running); answered directly where the real endpoint redirects to its log blob, with the blob's ETag behavior |
+| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists, which for a running job is its whole run; a running job with a log models the jobs API still reporting a completed job running); answered directly where the real endpoint redirects to its log blob, with the blob's ETag and Range behavior: a start or closed range is a 206 with `Content-Range`, a suffix range is ignored (200, whole body), a start at or past the end is a 416 (HTTP range semantics; not measured on the forges) |
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads; `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin) |
 | GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI |
-| GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`) |
+| GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
 Unhandled (fail with their request): GitHub's review, file comment and
@@ -160,6 +162,15 @@ POST and discussion resolve PUT.
   the raw trace: write section markers as the runner does
   (`section_start:<unix>:<name>\r\x1b[0K<header>`), and the app's trace
   cleaner turns them into sections.
+- A job's `synthetic` log (`SyntheticLog`, `synthetic.go`) is generated
+  line by line on each request instead of stored, so a spec can serve a
+  log of many megabytes: sections of a fixed number of fixed-width lines,
+  each GitHub section stamped with the time of the job's matching started
+  step and opened by its `##[group]<name>` line, each GitLab section
+  wrapped in the runner's markers. A running GitLab job serves
+  `runningLines` lines on its first trace request and `growLines` more on
+  each later one (`HarnessReset` restarts the count); a completed job
+  serves all of it. Its ETag names the spec and the extent served.
 
 Run `go test ./internal/harness/forgefake ./cmd/ao-mockforge` after a
 change here, and the Playwright specs that seed a forge

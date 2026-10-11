@@ -594,11 +594,11 @@
       <ReviewCILogView
         view={review.ciLogView}
         log={review.ciLog}
+        fetchLines={(from, count) => review?.readCILogLines(from, count) ?? Promise.reject(new Error('No CI job log is open.'))}
         loading={review.ciLogLoading}
         error={review.ciLogError}
         failure={review.ciLogFailure}
         forge={review.prRef?.forge}
-        available={review.ciLogAvailable}
         savedPath={review.ciLogSavedPath}
         openSections={review.ciLogOpenSections}
         onBack={() => review?.closeCILogView()}
@@ -607,6 +607,7 @@
         onSend={() => { void review?.sendCILogToChat(); }}
         onToggleSection={(sectionKey) => review?.toggleCILogSection(sectionKey)}
         onSetSectionsOpen={(sectionKeys, open) => review?.setCILogSectionsOpen(sectionKeys, open)}
+        onCopySection={(section) => review?.copyCILogSection(section) ?? Promise.resolve(false)}
         onSendSection={(section) => { void review?.sendCILogSectionToChat(section); }}
       />
     {:else if review.conflictView}

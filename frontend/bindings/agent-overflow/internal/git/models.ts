@@ -123,7 +123,7 @@ export class CIStage {
 /**
  * CIStep is a per-step status inside a job (GitHub Actions only;
  * GitLab has no step concept; its trace marks sections instead, see
- * cleanGitLabTrace). Number is GitHub's step number, which has gaps: post
+ * internal/cilog). Number is GitHub's step number, which has gaps: post
  * steps are numbered after the steps that did not run. StartedAt and
  * CompletedAt are the jobs API's RFC 3339 times, to the second, empty
  * until the step starts or completes. Steps run in order, and every line

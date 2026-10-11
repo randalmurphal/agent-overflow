@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/assetwatch"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/cilog"
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
@@ -310,6 +311,10 @@ type App struct {
 	// the reason forgeAttachCache is.
 	localImageOnce    sync.Once
 	localImageService *localimage.Service
+	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
+	// first use for the reason forgeAttachCache is lazy.
+	ciLogOnce  sync.Once
+	ciLogStore *cilog.Store
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)

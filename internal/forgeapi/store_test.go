@@ -57,35 +57,6 @@ func TestETagStoreBoundsAndHostDrop(t *testing.T) {
 	})
 }
 
-func TestTailBufferKeepsTheTailAcrossChunks(t *testing.T) {
-	t.Parallel()
-	var all bytes.Buffer
-	for i := range 500 {
-		fmt.Fprintf(&all, "line %04d\n", i)
-	}
-	data := all.Bytes()
-	for _, capacity := range []int{1, 7, 64, 1000, len(data), len(data) + 5} {
-		for _, chunk := range []int{1, 3, 13, 64, 999, len(data)} {
-			tail := NewTailBuffer(capacity)
-			for i := 0; i < len(data); i += chunk {
-				end := min(i+chunk, len(data))
-				if n, err := tail.Write(data[i:end]); err != nil || n != end-i {
-					t.Fatalf("Write = %d, %v", n, err)
-				}
-			}
-			want := data[max(0, len(data)-capacity):]
-			if got := tail.Bytes(); !bytes.Equal(got, want) {
-				t.Fatalf("cap %d chunk %d: tail = %q..., want %q...", capacity, chunk, head(got), head(want))
-			}
-			if tail.Total() != int64(len(data)) || tail.Truncated() != (capacity < len(data)) {
-				t.Fatalf("cap %d chunk %d: total %d truncated %v", capacity, chunk, tail.Total(), tail.Truncated())
-			}
-		}
-	}
-}
-
-func head(b []byte) []byte { return b[:min(len(b), 24)] }
-
 func TestRedactURL(t *testing.T) {
 	t.Parallel()
 	blob, _ := url.Parse("https://user:pass@pipelines.actions.githubusercontent.com/logs/job.txt?sig=SECRET&se=2026#frag")

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
+import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
@@ -709,12 +710,17 @@ function installCIMocks(): void {
   }));
 }
 
-function installLogFollows(text: string, seq = 5) {
+/** The wire state of version `version` of a `lines`-line log. */
+function wireLog(version: number, lines: number, seq: number, overrides: Record<string, unknown> = {}) {
+  return {
+    version, totalLines: lines, totalBytes: lines * 7, stableLines: 0, sections: [],
+    available: true, downloading: false, error: '', seq, ...overrides,
+  };
+}
+
+function installLogFollows(lines: number, seq = 5) {
   return setBindingMock('SetPRCILogFollows', async (_id: string, jobs: string[]) => ({
-    logs: Object.fromEntries(jobs.map((job) => [
-      job,
-      { text, truncated: false, totalBytes: text.length, available: true, error: '', seq },
-    ])),
+    logs: Object.fromEntries(jobs.map((job) => [job, wireLog(1, lines, seq)])),
   }));
 }
 
@@ -1400,7 +1406,10 @@ describe('reviewPane store — PR scope', () => {
 
   it('reads CI from the subscription and follows the opened job\'s log', async () => {
     installCIMocks();
-    const follows = installLogFollows('line 1\nline 2\n');
+    const follows = installLogFollows(2);
+    const reads = setBindingMock('GetPRCILogLines', async (_pr: unknown, _job: string, from: number, count: number) => ({
+      from, lines: ['line 1', 'line 2', 'line 3'].slice(from, from + count), totalLines: 3, version: 2,
+    }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1415,20 +1424,22 @@ describe('reviewPane store — PR scope', () => {
     expect(follows).toHaveBeenCalledWith('sub-1', ['20']);
     expect(state.ciLogLoading).toBe(false);
     expect(state.ciLogView?.jobId).toBe('20');
-    expect(state.ciLog?.text).toBe('line 1\nline 2\n');
-    expect(state.ciLogAvailable).toBe(true);
+    expect(state.ciLog).toMatchObject({ version: 1, totalLines: 2, available: true });
 
-    applyPRCILogEvent({
-      prKey: PR_KEY, jobId: '20', seq: 6, prevLen: 14, base: 14, append: 'line 3\n',
-      truncated: false, totalBytes: 21, available: true,
-    });
-    expect(state.ciLog?.text).toBe('line 1\nline 2\nline 3\n');
+    applyPRCILogEvent({ prKey: PR_KEY, jobId: '20', ...wireLog(2, 3, 6, { stableLines: 2 }) });
+    expect(state.ciLog).toMatchObject({ version: 2, totalLines: 3, stableLines: 2 });
+    // The open job's lines are read from the computer the PR lives on.
+    const window = await state.readCILogLines(1, 2);
+    expect(window.lines).toEqual(['line 2', 'line 3']);
+    expect(reads).toHaveBeenLastCalledWith(
+      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 }, '20', 1, 2);
 
     state.closeCILogView();
     await flushPane();
     expect(follows).toHaveBeenLastCalledWith('sub-1', []);
     expect(state.ciLogView).toBeNull();
     expect(state.ciLog).toBeNull();
+    await expect(state.readCILogLines(0, 1)).rejects.toThrow('No CI job log is open.');
 
     // Leaving pr scope: this pane no longer reports the PR's CI.
     await state.setScope('workspace');
@@ -1437,7 +1448,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('moves the open job\'s status and steps with the pipeline', async () => {
     installCIMocks();
-    installLogFollows('building\n');
+    installLogFollows(1);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1460,15 +1471,14 @@ describe('reviewPane store — PR scope', () => {
   it('reads a GitHub job that is still running as unavailable', async () => {
     installCIMocks();
     setBindingMock('SetPRCILogFollows', async () => ({
-      logs: { 20: { text: '', truncated: false, totalBytes: 0, available: false, error: '', seq: 5 } },
+      logs: { 20: wireLog(0, 0, 5, { available: false }) },
     }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
-    expect(state.ciLogAvailable).toBe(true);
     state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
     await flushPane();
-    expect(state.ciLogAvailable).toBe(false);
+    expect(state.ciLog?.available).toBe(false);
     expect(state.ciLogError).toBeNull();
   });
 
@@ -1494,24 +1504,24 @@ describe('reviewPane store — PR scope', () => {
 
   it('refreshCILog re-sends the follow, which refetches the log', async () => {
     installCIMocks();
-    const follows = installLogFollows('first\n');
+    const follows = installLogFollows(1);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
     state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
     await flushPane();
 
-    const again = installLogFollows('second\n', 9);
+    const again = setBindingMock('SetPRCILogFollows', async () => ({ logs: { 20: wireLog(2, 4, 9) } }));
     state.refreshCILog();
     await flushPane();
     expect(follows).toHaveBeenCalledTimes(1);
     expect(again).toHaveBeenCalledWith('sub-1', ['20']);
-    expect(state.ciLog?.text).toBe('second\n');
+    expect(state.ciLog).toMatchObject({ version: 2, totalLines: 4 });
   });
 
   it('clears the follow when the pane is disposed', async () => {
     installCIMocks();
-    const follows = installLogFollows('x\n');
+    const follows = installLogFollows(1);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1546,7 +1556,7 @@ describe('reviewPane store — PR scope', () => {
       ci: ciPipelineStub('running'),
       ciError: '',
     }));
-    const follows = installLogFollows('x\n');
+    const follows = installLogFollows(1);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1570,7 +1580,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('opening the conflict view closes the CI log view and vice versa', async () => {
     installCIMocks();
-    installLogFollows('x\n');
+    installLogFollows(1);
     setBindingMock('GetPRMergeConflicts', async () => ({
       conflicted: false,
       treeOID: 'tree-clean',
@@ -1598,7 +1608,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('sendCILogToChat saves the log and prefills the source pane composer', async () => {
     installCIMocks();
-    installLogFollows('boom\n');
+    installLogFollows(1);
     let finishSave!: (path: string) => void;
     const save = setBindingMock('SavePRCIJobLog', () => new Promise<string>((resolve) => {
       finishSave = resolve;
@@ -1639,7 +1649,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('keeps the open log\'s expanded sections per job, and starts each open collapsed', async () => {
     installCIMocks();
-    installLogFollows('x\n');
+    installLogFollows(1);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1665,10 +1675,15 @@ describe('reviewPane store — PR scope', () => {
     expect(state.ciLogOpenSections.size).toBe(0);
   });
 
-  it('sends a short section inline and a long one as a saved file', async () => {
+  it('sends a short section inline from its lines and a long one as a file the backend saves', async () => {
     installCIMocks();
-    installLogFollows('x\n');
+    installLogFollows(4);
     const save = setBindingMock('SavePRCIJobLogSection', async () => '/data/ci-logs/section.log');
+    const ESC = String.fromCharCode(27);
+    const log = ['setup', `${ESC}[31mFAIL${ESC}[0m \`\`\`x\`\`\``, 'exit 2', 'after'];
+    const reads = setBindingMock('GetPRCILogLines', async (_pr: unknown, _job: string, from: number, count: number) => ({
+      from, lines: log.slice(from, from + count), totalLines: log.length, version: 1,
+    }));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1682,8 +1697,11 @@ describe('reviewPane store — PR scope', () => {
       state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
       await flushPane();
 
-      await state.sendCILogSectionToChat({ name: 'Run make test', status: 'failed', text: 'FAIL ```x```\nexit 2', truncatedTop: false });
+      const step = { key: 'step:2', name: 'Run make test', status: 'failed', start: 1, end: 3, lines: 2, bytes: 40 };
+      await state.sendCILogSectionToChat(step);
       expect(save).not.toHaveBeenCalled();
+      expect(reads).toHaveBeenCalledWith(expect.anything(), '20', 1, 2);
+      // Plain text: the colors the view renders are dropped.
       expect(content).toBe([
         'Earlier draft',
         '',
@@ -1693,39 +1711,97 @@ describe('reviewPane store — PR scope', () => {
         '````',
       ].join('\n'));
 
-      // Over the inline cap, counted in UTF-8 bytes: saved, and named.
+      // Over the inline cap: the backend saves it by key and the lines
+      // are never read here.
       content = '';
-      const long = 'é'.repeat(CI_SECTION_INLINE_MAX_BYTES / 2 + 1);
-      await state.sendCILogSectionToChat({ name: 'step_script', status: 'done', text: long, truncatedTop: true });
+      reads.mockClear();
+      const big = { key: 'section:step_script:1', name: 'step_script', status: 'done', start: 0, end: 4, lines: 4, bytes: CI_SECTION_INLINE_MAX_BYTES + 1 };
+      await state.sendCILogSectionToChat(big);
+      expect(reads).not.toHaveBeenCalled();
       expect(save).toHaveBeenCalledWith(
         { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
         '20',
         'unit',
-        'step_script',
-        long,
+        'section:step_script:1',
       );
       expect(content).toBe([
         'Investigate `step_script` in CI job `unit` (test) on PR #5, status: running.',
-        'The text starts partway through this section: the log view holds the end of the job log.',
         'Section log saved at: /data/ci-logs/section.log',
       ].join('\n'));
 
-      // A failed save reaches the log view and leaves the draft alone.
+      // A failed save or read reaches the log view and leaves the draft alone.
       setBindingMock('SavePRCIJobLogSection', async () => {
         throw new Error('disk full');
       });
-      await state.sendCILogSectionToChat({ name: 'step_script', status: 'done', text: long, truncatedTop: false });
+      await state.sendCILogSectionToChat(big);
       expect(state.ciLogError).toBe('disk full');
-      expect(content).toContain('Section log saved at: /data/ci-logs/section.log');
+      setBindingMock('GetPRCILogLines', async () => {
+        throw new Error('the downloaded log is gone; refresh to download it again');
+      });
+      await state.sendCILogSectionToChat(step);
+      expect(state.ciLogError).toBe('the downloaded log is gone; refresh to download it again');
+      expect(content).toBe([
+        'Investigate `step_script` in CI job `unit` (test) on PR #5, status: running.',
+        'Section log saved at: /data/ci-logs/section.log',
+      ].join('\n'));
     } finally {
       dispose();
+    }
+  });
+
+  it('copies a short section\'s text and a long one\'s saved path', async () => {
+    installCIMocks();
+    installLogFollows(2);
+    setBindingMock('GetPRCILogLines', async (_pr: unknown, _job: string, from: number, count: number) => ({
+      from, lines: ['one', 'two'].slice(from, from + count), totalLines: 2, version: 1,
+    }));
+    const save = setBindingMock('SavePRCIJobLogSection', async () => '/data/ci-logs/big.log');
+    const writes: string[] = [];
+    let refuse = false;
+    // happy-dom has no clipboard; the stub is an own property the
+    // shared-worker guard expects gone when the test ends.
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          if (refuse) throw new DOMException('denied', 'NotAllowedError');
+          writes.push(text);
+        },
+      },
+    });
+    try {
+      const state = reviewStateForPane('pane-1', prSubject());
+      await waitLoaded(state);
+      await state.setScope('pr');
+      state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+      await flushPane();
+
+      expect(await state.copyCILogSection({ key: 'job', name: 'unit', status: 'running', start: 0, end: 2, lines: 2, bytes: 8 })).toBe(true);
+      expect(writes).toEqual(['one\ntwo']);
+      expect(save).not.toHaveBeenCalled();
+
+      const big = { key: 'job', name: 'unit', status: 'running', start: 0, end: 2, lines: 2, bytes: CI_SECTION_INLINE_MAX_BYTES + 1 };
+      expect(await state.copyCILogSection(big)).toBe(true);
+      expect(save).toHaveBeenCalledWith(expect.anything(), '20', 'unit', 'job');
+      expect(writes.at(-1)).toBe('/data/ci-logs/big.log');
+      expect(state.ciLogSavedPath).toBe('/data/ci-logs/big.log');
+      expect(getToasts().at(-1)?.message).toBe('The section is over 64 KB: it was saved to a file, and the path is copied.');
+
+      // A refused clipboard is a failed copy, said in a toast.
+      refuse = true;
+      expect(await state.copyCILogSection({ key: 'job', name: 'unit', status: 'running', start: 0, end: 2, lines: 2, bytes: 8 })).toBe(false);
+      expect(getToasts().at(-1)?.message).toBe('Failed to copy');
+    } finally {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
     }
   });
 
   it('shows a save failure over the log and the log\'s own failure after it clears', async () => {
     installCIMocks();
     setBindingMock('SetPRCILogFollows', async () => ({
-      logs: { 20: { text: 'x\n', truncated: false, totalBytes: 2, available: true, error: 'failed to fetch job log (id: q)', seq: 5 } },
+      logs: { 20: wireLog(1, 1, 5, { error: 'failed to fetch job log (id: q)' }) },
     }));
     setBindingMock('SavePRCIJobLog', async () => {
       throw new Error('disk full');

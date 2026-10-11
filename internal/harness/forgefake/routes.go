@@ -54,7 +54,7 @@ var commands = []command{
 var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
 	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
-	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match"}, run: ghJobLogs},
+	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match", "range"}, run: ghJobLogs},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
 }
 
@@ -65,7 +65,7 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
 	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
 	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
-	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match"}, run: glabJobTrace},
+	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
 }
 
@@ -94,20 +94,31 @@ func (e *Engine) api(c *call, routes []apiRoute) response {
 		if slices.Contains(route.flags, "if-none-match") {
 			resp = conditional(resp, c.flag("if-none-match"))
 		}
+		if slices.Contains(route.flags, "range") {
+			resp = logRange(resp, c.flag("range"), resp.ranges)
+		}
 		return resp
 	}
 	return unhandled("no %s api route for %s %s", c.cli, method, endpoint)
 }
 
-// conditional gives a route's 200 its ETag, a hash of the body, and
+// conditional gives a route's 200 its ETag, a hash of the body or the
+// one a generated log names, and
 // answers 304 with no body when ifNoneMatch names it. Any other answer
 // passes through.
 func conditional(resp response, ifNoneMatch string) response {
 	if resp.unhandled != "" || (resp.status != 0 && resp.status != http.StatusOK) || resp.exit != 0 {
 		return resp
 	}
-	sum := sha256.Sum256(resp.stdout)
-	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	etag := resp.etag
+	if etag == "" {
+		content := resp.stdout
+		if body, ok := resp.body.(bytesBody); ok {
+			content = body
+		}
+		sum := sha256.Sum256(content)
+		etag = `"` + hex.EncodeToString(sum[:16]) + `"`
+	}
 	if ifNoneMatch == etag {
 		return response{route: resp.route, status: http.StatusNotModified, header: http.Header{"Etag": {etag}}}
 	}

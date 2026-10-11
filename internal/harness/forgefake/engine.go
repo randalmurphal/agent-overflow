@@ -170,9 +170,12 @@ type Engine struct {
 	offline bool
 	// rateLimits are the pools under a limit (SetRateLimit).
 	rateLimits map[rateLimitKey]RateLimit
-	log        []Invocation
-	seq        int
-	dropped    int
+	// traceRequests counts the trace requests each running synthetic
+	// GitLab job answered, which is how far its trace has grown.
+	traceRequests map[int64]int
+	log           []Invocation
+	seq           int
+	dropped       int
 }
 
 // New builds an empty engine. Every invocation against it answers "not
@@ -184,7 +187,7 @@ func New(opts Options) *Engine {
 	if opts.Head == nil {
 		opts.Head = gitHead
 	}
-	return &Engine{opts: opts, viewer: defaultViewer, repos: make(map[string]*Repo)}
+	return &Engine{opts: opts, viewer: defaultViewer, repos: make(map[string]*Repo), traceRequests: make(map[int64]int)}
 }
 
 // Seed adds the fixture's repositories, replacing any already seeded
@@ -238,6 +241,7 @@ func (e *Engine) Reset() {
 	clear(e.sshHosts)
 	e.offline = false
 	clear(e.rateLimits)
+	clear(e.traceRequests)
 	e.log = nil
 	e.dropped = 0
 }
@@ -378,6 +382,16 @@ type response struct {
 	status    int
 	header    http.Header
 	unhandled string
+	// body is a job log, served over HTTP in place of stdout: bytes
+	// [from, to) of it on a 206, all of it otherwise. etag is its
+	// validator when the handler names one; a conditional route hashes
+	// the body otherwise.
+	body     logBody
+	from, to int64
+	etag     string
+	// ranges is how the endpoint answers Range, for a route that lists
+	// the range flag.
+	ranges rangePolicy
 }
 
 func unhandled(reason string, args ...any) response {

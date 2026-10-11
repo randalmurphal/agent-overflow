@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,8 +32,8 @@ const maxRequestBody = 1 << 20
 // no route claims (404, with the method and path in the detail). A
 // request with no token at all is refused with 401 and not recorded: it
 // is not the forge transport's. If-None-Match is a flag only the routes
-// that list it implement (conditional); Range has no handler, so a
-// request carrying it is unhandled. A pool under a rate limit
+// that list it implement (conditional). Range is likewise a flag only
+// the job log routes implement, each the way its forge answers it. A pool under a rate limit
 // (SetRateLimit) answers as the forge does.
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.EscapedPath(), "/")
@@ -130,6 +131,18 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header()[name] = values
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if body := resp.body; body != nil && !inv.Unhandled && (status == http.StatusOK || status == http.StatusPartialContent) {
+		// A job log is written here, outside the engine's lock, from the
+		// values its handler copied.
+		from, to := int64(0), body.size()
+		if status == http.StatusPartialContent {
+			from, to = resp.from, resp.to
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(to-from, 10))
+		w.WriteHeader(status)
+		_ = body.writeRange(w, from, to)
+		return
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(out)
 }
@@ -150,8 +163,9 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	default:
 		return c, "", "no forge mount " + forge
 	}
-	if r.Header.Get("Range") != "" {
-		return c, "", "header Range is not implemented"
+	if spec := r.Header.Get("Range"); spec != "" {
+		// Only the log routes, which list it, answer Range.
+		c.flags["range"] = []string{spec}
 	}
 	if tag := r.Header.Get("If-None-Match"); tag != "" {
 		// A route that lists if-none-match answers it; any other refuses

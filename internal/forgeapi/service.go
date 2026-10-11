@@ -67,7 +67,6 @@ type Service struct {
 
 	transport *http.Transport
 	follow    *http.Client
-	noFollow  *http.Client
 	gates     *gates
 	etags     *etagStore
 
@@ -133,7 +132,6 @@ func New(opts Options) (*Service, error) {
 	}
 	authorizing := authTransport{base: s.transport}
 	s.follow = &http.Client{Transport: authorizing, CheckRedirect: dropCrossHostAuth}
-	s.noFollow = &http.Client{Transport: authorizing, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return s, nil
 }
 

@@ -37,6 +37,10 @@ export default defineConfig({
     // Functional-flow evidence is semantic state and bounded observations.
     // Trace snapshots contain DOM state only. Pixel capture is disabled.
     screenshot: 'off',
+    // The app follows the system color scheme by default and Playwright
+    // emulates light unless told otherwise; dark is what the reviewer of a
+    // spec's screenshot is looking at.
+    colorScheme: 'dark',
   },
   // Compact is a layout mode of the one app (frontend/AGENTS.md § Compact),
   // so it is a second PROJECT over the same harness, not a second suite:

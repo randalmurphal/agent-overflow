@@ -1071,6 +1071,7 @@ func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
 	}
 	for id, handle := range a.prUpdates.handles {
 		if handle.pump == pump {
+			releaseFollowsLocked(pump, handle)
 			delete(a.prUpdates.handles, id)
 		}
 	}

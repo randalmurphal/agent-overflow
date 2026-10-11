@@ -1,11 +1,13 @@
 package git
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,11 +32,6 @@ const (
 	CIStatusManual   = "manual"
 	CIStatusNeutral  = "neutral"
 )
-
-// maxCILogBytes caps a fetched CI job log/trace. Traces beyond this are
-// rare; the runner errors past the cap and the UI falls back to "open in
-// browser".
-const maxCILogBytes = 16 * 1024 * 1024
 
 type CIPipeline struct {
 	// Status is the normalized aggregate for the whole pipeline.
@@ -66,7 +63,7 @@ type CIJob struct {
 
 // CIStep is a per-step status inside a job (GitHub Actions only;
 // GitLab has no step concept; its trace marks sections instead, see
-// cleanGitLabTrace). Number is GitHub's step number, which has gaps: post
+// internal/cilog). Number is GitHub's step number, which has gaps: post
 // steps are numbered after the steps that did not run. StartedAt and
 // CompletedAt are the jobs API's RFC 3339 times, to the second, empty
 // until the step starts or completes. Steps run in order, and every line
@@ -87,54 +84,103 @@ type CIStep struct {
 // job's whole run and can be a while after it completed.
 var ErrCIJobLogNotFound = errors.New("ci job log not found")
 
-// CIJobLogRequest names one job's log for GetCIJobLog. ETag is the
-// validator of the log text the caller already holds, sent as
-// If-None-Match; empty asks for the log unconditionally.
+// ErrCIJobLogRangeUnsatisfiable is a resumed job log request (From > 0)
+// the forge answered with HTTP 416: it holds no byte at that offset.
+var ErrCIJobLogRangeUnsatisfiable = errors.New("ci job log range not satisfiable")
+
+// CIJobLogRequest names one job's log for StreamCIJobLog. From > 0 asks
+// for the bytes from there on (Range: bytes=From-), to resume a cut-off
+// download; ETag, sent only from the start, is the validator of the log
+// the caller holds (If-None-Match). Timeout bounds the whole read, the
+// body included; zero is the transport's default.
 type CIJobLogRequest struct {
-	JobID string
-	ETag  string
+	JobID   string
+	ETag    string
+	From    int64
+	Timeout time.Duration
 }
 
-// CIJobLog is a GetCIJobLog answer. Text is the log's last maxCILogBytes
-// (a longer log starts at its first whole line); ETag is the validator the
-// forge sent with it, empty when none. NotModified means the forge
-// answered 304 to the request's ETag: Text is empty and the caller's text
-// stands.
-type CIJobLog struct {
-	Text        string
-	ETag        string
-	NotModified bool
+// CIJobLogStart describes a log answer before its body: the status (200,
+// or 206 for a range), the ETag and the byte its body starts at.
+type CIJobLogStart struct {
+	Status int
+	ETag   string
+	Offset int64
 }
 
-// ciLogRequest is the Stream request for a job log at path, conditional
-// on etag when the caller holds one.
-func ciLogRequest(path, etag string) forgeapi.Request {
+// ciLogRequest is the Stream request for a job log at path.
+func ciLogRequest(path string, req CIJobLogRequest) forgeapi.Request {
 	header := http.Header{}
-	if etag != "" {
-		header.Set("If-None-Match", etag)
+	switch {
+	case req.From > 0:
+		header.Set("Range", "bytes="+strconv.FormatInt(req.From, 10)+"-")
+	case req.ETag != "":
+		header.Set("If-None-Match", req.ETag)
 	}
-	return forgeapi.Request{Path: path, Header: header}
+	return forgeapi.Request{Path: path, Header: header, Timeout: req.Timeout}
 }
 
-// ciLogReadLimit bounds the bytes a job log read streams. A log over
-// maxCILogBytes is re-requested as a Range from its tail; a server that
-// ignores the Range (GitHub's log blob for a suffix range, a running
-// GitLab trace for any range) streams the whole log through the tail
-// buffer, up to this many bytes.
-const ciLogReadLimit = 4 * maxCILogBytes
+// ciLogSink is a job log Stream destination: told the answer, it asks the
+// caller for the writer the body goes to.
+type ciLogSink struct {
+	begin func(CIJobLogStart) (io.Writer, error)
+	dst   io.Writer
+}
 
-// ciLogText is a job log Stream read into tail. A log read from its tail
-// (a 206, or a body the buffer dropped bytes of) starts mid-line, so it
-// begins after the first newline; cut reports that it was.
-func ciLogText(resp *forgeapi.Response, tail *forgeapi.TailBuffer) (text []byte, cut bool) {
-	text = tail.Bytes()
-	if resp.Status != http.StatusPartialContent && !tail.Truncated() {
-		return text, false
+func (s *ciLogSink) StartStream(status int, header http.Header) error {
+	start := CIJobLogStart{Status: status, ETag: header.Get("ETag")}
+	if status == http.StatusPartialContent {
+		offset, ok := contentRangeStart(header.Get("Content-Range"))
+		if !ok {
+			return fmt.Errorf("CI log: a 206 without a usable Content-Range %q", header.Get("Content-Range"))
+		}
+		start.Offset = offset
 	}
-	if newline := bytes.IndexByte(text, '\n'); newline >= 0 {
-		text = text[newline+1:]
+	dst, err := s.begin(start)
+	if err != nil {
+		return err
 	}
-	return text, true
+	s.dst = dst
+	return nil
+}
+
+func (s *ciLogSink) Write(p []byte) (int, error) {
+	if s.dst == nil {
+		return 0, errors.New("CI log: body before its answer")
+	}
+	return s.dst.Write(p)
+}
+
+// contentRangeStart reads the first byte of "bytes a-b/total".
+func contentRangeStart(value string) (int64, bool) {
+	rest, ok := strings.CutPrefix(value, "bytes ")
+	if !ok {
+		return 0, false
+	}
+	first, _, ok := strings.Cut(rest, "-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(first, 10, 64)
+	return n, err == nil && n >= 0
+}
+
+// streamCILog runs a job log request into the caller's writer. A 404 is
+// ErrCIJobLogNotFound, a 416 ErrCIJobLogRangeUnsatisfiable; a 304 is
+// notModified, the writer never asked for.
+func streamCILog(ctx context.Context, client *forgeapi.Client, request forgeapi.Request, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+	resp, err := client.Stream(ctx, request, &ciLogSink{begin: begin}, forgeapi.NoLimit)
+	if err != nil {
+		var statusErr *forgeapi.StatusError
+		switch {
+		case errors.Is(err, forgeapi.ErrNotFound):
+			return false, fmt.Errorf("%w: %w", ErrCIJobLogNotFound, err)
+		case errors.As(err, &statusErr) && statusErr.Status == http.StatusRequestedRangeNotSatisfiable:
+			return false, fmt.Errorf("%w: %w", ErrCIJobLogRangeUnsatisfiable, err)
+		}
+		return false, err
+	}
+	return resp.NotModified, nil
 }
 
 var ciJobIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)

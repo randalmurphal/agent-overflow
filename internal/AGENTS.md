@@ -21,6 +21,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |
 | Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md), `worktreewatch/` (registry watch for removals made outside the app) |
 | Forge HTTP transport: tokens, rate gates, ETags, isolation | `forgeapi/`; contract in [forge-transport.md](../docs/architecture/forge-transport.md) |
+| CI job logs on disk: download, line index, sections, reads | `cilog/` (package comment); the review pane's use in [review-pane-design.md](../docs/architecture/review-pane-design.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |
 | Loopback MCP transport for built-in tool servers | [threadmcp/](threadmcp/AGENTS.md), `mcpargs/` |

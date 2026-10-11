@@ -95,38 +95,44 @@ function logFrame(frame: Partial<PRCILogEvent> & { seq: number }): PRCILogEvent 
   return {
     prKey: KEY,
     jobId: '20',
-    prevLen: 0,
-    base: 0,
-    append: '',
-    truncated: false,
-    totalBytes: 0,
+    version: 1,
+    totalLines: 1,
+    totalBytes: 6,
+    stableLines: 0,
+    sections: [],
     available: true,
+    downloading: false,
+    error: '',
     ...frame,
   };
 }
 
-function wireLog(text: string, seq: number, overrides: Record<string, unknown> = {}) {
-  return { text, truncated: false, totalBytes: text.length, available: true, error: '', seq, ...overrides };
+/** The wire state of a log of `version` with `lines` lines. */
+function wireLog(version: number, lines: number, seq: number, overrides: Record<string, unknown> = {}) {
+  return {
+    version, totalLines: lines, totalBytes: lines * 6, stableLines: 0, sections: [],
+    available: true, downloading: false, error: '', seq, ...overrides,
+  };
 }
 
-/** Answers every follow call with `text` at `seq` for each job asked. */
-function installFollows(text = 'hello\n', seq = 5) {
+/** Answers every follow call with version 1 of a `lines`-line log at `seq`. */
+function installFollows(lines = 1, seq = 5) {
   return setBindingMock('SetPRCILogFollows', async (_id: string, jobs: string[]) => ({
-    logs: Object.fromEntries(jobs.map((job) => [job, wireLog(text, seq)])),
+    logs: Object.fromEntries(jobs.map((job) => [job, wireLog(1, lines, seq)])),
   }));
 }
 
 /** A follow mock whose calls wait until the returned release runs. */
-function gatedFollows(text = 'hello\n', seq = 5) {
+function gatedFollows(lines = 1, seq = 5) {
   const gates: (() => void)[] = [];
   const follows = setBindingMock('SetPRCILogFollows', (_id: string, jobs: string[]) => new Promise((resolve) => {
-    gates.push(() => resolve({ logs: Object.fromEntries(jobs.map((job) => [job, wireLog(text, seq)])) }));
+    gates.push(() => resolve({ logs: Object.fromEntries(jobs.map((job) => [job, wireLog(1, lines, seq)])) }));
   }));
   return { follows, release: () => gates.shift()?.() };
 }
 
-function logText(jobId = '20'): string | undefined {
-  return peekPRCI(KEY).logs.get(jobId)?.text;
+function logLines(jobId = '20'): number | undefined {
+  return peekPRCI(KEY).logs.get(jobId)?.totalLines;
 }
 
 beforeEach(() => {
@@ -351,7 +357,7 @@ describe('prReviewCI: followed logs', () => {
   }
 
   it('sends the union of the panes\' jobs and seeds each log from the reply', async () => {
-    const follows = installFollows('hello\n', 5);
+    const follows = installFollows(3, 5);
     const a = await attached();
 
     setPRCILogFollow(KEY, paneA, '20');
@@ -359,7 +365,7 @@ describe('prReviewCI: followed logs', () => {
     await flush();
     expect(follows).toHaveBeenLastCalledWith('sub-1', ['20']);
     expect(prCILogFollowPending(KEY)).toBe(false);
-    expect(logText()).toBe('hello\n');
+    expect(logLines()).toBe(3);
 
     // A second pane on the same job changes nothing the backend holds.
     setPRCILogFollow(KEY, paneB, '20');
@@ -373,7 +379,7 @@ describe('prReviewCI: followed logs', () => {
     setPRCILogFollow(KEY, paneA, null);
     await flush();
     expect(follows).toHaveBeenLastCalledWith('sub-1', ['21']);
-    // Nobody here shows job 20 any more: its text is not kept.
+    // Nobody here shows job 20 any more: its state is not kept.
     expect(peekPRCI(KEY).logs.has('20')).toBe(false);
 
     // The last one closing clears the backend's set, or its pump keeps
@@ -408,107 +414,65 @@ describe('prReviewCI: followed logs', () => {
     await flush();
   });
 
-  it('applies deltas in order and leaves the text alone on stale, error and unavailable frames', async () => {
-    installFollows('hello\n', 5);
+  it('applies each newer frame whole and drops one already reflected', async () => {
+    installFollows(1, 5);
     const a = await attached();
     setPRCILogFollow(KEY, paneA, '20');
     await flush();
 
-    applyPRCILogEvent(logFrame({ seq: 6, prevLen: 6, base: 6, append: 'world\n', totalBytes: 12 }));
-    expect(logText()).toBe('hello\nworld\n');
-    expect(peekPRCI(KEY).logs.get('20')?.totalBytes).toBe(12);
+    const sections = [{ key: 'job', name: 'unit', status: 'running', start: 0, end: 2, lines: 2, bytes: 12 }];
+    applyPRCILogEvent(logFrame({ seq: 6, version: 2, totalLines: 2, totalBytes: 12, stableLines: 1, sections }));
+    expect(peekPRCI(KEY).logs.get('20')).toMatchObject({ version: 2, totalLines: 2, totalBytes: 12, stableLines: 1, sections });
 
-    // A rewritten tail: keep `base` units, append the rest.
-    applyPRCILogEvent(logFrame({ seq: 7, prevLen: 12, base: 6, append: 'there\n', truncated: true, totalBytes: 99 }));
-    expect(logText()).toBe('hello\nthere\n');
-    expect(peekPRCI(KEY).logs.get('20')?.truncated).toBe(true);
+    // Out of order: already reflected.
+    applyPRCILogEvent(logFrame({ seq: 6, version: 9, totalLines: 99 }));
+    expect(logLines()).toBe(2);
 
-    // Out of order: already reflected, even where its length happens to fit.
-    applyPRCILogEvent(logFrame({ seq: 6, prevLen: 12, base: 12, append: 'late\n' }));
-    expect(logText()).toBe('hello\nthere\n');
-
-    applyPRCILogEvent(logFrame({ seq: 8, prevLen: 12, base: 12, error: 'failed to fetch job log (id: x)' }));
-    expect(logText()).toBe('hello\nthere\n');
+    applyPRCILogEvent(logFrame({ seq: 8, version: 2, totalLines: 2, error: 'failed to fetch job log (id: x)' }));
+    expect(logLines()).toBe(2);
     expect(peekPRCI(KEY).logs.get('20')?.error).toBe('failed to fetch job log (id: x)');
-
     expect(peekPRCI(KEY).logs.get('20')?.failure).toBeNull();
 
-    // A rate limit carries its kind and resume time beside the text.
+    // A rate limit carries its kind and resume time beside the index.
     const resumeAt = '2026-10-10T12:30:00Z';
-    applyPRCILogEvent(logFrame({ seq: 9, prevLen: 12, base: 12, error: 'failed (id: y)', errorKind: 'rate_limited', resumeAt }));
-    expect(logText()).toBe('hello\nthere\n');
+    applyPRCILogEvent(logFrame({ seq: 9, version: 2, totalLines: 2, error: 'failed (id: y)', errorKind: 'rate_limited', resumeAt }));
     expect(peekPRCI(KEY).logs.get('20')?.failure).toEqual({ kind: 'rate_limited', reserve: false, resumeAt });
 
-    applyPRCILogEvent(logFrame({ seq: 10, prevLen: 12, base: 12, available: false }));
-    expect(logText()).toBe('hello\nthere\n');
-    expect(peekPRCI(KEY).logs.get('20')?.available).toBe(false);
-    expect(peekPRCI(KEY).logs.get('20')?.error).toBeNull();
-    expect(peekPRCI(KEY).logs.get('20')?.failure).toBeNull();
+    applyPRCILogEvent(logFrame({ seq: 10, version: 2, totalLines: 2, available: false, downloading: true }));
+    expect(peekPRCI(KEY).logs.get('20')).toMatchObject({ available: false, downloading: true, error: null, failure: null, totalLines: 2 });
+    // A frame without rows reads as none.
+    applyPRCILogEvent(logFrame({ seq: 11, sections: null }));
+    expect(peekPRCI(KEY).logs.get('20')?.sections).toEqual([]);
     a.release();
     await flush();
   });
 
-  it('asks for the full text when a delta does not fit, once per burst', async () => {
-    const { follows, release } = gatedFollows('hello\n', 5);
+  it('never asks the backend again for a frame: each one is whole', async () => {
+    const { follows, release } = gatedFollows(1, 5);
     const a = await attached();
     setPRCILogFollow(KEY, paneA, '20');
     release();
+    await flush();
+    applyPRCILogEvent(logFrame({ seq: 8, version: 5, totalLines: 40, stableLines: 0 }));
+    applyPRCILogEvent(logFrame({ seq: 9, version: 9, totalLines: 45 }));
     await flush();
     expect(follows).toHaveBeenCalledTimes(1);
-
-    // The frame between missed: this one was cut against text never held.
-    applyPRCILogEvent(logFrame({ seq: 8, prevLen: 40, base: 40, append: 'tail\n' }));
-    expect(logText()).toBe('hello\n');
-    await flush();
-    expect(follows).toHaveBeenCalledTimes(2);
-    expect(follows).toHaveBeenLastCalledWith('sub-1', ['20']);
-
-    // More misfits while that call is in flight: its reply already
-    // answers them.
-    applyPRCILogEvent(logFrame({ seq: 9, prevLen: 45, base: 45, append: 'more\n' }));
-    applyPRCILogEvent(logFrame({ seq: 10, prevLen: 50, base: 50, append: 'more\n' }));
-    await flush();
-    expect(follows).toHaveBeenCalledTimes(2);
-
-    release();
-    await flush();
-    expect(follows).toHaveBeenCalledTimes(2);
-    expect(prCILogFollowPending(KEY)).toBe(false);
-    a.release();
-    await flush();
-  });
-
-  it('replaces the held text with the full reply after a misfit', async () => {
-    let text = 'hello\n';
-    let seq = 5;
-    const follows = setBindingMock('SetPRCILogFollows', async (_id: string, jobs: string[]) => ({
-      logs: Object.fromEntries(jobs.map((job) => [job, wireLog(text, seq)])),
-    }));
-    const a = await attached();
-    setPRCILogFollow(KEY, paneA, '20');
-    await flush();
-
-    text = 'hello\nmissed\ntail\n';
-    seq = 8;
-    applyPRCILogEvent(logFrame({ seq: 8, prevLen: 13, base: 13, append: 'tail\n' }));
-    await flush();
-    expect(follows).toHaveBeenCalledTimes(2);
-    expect(logText()).toBe('hello\nmissed\ntail\n');
+    expect(logLines()).toBe(45);
     a.release();
     await flush();
   });
 
   it('keeps a frame that landed before an older reply', async () => {
-    const { release } = gatedFollows('stale\n', 6);
+    const { release } = gatedFollows(1, 6);
     const a = await attached();
     setPRCILogFollow(KEY, paneA, '20');
     await flush();
 
-    applyPRCILogEvent(logFrame({ seq: 7, prevLen: 0, base: 0, append: 'live\n' }));
-    expect(logText()).toBe('live\n');
+    applyPRCILogEvent(logFrame({ seq: 7, version: 2, totalLines: 7 }));
+    expect(logLines()).toBe(7);
     release();
     await flush();
-    expect(logText()).toBe('live\n');
+    expect(logLines()).toBe(7);
     a.release();
     await flush();
   });
@@ -519,7 +483,7 @@ describe('prReviewCI: followed logs', () => {
     setPRCILogFollow(KEY, paneA, '20');
     await flush();
 
-    applyPRCILogEvent(logFrame({ jobId: '99', seq: 9, prevLen: 30, base: 30, append: 'x' }));
+    applyPRCILogEvent(logFrame({ jobId: '99', seq: 9 }));
     await flush();
     expect(peekPRCI(KEY).logs.has('99')).toBe(false);
     expect(follows).toHaveBeenCalledTimes(1);
@@ -617,7 +581,7 @@ describe('prReviewCI: followed logs', () => {
     const b = await attached({ id: 'sub-2' });
     await flush();
     expect(follows).toHaveBeenCalledTimes(1);
-    applyPRCILogEvent(logFrame({ seq: 9, prevLen: 0, base: 0, append: 'x' }));
+    applyPRCILogEvent(logFrame({ seq: 9 }));
     expect(peekPRCI(KEY).logs.size).toBe(0);
     b.release();
     await flush();

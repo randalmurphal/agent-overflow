@@ -351,7 +351,26 @@ func glabJobTrace(e *Engine, c *call, m []string) response {
 	if job == nil || job.StartedAt == "" || job.LogWithheld {
 		return glabNotFound("Job")
 	}
-	return glabOK(response{stdout: []byte(job.Log)}, "Content-Type: text/plain")
+	resp := glabOK(response{ranges: rangeTrace}, "Content-Type: text/plain")
+	if job.Status == "running" {
+		// A running trace ignores Range: every answer is the whole body.
+		resp.ranges = rangeIgnored
+	}
+	if job.Synthetic == nil {
+		resp.body = bytesBody(job.Log)
+		return resp
+	}
+	units := -1
+	if job.Status == "running" {
+		// Each request of a running trace serves GrowLines more than the
+		// one before it.
+		served := e.traceRequests[job.ID]
+		e.traceRequests[job.ID] = served + 1
+		units = min(job.Synthetic.RunningLines+served*job.Synthetic.GrowLines, syntheticUnits("gitlab", job.Synthetic))
+	}
+	resp.body = newSyntheticBody("gitlab", job, units)
+	resp.etag = syntheticETag("gitlab", job, units)
+	return resp
 }
 
 func glabUpload(e *Engine, c *call, m []string) response {

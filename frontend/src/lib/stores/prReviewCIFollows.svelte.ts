@@ -5,13 +5,12 @@
 // token. The backend keeps the follow set on the subscription handle and
 // this client holds one handle per key, so the union of the key's desires
 // is what gets sent: when the union changes, after every (re)subscribe (a
-// new handle follows nothing), when a pr:ci_log delta does not fit the
-// text held, after a transport gap on pr:ci_log, and on a manual refresh
-// (re-sending a job id fetches it again). One call per key is in flight
-// with at most one owed behind it, so a burst of changes or mismatched
-// deltas costs two calls, not one per event. The reply carries each job's
-// full current log and replaces the held state unless a frame already
-// moved past it (prReviewCI.svelte.ts).
+// new handle follows nothing), after a transport gap on pr:ci_log, and on
+// a manual refresh (re-sending a job id fetches it again). One call per
+// key is in flight with at most one owed behind it, so a burst of changes
+// costs two calls, not one per change. The reply carries each job's
+// current state and replaces the held one unless a frame already moved
+// past it (prReviewCI.svelte.ts).
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
@@ -30,8 +29,6 @@ class KeyFollows {
   readonly desired = new Map<symbol, string>();
   /** The set the backend handle holds, as far as this client knows. */
   sent: readonly string[] = [];
-  /** The jobs the call in flight asked for; null while none is. */
-  inFlight: ReadonlySet<string> | null = null;
   owed = false;
   sending = $state(false);
 
@@ -85,7 +82,7 @@ export function resendPRCILogFollows(key: string): void {
   else if (settled(record)) followsByKey.delete(key);
 }
 
-/** A gap on pr:ci_log: any followed log on the backend may have missed a delta. */
+/** A gap on pr:ci_log: any followed log on the backend may have missed a frame. */
 export function resendPRCILogFollowsForBackend(backend: BackendKey): void {
   for (const [key, record] of untrack(() => [...followsByKey])) {
     if (workspaceKeyBackend(key) === backend && record.desired.size > 0) requestSend(key, record);
@@ -94,16 +91,12 @@ export function resendPRCILogFollowsForBackend(backend: BackendKey): void {
 
 /**
  * Applies a pr:ci_log frame routed to `key`. Frames for jobs another
- * client follows reach this one too and are dropped. A delta that does not
- * fit asks for the full text, unless a call already asking for it is in
- * flight: its reply is at least as new as the frame.
+ * client follows reach this one too and are dropped.
  */
 export function applyPRCILogFrame(key: string, event: PRCILogEvent): void {
   const record = recordFor(key);
   if (!record || !record.union().includes(event.jobId)) return;
-  if (applyPRCILog(key, event) !== 'resync') return;
-  if (record.inFlight?.has(event.jobId)) return;
-  requestSend(key, record);
+  applyPRCILog(key, event);
 }
 
 /** Reactive: a follow call for the PR is in flight. */
@@ -137,7 +130,6 @@ async function drainFollows(key: string, record: KeyFollows): Promise<void> {
       if (id === null) return;
       const jobs = record.union();
       if (jobs.length === 0 && record.sent.length === 0) return;
-      record.inFlight = new Set(jobs);
       let logs;
       try {
         const result = await withBackendTarget(workspaceKeyBackend(key), () => SetPRCILogFollows(id, jobs));
@@ -148,8 +140,6 @@ async function drainFollows(key: string, record: KeyFollows): Promise<void> {
         if (prSubscriptionId(key) !== id || recordFor(key) !== record) continue;
         reportFollowFailure(key, record, jobs, err);
         continue;
-      } finally {
-        record.inFlight = null;
       }
       if (prSubscriptionId(key) !== id || recordFor(key) !== record) continue;
       record.sent = jobs;
