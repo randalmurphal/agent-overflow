@@ -390,6 +390,8 @@ export interface ScenarioStep {
   mcpCall?: { server: string; tool: string; args?: Json; toolUseId?: string; timeoutMs?: number };
   /** Consumes the input held under `holdQueuedInput` into the running turn. */
   drainQueuedInput?: true;
+  /** Retires the input held under `holdQueuedInput` unrun (`cancelled`, no `started`). */
+  cancelQueuedInput?: true;
 }
 
 export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {

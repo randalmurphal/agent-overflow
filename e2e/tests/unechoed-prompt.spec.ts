@@ -11,13 +11,16 @@
 // The prompt's transcript record now confirms it.
 //
 // Coverage: a typed prompt quoting the tag followed by two more turns; a
-// thread-tools wake quoting it delivered to an idle thread; and a quoting
-// prompt whose turn the user interrupts before sending the next message.
+// thread-tools wake quoting it delivered to an idle thread; a quoting
+// prompt whose turn the user interrupts before sending the next message;
+// and a queued message the CLI retires without running, which returns to
+// the composer instead of staying pending.
 import type { Page, TestInfo } from '@playwright/test';
 import { expect, test, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
   RESULT_LINE,
+  advance,
   claudeTurnsScenario,
   emit,
   listItems,
@@ -215,4 +218,58 @@ test('interrupting a prompt the CLI does not echo keeps it above its output and 
   const want = ['set the stage', 'Ready.', QUOTED, 'Looking through the log first.', 'g', 'Answer to g.'];
   expect(await storedConversation(harness, threadId)).toEqual(want);
   await expect.poll(() => renderedConversation(page)).toEqual(want);
+});
+
+test('a queued message the CLI cancels before running returns to the composer and the thread goes idle', async ({
+  harness,
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const queued = 'Also update the changelog.';
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario(
+      'unechoed-cancelled',
+      [
+        [
+          emit(textLines('msg-1', 'Working on the tree.')),
+          { waitSignal: { name: 'hold' } },
+          { cancelQueuedInput: true },
+          emit([...textLines('msg-1b', 'Tree done.'), RESULT_LINE]),
+        ],
+      ],
+      { holdQueuedInput: true },
+    ),
+  });
+  const threadId = await seedAgentThread(harness, 'unechoed-cancelled', 'Unechoed cancelled');
+  await harness.open(page);
+  await page.getByText('Unechoed cancelled').click();
+  const mockId = await startMock(harness, threadId);
+
+  await send(page, 'Update the tree.');
+  await waitForGate(harness, 'hold');
+  const input = page.getByLabel('Message Input');
+  const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+  await input.fill(queued);
+  await input.press('Enter');
+  await flushed;
+  await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: queued })).toBeVisible();
+
+  const restored = harness.waitForEvent('provider:queue_restored', (ev: any) => ev.threadId === threadId);
+  await advance(harness, mockId, 'hold');
+  await restored;
+  await awaitTurnCompleted(harness, threadId);
+
+  await expect(page.getByText('Tree done.')).toBeVisible();
+  await expect(input).toHaveValue(queued);
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: queued })).toHaveCount(0);
+  await expectIdle(page);
+  await capture(page, testInfo, 'unechoed-cancelled.png');
+
+  expect(await storedConversation(harness, threadId)).toEqual([
+    'set the stage',
+    'Ready.',
+    'Update the tree.',
+    'Working on the tree.',
+    'Tree done.',
+  ]);
 });

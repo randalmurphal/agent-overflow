@@ -33,8 +33,8 @@ import (
 // queued). `discarded` is handled exactly like `cancelled` here — both
 // mean "the window this command may have opened is over" — and stays a
 // distinct state only so the cause reaches the timeline. Whether the
-// message reached context is a separate question: after `started` it did
-// (triage's confirmStartedSend).
+// message reached context is a separate question: it did only if `started`
+// came first (triage's settleTerminalSend).
 // The wire carries no reason field for any of them (2.1.237 schema:
 // `{type, command_uuid, state, uuid, session_id}`).
 //

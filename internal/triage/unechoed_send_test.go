@@ -213,20 +213,66 @@ func TestLifecycleBracketConfirmsSendWithNoOtherConfirmation(t *testing.T) {
 	}
 }
 
-// A terminal state without `started` is a message the CLI never ran, so it
-// proves nothing about context and confirms nothing.
-func TestLifecycleTerminalWithoutStartConfirmsNothing(t *testing.T) {
+// A terminal state without `started` is a message the CLI never ran. It is
+// never confirmed: the send leaves the registry and goes to the app's
+// restore, so the thread is idle and nothing lands in the timeline.
+func TestLifecycleTerminalWithoutStartReturnsTheSend(t *testing.T) {
+	for _, terminal := range []provider.CommandLifecycleState{provider.CommandCancelled, provider.CommandDiscarded} {
+		t.Run(string(terminal), func(t *testing.T) {
+			h := newUnechoedSendHarness(t)
+			var returned []UnconfirmedFlushItem
+			h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
+				returned = append(returned, item)
+			})
+			h.queueWake(0, "user:flush:wake", "u-wake", "wake")
+			h.lifecycle("u-wake", provider.CommandQueued)
+			h.lifecycle("u-wake", terminal)
+
+			if len(returned) != 1 || returned[0].UserItemID != "user:flush:wake" || returned[0].DeferredItem == nil || returned[0].Message != "wake" {
+				t.Fatalf("returned = %+v, want the wake with its retained row", returned)
+			}
+			if rows := h.turn(0); len(rows) != 0 {
+				t.Fatalf("turn 0 rows = %q, want none", rows)
+			}
+			h.wantIdle()
+		})
+	}
+}
+
+// With no app to return it to, an unrun send stays for the session-death
+// drain rather than being dropped.
+func TestLifecycleTerminalWithoutStartAndNoHookKeepsTheSend(t *testing.T) {
 	h := newUnechoedSendHarness(t)
 	h.queueWake(0, "user:flush:wake", "u-wake", "wake")
 	h.lifecycle("u-wake", provider.CommandQueued)
 	h.lifecycle("u-wake", provider.CommandCancelled)
-
 	if !h.router.HasPendingSendForThread("t1") {
-		t.Fatal("a never-started send was confirmed from its cancellation")
+		t.Fatal("an unrun send was dropped with nowhere to return it")
 	}
-	if rows := h.turn(0); len(rows) != 0 {
-		t.Fatalf("turn 0 rows = %q, want none", rows)
+}
+
+// `started` is recorded on the send itself, so a full correlation map
+// cannot turn a delivered message into an unrun one.
+func TestStartedIsKeptWhenTheLifecycleMapIsFull(t *testing.T) {
+	h := newUnechoedSendHarness(t)
+	var returned []UnconfirmedFlushItem
+	h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
+		returned = append(returned, item)
+	})
+	for i := 0; i < maxCommandLifecycleEntriesPerThread; i++ {
+		h.lifecycle(fmt.Sprintf("other-%d", i), provider.CommandQueued)
 	}
+	h.queueWake(0, "user:flush:wake", "u-wake", "wake")
+	h.lifecycle("u-wake", provider.CommandQueued)
+	h.lifecycle("u-wake", provider.CommandStarted)
+	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
+	h.answer("answer to the wake")
+	h.lifecycle("u-wake", provider.CommandCancelled)
+
+	if len(returned) != 0 {
+		t.Fatalf("a started send was returned to the composer: %+v", returned)
+	}
+	h.wantTurn(0, "user:flush:wake=wake", "text:0:0=answer to the wake")
 }
 
 // The ordinary order is untouched: when the record or echo confirmed the

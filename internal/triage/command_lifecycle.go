@@ -71,9 +71,6 @@ const (
 type commandLifecycleEntry struct {
 	UserItemID     string
 	RoundIDAtQueue string
-	// Started records that the CLI drained the message into a turn, which
-	// is what makes a later terminal state proof of consumption.
-	Started bool
 }
 
 // maxCommandLifecycleEntriesPerThread bounds the correlation map. Entries
@@ -133,7 +130,8 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry)
 		out.UserItemID = entry.UserItemID
 	case provider.CommandStarted:
-		entry, ok := r.startCommandLifecycle(evt.ThreadID, meta.CommandUUID)
+		r.markPendingSendStarted(evt.ThreadID, meta.CommandUUID)
+		entry, ok := r.peekCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID
 			out.Delivery = classifyCommandDelivery(entry.RoundIDAtQueue, r.openRoundID(evt.ThreadID))
@@ -145,31 +143,54 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		if ok {
 			out.UserItemID = entry.UserItemID
 		}
-		if ok && entry.Started {
-			confirmErr = r.confirmStartedSend(evt, meta)
-		}
+		confirmErr = r.settleTerminalSend(evt, meta)
 	}
 
 	r.emit(eventchan.ProviderCommandLifecycle, out)
 	return confirmErr
 }
 
-// confirmStartedSend is the backstop for a send the provider ran but never
-// confirmed. A terminal state after `started` proves the message was
-// consumed: `completed` ended its turn, and `cancelled` after `started`
-// means the turn that consumed it was aborted (2.1.284 schema). Its
-// transcript record and echo both precede this frame, so an entry still
-// pending here was missed by both, and leaving it pending would hold the
-// thread busy and the message out of the timeline until the session ends.
+// settleTerminalSend resolves a send that is still pending when its
+// command_lifecycle bracket ends. Its transcript record and echo both precede
+// the terminal frame, so a send still pending here was missed by both, and
+// leaving it pending would hold the thread busy until the session ends.
+// The frame says which way it went:
 //
-// The row lands at the head of the turn the send opened, where the
-// transcript has it; any other shape takes its normal placement.
-func (r *Router) confirmStartedSend(evt provider.ProviderEvent, meta provider.CommandLifecycleMeta) error {
+//   - After `started`, the message reached the model: `completed` ended its
+//     turn, and `cancelled` means the turn that consumed it was aborted
+//     (2.1.284 schema). Confirm it. The row lands at the head of a turn the
+//     send opened, where the transcript has it; any other shape takes its
+//     normal placement.
+//   - With no `started`, the CLI retired it unrun (`cancelled` by a cancel,
+//     `discarded` by the session ending). Hand it to the app, which returns
+//     it to the composer.
+//
+// An entry whose echo already arrived is confirmed whatever the frame says:
+// the echo proved consumption.
+func (r *Router) settleTerminalSend(evt provider.ProviderEvent, meta provider.CommandLifecycleMeta) error {
 	anchor := r.flushAnchor(evt.ThreadID)
 	anchor.Lock()
 	defer anchor.Unlock()
+	r.mu.Lock()
+	undelivered := r.sendUndelivered
+	var started, found bool
+	for _, entry := range r.pendingSendsLocked(evt.ThreadID) {
+		if entry.ExpectedProviderItemID == meta.CommandUUID {
+			started, found = entry.Started || entry.EchoConsumed, true
+			break
+		}
+	}
+	r.mu.Unlock()
+	if !found || (!started && undelivered == nil) {
+		return nil
+	}
 	pending, ok := r.consumePendingSendByProviderID(evt.ThreadID, meta.CommandUUID)
 	if !ok {
+		return nil
+	}
+	if !started {
+		log.Printf("triage: send %s/%s was %s before it started; returning it to the composer", evt.ThreadID, pending.AOItemID, meta.State)
+		undelivered(evt.ThreadID, unconfirmedFlushItemFromPending(pending))
 		return nil
 	}
 	log.Printf("triage: send %s/%s reached %s with no transcript record or echo; confirming from command_lifecycle", evt.ThreadID, pending.AOItemID, meta.State)
@@ -213,8 +234,7 @@ func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry co
 	byUUID[commandUUID] = entry
 }
 
-// startCommandLifecycle marks the entry started and returns it.
-func (r *Router) startCommandLifecycle(threadID, commandUUID string) (commandLifecycleEntry, bool) {
+func (r *Router) peekCommandLifecycle(threadID, commandUUID string) (commandLifecycleEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
@@ -222,10 +242,6 @@ func (r *Router) startCommandLifecycle(threadID, commandUUID string) (commandLif
 		return commandLifecycleEntry{}, false
 	}
 	entry, ok := st.commandLifecycle[commandUUID]
-	if ok {
-		entry.Started = true
-		st.commandLifecycle[commandUUID] = entry
-	}
 	return entry, ok
 }
 

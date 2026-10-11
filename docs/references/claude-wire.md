@@ -1371,7 +1371,8 @@ The terminal meaning of `cancelled` comes from the 2.1.284 schema text and
 was observed live: an interrupted turn's own prompt went `started`, then
 the interrupt's `control_response`, the `error_during_execution` result
 and `cancelled`, in that order. AO sends neither `cancel_queued` nor
-`cancel_async_message`, so every `cancelled` it sees follows `started`.
+`cancel_async_message`, so every `cancelled` it has observed follows
+`started`; triage still handles one that does not (below).
 
 ### Why this is better than the `isReplay` echo
 
@@ -1383,9 +1384,11 @@ The lifecycle frames are prompt and explicit. They do NOT replace the
 transcript record or the echo, which confirm the message entered context
 and stamp `provider_item_id` on the row. The acks answer the different
 question of what is happening to a message that is still pending. One
-exception: `started` followed by a terminal state proves consumption, so
-triage confirms a send that is still pending at that point and logs the
-drift (`confirmStartedSend`).
+exception: a terminal state settles a send that is still pending
+(`settleTerminalSend`). After `started` it proves consumption, so triage
+confirms the send and logs the drift. Without `started` the CLI retired the
+message unrun, so the app returns it to the composer
+(`provider:queue_restored`, reason `not_delivered`).
 
 ### Reading the delivery flavour off the ordering
 
@@ -1429,7 +1432,7 @@ detail is purely additive labelling. AO also drops any frame whose
 `parse_command_lifecycle.go` → `EventCommandLifecycle` → triage
 `handleCommandLifecycle`, which resolves the AO row id from the
 pending-send registry and emits `provider:command_lifecycle`. Live UI
-state, plus the confirmation backstop above. The correlation is registered at
+state, plus the terminal settlement above. The correlation is registered at
 `queued` and survives the wire echo popping the pending-send FIFO, so
 both arrival orders resolve.
 

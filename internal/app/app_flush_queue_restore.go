@@ -92,7 +92,34 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 	if len(drained) == 0 {
 		return nil
 	}
+	return a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+}
 
+// restoreUndeliveredSend returns a send the provider retired without running
+// to the composer: Claude's command_lifecycle `cancelled` or `discarded` with
+// no `started` (triage settleTerminalSend). A direct send's row is already in
+// the timeline, so it is removed exactly as an unconsumed quiet row is.
+func (a *App) restoreUndeliveredSend(threadID string, item triage.UnconfirmedFlushItem) {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if item.DeferredItem == nil && item.QuietItem == nil && item.UserItemID != "" {
+		row, found, err := a.store.GetThreadItem(threadID, item.UserItemID)
+		if err != nil {
+			log.Printf("flush queue: read undelivered send %s/%s: %v", threadID, item.UserItemID, err)
+			a.emitWireErrorToThread(threadID, "Could not restore a message the provider did not run: "+err.Error())
+			return
+		}
+		if found {
+			item.QuietItem = &row
+		}
+	}
+	a.restoreFlushItemsToDraftLocked(threadID, []triage.UnconfirmedFlushItem{item}, queueRestoredReasonNotDelivered)
+}
+
+// restoreFlushItemsToDraftLocked returns unconsumed messages to the composer
+// draft, removing any row one already has in the timeline. Caller holds the
+// thread action lock. Returns the items it requeued instead.
+func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.UnconfirmedFlushItem, reason string) []triage.UnconfirmedFlushItem {
 	// Quiet-row cleanup runs BEFORE the draft restore: a row whose
 	// cleanup fails must stay OUT of the restored draft — sending that
 	// draft after the store recovers would mint a second flush row while
@@ -156,7 +183,7 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 	}
 	if len(parts) > 0 {
 		if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs); err != nil {
-			log.Printf("flush queue: restore draft after session death for %s: %v", threadID, err)
+			log.Printf("flush queue: restore draft (%s) for %s: %v", reason, threadID, err)
 			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
 			// The quiet rows behind these items are already deleted, so
 			// the requeued entries carry deferred semantics — the retained
@@ -175,7 +202,7 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 	a.emitQueueStateChanged(threadID)
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
-		Reason:       "session_died",
+		Reason:       reason,
 		QueueItemIDs: queueItemIDs,
 		UserItemIDs:  userItemIDs,
 	})
@@ -229,6 +256,8 @@ func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []t
 // and folding them would make the others indistinguishable from a provider
 // that refused the message.
 const (
+	queueRestoredReasonSessionDied  = "session_died"
+	queueRestoredReasonNotDelivered = "not_delivered"
 	queueRestoredReasonResendFailed = "resend_failed"
 	queueRestoredReasonNeverQueued  = "provider_queue_never_taken"
 	queueRestoredReasonPurgeAborted = "provider_queue_purge_aborted"

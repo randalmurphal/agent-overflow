@@ -3509,3 +3509,61 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		}
 	})
 }
+
+// TestUndeliveredSendReturnsToComposer: a send Claude retires without
+// `started` never reached the model, so it leaves the timeline and its text
+// returns to the composer. A direct send's row is already persisted, so the
+// restore loads and deletes it.
+func TestUndeliveredSendReturnsToComposer(t *testing.T) {
+	t.Parallel()
+	for _, shape := range []string{"direct", "deferred"} {
+		t.Run(shape, func(t *testing.T) {
+			t.Parallel()
+			app, rec := newAppForFlushQueueRPC(t)
+			thread := testThread("undelivered-" + shape)
+			thread.Provider = string(provider.Claude)
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			now := time.Now().UnixMilli()
+			row := store.Item{ID: "user:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "never ran", CreatedAt: now, UpdatedAt: now}
+			expect := triage.PendingSendExpectation{ProviderItemID: "u-unrun"}
+			if shape == "direct" {
+				if _, err := app.store.AppendItem(row); err != nil {
+					t.Fatalf("AppendItem: %v", err)
+				}
+				app.triage.RegisterPendingSendWithExpectation(thread.ID, row.ID, 0, expect)
+			} else {
+				row.ID = "user:flush:0"
+				app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:unrun", row, now, expect)
+			}
+			for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandCancelled} {
+				meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-unrun", State: state})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ThreadID: thread.ID, ItemID: "u-unrun", Meta: meta, Timestamp: time.Now()}); err != nil {
+					t.Fatalf("lifecycle %s: %v", state, err)
+				}
+			}
+
+			waitForCondition(t, "undelivered send restored to the draft", func() bool {
+				draft, _, err := app.store.GetThreadDraft(thread.ID)
+				return err == nil && draft.Content == "never ran"
+			})
+			if app.triage.HasPendingSendForThread(thread.ID) {
+				t.Fatal("undelivered send still pending")
+			}
+			if _, found, err := app.store.GetThreadItem(thread.ID, row.ID); err != nil {
+				t.Fatalf("GetThreadItem: %v", err)
+			} else if found {
+				t.Fatal("undelivered send's row still in the timeline")
+			}
+			restored := emittedQueueRestored(rec)
+			if len(restored) != 1 || restored[0].Reason != queueRestoredReasonNotDelivered || strings.Join(restored[0].UserItemIDs, ",") != row.ID {
+				t.Fatalf("queue restored events = %+v, want one not_delivered for %s", restored, row.ID)
+			}
+		})
+	}
+}

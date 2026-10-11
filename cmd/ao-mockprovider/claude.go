@@ -398,6 +398,19 @@ func (a *claudeAdapter) drainHeldInput(turn int) {
 	}
 }
 
+// cancelHeldInput retires every held envelope unrun, the CLI's answer to a
+// cancel of a queued message: `cancelled` with no `started`, no echo and no
+// transcript entry.
+func (a *claudeAdapter) cancelHeldInput() {
+	a.heldMu.Lock()
+	held := a.held
+	a.held = nil
+	a.heldMu.Unlock()
+	for _, line := range held {
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "cancelled")
+	}
+}
+
 // pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
 // already written: init, replay echo, `started`, and the turn's steps.
 func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {

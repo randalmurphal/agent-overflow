@@ -358,6 +358,8 @@ func TestDrainQueuedInputValidation(t *testing.T) {
 			ToolName: "Bash", OnAllow: []Step{emit}, OnDeny: []Step{drain},
 		}}), "approval onDeny step 1: drainQueuedInput"},
 		{"with another action", scenarioWith(ProviderClaude, hold, Step{DelayMs: 5, DrainQueuedInput: true}), "exactly one action"},
+		{"cancel with no hold", scenarioWith(ProviderClaude, nil, emit, Step{CancelQueuedInput: true}), "cancelQueuedInput: needs provider"},
+		{"cancel on codex", scenarioWith(ProviderCodex, hold, emit, Step{CancelQueuedInput: true}), "cancelQueuedInput: needs provider"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -371,7 +373,7 @@ func TestDrainQueuedInputValidation(t *testing.T) {
 		})
 	}
 
-	ok := scenarioWith(ProviderClaude, hold, emit, drain, Step{Repeat: &RepeatStep{Count: 2, Steps: []Step{emit, drain}}})
+	ok := scenarioWith(ProviderClaude, hold, emit, drain, Step{CancelQueuedInput: true}, Step{Repeat: &RepeatStep{Count: 2, Steps: []Step{emit, drain}}})
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("held drain rejected: %v", err)
 	}

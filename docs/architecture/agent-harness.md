@@ -567,6 +567,9 @@ envelope up into its own turn at once. On, it holds the envelope:
   new turn, and a `queued_command` attachment carrying the client uuid as
   `source_uuid` in the transcript. This is the CLI's mid-loop consumption.
   Validation rejects the step in a scenario that holds no input.
+- A `cancelQueuedInput` step retires every held envelope unrun: a
+  `cancelled` ack with no `started`, no echo and no transcript entry, the
+  CLI's answer to a cancel of a queued message. The same validation applies.
 - Input the turn never drains is picked up when the turn ends, so the
   replay echo that confirms a queued message lands after every row that
   turn still wrote. This is the CLI's turn-pickup consumption, and the case

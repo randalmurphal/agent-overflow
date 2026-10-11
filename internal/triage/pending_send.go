@@ -172,6 +172,11 @@ type pendingSend struct {
 	// counters are already written.
 	OpenedTurn bool
 
+	// Started records Claude's command_lifecycle `started` for this send:
+	// the message reached the model. It decides what the send's terminal
+	// lifecycle state means (handleCommandLifecycle).
+	Started bool
+
 	Confirmation *userMessageConfirmation
 }
 
@@ -395,6 +400,23 @@ func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {
 // turn left to open.
 func (p pendingSend) canOpenTurn() bool {
 	return !p.OpenedTurn && !p.EchoConsumed
+}
+
+// markPendingSendStarted records `started` on the entry registered under
+// providerItemID, if it is still pending.
+func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
+	if providerItemID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	for i := range queue {
+		if queue[i].ExpectedProviderItemID == providerItemID {
+			queue[i].Started = true
+			return
+		}
+	}
 }
 
 // consumePendingSendByProviderID pops the entry registered under the wire id

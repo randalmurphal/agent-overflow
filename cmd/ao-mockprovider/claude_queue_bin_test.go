@@ -262,3 +262,31 @@ func TestClaudeDrainQueuedInputWithNothingHeldWritesNothing(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 	validateClaudeFrames(t, p.all)
 }
+
+// A cancelled held message is retired unrun: `cancelled` with no `started`,
+// no echo, no transcript entry, and no turn of its own.
+func TestClaudeCancelQueuedInputRetiresHeldInputUnrun(t *testing.T) {
+	home := t.TempDir()
+	sc := claudeHeldTurnScenario(true)
+	held := sc.Turns[0].Steps
+	sc.Turns[0].Steps = []scenario.Step{held[0], held[1], {CancelQueuedInput: true}, held[2]}
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-q")
+	p, advance := startControlledMock(t, sc, args, control.EnvTranscriptHome+"="+home)
+	startHeldTurn(t, p)
+
+	p.send(queuedUserLine("u2", "never run"))
+	expectLifecycle(t, p.expectLine(testTimeout), "u2", "queued")
+	advance("hold")
+	expectLifecycle(t, p.expectLine(testTimeout), "u2", "cancelled")
+	if got := p.expectLine(testTimeout); got != claudeResultLine {
+		t.Fatalf("line after the cancel = %q, want turn-1 result", got)
+	}
+	p.expectNoLine(300 * time.Millisecond)
+
+	rows := readClaudeTranscript(t, home, "sess-q")
+	if len(rows) != 1 || rows[0]["uuid"] != "u1" {
+		t.Fatalf("transcript = %+v, want only u1", rows)
+	}
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
