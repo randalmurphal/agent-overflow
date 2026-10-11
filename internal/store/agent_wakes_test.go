@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,6 +102,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 		"last_run_at|INTEGER|0|NULL|0",
 		"last_outcome|TEXT|1|''|0",
 		"last_output|TEXT|1|''|0",
+		"undelivered|TEXT|1|''|0",
 		"missed|INTEGER|1|0|0",
 		"state|TEXT|1|NULL|0",
 		"created_at|INTEGER|1|NULL|0",
@@ -137,8 +139,9 @@ func TestStandingAgentsMigration(t *testing.T) {
 		{ID: "w-cancelled", ThreadID: "agent", Kind: AgentWakeLoop, Label: "old", Note: "retired", IntervalSeconds: 60,
 			LastOutcome: "cancelled", State: AgentWakeCancelled, CreatedAt: 21},
 		{ID: "w-running", ThreadID: "watcher", Kind: AgentWakeWatch, Label: "poll", Command: "sh poll.sh", Cwd: "sub",
-			IntervalSeconds: 120, TimeoutSeconds: 900, NextAt: 6000, LastRunAt: 5880, LastOutcome: "not delivered",
-			LastOutput: "Watch \"poll\" reported.", Missed: 2, State: AgentWakeRunning, CreatedAt: 22},
+			IntervalSeconds: 120, TimeoutSeconds: 900, NextAt: 6000, LastRunAt: 5880, LastOutcome: "no output",
+			LastOutput: "Watch \"poll\" reported.", Undelivered: "skipped: the previous wake is still queued", Missed: 2,
+			State: AgentWakeRunning, CreatedAt: 22},
 		{ID: "w-long", ThreadID: "watcher", Kind: AgentWakeWatch, Label: "tail", Command: "sh tail.sh", LongRunning: true,
 			LastRunAt: 5900, LastOutcome: "exited; restarting in 1s", State: AgentWakeRunning, CreatedAt: 23},
 	}
@@ -147,10 +150,10 @@ func TestStandingAgentsMigration(t *testing.T) {
 		if w.LongRunning {
 			long = 1
 		}
-		mustExec(t, db, `INSERT INTO agent_wakes (`+agentWakeColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mustExec(t, db, `INSERT INTO agent_wakes (`+agentWakeColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			w.ID, w.ThreadID, w.Kind, w.Label, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds),
 			nullableMillis(w.TimeoutSeconds), long, nullableMillis(w.NextAt), nullableMillis(w.LastRunAt), w.LastOutcome,
-			w.LastOutput, w.Missed, w.State, w.CreatedAt)
+			w.LastOutput, w.Undelivered, w.Missed, w.State, w.CreatedAt)
 	}
 	for _, bad := range []string{
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'agent', 'cron', 'l2', 'armed', 1)`,
@@ -272,7 +275,7 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if due, err := s.DueAgentWakes(100, 8); err != nil || len(due) != 1 {
 		t.Fatalf("due at its time: %v %v", due, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "early", "", 0); err != nil || finished {
+	if finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
 		t.Fatalf("finish before claim: %v %v", finished, err)
 	}
 	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
@@ -281,7 +284,7 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
 		t.Fatalf("second claim: %v %v", claimed, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0); err != nil || !finished {
+	if finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
 		t.Fatalf("finish: %v %v", finished, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || !next.Set || next.At != 160 {
@@ -436,7 +439,7 @@ func TestAgentWakeKeepsUndeliveredOutput(t *testing.T) {
 	if row := read(loop.ID); row.LastOutput != "" {
 		t.Fatalf("a loop kept output %q", row.LastOutput)
 	}
-	if _, err := s.NoteAgentWakeOutcome(watch.ID, "delivered"); err != nil {
+	if _, err := s.NoteAgentWakeOutcome(watch.ID, "delivered", AgentWakeCarried); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.NoteAgentWakeUndelivered(watch.ID, "not delivered: joined", ""); err != nil {
@@ -457,6 +460,111 @@ func TestAgentWakeKeepsUndeliveredOutput(t *testing.T) {
 	if again, err := s.RegisterAgentWake(AgentWake{ID: "w2", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll", Command: "false",
 		IntervalSeconds: 60, NextAt: 100}); err != nil || again.LastOutput != "" || again.TimeoutSeconds != 0 {
 		t.Fatalf("re-register = %+v %v, want the kept output and the old timeout cleared", again, err)
+	}
+}
+
+// A row's undelivered outcome stays through every write that sent no wake
+// (a quiet or failed run, a process exit, a quit's recovery) with the count a
+// skip left, and goes only when a wake carries it or the label is registered
+// again. Every way a wake is lost sets it.
+func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t")
+	if _, err := s.RegisterAgentWake(AgentWake{ID: "w", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll", Command: "true",
+		IntervalSeconds: 60, NextAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() AgentWake {
+		t.Helper()
+		row, found, err := s.GetAgentWake("w")
+		if err != nil || !found {
+			t.Fatalf("read: %v %v", found, err)
+		}
+		return row
+	}
+	at := int64(100)
+	finish := func(outcome, output string, missed int64, carry AgentWakeCarry) AgentWake {
+		t.Helper()
+		if claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
+			t.Fatalf("claim at %d: %v %v", at, claimed, err)
+		}
+		at += 60_000
+		if finished, err := s.FinishAgentWake("w", outcome, output, missed, carry); err != nil || !finished {
+			t.Fatalf("finish %q: %v %v", outcome, finished, err)
+		}
+		return read()
+	}
+	const skipped = "skipped: the previous wake is still queued"
+
+	if row := finish(skipped, "skipped body", 1, AgentWakeLost); row.Undelivered != skipped || row.Missed != 1 ||
+		row.LastOutput != "skipped body" {
+		t.Fatalf("after a skip = %+v", row)
+	}
+	if row := finish("no output", "", 1, AgentWakeNoWake); row.LastOutcome != "no output" || row.Undelivered != skipped ||
+		row.Missed != 1 || row.LastOutput != "skipped body" || row.LastRunAt != at-60_000 {
+		t.Fatalf("a quiet run cleared what the skip left: %+v", row)
+	}
+	if row := finish("error: exit status 3", "", 1, AgentWakeNoWake); row.Undelivered != skipped || row.Missed != 1 {
+		t.Fatalf("a failed run cleared what the skip left: %+v", row)
+	}
+	if _, err := s.NoteAgentWakeOutcome("w", "exited; restarting in 1s", AgentWakeNoWake); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
+		t.Fatalf("claim before the quit: %v %v", claimed, err)
+	}
+	if _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
+		t.Fatal(err)
+	}
+	if row := read(); row.LastOutcome != "cancelled-by-quit" || row.Undelivered != skipped {
+		t.Fatalf("an exit or a quit's recovery cleared it: %+v", row)
+	}
+	if row := finish("delivered", "", 2, AgentWakeCarried); row.Undelivered != "" || row.Missed != 2 ||
+		row.LastOutput != "skipped body" {
+		t.Fatalf("the wake that carried it = %+v, want it cleared and the body still readable", row)
+	}
+
+	for _, lose := range []struct {
+		name  string
+		write func(outcome string) error
+	}{
+		{"finish", func(outcome string) error {
+			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+				return fmt.Errorf("claim: %v %v", claimed, err)
+			}
+			at += 60_000
+			_, err := s.FinishAgentWake("w", outcome, "", 0, AgentWakeLost)
+			return err
+		}},
+		{"session end", func(outcome string) error { _, err := s.NoteAgentWakeUndelivered("w", outcome, ""); return err }},
+		{"shutdown", func(outcome string) error {
+			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+				return fmt.Errorf("claim: %v %v", claimed, err)
+			}
+			_, err := s.ReleaseUndeliveredAgentWake("w", outcome, "", at)
+			return err
+		}},
+		{"boot", func(outcome string) error { _, err := s.ReleaseQueuedAgentWake("w", outcome, "", at); return err }},
+	} {
+		outcome := "not delivered: " + lose.name
+		if err := lose.write(outcome); err != nil {
+			t.Fatalf("%s: %v", lose.name, err)
+		}
+		if row := read(); row.Undelivered != outcome {
+			t.Fatalf("%s left undelivered %q", lose.name, row.Undelivered)
+		}
+		if _, err := s.NoteAgentWakeOutcome("w", "delivered", AgentWakeCarried); err != nil || read().Undelivered != "" {
+			t.Fatalf("a long-running watch's delivery after %s did not carry it: %+v %v", lose.name, read(), err)
+		}
+	}
+
+	if _, err := s.NoteAgentWakeUndelivered("w", "not delivered", ""); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.RegisterAgentWake(AgentWake{ID: "w2", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll",
+		Command: "false", IntervalSeconds: 60, NextAt: at}); err != nil || again.Undelivered != "" {
+		t.Fatalf("re-register = %+v %v, want undelivered cleared", again, err)
 	}
 }
 

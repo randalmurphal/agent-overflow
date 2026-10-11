@@ -232,7 +232,8 @@ func agentWakeToolState(row store.AgentWake) threadtools.WakeState {
 		Kind: row.Kind, Label: row.Label, State: row.State, Note: row.Note,
 		Command: row.Command, Cwd: row.Cwd, EverySeconds: row.IntervalSeconds,
 		TimeoutSeconds: row.TimeoutSeconds, LongRunning: row.LongRunning, NextFireAt: row.NextAt,
-		LastRunAt: row.LastRunAt, LastOutcome: row.LastOutcome, LastOutput: row.LastOutput, Missed: row.Missed,
+		LastRunAt: row.LastRunAt, LastOutcome: row.LastOutcome, LastOutput: row.LastOutput,
+		Undelivered: row.Undelivered, Missed: row.Missed,
 	}
 }
 

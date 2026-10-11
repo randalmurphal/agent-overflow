@@ -254,6 +254,7 @@ CREATE TABLE agent_wakes (
     last_run_at      INTEGER,
     last_outcome     TEXT NOT NULL DEFAULT '',
     last_output      TEXT NOT NULL DEFAULT '',
+    undelivered      TEXT NOT NULL DEFAULT '',
     missed           INTEGER NOT NULL DEFAULT 0,
     state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
     created_at       INTEGER NOT NULL
@@ -339,6 +340,15 @@ the person's own text goes back to the composer, and the wake and send
 parts are discarded with their `not delivered` records, the watch
 keeping only its own wake's data.
 
+Other than that retry, a fire whose previous wake is still queued is
+skipped and counted missed, and its output is kept the same way. The outcome of the latest
+wake that did not reach the agent stays on the row as `undelivered`,
+with the fires a skip missed, until a later wake of the row reaches
+the queue: that wake says the previous one did not reach the agent
+and counts the missed fires. A run that wakes nothing, such as a watch
+run with no output or a failed one, records its own `last_outcome`
+and leaves them.
+
 Restart rules:
 
 - On boot the sweep loads every `armed` or `running` row.
@@ -371,8 +381,8 @@ Thread tools:
   timeout_seconds?, stop}`: standing agents only; an ordinary thread
   is refused with the reason. One watch per label.
 - `thread_status` lists the caller's loops and watches with next fire,
-  last outcome, last undelivered output and missed count alongside its
-  open requests.
+  last outcome, the outcome and output of a wake that has not reached
+  the thread, and missed count alongside its open requests.
 - `thread_cancel` by label cancels a loop or watch.
 
 An outside poke, `agent-overflow thread send <thread-id> <text>`, queues

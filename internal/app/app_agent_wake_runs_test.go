@@ -36,15 +36,44 @@ func TestAgentWakeElapsedCountsDueFires(t *testing.T) {
 	}
 }
 
-// A skipped fire's count carries into the next fire; any other outcome's
-// count was already reported by the wake that carried it.
+// A skipped fire's count carries into the next fire until a wake carries it,
+// through runs that woke nothing; a count a wake already reported does not.
 func TestCarriedMissedOnlyAfterASkip(t *testing.T) {
 	t.Parallel()
-	if got := carriedMissed(store.AgentWake{LastOutcome: agentWakeOutcomeSkipped, Missed: 3}); got != 3 {
+	if got := carriedMissed(store.AgentWake{LastOutcome: agentWakeOutcomeSkipped, Undelivered: agentWakeOutcomeSkipped, Missed: 3}); got != 3 {
 		t.Fatalf("after a skip = %d, want 3", got)
+	}
+	if got := carriedMissed(store.AgentWake{LastOutcome: agentWakeOutcomeNoOutput, Undelivered: agentWakeOutcomeSkipped, Missed: 3}); got != 3 {
+		t.Fatalf("after a skip and a quiet run = %d, want 3", got)
 	}
 	if got := carriedMissed(store.AgentWake{LastOutcome: agentWakeOutcomeDelivered, Missed: 3}); got != 0 {
 		t.Fatalf("after a delivery = %d, want 0", got)
+	}
+	if got := carriedMissed(store.AgentWake{LastOutcome: agentWakeOutcomeNoOutput, Undelivered: agentWakeOutcomeSessionEnded, Missed: 3}); got != 0 {
+		t.Fatalf("after a wake the session lost = %d, want 0: it missed no fire", got)
+	}
+}
+
+// A watch wake says a wake of its row did not reach the agent while the row
+// holds one undelivered, whatever runs came between, and not once a wake has
+// carried it, though the kept output stays readable.
+func TestWatchWakeSaysAnUndeliveredWakeIsKept(t *testing.T) {
+	t.Parallel()
+	const line = "The previous wake of this watch did not reach you"
+	for _, tc := range []struct {
+		name string
+		row  store.AgentWake
+		want bool
+	}{
+		{"skipped, then a quiet run", store.AgentWake{LastOutcome: agentWakeOutcomeNoOutput, Undelivered: agentWakeOutcomeSkipped, LastOutput: "kept"}, true},
+		{"lost at session end, then a failed run", store.AgentWake{LastOutcome: "error: exit status 3", Undelivered: agentWakeOutcomeSessionEnded, LastOutput: "kept"}, true},
+		{"carried by a later wake", store.AgentWake{LastOutcome: agentWakeOutcomeDelivered, LastOutput: "kept"}, false},
+		{"a skipped loop keeps no output", store.AgentWake{Undelivered: agentWakeOutcomeSkipped}, false},
+	} {
+		body := renderAgentWatchWake(tc.row, agentWakeFire{}, cappedOutput{}, cappedOutput{})
+		if got := strings.Contains(body, line); got != tc.want {
+			t.Errorf("%s: says the previous wake did not reach the agent = %v, want %v:\n%s", tc.name, got, tc.want, body)
+		}
 	}
 }
 
@@ -55,7 +84,7 @@ func TestTheLargestWakeFitsTheQueue(t *testing.T) {
 	t.Parallel()
 	worst := strings.Repeat("<", agentWakeOutputCap*2)
 	row := store.AgentWake{Kind: store.AgentWakeWatch, Label: strings.Repeat("<", threadtools.MaxWakeLabelRunes),
-		Note: strings.Repeat("<", threadtools.MaxNoteRunes), LastOutcome: agentWakeOutcomeSessionEnded, LastOutput: "kept"}
+		Note: strings.Repeat("<", threadtools.MaxNoteRunes), Undelivered: agentWakeOutcomeSessionEnded, LastOutput: "kept"}
 	stdout := newHeadOutput(agentWakeOutputCap)
 	_, _ = stdout.Write([]byte(worst))
 	stderr := newTailOutput(agentWakeStderrCap)

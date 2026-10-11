@@ -226,14 +226,14 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) string {
 
 // renderAgentWatchWake renders one watch wake: its stdout, then its stderr
 // tail, together capped at agentWakeOutputCap with what was dropped stated.
-// The row is read as it stands now: when its previous wake did not reach the
-// agent, this one says where that wake's output is kept.
+// The row is read as it stands now: when a wake of it did not reach the agent
+// and none has said so since, this one says where that wake's output is kept.
 func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) string {
 	stdout = stdout.clip(agentWakeOutputCap - len(stderr.data))
 	var out strings.Builder
 	fmt.Fprintf(&out, "Watch %s reported. %s\n", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice)
 	writeAgentWakeFireLines(&out, fire)
-	if row.LastOutput != "" && agentWakeOutcomeLost(row.LastOutcome) {
+	if row.LastOutput != "" && row.Undelivered != "" {
 		out.WriteString("The previous wake of this watch did not reach you; thread_status shows its output as last_output.\n")
 	}
 	out.WriteString("stdout:\n")
