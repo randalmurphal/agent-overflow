@@ -50,10 +50,21 @@ func (s *Session) supportsLiveThinking() bool {
 // for why an older build's silent success is the dangerous case.
 const minLiveSystemPromptCLIVersion = "2.1.214"
 
-// supportsLiveSystemPrompt reports whether this process's CLI is new enough
-// to APPLY (not merely ack) a `set_model.system_prompt`.
+// supportsLiveSystemPrompt reports whether this process's CLI will APPLY
+// (not merely ack) a `set_model.system_prompt`: new enough to carry the
+// handler, and not running under a prompt snapshot that would mask the
+// swap on the next request (see spawnedWithSnapshotOff). The fallback for
+// either is the restart, whose respawn passes the opt-out once the
+// installed version is known.
 func (s *Session) supportsLiveSystemPrompt() bool {
-	return claudeCLIVersionAtLeast(s.CLIVersion(), minLiveSystemPromptCLIVersion)
+	version := s.CLIVersion()
+	if !claudeCLIVersionAtLeast(version, minLiveSystemPromptCLIVersion) {
+		return false
+	}
+	if claudeCLIVersionAtLeast(version, minSystemPromptSnapshotCLIVersion) && !s.spawnedWithSnapshotOff {
+		return false
+	}
+	return true
 }
 
 // claudeCLIVersionAtLeast compares two dotted Claude Code versions. An
@@ -101,4 +112,30 @@ func parseClaudeCLIVersion(version string) ([3]int, bool) {
 		parts[i] = n
 	}
 	return parts, true
+}
+
+// minSystemPromptSnapshotCLIVersion is the oldest Claude Code build that
+// accepts `--system-prompt-snapshot`. Added in 2.1.267 (its changelog entry);
+// an older build answers the flag with `error: unknown option` and exits 1,
+// so the flag is only passed when the binary about to run is known to be at
+// least this new.
+const minSystemPromptSnapshotCLIVersion = "2.1.267"
+
+// SystemPromptSnapshotArgs is the argv that turns the CLI's system prompt
+// snapshot off, or nil when installedVersion is unknown or too old.
+//
+// With the snapshot on (the CLI default), the first request's rendered
+// system prompt is recorded in the transcript and reused on every resume,
+// so neither a changed `--append-system-prompt-file` nor a changed
+// `--system-prompt-file` reaches a resumed session. Off, the prompt is
+// rendered fresh on every start; the default body is byte-identical across
+// resumes of one build (spike-verified 2.1.284, headless and TUI), so the
+// prompt cache is unaffected. An unknown version omits the flag: the cost
+// is one session whose later prompt changes wait for a fresh conversation,
+// against a failed spawn on the other side.
+func SystemPromptSnapshotArgs(installedVersion string) []string {
+	if !claudeCLIVersionAtLeast(installedVersion, minSystemPromptSnapshotCLIVersion) {
+		return nil
+	}
+	return []string{"--system-prompt-snapshot", "off"}
 }

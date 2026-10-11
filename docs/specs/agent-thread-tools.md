@@ -516,9 +516,12 @@ The `instructions` string is the decision guide the model reads once
 per session. It is short enough to be read, and it covers every
 interaction the tools have with each other. Claude reads it from the
 server; Codex uses a server's instructions only to describe the server
-in its tool search, so a Codex session receives the same text appended
-to its `developerInstructions` on `thread/start`, `thread/resume` and
-`thread/fork`, after any developer instructions the user configured.
+in its tool search, so a Codex session receives the same text inside its
+composed `developerInstructions` on `thread/start`, `thread/resume` and
+`thread/fork`. It comes last, after whichever of these are present:
+developer instructions the user configured, the app guide, and the
+browser guide
+([prompt-tool-overrides.md §App guide](prompt-tool-overrides.md#app-guide)).
 The text, maintained beside the tool schemas in `internal/threadtools`:
 
 > These tools let you work with other Agent Overflow threads, on this

@@ -4846,9 +4846,12 @@ The `/v1/messages` request carries `system` as three text blocks:
 
 1. **Billing header** (~81 chars): `x-anthropic-billing-header:
    cc_version=…; cc_entrypoint=…;`. Internal, immutable.
-2. **SDK identity line** (62 chars): `"You are a Claude agent, built
-   on Anthropic's Claude Agent SDK."`. **Not replaceable**; survives
-   `--system-prompt` verbatim.
+2. **Identity line**: fixed and **not replaceable**; survives
+   `--system-prompt` verbatim. On 2.1.284 headless sends `"You are
+   Claude Code, Anthropic's official CLI for Claude."` (57 chars), or
+   `"You are Claude Code, Anthropic's official CLI for Claude, running
+   within the Claude Agent SDK."` (94 chars) when any append flag is
+   passed. The interactive TUI sends the 57-char line either way.
 3. **The body** (~10.5k chars / ~2.6k tokens on Fable 5). This is the
    entire surface `--system-prompt` replaces: with the flag, block 3
    is exactly the given text and nothing else.
@@ -4898,7 +4901,9 @@ snapshot of one (model, mode) variant.
   it: no dynamic sections appear anywhere in the request).
 - `--append-system-prompt` appends **after the entire default body**,
   including the CLI-injected `<total_tokens>` footer. It cannot remove
-  default behavioral text, only argue with it.
+  default behavioral text, only argue with it. Composition with a
+  replacement, the file form and the TUI: §"Appended prompt and prompt
+  snapshot".
 - `--system-prompt-file` / `--append-system-prompt-file` exist as
   file-based variants. **`--system-prompt-file <path>` is wire-identical
   to `--system-prompt <text>`**: the same capture run both ways
@@ -4920,12 +4925,9 @@ snapshot of one (model, mode) variant.
 
   **The INTERACTIVE TUI honors the flag too** (verified 2.1.234 by
   running the real TUI under a PTY against the same sink). The
-  replacement is total exactly as it is headless; the one difference is
-  block 2, which is the TUI's own fixed identity line (`"You are
-  Claude Code, Anthropic's official CLI for Claude."`) rather than the
-  SDK's `"You are a Claude agent, built on Anthropic's Claude Agent
-  SDK."`. Neither is replaceable. So the TUI's `system` array under the
-  flag is [billing header, that identity line, the file's content].
+  replacement is total exactly as it is headless, so the TUI's `system`
+  array under the flag is [billing header, the TUI's identity line
+  (§"Request shape"), the file's content].
   `internal/provider/claudetui/launch.go` passes
   `--system-prompt-file` on the PTY launch and shares the headless
   writer; `claudetui.Session.Close` removes the file, which the
@@ -4940,6 +4942,44 @@ snapshot of one (model, mode) variant.
   `claudetui` passes one flag per settings entry. One aliasing quirk:
   the CLI treats `Task` and `Agent` as the same tool, so disallowing
   `Task` removes `Agent` from the request too.
+
+### Appended prompt and prompt snapshot (verified 2.1.284)
+
+Same sink method, run headless and against the interactive TUI under a
+PTY. Each point holds on both transports unless it names one.
+
+- **`--append-system-prompt-file <path>`** lands where
+  `--append-system-prompt` text does: after the whole default body, in
+  the same final `system` block, joined by `\n\n`. With
+  `--system-prompt-file S --append-system-prompt-file A` that block is
+  exactly `S\n\nA`. The composition rule is the same on both
+  transports; the default bodies differ (5890 chars headless and 6240
+  TUI in this capture), and any append flag also switches the headless
+  identity line to its 94-char form (§"Request shape").
+- **Prompt snapshot, the CLI default.** The first request's rendered
+  system prompt is written to the transcript as an `attachment` row with
+  `type: "prompt_snapshot"` and reused on every `--resume` of that
+  session. A resume launched with a changed append or replacement file
+  still sends the snapshotted prompt, and a live
+  `set_model.system_prompt` is masked by it. The bundle's guard is
+  `systemPromptSnapshot !== false && (...)`.
+- **`--system-prompt-snapshot off`** writes no snapshot row and renders
+  the prompt fresh on every start, so a resume sends the current append
+  and replacement files. A resume passed `off` also ignores a
+  snapshot row an earlier launch without the flag wrote (verified: first
+  launch without the flag, resume with it and a changed append file; the
+  resumed request carried the new append and the earlier turn), so
+  existing conversations pick up the current prompt too. The default body stays byte-identical across
+  turns, resumes and workspace git changes on one build (git status and
+  the Environment system message are replayed from the transcript, not
+  re-rendered), so the prompt-cache prefix does not move; only a
+  feature-flag change between launches or a CLI upgrade changes it.
+- The flag first shipped in 2.1.267. An older build answers it with
+  `error: unknown option` and exits 1.
+
+AO passes the append file on both transports for its app guide, and the
+snapshot opt-out only when the binary is known to be 2.1.267 or newer
+([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
 
 ---
 

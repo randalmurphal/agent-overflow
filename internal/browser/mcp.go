@@ -19,6 +19,11 @@ const (
 
 var cachedToolDefinitions = toolDefinitions()
 
+// Instructions is the guide the server states on its MCP handshake. Claude
+// reads it there; Codex never shows a server's instructions to the model, so
+// the app appends it to that provider's developer instructions instead.
+func Instructions() string { return browserMCPInstructions }
+
 type MCPServer struct {
 	*threadmcp.Server[Access]
 	controller Controller

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 	"unsafe"
@@ -81,12 +82,13 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 	}, sessionToken)
 }
 
+// appManagedMCPServers names every MCP server the app registers on a session
+// itself. Each one is hidden from the user-config MCP bindings, toggled in
+// Settings, and named in the app guide (app_agent_guide.go).
+var appManagedMCPServers = []string{appbrowser.ServerName, remoteMCPName, threadMCPName}
+
 func isAppManagedMCPServer(name string) bool {
-	switch strings.TrimSpace(name) {
-	case appbrowser.ServerName, remoteMCPName, threadMCPName:
-		return true
-	}
-	return false
+	return slices.Contains(appManagedMCPServers, strings.TrimSpace(name))
 }
 
 func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {

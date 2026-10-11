@@ -304,6 +304,14 @@ Mechanism in
 - A Claude rollback whose stamped provider uuid is missing from a transcript
   that continues past it FAILS loudly instead of falling back to the ordinal
   walk; only a transcript ending before that turn is recoverable by cloning.
+- The app guide appended to Claude, claude-tui and Codex sessions is on by
+  default and user-toggleable, spawn-only, names only the app's tool servers
+  that are on for the session, and is never added to a workflow-mode thread
+  (phases and units; `docs/specs/prompt-tool-overrides.md` §App guide).
+- Claude and claude-tui always pass `--system-prompt-snapshot off` on a binary
+  known to be 2.1.267 or newer, guide or not, so a resume runs the current
+  prompt; the default body is stable across resumes of one build, so the
+  prompt cache is unaffected (same spec §Claude prompt snapshot).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

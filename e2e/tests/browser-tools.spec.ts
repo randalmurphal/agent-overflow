@@ -2,6 +2,7 @@ import { test, expect, type SeedResult } from './fixtures.js';
 import { sessionConfigs } from './workflows-helpers.js';
 
 const browserServer = 'ao-browser-tools';
+const BROWSER_GUIDE_OPENING = 'Browser pages are shared only within this AO thread';
 
 interface BrowserState {
   kind: string;
@@ -41,6 +42,12 @@ test('built-in browser MCP reaches both provider launch boundaries and composer 
   const [codex] = await sessionConfigs(harness, 'codex', 1);
   expect(claude.mcpServers).toContain(browserServer);
   expect(codex.mcpServers).toContain(browserServer);
+  // The app guide names the browser as on for both; Codex, which never
+  // reads a server's handshake instructions, also gets the browser guide
+  // in its developer instructions.
+  expect(claude.appendSystemPrompt).toContain('`' + browserServer + '`');
+  expect(codex.developerInstructions).toContain('`' + browserServer + '`');
+  expect(codex.developerInstructions).toContain(BROWSER_GUIDE_OPENING);
 
   const rows = await harness.rpc<Array<{ name: string; disabled: boolean }>>(
     'ListThreadMcpServers',

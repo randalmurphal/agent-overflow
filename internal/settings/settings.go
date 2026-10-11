@@ -111,14 +111,20 @@ type Settings struct {
 	// Default on. It says nothing about who may reach this computer's
 	// threads: pairing already says which computers belong to the user, and
 	// a paired computer's agents reach this one whether it is on or off.
-	ThreadToolsEnabled bool   `json:"threadToolsEnabled"`
-	ConfirmArchive     bool   `json:"confirmArchive"`
-	ConfirmDelete      bool   `json:"confirmDelete"`
-	AutoPinNewThreads  bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath   string `json:"claudeBinaryPath"`
-	CodexBinaryPath    string `json:"codexBinaryPath"`
-	ClaudeEnabled      bool   `json:"claudeEnabled"`
-	CodexEnabled       bool   `json:"codexEnabled"`
+	ThreadToolsEnabled bool `json:"threadToolsEnabled"`
+	// AgentGuideEnabled appends Agent Overflow's own guide to every
+	// interactive Claude, claude-tui and Codex session's system prompt: what
+	// the chat pane renders and which built-in tool servers are on
+	// (internal/app/app_agent_guide.go). Default on; spawn-only, so a
+	// change reaches a session at its next start or resume.
+	AgentGuideEnabled bool   `json:"agentGuideEnabled"`
+	ConfirmArchive    bool   `json:"confirmArchive"`
+	ConfirmDelete     bool   `json:"confirmDelete"`
+	AutoPinNewThreads bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath  string `json:"claudeBinaryPath"`
+	CodexBinaryPath   string `json:"codexBinaryPath"`
+	ClaudeEnabled     bool   `json:"claudeEnabled"`
+	CodexEnabled      bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -622,6 +628,7 @@ var DefaultSettings = Settings{
 	BrowserEnabled:         true,
 	BrowserPersistSiteData: true,
 	ThreadToolsEnabled:     true,
+	AgentGuideEnabled:      true,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
 	AutoPinNewThreads:      true,

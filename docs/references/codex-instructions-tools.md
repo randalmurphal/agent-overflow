@@ -133,5 +133,9 @@ The current source in `app-server-protocol/src/protocol/v2/thread.rs` exposes
 config/read. `core/src/session/mod.rs` resolves developer instructions from
 config on cold start/resume, whereas base instructions explicitly consult
 conversation history. AO therefore reads cwd-scoped config before appending
-its optional remote-command guide, and omits the override when that guide is
-absent. Native developer instructions remain first and unchanged.
+its own text: the app guide, then the guides of the browser and thread tools
+servers when those are on
+([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
+Native developer instructions remain first and unchanged, joined to AO's text
+by a blank line. AO omits the override when it has nothing to append, and when
+config/read fails, which it reports to the thread as a non-fatal error.

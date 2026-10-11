@@ -52,6 +52,9 @@ const TOOL_NAMES = [
   'thread_remind',
 ];
 
+const APP_GUIDE_OPENING = 'You are running inside Agent Overflow';
+const THREAD_TOOLS_GUIDE_OPENING = 'These tools let you work with other Agent Overflow threads';
+
 interface McpRow {
   name: string;
   disabled: boolean;
@@ -99,12 +102,31 @@ test('both providers get the thirteen tools and the guide, in every runtime mode
     }),
   );
 
+  // The status probe records the installed CLI version the snapshot opt-out
+  // is gated on; boot runs it too, but off the critical path, so it is run
+  // here before the sessions start rather than raced.
+  await harness.rpc('GetProviderStatuses');
   await harness.rpc('StartSession', claudeThread);
   await harness.rpc('StartSession', codexThread);
   const [claudeConfig] = await sessionConfigs(harness, 'claude', 1);
   const [codexConfig] = await sessionConfigs(harness, 'codex', 1);
   expect(claudeConfig.mcpServers).toContain(THREAD_TOOLS_SERVER);
   expect(codexConfig.mcpServers).toContain(THREAD_TOOLS_SERVER);
+
+  // The app guide reaches Claude as the appended system prompt, naming the
+  // thread tools as on, with the snapshot opt-out so a later prompt change
+  // lands on resume. Codex reads it from developer instructions, followed
+  // by the thread tools' own guide, which it never sees on the handshake.
+  expect(claudeConfig.appendSystemPrompt).toContain(APP_GUIDE_OPENING);
+  expect(claudeConfig.appendSystemPrompt).toContain('`' + THREAD_TOOLS_SERVER + '`');
+  // The harness has a browser engine, so the browser server is named too
+  // (browser-tools.spec.ts asserts that); no computer is paired, so the
+  // remote server is not.
+  expect(claudeConfig.appendSystemPrompt).not.toContain('ao-remote-tools');
+  expect(claudeConfig.systemPromptSnapshot).toBe('off');
+  expect(codexConfig.developerInstructions?.startsWith(APP_GUIDE_OPENING)).toBe(true);
+  expect(codexConfig.developerInstructions).toContain('`' + THREAD_TOOLS_SERVER + '`');
+  expect(codexConfig.developerInstructions).toContain(THREAD_TOOLS_GUIDE_OPENING);
 
   const rows = await harness.rpc<McpRow[]>('ListThreadMcpServers', claudeThread);
   expect(rows).toContainEqual(expect.objectContaining({ name: THREAD_TOOLS_SERVER, disabled: false }));
@@ -113,7 +135,7 @@ test('both providers get the thirteen tools and the guide, in every runtime mode
   const claudeListing = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(claudeListing.isError).toBe(false);
   expect(claudeListing.tools).toEqual(TOOL_NAMES);
-  expect(claudeListing.instructions).toContain('These tools let you work with other Agent Overflow threads');
+  expect(claudeListing.instructions).toContain(THREAD_TOOLS_GUIDE_OPENING);
   // With no paired computer the guide drops the computers paragraph and
   // no schema offers a computer to address.
   expect(claudeListing.instructions).not.toContain('Other computers');
@@ -123,9 +145,47 @@ test('both providers get the thirteen tools and the guide, in every runtime mode
   const codexListing = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(codexListing.tools).toEqual(TOOL_NAMES);
   // Codex never shows a server's instructions to the model, so the same
-  // guide rides its developer instructions; the handshake still carries
-  // it, which is what this listing reads.
+  // guide rides its developer instructions (asserted above); the handshake
+  // still carries it, which is what this listing reads.
   expect(codexListing.instructions).toBe(claudeListing.instructions);
+  expect(codexConfig.developerInstructions).toContain(claudeListing.instructions);
+});
+
+test('the app guide switch is spawn-only and leaves the server guides to their servers', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'tt-guide-off',
+        repo: {},
+        threads: [
+          { title: 'Claude without the guide', provider: 'claude' },
+          { title: 'Codex without the guide', provider: 'codex' },
+        ],
+      },
+    ],
+  });
+  const [claudeThread, codexThread] = seed.projects[0].threadIds;
+
+  await harness.rpc('GetProviderStatuses');
+  try {
+    await harness.rpc('UpdateSettings', { agentGuideEnabled: false });
+    await harness.rpc('StartSession', claudeThread);
+    await harness.rpc('StartSession', codexThread);
+    const [claudeConfig] = await sessionConfigs(harness, 'claude', 1);
+    const [codexConfig] = await sessionConfigs(harness, 'codex', 1);
+    expect(claudeConfig.appendSystemPrompt ?? '').toBe('');
+    // The opt-out is about the override axis too, so it does not follow
+    // the guide switch.
+    expect(claudeConfig.systemPromptSnapshot).toBe('off');
+    // The server guides follow their servers, not the switch: Codex still
+    // reads the thread tools guide, with no app guide ahead of it.
+    expect(codexConfig.developerInstructions ?? '').not.toContain(APP_GUIDE_OPENING);
+    expect(codexConfig.developerInstructions).toContain(THREAD_TOOLS_GUIDE_OPENING);
+  } finally {
+    await harness.rpc('UpdateSettings', { agentGuideEnabled: true });
+  }
 });
 
 test('the switch removes and restores the tools inside one running session', async ({

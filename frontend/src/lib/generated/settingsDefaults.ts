@@ -23,6 +23,7 @@ export const SETTINGS_DEFAULTS = {
   browserAllowOutsideWorkspace: false,
   browserChromiumPath: "",
   threadToolsEnabled: true,
+  agentGuideEnabled: true,
   confirmArchive: true,
   confirmDelete: true,
   autoPinNewThreads: true,

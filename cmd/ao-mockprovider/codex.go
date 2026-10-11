@@ -185,9 +185,10 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		a.e.rep.report(control.Report{
 			Kind: control.ReportSessionConfig,
 			SessionConfig: &control.SessionConfig{
-				Sandbox:        readParamString(params, "sandbox"),
-				ApprovalPolicy: readParamString(params, "approvalPolicy"),
-				MCPServers:     codexMCPServerNames(params),
+				Sandbox:               readParamString(params, "sandbox"),
+				ApprovalPolicy:        readParamString(params, "approvalPolicy"),
+				MCPServers:            codexMCPServerNames(params),
+				DeveloperInstructions: readParamString(params, "developerInstructions"),
 			},
 		})
 		a.noteMCPServers(params)

@@ -19,7 +19,22 @@ import (
 //ao:scope access:admin
 //ao:route home
 func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
-	return a.providerDiscoveryService().ProviderStatuses(), nil
+	// Identity before the probe, for the reason recordProbedProviderVersion
+	// states. A binary that does not resolve is reported by the statuses and
+	// recorded by nobody.
+	identities := make(map[string]providerBinaryIdentity, 2)
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
+			identities[providerName] = identity
+		}
+	}
+	statuses := a.providerDiscoveryService().ProviderStatuses()
+	for _, status := range statuses {
+		if identity, ok := identities[status.Provider]; ok {
+			a.recordProbedProviderVersion(status.Provider, identity, status)
+		}
+	}
+	return statuses, nil
 }
 
 func (a *App) currentSettings() settings.Settings {

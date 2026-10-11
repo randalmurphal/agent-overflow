@@ -17,6 +17,10 @@ A settings surface (Agents group) where the user can:
    the model context (e.g. Claude's `Workflow`, because the user runs
    AO's own workflow engine instead). Claude's tools payload is ~92KB of schemas,
    so this is the bigger context lever.
+3. **Turn the app guide on or off**: the short text Agent Overflow
+   appends so interactive Claude, claude-tui and Codex sessions know what
+   the chat pane renders and which of the app's tool servers are on.
+   Default on (see [App guide](#app-guide)).
 
 Both providers are already fully plumbed for prompt replacement:
 `cfg.SystemPrompt` → `--system-prompt-file`
@@ -36,9 +40,10 @@ that:
 - **`--system-prompt-file <path>` works interactively.** The request's
   `system` array becomes [billing header, the TUI's fixed identity line
   `"You are Claude Code, Anthropic's official CLI for Claude."`, the
-  file's content], a full body replacement, same as headless. Only the
-  identity line differs from the headless SDK one; it is not
-  replaceable on either.
+  file's content], a full body replacement, same as headless. The
+  identity line is not replaceable on either transport;
+  [claude-wire.md §Request shape](../references/claude-wire.md#request-shape)
+  records the line each one sends.
 - **Repeated `--disallowedTools <name>` works interactively.** The
   named tools' schemas are absent from the request. Quirk worth
   knowing when reading a user's list: the CLI **aliases `Task` and
@@ -108,6 +113,7 @@ CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
 ClaudeDisabledTools   []string         `json:"claudeDisabledTools,omitempty"`
 CodexDisabledTools    []string         `json:"codexDisabledTools,omitempty"`
 ClaudeTodoRemindersDisabled bool       `json:"claudeTodoRemindersDisabled,omitempty"`
+AgentGuideEnabled     bool             `json:"agentGuideEnabled"` // default true
 ```
 
 Decisions (2026-08-17, with user):
@@ -190,11 +196,13 @@ as thread error state and the session starts anyway.
   the catalog default. `buildThreadParams` covers both, which is what
   also carries the disabled-tool `config` keys onto a resume.
 - `thread/fork` carries **neither**: `ForkAt` sends `threadId`,
-  `excludeTurns: true`, and the optional `lastTurnId` anchor. That is safe for
-  the same reason it is safe for model / sandbox / reviewer: nothing executes
-  on a forked thread until AO spawns against it, and that spawn is a `thread/resume`
-  which re-asserts every axis. So the axes to get right on a fork are the
-  ones on its NEXT launch config, not on the fork call.
+  `excludeTurns: true`, the optional `lastTurnId` anchor, and the
+  session's composed `developerInstructions` ([App guide](#app-guide)).
+  That is safe for the same reason it is safe for model / sandbox /
+  reviewer: nothing executes on a forked thread until AO spawns against
+  it, and that spawn is a `thread/resume` which re-asserts every axis. So
+  the axes to get right on a fork are the ones on its NEXT launch config,
+  not on the fork call.
 - Replacement is verbatim-total on the Responses `instructions` field.
   AGENTS.md content, personality consistency, model-switch re-injection,
   and compaction all survive (see reference doc). The stock prompt's
@@ -283,7 +291,7 @@ settings-owned axes:
 |---|---|
 | `DisabledTools` | **Pinned** to `sess.launchOpts`. Spawn-only on every provider, so a diff could only queue a restart nobody asked for. |
 | `DisableTodoReminders` | **Pinned**, same reason (an env var, fixed at spawn). |
-| `SystemPrompt`, headless Claude on CLI ≥ 2.1.214 | **Converges live** when the change lands on a non-empty prompt: an override edited, or one turned on. `claude.PlanLiveUpdate` carries it as `LiveUpdate.SystemPrompt` and `ApplyLiveUpdate` sends it on `set_model` (see `claude-wire.md`). Turning an override OFF is a **deferred restart**: `set_model.system_prompt` must be a non-empty string and has no revert-to-built-in form, so only a respawn without `--system-prompt-file` restores the CLI's own prompt. |
+| `SystemPrompt`, headless Claude on CLI ≥ 2.1.214 | **Converges live** when the change lands on a non-empty prompt: an override edited, or one turned on. `claude.PlanLiveUpdate` carries it as `LiveUpdate.SystemPrompt` and `ApplyLiveUpdate` sends it on `set_model` (see `claude-wire.md`). On 2.1.267+ this holds only for a process spawned with `--system-prompt-snapshot off` ([Claude prompt snapshot](#claude-prompt-snapshot)); a process spawned while the installed version was unknown takes the deferred restart instead, since the snapshot would mask the swap, and its respawn passes the opt-out. Turning an override OFF is a **deferred restart**: `set_model.system_prompt` must be a non-empty string and has no revert-to-built-in form, so only a respawn without `--system-prompt-file` restores the CLI's own prompt. |
 | `SystemPrompt`, Codex / claude-tui | **Pinned.** Neither has a prompt-swap wire, so re-resolving could only ever queue a deferred restart for an edit the user expected to affect the NEXT session, the contract those two keep. |
 | `SystemPrompt`, headless Claude on an older CLI | **Deferred restart.** The reconciler resolves and `PlanLiveUpdate` plans it as usual; the version gate lives one layer down in `ApplyLiveUpdate`, which answers `ErrLiveUpdateRequiresRestart`. Older builds ACK `set_model.system_prompt` without applying it (the one failure mode with no wire signal at all), so an unknown version counts as too old. |
 | `SystemPrompt`, feature-owned | **Untouched.** A non-empty `opts.SystemPrompt` after `buildSessionOptions` means a discussion owns it; those converge exactly as they did before this feature existed. |
@@ -296,8 +304,8 @@ rendered comparison would report a diff every time the workspace's git
 state moved under a `{{GIT_BLOCK}}` and reconcile forever.
 
 `applySettingsOwnedAxes` (spawn) and `reconcileSettingsOwnedAxes`
-(reconcile) are a **pair**, and `buildSessionOptions` stamps none of the
-three axes so the pairing cannot be forgotten:
+(reconcile) are a **pair**, and `buildSessionOptions` stamps none of
+these axes so the pairing cannot be forgotten:
 
 - `ClaudeThinking` is the one axis a *settings save alone* has to act on:
   every other axis here is spawn-only, so nothing would reconcile until an
@@ -321,6 +329,84 @@ three axes so the pairing cannot be forgotten:
   `{{MEMORY_DIR}}` promises already exists, and that is as true of a swap
   as of a spawn.
 
+## App guide
+
+The app guide is a short text Agent Overflow appends to the system
+prompt of interactive Claude, claude-tui and Codex sessions: how the chat
+pane renders replies, then one sentence per app-managed tool server the
+session has on. The text and its composition live in
+`internal/app/app_agent_guide.go`. `TestAgentGuideNamesEveryAppManagedServer`
+requires a sentence for every name in `appManagedMCPServers`, so a new
+app-managed server adds one.
+
+- **Setting.** `AgentGuideEnabled`, user tier, default on, on the App
+  guide page of the Agents group. Off, no session carries the guide.
+- **Scope.** `agentGuideFor` answers the guide for those three providers
+  only, and never for a workflow-mode thread (`threadmode.ModeWorkflow`:
+  phases and units, attached to an attempt or not): a workflow session
+  runs under its workflow's prompt and structured output, and its tool
+  servers are granted per phase.
+- **Servers named.** Only servers the session gets tools from
+  (`agentGuideServersOn`): the browser server when it is registered, the
+  global `BrowserEnabled` switch is on and the thread's browser switch is
+  on; the thread tools when registered and `threadToolsEnabledFor` holds;
+  the remote server when registered. With none on, the tools paragraph is
+  omitted. The set is read at spawn, so a live server switch reaches the
+  text at the next start or resume.
+- **Spawn-only on every provider.** The guide rides the provider
+  `Config`, not `SessionOptions`, so it is outside the
+  `applySettingsOwnedAxes` / `reconcileSettingsOwnedAxes` pair: a
+  settings change never queues a restart and lands at the session's next
+  start or resume.
+
+### Delivery
+
+- **Claude and claude-tui:** `Config.AppendSystemPrompt`, passed as
+  `--append-system-prompt-file <path>`: a second 0600 temp file from
+  `claude.WriteSystemPromptFile`, removed with the replacement file on
+  `Close` and on a failed spawn. The CLI places it after whichever prompt
+  the session otherwise runs with (the default body, a settings override
+  or a feature-owned prompt), joined by a blank line
+  ([claude-wire.md §Appended prompt and prompt snapshot](../references/claude-wire.md#appended-prompt-and-prompt-snapshot-verified-21284)).
+- **Codex:** `codexDeveloperInstructions` joins, with blank lines, the
+  app guide, the browser server's guide (`appbrowser.Instructions()`)
+  when the browser tools are on, and the thread tools guide when those
+  are on. Codex never shows a server's MCP `instructions` to the model,
+  so the server guides reach it only this way; they follow their
+  servers, not `AgentGuideEnabled` or the phase exclusion. The provider
+  appends the result to the cwd's configured `developer_instructions`
+  (read with `config/read`) and sends it as `developerInstructions` on
+  `thread/start` and `thread/resume`; `ForkAt` carries the composed value
+  forward. An empty composition omits the field. A failed `config/read`
+  also omits it rather than replace instructions AO could not read, and
+  reports a non-fatal error on the thread
+  ([codex-instructions-tools.md §App-owned appended guidance](../references/codex-instructions-tools.md#app-owned-appended-guidance)).
+
+### Claude prompt snapshot
+
+By default the CLI records the first request's rendered system prompt in
+the transcript and reuses it on every `--resume`. With that default a
+resumed session keeps its first guide and ignores a changed or removed
+`--system-prompt-file`, and the snapshot masks a live
+`set_model.system_prompt`, so neither the guide nor the override axis
+above reaches an existing conversation. Both Claude providers therefore pass
+`--system-prompt-snapshot off` (`claude.SystemPromptSnapshotArgs`)
+whenever the installed version is known and at least 2.1.267, with or
+without a guide or override. Off, the prompt renders fresh at every
+start; the default body is byte-identical across resumes of one build,
+so the prompt cache is unaffected. The session records whether the
+opt-out was passed (`spawnedWithSnapshotOff`), and on 2.1.267+
+`supportsLiveSystemPrompt` refuses a live `set_model.system_prompt`
+without it, so a swap the snapshot would mask becomes a deferred
+restart rather than an acknowledged no-op.
+
+The version comes from `installedProviderVersion`: the token the last
+probe recorded (the boot status probe in `GetProviderStatuses` or the
+binary watcher), trusted only while the binary on disk still has the
+probed identity. A build below 2.1.267 rejects the flag and the spawn
+fails, so an unknown version omits it and that launch behaves as the CLI
+default.
+
 ## UI
 
 New section in the Agents group (`sections.ts`): per provider, a list
@@ -339,5 +425,6 @@ and the section registry are the only wiring.
   Codex's effective default over the wire; Claude's is capturable via
   the ANTHROPIC_BASE_URL sink method in claude-wire.md).
 - MCP tool toggles (already covered by MCP server management).
-- `developerInstructions` (Codex): exists on the same RPCs if a
-  lighter-than-replacement channel is ever wanted.
+- User-authored appended text (Codex `developerInstructions`, Claude
+  `--append-system-prompt-file`) as a lighter-than-replacement channel.
+  The app uses both only for its own guides.

@@ -517,6 +517,14 @@ func (a *App) spawnProviderSession(
 		return session{}, err
 	}
 	accountSelection := a.captureProviderAccountSelection(t.Provider)
+	// The app guide (app_agent_guide.go) is spawn-only on every provider: it
+	// rides the Config, not the options bundle, so the reconciler never
+	// queues a restart for it and a settings change lands at the next start
+	// or resume.
+	appGuide, err := a.agentGuideFor(t, mcpServers)
+	if err != nil {
+		return session{}, err
+	}
 
 	switch t.Provider {
 	case string(provider.Claude):
@@ -525,6 +533,8 @@ func (a *App) spawnProviderSession(
 			cfg.OutputSchema = string(workflowSchema)
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.AppendSystemPrompt = appGuide
+		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
@@ -570,19 +580,15 @@ func (a *App) spawnProviderSession(
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
-		// Codex has no server instructions channel of its own, so the
-		// thread tools' guide rides developer instructions instead. It
-		// follows the same shape the tool list does and comes from the
-		// same source, so the two cannot drift; a pairing change reaches
-		// a live thread at its next start or resume.
-		// The entry is registered whether or not the switch is on, so
-		// the tool list can be turned on live; the guide is only sent
-		// while the tools are on, since a guide to tools that are not
-		// listed would be noise, and a live switch reaches the text at
+		// Codex never shows a server's instructions to the model, so the
+		// app guide and the on servers' guides ride developer instructions
+		// instead. Each guide follows the same shape its tool list does and
+		// comes from the same source, so the two cannot drift; a browser or
+		// thread-tools entry is registered whether or not its switch is on
+		// (so the tool list can be turned on live), while its guide is only
+		// sent when the tools are on, and a live switch reaches the text at
 		// the next start or resume.
-		if mcpServers[threadMCPName] != nil && a.threadToolsEnabledFor(threadID) {
-			cfg.DeveloperInstructions = a.threadToolsServer().Instructions(a.threadToolsShape(threadID))
-		}
+		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
 		// Ownership of a row sitting in the PROVIDER's queue is a store
 		// question — the id grammar is deterministic and therefore not a
 		// credential — so the codex package asks the app layer. AO writes no
@@ -703,6 +709,8 @@ func (a *App) spawnProviderSession(
 		// The interactive provider drives the same `claude` binary as the
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+		cfg.AppendSystemPrompt = appGuide
+		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		// claudetui's Config carries a whole environment rather than an
 		// override map, so the shared rule is applied here instead of inside
 		// the provider package. Skipping this branch would leave one provider

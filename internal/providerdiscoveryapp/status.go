@@ -5,13 +5,14 @@ import (
 	"agent-overflow/internal/providerstatus"
 )
 
-// ProviderStatuses detects both configured providers and emits each non-ready
-// status so pull and push consumers observe the same answer.
+// ProviderStatuses detects both providers at the binary a session would
+// spawn (ProviderBinary, which is the settings path or the harness override)
+// and emits each non-ready status so pull and push consumers observe the
+// same answer.
 func (s *Service) ProviderStatuses() []provider.ProviderStatus {
-	cfg := s.deps.CurrentSettings()
 	statuses := []provider.ProviderStatus{
-		s.deps.DetectProvider(string(provider.Claude), cfg.ClaudeBinaryPath),
-		s.deps.DetectProvider(string(provider.Codex), cfg.CodexBinaryPath),
+		s.deps.DetectProvider(string(provider.Claude), s.deps.ProviderBinary(string(provider.Claude))),
+		s.deps.DetectProvider(string(provider.Codex), s.deps.ProviderBinary(string(provider.Codex))),
 	}
 	for _, status := range statuses {
 		if status.Status != "ready" && s.deps.EmitStatus != nil {

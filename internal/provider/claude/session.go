@@ -25,11 +25,13 @@ type Session struct {
 	cancel   context.CancelFunc
 	closing  atomic.Bool
 	readDone chan struct{}
-	// systemPromptPath is the temp file cfg.SystemPrompt was written to for
-	// `--system-prompt-file`, or "" when the session carries no override.
-	// Removed by Close; see WriteSystemPromptFile for why the prompt does
-	// not travel in argv.
-	systemPromptPath string
+	// systemPromptPath and appendSystemPromptPath are the temp files
+	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
+	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
+	// the one the session does not carry. Removed by Close; see
+	// WriteSystemPromptFile for why a prompt does not travel in argv.
+	systemPromptPath       string
+	appendSystemPromptPath string
 	// allowsBypassPermissions records whether the process was spawned with
 	// --allow-dangerously-skip-permissions. The CLI rejects a live
 	// set_permission_mode escalation to bypassPermissions without it
@@ -44,6 +46,13 @@ type Session struct {
 	// the restart path — the respawn is what adds the opt-in. Written once
 	// at construction, like allowsBypassPermissions.
 	spawnedWithFastModeOptIn bool
+	// spawnedWithSnapshotOff records whether the process was spawned with
+	// `--system-prompt-snapshot off` (SystemPromptSnapshotArgs). On a build
+	// that snapshots by default (2.1.267+), a live `set_model.system_prompt`
+	// on a process spawned WITHOUT it is acked and then masked by the
+	// snapshot on the next request, so supportsLiveSystemPrompt routes that
+	// case to the restart path. Written once at construction.
+	spawnedWithSnapshotOff bool
 	// configModelMu guards configModel AND requestedEffort (below) — the
 	// two halves of "what AO has asked this process to run", read together
 	// by the get_settings override projection, so they take one lock.
@@ -225,7 +234,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
 	}
-	args := buildArgs(cfg, systemPromptPath)
+	appendSystemPromptPath, err := WriteSystemPromptFile(cfg.AppendSystemPrompt)
+	if err != nil {
+		RemoveSystemPromptFile(systemPromptPath)
+		return nil, fmt.Errorf("claude: %w", err)
+	}
+	args := buildArgs(cfg, systemPromptPath, appendSystemPromptPath)
 
 	childCtx, cancel := context.WithCancel(ctx)
 
@@ -242,12 +256,14 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if err != nil {
 		cancel()
 		RemoveSystemPromptFile(systemPromptPath)
+		RemoveSystemPromptFile(appendSystemPromptPath)
 		return nil, fmt.Errorf("claude: spawn: %w", err)
 	}
 
 	s := &Session{
 		proc:                     proc,
 		systemPromptPath:         systemPromptPath,
+		appendSystemPromptPath:   appendSystemPromptPath,
 		threadID:                 threadID,
 		onEvent:                  onEvent,
 		cancel:                   cancel,
@@ -256,6 +272,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		leafTracker:              newClaudeLeafTracker(cfg.ResumeAt),
 		allowsBypassPermissions:  slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
 		spawnedWithFastModeOptIn: cfg.FastMode,
+		spawnedWithSnapshotOff:   len(SystemPromptSnapshotArgs(cfg.InstalledCLIVersion)) > 0,
 		configModel:              cfg.Model,
 		requestedEffort:          cfg.ReasoningEffort,
 		modelAliases:             maps.Clone(cfg.ModelAliases),
@@ -316,6 +333,7 @@ func (s *Session) Close() error {
 	// removing it while a wedged process might still be starting up would
 	// turn a slow spawn into a missing system prompt.
 	RemoveSystemPromptFile(s.systemPromptPath)
+	RemoveSystemPromptFile(s.appendSystemPromptPath)
 	// Release parser-owned state so the dedup sets
 	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
 	// don't linger after the readLoop exits.

@@ -14,7 +14,9 @@ import (
 // full-access flag set, the --settings hook registration that points Claude at
 // the AO relay subcommand, the two settings-owned override flags
 // (--system-prompt-file / --disallowedTools, both spike-verified to work
-// interactively on 2.1.234 — see AGENTS.md §Prompt + tool overrides), and the
+// interactively on 2.1.234 — see docs/specs/prompt-tool-overrides.md), the
+// app guide's --append-system-prompt-file and the version-gated
+// --system-prompt-snapshot off (both spike-verified on 2.1.284), and the
 // env that injects the gateway base URL and the per-session relay url +
 // capability token.
 //
@@ -28,11 +30,12 @@ import (
 // buildLaunchOptions produces the terminal.SessionOptions that spawn the
 // interactive claude under the session's gateway + relay.
 //
-// systemPromptPath is the file claude.WriteSystemPromptFile produced for
-// cfg.SystemPrompt (empty when the session carries no override) — the prompt
-// reaches the CLI by path, never as an argv value, so this function never
-// reads cfg.SystemPrompt itself. Same split as the headless buildArgs.
-func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookToken string) (terminal.SessionOptions, error) {
+// systemPromptPath and appendSystemPromptPath are the files
+// claude.WriteSystemPromptFile produced for cfg.SystemPrompt and
+// cfg.AppendSystemPrompt (empty for the one the session does not carry) — a
+// prompt reaches the CLI by path, never as an argv value, so this function
+// never reads either text itself. Same split as the headless buildArgs.
+func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, gatewayURL, hookURL, hookToken string) (terminal.SessionOptions, error) {
 	if cfg.Binary == "" {
 		return terminal.SessionOptions{}, fmt.Errorf("claudetui: no claude binary configured")
 	}
@@ -93,6 +96,16 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 		// claude.WriteSystemPromptFile.
 		args = append(args, "--system-prompt-file", systemPromptPath)
 	}
+	if appendSystemPromptPath != "" {
+		// The app guide, after whichever prompt the session otherwise runs
+		// with; the TUI composes `--system-prompt-file` and this flag exactly
+		// as headless does (2.1.284 PTY + wire capture).
+		args = append(args, "--append-system-prompt-file", appendSystemPromptPath)
+	}
+	// The TUI snapshots the first request's prompt into the transcript and
+	// reuses it on resume exactly as headless does (same capture), so the
+	// same version-gated opt-out applies.
+	args = append(args, claude.SystemPromptSnapshotArgs(cfg.InstalledCLIVersion)...)
 	for _, tool := range cfg.DisallowedTools {
 		// One flag per name; the named tools' schemas are absent from the
 		// TUI's requests (same 2.1.234 capture). Worth knowing when reading a
