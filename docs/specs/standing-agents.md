@@ -359,9 +359,20 @@ Two defects observed in the wire reference that an agent's loop would
 hit:
 
 - `CronCreate` acks are not classified, so the idle reaper can close a
-  session holding a provider-side fixed-interval loop. Classify them as
-  `EventSessionWakeup` with the next fire time, mirroring
-  `ScheduleWakeup`.
+  session holding a provider-side fixed-interval loop. Jobs are
+  session-only on the provider side (the ack says so), so the reaper
+  must keep a session alive while it holds an armed recurring job,
+  protecting until the next fire computed from the job's cron
+  expression plus the existing grace, re-evaluated on each fire and
+  cleared by `CronDelete` or a one-shot fire. Acks are classified by
+  tool name (`CronCreate`, `CronList`, `CronDelete`) with the key shape
+  as a check; the spike capture is the fixture.
+- A cron fire reaches the wire as a `command_lifecycle` bracket with a
+  CLI-created uuid and no user envelope, so the parser labels it a peer
+  turn. Its transcript-mirror user row carries `turnOrigin:"scheduled"`
+  and `isMeta:true`; classify the turn as scheduled from that row and
+  render the injected prompt as the turn's badged user row, as a
+  `thread_remind` wake renders, instead of dropping it.
 - A background completion that lands on an idle session renders a
   response starting from nothing (claude-wire.md E7). The reference
   says a transcript-tail backfill is not built; the scoped fix is to
@@ -369,10 +380,10 @@ hit:
   result and name, so the pane shows what woke the session rather than
   an unexplained response. A full backfill stays an open question.
 
-The `CronCreate` ack shape has no captured fixture. Slice 4 starts with
-a spike against the real CLI under the isolated spike policy that
-records the ack into `docs/references/fixtures/claude/`, and the
-classification is written against that capture.
+The ack and fire shapes were captured on claude 2.1.284 under the
+isolated spike policy (2026-10-10); slice 4 commits the sanitized
+captures to `docs/references/fixtures/claude/` and documents them in
+`claude-wire.md` as E10.
 
 ## Slices and verification
 
@@ -390,7 +401,7 @@ the real app with the commands run. Unit tests are not evidence.
 | 3a | Wake supervisor | none | `thread_loop`, `thread_watch` and `thread send` work for Claude and Codex mock providers; a wake starts a headless session; boot replays a missed fire once with the missed count in the wake; quit mid-tick reruns; long-running watch lines arrive as separate wakes; a non-zero exit is an outcome, not a wake; `thread_status` lists loops and watches; `thread_watch` on a non-agent is refused (the agent row lands in 2, so 3a carries the `standing_agents` table and the refusal, and 2 builds the UI on it) | Harness spec that registers each kind, restarts the backend, and asserts the delivered wakes, their badges and the untrusted framing; the same spec on both mock providers |
 | 3b | Wake rows in the pane | 3a | Loops, watches and reminders render in the background tray with next fire, last outcome, wake now and cancel; expanding a watch shows command, cwd and stderr tail; the registering tool call renders in the timeline with the next fire time | Screenshots of the tray with each kind, expanded and collapsed, on desktop and compact; the wake-now and cancel paths in a Playwright spec |
 | 3c | Delete the workflow scheduler | 3a | `internal/workflow/scheduler`, the `automations` and `automation_cursors` tables, `WorkflowCreateAutomation`, the `schedule` CLI verb and the overlay's automation rows are gone; the workflow suites pass | Workflow e2e suite run; migration output on the user's database copy showing the tables dropped |
-| 4 | Claude wire gaps | spike | `CronCreate` ack keeps the session alive past the reap threshold; an E7 completion renders as a badged system row naming the task | Fixture replay through the harness with the reap threshold shortened; before and after screenshots of the E7 pane |
+| 4 | Claude wire gaps | none | An armed recurring cron keeps the session alive past the reap threshold and `CronDelete` releases it; a cron fire renders as a scheduled turn with its prompt, not as a peer turn; an E7 completion renders as a badged system row naming the task | Fixture replay through the harness with the reap threshold shortened; screenshots of a cron fire turn and of the E7 pane before and after |
 | 5 | Agent homes and settings | 2, 3a | Promotion creates the home and injects its path into both providers; the Skills page installs, updates and removes per provider | Settings e2e with temp provider homes showing the installed tree; harness proof that a Claude and a Codex mock session received the home path; screenshots of the Skills page |
 | 6 | pstack vendored and ported | 3a, 5 | Every primitive in the port table is rewritten; the `forge` script passes against the fake `gh` and `glab`; `poteto-mode` completes a small real task in a Claude thread and in a Codex thread with the same steps | Manual provider smoke on a throwaway repo with the transcripts attached; forge script run log against the harness fake |
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool |
