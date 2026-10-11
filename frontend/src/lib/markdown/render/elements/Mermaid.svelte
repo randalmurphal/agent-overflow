@@ -4,6 +4,7 @@
 	import type { Tokens } from '../../parser/engine';
 	import type { MermaidConfig } from 'mermaid';
 	import { fullscreenIcon } from './icons';
+	import { mermaidRenderConfig } from './mermaidRenderConfig';
 
 	// Module-level SVG cache. `mermaid.render` is expensive (hundreds of
 	// ms for non-trivial diagrams) and its output is deterministic for a
@@ -37,7 +38,11 @@
 	onMount(async () => {
 		const resolveAsync = streamdown.registerAsyncResource?.();
 		try {
-			mermaid = (await import('mermaid')).default;
+			const loaded = (await import('mermaid')).default;
+			// The first initialize registers the diagram detectors that
+			// `detectType` reads; render re-initializes per diagram kind.
+			loaded.initialize(mermaidRenderConfig(''));
+			mermaid = loaded;
 		} finally {
 			resolveAsync?.();
 		}
@@ -202,20 +207,17 @@
 				// runtime targets.
 				svgString = cached.svg.split(cached.baseId).join(uniqueId);
 			} else {
-				// Default configuration
+				// The edge curve depends on the diagram kind; an unknown
+				// kind gets the default config and fails in render as before.
+				let diagramType = '';
+				try {
+					diagramType = mermaid.detectType(sanitizedCode);
+				} catch {
+					diagramType = '';
+				}
 				const defaultConfig: MermaidConfig = {
-					theme: 'base',
-					startOnLoad: false,
-					securityLevel: 'strict',
-					fontFamily: 'monospace',
-					suppressErrorRendering: true,
-
-					flowchart: {
-						useMaxWidth: true,
-						htmlLabels: true,
-						curve: 'basis'
-					},
-					...(mermaidConfig || {})
+					...mermaidRenderConfig(diagramType),
+					...mermaidConfig
 				};
 
 				// Initialize mermaid with merged config

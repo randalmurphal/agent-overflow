@@ -1036,6 +1036,17 @@ input[type="search"]::-webkit-search-cancel-button {
   max-width: 100%;
 }
 
+/* Mermaid 12's neo look draws a light drop shadow under nodes, sequence
+   actors and loop tabs; its colour is hardcoded in mermaid's stylesheet,
+   so on dark it is a halo. Mermaid's own rules start with the SVG id and
+   outrank a page rule without !important. `dropShadow: none` in the
+   theme config misses the actor and start-circle filters. */
+svg[data-mermaid-svg] [data-look="neo"],
+svg[data-mermaid-svg] [data-look="neo"] *,
+svg[data-mermaid-svg] .labelBox {
+  filter: none !important;
+}
+
 /* Collapsible <details>/<summary> passed through sanitized client markdown. */
 .markdown-body details {
   border-width: 1px;
