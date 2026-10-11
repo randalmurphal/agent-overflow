@@ -64,18 +64,27 @@ type CIJob struct {
 	Steps           []CIStep `json:"steps,omitempty"`
 }
 
-// CIStep is a per-step status inside a job (GitHub Actions only —
-// GitLab has no step concept).
+// CIStep is a per-step status inside a job (GitHub Actions only;
+// GitLab has no step concept; its trace marks sections instead, see
+// cleanGitLabTrace). Number is GitHub's step number, which has gaps: post
+// steps are numbered after the steps that did not run. StartedAt and
+// CompletedAt are the jobs API's RFC 3339 times, to the second, empty
+// until the step starts or completes. Steps run in order, and every line
+// of the job log starts with its own RFC 3339 time at 100 ns, so a step's
+// lines run from its start to the next step's start. A skipped step
+// carries times but writes no lines.
 type CIStep struct {
-	Number int    `json:"number"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Number      int    `json:"number"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
 }
 
 // ErrCIJobLogNotFound is a job log request the forge answered with HTTP
-// 404: the job has not started, or the forge has not published the log of
-// a job that ran. GitHub answers it for a running job and for a while
-// after the job completed.
+// 404: the job has not started, or the forge has not published its log.
+// GitHub answers it until the job's log blob exists, which is a running
+// job's whole run and can be a while after it completed.
 var ErrCIJobLogNotFound = errors.New("ci job log not found")
 
 // CIJobLogRequest names one job's log for GetCIJobLog. ETag is the

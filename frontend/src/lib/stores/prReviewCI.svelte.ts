@@ -45,9 +45,9 @@ export interface PRCILogEvent extends ForgeFailureWire {
   append: string;
   truncated: boolean;
   totalBytes: number;
-  /** False while the forge cannot serve the log: the job is live on a
-   * forge that serves logs only after completion, or the forge has not
-   * published a completed job's log yet. The text is unchanged. */
+  /** False while the forge cannot serve the log: it has not published
+   * the log yet (GitHub until the job's log blob exists, running or
+   * completed). The text is unchanged. */
   available: boolean;
   error?: string;
 }

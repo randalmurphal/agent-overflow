@@ -137,8 +137,9 @@ polling.
 - **CI rides the same pump** (`internal/app/app_forge_ci.go`). The pump
   reads the head pipeline on start and re-reads it only while something
   can change: every 10s while a job is queued or running, every 5s while
-  a followed job is live on GitLab or its final log is still being
-  fetched, never while every job is terminal (the 45s snapshot re-arms it
+  a followed job is live on a forge that streams its log (GitLab) or a
+  followed job's final log is still being fetched, never while every job
+  is terminal (the 45s snapshot re-arms it
   when the head SHA or the check summary moves). Pipeline frames go out on
   `pr:ci_updated` only on change, under the PR's sequence, and the
   subscribe result carries the current pipeline for a joiner. GitHub reads
@@ -147,19 +148,44 @@ polling.
   followed job whose steps can still change; GitLab reads the MR view and
   the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
   the pump fetches each now and streams UTF-16 prefix deltas on
-  `pr:ci_log` while a GitLab job runs (the trace endpoint serves partial
-  traces); GitHub serves a log only after completion, so a running job
-  reads as unavailable with its steps live, and the log lands once the job
-  completes. A completed job's log the forge still answers 404 for is a
-  wait, not an error: asked every 5s for six tries, then every 45s while
-  the job stays followed. The pause, dedup, caller-safe error and
-  connection-cleanup rules of the
-  snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
+  `pr:ci_log` while the job runs, revalidating by ETag. GitLab serves a
+  running job's trace; GitHub serves a log once its blob exists, in
+  practice once the job completed, though the jobs API can still call the
+  job running then
+  ([measurements](../references/forge-api-measurements.md#logs)). A log
+  the forge answers 404 for is a wait, not an error: asked at the job's
+  cadence while it runs (every 10s on GitHub, which answers 404 for a
+  running job's whole run), and once it completed every 5s for six tries,
+  then every 45s while the job stays followed. The log keeps what the
+  log view splits it by: each GitHub log line's own RFC 3339 time, beside
+  the steps' `startedAt` and `completedAt` from the jobs list, and a
+  GitLab trace's section markers, each on a line of its own
+  (`cleanGitLabTrace`). The pause, dedup, caller-safe error and
+  connection-cleanup rules of the snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the
   union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
-  The open log view opens at the tail and follows growth through the
-  shared stick-to-bottom controller, wired over `LongListVirtualizer` as
-  chat wires it; a reader who scrolls away keeps their place.
+- **The CI log view** (`ReviewCILogView.svelte`) shows a job's log as one
+  collapsible row per GitHub step or top-level GitLab section, split by
+  `utils/ciLogSections.ts`. A GitHub step's start time is floored to the
+  second and several steps often start in the same one, so the time
+  bounds where a step can begin and the line the runner writes when a
+  step begins (`##[group]Run ...`, `Post job cleanup.` and the like)
+  decides inside that second; skipped steps are not listed, and steps not
+  reached yet are listed as pending. GitLab sections nest; nested ones
+  stay inside their parent's row, lines outside every section form rows
+  of their own, and markers are never shown, saved or sent. Each row
+  shows its status, name and duration (a running one, its line count),
+  and has Copy and Send to chat for its text alone: inline in the
+  composer up to `CI_SECTION_INLINE_MAX_BYTES` (64 KB), otherwise saved
+  by `SavePRCIJobLogSection` and named by path. Nothing expands on its
+  own; the expanded set lives in the pane's review store, per job, and
+  each log open starts collapsed. When the 2 MB display tail starts
+  partway through a row, that row is marked cut at its top. Save to file
+  and Send to chat in the header cover the whole job. The list opens at
+  its end and follows growth through the shared stick-to-bottom
+  controller, wired over `LongListVirtualizer` as chat wires it; a reader
+  who scrolls away keeps their place, and expanding or collapsing a row
+  holds that row where it is.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,

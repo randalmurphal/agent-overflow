@@ -186,6 +186,29 @@ func TestGitLabListPRCIJobs(t *testing.T) {
 	}
 }
 
+func TestStripCISectionMarkers(t *testing.T) {
+	t.Parallel()
+	cleaned := cleanGitLabTrace("Running with gitlab-runner\n" +
+		"section_start:1714557600:step_script\r\x1b[0K\x1b[36;1mExecuting\x1b[0;m\n" +
+		"$ make test\n" +
+		"\x1b[0Ksection_end:1714557605:step_script\r\x1b[0K\n" +
+		"section_start:1714557605:after[collapsed=true]\r\x1b[0Kdone\n" +
+		"section_end:1714557606:after\r\x1b[0K\n" +
+		"section_start without a time stays\n")
+	want := "Running with gitlab-runner\n" +
+		"\x1b[36;1mExecuting\x1b[0;m\n" +
+		"$ make test\n" +
+		"done\n" +
+		"section_start without a time stays\n"
+	if got := StripCISectionMarkers(cleaned); got != want {
+		t.Fatalf("StripCISectionMarkers = %q, want %q", got, want)
+	}
+	plain := "2026-10-11T00:04:31.5805438Z ##[group]Run make\n"
+	if got := StripCISectionMarkers(plain); got != plain {
+		t.Fatalf("a log without markers changed: %q", got)
+	}
+}
+
 func TestCleanGitLabTrace(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -199,20 +222,31 @@ func TestCleanGitLabTrace(t *testing.T) {
 			want: "2026-06-26T22:39:47.158568Z echo hello",
 		},
 		{
-			name: "marker-only timestamped line vanishes",
+			name: "marker-only timestamped line keeps the bare marker",
 			raw: "2026-06-26T22:39:47.158568Z 00O+\x1b[0Ksection_start:1782513587:upload_artifacts_on_success\n" +
 				"2026-06-26T22:39:47.158568Z 00O \x1b[0;33mUploading artifacts\x1b[0;m",
-			want: "2026-06-26T22:39:47.158568Z \x1b[0;33mUploading artifacts\x1b[0;m",
+			want: "section_start:1782513587:upload_artifacts_on_success\n" +
+				"2026-06-26T22:39:47.158568Z \x1b[0;33mUploading artifacts\x1b[0;m",
 		},
 		{
-			name: "inline section marker with CR-erased header survives",
+			name: "inline section marker puts its CR-erased header on the next line",
 			raw:  "section_start:1714557600:step_script\r\x1b[0K\x1b[36;1mRunning steps\x1b[0;m",
-			want: "\x1b[36;1mRunning steps\x1b[0;m",
+			want: "section_start:1714557600:step_script\n\x1b[36;1mRunning steps\x1b[0;m",
 		},
 		{
-			name: "section marker with options",
+			name: "section marker keeps its options",
 			raw:  "section_start:1714557600:cleanup[collapsed=true]\r\x1b[0Kdone",
-			want: "done",
+			want: "section_start:1714557600:cleanup[collapsed=true]\ndone",
+		},
+		{
+			name: "an end and a start on one line keep their order",
+			raw:  "\x1b[0Ksection_end:1714557605:prepare\r\x1b[0K\x1b[0Ksection_start:1714557605:step_script\r\x1b[0K\x1b[0K\x1b[36;1mExecuting\x1b[0;m",
+			want: "section_end:1714557605:prepare\nsection_start:1714557605:step_script\n\x1b[36;1mExecuting\x1b[0;m",
+		},
+		{
+			name: "output without a final newline stays before the end marker",
+			raw:  "2026-06-26T22:39:47.158568Z 00O last words\x1b[0Ksection_end:1782513590:step_script\r\x1b[0K",
+			want: "2026-06-26T22:39:47.158568Z last words\nsection_end:1782513590:step_script",
 		},
 		{
 			name: "carriage-return progress overwrite keeps the final frame",

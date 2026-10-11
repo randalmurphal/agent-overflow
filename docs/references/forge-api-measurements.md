@@ -71,9 +71,19 @@ empty body. The pipeline jobs list carries a weak `ETag` but answers 200 to
   `Accept-Ranges: bytes`) and ignores a suffix range `bytes=-100` (200 with
   the whole body). It sends `Content-Length` and an `ETag`, and the blob
   answers 304 to a matching `If-None-Match` (checked through the shipped
-  transport on 2026-10-10, as did a GitLab trace). A running job
-  answers 404 (`{"message":"Not Found", ... "status":"404"}`); `gh` prints
-  `gh: Not Found (HTTP 404)`.
+  transport on 2026-10-10, as did a GitLab trace). A job whose log blob
+  does not exist answers 404 on the blob hop (XML `BlobNotFound`, with
+  `x-ms-error-code: BlobNotFound`); `gh` prints `gh: HTTP 404`. A running
+  job has no log blob: every running job of randalmurphal/agent-overflow
+  probed on 2026-10-11 (CodeQL analyses and Playwright shards, 1.5 to 7.5
+  minutes long, polled every 30 to 40 seconds, and one more re-probed the
+  same day) answered 404 for its whole run and served a `BlockBlob` from
+  the poll after it completed. The jobs API can still report a job
+  `in_progress` after its log is served: one such job answered 200 with
+  2.1 MB, then 5.7 MB a minute later, an append blob whose `ETag` and
+  `Last-Modified` moved while the log was assembled after completion, not
+  a live stream; it answered `Range: bytes=-500` with 200 and the whole
+  body. A 404 for a running job is a wait, not a failure.
 - GitLab `GET /projects/ID/jobs/ID/trace` on a completed job honors
   `Range: bytes=0-99` (206, `Content-Range: bytes 0-99/1068374`) and refuses
   a suffix range (400). It sends `Content-Length` and an `ETag`. A running

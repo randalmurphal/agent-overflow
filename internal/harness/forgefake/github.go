@@ -48,9 +48,16 @@ func ghRunJobs(e *Engine, c *call, m []string) response {
 	for _, job := range pipeline.Jobs {
 		status, conclusion := githubRESTState(job.Status)
 		steps := make([]map[string]any, 0, len(job.Steps))
-		for i, step := range job.Steps {
+		for _, step := range job.Steps {
 			stepStatus, stepConclusion := githubRESTState(step.Status)
-			steps = append(steps, map[string]any{"number": i + 1, "name": step.Name, "status": stepStatus, "conclusion": stepConclusion})
+			steps = append(steps, map[string]any{
+				"number":       step.Number,
+				"name":         step.Name,
+				"status":       stepStatus,
+				"conclusion":   stepConclusion,
+				"started_at":   githubRESTTime(step.StartedAt),
+				"completed_at": githubRESTTime(step.CompletedAt),
+			})
 		}
 		jobs = append(jobs, map[string]any{
 			"id":           job.ID,
@@ -145,9 +152,11 @@ func ghJobLogs(e *Engine, c *call, m []string) response {
 	if r != nil {
 		job = r.job(id)
 	}
-	// The real endpoint answers 404 until the job has completed (a running
-	// job's log is only the website's own stream), and for a while after.
-	if job == nil || job.StartedAt == "" || job.Status == "running" || job.Status == "pending" || job.LogWithheld {
+	// The real endpoint answers 404 until the job's log blob exists, in
+	// practice once the job completed (LogWithheld), and for a queued job.
+	// A running job with a log is the window where the jobs API still
+	// reports a completed job running.
+	if job == nil || job.StartedAt == "" || job.Status == "pending" || job.LogWithheld {
 		return ghHTTPNotFound()
 	}
 	// The real endpoint prepends a UTF-8 byte order mark.

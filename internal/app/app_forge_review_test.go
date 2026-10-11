@@ -116,8 +116,8 @@ func stubPRCIFetch(app *App) {
 	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
 		return gitops.CIJobLog{}, nil
 	}
-	whileRunning := true
-	app.prUpdates.ciLogWhileRunning = &whileRunning
+	streams := true
+	app.prUpdates.ciLogStreams = &streams
 }
 
 func capturePRUpdates(t *testing.T, app *App) chan PRUpdatedEvent {

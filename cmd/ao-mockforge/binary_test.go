@@ -173,7 +173,7 @@ func gitlabFixture() forgefake.Fixture {
 			Reviews: []forgefake.Review{{Author: "erin", AuthorName: "Erin Lee", State: "APPROVED"}},
 			CI: &forgefake.Pipeline{ID: 777, Jobs: []forgefake.Job{
 				{ID: 11, Name: "build", Stage: "build", Status: "success", Log: "built"},
-				{ID: 12, Name: "test", Stage: "test", Status: "running", StartedAt: "2026-01-01T00:00:00Z"},
+				{ID: 12, Name: "test", Stage: "test", Status: "running", StartedAt: "2026-01-01T00:00:00Z", Log: gitlabSectionTrace},
 				{ID: 13, Name: "package", Stage: "build", Status: "success", Log: "packaged", LogWithheld: true},
 			}},
 		}, {Number: 2, Title: "Merged", State: "merged", HeadRef: "done", HeadSHA: strings.Repeat("e", 40)}},
@@ -294,6 +294,88 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// gitlabSectionTrace is a GitLab 17 timestamped trace with the section
+// protocol as the runner writes it: an end and the next start share a
+// line, each start carries its header after the erasing \r.
+const gitlabSectionTrace = "2026-01-01T00:00:00.100000Z 00O \x1b[0Ksection_start:1767225600:prepare_executor\r\x1b[0K\x1b[0K\x1b[36;1mPreparing the \"docker\" executor\x1b[0;m\n" +
+	"2026-01-01T00:00:01.200000Z 00O Using docker image alpine\n" +
+	"2026-01-01T00:00:02.300000Z 00O \x1b[0Ksection_end:1767225602:prepare_executor\r\x1b[0K\x1b[0Ksection_start:1767225602:step_script[collapsed=true]\r\x1b[0K\x1b[0K\x1b[36;1mExecuting \"step_script\"\x1b[0;m\n" +
+	"2026-01-01T00:00:03.400000Z 00O $ make test\n"
+
+const gitlabSectionTraceCleaned = "section_start:1767225600:prepare_executor\n" +
+	"2026-01-01T00:00:00.100000Z \x1b[36;1mPreparing the \"docker\" executor\x1b[0;m\n" +
+	"2026-01-01T00:00:01.200000Z Using docker image alpine\n" +
+	"section_end:1767225602:prepare_executor\n" +
+	"section_start:1767225602:step_script[collapsed=true]\n" +
+	"2026-01-01T00:00:02.300000Z \x1b[36;1mExecuting \"step_script\"\x1b[0;m\n" +
+	"2026-01-01T00:00:03.400000Z $ make test\n"
+
+// TestGitHubRunningJobLogThroughTheAppsForgeCode: the app's GitHub CI code
+// against the fake's Actions endpoints while the jobs API reports a job
+// running. The log answers 404 until its blob exists, then the log,
+// revalidated by its ETag and re-read when it moves; steps carry GitHub's
+// numbers and times.
+func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
+	steps := []forgefake.Step{
+		{Name: "Set up job", Status: "success", StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:00:01Z"},
+		{Number: 3, Name: "Run make test", Status: "running", StartedAt: "2026-01-01T00:00:01Z"},
+		{Name: "Post Run make test", Status: "pending"},
+	}
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/live",
+		Pulls: []forgefake.Pull{{Number: 1, Title: "Live", HeadRef: "live", CI: &forgefake.Pipeline{ID: 600, Name: "CI", Jobs: []forgefake.Job{
+			{ID: 601, Name: "test", Status: "running", Log: "2026-01-01T00:00:00.1000000Z Current runner version: '2.337.0'\n", LogWithheld: true, Steps: steps},
+		}}}},
+	}}}
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "live", Number: 1}
+	reseed := func(mutate func(job *forgefake.Job)) {
+		t.Helper()
+		mutate(&fixture.Repos[0].Pulls[0].CI.Jobs[0])
+		if _, err := r.engine.Seed(fixture); err != nil {
+			t.Fatalf("re-seed: %v", err)
+		}
+	}
+
+	if r.core.CILogStreams(ref) {
+		t.Fatal("GitHub reports that it streams running logs")
+	}
+	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+		t.Fatalf("running log before its blob exists: %v, want ErrCIJobLogNotFound", err)
+	}
+	reseed(func(job *forgefake.Job) { job.LogWithheld = false })
+	first, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601"})
+	if err != nil || first.Text != "2026-01-01T00:00:00.1000000Z Current runner version: '2.337.0'\n" || first.ETag == "" {
+		t.Fatalf("running log = %+v, %v", first, err)
+	}
+	if same, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.ETag}); err != nil || !same.NotModified {
+		t.Fatalf("unchanged running log = %+v, %v; want NotModified", same, err)
+	}
+	reseed(func(job *forgefake.Job) { job.Log += "2026-01-01T00:00:01.2000000Z ##[group]Run make test\n" })
+	grown, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.ETag})
+	if err != nil || grown.NotModified || grown.ETag == first.ETag || !strings.HasSuffix(grown.Text, "##[group]Run make test\n") {
+		t.Fatalf("grown running log = %+v, %v", grown, err)
+	}
+
+	pipeline, err := r.core.ListPRCIJobs(t.Context(), ref, nil, []string{"601"})
+	if err != nil {
+		t.Fatalf("ListPRCIJobs: %v", err)
+	}
+	want := []gitops.CIStep{
+		{Number: 1, Name: "Set up job", Status: gitops.CIStatusSuccess, StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:00:01Z"},
+		{Number: 3, Name: "Run make test", Status: gitops.CIStatusRunning, StartedAt: "2026-01-01T00:00:01Z"},
+		{Number: 4, Name: "Post Run make test", Status: gitops.CIStatusPending},
+	}
+	if job := gitops.FindCIJob(pipeline, "601"); job == nil || !job.LogsAvailable || !slices.Equal(job.Steps, want) {
+		t.Fatalf("job = %+v, want steps %+v", job, want)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("the app made an invocation the fake does not implement: %+v", inv)
+		}
+	}
+}
+
 func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, gitlabFixture())
 	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
@@ -357,6 +439,11 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld trace error = %v, want ErrCIJobLogNotFound", err)
+	}
+	// A running trace keeps its section markers, each on a line of its
+	// own, for the log view to group lines by.
+	if live, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "12"}); err != nil || live.Text != gitlabSectionTraceCleaned {
+		t.Fatalf("running trace = %q, %v; want %q", live.Text, err, gitlabSectionTraceCleaned)
 	}
 
 	// One pump tick reads the merge request once and derives every part

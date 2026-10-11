@@ -596,7 +596,7 @@ func TestGitHubPipelineReadsStepsOnlyForFollowedJobs(t *testing.T) {
 		githubCheckRun("lint", "Lint", "COMPLETED", "FAILURE", "222", "902", "2026-07-06T14:08:19Z", "2026-07-06T14:09:19Z") + "," +
 		githubCheckRun("vet", "Lint", "COMPLETED", "SUCCESS", "222", "903", "2026-07-06T14:09:19Z", "2026-07-06T14:09:29Z")
 	const runningJobs = `{"total_count":2,"jobs":[
-{"id":902,"name":"lint","status":"in_progress","conclusion":null,"steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success"},{"number":2,"name":"Lint","status":"in_progress","conclusion":null}]},
+{"id":902,"name":"lint","status":"in_progress","conclusion":null,"steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success","started_at":"2026-07-06T14:08:19Z","completed_at":"2026-07-06T14:08:20Z"},{"number":4,"name":"Lint","status":"in_progress","conclusion":null,"started_at":"2026-07-06T14:08:20Z","completed_at":null},{"number":5,"name":"Post Lint","status":"queued","conclusion":null,"started_at":null,"completed_at":null}]},
 {"id":903,"name":"vet","status":"queued","conclusion":null,"steps":[]}]}`
 	const doneJobs = `{"total_count":2,"jobs":[
 {"id":902,"name":"lint","status":"completed","conclusion":"failure","steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success"},{"number":2,"name":"Lint","status":"completed","conclusion":"failure"}]},
@@ -629,8 +629,15 @@ func TestGitHubPipelineReadsStepsOnlyForFollowedJobs(t *testing.T) {
 	if got := rest(); len(got) != 1 || got[0] != "repos/o/r/actions/runs/222/jobs?per_page=100" {
 		t.Fatalf("REST calls = %v, want one jobs list of run 222", got)
 	}
-	if lint := FindCIJob(first, "902"); len(lint.Steps) != 2 || lint.Steps[1].Name != "Lint" || lint.Steps[1].Status != CIStatusRunning {
-		t.Fatalf("lint steps = %+v", lint.Steps)
+	// Steps keep GitHub's numbers, gaps included, and their times; a time
+	// the API has not set yet is empty.
+	wantSteps := []CIStep{
+		{Number: 1, Name: "Set up job", Status: CIStatusSuccess, StartedAt: "2026-07-06T14:08:19Z", CompletedAt: "2026-07-06T14:08:20Z"},
+		{Number: 4, Name: "Lint", Status: CIStatusRunning, StartedAt: "2026-07-06T14:08:20Z"},
+		{Number: 5, Name: "Post Lint", Status: CIStatusPending},
+	}
+	if lint := FindCIJob(first, "902"); !slices.Equal(lint.Steps, wantSteps) {
+		t.Fatalf("lint steps = %+v, want %+v", lint.Steps, wantSteps)
 	}
 	if FindCIJob(first, "903").Steps != nil || FindCIJob(first, "901").Steps != nil {
 		t.Fatalf("an unfollowed job carries steps: %+v", first.Stages)

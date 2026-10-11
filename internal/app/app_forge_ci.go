@@ -20,8 +20,9 @@ import (
 // one poller however many panes show it, pauses with them, and emits each
 // observation once. Cadence follows what can still change: nothing while
 // every job is terminal (the 45s snapshot re-arms it when the head or the
-// check summary moves), prCILiveInterval while a job is queued or running,
-// prCIFollowInterval while a followed job is live on a forge that serves
+// check summary moves), prCILiveInterval while a job is queued or running
+// (a followed running job's log included, unless its forge streams it),
+// prCIFollowInterval while a followed job is live on a forge that streams
 // running logs or its final log is still being fetched, and
 // prCILogWaitInterval while a completed job's log stays unpublished after
 // the quick tries.
@@ -76,9 +77,8 @@ type PRCIUpdatedEvent struct {
 // must be PrevLen units long) and append Append. A receiver holding
 // anything else missed a frame and asks for the whole text again through
 // SetPRCILogFollows. Available false means the forge cannot serve the log
-// yet: the job is live on a forge that serves logs only after completion,
-// or it completed and its log is not published yet; the text is
-// unchanged. Error is a fetch failure with its kind fields (see
+// yet: it answered 404 (the log is not published yet, which on GitHub
+// lasts a running job's whole run); the text is unchanged. Error is a fetch failure with its kind fields (see
 // PRUpdatedEvent), text unchanged.
 type PRCILogEvent struct {
 	PRKey      string `json:"prKey"`
@@ -144,11 +144,11 @@ func (a *App) fetchPRCILog(ctx context.Context, pr gitops.PRReference, req gitop
 	return a.gitCore().GetCIJobLog(ctx, pr, req)
 }
 
-func (a *App) prCILogWhileRunning(pr gitops.PRReference) bool {
-	if a.prUpdates.ciLogWhileRunning != nil {
-		return *a.prUpdates.ciLogWhileRunning
+func (a *App) prCILogStreams(pr gitops.PRReference) bool {
+	if a.prUpdates.ciLogStreams != nil {
+		return *a.prUpdates.ciLogStreams
 	}
-	return a.gitCore().CILogWhileRunning(pr)
+	return a.gitCore().CILogStreams(pr)
 }
 
 func (a *App) prCILiveInterval() time.Duration {
@@ -185,11 +185,10 @@ func prCIStamp(snapshot prUpdateSnapshot) string {
 // shortest cadence anything still changing asks for. retry is the loop's
 // doubling delay while the pipeline fetch fails, reset here once it
 // succeeds. A rate-limited pipeline or log waits for its failure's
-// release instead. A live followed job on a forge that serves logs only
-// after completion asks nothing of its own: the pipeline's live cadence
-// carries its steps.
+// release instead. A live followed job's log is asked for at the follow
+// cadence where the forge streams it, and at the live cadence elsewhere.
 func (a *App) prCIInterval(pump *prUpdatePump, retry *time.Duration) time.Duration {
-	whileRunning := a.prCILogWhileRunning(pump.pr)
+	streams := a.prCILogStreams(pump.pr)
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	if pump.ciFail.rateLimited() {
@@ -219,8 +218,10 @@ func (a *App) prCIInterval(pump *prUpdatePump, retry *time.Duration) time.Durati
 			consider(a.prCIFollowInterval())
 		case follow.pendingFinal:
 			consider(a.prCILogWaitInterval())
-		case follow.wasLive && whileRunning:
+		case follow.wasLive && streams:
 			consider(a.prCIFollowInterval())
+		case follow.wasLive:
+			consider(a.prCILiveInterval())
 		}
 	}
 	if pump.ciKnown && gitops.CIPipelineLive(pump.ci) {
@@ -320,10 +321,6 @@ func (a *App) pollPRCI(ctx context.Context, pump *prUpdatePump) (PRCIUpdatedEven
 // from the pipeline the pump holds.
 type prCILogPlan struct {
 	jobID string
-	// fetch asks for the trace; unavailable records that the job is live
-	// on a forge without running logs (nothing to fetch, state to emit).
-	fetch       bool
-	unavailable bool
 	// live is the job's liveness the plan was made from.
 	live bool
 	// etag is the validator of the text the follow holds, sent with the
@@ -336,7 +333,6 @@ type prCILogPlan struct {
 // (an RPC's) are fetched whatever their state; any other job held by a
 // rate limit waits for its release.
 func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[string]bool) []PRCILogEvent {
-	whileRunning := a.prCILogWhileRunning(pump.pr)
 	now := time.Now()
 	a.prUpdates.mu.Lock()
 	if pump.dead || len(pump.follows) == 0 {
@@ -360,18 +356,12 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 		}
 		held := !forced[jobID] && now.Before(follow.fail.release)
 		switch {
-		case live && !whileRunning:
-			// Nothing to fetch; record the state once (and over an error
-			// a fetch made before the pipeline said the job was live).
-			if !follow.fetched || follow.available || follow.fail.failing() {
-				plans = append(plans, prCILogPlan{jobID: jobID, unavailable: true, live: true})
-			}
 		case held:
 		case live:
-			plans = append(plans, prCILogPlan{jobID: jobID, fetch: true, live: true, etag: etag})
+			plans = append(plans, prCILogPlan{jobID: jobID, live: true, etag: etag})
 		default:
 			if forced[jobID] || !follow.fetched || follow.pendingFinal || follow.fail.rateLimited() {
-				plans = append(plans, prCILogPlan{jobID: jobID, fetch: true, etag: etag})
+				plans = append(plans, prCILogPlan{jobID: jobID, etag: etag})
 			}
 		}
 	}
@@ -385,9 +375,7 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 	results := make([]fetched, 0, len(plans))
 	for _, plan := range plans {
 		result := fetched{plan: plan}
-		if plan.fetch {
-			result.log, result.err = a.fetchPRCILog(ctx, pump.pr, gitops.CIJobLogRequest{JobID: plan.jobID, ETag: plan.etag})
-		}
+		result.log, result.err = a.fetchPRCILog(ctx, pump.pr, gitops.CIJobLogRequest{JobID: plan.jobID, ETag: plan.etag})
 		results = append(results, result)
 	}
 
@@ -406,13 +394,6 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 		}
 		frame := PRCILogEvent{PRKey: pump.prKey, JobID: jobID}
 		switch {
-		case result.plan.unavailable:
-			follow.fetched = true
-			follow.available = false
-			follow.fail = prForgeFailure{}
-			follow.seq = a.nextPRUpdateSeqLocked()
-			frame.PrevLen = utf16Len(follow.text)
-			frame.Base = frame.PrevLen
 		case result.err == nil && result.log.NotModified:
 			// The log is the text the follow holds; only a failure or an
 			// unavailable state it showed over that text changes.
@@ -448,17 +429,23 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 			follow.seq = a.nextPRUpdateSeqLocked()
 			frame.PrevLen, frame.Base, frame.Append = prevLen, base, appended
 			frame.Available = true
-		case errors.Is(result.err, gitops.ErrCIJobLogNotFound) && !result.plan.live:
-			// The forge has not published the completed job's log yet. That
-			// is a wait, not a failure: the follow keeps asking at the pace
-			// prCIInterval sets, a forced fetch included, and shows the job
-			// as waiting for its log.
+		case errors.Is(result.err, gitops.ErrCIJobLogNotFound):
+			// The forge has not published the job's log yet: GitHub answers
+			// 404 until the log blob exists, which in practice is once the
+			// job completed, while the API can still report it running.
+			// That is a wait, not a failure: the follow keeps asking at the
+			// pace prCIInterval sets (the live cadence while the job is
+			// live, the final tries and then the wait cadence once it
+			// completed), a forced fetch included, and shows the job as
+			// waiting.
 			shown := follow.fetched && !follow.available && !follow.fail.failing()
 			follow.fetched = true
 			follow.available = false
 			follow.fail = prForgeFailure{}
-			follow.pendingFinal = true
-			follow.finalAttempts++
+			if !result.plan.live {
+				follow.pendingFinal = true
+				follow.finalAttempts++
+			}
 			if shown {
 				continue
 			}

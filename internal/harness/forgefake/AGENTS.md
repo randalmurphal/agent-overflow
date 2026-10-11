@@ -120,7 +120,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head)` | open PR lookup (checkout origin) |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
 | GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run; `Link` rel="next" while more pages exist |
-| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (404 while the job is running or pending, as the real endpoint, and while the job sets `logWithheld`); answered directly where the real endpoint redirects to its log blob, with the blob's ETag behavior |
+| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists, which for a running job is its whole run; a running job with a log models the jobs API still reporting a completed job running); answered directly where the real endpoint redirects to its log blob, with the blob's ETag behavior |
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail |
@@ -152,6 +152,14 @@ POST and discussion resolve PUT.
   wants the detail; a reseed changes it on the next read.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
+- A job's `log` is served as the forge would serve it, and the app's log
+  view splits it into rows from what it carries. A GitHub log splits by
+  its steps: give each line its own time prefix
+  (`2026-01-01T00:00:04.0000000Z text`) and each started step its
+  `startedAt`, or the lines stay in one row for the job. A GitLab log is
+  the raw trace: write section markers as the runner does
+  (`section_start:<unix>:<name>\r\x1b[0K<header>`), and the app's trace
+  cleaner turns them into sections.
 
 Run `go test ./internal/harness/forgefake ./cmd/ao-mockforge` after a
 change here, and the Playwright specs that seed a forge

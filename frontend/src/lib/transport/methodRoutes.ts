@@ -343,6 +343,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2960563266: 'selected', // SaveForgeAttachment
 	1040176720: 'selected', // SaveLocalImage
 	1537914193: 'selected', // SavePRCIJobLog
+	1281545488: 'selected', // SavePRCIJobLogSection
 	3576148797: 'thread', // SavePayloadToFile
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
