@@ -14,7 +14,7 @@
   import { createUsageStats, type UsageStats } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { displayUsageModelLabel } from '../../utils/modelLabels';
-  import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
+  import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import { composerTriggerClasses } from './triggerClasses';
   import { activityRailChipClasses } from './activityRailClasses';
   import Popover from '../primitives/Popover.svelte';
@@ -84,12 +84,8 @@
   // `costSource` is set only when a PROVIDER priced this thread itself and
   // its figure replaced AO's rate-table arithmetic wholesale (Codex >= 0.148
   // — see app_usage.go's overlay). Empty means the ordinary composition, so
-  // the hint appears only when the number on screen is somebody else's.
+  // the Codex labels appear only when the number on screen is somebody else's.
   let providerEstimated = $derived(lifetimeBucket?.costSource === 'provider-estimate');
-  let accountingPending = $derived((lifetimeBucket?.pendingRows ?? 0) > 0);
-  let chipTitle = $derived(lifetime.error ?? (accountingPending
-    ? 'Latest reported tokens; cost accounting is still pending'
-    : providerEstimated ? 'Cost estimated by Codex; billing may still be settling' : USAGE_COST_EXPLANATION));
 
   let chipLabel = $derived.by(() => {
     if (!lifetimeBucket) return '';
@@ -137,7 +133,7 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     data-testid="usage-chip-trigger"
-    title={chipTitle}
+    title={lifetime.error ?? undefined}
     class="{triggerClasses} tabular-nums"
   >
     {chipLabel}
@@ -168,10 +164,6 @@
           </div>
         {/if}
 
-        <p class="mt-2 max-w-xs text-xs text-fg-hint">{providerEstimated ? 'Cost estimated by Codex; billing may still be settling. Model totals below use standard token rates.' : USAGE_COST_EXPLANATION}</p>
-        {#if accountingPending}
-          <p class="mt-2 text-xs text-fg-hint">Latest reported tokens. Cost accounting is still pending.</p>
-        {/if}
         {#if lifetime.error || models.error}
           <p role="status" class="mt-2 text-xs text-fg-hint">{lifetime.error ?? models.error}</p>
         {/if}

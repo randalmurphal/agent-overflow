@@ -1,7 +1,5 @@
 import { formatUsd } from './format';
 
-export const USAGE_COST_EXPLANATION = 'Estimated cost from provider reports or standard token rates. May differ from billing; missing prices are excluded.';
-
 /**
  * Formats a bucket's cost for display, or returns `null` when the cost
  * segment should be omitted entirely.
