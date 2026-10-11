@@ -149,6 +149,28 @@ test('touch unlock preserves view-only access across tabs, reload and reopening'
   expect((await session(reopened)).sessionId).toBe(before.sessionId);
 });
 
+test('an unlock pressed before the backend answers waits for its answer', async ({ lockedBrowser, context }) => {
+  const second = await context.newPage();
+  let held = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await second.route(/\/bootstrap\.json/, async (route) => {
+    held++;
+    await released;
+    await route.continue();
+  });
+  await second.goto(lockedBrowser.page.url());
+  await expectCovered(second);
+  // The cover is up while the manifest that says whether this backend
+  // offers passkeys is still in flight.
+  await expect.poll(() => held).toBeGreaterThan(0);
+  await second.getByRole('button', { name: 'Unlock', exact: true }).tap();
+  release();
+  await expect(second.getByTestId('app-lock')).toHaveCount(0);
+  await expect(second.getByRole('alert')).toHaveCount(0);
+  await second.close();
+});
+
 test('background grace, canceled verification and returning through browser history stay locked when owed', async ({ lockedBrowser }) => {
   const { page } = lockedBrowser;
   const start = Date.now();
