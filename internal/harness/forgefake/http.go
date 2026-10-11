@@ -120,18 +120,22 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case inv.Unhandled:
 		inv.Detail = fmt.Sprintf("ao-mockforge: unhandled http request (%s): %s %s. Add a handler in internal/harness/forgefake (see its AGENTS.md).", resp.unhandled, r.Method, inv.Path)
-		out = []byte(inv.Detail + "\n")
-		header = http.Header{"Content-Type": {"text/plain; charset=utf-8"}}
 	case status >= 400:
 		inv.Detail = strings.TrimSpace(resp.stderr)
 	}
 	e.record(inv)
 
+	if inv.Unhandled {
+		// The detail names the request's own path: it goes out as plain
+		// text through http.Error, never as a body a browser could sniff.
+		http.Error(w, inv.Detail, status)
+		return
+	}
 	for name, values := range header {
 		w.Header()[name] = values
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if body := resp.body; body != nil && !inv.Unhandled && (status == http.StatusOK || status == http.StatusPartialContent) {
+	if body := resp.body; body != nil && (status == http.StatusOK || status == http.StatusPartialContent) {
 		// A job log is written here, outside the engine's lock, from the
 		// values its handler copied.
 		from, to := int64(0), body.size()
