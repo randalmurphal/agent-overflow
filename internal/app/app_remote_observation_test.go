@@ -2,10 +2,10 @@ package app
 
 import (
 	"context"
-	"errors"
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,7 +134,7 @@ func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *te
 			if lateReply {
 				w.Receipt.State = "failed"
 				w.Receipt.Output = "obsolete output"
-				if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+				if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -157,32 +157,40 @@ func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *te
 // A thread action lock another operation holds costs a completion one poll,
 // never the whole watcher tick: the wait is bounded by the check context and
 // the watch stays pending for the next pass.
-func TestRemoteCompletionDeliveryWaitIsBounded(t *testing.T) {
+// A completion is accepted while the thread's action lock is held, as a
+// send or a session start holds it, and the session start it needs waits
+// for the lock instead of the completion.
+func TestRemoteCompletionQueuesWhileTheThreadIsBusy(t *testing.T) {
 	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
-	a.startSessionFn = func(string) error { return nil }
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
 	thread := remoteWatchThread(t, a, string(provider.Codex))
 	w := completedRemoteWatch(t, a, thread)
 	unlock := a.threadLocks().Lock(thread.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 	began := time.Now()
-	err := a.deliverRemoteCompletion(ctx, w, remoteCompletionOutput{Tail: w.Receipt.Output})
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(began) > 2*time.Second {
-		t.Fatalf("held action lock did not bound delivery: %v after %s", err, time.Since(began))
-	}
-	if saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "pending" {
-		t.Fatalf("deferred delivery changed the watch: %+v %v", saved, err)
-	}
-	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
-		t.Fatalf("queued without the lock: %+v", rows)
-	}
-	unlock()
-	if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+	if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 		t.Fatal(err)
 	}
+	if elapsed := time.Since(began); elapsed > 2*time.Second {
+		t.Fatalf("delivery waited %s on the held lock", elapsed)
+	}
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {
-		t.Fatalf("released lock did not deliver: %+v", rows)
+		t.Fatalf("not queued while the lock was held: %+v", rows)
+	}
+	if saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" {
+		t.Fatalf("watch after delivery: %+v %v", saved, err)
+	}
+	if n := starts.Load(); n != 0 {
+		t.Fatalf("started %d sessions through a held lock", n)
+	}
+	unlock()
+	a.waitAgentNoticeWork()
+	if n := starts.Load(); n != 1 {
+		t.Fatalf("started %d sessions once the lock was released, want 1", n)
 	}
 }
 

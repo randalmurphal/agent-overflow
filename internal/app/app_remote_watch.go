@@ -289,9 +289,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	w.Receipt = receipt
 	output := a.remoteCompletionExcerpt(ctx, w.ComputerID, w.RequestID, receipt)
-	// An expired context means the action lock stayed busy; the scheduled
-	// recheck above retries without reporting a transient wait as an error.
-	if err = a.deliverRemoteCompletion(ctx, w, output); err != nil && ctx.Err() == nil {
+	if err = a.deliverRemoteCompletion(w, output); err != nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
 }
@@ -329,10 +327,10 @@ func (a *App) remoteCompletionExcerpt(ctx context.Context, computerID, requestID
 }
 
 // deliverRemoteCompletion queues the finished job's report for its thread.
-// The excerpt is fetched before this call because the thread lock must never
-// be held across the destination network; ctx bounds only the lock wait.
-func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, output remoteCompletionOutput) error {
-	return a.queueAgentNotice(ctx, agentNotice{
+// The excerpt is fetched before this call, so the queue write never waits on
+// the destination network.
+func (a *App) deliverRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) error {
+	return a.queueAgentNotice(agentNotice{
 		threadID: w.ThreadID,
 		sendID:   remoteCompletionSendID(w),
 		prepare:  func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
@@ -347,9 +345,9 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 	})
 }
 
-// prepareRemoteCompletion is this notice's own policy, run under the thread
-// lock: whether the completion is still owed, and what it says. Every read it
-// makes can have changed while the lock was being taken.
+// prepareRemoteCompletion is this notice's own policy: whether the
+// completion is still owed, and what it says. Every read it makes can have
+// changed since the watcher observed the receipt.
 func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) (string, bool, error) {
 	current, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
 	if err != nil {

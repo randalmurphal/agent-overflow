@@ -9,8 +9,11 @@ package store
 // them, and the sweep rebuilds its schedule from these rows at every boot.
 // `last_output` keeps the body of a watch's most recent wake that never
 // reached the agent, so the agent can read the event it missed.
-// Both cascade from their thread, so a deleted thread takes its agent row,
-// loops and watches with it.
+// `session_start_failures` marks a thread whose session, started for a
+// message the app queued, failed to start and raised the start-failure
+// notification, so the first start that succeeds withdraws it even after a
+// restart. All three cascade from their thread, so a deleted thread takes
+// its agent row, loops, watches and mark with it.
 const standingAgentsMigrationVersion = 143
 
 const standingAgentsV143SQL = `
@@ -40,4 +43,8 @@ CREATE TABLE agent_wakes (
     created_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_agent_wakes_due ON agent_wakes(state, next_at);
+CREATE TABLE session_start_failures (
+    thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    failed_at        INTEGER NOT NULL
+);
 `

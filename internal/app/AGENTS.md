@@ -98,7 +98,13 @@ apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
 (`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
-delivery mark in one store transaction. Settling runs off the provider event
+delivery mark in one store transaction. Every message the app writes into
+a thread for someone else goes through `queueAgentNotice`
+(`app_agent_notice.go`): it is accepted once queued, without the action
+lock, and the session start it needs runs afterwards on joined notice
+work. Nobody watches that start, so its failure notifies, once per run
+of failures, as well as writing the error row, and a later loop or watch
+fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
 worker's queue.
 

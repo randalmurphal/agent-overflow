@@ -903,9 +903,9 @@ export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
 
 /**
  * DemoteStandingAgent removes a thread's standing agent row and cancels its
- * watches, which only a standing agent may keep. Its loops stay, since any
- * thread may keep one, and its home stays on disk. Demoting a thread that is
- * not a standing agent does nothing.
+ * watches, which only a standing agent may keep, withdrawing their queued
+ * wakes. Its loops stay, since any thread may keep one, and its home stays on
+ * disk. Demoting a thread that is not a standing agent does nothing.
  */
 export function DemoteStandingAgent(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2416251970, threadID);
@@ -4593,11 +4593,12 @@ export function SendDiffReviewComments(threadID: string, scope: string, sourceKe
 
 /**
  * SendExternalThreadMessage queues text a script outside the app sent with
- * `agent-overflow thread send` to a thread on this computer. It is delivered
- * as a wake is: badged as an outside send, quoted as data and capped, and a
- * thread with no live session starts one.
+ * `agent-overflow thread send` to a thread on this computer, and returns the
+ * message's send id. It is delivered as a wake is: badged as an outside
+ * send, quoted as data and capped, and a thread with no live session starts
+ * one. It returns once the message is queued, not once a session is up.
  */
-export function SendExternalThreadMessage(threadID: string, text: string): $CancellablePromise<void> {
+export function SendExternalThreadMessage(threadID: string, text: string): $CancellablePromise<string> {
     return $Call.ByID(2956817699, threadID, text);
 }
 

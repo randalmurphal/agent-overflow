@@ -286,7 +286,28 @@ Limits, enforced at registration:
 
 Delivery queues the wake into the thread's message queue through the
 path `thread_remind` uses today, so a thread with no live session starts
-one headless. The queued message is badged with the wake's kind and
+one headless. A wake is delivered once it is queued: the queue write
+never waits on the thread's action lock or on a session start, and the
+start runs after it. A start that fails leaves an error row and the
+wake queued for the next start, and raises an error notification
+naming the thread (`session-start:<thread>`), which the thread's next
+successful session start withdraws, after a restart too: the thread is
+marked in `session_start_failures` until then. Every message the app queues for someone else
+and starts a session for (a wake, an outside send, a reminder or an
+answer, a remote job's completion, a worker's prompt) does the same.
+The notification is raised once per run of failed starts. A failed
+start does not stall a loop or watch: each later fire that finds its
+previous wake still queued with no live session tries the start again,
+no sooner than half the 60-second floor after the last try, and writes
+no further row while the start keeps failing. When the start succeeds,
+the waiting wake and the new one are both delivered. Archiving a thread
+takes its queued wakes, outside sends and workers' prompts back out of
+the queue, and cancelling a loop or watch (by label, by demotion or by
+a move) takes back its queued wakes, whether or not a session is live,
+so no later start delivers them; a message a session has already taken
+is the session's. A message that could not be taken back is reported to
+the caller.
+The queued message is badged with the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
 no approval or user authority. The timeline and the send queue show its
 quoted data decoded; the agent reads it escaped. A wake that arrives
@@ -310,7 +331,8 @@ unconfirmed by a session that ended, is discarded and its row records
 (capped at 64 KiB), which `thread_status` shows, so the agent can
 recover the event at its next wake; a loop needs nothing beyond the
 row. An outside `thread send` message is handled the same way, with a
-`not delivered` row in the thread's timeline.
+`not delivered` row in the thread's timeline; so is one a Stop, an
+archive or a revert takes out of the queue.
 
 Restart rules:
 
@@ -351,8 +373,9 @@ Thread tools:
 An outside poke, `agent-overflow thread send <thread-id> <text>`, queues
 a message to a local thread through the same badged, untrusted path, for
 scripts run by anything other than the supervisor. It is a CLI verb
-because its caller is not a session. It refuses an archived thread and
-a thread that is not on this computer.
+because its caller is not a session. It returns once the message is
+queued, printing its send id, and never waits for a session start. It
+refuses an archived thread and a thread that is not on this computer.
 
 ### Activity rail
 

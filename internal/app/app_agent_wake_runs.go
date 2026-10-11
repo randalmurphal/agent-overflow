@@ -236,6 +236,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			return
 		}
 		if outcome, wakes := result.outcome(agentWatchTimeout(row)); !wakes {
+			a.retryHeldAgentWake(row)
 			a.finishAgentWakeFire(run, row, outcome, "", fire.missed)
 			return
 		}

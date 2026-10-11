@@ -163,30 +163,44 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, workerID, requestI
 		kind = workerPromptKindApproval
 	}
 	body := renderWorkerPromptWake(worker.Title, workerID, prompt)
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), agentWakeLockTimeout)
-	defer cancel()
 	var abandoned error
-	err = a.queueAgentNotice(ctx, agentNotice{
+	// The user may have answered, and the agent may have been archived,
+	// before the prompt is queued and again before a session is started
+	// for it.
+	agentArchived := func() (bool, error) {
+		agent, err := a.store.GetThread(route.ThreadID)
+		if err != nil {
+			return false, fmt.Errorf("read the thread: %w", err)
+		}
+		return agent.Archived, nil
+	}
+	err = a.queueAgentNotice(agentNotice{
 		threadID:   route.ThreadID,
 		sendID:     prompt.sendID(),
 		origin:     usermessage.OriginAgentWake,
 		originWake: &usermessage.OriginWake{Kind: kind, Label: worker.Title, ThreadID: workerID},
-		// Re-checked under the agent's lock: the user may have answered,
-		// and the agent may have been archived meanwhile.
 		prepare: func() (string, bool, error) {
 			if !a.workerPrompts.isRouted(prompt.token) {
 				return "", false, nil
 			}
-			agent, err := a.store.GetThread(route.ThreadID)
+			archived, err := agentArchived()
 			if err != nil {
 				return "", false, err
 			}
-			if agent.Archived {
+			if archived {
 				abandoned = errors.New("the agent is archived")
 				return "", false, nil
 			}
 			return body, true, nil
 		},
+		keep: func() (bool, error) {
+			if !a.workerPrompts.isRouted(prompt.token) {
+				return false, nil
+			}
+			archived, err := agentArchived()
+			return !archived, err
+		},
+		withdrawn: func() { a.handBackWorkerPrompt(prompt) },
 		startFailed: func(err error) string {
 			return fmt.Sprintf("Thread %q is waiting on your answer and its prompt is queued here, but this thread's agent could not start: %v", worker.Title, err)
 		},
@@ -208,9 +222,7 @@ func (a *App) settleWorkerPrompt(workerID, requestID string) {
 	if !settled {
 		return
 	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), agentWakeLockTimeout)
-	defer cancel()
-	if _, err := a.removeQueuedItem(ctx, prompt.agentID, prompt.sendID()); err != nil {
+	if _, err := a.removeQueuedItem(a.lifeCtx(), prompt.agentID, prompt.sendID()); err != nil {
 		log.Printf("worker prompts: withdraw the wake for %s of %s: %v", requestID, workerID, err)
 	}
 }

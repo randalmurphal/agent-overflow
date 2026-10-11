@@ -125,7 +125,7 @@ func TestFlushQueueItemsAreScopedToTheirThread(t *testing.T) {
 		t.Fatalf("delete empty id: %v", err)
 	}
 
-	if err := s.DeleteFlushQueueItemsForThread("thread-a"); err != nil {
+	if err := s.DeleteFlushQueueItemsForThread("thread-a", ""); err != nil {
 		t.Fatalf("delete thread: %v", err)
 	}
 	remaining, err := s.ListFlushQueueItems("thread-a")
@@ -178,5 +178,36 @@ func TestFlushQueueItemInsertRefusesAnUnidentifiedRow(t *testing.T) {
 	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:x", Message: "x"}); err == nil {
 		t.Fatal("expected an error for a row with no thread")
+	}
+}
+
+// A wholesale drop can keep the rows under one send id prefix for their
+// owner to remove, and of two removals of one row only one finds it.
+func TestDropKeepsAPrefixAndRemoveReportsWhoRemoved(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	for _, row := range []FlushQueueItem{
+		{ID: "queue:1", ThreadID: "thread-a", SendID: "person-1", Message: "mine", EnqueuedAt: 1},
+		{ID: "queue:2", ThreadID: "thread-a", SendID: "agent-send:x", Message: "outside", EnqueuedAt: 2},
+		{ID: "queue:3", ThreadID: "thread-a", Message: "no id", EnqueuedAt: 3},
+		{ID: "queue:4", ThreadID: "thread-a", SendID: "agent-wake:w:1", Message: "wake", EnqueuedAt: 4},
+	} {
+		if err := s.InsertFlushQueueItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+	if err := s.DeleteFlushQueueItemsForThread("thread-a", "agent-send:"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	rows, err := s.ListFlushQueueItems("thread-a")
+	if err != nil || len(rows) != 1 || rows[0].ID != "queue:2" {
+		t.Fatalf("kept %+v %v, want only the agent-send row", rows, err)
+	}
+	if removed, err := s.RemoveFlushQueueItem("queue:2"); err != nil || !removed {
+		t.Fatalf("first remove: %v %v", removed, err)
+	}
+	if removed, err := s.RemoveFlushQueueItem("queue:2"); err != nil || removed {
+		t.Fatalf("second remove: %v %v", removed, err)
 	}
 }

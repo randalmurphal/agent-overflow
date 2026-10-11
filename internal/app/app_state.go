@@ -195,3 +195,18 @@ type appMarkThreadReadState struct {
 	stopped bool
 	wg      sync.WaitGroup
 }
+
+// appAgentNoticeWorkState joins what a notice runs after it is accepted
+// (`app_agent_notice.go`). stopped is set under mu, which is also where the
+// work registers, so none can register after Shutdown began its join.
+type appAgentNoticeWorkState struct {
+	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
+	// failing is the threads whose last notice start failed and that have
+	// not started since, with when that start was tried. Each holds the
+	// start-failure notification. The store keeps the same set
+	// (session_start_failures), and boot loads it, so a start after a
+	// restart withdraws a notification raised before it.
+	failing map[string]time.Time
+}

@@ -63,8 +63,8 @@ func TestStandingAgentsMigration(t *testing.T) {
 		}
 	}
 	slices.Sort(added)
-	if want := []string{"agent_wakes", "idx_agent_wakes_due", "sqlite_autoindex_agent_wakes_1",
-		"sqlite_autoindex_standing_agents_1", "standing_agents"}; !slices.Equal(added, want) {
+	if want := []string{"agent_wakes", "idx_agent_wakes_due", "session_start_failures", "sqlite_autoindex_agent_wakes_1",
+		"sqlite_autoindex_session_start_failures_1", "sqlite_autoindex_standing_agents_1", "standing_agents"}; !slices.Equal(added, want) {
 		t.Errorf("v%d added %v, want %v", standingAgentsMigrationVersion, added, want)
 	}
 
@@ -107,12 +107,18 @@ func TestStandingAgentsMigration(t *testing.T) {
 	}; !slices.Equal(got, want) {
 		t.Errorf("agent_wakes columns:\n got %q\nwant %q", got, want)
 	}
+	if got, want := columns("session_start_failures"), []string{
+		"thread_id|TEXT|0|NULL|1",
+		"failed_at|INTEGER|1|NULL|0",
+	}; !slices.Equal(got, want) {
+		t.Errorf("session_start_failures columns:\n got %q\nwant %q", got, want)
+	}
 	if got, err := queryIDs(db, `SELECT name FROM pragma_index_info('idx_agent_wakes_due') ORDER BY seqno`); err != nil {
 		t.Fatal(err)
 	} else if want := []string{"state", "next_at"}; !slices.Equal(got, want) {
 		t.Errorf("idx_agent_wakes_due columns = %q, want %q", got, want)
 	}
-	for _, table := range []string{"standing_agents", "agent_wakes"} {
+	for _, table := range []string{"standing_agents", "agent_wakes", "session_start_failures"} {
 		got, err := queryIDs(db, `SELECT "table" || '.' || "to" || '|' || on_delete FROM pragma_foreign_key_list('`+table+`')`)
 		if err != nil {
 			t.Fatal(err)
@@ -292,28 +298,37 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	}
 }
 
-// A row's second wake is refused while its first still waits on the queue.
-func TestQueueAgentWakeRefusesASecondQueuedWake(t *testing.T) {
+// A row's wake is refused while more than its allowance of earlier wakes
+// waits on the queue.
+func TestQueueAgentWakeRefusesMoreThanAheadQueuedWakes(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
 	item := func(id, sendID string) FlushQueueItem {
 		return FlushQueueItem{ID: id, ThreadID: "t", SendID: sendID, Message: "m", EnqueuedAt: 1}
 	}
-	if err := s.QueueAgentWake(item("q1", "agent-wake:a:1"), "agent-wake:a:"); err != nil {
+	if err := s.QueueAgentWake(item("q1", "agent-wake:a:1"), "agent-wake:a:", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAgentWake(item("q2", "agent-wake:a:2"), "agent-wake:a:"); !errors.Is(err, ErrAgentWakeStillQueued) {
+	if err := s.QueueAgentWake(item("q2", "agent-wake:a:2"), "agent-wake:a:", 0); !errors.Is(err, ErrAgentWakeStillQueued) {
 		t.Fatalf("second wake: %v, want ErrAgentWakeStillQueued", err)
 	}
-	if err := s.QueueAgentWake(item("q3", "agent-wake:b:1"), "agent-wake:b:"); err != nil {
+	if err := s.QueueAgentWake(item("q3", "agent-wake:b:1"), "agent-wake:b:", 0); err != nil {
 		t.Fatalf("another row's wake: %v", err)
 	}
 	if err := s.DeleteFlushQueueItem("q1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAgentWake(item("q4", "agent-wake:a:3"), "agent-wake:a:"); err != nil {
+	if err := s.QueueAgentWake(item("q4", "agent-wake:a:3"), "agent-wake:a:", 0); err != nil {
 		t.Fatalf("after the first left the queue: %v", err)
+	}
+	// A wake allowed one ahead of it queues behind the waiting one, and no
+	// further.
+	if err := s.QueueAgentWake(item("q5", "agent-wake:a:4"), "agent-wake:a:", 1); err != nil {
+		t.Fatalf("one ahead allowed: %v", err)
+	}
+	if err := s.QueueAgentWake(item("q6", "agent-wake:a:5"), "agent-wake:a:", 1); !errors.Is(err, ErrAgentWakeStillQueued) {
+		t.Fatalf("two ahead with one allowed: %v, want ErrAgentWakeStillQueued", err)
 	}
 }
 

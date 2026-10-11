@@ -63,6 +63,15 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
+			name: "a start the app made on its own failed",
+			got: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+			},
+			kind: KindError, id: "session-start:" + threadID,
+			title: "Fix the parser", body: "The agent could not start. Open the thread to see why.",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
 			name: "approval needed",
 			got: func() (Notification, bool) {
 				return MapApproval(ApprovalMoment{
@@ -172,6 +181,15 @@ func TestEveryRetractionMomentWithdrawsItsOwnNotification(t *testing.T) {
 			},
 		},
 		{
+			name: "starting a session withdraws a failed start",
+			presented: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+			},
+			retracted: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{ThreadID: threadID, FailureRaised: true})
+			},
+		},
+		{
 			name: "answering an approval withdraws its prompt",
 			presented: func() (Notification, bool) {
 				return MapApproval(ApprovalMoment{Thread: thread(), RequestID: "req-7", ToolName: "Bash"})
@@ -242,6 +260,17 @@ func TestOneThreadHoldsOneRestNotification(t *testing.T) {
 	}
 	if completed.Send.Body == failed.Send.Body {
 		t.Fatal("a completed turn and a failed one say the same thing")
+	}
+}
+
+// TestAStartFailureIsNotARestState: a session start retracts a failed start,
+// and must not take a turn's completion with it, so the two ids differ.
+func TestAStartFailureIsNotARestState(t *testing.T) {
+	failed, _ := MapSessionStartFailed(SessionStartFailed{Thread: thread()})
+	completed, _ := MapTurnRest(TurnRest{Thread: thread(), TopLevel: true})
+	started, _ := MapSessionStarted(SessionStarted{ThreadID: threadID, FailureRaised: true})
+	if failed.Send.ID == completed.Send.ID || started.Send.ID == completed.Send.ID {
+		t.Fatalf("a start failure shares the rest id %q", completed.Send.ID)
 	}
 }
 
@@ -319,6 +348,24 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 			},
 		},
 		{
+			name: "a failed start with no thread",
+			got: func() (Notification, bool) {
+				return MapSessionStartFailed(SessionStartFailed{})
+			},
+		},
+		{
+			name: "a session start with no thread",
+			got: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{FailureRaised: true})
+			},
+		},
+		{
+			name: "a session start with no failure to withdraw",
+			got: func() (Notification, bool) {
+				return MapSessionStarted(SessionStarted{ThreadID: threadID})
+			},
+		},
+		{
 			name: "a resumed thread with no id",
 			got: func() (Notification, bool) {
 				return MapThreadResumed(ThreadResumed{})
@@ -382,6 +429,7 @@ func TestRedactionKeepsContentOutOfEveryBody(t *testing.T) {
 			return MapTurnRest(TurnRest{Thread: loud, TopLevel: true, Failed: true})
 		},
 		func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: loud}) },
+		func() (Notification, bool) { return MapSessionStartFailed(SessionStartFailed{Thread: loud}) },
 		func() (Notification, bool) {
 			return MapApproval(ApprovalMoment{Thread: loud, RequestID: "req-7", ToolName: "Bash"})
 		},
@@ -712,6 +760,9 @@ func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
 			return MapTurnRest(TurnRest{Thread: hidden, TopLevel: true, Failed: true})
 		}},
 		{"provider exited", func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: hidden}) }},
+		{"start failed", func() (Notification, bool) {
+			return MapSessionStartFailed(SessionStartFailed{Thread: hidden})
+		}},
 		{"approval needed", func() (Notification, bool) {
 			return MapApproval(ApprovalMoment{Thread: hidden, RequestID: "req-7", ToolName: "Bash"})
 		}},

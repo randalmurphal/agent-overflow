@@ -70,10 +70,11 @@ func threadCommand(args []string, root string, stdout, stderr io.Writer) int {
 		return operationalError(stderr, err)
 	}
 	defer client.Close()
-	if err := client.Call(ctx, "SendExternalThreadMessage", nil, threadID, text); err != nil {
+	var sendID string
+	if err := client.Call(ctx, "SendExternalThreadMessage", &sendID, threadID, text); err != nil {
 		return operationalError(stderr, err)
 	}
-	if err := writeOutput(stdout, fmt.Sprintf("Queued for thread %s.\n", threadID)); err != nil {
+	if err := writeOutput(stdout, fmt.Sprintf("Queued for thread %s as %s.\n", threadID, sendID)); err != nil {
 		return operationalError(stderr, err)
 	}
 	return exitOK

@@ -799,7 +799,9 @@ a body capped at a 24KB preview with a notice pointing at
 `thread_status` with the token, which returns the whole answer.
 Delivered by the
 queued-message path: queued at the turn boundary when the caller is
-live, lazily starting a session otherwise, draft preserved, one durable
+live, lazily starting a session otherwise once the wake is queued (a
+start that fails is an error row in the caller, and the wake stays
+queued), draft preserved, one durable
 transaction inserting the row and marking the request delivered so a
 repeated observation cannot inject it twice. A wake is a message, so an
 idle caller wakes up and runs on its own when it lands, human present
@@ -814,9 +816,9 @@ queued message is; the request then reads `delivered: draft`, distinct
 from `delivered: inline` and `delivered: queued`, and `thread_status`
 still returns the answer.
 
-A wake the settlement could not hand over (a caller thread whose lock
-never came free, a fenced thread, a crash between the two
-transactions) is retried on its own clock, doubling from half a minute
+A wake the settlement could not hand over (a caller thread that could
+not be unarchived, a fenced thread, a failed queue write, a crash
+between the two transactions) is retried on its own clock, doubling from half a minute
 towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
