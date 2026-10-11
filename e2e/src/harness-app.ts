@@ -291,6 +291,16 @@ export class HarnessApp {
    * bound App method (CreateThread, SendMessage, ...) share the wire.
    */
   async rpc<T = unknown>(method: string, ...params: unknown[]): Promise<T> {
+    return await this.rpcWithin<T>(RPC_TIMEOUT_MS, method, ...params);
+  }
+
+  /**
+   * `rpc` with its own deadline, for a call whose work is bounded by the
+   * data it is handed rather than by the wire: a `HarnessSeed` of a whole
+   * large thread writes one history batch, which is what a release
+   * upgrade corpus asks for.
+   */
+  async rpcWithin<T = unknown>(timeoutMs: number, method: string, ...params: unknown[]): Promise<T> {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new Error(`rpc ${method}: WS is not connected`);
@@ -299,8 +309,8 @@ export class HarnessApp {
     const result = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
-        reject(new Error(`rpc ${method} timed out after ${RPC_TIMEOUT_MS}ms`));
-      }, RPC_TIMEOUT_MS);
+        reject(new Error(`rpc ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
     });
     try {

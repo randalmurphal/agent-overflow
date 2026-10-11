@@ -129,7 +129,9 @@ requiring these checks is a repository setting, not part of the tree.
 ## Releases
 
 Use [release candidates](release-candidates.md) for producing, testing and
-promoting saved artifact bytes. Only `scripts/build-release.sh` and the release
+promoting saved artifact bytes. Before a candidate is promoted, the
+[release upgrade check](release-upgrade-check.md) proves it migrates a large
+database the previous release wrote and boots on it. Only `scripts/build-release.sh` and the release
 workflow set `AO_RELEASE_BUILD=1`, which stamps the frontend bundle with the
 bare package version; any other build stamps a dated prerelease of the next
 patch so a paired phone adopts development rebuilds in build order. Every build artifact must survive CI upload
