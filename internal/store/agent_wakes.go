@@ -93,8 +93,8 @@ func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	return row, nil
 }
 
-func collectAgentWakes(rows *sql.Rows, action string) ([]AgentWake, error) {
-	defer rows.Close()
+func collectAgentWakes(rows *sql.Rows, action string) (_ []AgentWake, err error) {
+	defer closeAgentWakeRows(rows, action, &err)
 	var out []AgentWake
 	for rows.Next() {
 		row, err := scanAgentWake(rows)
@@ -107,6 +107,22 @@ func collectAgentWakes(rows *sql.Rows, action string) ([]AgentWake, error) {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	return out, nil
+}
+
+// closeAgentWakeRows closes a read's rows and joins a failed close into the
+// read's error.
+func closeAgentWakeRows(rows *sql.Rows, action string, result *error) {
+	if err := rows.Close(); err != nil {
+		*result = errors.Join(*result, fmt.Errorf("%s: close rows: %w", action, err))
+	}
+}
+
+// rollbackAgentWakeTx ends a transaction its write did not commit and joins a
+// failed rollback into the write's error.
+func rollbackAgentWakeTx(tx *sql.Tx, action string, result *error) {
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		*result = errors.Join(*result, fmt.Errorf("%s: rollback: %w", action, err))
+	}
 }
 
 func nullableMillis(value int64) any {
@@ -126,7 +142,7 @@ func nullableMillis(value int64) any {
 // beside the first. The new schedule and command apply from the next run. A
 // long-running watch's process is the caller's to stop and restart, so its
 // row is armed like any other.
-func (s *Store) RegisterAgentWake(w AgentWake) (AgentWake, error) {
+func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 	action := fmt.Sprintf("store: register %s %q on %s", w.Kind, w.Label, w.ThreadID)
 	if w.ID == "" || w.ThreadID == "" || strings.TrimSpace(w.Label) == "" {
 		return AgentWake{}, fmt.Errorf("%s: id, thread and label are required", action)
@@ -138,7 +154,7 @@ func (s *Store) RegisterAgentWake(w AgentWake) (AgentWake, error) {
 	if err != nil {
 		return AgentWake{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer rollbackAgentWakeTx(tx, action, &err)
 
 	existing, found, err := agentWakeByLabelTx(tx, w.ThreadID, w.Label)
 	if err != nil {
@@ -343,13 +359,13 @@ func (s *Store) NoteAgentWakeOutcome(id, outcome string) (bool, error) {
 // CancelAgentWake cancels one thread's live row by label and returns it as it
 // was. An empty kind matches either kind. Not found is no live row of that
 // kind under that label.
-func (s *Store) CancelAgentWake(threadID, label, kind, outcome string) (AgentWake, bool, error) {
+func (s *Store) CancelAgentWake(threadID, label, kind, outcome string) (_ AgentWake, _ bool, err error) {
 	action := fmt.Sprintf("store: cancel %q on %s", label, threadID)
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return AgentWake{}, false, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer rollbackAgentWakeTx(tx, action, &err)
 	row, found, err := agentWakeByLabelTx(tx, threadID, label)
 	if err != nil {
 		return AgentWake{}, false, fmt.Errorf("%s: %w", action, err)
@@ -370,7 +386,7 @@ func (s *Store) CancelAgentWake(threadID, label, kind, outcome string) (AgentWak
 // CancelAgentWakesForThread cancels every live row of one thread, or every
 // live row of one kind when kind is set, and returns the ids it cancelled so
 // the caller can stop their processes.
-func (s *Store) CancelAgentWakesForThread(threadID, kind, outcome string) ([]string, error) {
+func (s *Store) CancelAgentWakesForThread(threadID, kind, outcome string) (_ []string, err error) {
 	action := fmt.Sprintf("store: cancel agent wakes for %s", threadID)
 	rows, err := s.db.Query(`UPDATE agent_wakes SET state = 'cancelled', next_at = NULL, last_outcome = ?
 		WHERE thread_id = ? AND state <> 'cancelled' AND (? = '' OR kind = ?) RETURNING id`,
@@ -378,7 +394,7 @@ func (s *Store) CancelAgentWakesForThread(threadID, kind, outcome string) ([]str
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	defer rows.Close()
+	defer closeAgentWakeRows(rows, action, &err)
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -409,7 +425,7 @@ func (s *Store) changeAgentWake(action, query string, args ...any) (bool, error)
 // ErrAgentWakeStillQueued while an earlier wake of the same row (any send id
 // under sendIDPrefix) is still waiting for the provider. The check and the
 // insert are one transaction, so two fires cannot both pass it.
-func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string) error {
+func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string) (err error) {
 	action := fmt.Sprintf("store: queue agent wake %s", item.SendID)
 	if sendIDPrefix == "" || !strings.HasPrefix(item.SendID, sendIDPrefix) {
 		return fmt.Errorf("%s: send id must carry the wake's prefix", action)
@@ -419,7 +435,7 @@ func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string) error {
 		return fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer release()
-	defer tx.Rollback()
+	defer rollbackAgentWakeTx(tx, action, &err)
 	var pending bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM flush_queue_items
 		WHERE thread_id = ? AND substr(send_id, 1, ?) = ?)`,

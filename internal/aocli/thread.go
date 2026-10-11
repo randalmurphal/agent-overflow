@@ -28,8 +28,7 @@ func threadCommand(args []string, root string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if args[0] != "send" {
-		fmt.Fprintf(stderr, "agent-overflow thread: unknown command %q\n", args[0])
-		_ = writeOutput(stderr, threadUsage)
+		_ = writeOutput(stderr, fmt.Sprintf("agent-overflow thread: unknown command %q\n", args[0])+threadUsage)
 		return exitError
 	}
 	flags := flag.NewFlagSet("agent-overflow thread send", flag.ContinueOnError)
@@ -43,13 +42,11 @@ func threadCommand(args []string, root string, stdout, stderr io.Writer) int {
 			}
 			return exitOK
 		}
-		fmt.Fprintf(stderr, "%s: %v\n", flags.Name(), err)
-		_ = writeOutput(stderr, threadUsage)
+		_ = writeOutput(stderr, fmt.Sprintf("%s: %v\n", flags.Name(), err)+threadUsage)
 		return exitError
 	}
 	if flags.NArg() != 2 {
-		fmt.Fprintf(stderr, "%s: want a thread id and the text, got %d arguments\n", flags.Name(), flags.NArg())
-		_ = writeOutput(stderr, threadUsage)
+		_ = writeOutput(stderr, fmt.Sprintf("%s: want a thread id and the text, got %d arguments\n", flags.Name(), flags.NArg())+threadUsage)
 		return exitError
 	}
 	threadID, text := strings.TrimSpace(flags.Arg(0)), flags.Arg(1)
