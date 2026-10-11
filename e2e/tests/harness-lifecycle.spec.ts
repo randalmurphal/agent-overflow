@@ -290,7 +290,11 @@ test('writes a backend console, launch record and own logs as diagnostics', asyn
 // developer's shell holds provider and service keys. None may reach a
 // backend the suite starts.
 test('a launched backend inherits only the allowlisted environment', async ({}, testInfo) => {
-  const canaries = { AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret' };
+  // AO_HARNESS_KEEP_HOME would make the backend keep HOME. HOME is a
+  // throwaway directory here, so even a backend that kept it would never
+  // see the real one.
+  const fakeHome = await mkdtemp(path.join(tmpdir(), 'ao-harness-fake-home-'));
+  const canaries = { AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret', AO_HARNESS_KEEP_HOME: '1', HOME: fakeHome };
   const previous = Object.fromEntries(Object.keys(canaries).map((name) => [name, process.env[name]]));
   Object.assign(process.env, canaries);
   let harness: Awaited<ReturnType<typeof launchHarness>>;
@@ -303,10 +307,13 @@ test('a launched backend inherits only the allowlisted environment', async ({}, 
     }
   }
   try {
+    // The backend isolated its home rather than keeping HOME.
+    expect(harness.bootstrap.homeDir).toBe(path.join(harness.bootstrap.dataRoot, 'home'));
     if (process.platform === 'linux') {
       // The backend's own exec-time environment, not the launcher's intent.
       const environ = (await readFile(`/proc/${harness.bootstrap.pid}/environ`, 'utf8')).split('\0');
       expect(environ.filter((entry) => entry.includes('canary'))).toEqual([]);
+      expect(environ.filter((entry) => entry.startsWith('AO_HARNESS_KEEP_HOME='))).toEqual([]);
       expect(environ).toContain(`AO_HARNESS_TIMING=${HARNESS_TIMING}`);
       expect(environ).toContain(`PATH=${process.env.PATH}`);
     }
@@ -314,8 +321,10 @@ test('a launched backend inherits only the allowlisted environment', async ({}, 
     await harness.writeDiagnostics(dir);
     const record = await readFile(path.join(dir, 'backend-launch.json'), 'utf8');
     expect(record).not.toContain('canary');
+    expect((JSON.parse(record) as HarnessLaunchRecord).env.AO_HARNESS_KEEP_HOME).toBeUndefined();
   } finally {
     await harness.close();
+    await rm(fakeHome, { recursive: true, force: true });
   }
 });
 
