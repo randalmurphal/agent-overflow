@@ -404,8 +404,12 @@ Each slice is one pull request. Its owner never verifies its own work:
 a fresh verifier re-runs the named proofs on the exact head and attaches
 the evidence before review. Evidence means a Playwright or harness spec
 by name with its run output, screenshots copied out of
-`e2e/test-results` into the pull request, or a described proof against
-the real app with the commands run. Unit tests are not evidence.
+`e2e/test-results`, or a described proof against the real app with the
+commands run. Unit tests are not evidence. Evidence files are never
+committed (`.evidence/` is ignored): they go to a secret gist on the
+author's account and the pull request body links their raw URLs. Nothing
+in them may carry local paths, host names, tokens, real thread titles or
+ticket keys.
 
 | # | Slice | Depends on | Done means | Evidence |
 |---|---|---|---|---|
