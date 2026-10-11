@@ -699,6 +699,14 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		maxBytes = defaultMaxOutputBytes
 	}
 
+	// Taken before the timeout starts, so waiting for another worktree
+	// command does not spend this one's budget.
+	unlockWorktreeAdmin, err := c.lockWorktreeAdmin(spec)
+	if err != nil {
+		return commandResult{}, err
+	}
+	defer unlockWorktreeAdmin()
+
 	parent := spec.ctx
 	if parent == nil {
 		parent = context.Background()
