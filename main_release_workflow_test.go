@@ -204,7 +204,7 @@ func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
 	if err := yaml.Unmarshal(body, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"linux-wsl", "macos", "android", "package"} {
+	for _, name := range []string{"linux-wsl", "macos", "android", "toolchain", "upgrade-check", "package"} {
 		job := workflow.Jobs[name]
 		if job.If != "github.event_name == 'workflow_dispatch'" {
 			t.Errorf("%s must build only manual candidates", name)

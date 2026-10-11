@@ -1,14 +1,17 @@
 # Test a candidate, then publish its bytes
 
 `Release build` has two separate paths. A manual run builds all desktop/server
-artifacts and the signed Android APK, packages them with installation assets,
-and uploads `agent-overflow-release-<version>`. It creates no tag or release.
-Download that artifact from the successful Actions run to test production builds.
-The APK uses the persistent signing key, so it upgrades earlier signed installs.
+artifacts and the signed Android APK, runs the
+[release upgrade check](release-upgrade-check.md) with the Linux headless
+candidate against the newest release's published corpus, packages the
+artifacts with installation assets and the migrated corpus
+(`upgrade-corpus.tar.zst`), and uploads `agent-overflow-release-<version>`.
+It creates no tag or release. Download that artifact from the successful
+Actions run to test production builds. The APK uses the persistent signing
+key, so it upgrades earlier signed installs.
 
 Before dispatch, commit synchronized version metadata and run the local release
-gates, the [release upgrade check](release-upgrade-check.md) included. The
-workflow's optional version input must match those committed files.
+gates. The workflow's optional version input must match those committed files.
 The candidate includes `CANDIDATE.json` identifying the repository, exact commit,
 version, workflow run and attempt; `SHASUMS256` covers it and every install asset.
 Record which run you tested. Candidates are retained for 90 days, subject to the

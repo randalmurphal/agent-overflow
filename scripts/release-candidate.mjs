@@ -9,6 +9,7 @@ const assets = [
   'agent-overflow-linux-amd64', 'agent-overflow-headless-linux-amd64',
   'agent-overflow-wsl-amd64.exe', 'agent-overflow-darwin-arm64.zip',
   'agent-overflow-android.apk', 'install.sh', 'macos-bundle.sh', 'appicon.png',
+  'upgrade-corpus.tar.zst',
 ];
 const manifestName = 'CANDIDATE.json';
 const files = [...assets, manifestName, 'SHASUMS256'].sort();

@@ -644,9 +644,10 @@ e2e e2e-mobile-browser: harness-build
 
 # release-upgrade-check: the candidate migrates the corpus the previous
 # release published, boots on it, tops it up and archives it for the next
-# release (docs/architecture/release-upgrade-check.md). A release gate and
-# an operator tool; the per-PR gate is the upgrade-corpus-coverage spec in
-# make e2e. PREVIOUS_RELEASE picks the release to upgrade from (default:
+# release (docs/architecture/release-upgrade-check.md). A release gate, an
+# operator tool and CI's upgrade-lineage job; every pull request runs the
+# upgrade-corpus-coverage spec in make e2e instead. PREVIOUS_RELEASE picks
+# the release to upgrade from (default:
 # the newest GitHub release); RELEASE_UPGRADE_BOOTSTRAP=1 seeds a synthetic
 # corpus with that release's binary instead of its published corpus, at
 # RELEASE_UPGRADE_SCALE (1 is about 2 GB, 0.02 a smoke slice);

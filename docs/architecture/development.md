@@ -93,7 +93,9 @@ and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
-`AO_E2E_WORKERS`).
+`AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`
+when the change reaches the store, the check or the version
+([release upgrade check](release-upgrade-check.md)).
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
 built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
 browsers with their OS libraries (Chromium as the headless shell the
@@ -129,9 +131,11 @@ requiring these checks is a repository setting, not part of the tree.
 ## Releases
 
 Use [release candidates](release-candidates.md) for producing, testing and
-promoting saved artifact bytes. Before a candidate is promoted, the
-[release upgrade check](release-upgrade-check.md) proves it migrates a large
-database the previous release wrote and boots on it. Only `scripts/build-release.sh` and the release
+promoting saved artifact bytes. The candidate workflow runs the
+[release upgrade check](release-upgrade-check.md) with the candidate's own
+headless binary against the previous release's published corpus, and
+packages the migrated corpus as the candidate's `upgrade-corpus.tar.zst`
+for the next release. Only `scripts/build-release.sh` and the release
 workflow set `AO_RELEASE_BUILD=1`, which stamps the frontend bundle with the
 bare package version; any other build stamps a dated prerelease of the next
 patch so a paired phone adopts development rebuilds in build order. Every build artifact must survive CI upload

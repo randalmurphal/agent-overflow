@@ -1,8 +1,9 @@
 // Release upgrade check (docs/architecture/release-upgrade-check.md): the
 // candidate binary takes a large database the previous release wrote,
 // migrates it through the launcher's real update path, boots on it, and
-// serves its sidebar and threads. Operator-run, never a per-PR gate: the
-// corpus is gigabytes and the run takes minutes to hours.
+// serves its sidebar and threads. A release gate and an operator tool,
+// run per pull request only for changes that reach the store or the check:
+// the corpus is gigabytes and the run takes minutes.
 //
 // Modes, chosen by environment:
 //   AO_RELEASE_UPGRADE_PREVIOUS_BIN=<headless binary of the previous release>

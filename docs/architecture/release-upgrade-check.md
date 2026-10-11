@@ -3,10 +3,9 @@
 `make release-upgrade-check` proves that the candidate build takes a large
 database the previous release wrote, migrates it through the launcher's real
 update path, boots on it, serves its sidebar and threads, and writes its own
-slice of use into it. It is a release gate and an operator tool; it never
-runs per pull request, because the corpus is gigabytes and a run takes
-minutes. What runs per pull request is the coverage gate below, which keeps
-the corpus representative of the schema.
+slice of use into it. It is a release gate and an operator tool, and it runs
+on the pull requests that can break it; every pull request runs the coverage
+gate below, which keeps the corpus representative of the schema.
 
 The check is `e2e/tests/upgrade-corpus.manual.spec.ts` under the manual
 Playwright config, with its helpers and the corpus generator in
@@ -160,6 +159,23 @@ Playwright result; `RELEASE_UPGRADE_REPORT=<file>` writes it elsewhere.
 touches: the mirrored launcher limits, `migrationExceptions`,
 `fingerprintIgnoredTables` and `countIgnoredTables`. Every failure message
 names the entry to add.
+
+## Where it runs
+
+The `Release build` workflow's `upgrade-check` job runs the check on every
+manual candidate, with `AO_HARNESS_BIN` pointing at the candidate's own
+headless Linux binary, against the newest release's published corpus, and
+archives the result. The `package` job carries that archive into the
+candidate as `upgrade-corpus.tar.zst`, so the tag promotes it with the
+rest of the tested bytes and the next release finds it. The job's step
+summary carries the JSON report.
+
+In CI, the `upgrade-lineage` job runs the same check with the pull
+request's build (`bin/agent-overflow`) against the newest release's corpus
+when the change touches `internal/store/`, the check's own sources and
+script, or the version bump (`build/config.yml`, `frontend/package.json`),
+and on `workflow_dispatch`; otherwise its summary records the skip. The
+store coverage gate runs in every `make e2e` shard regardless.
 
 ## Running it
 

@@ -292,6 +292,77 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The release upgrade check against the newest release's published corpus,
+  # for the changes that can break a migration or the check itself. The
+  # per-PR schema coverage gate is a spec inside `make e2e`; this job is the
+  # lineage leg (docs/architecture/release-upgrade-check.md).
+  upgrade-lineage:
+    name: Upgrade lineage check
+    needs: toolchain
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      options: --init --privileged -v /lib/modules:/lib/modules:ro
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Decide whether the change reaches the store or the check
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The store, the check and its config, and the version bump: a
+          # stale migration exception surfaces on the bump, not on the tag.
+          if gh pr diff "$PR" --name-only | grep -Eq '^(internal/store/|e2e/tests/upgrade-corpus|scripts/release-upgrade-check\.sh|build/config\.yml|frontend/package\.json)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No store, check or version change; skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: ./.github/actions/setup
+        if: steps.changed.outputs.run == 'true'
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-deps: "true"
+          e2e-deps: "true"
+          browsers: chromium
+          netns: "true"
+          cache-name: harness
+      - name: Migrate the newest release's corpus with this build
+        if: steps.changed.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: make release-upgrade-check RELEASE_UPGRADE_REPORT="$RUNNER_TEMP/upgrade-report.json"
+      - name: Summarize
+        if: always() && steps.changed.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/upgrade-report.json" ]]; then
+            { echo '```json'; cat "$RUNNER_TEMP/upgrade-report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload failure traces
+        if: failure() && steps.changed.outputs.run == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-lineage
+          path: e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   dependency-review:
     name: Dependency review
     if: github.event_name == 'pull_request'
