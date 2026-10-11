@@ -1385,13 +1385,16 @@ state only; nothing is persisted. The correlation is registered at
 `queued` and survives the wire echo popping the pending-send FIFO, so
 both arrival orders resolve.
 
-### A `command_uuid` the client never minted (verified 2.1.237)
+### A `command_uuid` the client never minted (verified 2.1.237, 2.1.284)
 
 Every `command_uuid` above is one AO stamped on an outbound envelope,
-with ONE exception, and it is the whole tell for a turn this app did not
-ask for. When cross-session messaging is on and a peer's `SendMessage` is
-accepted, the CLI mints its own uuid for the user row it injects and
-opens the bracket with it:
+except for turns the CLI starts itself, and that is the whole tell for a
+turn this app did not ask for. Two producers mint their own uuid: a
+peer's accepted `SendMessage` (below) and a scheduled turn, a
+`CronCreate` job's fire or a `ScheduleWakeup` wake (§E11). When
+cross-session messaging is on and a peer's `SendMessage` is accepted,
+the CLI mints its own uuid for the user row it injects and opens the
+bracket with it:
 
 ```
 command_lifecycle{state:"started", command_uuid:"<CLI-minted>"}
@@ -1403,14 +1406,17 @@ command_lifecycle{state:"completed", command_uuid:"<CLI-minted>"}
 ```
 
 `started` precedes even the `system/init`, so the bracket is the FIRST
-observable of a peer turn. AO keeps a ledger of the uuids it issued
-(`internal/provider/claude/session_peer.go`) and stamps
-`Meta.origin = "peer-session"` on every frame of a bracket whose uuid the
-ledger positively lacks (every frame, not just `started`, so a consumer
-reading the terminal frame reaches the same verdict). The classifier fails
-SAFE: an unknown session or an overflowed ledger reads as ours, because
-labelling the user's own message "from another Claude session" is the
-transcript lying about who asked for what.
+observable of a foreign turn, and it does not say which producer
+started it. AO keeps a ledger of the uuids it issued
+(`internal/provider/claude/session_peer.go`); for a uuid the ledger
+positively lacks, the bracket's frames carry `Meta.origin` only once the
+turn's own user row names the cause under the same uuid: the peer echo
+above (`peer-session`) or the scheduled mirror row (`scheduled`, §E11).
+`started` therefore carries none, and the terminal frame carries the
+proven origin. The classifier fails SAFE: an unknown session or an
+overflowed ledger reads as ours, because labelling the user's own message
+"from another Claude session" is the transcript lying about who asked for
+what. The user rows, not the bracket, are what the timeline renders.
 
 Observed states for a peer turn are `started` and `completed` only. No
 `queued` and no `discarded` were seen for one in any spike run
@@ -2414,9 +2420,37 @@ starting the next API iteration. Stdout carries `system/init` +
 stream-json client therefore cannot render what woke the model or what
 it was told; the transcript file is the only record. The
 `system/task_notification` delivery above holds for events that land
-while a turn is open. AO currently shows a new response starting "from
-nothing" in this case; fixing it requires a transcript-tail backfill,
-which is not built.
+while a turn is open.
+
+On 2.1.280 and 2.1.284 (AO provider-events logs, 2026-09 to 2026-10) the
+woken turn is visible: after `system/init` and `system/status` comes a
+main-transcript `transcript_mirror` user row with
+`turnOrigin:"task_notification"`, `promptSource:"system"` and
+`origin:{kind:"task-notification", producer:"session-task"}`, whose
+content is the `<task-notification>` block. A terminal completion
+(Bash, agent stop) also sends `task_updated` and a structured
+`system/task_notification` first; a Monitor event sends neither. There
+is no `command_lifecycle` bracket and no user replay echo. The block's
+`<summary>` names the task (`Background command "…" completed (exit
+code 0)`, `Agent "…" finished`, `Monitor event: "…"`), an agent stop adds
+`<result>` and a Monitor event adds `<event>`:
+
+```xml
+<task-notification>
+<task-id>bwatch002</task-id>
+<summary>Monitor event: "deploy log errors"</summary>
+<event>ERROR deploy step 3 failed: connection refused</event>
+</task-notification>
+```
+
+The parser (`parse_turn_origin.go`) turns such a row into one
+`background_wake` notification (summary, plus the `<result>` or `<event>`
+text bounded to 2,000 runes) when the session is between turns: after a
+top-level `result` and before the next turn's first top-level assistant
+frame or `command_lifecycle` start. A row injected mid-turn also reaches
+the `isReplay` echo, which reports it already. The timeline shows the row
+ahead of the reply it caused. The rest of what the model read stays in
+the transcript file; a transcript-tail backfill is not built.
 
 ### E8: ScheduleWakeup ack (pending in-process wakeup, NO task lifecycle)
 
@@ -2455,7 +2489,9 @@ timer. The record is swept on session teardown AND on
 replacement-session commit: the timer never survives its CLI process.
 When the wakeup fires, the injected turn's own wire activity takes over
 protection; observed delays run 240–1800s, so a wakeup can legally
-exceed the idle-reap threshold on its own.
+exceed the idle-reap threshold on its own. The wake is a scheduled turn
+with the §E11 fire shape: its stored prompt renders as the turn's
+badged user row.
 
 ### E9: Forked skill (`Skill` tool, `context: fork`)
 
@@ -2600,6 +2636,78 @@ worktree; verified 2.1.257 in `-p` mode). The app's start-time
 move and only acts when row and file disagree. The claude-tui provider's
 PostToolUse hook carries the same
 `tool_response`, so both providers share this path.
+
+### E11: `CronCreate` / `CronList` / `CronDelete` and scheduled turns
+
+The CLI's cron tools arm jobs that live only in its process and fire as
+turns it starts itself. Like §E8 there is no task lifecycle and no wire
+traffic between the ack and a fire, so an armed job is invisible to
+every other "is this session busy" signal. Captured on 2.1.284
+(2026-10-10, isolated spike):
+[`cron_create_fire_20261010.ndjson`](fixtures/claude/cron_create_fire_20261010.ndjson),
+[`cron_loop_midturn_20261010.ndjson`](fixtures/claude/cron_loop_midturn_20261010.ndjson)
+and [`cron_spike_20261010.summary.json`](fixtures/claude/cron_spike_20261010.summary.json).
+
+Acks (`tool_use_result`):
+
+| Tool | Input | Ack |
+|---|---|---|
+| `CronCreate` | `{cron, prompt, recurring?, durable?}` | `{id, humanSchedule, recurring, durable}` |
+| `CronList` | `{}` | `{jobs: [{id, cron, humanSchedule, prompt, recurring, durable}]}` |
+| `CronDelete` | `{id}` | `{id}` |
+
+The `CronCreate` ack carries no cron expression; only the input and a
+later `CronList` do. `CronDelete` of an unknown id answers `is_error:true`
+with a string `tool_use_result` (`"Error: No scheduled job with id
+'…'"`). `/loop` arms through the same `CronCreate`, runs its prompt once
+in the same turn, and acks the same way. No key overlaps the §E2, §E5,
+§E7 or §E8 markers.
+
+The parser classifies by tool name, checks the ack shape, and keeps the
+session's job table (`parse_cron.go`): an ack it cannot prove (an error,
+a missing `id`, `recurring` or `jobs`) changes nothing. Every change
+emits `EventScheduledJobs`, the full list with each job's latest
+possible next fire. Triage keeps the list per thread beside the §E8
+wakeup, and the idle-session reaper, the update admission check and the
+conversation transfer guard treat a session as scheduled to resume
+until the latest deadline plus the wakeup grace. The table dies with the
+parser, which lives exactly as long as the CLI process; triage drops its
+copy on teardown and on replacement-session commit.
+
+**Fire shape.** A fire is a `command_lifecycle` bracket with a
+CLI-minted uuid and no `queued` state: `started`, `system/status` (a
+ScheduleWakeup wake also re-emits `system/init`), then a main-transcript
+`transcript_mirror` batch holding a `queue-operation` enqueue (content =
+the prompt), its dequeue, and the user row
+`{type:"user", isSidechain:false, isMeta:true, promptSource:"system",
+turnOrigin:"scheduled", uuid:<command_uuid>, message.content:<prompt>}`,
+then the reply, `result` and `completed`. No user envelope reaches
+stdout and no task lifecycle runs. A fire due during a busy turn is
+held and runs once right after that turn's `result`. ScheduleWakeup
+wakes share the shape and the `turnOrigin`. The parser emits the row as
+an `EventUserText` with `origin:"scheduled"` under the fire's uuid
+(triage persists `user:scheduled:<uuid>`, badged "Scheduled") and moves
+the job table past the fire. History import keeps the same row
+(`sessionimport.ScheduledTurnOrigin`).
+
+**Deadlines.** Grammar and matching mirror the 2.1.284 bundle
+(`cron_schedule.go`): five fields, each a comma list of `*`, `*/n`,
+`a-b`, `a-b/n` or `n`, weekday 7 = 0, no names; local time; day of month
+and day of week are ORed when both are restricted, where a field whose
+set covers its whole range counts as unrestricted. The CLI fires a
+recurring job at its next match `i` plus a per-job delay of
+`frac(id) x recurringFrac x o` capped at `recurringCapMs` (`o` is the gap
+to the following match; a `*/n` minute job may instead fire up to
+`cacheLeadMs` early) and a one-shot at its match or up to `oneShotMaxMs`
+early. The `tengu_kairos_cron_config` flag may replace those constants at
+runtime within a schema capping `recurringFrac` at 1 and
+`recurringCapMs` at 30 minutes, so the parser bounds a recurring fire by
+`i + min(o, 30m)` and a one-shot by `i`, which holds under every
+permitted config. A fire's row names no job, so a fire at `t` re-anchors
+every recurring job whose match is at or before `t` (its deadline only
+moves later) and releases every such one-shot. A deadline that passes
+with no fire leaves the job inert rather than protecting the session
+forever; that also covers the CLI's age-out of recurring jobs.
 
 ### Subagent approvals carry `agent_id`
 

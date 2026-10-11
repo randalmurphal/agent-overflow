@@ -381,8 +381,9 @@ hit:
   tool name (`CronCreate`, `CronList`, `CronDelete`) with the key shape
   as a check; the spike capture is the fixture.
 - A cron fire reaches the wire as a `command_lifecycle` bracket with a
-  CLI-created uuid and no user envelope, so the parser labels it a peer
-  turn. Its transcript-mirror user row carries `turnOrigin:"scheduled"`
+  CLI-created uuid and no user envelope, so the parser stamps the
+  bracket with the peer origin and the prompt never renders. Its
+  transcript-mirror user row carries `turnOrigin:"scheduled"`
   and `isMeta:true`; classify the turn as scheduled from that row and
   render the injected prompt as the turn's badged user row, as a
   `thread_remind` wake renders, instead of dropping it.
@@ -396,7 +397,7 @@ hit:
 The ack and fire shapes were captured on claude 2.1.284 under the
 isolated spike policy (2026-10-10); slice 4 commits the sanitized
 captures to `docs/references/fixtures/claude/` and documents them in
-`claude-wire.md` as E10.
+`claude-wire.md` as E11 (E10 was already `EnterWorktree`).
 
 ## Slices and verification
 

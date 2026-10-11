@@ -88,7 +88,8 @@ behavior. These back parser replay tests and the reference docs in
   `CronDelete`s and an empty `CronList`. Each fire is a
   `command_lifecycle` `started`/`completed` pair with a CLI-minted uuid;
   its prompt is only in the `transcript_mirror` user row with
-  `turnOrigin:"scheduled"` and the same uuid.
+  `turnOrigin:"scheduled"` and the same uuid. Backs
+  `parse_cron_test.go` and `e2e/tests/claude-cron-wakes.spec.ts`.
 - `cron_loop_midturn_20261010.ndjson`: 2.1.284. `/loop 1m` arms a
   recurring job, an 80s foreground Bash turn holds the fire due during
   it, the held fire runs once right after that turn's `result`, then
