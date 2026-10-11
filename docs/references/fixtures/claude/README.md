@@ -81,6 +81,24 @@ behavior. These back parser replay tests and the reference docs in
   `display` (the TUI's line) beside `message` and `pin{id,name,ref}`
   naming the resolved agent (claude-wire.md §"`SendMessage` ack").
   Backs `sendmessage_ack_test.go` and triage's `ApplySendMessageAck`.
+- `cron_create_fire_20261010.ndjson`: 2.1.284 (claude-wire.md §E11).
+  `CronCreate` of a recurring every-minute job, three idle fires, then
+  one turn with `CronList`, a one-shot `CronCreate`, a `CronDelete` of
+  an unknown id (`is_error`, string `tool_use_result`), two
+  `CronDelete`s and an empty `CronList`. Each fire is a
+  `command_lifecycle` `started`/`completed` pair with a CLI-minted uuid;
+  its prompt is only in the `transcript_mirror` user row with
+  `turnOrigin:"scheduled"` and the same uuid.
+- `cron_loop_midturn_20261010.ndjson`: 2.1.284. `/loop 1m` arms a
+  recurring job, an 80s foreground Bash turn holds the fire due during
+  it, the held fire runs once right after that turn's `result`, then
+  `CronList` and `CronDelete`.
+
+  Both: captured under the isolated spike policy with a clean
+  environment and sanitized: session ids, home and project paths and
+  the user email are synthetic.
+  `cron_spike_20261010.summary.json` records the shapes, fire timings and
+  the 2.1.284 scheduler constants read from the CLI bundle.
 - `ndjson_outlives.log`: backgrounded Bash outliving its launching turn
   (the wire `result` envelope arrives BEFORE the task's `task_updated`)
 - `ndjson_outlives_turn2.log`: follow-up turn on the same session
