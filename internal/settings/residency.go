@@ -103,6 +103,7 @@ func (s *Service) InvalidateTierCache() {
 	defer s.mu.Unlock()
 	s.cached = nil
 	s.cachedState = fileState{}
+	s.cachedPromptFiles = nil
 }
 
 // Caller is this service seen from one connection: the same settings, with

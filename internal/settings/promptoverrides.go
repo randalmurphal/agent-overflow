@@ -5,20 +5,38 @@ import (
 	"log"
 	"strings"
 	"unicode"
+
+	"github.com/google/uuid"
 )
 
 // PromptOverride replaces a provider's built-in system prompt for the
 // models it names. Zero value is inert: a disabled entry, or one with no
 // models, never matches.
+//
+// The entry's text lives in its own file, <configDir>/prompts/<ID>.md, so
+// the user or an agent can edit it directly (promptfiles.go). Once the tier
+// store is attached the settings row holds ID, Enabled and Models only;
+// Prompt stays populated in memory and on the wire, filled from the file.
 type PromptOverride struct {
+	// ID names the entry's prompt file: a canonical lowercase UUID, minted
+	// by Service.mutate when empty. A client never chooses the filename.
+	ID string `json:"id"`
 	// Enabled gates the entry without the user having to delete it.
 	Enabled bool `json:"enabled"`
 	// Models holds normalized model slugs WITHOUT a context-tier marker
 	// (`claude-opus-5`, not `claude-opus-5[1m]`). Matching normalizes both
 	// sides, so a marker that slips in still compares equal.
 	Models []string `json:"models"`
-	// Prompt is the replacement text, placeholders unrendered.
-	Prompt string `json:"prompt"`
+	// Prompt is the replacement text, placeholders unrendered. Persisted
+	// only in the prompt file; a row still carrying it predates the file
+	// (MigratePromptFiles).
+	Prompt string `json:"prompt,omitempty"`
+	// Path is the absolute prompt file path, for the UI to show and open.
+	// Computed on load, never persisted; a client value is ignored.
+	Path string `json:"path,omitempty"`
+	// Problem says why the file's text is not applied (it is over a size
+	// limit). Computed on load, never persisted; a client value is ignored.
+	Problem string `json:"problem,omitempty"`
 }
 
 // Limits on the override lists. They exist to keep a hand-edited or
@@ -115,7 +133,19 @@ func validatePromptOverrides(field string, entries []PromptOverride) ([]PromptOv
 	}
 	out := make([]PromptOverride, 0, len(entries))
 	total := 0
+	ids := make(map[string]bool, len(entries))
 	for i, entry := range entries {
+		id, err := canonicalPromptOverrideID(entry.ID)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d].id: %w", field, i, err)
+		}
+		if id != "" && ids[id] {
+			return nil, fmt.Errorf("%s[%d].id %q is used by an earlier entry", field, i, id)
+		}
+		ids[id] = true
+		entry.ID = id
+		// Computed by the service, never taken from a caller.
+		entry.Path, entry.Problem = "", ""
 		if len(entry.Models) > MaxPromptOverrideModels {
 			return nil, fmt.Errorf(
 				"%s[%d].models has %d entries, max is %d",
@@ -159,7 +189,22 @@ func sanitizePromptOverrides(field string, entries []PromptOverride) []PromptOve
 	}
 	out := make([]PromptOverride, 0, len(entries))
 	total := 0
+	ids := make(map[string]bool, len(entries))
 	for i, entry := range entries {
+		// An id that is not a UUID, or that an earlier entry already uses,
+		// would name a file this entry does not own. It is cleared rather
+		// than trusted, and the next write mints a fresh one.
+		id, err := canonicalPromptOverrideID(entry.ID)
+		if err != nil {
+			log.Printf("settings: %s[%d].id: %v; clearing it", field, i, err)
+			id = ""
+		}
+		if id != "" && ids[id] {
+			log.Printf("settings: %s[%d].id %q is used by an earlier entry; clearing it", field, i, id)
+			id = ""
+		}
+		ids[id] = true
+		entry.ID = id
 		entry.Models = dedupeTrimmedLogged(
 			fmt.Sprintf("%s[%d].models", field, i), entry.Models, MaxPromptOverrideModels,
 		)
@@ -184,6 +229,57 @@ func sanitizePromptOverrides(field string, entries []PromptOverride) []PromptOve
 		return nil
 	}
 	return out
+}
+
+// canonicalPromptOverrideID answers the canonical lowercase form of a
+// prompt override id, or "" for an empty one. The id becomes a filename, so
+// only the UUID shape is admissible: it carries no separator, dot or
+// reserved device name on any platform.
+func canonicalPromptOverrideID(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("%q is not a UUID", raw)
+	}
+	return parsed.String(), nil
+}
+
+// claudePromptOverrideIDs answers the ids the Claude list uses.
+func claudePromptOverrideIDs(current Settings) map[string]bool {
+	ids := make(map[string]bool, len(current.ClaudePromptOverrides))
+	for _, entry := range current.ClaudePromptOverrides {
+		if entry.ID != "" {
+			ids[entry.ID] = true
+		}
+	}
+	return ids
+}
+
+// validatePromptOverrideIDsAcrossProviders rejects an id both lists use.
+// The lists share one prompts directory, so a shared id would be two
+// entries over one file.
+func validatePromptOverrideIDsAcrossProviders(current Settings) error {
+	claude := claudePromptOverrideIDs(current)
+	for i, entry := range current.CodexPromptOverrides {
+		if entry.ID != "" && claude[entry.ID] {
+			return fmt.Errorf("codexPromptOverrides[%d].id %q is also used by a Claude entry", i, entry.ID)
+		}
+	}
+	return nil
+}
+
+// sanitizePromptOverrideIDsAcrossProviders is the lenient counterpart: the
+// Codex entry loses its id, and with it the claim on the file, with a log.
+func sanitizePromptOverrideIDsAcrossProviders(current *Settings) {
+	claude := claudePromptOverrideIDs(*current)
+	for i, entry := range current.CodexPromptOverrides {
+		if entry.ID != "" && claude[entry.ID] {
+			log.Printf("settings: codexPromptOverrides[%d].id %q is also used by a Claude entry; clearing it", i, entry.ID)
+			current.CodexPromptOverrides[i].ID = ""
+		}
+	}
 }
 
 // validateDisabledTools enforces the shape a tool entry must have to reach
