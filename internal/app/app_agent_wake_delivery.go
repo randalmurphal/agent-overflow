@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,8 +29,9 @@ import (
 
 const (
 	// agentWakeOutputCap is the most data one wake carries, stdout and the
-	// stderr tail together, before quoting. What it drops is stated.
-	agentWakeOutputCap = 64 << 10
+	// stderr tail together, before quoting, and the most of an undelivered
+	// wake's body a row keeps. What it drops is stated.
+	agentWakeOutputCap = store.MaxAgentWakeOutputBytes
 	// agentWakeStderrCap is the part of the cap stderr may take: its tail,
 	// which is where a script's last complaint is.
 	agentWakeStderrCap = 8 << 10
@@ -134,11 +137,16 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) string {
 
 // renderAgentWatchWake renders one watch wake: its stdout, then its stderr
 // tail, together capped at agentWakeOutputCap with what was dropped stated.
+// The row is read as it stands now: when its previous wake did not reach the
+// agent, this one says where that wake's output is kept.
 func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) string {
 	stdout = stdout.clip(agentWakeOutputCap - len(stderr.data))
 	var out strings.Builder
 	fmt.Fprintf(&out, "Watch %s reported. %s\n", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice)
 	writeAgentWakeFireLines(&out, fire)
+	if row.LastOutput != "" && agentWakeOutcomeLost(row.LastOutcome) {
+		out.WriteString("The previous wake of this watch did not reach you; thread_status shows its output as last_output.\n")
+	}
 	out.WriteString("stdout:\n")
 	writeQuotedLines(&out, stdout)
 	if stderr.total > 0 {
@@ -296,49 +304,101 @@ func clipUTF8(text string, limit int) string {
 	return string(newCappedText(text, limit).data)
 }
 
+// keptAgentWakeOutput is an undelivered wake's body as its row keeps it: cut
+// to agentWakeOutputCap with what it dropped stated.
+func keptAgentWakeOutput(body string) string {
+	if len(body) <= agentWakeOutputCap {
+		return body
+	}
+	// The drop line is under 80 bytes for any body length.
+	kept := clipUTF8(body, agentWakeOutputCap-80)
+	return kept + fmt.Sprintf("\n[%d bytes dropped: a kept wake is at most %d KiB]", len(body)-len(kept), agentWakeOutputCap>>10)
+}
+
+// noteAgentWakeUndelivered records on its row a loop or watch wake that never
+// reached the agent, keeping a watch's body.
+func (a *App) noteAgentWakeUndelivered(wakeID, outcome, body string) {
+	if _, err := a.store.NoteAgentWakeUndelivered(wakeID, outcome, keptAgentWakeOutput(body)); err != nil {
+		logThreadRequestSweep("record the undelivered wake of "+wakeID, err)
+	}
+}
+
 // discardAgentWakeAtBoot handles a loop or watch wake still queued when the
 // app quit. It is not restored to the composer as a person's undelivered
 // message is: it is data, not something the user wrote, and its row replays
-// it. The row records `not delivered` and an interval row is made due at the
-// fire the wake was for, so the boot pass runs it again with what it missed.
+// it. The row records `not delivered`, a watch keeps the wake's body, and an
+// interval row is made due at the fire the wake was for, so the boot pass
+// runs it again with what it missed.
 //
 // A worker's prompt still queued is discarded too: the prompt it carried
-// died with the worker's session when the app quit.
-func (a *App) discardAgentWakeAtBoot(sendID string) bool {
-	if strings.HasPrefix(sendID, workerPromptSendIDRoot) {
+// died with the worker's session when the app quit. So is an outside
+// `thread send`, for the reason a wake is: its text is a script's, and the
+// thread gets a notice that it was not delivered.
+func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
+	switch {
+	case strings.HasPrefix(row.SendID, workerPromptSendIDRoot):
+		return true
+	case strings.HasPrefix(row.SendID, agentSendIDRoot):
+		a.noteAgentSendNotDelivered(row.ThreadID, "the app quit before the agent took it in")
 		return true
 	}
-	wakeID, fireAt, ok := agentWakeFromSendID(sendID)
+	wakeID, fireAt, ok := agentWakeFromSendID(row.SendID)
 	if !ok {
 		return false
 	}
-	if _, err := a.store.ReleaseQueuedAgentWake(wakeID, agentWakeOutcomeNotDelivered, fireAt); err != nil {
+	if _, err := a.store.ReleaseQueuedAgentWake(wakeID, agentWakeOutcomeNotDelivered, keptAgentWakeOutput(row.Message), fireAt); err != nil {
 		logThreadRequestSweep("release the queued wake of "+wakeID, err)
 	}
 	return true
 }
 
+// noteAgentSendNotDelivered tells the thread's person that an outside
+// `thread send` was thrown away, since the script that sent it was told it
+// was queued.
+func (a *App) noteAgentSendNotDelivered(threadID, why string) {
+	if err := a.emitNoticeToThread(threadID, "A message sent with agent-overflow thread send was not delivered: "+why+
+		". The script that sent it can send it again."); err != nil {
+		log.Printf("agent wakes: %v", err)
+	}
+}
+
 // dropAgentWakeAtSessionEnd handles a loop or watch wake the session ended
 // before taking in. Like a wake queued at quit it never goes to the composer;
 // unlike one it does not replay: the session that ended may end again, and a
-// replay would start it on every fire. The row records `not delivered` and
-// keeps its schedule. A message a person's text was joined to is theirs and
-// goes to the composer as before; its wakes are still recorded. A worker's
-// prompt the session did not take in goes back to the user in the worker.
-func (a *App) dropAgentWakeAtSessionEnd(item triage.UnconfirmedFlushItem) bool {
+// replay would start it on every fire. The row records `not delivered`, a
+// watch keeps the wake's body, and the row keeps its schedule. A message a
+// person's text was joined to is theirs and goes to the composer as before;
+// its wakes are still recorded. A worker's prompt the session did not take in
+// goes back to the user in the worker, and an outside `thread send` is thrown
+// away with a notice, as at boot.
+func (a *App) dropAgentWakeAtSessionEnd(threadID string, item triage.UnconfirmedFlushItem) bool {
 	ids := unconfirmedSendIDs(item)
 	onlyWakes := len(ids) > 0
+	for _, id := range ids {
+		if !strings.HasPrefix(id, workerPromptSendIDRoot) && !strings.HasPrefix(id, agentSendIDRoot) {
+			if _, _, ok := agentWakeFromSendID(id); !ok {
+				onlyWakes = false
+			}
+		}
+	}
+	// The body is the item's message, which for a joined message is every
+	// member's; it is kept only when nothing in it is the person's.
+	body := ""
+	if onlyWakes {
+		body = item.Message
+	}
 	for _, id := range ids {
 		if a.handBackWorkerPromptWake(id) {
 			continue
 		}
-		wakeID, _, ok := agentWakeFromSendID(id)
-		if !ok {
-			onlyWakes = false
+		if strings.HasPrefix(id, agentSendIDRoot) {
+			if onlyWakes {
+				a.noteAgentSendNotDelivered(threadID, "the session ended before the agent took it in")
+			}
 			continue
 		}
-		if _, err := a.store.NoteAgentWakeOutcome(wakeID, agentWakeOutcomeSessionEnded); err != nil {
-			logThreadRequestSweep("record the dropped wake of "+wakeID, err)
+		if wakeID, _, ok := agentWakeFromSendID(id); ok {
+			a.noteAgentWakeUndelivered(wakeID, agentWakeOutcomeSessionEnded, body)
 		}
 	}
 	if !onlyWakes {
@@ -382,8 +442,9 @@ func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
 
 // noteAgentWakesDropped records `not delivered` on the rows whose wakes a
 // wholesale queue drop (the person's Stop, a Codex rollback) throws away, so
-// thread_status does not report them delivered. They keep their schedule.
-// A worker's prompt among them goes back to the user in the worker.
+// thread_status does not report them delivered, and a watch keeps the wake's
+// body. They keep their schedule. A worker's prompt among them goes back to
+// the user in the worker.
 func (a *App) noteAgentWakesDropped(threadID string) {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -394,20 +455,17 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 		if a.handBackWorkerPromptWake(row.SendID) {
 			continue
 		}
-		wakeID, _, ok := agentWakeFromSendID(row.SendID)
-		if !ok {
-			continue
-		}
-		if _, err := a.store.NoteAgentWakeOutcome(wakeID, agentWakeOutcomeDropped); err != nil {
-			logThreadRequestSweep("record the dropped wake of "+wakeID, err)
+		if wakeID, _, ok := agentWakeFromSendID(row.SendID); ok {
+			a.noteAgentWakeUndelivered(wakeID, agentWakeOutcomeDropped, row.Message)
 		}
 	}
 }
 
 // agentSendIDRoot names the messages `agent-overflow thread send` queues. It
 // is not a wake's prefix: an outside message is not a tick, so its turn
-// notifies, and the app quitting with one queued restores it to the composer
-// like any message that was not delivered.
+// notifies. Like a wake it never goes to the composer: one still queued at
+// boot, or left unconfirmed by a session that ended, is thrown away and the
+// thread gets a notice that it was not delivered.
 const agentSendIDRoot = "agent-send:"
 
 // SendExternalThreadMessage queues text a script outside the app sent with
@@ -421,28 +479,49 @@ func (a *App) SendExternalThreadMessage(threadID, text string) error {
 		return errors.New("the message is empty")
 	}
 	thread, err := a.store.GetThread(threadID)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("thread %s is not on this computer", threadID)
+	}
+	if err != nil {
+		return fmt.Errorf("read thread %s: %w", threadID, err)
 	}
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return err
 	}
+	archived := fmt.Errorf("thread %s is archived; unarchive it first", threadID)
 	if thread.Archived {
-		return fmt.Errorf("thread %s is archived; unarchive it first", threadID)
+		return archived
 	}
 	body := renderAgentSendWake(text)
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), agentWakeLockTimeout)
 	defer cancel()
-	return a.queueAgentNotice(ctx, agentNotice{
+	var refused error
+	err = a.queueAgentNotice(ctx, agentNotice{
 		threadID:   threadID,
 		sendID:     agentSendIDRoot + newAgentWakeID(),
 		origin:     usermessage.OriginAgentWake,
 		originWake: &usermessage.OriginWake{Kind: agentWakeKindSend},
-		prepare:    func() (string, bool, error) { return body, true, nil },
+		// Re-checked under the thread lock: an archive that landed since the
+		// read above has the last word.
+		prepare: func() (string, bool, error) {
+			current, err := a.store.GetThread(threadID)
+			if err != nil {
+				return "", false, fmt.Errorf("read thread %s: %w", threadID, err)
+			}
+			if current.Archived {
+				refused = archived
+				return "", false, nil
+			}
+			return body, true, nil
+		},
 		startFailed: func(err error) string {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
 		},
 	})
+	if err != nil {
+		return err
+	}
+	return refused
 }
 
 // agentWakeKindSend is the badge kind of an outside send.

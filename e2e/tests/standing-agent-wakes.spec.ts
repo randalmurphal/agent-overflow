@@ -1119,3 +1119,103 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     }
   });
 }
+
+// A Claude wake that comes due during a person's turn is flushed into the
+// running session at once. The CLI either takes it in at its next model call,
+// and the turn stays the person's, or picks it up as a turn of its own once
+// the person's turn ends. That turn is a tick: it raises no notification and
+// its start withdraws none.
+test('claude: a wake flushed mid-turn is a tick only when it runs as its own turn', async () => {
+  test.setTimeout(180_000);
+  const harness = await launchHarness();
+  try {
+    await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'tick-pickup', repo: {}, threads: [{ title: 'Pickup agent', provider: 'claude' }] },
+        { name: 'tick-drain', repo: {}, threads: [{ title: 'Drain agent', provider: 'claude' }] },
+        { name: 'tick-barrier', repo: {}, threads: [{ title: 'Barrier', provider: 'claude' }] },
+      ],
+    });
+    const [pickupP, drainP, barrierP] = seed.projects;
+    const pickup = pickupP.threadIds[0];
+    const drain = drainP.threadIds[0];
+    const barrier = barrierP.threadIds[0];
+    for (const id of [pickup, drain]) await harness.rpc('PromoteStandingAgent', id);
+    const loop = (every: number) => ({ call: { tool: 'thread_loop', args: { label: 'tick', note: 'look again', every_seconds: every } } });
+    const stop = { call: { tool: 'thread_loop', args: { label: 'tick', stop: true } } };
+    await setScenario(harness, pickupP.path, {
+      ...threadToolsScenario({
+        name: 'tick-pickup',
+        provider: 'claude',
+        turns: [
+          { steps: [loop(3), { gate: 'hold' }], text: 'Finished the work.' },
+          { steps: [stop], text: 'Tick handled.' },
+        ],
+        afterTurns: 'silent',
+      }),
+      claude: { holdQueuedInput: true },
+    });
+    await setScenario(harness, drainP.path, {
+      ...threadToolsScenario({
+        name: 'tick-drain',
+        provider: 'claude',
+        turns: [
+          { steps: [loop(3), { gate: 'hold' }, { drainQueuedInput: true }, stop], text: 'Finished, the tick folded in.' },
+          { text: 'Done again.' },
+        ],
+        afterTurns: 'silent',
+      }),
+      claude: { holdQueuedInput: true },
+    });
+    await setScenario(harness, barrierP.path, threadToolsScenario({ name: 'tick-barrier', provider: 'claude', turns: [{ text: 'Here.' }] }));
+
+    const rests = (thread: string) => (data: NotificationSend) =>
+      !data.retract && data.kind === 'turn-complete' && data.target.threadId === thread;
+    const retractions = (thread: string) => (data: NotificationSend) => Boolean(data.retract) && data.id === `thread:${thread}`;
+    const turnsOf = (thread: string) =>
+      harness.countEvents<{ threadId?: string }>('provider:turn_completed', (data) => data.threadId === thread);
+    // Notifications go out in one order, so another thread's rest raised
+    // after an event comes after anything that event raised.
+    const settleNotifications = async () => {
+      const barrierRest = harness.waitForEvent<NotificationSend>('notification:send', rests(barrier), 60_000);
+      await harness.rpc('SendMessage', barrier, 'still there?', null);
+      await barrierRest;
+    };
+    await harness.rpc('StartSession', barrier);
+
+    for (const [thread, cwd, turns] of [
+      [pickup, pickupP.path, 2],
+      [drain, drainP.path, 1],
+    ] as const) {
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'do the work', null);
+      const { mockId } = await awaitGate(harness, 'hold', cwd);
+      // The loop fires while the person's turn is parked, and the app flushes
+      // its wake into the running session.
+      await harness.waitForEvent<{ threadId?: string }>('provider:queue_flushed', (data) => data.threadId === thread, 30_000);
+      await settleNotifications();
+      const retractionsBefore = harness.countEvents<NotificationSend>('notification:send', retractions(thread));
+      await advanceGate(harness, mockId, 'hold');
+      await expect.poll(() => turnsOf(thread), { timeout: 60_000 }).toBe(turns);
+      expect(countInputs(harness, cwd, 'Loop "tick" fired.')).toBe(1);
+      await settleNotifications();
+      // The person's turn notifies once; the tick neither notifies nor
+      // withdraws it.
+      expect(harness.countEvents<NotificationSend>('notification:send', rests(thread)), thread).toBe(1);
+      expect(harness.countEvents<NotificationSend>('notification:send', retractions(thread)), thread).toBe(retractionsBefore);
+    }
+
+    // The wake the person's turn took in is not waiting for a turn of its
+    // own: the person's next turn is theirs, and its start withdraws the
+    // last rest.
+    const retractionsBefore = harness.countEvents<NotificationSend>('notification:send', retractions(drain));
+    await harness.rpc('SendMessage', drain, 'one more thing', null);
+    await expect.poll(() => turnsOf(drain), { timeout: 60_000 }).toBe(2);
+    await settleNotifications();
+    expect(harness.countEvents<NotificationSend>('notification:send', rests(drain))).toBe(2);
+    expect(harness.countEvents<NotificationSend>('notification:send', retractions(drain))).toBe(retractionsBefore + 1);
+  } finally {
+    await harness.close();
+  }
+});

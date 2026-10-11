@@ -7,6 +7,8 @@ package store
 // whether a routine tick may notify. `agent_wakes` holds the loops and watches
 // a thread registered. Both are authoritative: no provider history rebuilds
 // them, and the sweep rebuilds its schedule from these rows at every boot.
+// `last_output` keeps the body of a watch's most recent wake that never
+// reached the agent, so the agent can read the event it missed.
 // Both cascade from their thread, so a deleted thread takes its agent row,
 // loops and watches with it.
 const standingAgentsMigrationVersion = 143
@@ -27,10 +29,12 @@ CREATE TABLE agent_wakes (
     command          TEXT NOT NULL DEFAULT '',
     cwd              TEXT NOT NULL DEFAULT '',
     interval_seconds INTEGER,
+    timeout_seconds  INTEGER,
     long_running     INTEGER NOT NULL DEFAULT 0 CHECK(long_running IN (0,1)),
     next_at          INTEGER,
     last_run_at      INTEGER,
     last_outcome     TEXT NOT NULL DEFAULT '',
+    last_output      TEXT NOT NULL DEFAULT '',
     missed           INTEGER NOT NULL DEFAULT 0,
     state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
     created_at       INTEGER NOT NULL

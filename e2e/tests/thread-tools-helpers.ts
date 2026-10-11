@@ -37,6 +37,8 @@ export type TurnStep =
   | { gate: string }
   /** Ask the app for a decision and branch on it. */
   | { approval: ApprovalRequest }
+  /** Claude: take input held under `holdQueuedInput` into the running turn. */
+  | { drainQueuedInput: true }
   | { delayMs: number };
 
 /** One provider approval a turn raises, with the branches it takes. */
@@ -56,6 +58,8 @@ export interface ScriptedTurn {
   text?: string;
   /** Overrides the scenario's echoUserMessage for this turn. */
   echo?: boolean;
+  /** Ends the turn failed with this provider error instead of with `text`. */
+  fail?: string;
 }
 
 /**
@@ -103,6 +107,16 @@ function codexTurnLines(text: string): string[] {
   return lines;
 }
 
+/** The provider's frames for a turn that ends failed. */
+function failedTurnLines(provider: ProviderName, message: string): string[] {
+  if (provider === 'claude') {
+    return [`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[${jsonString(message)}]}`];
+  }
+  return [
+    `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\${THREAD_ID}","turn":{"id":"\${TURN_ID}","status":"failed","error":{"message":${jsonString(message)}}}}}`,
+  ];
+}
+
 function stepJSON(step: TurnStep): Record<string, unknown> {
   if ('call' in step) {
     const { tool, args, toolUseId, timeoutMs } = step.call;
@@ -142,6 +156,7 @@ function stepJSON(step: TurnStep): Record<string, unknown> {
     };
   }
   if ('emitLines' in step) return { emit: { lines: step.emitLines } };
+  if ('drainQueuedInput' in step) return { drainQueuedInput: true };
   return { delayMs: step.delayMs };
 }
 
@@ -182,7 +197,12 @@ export function threadToolsScenario(opts: {
     }
     for (const step of turn.steps ?? []) steps.push(stepJSON(step));
     const text = turn.text ?? '';
-    const lines = opts.provider === 'claude' ? claudeTurnLines(text) : codexTurnLines(text);
+    const lines =
+      turn.fail !== undefined
+        ? failedTurnLines(opts.provider, turn.fail)
+        : opts.provider === 'claude'
+          ? claudeTurnLines(text)
+          : codexTurnLines(text);
     steps.push({ emit: { lines } });
     return { label: `${opts.name}-${index + 1}`, steps };
   });

@@ -44,9 +44,10 @@ const (
 	// KindTurnComplete is the agent finishing a top-level turn: the thread
 	// is resting and there is something to read.
 	KindTurnComplete Kind = "turn-complete"
-	// KindApprovalNeeded is the agent blocked on the user's permission. The
-	// only one of the four where work has stopped and stays stopped until a
-	// person acts, which is why §6's default has it on.
+	// KindApprovalNeeded is the agent blocked on the user: their permission,
+	// or their answer to a question it asked. The only one of the four where
+	// work has stopped and stays stopped until a person acts, which is why
+	// §6's default has it on.
 	KindApprovalNeeded Kind = "approval-needed"
 	// KindError is a turn that ended badly, or a provider process that died
 	// under a thread. It shares KindTurnComplete's identifier because both
@@ -228,6 +229,17 @@ type ApprovalMoment struct {
 	Answered bool
 }
 
+// QuestionMoment is a question put to the user or its answer — the two
+// actions of the `provider:user_input` transition. Like ApprovalMoment it has
+// nowhere to put the question's text: what was asked is the thread's to show.
+type QuestionMoment struct {
+	Thread    ThreadRef
+	RequestID string
+	// Answered is the resolve/fail action, for ApprovalMoment.Answered's
+	// reason.
+	Answered bool
+}
+
 // ProviderAuthChange is a provider's login crossing the line, in either
 // direction.
 //
@@ -260,6 +272,11 @@ func threadNotificationID(threadID string) string { return "thread:" + threadID 
 // its own.
 func approvalNotificationID(threadID, requestID string) string {
 	return "approval:" + threadID + ":" + requestID
+}
+
+// questionNotificationID is per request, for approvalNotificationID's reason.
+func questionNotificationID(threadID, requestID string) string {
+	return "question:" + threadID + ":" + requestID
 }
 
 // providerAuthNotificationID is per provider. Claude being signed out says
@@ -327,6 +344,23 @@ func MapApproval(moment ApprovalMoment) (Notification, bool) {
 		body += ": " + tool
 	}
 	notification := threadNotification(KindApprovalNeeded, moment.Thread, body)
+	notification.Send.ID = id
+	return notification, true
+}
+
+// MapQuestion maps a question put to the user to a notification and its
+// answer to that notification's retraction. It is KindApprovalNeeded: the
+// agent has stopped until a person answers, which is the moment that kind
+// names, so the preference and cue a person set for it apply.
+func MapQuestion(moment QuestionMoment) (Notification, bool) {
+	if moment.Thread.ID == "" || moment.RequestID == "" {
+		return Notification{}, false
+	}
+	id := questionNotificationID(moment.Thread.ID, moment.RequestID)
+	if moment.Answered {
+		return Notification{Send: Send{ID: id, Kind: KindApprovalNeeded, Retract: true}}, true
+	}
+	notification := threadNotification(KindApprovalNeeded, moment.Thread, "Waiting for your answer")
 	notification.Send.ID = id
 	return notification, true
 }

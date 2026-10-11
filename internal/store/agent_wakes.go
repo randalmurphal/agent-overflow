@@ -34,7 +34,11 @@ const (
 // MaxAgentWakesPerThread bounds the loops and watches one thread keeps armed
 // at once. Each long-running watch is a process, so the bound is a process
 // bound as well as a row bound.
-const MaxAgentWakesPerThread = 16
+const MaxAgentWakesPerThread = 64
+
+// MaxAgentWakeOutputBytes bounds the data one wake carries and the
+// undelivered output a row keeps in `last_output`.
+const MaxAgentWakeOutputBytes = 64 << 10
 
 // ErrAgentWakeLabelTaken refuses a registration whose label names a live row
 // of the other kind: `thread_cancel` addresses both kinds by label, so one
@@ -48,7 +52,7 @@ var ErrAgentWakeLimit = errors.New("store: too many live loops and watches on th
 // has not reached the provider yet.
 var ErrAgentWakeStillQueued = errors.New("store: this loop or watch's previous wake is still queued")
 
-// AgentWake is one row of agent_wakes. Zero means NULL for the three nullable
+// AgentWake is one row of agent_wakes. Zero means NULL for the four nullable
 // integers.
 type AgentWake struct {
 	ID              string `json:"id"`
@@ -59,13 +63,20 @@ type AgentWake struct {
 	Command         string `json:"command,omitempty"`
 	Cwd             string `json:"cwd,omitempty"`
 	IntervalSeconds int64  `json:"intervalSeconds,omitempty"`
-	LongRunning     bool   `json:"longRunning,omitempty"`
-	NextAt          int64  `json:"nextAt,omitempty"`
-	LastRunAt       int64  `json:"lastRunAt,omitempty"`
-	LastOutcome     string `json:"lastOutcome,omitempty"`
-	Missed          int64  `json:"missed,omitempty"`
-	State           string `json:"state"`
-	CreatedAt       int64  `json:"createdAt"`
+	// TimeoutSeconds bounds one run of an interval watch; zero is the app's
+	// default.
+	TimeoutSeconds int64  `json:"timeoutSeconds,omitempty"`
+	LongRunning    bool   `json:"longRunning,omitempty"`
+	NextAt         int64  `json:"nextAt,omitempty"`
+	LastRunAt      int64  `json:"lastRunAt,omitempty"`
+	LastOutcome    string `json:"lastOutcome,omitempty"`
+	// LastOutput is the body of a watch's most recent wake that did not
+	// reach the agent, kept until another replaces it or the label is
+	// registered again.
+	LastOutput string `json:"lastOutput,omitempty"`
+	Missed     int64  `json:"missed,omitempty"`
+	State      string `json:"state"`
+	CreatedAt  int64  `json:"createdAt"`
 }
 
 // StandingAgent is one row of standing_agents.
@@ -77,18 +88,19 @@ type StandingAgent struct {
 }
 
 const agentWakeColumns = `id, thread_id, kind, label, note, command, cwd, interval_seconds,
-	long_running, next_at, last_run_at, last_outcome, missed, state, created_at`
+	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, missed, state, created_at`
 
 func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	var row AgentWake
-	var interval, nextAt, lastRunAt sql.NullInt64
+	var interval, timeout, nextAt, lastRunAt sql.NullInt64
 	var longRunning int
 	if err := scanner.Scan(&row.ID, &row.ThreadID, &row.Kind, &row.Label, &row.Note, &row.Command,
-		&row.Cwd, &interval, &longRunning, &nextAt, &lastRunAt, &row.LastOutcome, &row.Missed,
-		&row.State, &row.CreatedAt); err != nil {
+		&row.Cwd, &interval, &timeout, &longRunning, &nextAt, &lastRunAt, &row.LastOutcome, &row.LastOutput,
+		&row.Missed, &row.State, &row.CreatedAt); err != nil {
 		return AgentWake{}, err
 	}
-	row.IntervalSeconds, row.NextAt, row.LastRunAt = interval.Int64, nextAt.Int64, lastRunAt.Int64
+	row.IntervalSeconds, row.TimeoutSeconds = interval.Int64, timeout.Int64
+	row.NextAt, row.LastRunAt = nextAt.Int64, lastRunAt.Int64
 	row.LongRunning = longRunning == 1
 	return row, nil
 }
@@ -135,7 +147,9 @@ func nullableMillis(value int64) any {
 // RegisterAgentWake arms one loop or watch, replacing the row the thread
 // already keeps under the same label. A label is one row for the life of the
 // thread: a cancelled row is revived rather than joined by a second one, so
-// the rows stay bounded by the labels a thread ever used.
+// the rows stay bounded by the labels a thread ever used. A registration
+// clears the undelivered output the row kept: it belonged to the watch the
+// registration replaces.
 //
 // An interval run in flight keeps `running`: the run that holds it re-arms it
 // when it finishes, and arming it here would let the sweep start a second run
@@ -183,11 +197,11 @@ func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 			state = AgentWakeRunning
 		}
 		if _, err := tx.Exec(`UPDATE agent_wakes
-			SET kind = ?, note = ?, command = ?, cwd = ?, interval_seconds = ?, long_running = ?,
-			    next_at = ?, missed = 0, state = ?
+			SET kind = ?, note = ?, command = ?, cwd = ?, interval_seconds = ?, timeout_seconds = ?,
+			    long_running = ?, next_at = ?, missed = 0, last_output = '', state = ?
 			WHERE id = ?`,
-			w.Kind, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds), longRunning,
-			nullableMillis(w.NextAt), state, existing.ID); err != nil {
+			w.Kind, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds), nullableMillis(w.TimeoutSeconds),
+			longRunning, nullableMillis(w.NextAt), state, existing.ID); err != nil {
 			return AgentWake{}, fmt.Errorf("%s: update: %w", action, err)
 		}
 		w.ID = existing.ID
@@ -205,10 +219,11 @@ func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 			return AgentWake{}, fmt.Errorf("%s: prune cancelled rows: %w", action, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO agent_wakes
-			(id, thread_id, kind, label, note, command, cwd, interval_seconds, long_running, next_at, state, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', ?)`,
+			(id, thread_id, kind, label, note, command, cwd, interval_seconds, timeout_seconds, long_running,
+			 next_at, state, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', ?)`,
 			w.ID, w.ThreadID, w.Kind, w.Label, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds),
-			longRunning, nullableMillis(w.NextAt), w.CreatedAt); err != nil {
+			nullableMillis(w.TimeoutSeconds), longRunning, nullableMillis(w.NextAt), w.CreatedAt); err != nil {
 			return AgentWake{}, fmt.Errorf("%s: insert: %w", action, err)
 		}
 	}
@@ -302,35 +317,54 @@ func (s *Store) ClaimAgentWake(id string, now, nextAt, missed int64) (bool, erro
 }
 
 // FinishAgentWake ends one interval run: running back to armed, with what it
-// came to and the fires it now stands for. A row re-registered as a
-// long-running watch while the run was in flight belongs to its process, and
-// the finish is a lost race.
-func (s *Store) FinishAgentWake(id, outcome string, missed int64) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: finish agent wake %s", id),
-		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, missed = ?
+// came to and the fires it now stands for. A watch run whose wake did not
+// reach the agent passes its body, which the row keeps (see
+// NoteAgentWakeUndelivered); any other run passes none. A row re-registered
+// as a long-running watch while the run was in flight belongs to its process,
+// and the finish is a lost race.
+func (s *Store) FinishAgentWake(id, outcome, output string, missed int64) (bool, error) {
+	action := fmt.Sprintf("store: finish agent wake %s", id)
+	if err := checkAgentWakeOutput(output); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changeAgentWake(action,
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, missed = ?,
+		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
 		  WHERE id = ? AND state = 'running' AND long_running = 0`,
-		outcome, missed, id)
+		outcome, missed, output, output, id)
 }
 
 // ReleaseUndeliveredAgentWake ends an interval run whose output a shutdown
 // kept from the queue: armed, `not delivered`, and due again at the fire it
-// ran for, so the next boot treats it as not run and replays it.
-func (s *Store) ReleaseUndeliveredAgentWake(id, outcome string, fireAt int64) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: release undelivered agent wake %s", id),
-		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, next_at = ?
+// ran for, so the next boot treats it as not run and replays it. A watch
+// keeps the wake's body in `last_output` (see NoteAgentWakeUndelivered).
+func (s *Store) ReleaseUndeliveredAgentWake(id, outcome, output string, fireAt int64) (bool, error) {
+	action := fmt.Sprintf("store: release undelivered agent wake %s", id)
+	if err := checkAgentWakeOutput(output); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changeAgentWake(action,
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, next_at = ?,
+		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
 		  WHERE id = ? AND state = 'running' AND long_running = 0`,
-		outcome, fireAt, id)
+		outcome, fireAt, output, output, id)
 }
 
 // ReleaseQueuedAgentWake answers a wake the app quit with still queued: the
-// row records the outcome, and an interval row is due again no later than the
-// fire the wake was for, so the boot pass replays it.
-func (s *Store) ReleaseQueuedAgentWake(id, outcome string, fireAt int64) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: release queued agent wake %s", id),
+// row records the outcome and, for a watch, the wake's body, and an interval
+// row is due again no later than the fire the wake was for, so the boot pass
+// replays it.
+func (s *Store) ReleaseQueuedAgentWake(id, outcome, output string, fireAt int64) (bool, error) {
+	action := fmt.Sprintf("store: release queued agent wake %s", id)
+	if err := checkAgentWakeOutput(output); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changeAgentWake(action,
 		`UPDATE agent_wakes SET last_outcome = ?,
+		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END,
 		        next_at = CASE WHEN long_running = 0 AND next_at > ? THEN ? ELSE next_at END
 		  WHERE id = ? AND state <> 'cancelled'`,
-		outcome, fireAt, fireAt, id)
+		outcome, output, output, fireAt, fireAt, id)
 }
 
 // RecoverAgentWake records what a quit did to a row it left `running` and
@@ -354,6 +388,31 @@ func (s *Store) StartAgentWakeProcess(id string, now int64) (bool, error) {
 func (s *Store) NoteAgentWakeOutcome(id, outcome string) (bool, error) {
 	return s.changeAgentWake(fmt.Sprintf("store: note agent wake outcome %s", id),
 		`UPDATE agent_wakes SET last_outcome = ? WHERE id = ? AND state <> 'cancelled'`, outcome, id)
+}
+
+// NoteAgentWakeUndelivered records a wake that never reached the agent: the
+// outcome says why and, on a watch, `last_output` keeps the wake's body so
+// the agent can read the event it missed. An empty output leaves the kept one
+// alone: a joined message names wakes whose bodies other items carry. A loop
+// keeps no output; its note is on the row already.
+func (s *Store) NoteAgentWakeUndelivered(id, outcome, output string) (bool, error) {
+	action := fmt.Sprintf("store: note undelivered agent wake %s", id)
+	if err := checkAgentWakeOutput(output); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changeAgentWake(action,
+		`UPDATE agent_wakes SET last_outcome = ?,
+		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
+		  WHERE id = ? AND state <> 'cancelled'`, outcome, output, output, id)
+}
+
+// checkAgentWakeOutput refuses an output past MaxAgentWakeOutputBytes. The
+// caller clips it and states what it dropped.
+func checkAgentWakeOutput(output string) error {
+	if len(output) > MaxAgentWakeOutputBytes {
+		return fmt.Errorf("output is %d bytes, past the %d-byte cap", len(output), MaxAgentWakeOutputBytes)
+	}
+	return nil
 }
 
 // CancelAgentWake cancels one thread's live row by label and returns it as it
@@ -475,6 +534,27 @@ func (s *Store) PromoteStandingAgent(threadID, home string, now int64) (Standing
 		return StandingAgent{}, false, fmt.Errorf("%s: the row is gone after insert", action)
 	}
 	return row, inserted == 1, nil
+}
+
+// SetStandingAgentNotifyOnTick turns tick notifications on or off for one
+// standing agent. Changed is false when the row already said so; found is
+// false when the thread is not a standing agent.
+func (s *Store) SetStandingAgentNotifyOnTick(threadID string, on bool) (_ StandingAgent, changed, found bool, _ error) {
+	notify := 0
+	if on {
+		notify = 1
+	}
+	changed, err := s.changeAgentWake(fmt.Sprintf("store: set notify_on_tick of %s", threadID),
+		`UPDATE standing_agents SET notify_on_tick = ? WHERE thread_id = ? AND notify_on_tick IS NOT ?`,
+		notify, threadID, notify)
+	if err != nil {
+		return StandingAgent{}, false, false, err
+	}
+	row, found, err := s.GetStandingAgent(threadID)
+	if err != nil || !found {
+		return StandingAgent{}, false, false, err
+	}
+	return row, changed, true, nil
 }
 
 // DemoteStandingAgent removes the row and reports whether there was one.

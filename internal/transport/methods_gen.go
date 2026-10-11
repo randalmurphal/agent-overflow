@@ -395,6 +395,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},                   // main.App.SetProviderCustomEnvVar
 	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},        // main.App.SetPushSenderCredential
+	{Name: "SetStandingAgentNotifyOnTick", ID: 2532132305, Scope: "threads:operate", Route: "thread"},                         // main.App.SetStandingAgentNotifyOnTick
 	{Name: "SetThreadGroup", ID: 2514763466, Scope: "threads:operate", Route: "home"},                                         // main.App.SetThreadGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},               // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                                    // main.App.SetThreadPinGroup
