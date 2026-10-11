@@ -78,4 +78,7 @@ type Host interface {
 	// recorder, which is every shipping one.
 	PushSent() []PushMessage
 	ForgetPushSent()
+	// UpdateWorkReason is the production update admission check: what a
+	// service update or restart would wait for now, "" when nothing.
+	UpdateWorkReason() (string, error)
 }
