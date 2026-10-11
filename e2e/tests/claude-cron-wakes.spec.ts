@@ -425,15 +425,18 @@ test('a background completion and a Monitor event that wake an idle session say 
     await waitForGate(harness, 'watch-event');
     await advance(harness, mockId, 'watch-event');
     await expect(replyRow(page, WATCH_REPLY)).toBeVisible();
-    await shot(page, testInfo, 'e7-idle-wake.png');
 
     const wakes = page.locator('[data-testid="notification-row"][data-notification-kind="background_wake"]');
     await expect(wakes).toHaveCount(2);
+    const watchWake = wakes.filter({ hasText: WATCH_DESC });
+    await expectClearOfComposer(page, watchWake);
+    await expectClearOfComposer(page, replyRow(page, WATCH_REPLY));
+    await shot(page, testInfo, 'e7-idle-wake.png');
+
     const buildWake = wakes.filter({ hasText: BUILD_DESC });
     await expect(buildWake).toContainText(buildSummary);
     await expectAbove(replyRow(page, ARMED_REPLY), buildWake);
     await expectAbove(buildWake, replyRow(page, 'The release build finished cleanly.'));
-    const watchWake = wakes.filter({ hasText: WATCH_DESC });
     await expect(watchWake).toContainText(watchEvent);
     await expectAbove(replyRow(page, 'The release build finished cleanly.'), watchWake);
     await expectAbove(watchWake, replyRow(page, WATCH_REPLY));
