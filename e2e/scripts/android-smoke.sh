@@ -112,6 +112,8 @@ if [[ ! -f "$apk" ]]; then
 fi
 if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
   export JAVA_HOME="${JAVA_HOME:-$HOME/.jdks/temurin-21}"
+  # apksigner runs `java` from PATH, not JAVA_HOME.
+  export PATH="$JAVA_HOME/bin:$PATH"
   "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$apk"
   manifest="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
   if [[ "$manifest" != "package: name='dev.agentoverflow.app'"* ]]; then

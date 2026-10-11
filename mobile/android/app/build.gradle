@@ -1,3 +1,5 @@
+import com.android.build.api.variant.HostTestBuilder
+
 apply plugin: 'com.android.application'
 
 // The SPA version is shared with the desktop; the shell build increases
@@ -36,8 +38,17 @@ android {
         release {
             if (releaseStore) signingConfig signingConfigs.release
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+// AGP 9 creates unit tests only for the tested (debug) build type.
+// build-apk.sh runs testReleaseUnitTest before assembleRelease, so the
+// release variant keeps its JVM tests.
+androidComponents {
+    beforeVariants(selector().withBuildType('release')) { variant ->
+        variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE].enable = true
     }
 }
 
@@ -49,9 +60,9 @@ repositories {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
-    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
-    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
-    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.appcompat:appcompat:${rootProject.ext.androidxAppCompatVersion}"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:${rootProject.ext.androidxCoordinatorLayoutVersion}"
+    implementation "androidx.core:core-splashscreen:${rootProject.ext.coreSplashScreenVersion}"
     implementation project(':capacitor-android')
     // Push (docs/specs/remote-access.md §9). UNCONDITIONAL, and that was
     // checked rather than assumed: the library needs the google-services
@@ -61,22 +72,22 @@ dependencies {
     // push — which is this box's state and a state a release is allowed
     // to be in. Making the dependency itself conditional would mean two
     // source sets, one of which nobody compiles.
-    implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
-    implementation "com.squareup.okhttp3:okhttp:$okhttpVersion"
-    testImplementation "com.squareup.okhttp3:mockwebserver3:$okhttpVersion"
-    testImplementation "com.squareup.okhttp3:okhttp-tls:$okhttpVersion"
-    testImplementation "junit:junit:$junitVersion"
+    implementation "com.google.firebase:firebase-messaging:${rootProject.ext.firebaseMessagingVersion}"
+    implementation "com.squareup.okhttp3:okhttp:${rootProject.ext.okhttpVersion}"
+    testImplementation "com.squareup.okhttp3:mockwebserver3:${rootProject.ext.okhttpVersion}"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:${rootProject.ext.okhttpVersion}"
+    testImplementation "junit:junit:${rootProject.ext.junitVersion}"
     testImplementation "org.mockito:mockito-core:5.24.0"
-    testImplementation "androidx.webkit:webkit:$androidxWebkitVersion"
-    testImplementation "org.apache.cordova:framework:$cordovaAndroidVersion"
+    testImplementation "androidx.webkit:webkit:${rootProject.ext.androidxWebkitVersion}"
+    testImplementation "org.apache.cordova:framework:${rootProject.ext.cordovaAndroidVersion}"
     // The bundle state file is JSON, and `org.json` on the unit-test
     // classpath is android.jar's STUB, whose every method throws. The
     // real implementation from Maven shadows it, which is what lets
     // BundleStoreTest exercise the whole update mechanic on the JVM
     // instead of needing an emulator for it (mobile/AGENTS.md).
-    testImplementation "org.json:json:$orgJsonVersion"
-    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
-    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    testImplementation "org.json:json:${rootProject.ext.orgJsonVersion}"
+    androidTestImplementation "androidx.test.ext:junit:${rootProject.ext.androidxJunitVersion}"
+    androidTestImplementation "androidx.test.espresso:espresso-core:${rootProject.ext.androidxEspressoCoreVersion}"
     implementation project(':capacitor-cordova-android-plugins')
 }
 
