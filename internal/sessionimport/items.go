@@ -79,11 +79,20 @@ func (b *builder) prompt(evt importir.Event) error {
 	// blob, so the correlation keys are the whole meta — the event's own
 	// meta (dedup ids, command-echo flags) is CLI bookkeeping that never
 	// reaches a live row either.
+	//
+	// A turn the provider started itself (a Claude scheduled turn) keeps
+	// the `origin` the live row carries, and like the live row it is
+	// wire-only: nobody typed it, so it has no edit or fork actions.
+	origin := metaString(evt.Meta, "origin")
 	meta, err := mergeMetaKeys("", map[string]string{
 		"provider_item_id":     stringsx.FirstNonEmptyTrimmed(metaString(evt.Meta, "provider_item_id"), evt.ItemID),
 		"provider_parent_uuid": metaString(evt.Meta, "parent_uuid"),
 		"command":              metaString(evt.Meta, "command"),
+		"origin":               origin,
 	})
+	if err == nil && origin != "" {
+		meta, err = mergeMetaWireOnly(meta)
+	}
 	if err != nil {
 		return fmt.Errorf("user text meta %s: %w", itemID, err)
 	}

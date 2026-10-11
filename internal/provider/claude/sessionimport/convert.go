@@ -298,6 +298,10 @@ func (c *converter) convertUser(row Row) {
 		Content:        text,
 		ContentPresent: true,
 	}
+	if isScheduledTurnRow(row) {
+		meta, _ := json.Marshal(map[string]any{"origin": ScheduledTurnOrigin})
+		evt.Meta = meta
+	}
 	if scope := strings.TrimSpace(c.subagentScope); scope != "" && !c.openingPromptByScope[scope] {
 		c.openingPromptByScope[scope] = true
 		meta, _ := json.Marshal(map[string]any{provider.MetaSubagentOpeningPromptKey: true})
@@ -306,12 +310,25 @@ func (c *converter) convertUser(row Row) {
 	c.emit(evt, row)
 }
 
-// userPromptText reports whether a user row is something the person
-// typed, and returns its text. Everything else on a `user` row is
-// machinery: tool-result echoes, `isMeta` caveats, the compaction
-// summary, and synthetic/transcript-only context injections.
+// ScheduledTurnOrigin is the `origin` of the user row that opens a turn
+// the CLI started from its own schedule (a CronCreate job's fire or a
+// ScheduleWakeup wake, claude-wire.md §E11). The live parser stamps the
+// same value (claude.ScheduledTurnOrigin).
+const ScheduledTurnOrigin = "scheduled"
+
+// isScheduledTurnRow reports a scheduled turn's prompt row. The CLI marks
+// it `isMeta`, but it is the turn's only statement of what was asked.
+func isScheduledTurnRow(row Row) bool {
+	return row.Type == "user" && row.IsMeta && rawString(row.Raw, "turnOrigin") == ScheduledTurnOrigin
+}
+
+// userPromptText reports whether a user row is a prompt that opens a
+// turn, and returns its text: something the person typed, or a scheduled
+// turn's stored prompt. Everything else on a `user` row is machinery:
+// tool-result echoes, `isMeta` caveats, the compaction summary, and
+// synthetic/transcript-only context injections.
 func userPromptText(row Row) (string, bool) {
-	if row.Type != "user" || row.IsMeta || row.IsCompactSummary || row.IsSynthetic {
+	if row.Type != "user" || (row.IsMeta && !isScheduledTurnRow(row)) || row.IsCompactSummary || row.IsSynthetic {
 		return "", false
 	}
 	if rawBool(row.Raw, "isVisibleInTranscriptOnly") {

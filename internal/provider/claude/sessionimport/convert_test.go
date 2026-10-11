@@ -756,3 +756,34 @@ func TestConvertMonitorAckClassifiesAsWatch(t *testing.T) {
 		})
 	}
 }
+
+// A turn the CLI started from a cron job opens with an `isMeta` row
+// carrying `turnOrigin:"scheduled"` (claude-wire.md §E11). Unlike an
+// `isMeta` caveat it is the turn's prompt, so it converts to a user row
+// that says where it came from; a plain `isMeta` row stays dropped.
+func TestConvertKeepsAScheduledTurnPromptWithItsOrigin(t *testing.T) {
+	events, _ := convertFixture(t, ConvertOptions{},
+		userRow("u1", "", "schedule a ping", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{map[string]any{"type": "text", "text": "Scheduled."}}, "2026-01-01T00:00:01.000Z"),
+		userRow("u2", "a1", "Reply with CRON-FIRED.", "2026-01-01T00:01:00.000Z",
+			with("isMeta", true), with("promptSource", "system"), with("turnOrigin", "scheduled")),
+		assistantRow("a2", "u2", "msg_2", []any{map[string]any{"type": "text", "text": "CRON-FIRED"}}, "2026-01-01T00:01:01.000Z"),
+		userRow("u3", "a2", "[Image: 100x100]", "2026-01-01T00:01:02.000Z", with("isMeta", true)),
+	)
+	texts := eventsOfKind(events, provider.EventUserText)
+	if len(texts) != 2 {
+		t.Fatalf("user_text events = %d, want 2:\n%s", len(texts), renderEvents(events))
+	}
+	if meta := decodeMeta(t, texts[0].Meta); meta["origin"] != nil {
+		t.Fatalf("typed prompt carries origin %v", meta["origin"])
+	}
+	if texts[1].Content != "Reply with CRON-FIRED." {
+		t.Fatalf("scheduled prompt content = %q", texts[1].Content)
+	}
+	if meta := decodeMeta(t, texts[1].Meta); meta["origin"] != ScheduledTurnOrigin {
+		t.Fatalf("scheduled prompt meta = %v, want origin %q", meta, ScheduledTurnOrigin)
+	}
+	if texts[1].TurnIndex == texts[0].TurnIndex {
+		t.Fatalf("the scheduled prompt did not open its own turn:\n%s", renderEvents(events))
+	}
+}

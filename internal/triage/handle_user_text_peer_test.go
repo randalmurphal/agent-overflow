@@ -155,3 +155,11 @@ func TestPeerMessageOriginMatchesTheProviderConstant(t *testing.T) {
 		t.Fatalf("triage origin %q != claude.PeerTurnOrigin %q", crossSessionMessageOrigin, claude.PeerTurnOrigin)
 	}
 }
+
+// Same pin for the scheduled-turn origin: the frontend badges a row by
+// this exact string.
+func TestScheduledTurnOriginMatchesTheProviderConstant(t *testing.T) {
+	if scheduledTurnOrigin != claude.ScheduledTurnOrigin {
+		t.Fatalf("triage origin %q != claude.ScheduledTurnOrigin %q", scheduledTurnOrigin, claude.ScheduledTurnOrigin)
+	}
+}

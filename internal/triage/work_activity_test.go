@@ -3,6 +3,8 @@ package triage
 import (
 	"testing"
 	"time"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestUnfinishedWorkKeepsEchoVisibleAcrossConsumptionAndCleanup(t *testing.T) {
@@ -46,6 +48,9 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 			s.pendingWakeupSet = true
 			s.pendingWakeupAt = time.Now().Add(time.Hour).UnixMilli()
 		},
+		"scheduled job": func(s *threadState) {
+			s.scheduledJobs = []provider.ScheduledJob{{ID: "job", FireByUnixMs: time.Now().Add(time.Hour).UnixMilli()}}
+		},
 	}
 	for name, active := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -67,6 +72,15 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 		r.mu.Unlock()
 		if r.AnyUnfinishedWork(time.Minute) {
 			t.Fatal("stale wakeup blocked maintenance")
+		}
+	})
+	t.Run("expired scheduled job", func(t *testing.T) {
+		r, _, _ := newTestRouter(t)
+		r.mu.Lock()
+		r.state("thread").scheduledJobs = []provider.ScheduledJob{{ID: "job", FireByUnixMs: time.Now().Add(-time.Hour).UnixMilli()}}
+		r.mu.Unlock()
+		if r.AnyUnfinishedWork(time.Minute) {
+			t.Fatal("a job whose deadline passed blocked maintenance")
 		}
 	})
 }

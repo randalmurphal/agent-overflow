@@ -114,3 +114,79 @@ func TestPendingWakeupAtNilSafety(t *testing.T) {
 		t.Fatal("empty thread id must report no pending wakeup")
 	}
 }
+
+func scheduledJobsEvent(t *testing.T, threadID string, jobs ...provider.ScheduledJob) provider.ProviderEvent {
+	t.Helper()
+	meta, err := json.Marshal(provider.ScheduledJobsMeta{Jobs: jobs})
+	if err != nil {
+		t.Fatalf("marshal scheduled jobs: %v", err)
+	}
+	return provider.ProviderEvent{Kind: provider.EventScheduledJobs, ThreadID: threadID, Meta: meta, Timestamp: time.Now()}
+}
+
+// The armed-job list replaces itself on every report, and the thread's
+// wake deadline is the latest of the ScheduleWakeup time and every job's
+// next-fire deadline, so neither record can hide the other.
+func TestScheduledJobsExtendThePendingWakeup(t *testing.T) {
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
+	const threadID = "thread-cron"
+	wakeAt := time.Now().Add(10 * time.Minute).UnixMilli()
+	jobLate := time.Now().Add(40 * time.Minute).UnixMilli()
+	jobEarly := time.Now().Add(5 * time.Minute).UnixMilli()
+
+	if err := r.Handle(scheduledJobsEvent(t, threadID,
+		provider.ScheduledJob{ID: "a", Cron: "* * * * *", Recurring: true, FireByUnixMs: jobEarly},
+		provider.ScheduledJob{ID: "b", Cron: "0 * * * *", Recurring: true, FireByUnixMs: jobLate},
+	)); err != nil {
+		t.Fatalf("handle jobs: %v", err)
+	}
+	if at, ok := r.PendingWakeupAt(threadID); !ok || at.UnixMilli() != jobLate {
+		t.Fatalf("PendingWakeupAt = (%v, %v), want the latest job deadline %d", at.UnixMilli(), ok, jobLate)
+	}
+	if err := r.Handle(wakeupEvent(t, threadID, wakeAt)); err != nil {
+		t.Fatalf("handle wakeup: %v", err)
+	}
+	if at, _ := r.PendingWakeupAt(threadID); at.UnixMilli() != jobLate {
+		t.Fatalf("a nearer ScheduleWakeup hid a later job deadline: %d", at.UnixMilli())
+	}
+	// A replacement list drops the later job.
+	if err := r.Handle(scheduledJobsEvent(t, threadID,
+		provider.ScheduledJob{ID: "a", Cron: "* * * * *", Recurring: true, FireByUnixMs: jobEarly})); err != nil {
+		t.Fatalf("handle replacement: %v", err)
+	}
+	if at, _ := r.PendingWakeupAt(threadID); at.UnixMilli() != wakeAt {
+		t.Fatalf("PendingWakeupAt = %d after the list shrank, want the wakeup %d", at.UnixMilli(), wakeAt)
+	}
+	// An empty list clears the jobs; the wakeup stays its own record.
+	if err := r.Handle(scheduledJobsEvent(t, threadID)); err != nil {
+		t.Fatalf("handle empty: %v", err)
+	}
+	if err := r.Handle(wakeupEvent(t, threadID, 0)); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	if _, ok := r.PendingWakeupAt(threadID); ok {
+		t.Fatal("an empty job list and a stopped wakeup left a deadline")
+	}
+}
+
+// Armed jobs live in the CLI process like the wakeup timer, so both
+// lifecycle sweeps drop them.
+func TestScheduledJobsClearedBySessionLifecycle(t *testing.T) {
+	job := provider.ScheduledJob{ID: "a", Cron: "0 9 * * *", Recurring: true, FireByUnixMs: time.Now().Add(20 * time.Hour).UnixMilli()}
+	for name, sweep := range map[string]func(*Router, string){
+		"CleanupThread":    func(r *Router, id string) { r.CleanupThread(id) },
+		"MarkThreadActive": func(r *Router, id string) { r.MarkThreadActive(id) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewRouter(nil, func(eventchan.Channel, any) {})
+			const threadID = "thread-cron-sweep"
+			if err := r.Handle(scheduledJobsEvent(t, threadID, job)); err != nil {
+				t.Fatalf("handle jobs: %v", err)
+			}
+			sweep(r, threadID)
+			if _, ok := r.PendingWakeupAt(threadID); ok {
+				t.Fatalf("%s left the previous process's jobs armed", name)
+			}
+		})
+	}
+}

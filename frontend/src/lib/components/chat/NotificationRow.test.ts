@@ -194,3 +194,34 @@ describe('<NotificationRow> permission notices', () => {
     expect(commands.textContent).toContain('ls');
   });
 });
+
+describe('<NotificationRow> background wake', () => {
+  it('names the task, shows what woke the session and exposes its kind', () => {
+    const { getByTestId } = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          { kind: 'background_wake', detail: 'ERROR deploy step 3 failed', taskId: 'bwatch002' },
+          'Monitor event: "deploy log errors"',
+        ),
+      },
+    });
+    const row = getByTestId('notification-row');
+    expect(row.getAttribute('data-notification-kind')).toBe('background_wake');
+    expect(row.textContent).toContain('Monitor event: "deploy log errors"');
+    expect(getByTestId('background-wake-detail').textContent).toContain('ERROR deploy step 3 failed');
+    // Not a warning: nothing failed in the app.
+    expect(row.getAttribute('role')).toBeNull();
+  });
+
+  it('renders no detail block when the report carried none', () => {
+    const { queryByTestId } = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          { kind: 'background_wake' },
+          'Background command "Run the release build" completed (exit code 0)',
+        ),
+      },
+    });
+    expect(queryByTestId('background-wake-detail')).toBeNull();
+  });
+});

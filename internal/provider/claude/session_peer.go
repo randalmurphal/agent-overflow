@@ -145,15 +145,16 @@ func (s *Session) noteIssuedCommandUUID(uuid string) {
 	s.issuedCommands.note(uuid)
 }
 
-// commandUUIDIsPeerOriginated reports whether a command_lifecycle frame
-// belongs to a turn another Claude session started.
+// commandUUIDIsForeign reports whether a command_lifecycle frame belongs
+// to a turn this app did not start: a peer session's delivery or the
+// CLI's own scheduled turn.
 //
-// FAIL-SAFE DIRECTION: a uuid is peer-originated only when the ledger
-// positively lacks it AND has never overflowed. Mislabelling a peer turn
-// as AO's costs a missing attribution label; mislabelling AO's OWN turn
-// as a peer's would put "from another Claude session" on a message the
-// user typed, which is the transcript lying about who asked for what.
-func (s *Session) commandUUIDIsPeerOriginated(uuid string) bool {
+// FAIL-SAFE DIRECTION: a uuid is foreign only when the ledger positively
+// lacks it AND has never overflowed. Mislabelling a foreign turn as AO's
+// costs a missing attribution label; mislabelling AO's OWN turn as a
+// peer's would put "from another Claude session" on a message the user
+// typed, which is the transcript lying about who asked for what.
+func (s *Session) commandUUIDIsForeign(uuid string) bool {
 	if uuid == "" {
 		return false
 	}
@@ -175,7 +176,7 @@ func (s *Session) releaseIssuedCommandUUID(uuid string) {
 // panic — which is also the correct answer: with no session ledger, no
 // uuid can be PROVEN unissued.
 type peerTurnClassifier interface {
-	commandUUIDIsPeerOriginated(commandUUID string) bool
+	commandUUIDIsForeign(commandUUID string) bool
 	directSlashCommand(commandUUID string) (directSlashCommand, bool)
 	releaseDirectSlashCommand(commandUUID string)
 	releaseIssuedCommandUUID(commandUUID string)

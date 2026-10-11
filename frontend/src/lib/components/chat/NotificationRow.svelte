@@ -6,6 +6,7 @@
   import Inbox from '@lucide/svelte/icons/inbox';
   import ShieldBan from '@lucide/svelte/icons/shield-ban';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import AlarmClock from '@lucide/svelte/icons/alarm-clock';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -44,6 +45,9 @@
     // TRIED to do and could not.
     if (kind === 'permission_denied') return ShieldBan;
     if (kind === 'permission_retry') return RotateCcw;
+    // A background task's report started a turn on an idle session: the
+    // row says what woke it, ahead of the reply it caused.
+    if (kind === 'background_wake') return AlarmClock;
     return Bell;
   });
   let isWarning = $derived(
@@ -86,6 +90,13 @@
   let isWorkspaceBoundaryDenial = $derived(
     kind === 'permission_denied' && meta?.workspaceBoundary === true,
   );
+
+  // The woken turn's cause in the task's own words: an agent's report or
+  // the Monitor event line. The summary above already names the task.
+  let wakeDetail = $derived.by(() => {
+    if (kind !== 'background_wake') return '';
+    return typeof meta?.detail === 'string' ? meta.detail.trim() : '';
+  });
 
   // permission_retry's display names of the commands a permission-mode change
   // just allowed. Per command NAME — the subtype carries no tool id.
@@ -155,6 +166,7 @@
 <div
   class="mb-1.5 px-2 py-1 text-[0.6875rem] italic {isWarning ? 'text-warning' : 'text-fg-subtle'}"
   data-testid="notification-row"
+  data-notification-kind={kind || undefined}
   role={isWarning ? 'status' : undefined}
 >
   <div class="flex items-center gap-1.5">
@@ -174,6 +186,14 @@
   {#if isWorkspaceBoundaryDenial}
     <div class="ml-5 mt-0.5 not-italic text-warning/80" data-testid="permission-denied-remedy">
       Allowing this needs the directory added to the session, not a tool permission rule.
+    </div>
+  {/if}
+  {#if wakeDetail}
+    <div
+      class="ml-5 mt-0.5 whitespace-pre-wrap break-words not-italic text-fg-subtle"
+      data-testid="background-wake-detail"
+    >
+      {wakeDetail}
     </div>
   {/if}
   {#if retriedCommands.length > 0}

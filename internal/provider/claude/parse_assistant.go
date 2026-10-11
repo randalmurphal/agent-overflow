@@ -508,6 +508,12 @@ func (p *Parser) appendToolUseEvent(
 	if isWorktreeToolName(block.Name) {
 		p.markWorktreeTool(block.ID, block.Name, parentToolUseID)
 	}
+	// CronCreate / CronList / CronDelete render as ordinary tool rows AND
+	// change the CLI's armed jobs; the result side applies the ack
+	// (parse_cron.go). A job is the session's whichever agent armed it.
+	if isCronToolName(block.Name) {
+		p.markCronTool(block.ID, block.Name, block.Input)
+	}
 
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {

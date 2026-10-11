@@ -528,6 +528,22 @@ func (b *builder) providerMetaString(evt importir.Event) string {
 	return string(b.providerMeta(evt))
 }
 
+// mergeMetaWireOnly sets `wire_only: true` on an item meta object.
+func mergeMetaWireOnly(existing string) (string, error) {
+	merged := map[string]any{}
+	if strings.TrimSpace(existing) != "" {
+		if err := json.Unmarshal([]byte(existing), &merged); err != nil {
+			return "", fmt.Errorf("decode item meta: %w", err)
+		}
+	}
+	merged["wire_only"] = true
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 // mergeMetaKeys sets top-level keys on a meta object, preserving the
 // rest. Used for the correlation keys triage stamps outside the
 // provider's own meta (provider_item_id, provider_parent_uuid).

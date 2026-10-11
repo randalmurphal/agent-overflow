@@ -107,7 +107,7 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 		if projection != nil {
 			return nil, fmt.Errorf("transcript_mirror %q changed from sidechain to main transcript", envelope.FilePath)
 		}
-		return nil, nil
+		return p.mainTranscriptTurnStarts(threadID, envelope.Entries, facts, now), nil
 	}
 	if projection == nil && p.activeCommandUUID != "" && state.commands[p.activeCommandUUID] != nil {
 		// Claude emits agent_metadata before the ordinary task_started event.
@@ -542,6 +542,9 @@ type mirrorEntryFact struct {
 	compaction      bool
 	compactBoundary bool
 	attachment      bool
+	// turnOrigin is a user row's `turnOrigin`: why the CLI started the
+	// turn this row opens (parse_turn_origin.go).
+	turnOrigin string
 }
 
 func (i mirrorEntryInspection) timestampOr(fallback time.Time) time.Time {
@@ -617,6 +620,7 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			AttributionSkill string `json:"attributionSkill"`
 			LegacySkill      string `json:"attribution_skill"`
 			Timestamp        string `json:"timestamp"`
+			TurnOrigin       string `json:"turnOrigin"`
 			Attribution      struct {
 				Skill     string `json:"skill"`
 				SkillName string `json:"skillName"`
@@ -638,12 +642,16 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			return mirrorEntryInspection{}, err
 		}
 		boundary := raw.Type == "system" && raw.Subtype == "compact_boundary"
-		facts.entries = append(facts.entries, mirrorEntryFact{
+		fact := mirrorEntryFact{
 			uuid:            strings.TrimSpace(raw.UUID),
 			compaction:      boundary || raw.IsCompactSummary,
 			compactBoundary: boundary,
 			attachment:      raw.Type == "attachment",
-		})
+		}
+		if raw.Type == "user" {
+			fact.turnOrigin = strings.TrimSpace(raw.TurnOrigin)
+		}
+		facts.entries = append(facts.entries, fact)
 		facts.agentID = firstNonEmpty(facts.agentID,
 			strings.TrimSpace(raw.AgentID), strings.TrimSpace(raw.LegacyAgentID))
 		facts.attributionSkill = firstNonEmpty(facts.attributionSkill,

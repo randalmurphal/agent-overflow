@@ -110,6 +110,23 @@ describe('<UserMessage>', () => {
     expect(local.queryByTestId('user-message-external-origin')).toBeNull();
   });
 
+  // A scheduled turn's prompt was stored by the model earlier; the badge
+  // says so, and it is not attributed to another session.
+  it('marks the prompt of a scheduled turn', () => {
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'Reply with CRON-FIRED.',
+          meta: JSON.stringify({ origin: 'scheduled', wire_only: true }),
+        }),
+      },
+    });
+    expect(view.getByTestId('user-message-scheduled-origin').textContent).toContain('Scheduled');
+    expect(view.queryByTestId('user-message-peer-origin')).toBeNull();
+  });
+
   // A row an agent in another thread wrote carries that thread through to
   // the reader: its title, the computer when that is a different one, and a
   // way in when this client can reach it.

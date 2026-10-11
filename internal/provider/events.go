@@ -90,6 +90,16 @@ const (
 	// clears the pending state (the `{stop:true}` ack).
 	EventSessionWakeup EventKind = "session_wakeup"
 
+	// EventScheduledJobs is the Claude-only snapshot of the session's armed
+	// CronCreate jobs (claude-wire.md §E11). Like a ScheduleWakeup timer, a
+	// job lives only in the CLI process and has no task lifecycle, so it is
+	// invisible to every other "is this session busy" signal until it
+	// fires. The meta is the FULL replacement list with each job's latest
+	// possible next fire; triage keeps it per thread so the idle-session
+	// reaper and the update admission check protect a session until its
+	// jobs' deadlines pass. An empty list clears it.
+	EventScheduledJobs EventKind = "scheduled_jobs"
+
 	// EventCompactionStatus is the live signal that the provider is
 	// summarizing the thread's context right now — a window that can run
 	// for minutes with no other wire traffic. Claude emits it from
@@ -248,6 +258,7 @@ var AllEventKinds = []EventKind{
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
 	EventSessionWakeup,
+	EventScheduledJobs,
 	EventCompactionStatus,
 	EventSubagentNotification,
 	EventSubagentStatus,
@@ -513,6 +524,23 @@ func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 // (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
 type SessionWakeupMeta struct {
 	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
+
+// ScheduledJobsMeta is the typed payload for EventScheduledJobs: every job
+// the session holds armed, replacing any earlier list.
+type ScheduledJobsMeta struct {
+	Jobs []ScheduledJob `json:"jobs"`
+}
+
+// ScheduledJob is one armed provider-scheduled job. FireByUnixMs is the
+// latest wall-clock time (epoch ms) the provider can next fire it; a fire
+// moves it forward, and a deadline that passes with no fire leaves the job
+// inert rather than protecting the session forever.
+type ScheduledJob struct {
+	ID           string `json:"id"`
+	Cron         string `json:"cron"`
+	Recurring    bool   `json:"recurring"`
+	FireByUnixMs int64  `json:"fireByUnixMs"`
 }
 
 // WorkspaceChangeMeta is the typed payload for EventWorkspaceChanged.

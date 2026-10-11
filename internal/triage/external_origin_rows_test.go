@@ -275,3 +275,37 @@ func TestConsumeMatchingPendingSend_UnknownClientID_MatchesNothing(t *testing.T)
 		t.Fatal("the entry was consumed anyway")
 	}
 }
+
+// A scheduled turn's prompt (a Claude cron fire or ScheduleWakeup wake)
+// persists as its own badged user row, and it can arrive while one of the
+// user's sends waits for its echo: it must not take that send's row.
+func TestHandleUserText_ScheduledPrompt_PersistsItsOwnRowAndLeavesThePendingSendAlone(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 4)
+	router.RegisterPendingSendWithExpectation("t1", "user:5", 5, PendingSendExpectation{})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "Reply with CRON-FIRED.",
+		Meta:      json.RawMessage(`{"provider_item_id":"fire-1","origin":"scheduled"}`),
+		Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("Handle scheduled prompt: %v", err)
+	}
+	row, found, err := st.GetThreadItem("t1", "user:scheduled:fire-1")
+	if err != nil || !found {
+		t.Fatalf("scheduled prompt row missing: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if row.Role != "user" || row.Summary != "Reply with CRON-FIRED." || meta["origin"] != scheduledTurnOrigin || meta["wire_only"] != true {
+		t.Fatalf("row = %+v meta %v", row, meta)
+	}
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatal("the scheduled prompt consumed the user's pending send")
+	}
+}

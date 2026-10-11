@@ -1974,6 +1974,8 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// would shield the fresh session from the idle reaper for up to
 		// the wakeup clamp (60 min).
 		st.pendingWakeupAt, st.pendingWakeupSet = 0, false
+		// Cron jobs are the same kind of in-process CLI state.
+		st.scheduledJobs = nil
 		// The ticks belong to the provider PROCESS: a dead process will
 		// never deliver the terminal that would consume them.
 		st.subagentProgress = nil
