@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"path/filepath"
@@ -69,10 +70,15 @@ func (a *App) ciLogSource(pr gitops.PRReference, jobID string) cilog.Source {
 		start := func(st gitops.CIJobLogStart) (io.Writer, error) {
 			return begin(cilog.Start{Status: st.Status, ETag: st.ETag, Offset: st.Offset})
 		}
+		stream := a.gitCore().StreamCIJobLog
 		if a.prUpdates.ciLogStreamFn != nil {
-			return a.prUpdates.ciLogStreamFn(ctx, pr, forgeReq, start)
+			stream = a.prUpdates.ciLogStreamFn
 		}
-		return a.gitCore().StreamCIJobLog(ctx, pr, forgeReq, start)
+		notModified, err := stream(ctx, pr, forgeReq, start)
+		if errors.Is(err, gitops.ErrCIJobLogRangeUnsatisfiable) {
+			return false, fmt.Errorf("%w: %w", cilog.ErrRangeUnsatisfiable, err)
+		}
+		return notModified, err
 	}
 }
 

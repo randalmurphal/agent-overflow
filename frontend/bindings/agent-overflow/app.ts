@@ -4599,8 +4599,8 @@ export function SavePRCIJobLog(pr: git$0.PRReference, jobID: string, jobName: st
  * follow's last index computed. The path is stable per (pr, job,
  * section), so a re-save refreshes the same file.
  */
-export function SavePRCIJobLogSection(pr: git$0.PRReference, jobID: string, sectionKey: string): $CancellablePromise<string> {
-    return $Call.ByID(1281545488, pr, jobID, sectionKey);
+export function SavePRCIJobLogSection(pr: git$0.PRReference, jobID: string, jobName: string, sectionKey: string): $CancellablePromise<string> {
+    return $Call.ByID(1281545488, pr, jobID, jobName, sectionKey);
 }
 
 export function SavePayloadToFile(threadID: string, payloadID: string): $CancellablePromise<string> {

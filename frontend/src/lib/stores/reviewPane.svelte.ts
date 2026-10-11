@@ -2098,7 +2098,7 @@ function createReviewPaneState(
   async function saveCILogSection(open: NonNullable<typeof ciLogOpen>, ref: PRRef, section: CILogSection): Promise<string | null> {
     try {
       return String(await withBackendTarget(backend, () =>
-        SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, section.key)));
+        SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, open.job.name, section.key)));
     } catch (err) {
       if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
       return null;

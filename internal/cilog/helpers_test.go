@@ -50,6 +50,9 @@ func (f *fakeForge) source() Source {
 		}
 		status, offset := http.StatusOK, int64(0)
 		if req.From > 0 && !running {
+			if req.From >= int64(len(body)) {
+				return false, fmt.Errorf("%w: 416", ErrRangeUnsatisfiable)
+			}
 			status, offset = http.StatusPartialContent, req.From
 		}
 		w, err := begin(Start{Status: status, ETag: etag, Offset: offset})
@@ -58,7 +61,9 @@ func (f *fakeForge) source() Source {
 		}
 		body = body[offset:]
 		failed := false
-		if cut > 0 && int64(len(body)) > cut {
+		// A cut at the body's length delivers every byte and then fails,
+		// before the end was seen.
+		if cut > 0 && int64(len(body)) >= cut {
 			body, failed = body[:cut], true
 		}
 		if chunk <= 0 {

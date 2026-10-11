@@ -207,3 +207,33 @@ func TestAFetchFailureBeforeABodyLeavesTheVersion(t *testing.T) {
 		t.Fatalf("after a failed fetch: %q, parts %v", got, partFiles(t, dir))
 	}
 }
+
+// A resume the forge answers 416 (the download was cut off after its last
+// byte, before its end was seen) drops the cut download and starts over
+// from the first byte in the same fetch; the next resume would be refused
+// the same way forever.
+func TestARefusedResumeStartsOver(t *testing.T) {
+	t.Parallel()
+	s, dir, _ := newTestStore(t, CacheBytes)
+	key := githubKey("1")
+	want := numberedLines(100)
+	body := strings.Join(want, "\n") + "\n"
+	forge := &fakeForge{cut: int64(len(body))}
+	forge.set(body, `"blob"`)
+	if result, err := s.Fetch(t.Context(), key, forge.source()); err != nil || !result.Partial {
+		t.Fatalf("cut fetch = %+v, %v", result, err)
+	}
+	result, err := s.Fetch(t.Context(), key, forge.source())
+	if err != nil || !result.Changed || result.Partial {
+		t.Fatalf("fetch after the refused resume = %+v, %v", result, err)
+	}
+	if got := forge.requests; len(got) != 3 || got[1].From != int64(len(body)) || got[2] != (Request{}) {
+		t.Fatalf("requests %+v, want the refused resume and then a whole request", got)
+	}
+	if got := allLines(t, s, key); !slices.Equal(got, want) {
+		t.Fatalf("log has %d lines, want %d", len(got), len(want))
+	}
+	if parts := partFiles(t, dir); len(parts) != 0 {
+		t.Fatalf("part files left %v", parts)
+	}
+}

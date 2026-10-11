@@ -84,6 +84,10 @@ type CIStep struct {
 // job's whole run and can be a while after it completed.
 var ErrCIJobLogNotFound = errors.New("ci job log not found")
 
+// ErrCIJobLogRangeUnsatisfiable is a resumed job log request (From > 0)
+// the forge answered with HTTP 416: it holds no byte at that offset.
+var ErrCIJobLogRangeUnsatisfiable = errors.New("ci job log range not satisfiable")
+
 // CIJobLogRequest names one job's log for StreamCIJobLog. From > 0 asks
 // for the bytes from there on (Range: bytes=From-), to resume a cut-off
 // download; ETag, sent only from the start, is the validator of the log
@@ -162,12 +166,17 @@ func contentRangeStart(value string) (int64, bool) {
 }
 
 // streamCILog runs a job log request into the caller's writer. A 404 is
-// ErrCIJobLogNotFound; a 304 is notModified, the writer never asked for.
+// ErrCIJobLogNotFound, a 416 ErrCIJobLogRangeUnsatisfiable; a 304 is
+// notModified, the writer never asked for.
 func streamCILog(ctx context.Context, client *forgeapi.Client, request forgeapi.Request, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	resp, err := client.Stream(ctx, request, &ciLogSink{begin: begin}, forgeapi.NoLimit)
 	if err != nil {
-		if errors.Is(err, forgeapi.ErrNotFound) {
+		var statusErr *forgeapi.StatusError
+		switch {
+		case errors.Is(err, forgeapi.ErrNotFound):
 			return false, fmt.Errorf("%w: %w", ErrCIJobLogNotFound, err)
+		case errors.As(err, &statusErr) && statusErr.Status == http.StatusRequestedRangeNotSatisfiable:
+			return false, fmt.Errorf("%w: %w", ErrCIJobLogRangeUnsatisfiable, err)
 		}
 		return false, err
 	}

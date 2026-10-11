@@ -187,7 +187,7 @@ func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, 
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, sectionKey string) (string, error) {
+func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, jobName, sectionKey string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
@@ -206,7 +206,7 @@ func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, sectionKey str
 	}
 	key := ciLogKey(pr, jobID)
 	var section cilog.Section
-	stem := strings.TrimSuffix(ciLogFileName(pr, jobID, ""), ".log")
+	stem := strings.TrimSuffix(ciLogFileName(pr, jobID, jobName), ".log")
 	// The name comes from the row the copy finds, so the copy goes to a
 	// temp file first and is renamed once the row is known.
 	path, err := a.writeCILogFileNamed(func(w io.Writer) (string, error) {

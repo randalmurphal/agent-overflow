@@ -28,8 +28,9 @@ type Start struct {
 
 // Source downloads one job's log. It calls begin once the answer's
 // headers are in, and writes the body to the writer begin returns. It
-// reports a 304 as notModified with begin never called. A 404 or any
-// other failure is its error, passed through.
+// reports a 304 as notModified with begin never called, and a 416 to a
+// resume as an error that is ErrRangeUnsatisfiable. A 404 or any other
+// failure is its error, passed through.
 type Source func(ctx context.Context, req Request, begin func(Start) (io.Writer, error)) (notModified bool, err error)
 
 // FetchResult is what a Fetch did. Changed: a new version was published
@@ -39,6 +40,12 @@ type FetchResult struct {
 	Changed bool
 	Partial bool
 }
+
+// ErrRangeUnsatisfiable is a Source's report of a 416 to a resume: the
+// forge holds no byte at the offset asked for, because the download was
+// cut off after its last byte but before its end was seen, or the log
+// was rewritten shorter. The download starts over from the first byte.
+var ErrRangeUnsatisfiable = errors.New("cilog: the forge cannot serve the resume range")
 
 var errRestart = errors.New("cilog: the forge answered a resume with another log")
 
@@ -75,7 +82,8 @@ func (d *download) Write(p []byte) (int, error) {
 // holds, downloads a changed log whole into a new version, or resumes a
 // download a previous Fetch was cut off in. A download the forge answers
 // with another log than the one being resumed (a 200, or a 206 under
-// another ETag) starts over. Fetches of one key run one at a time.
+// another ETag) or refuses the range of (ErrRangeUnsatisfiable) starts
+// over. Fetches of one key run one at a time.
 func (s *Store) Fetch(ctx context.Context, key Key, src Source) (FetchResult, error) {
 	s.mu.Lock()
 	e := s.entryLocked(key)
@@ -135,6 +143,9 @@ func (s *Store) fetchOnce(ctx context.Context, e *entry, src Source) (FetchResul
 		err = active.writeErr
 	}
 	switch {
+	case err != nil && active == nil && resume != nil && errors.Is(err, ErrRangeUnsatisfiable):
+		s.discard(e, resume)
+		return FetchResult{}, errRestart
 	case err != nil && active == nil:
 		return FetchResult{}, err
 	case err != nil:

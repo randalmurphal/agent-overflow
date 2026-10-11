@@ -795,16 +795,22 @@ func TestGitHubJobLog(t *testing.T) {
 		t.Fatalf("requests = %d, want the one valid read", n)
 	}
 	for _, tc := range []struct {
-		status   int
-		notFound bool
-	}{{http.StatusNotFound, true}, {http.StatusInternalServerError, false}, {http.StatusForbidden, false}} {
+		status       int
+		notFound     bool
+		rangeRefused bool
+	}{
+		{status: http.StatusNotFound, notFound: true},
+		{status: http.StatusRequestedRangeNotSatisfiable, rangeRefused: true},
+		{status: http.StatusInternalServerError},
+		{status: http.StatusForbidden},
+	} {
 		mu.Lock()
 		status = tc.status
 		mu.Unlock()
-		_, _, _, err := streamTestLog(t, core, githubTestRef(1), CIJobLogRequest{JobID: "901"})
+		_, _, _, err := streamTestLog(t, core, githubTestRef(1), CIJobLogRequest{JobID: "901", From: 10})
 		var statusErr *forgeapi.StatusError
-		if errors.Is(err, ErrCIJobLogNotFound) != tc.notFound || !errors.As(err, &statusErr) || statusErr.Status != tc.status {
-			t.Fatalf("HTTP %d: StreamCIJobLog = %v, want ErrCIJobLogNotFound %v over the *StatusError", tc.status, err, tc.notFound)
+		if errors.Is(err, ErrCIJobLogNotFound) != tc.notFound || errors.Is(err, ErrCIJobLogRangeUnsatisfiable) != tc.rangeRefused || !errors.As(err, &statusErr) || statusErr.Status != tc.status {
+			t.Fatalf("HTTP %d: StreamCIJobLog = %v, want ErrCIJobLogNotFound %v and ErrCIJobLogRangeUnsatisfiable %v over the *StatusError", tc.status, err, tc.notFound, tc.rangeRefused)
 		}
 	}
 }

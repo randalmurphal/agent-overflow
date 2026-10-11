@@ -1721,6 +1721,7 @@ describe('reviewPane store — PR scope', () => {
       expect(save).toHaveBeenCalledWith(
         { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
         '20',
+        'unit',
         'section:step_script:1',
       );
       expect(content).toBe([
@@ -1782,7 +1783,7 @@ describe('reviewPane store — PR scope', () => {
 
       const big = { key: 'job', name: 'unit', status: 'running', start: 0, end: 2, lines: 2, bytes: CI_SECTION_INLINE_MAX_BYTES + 1 };
       expect(await state.copyCILogSection(big)).toBe(true);
-      expect(save).toHaveBeenCalledWith(expect.anything(), '20', 'job');
+      expect(save).toHaveBeenCalledWith(expect.anything(), '20', 'unit', 'job');
       expect(writes.at(-1)).toBe('/data/ci-logs/big.log');
       expect(state.ciLogSavedPath).toBe('/data/ci-logs/big.log');
       expect(getToasts().at(-1)?.message).toBe('The section is over 64 KB: it was saved to a file, and the path is copied.');

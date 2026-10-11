@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -84,12 +85,15 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 			return false, err
 		}
 		// The log's ETag is its text: a fetch naming the text it holds is
-		// answered 304, and a resume of it 206 from its offset.
+		// answered 304, a resume of it 206 from its offset, and a resume
+		// from its end or past it 416, as the forges answer.
 		etag := strconv.Quote(text)
 		start := gitops.CIJobLogStart{Status: http.StatusOK, ETag: etag}
 		body := text
 		switch {
-		case req.From > 0 && req.From <= int64(len(text)):
+		case req.From > 0 && req.From >= int64(len(text)):
+			return false, fmt.Errorf("%w: HTTP 416", gitops.ErrCIJobLogRangeUnsatisfiable)
+		case req.From > 0:
 			start.Status, start.Offset, body = http.StatusPartialContent, req.From, text[req.From:]
 		case req.ETag == etag:
 			return true, nil
@@ -98,7 +102,9 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		if err != nil {
 			return false, err
 		}
-		if cut > 0 && cut < len(body) {
+		// A cut at the body's length delivers every byte and then fails,
+		// before the end was seen.
+		if cut > 0 && cut <= len(body) {
 			_, _ = io.WriteString(w, body[:cut])
 			return false, errLogCut
 		}

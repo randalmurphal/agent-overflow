@@ -385,8 +385,10 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
   where N is the raw bytes taken; the follow shows it as downloading and
   resumes at the follow cadence, and a Save retries until it is whole. A
   completed GitLab trace and the GitHub blob answer that with a 206; an
-  answer of 200, or a 206 under another ETag, is another log and the
-  download starts over. A running GitLab trace ignores `Range` (200 with
+  answer of 200, or a 206 under another ETag, is another log, and a 416
+  (the cut came after the last byte, or the log is shorter now) has no
+  byte to resume from: either way the download starts over from the
+  first byte. A running GitLab trace ignores `Range` (200 with
   the whole body), so its growth is read whole each time; a completed
   trace honors it. Suffix ranges (`bytes=-N`) are refused by GitLab traces
   (400) and ignored by the GitHub log blob (200 with the whole body); the

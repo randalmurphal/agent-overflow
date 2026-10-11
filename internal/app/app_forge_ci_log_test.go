@@ -534,3 +534,35 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// A resume the forge refuses (416: the download was cut off after its last
+// byte) is not asked again: the pump's next poll starts the download over
+// and the log arrives whole, with no failure shown.
+func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
+	t.Parallel()
+	f := newPRCIFixture(t, true)
+	f.app.prUpdates.ciLogWaitInterval = time.Hour
+	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
+	body := strings.Repeat("0123456789abcdef\n", 2000)
+	f.setLog("7", body, nil)
+	f.cutLog("7", len(body))
+	sub := f.subscribe(t)
+	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
+	if err != nil {
+		t.Fatalf("SetPRCILogFollows: %v", err)
+	}
+	if state := result.Logs["7"]; !state.Downloading || state.Error != "" {
+		t.Fatalf("cut download state = %+v, want downloading", state)
+	}
+	awaitLogEvent(t, f.logEvents, "downloading frame")
+	done := awaitLogEvent(t, f.logEvents, "restarted log frame")
+	if done.Downloading || !done.Available || done.Error != "" || done.TotalLines != 2000 {
+		t.Fatalf("restarted frame = %+v", done)
+	}
+	requests := f.requests()
+	if len(requests) != 3 || requests[1].From != int64(len(body)) || requests[2].From != 0 || requests[2].ETag != "" {
+		t.Fatalf("requests %+v, want the refused resume and then a whole download", requests)
+	}
+	expectCountHolds(t, &f.logFetches, "a restarted log kept being fetched")
+}
