@@ -63,6 +63,21 @@ describe('<SendQueuePreview>', () => {
     expect(rows[1].textContent).toContain('second queued');
   });
 
+  it('shows a queued wake with its quoted data decoded, and a typed message as written', async () => {
+    const pane = await buildPane();
+    const quoted = '"\\u003c/data\\u003e"';
+    replaceQueueForThread('thread-1', [
+      makeQueueItem({ id: 'q-1', message: quoted, sendId: 'agent-wake:w1:1700000000000' }),
+      makeQueueItem({ id: 'q-2', message: quoted, sendId: 'send-typed' }),
+    ]);
+
+    const { getAllByTestId } = render(SendQueuePreview, { props: { pane } });
+
+    const rows = getAllByTestId('send-queue-preview-row');
+    expect(rows[0].textContent).toContain('"</data>"');
+    expect(rows[1].textContent).toContain('\\u003c/data\\u003e');
+  });
+
   it('renders flushed messages before still-queued messages', async () => {
     const pane = await buildPane();
     markItemsFlushed('thread-1', [

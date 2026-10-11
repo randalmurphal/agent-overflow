@@ -32,6 +32,7 @@
     userMessageOriginWake,
   } from '../../utils/userMessageMeta';
   import { agentThreadOriginChip } from './agentThreadOrigin';
+  import { readableWakeText } from '../../utils/wakeText';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { imageAttachments, formatAttachmentSize } from '../../types/attachment';
   import { commandSegments } from '../../utils/commandWords';
@@ -168,12 +169,19 @@
     () => attachments,
     { cache },
   );
-  const visibleSummary = $derived(stripAttachmentImages(item.summary).trimEnd());
+  // A wake quotes its data escaped for the agent; the person reads it
+  // decoded. A wake expands no composer command, so it has no command ranges
+  // to keep in step with the decoded text.
+  const isWake = $derived(messageOrigin === 'agent-wake');
+  const visibleSummary = $derived.by(() => {
+    const summary = stripAttachmentImages(item.summary).trimEnd();
+    return isWake ? readableWakeText(summary) : summary;
+  });
   // A composer command that expanded at send time (D31) keeps its words in the
   // transcript — the block it added is never stored — and every occurrence
   // renders in the accent colour, exactly as the composer showed them while
   // typing.
-  const commandRanges = $derived(userMessageCommandRanges(item.meta, visibleSummary));
+  const commandRanges = $derived(isWake ? [] : userMessageCommandRanges(item.meta, visibleSummary));
   const summarySegments = $derived(
     commandRanges.length > 0 ? commandSegments(visibleSummary, commandRanges) : [],
   );
