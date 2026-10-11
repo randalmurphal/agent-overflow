@@ -3657,3 +3657,56 @@ func TestStopDropsDiscardedSends(t *testing.T) {
 		t.Fatalf("queue restored events = %+v, want none", restored)
 	}
 }
+
+// TestSessionReplacementReturnsDiscardedSends: replacing a session runs no
+// session-end restore, so the sends the old CLI discarded unrun come back
+// when the replacement starts, whether the old session was still registered
+// or had already died.
+func TestSessionReplacementReturnsDiscardedSends(t *testing.T) {
+	t.Parallel()
+	for _, registered := range []bool{true, false} {
+		t.Run(fmt.Sprintf("registered=%v", registered), func(t *testing.T) {
+			t.Parallel()
+			app, rec := newAppForFlushQueueRPC(t)
+			thread := testThread(fmt.Sprintf("discarded-replace-%v", registered))
+			thread.Provider = string(provider.Claude)
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			now := time.Now().UnixMilli()
+			row := store.Item{ID: "user:flush:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "never ran", CreatedAt: now, UpdatedAt: now}
+			app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:0", row, 10, triage.PendingSendExpectation{ProviderItemID: "u-0"})
+			for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandDiscarded} {
+				meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-0", State: state})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ThreadID: thread.ID, ItemID: "u-0", Meta: meta, Timestamp: time.Now()}); err != nil {
+					t.Fatalf("lifecycle %s: %v", state, err)
+				}
+			}
+			if registered {
+				app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "old-token"})
+			}
+
+			unlock := app.threadLocks().Lock(thread.ID)
+			err := app.stopExistingSessionLocked(thread.ID)
+			unlock()
+			if err != nil {
+				t.Fatalf("stopExistingSessionLocked: %v", err)
+			}
+
+			draft, _, err := app.store.GetThreadDraft(thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if draft.Content != "never ran" {
+				t.Fatalf("draft = %q, want the discarded send", draft.Content)
+			}
+			if restored := emittedQueueRestored(rec); len(restored) != 1 || restored[0].Reason != queueRestoredReasonNotDelivered {
+				t.Fatalf("queue restored events = %+v, want one not_delivered", restored)
+			}
+		})
+	}
+}

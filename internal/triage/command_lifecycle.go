@@ -208,8 +208,8 @@ func (r *Router) settleTerminalSend(evt provider.ProviderEvent, meta provider.Co
 // retireUnrunSend moves a send the provider retired without running from the
 // pending registry to the undelivered list. A direct send retains no copy of
 // its message; its row is read first so the restore can delete it and return
-// its text. A failed read leaves the entry pending for the session-end drain.
-// Caller holds the flush anchor.
+// its text. A failed read returns the error with the entry still pending, as
+// it was before the frame. Caller holds the flush anchor.
 func (r *Router) retireUnrunSend(threadID string, entry pendingSend, state provider.CommandLifecycleState) error {
 	item := unconfirmedFlushItemFromPending(entry)
 	if item.DeferredItem == nil && item.QuietItem == nil {

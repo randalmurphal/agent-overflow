@@ -207,9 +207,10 @@ type threadState struct {
 	// undeliveredSends holds sends the provider retired without running
 	// (command_lifecycle terminal with no `started`), in retirement order,
 	// until the app returns them to the composer. Bounded by pendingSends,
-	// which feeds it. Lifecycle: drained by DrainUndeliveredSends or the
-	// session-end DrainUnconfirmedFlushItems; swept at cleanup, so a Stop
-	// drops them with the rest of the queue.
+	// which feeds it. Lifecycle: drained by DrainUndeliveredSends (after a
+	// cancel, or when a replacement session starts) or the session-end
+	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
+	// with the rest of the queue.
 	undeliveredSends []UnconfirmedFlushItem
 	// recentFlushDigests is the bounded, ordered history of this thread's
 	// flush sends and the content-block fingerprints they put on the wire.

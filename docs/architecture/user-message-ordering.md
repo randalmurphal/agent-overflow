@@ -133,7 +133,8 @@ the registry for the thread's undelivered list, and its row is deleted when its
 text returns to the composer. After `cancelled` the session lives on, so it
 returns at once (`queue_restored`, reason `not_delivered`). After `discarded`
 the session is ending: it returns with the rest of the queue in the
-session-end restore, in queue order, or is dropped with the queue by a Stop.
+session-end restore, in queue order, or when a replacement session starts, or
+is dropped with the queue by a Stop.
 Otherwise a send stays pending until session teardown repairs or restores it.
 
 The first matched confirmation captures placement before fallible cache writes. A stable

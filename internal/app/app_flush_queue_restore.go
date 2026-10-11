@@ -95,6 +95,15 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 func (a *App) restoreUndeliveredSends(threadID string) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	a.restoreUndeliveredSendsLocked(threadID)
+}
+
+// restoreUndeliveredSendsLocked is restoreUndeliveredSends for a caller that
+// holds the thread action lock.
+func (a *App) restoreUndeliveredSendsLocked(threadID string) {
+	if a.triage == nil {
+		return
+	}
 	drained := a.triage.DrainUndeliveredSends(threadID)
 	if len(drained) == 0 {
 		return
