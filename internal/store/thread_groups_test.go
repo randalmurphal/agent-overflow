@@ -155,50 +155,6 @@ func TestGroupedThreadPinsLikeAnyThread(t *testing.T) {
 	}
 }
 
-// TestSetThreadGroupCarriesDiscussionChildren pins the parent_thread_id
-// disjunct: a discussion tree moves as a unit, and the caller learns the
-// child ids from the rows it gets back.
-func TestSetThreadGroupCarriesDiscussionChildren(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-root")
-	child := makeThread("t-child", "claude")
-	child.ParentThreadID = "t-root"
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("create child thread: %v", err)
-	}
-	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
-
-	moved, err := s.SetThreadGroup([]string{"t-root"}, group.ID)
-	if err != nil {
-		t.Fatalf("set thread group: %v", err)
-	}
-	if len(moved) != 2 {
-		t.Fatalf("moved %d rows, want the root and its child: %+v", len(moved), moved)
-	}
-	for _, thread := range moved {
-		if thread.GroupID != group.ID {
-			t.Errorf("thread %s groupId = %q, want %q", thread.ID, thread.GroupID, group.ID)
-		}
-	}
-	if got := threadGroupID(t, s, "t-child"); got != group.ID {
-		t.Errorf("child groupId = %q, want %q", got, group.ID)
-	}
-
-	// "" is ungroup, and it carries the children back out the same way.
-	out, err := s.SetThreadGroup([]string{"t-root"}, "")
-	if err != nil {
-		t.Fatalf("ungroup: %v", err)
-	}
-	if len(out) != 2 {
-		t.Fatalf("ungroup moved %d rows, want 2", len(out))
-	}
-	for _, thread := range out {
-		if thread.GroupID != "" {
-			t.Errorf("thread %s still grouped as %q", thread.ID, thread.GroupID)
-		}
-	}
-}
-
 // TestSetThreadGroupRefusesCrossProjectAndRollsBack: the project subquery
 // is the refusal, and one bad id fails the whole call — a partial
 // multi-select move is not a state the sidebar could explain.
@@ -237,47 +193,6 @@ func TestSetThreadGroupRefusesCrossProjectAndRollsBack(t *testing.T) {
 	_, err = s.SetThreadGroup([]string{"no-such-thread"}, group.ID)
 	if !errors.Is(err, ErrThreadGone) {
 		t.Fatalf("unknown-thread move error = %v, want ErrThreadGone", err)
-	}
-}
-
-// TestSetThreadGroupRefusesAChildNamedAsRoot: a discussion child travels
-// with its root and is never grouped on its own, in either direction.
-// Naming it BESIDE its root is fine — the root's disjunct carries it and
-// the read-back dedupes.
-func TestSetThreadGroupRefusesAChildNamedAsRoot(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-root")
-	child := makeThread("t-child", "claude")
-	child.ParentThreadID = "t-root"
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("create child thread: %v", err)
-	}
-	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
-
-	_, err := s.SetThreadGroup([]string{"t-child"}, group.ID)
-	if !errors.Is(err, ErrThreadNotRoot) {
-		t.Fatalf("grouping a child alone: error = %v, want ErrThreadNotRoot", err)
-	}
-	if got := threadGroupID(t, s, "t-child"); got != "" {
-		t.Errorf("the refused move left t-child grouped as %q", got)
-	}
-
-	moved, err := s.SetThreadGroup([]string{"t-child", "t-root"}, group.ID)
-	if err != nil {
-		t.Fatalf("root and child named together: %v", err)
-	}
-	if len(moved) != 2 {
-		t.Fatalf("moved %d rows, want the root and its child once each: %+v", len(moved), moved)
-	}
-	for _, thread := range moved {
-		if thread.GroupID != group.ID {
-			t.Errorf("thread %s groupId = %q, want %q", thread.ID, thread.GroupID, group.ID)
-		}
-	}
-
-	_, err = s.SetThreadGroup([]string{"t-child"}, "")
-	if !errors.Is(err, ErrThreadNotRoot) {
-		t.Fatalf("ungrouping a child alone: error = %v, want ErrThreadNotRoot", err)
 	}
 }
 

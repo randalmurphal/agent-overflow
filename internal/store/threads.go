@@ -62,7 +62,6 @@ var threadColumns = `id, COALESCE(project_id, ''),
     pending_fork_resume_at, fork_preparing,
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
-    COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
     COALESCE(forked_from_thread_id, ''), last_token_usage,
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
@@ -216,7 +215,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.PendingForkResumeAt, &t.ForkPreparing,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
-		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
+		&t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
 		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
@@ -309,13 +308,13 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    pending_fork_resume_at, fork_preparing,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
-		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
+		    forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
 		    created_by_device, created_branch, created_remote_url, created_head_commit,
 		    group_id`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
 func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
@@ -332,7 +331,7 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		t.PendingForkResumeAt, boolToInt(t.ForkPreparing),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
+		nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
 		// The write-once creation facts. They appear here and in
 		// threadColumns, and deliberately NOT in updateThreadSetSQL: a
@@ -559,47 +558,6 @@ func hiddenThreadModesClause(column string) (string, []any) {
 	return column + " NOT IN (" + placeholders + ")", args
 }
 
-// ListChildThreads returns a parent's child threads ordered by
-// creation. Discussion participant threads are all created with the
-// same CreatedAt millisecond (see BuildParticipantPlans, which stamps
-// every plan with one shared nowMillis), so `ORDER BY created_at ASC`
-// alone is not a deterministic tiebreak under SQL semantics — ties can
-// come back in any order. `rowid ASC` breaks the tie by insert order
-// (these are rowid tables), which matches definition order and keeps
-// the deliberation roster's round-robin sequence stable across reads.
-func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
-	rows, err := s.reader().Query(
-		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC, rowid ASC`,
-		parentID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list child threads for %s: %w", parentID, err)
-	}
-	defer rows.Close()
-
-	var threads []Thread
-	for rows.Next() {
-		t, err := scanThread(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan child thread row: %w", err)
-		}
-		threads = append(threads, t)
-	}
-	return threads, rows.Err()
-}
-
-func (s *Store) HasChildThreads(parentID string) (bool, error) {
-	var exists int
-	err := s.reader().QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM threads WHERE parent_thread_id = ? LIMIT 1)`,
-		parentID,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: check child threads for %s: %w", parentID, err)
-	}
-	return exists != 0, nil
-}
-
 // ListThreadWorkspaceRefs returns workspace/worktree pointers for all thread
 // rows, including archived ones. Worktree removal uses this to avoid deleting a
 // checkout that an archived thread would reference if restored.
@@ -756,7 +714,7 @@ const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?
     workspace_path=?, worktree_path=?, branch=?, session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
-    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
+    forked_from_thread_id=?, last_token_usage=?,
     archived=?`
 
 func normalizeThreadForUpdate(t Thread) (Thread, error) {
@@ -788,7 +746,7 @@ func updateThreadArgs(t Thread) []any {
 		nilIfEmpty(t.SessionRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
+		nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		boolToInt(t.Archived),
 	}
 }
@@ -1402,8 +1360,8 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
 }
 
-// UpdateMode overwrites the thread's mode (chat, plan, discussion,
-// terminal, or a workflow-owned mode). Empty strings are normalized to "chat" to
+// UpdateMode overwrites the thread's mode (chat, plan, terminal, or a
+// workflow-owned mode). Empty strings are normalized to "chat" to
 // match CreateThread/UpdateThread. This is the permissive store
 // primitive; user-driven toggles route through threadmode.ValidateSet,
 // which restricts the reachable set to chat/plan.

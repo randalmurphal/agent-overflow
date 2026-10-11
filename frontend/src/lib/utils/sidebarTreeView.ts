@@ -1,9 +1,8 @@
 // Sidebar thread tree: the VIEW half. Everything between a built tree and the
-// rows the sidebar renders — the depth-first flatten, the preview cut and its
-// reveal step, the status rollup, the render-content identity cutoffs, and the
-// discussion expansion cleanup. The BUILD half (node shapes, the comparator, the
-// builder) is `sidebarTree.ts`; this file imports from it and never the other
-// way round.
+// rows the sidebar renders — the flatten, the preview cut and its reveal step,
+// the status rollup and the render-content identity cutoffs. The BUILD half
+// (node shapes, the comparator, the builder) is `sidebarTree.ts`; this file
+// imports from it and never the other way round.
 //
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 
@@ -12,14 +11,11 @@ import type { ThreadStatusPill } from './threadStatusPill';
 import {
   sidebarNodeSection,
   statusPriority,
-  type SidebarThreadTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
 export type SidebarTreeVisibleNode = SidebarTreeNode & {
-  isExpanded: boolean;
-  isExpandable: boolean;
   /**
    * True on the first top-level row of a section (groups, front burner,
    * back burner, unpinned) when an earlier section has rows: the renderer
@@ -33,85 +29,28 @@ export type SidebarTreeVisibleNode = SidebarTreeNode & {
    * `groupId` field is unverified against what is actually on screen.
    */
   ownerGroupId: string | null;
-  /**
-   * The row carries a pin affordance: a top-level thread or a group's
-   * direct member. A discussion child pins through its parent. Decided from
-   * the node's tree depth, which a collapsed container's preview row no
-   * longer shows in `depth`.
-   */
-  isPinTarget: boolean;
 };
 
 export interface FlattenSidebarThreadTreeInput {
   nodes: readonly SidebarTreeNode[];
-  expandedThreadIds: ReadonlySet<string>;
   /**
-   * Inverted, unlike `expandedThreadIds`: groups default to EXPANDED, so
-   * this holds the ids the user explicitly collapsed.
+   * Groups default to EXPANDED, so this holds the ids the user explicitly
+   * collapsed: a group the user just made must show what is in it.
    */
   collapsedGroupIds?: ReadonlySet<string>;
-  /** A closed container shows only this descendant directly beneath it. */
+  /** A collapsed group shows only this member directly beneath it. */
   activeThreadId?: string | null;
 }
 
 /**
- * flattenSidebarThreadTree — depth-first walk, descending into a node's
- * children when expanded, or only the focused descendant when collapsed.
- * Returned nodes carry their display depth so the renderer needs no second pass.
- *
- * The two kinds use OPPOSITE defaults, deliberately: a discussion is
- * closed until the user opens it (`expandedThreadIds` lists the open
- * ones), a group is open until the user closes it (`collapsedGroupIds`
- * lists the closed ones), because a group the user just made must show
- * what is in it.
+ * flattenSidebarThreadTree — emit each top-level row, followed by a group's
+ * members when it is expanded, or only its focused member when collapsed.
  */
 export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
 ): SidebarTreeVisibleNode[] {
   const visibleNodes: SidebarTreeVisibleNode[] = [];
   const collapsedGroupIds = input.collapsedGroupIds;
-
-  const visit = (
-    node: SidebarTreeNode,
-    startsSection = false,
-    ownerGroupId: string | null = null,
-  ) => {
-    const isExpandable = node.children.length > 0;
-    const isExpanded = isExpandable && (
-      node.kind === 'group'
-        ? collapsedGroupIds === undefined || !collapsedGroupIds.has(node.group.id)
-        : input.expandedThreadIds.has(node.thread.id)
-    );
-    visibleNodes.push({
-      ...node,
-      isExpanded,
-      isExpandable,
-      startsSection,
-      ownerGroupId,
-      isPinTarget: isPinTarget(node, ownerGroupId),
-    });
-    const childOwner = node.kind === 'group' ? node.group.id : ownerGroupId;
-    if (!isExpanded) {
-      const active = input.activeThreadId
-        ? findThreadNode(node.children, input.activeThreadId)
-        : null;
-      if (active) {
-        visibleNodes.push({
-          ...active,
-          depth: node.depth + 1,
-          isExpanded: false,
-          isExpandable: false,
-          startsSection: false,
-          ownerGroupId: childOwner,
-          isPinTarget: isPinTarget(active, childOwner),
-          displayLiveStatus: active.ownLiveStatus,
-          displayStatus: active.ownStatus,
-        });
-      }
-      return;
-    }
-    for (const child of node.children) visit(child, false, childOwner);
-  };
 
   // The top level arrives sorted, so each section is one contiguous run.
   // Drafts sit above every section and never open one.
@@ -120,26 +59,18 @@ export function flattenSidebarThreadTree(
     const section = sidebarNodeSection(node);
     const startsSection = section !== null && previousSection !== null && section !== previousSection;
     if (section !== null) previousSection = section;
-    visit(node, startsSection);
+    visibleNodes.push({ ...node, startsSection, ownerGroupId: null });
+    if (node.kind === 'thread') continue;
+    const groupId = node.group.id;
+    const collapsed = collapsedGroupIds !== undefined && collapsedGroupIds.has(groupId);
+    const members = collapsed
+      ? node.children.filter((member) => member.thread.id === input.activeThreadId)
+      : node.children;
+    for (const member of members) {
+      visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId });
+    }
   }
   return visibleNodes;
-}
-
-function isPinTarget(node: SidebarTreeNode, ownerGroupId: string | null): boolean {
-  if (node.kind !== 'thread') return false;
-  return node.depth === 0 || (node.depth === 1 && ownerGroupId !== null);
-}
-
-function findThreadNode(
-  nodes: readonly SidebarTreeNode[],
-  threadId: string,
-): SidebarThreadTreeNode | null {
-  for (const node of nodes) {
-    if (node.kind === 'thread' && node.thread.id === threadId) return node;
-    const found = findThreadNode(node.children, threadId);
-    if (found) return found;
-  }
-  return null;
 }
 
 /**
@@ -189,10 +120,8 @@ export function sameSidebarVisibleNodes(
       if (x.children.length !== y.children.length) return false;
     }
     if (x.depth !== y.depth) return false;
-    if (x.isExpanded !== y.isExpanded || x.isExpandable !== y.isExpandable) return false;
     if (x.startsSection !== y.startsSection) return false;
     if (x.ownerGroupId !== y.ownerGroupId) return false;
-    if (x.isPinTarget !== y.isPinTarget) return false;
     if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
     if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
     if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
@@ -200,39 +129,13 @@ export function sameSidebarVisibleNodes(
   return true;
 }
 
-/**
- * toggleSidebarTreeThreadExpansion — pure helper for the discussion
- * expand/collapse store. Returns a new Set so callers can swap state
- * without mutating shared references.
- */
-export function toggleSidebarTreeThreadExpansion(
-  expandedThreadIds: ReadonlySet<string>,
-  threadId: string,
-): Set<string> {
-  const next = new Set(expandedThreadIds);
-  if (next.has(threadId)) next.delete(threadId);
-  else next.add(threadId);
-  return next;
-}
-
-/** Keep the container of an open descendant above the preview cut. */
+/** An open thread, or a group holding one, stays above the preview cut. */
 function nodeHoldsOpenThread(
   node: SidebarTreeNode,
   openThreadIds: ReadonlySet<string>,
 ): boolean {
-  if (node.kind === 'thread' && openThreadIds.has(node.thread.id)) return true;
-  return subtreeHoldsOpenThread(node.children, openThreadIds);
-}
-
-function subtreeHoldsOpenThread(
-  nodes: readonly SidebarTreeNode[],
-  openThreadIds: ReadonlySet<string>,
-): boolean {
-  for (const node of nodes) {
-    if (node.kind === 'thread' && openThreadIds.has(node.thread.id)) return true;
-    if (subtreeHoldsOpenThread(node.children, openThreadIds)) return true;
-  }
-  return false;
+  if (node.kind === 'thread') return openThreadIds.has(node.thread.id);
+  return node.children.some((member) => openThreadIds.has(member.thread.id));
 }
 
 export interface PreviewThreadsResult {
@@ -248,8 +151,7 @@ export interface PreviewThreadsResult {
  * the limit and always stay visible, even when their count exceeds it.
  * Drafts stay visible outside the limit.
  *
- * A group or discussion takes one slot. Its descendants take none.
- * Discussions with an open descendant stay visible above the cut.
+ * A group takes one slot. Its members take none.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
@@ -340,23 +242,4 @@ export function rollupDisplayStatus(
     }
   }
   return best;
-}
-
-/** Remove leaf IDs belonging to this tree without changing other projects. */
-export function pruneSidebarDiscussionExpansion(input: {
-  nodes: readonly SidebarTreeNode[];
-  expandedThreadIds: ReadonlySet<string>;
-}): ReadonlySet<string> {
-  let next: Set<string> | undefined;
-  const visit = (nodes: readonly SidebarTreeNode[]) => {
-    for (const node of nodes) {
-      if (node.kind === 'thread' && node.children.length === 0 && input.expandedThreadIds.has(node.thread.id)) {
-        next ??= new Set(input.expandedThreadIds);
-        next.delete(node.thread.id);
-      }
-      visit(node.children);
-    }
-  };
-  visit(input.nodes);
-  return next ?? input.expandedThreadIds;
 }

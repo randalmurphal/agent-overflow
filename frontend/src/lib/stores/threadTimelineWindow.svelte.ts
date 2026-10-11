@@ -800,8 +800,8 @@ export function createThreadTimelineWindow(
    * When a mounted timeline is behind the pane (the controller offers
    * the anchor-survival guard), the prune is recorded as pending and the
    * quiet scheduler (timelineQuietWork) retries it once nothing is
-   * animating. Without one, such as a discussion surface or headless pane,
-   * it applies immediately.
+   * animating. Without one, such as a headless pane, it applies
+   * immediately.
    * See docs/architecture/scroll-arbitration-plan.md.
    */
   function settleRecentWindowPrune(): void {

@@ -17,7 +17,6 @@ export function shouldAutoPinFirstSend(thread: Thread | undefined): boolean {
   return getSettings().autoPinNewThreads
     && thread?.isDraft === true
     && !thread.importSource
-    && !thread.parentThreadId
     && !isHiddenThreadMode(thread.mode);
 }
 

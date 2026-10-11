@@ -153,28 +153,6 @@ describe('<ProjectThreadList>', () => {
     expect(list.querySelectorAll('[data-testid="thread-section-divider"]')).toHaveLength(0);
   });
 
-  it('renders a child durable Interrupted status on the collapsed parent row', () => {
-    const pane = createThreadPane();
-    const parent = mkThread('parent', { title: 'Parent' });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      title: 'Child',
-      hasIncompleteTurn: true,
-    });
-    const { getByTestId, queryByText } = render(ProjectThreadList, {
-      props: {
-        projectId: 'p1',
-        threads: [parent, child],
-        pane,
-      },
-    });
-
-    expect(queryByText('Child')).toBeNull();
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('interrupted');
-    expect(dot.getAttribute('aria-label')).toBe('Interrupted');
-  });
-
   it('shows 8 threads before the show-more row, then reveals 20 more per click', async () => {
     const pane = createThreadPane();
     const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
@@ -395,9 +373,8 @@ describe('<ProjectThreadList> thread groups', () => {
 
   it('gives members a pin and the group row none, and sorts the group above pins', () => {
     const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
-    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
     const front = mkThread('front', { projectId: 'p1', pinnedAt: 1, updatedAt: 99_000 });
-    const { getByTestId, container } = renderList([front, member, child], [mkGroup()]);
+    const { getByTestId, container } = renderList([front, member], [mkGroup()]);
 
     expect(getByTestId('thread-group-row-shell').querySelector('[data-testid="thread-row-pin"]')).toBeNull();
     const rows = Array.from(container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'));
@@ -407,18 +384,6 @@ describe('<ProjectThreadList> thread groups', () => {
     expect(memberRow.querySelector('[data-testid="thread-row-pin"]')).not.toBeNull();
     // A front-burner member is not a numbered jump target.
     expect(memberRow.hasAttribute('data-sidebar-jump-target')).toBe(false);
-  });
-
-  it('keeps the pin off a member discussion child', async () => {
-    const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
-    const child = mkThread('m1-child', { projectId: 'p1', groupId: 'g1', parentThreadId: 'm1' });
-    const { container, getAllByTestId } = renderList([member, child], [mkGroup()]);
-    await fireEvent.click(getAllByTestId('thread-row-expand')[0]);
-    await tick();
-
-    const childRow = container.querySelector('[data-sidebar-thread-id="m1-child"]') as HTMLElement;
-    expect(childRow).not.toBeNull();
-    expect(childRow.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
   });
 
   it('renders a group row above its members', () => {

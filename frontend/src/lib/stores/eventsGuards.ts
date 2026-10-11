@@ -3,12 +3,10 @@
 // WebSocket serves the embedded webview, `agent-overflow --connect`
 // clients, and LAN browsers), so string fields are length-bounded and
 // numeric fields finite-checked before a payload touches reactive
-// state. Extracted from eventsItemStream.ts so eventsDiscussion.ts
-// applies the identical guards to its channel payloads.
+// state.
 
 /**
- * Cap for unbounded text fields (item summaries/deltas/meta and
- * discussion message content). 2M chars is comfortably above the
+ * Cap for unbounded text fields (item summaries/deltas/meta). 2M chars is comfortably above the
  * largest single payload the item stream legitimately carries while
  * still bounding oversized fields from remote frames.
  */

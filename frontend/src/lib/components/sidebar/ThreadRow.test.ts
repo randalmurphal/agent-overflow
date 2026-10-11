@@ -82,7 +82,6 @@ describe('<ThreadRow> provider icons', () => {
     { thread: { provider: 'claude' }, label: 'Claude' },
     { thread: { provider: 'claude-tui' }, label: 'Claude TUI' },
     { thread: { provider: 'codex', isDraft: true }, label: 'Codex' },
-    { thread: { mode: 'discussion', parentThreadId: 'parent', provider: 'codex' }, label: 'Codex' },
     { thread: { groupId: 'group', provider: 'codex' }, label: 'Codex' },
   ])('identifies $label on $thread', ({ thread, label }) => {
     setShowProviderIcons(true);
@@ -92,7 +91,6 @@ describe('<ThreadRow> provider icons', () => {
 
   it.each([
     { mode: 'terminal' },
-    { mode: 'discussion' },
     { provider: undefined },
     { provider: 'unknown' },
   ])('omits provider icons for $mode $provider', (thread) => {
@@ -841,20 +839,6 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(pin).toHaveBeenCalledWith('thread-1');
   });
 
-  it('keeps the pin action out of rows that are not pin targets', () => {
-    const pane = createThreadPane();
-    const { queryByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ parentThreadId: 'parent' }),
-        pane,
-        indent: 2,
-        pinnable: false,
-      },
-    });
-
-    expect(queryByTestId('thread-row-pin')).toBeNull();
-  });
-
   it.each([
     { name: 'unpinned', thread: {}, want: 'Pin Thread\nOnce pinned, right-click toggles front/back burner' },
     { name: 'front burner', thread: { pinnedAt: 1, pinGroup: 0 }, want: 'Unpin Thread\nRight-click to move to back burner' },
@@ -1034,9 +1018,6 @@ describe('<ThreadRow> live status dot', () => {
 
     await rerender({ thread: { ...chat, mode: 'plan' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
-
-    await rerender({ thread: { ...chat, mode: 'discussion' }, pane });
-    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
   });
 
   it('flips the pill to Working when provider:turn_started arrives', async () => {
@@ -1277,7 +1258,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 });
 
-describe('<ThreadRow> nested row chrome', () => {
+describe('<ThreadRow> row chrome', () => {
   beforeEach(async () => {
     resetPanesForTest();
     await primeSettings();
@@ -1288,20 +1269,16 @@ describe('<ThreadRow> nested row chrome', () => {
   it.each([
     { name: 'front pin', thread: { pinnedAt: 1, pinGroup: 0 }, eligible: true },
     { name: 'legacy front pin', thread: { pinnedAt: 0 }, eligible: true },
-    { name: 'pinned discussion parent', thread: { mode: 'discussion' as const, pinnedAt: 1 }, eligible: true },
     { name: 'back pin', thread: { pinnedAt: 1, pinGroup: 1 }, eligible: false },
     { name: 'unpinned', thread: { pinGroup: 0 }, eligible: false },
     { name: 'front-pinned group member', thread: { pinnedAt: 1, groupId: 'group' }, indent: 2, inGroup: true, eligible: false },
-    { name: 'nested discussion child', thread: { pinnedAt: 1, parentThreadId: 'parent' }, indent: 2, pinnable: false, eligible: false },
-    { name: 'pinned child promoted to a top-level row', thread: { pinnedAt: 1, parentThreadId: 'missing-parent' }, eligible: true },
-  ])('marks jump eligibility for $name', ({ thread, eligible, indent, inGroup, pinnable }) => {
+  ])('marks jump eligibility for $name', ({ thread, eligible, indent, inGroup }) => {
     const { getByTestId } = render(ThreadRow, {
       props: {
         thread: makeThread(thread),
         pane: null,
         indent: indent ?? 1,
         inGroup: inGroup ?? false,
-        pinnable: pinnable ?? true,
       },
     });
     expect(getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(eligible);
@@ -1317,67 +1294,6 @@ describe('<ThreadRow> nested row chrome', () => {
     expect(getByTestId('thread-row')).toHaveAttribute('data-sidebar-jump-target');
     await rerender({ thread: makeThread(), pane: null });
     expect(getByTestId('thread-row')).not.toHaveAttribute('data-sidebar-jump-target');
-  });
-
-  it('renders no chevron when hasChildren is false', () => {
-    const pane = createThreadPane();
-    const { queryByTestId } = render(ThreadRow, {
-      props: { thread: makeThread(), pane, hasChildren: false },
-    });
-    expect(queryByTestId('thread-row-expand')).toBeNull();
-  });
-
-  it('renders the chevron (not rotated) when hasChildren is true and expanded is false', () => {
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: false,
-      },
-    });
-    const btn = getByTestId('thread-row-expand');
-    expect(btn.getAttribute('aria-expanded')).toBe('false');
-    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(false);
-  });
-
-  it('rotates the chevron when expanded is true', () => {
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: true,
-      },
-    });
-    const btn = getByTestId('thread-row-expand');
-    expect(btn.getAttribute('aria-expanded')).toBe('true');
-    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(true);
-  });
-
-  it('chevron click calls onToggleExpand and not the row-click path', async () => {
-    const onToggleExpand = vi.fn();
-    const onSelectClick = vi.fn(() => false);
-    const pane = createThreadPane();
-    setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
-
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread: makeThread({ discussionId: 'def-1' }),
-        pane,
-        hasChildren: true,
-        expanded: false,
-        onToggleExpand,
-        onSelectClick,
-      },
-    });
-    await fireEvent.click(getByTestId('thread-row-expand'));
-    expect(onToggleExpand).toHaveBeenCalledTimes(1);
-    expect(onSelectClick).not.toHaveBeenCalled();
-    expect(pane.threadId).toBeNull();
   });
 
   it('applies indent via padding-left on the outer container', () => {

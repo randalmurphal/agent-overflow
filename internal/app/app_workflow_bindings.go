@@ -998,7 +998,7 @@ func (a *App) WorkflowSendPRReviewCommentsToThread(ctx context.Context, itemID s
 }
 
 // WorkflowDiscussPR opens or reuses the run's linked thread and sends a
-// diff-free snapshot of the PR and run intent for discussion preparation.
+// diff-free snapshot of the PR and run intent to discuss with the user.
 //
 //ao:scope threads:autonomy
 //ao:route home

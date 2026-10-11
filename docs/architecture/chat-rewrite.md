@@ -30,7 +30,7 @@ listener, one list**.
 
 - Reframing the framework (Svelte stays).
 - Wholesale provider rewrites, sidebar, composer shell, terminal,
-  discussion mode, or settings.
+  or settings.
 - UI visual polish. That's a separate pass after the data model
   lands.
 
@@ -1454,7 +1454,7 @@ contextWindow: ContextWindowMeta // for the meter widget
 providerBanner: ProviderBannerMeta | null  // persistent provider error
 thread: Thread | null
 loading: boolean
-// design + discussion + diff-panel + terminal state stay as-is
+// design + diff-panel + terminal state stay as-is
 ```
 
 **Deleted:** `activeToolCalls`, `streamingContent`, `backgroundTasks`,
@@ -1811,8 +1811,8 @@ break the UI.
 - ADD: `ContextWindowMeter.svelte` (composer toolbar)
 - ADD: `ToolCallCard.svelte` (the per-kind header + payload dispatcher
   + child recursion)
-- All composer components, sidebar, terminal drawer, and discussion view:
-  untouched by this historical rewrite
+- All composer components, sidebar, and terminal drawer: untouched by
+  this historical rewrite
 - UNTOUCHED (explicitly out of scope for this rewrite):
   `PlanFollowUpBanner.svelte`, `PlanSidebar.svelte`,
   `LazyContentBlock.svelte`, `ChatHeader.svelte`, `ChatView.svelte`,

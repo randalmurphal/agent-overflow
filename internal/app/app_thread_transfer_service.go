@@ -92,8 +92,8 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 	if entry, ok := a.sessionManager().runtime.Get(thread.ID); ok && entry.Liveness != nil && entry.Liveness.ActiveTurns.Load() > 0 {
 		return errors.New("Let the current provider turn finish before transferring this conversation.")
 	}
-	if transferManagedMode(thread.Mode) || thread.DiscussionID != "" || thread.ParentThreadID != "" {
-		return errors.New("This conversation belongs to a discussion or workflow. Transfer an independent conversation.")
+	if transferManagedMode(thread.Mode) {
+		return errors.New("this conversation belongs to a workflow. Transfer an independent conversation")
 	}
 	if a.terminals != nil && len(a.terminals.List(thread.ID)) > 0 {
 		return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.")

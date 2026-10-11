@@ -33,7 +33,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-new-fields", "/home/user/project")
 
-	// First create a parent thread so the parent_thread_id FK is valid.
+	// First create a source thread so the forked_from_thread_id FK is valid.
 	parent := makeThread("parent-1", "claude")
 	parent.ProjectID = proj.ID
 	parent.Mode = "chat"
@@ -41,15 +41,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
-	// And a channel so the discussion_id FK is valid.
 	now := time.Now().UnixMilli()
-	if err := s.CreateChannel(Channel{
-		ID: "disc-abc", ThreadID: "parent-1",
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
 
 	thr := Thread{
 		ID:                  "thread-new-fields",
@@ -67,8 +59,6 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 		ReasoningEffort:     "xhigh",
 		FastMode:            true,
 		ContextWindow:       200000,
-		DiscussionID:        "disc-abc",
-		ParentThreadID:      "parent-1",
 		ForkedFromThreadID:  "parent-1",
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -104,12 +94,6 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 	if got.ContextWindow != thr.ContextWindow {
 		t.Errorf("ContextWindow: got %d, want %d", got.ContextWindow, thr.ContextWindow)
-	}
-	if got.DiscussionID != thr.DiscussionID {
-		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, thr.DiscussionID)
-	}
-	if got.ParentThreadID != thr.ParentThreadID {
-		t.Errorf("ParentThreadID: got %q, want %q", got.ParentThreadID, thr.ParentThreadID)
 	}
 
 	// Verify existing fields still round-trip correctly.
@@ -327,12 +311,6 @@ func TestCreateThreadDefaultValues(t *testing.T) {
 	if got.Branch != "" {
 		t.Errorf("Branch: got %q, want empty string", got.Branch)
 	}
-	if got.DiscussionID != "" {
-		t.Errorf("DiscussionID: got %q, want empty string", got.DiscussionID)
-	}
-	if got.ParentThreadID != "" {
-		t.Errorf("ParentThreadID: got %q, want empty string", got.ParentThreadID)
-	}
 	if got.PendingForkRef != "" {
 		t.Errorf("PendingForkRef: got %q, want empty string", got.PendingForkRef)
 	}
@@ -366,21 +344,11 @@ func TestUpdateThreadNewFields(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
-	// Channel for the discussion_id FK on the upcoming update.
-	if err := s.CreateChannel(Channel{
-		ID: "disc-xyz", ThreadID: "thread-upd-parent",
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-
 	// Update with new field values.
 	thr.Title = "After Update"
 	thr.WorktreePath = "/home/user/.worktrees/fix-123"
 	thr.Branch = "fix-123"
 	thr.Mode = "plan"
-	thr.DiscussionID = "disc-xyz"
 	thr.ForkedFromThreadID = "thread-upd-parent"
 	thr.UpdatedAt = now + 5000
 
@@ -404,9 +372,6 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	}
 	if got.Mode != "plan" {
 		t.Errorf("Mode: got %q, want %q", got.Mode, "plan")
-	}
-	if got.DiscussionID != "disc-xyz" {
-		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, "disc-xyz")
 	}
 	// PendingForkRef / PendingForkResumeAt are deliberately NOT reachable
 	// from here — see TestUpdateThreadPreservesPendingForkPin.
@@ -669,101 +634,6 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 	// Unset nullable fields should be empty.
 	if got.WorktreePath != "" {
 		t.Errorf("WorktreePath: got %q, want empty", got.WorktreePath)
-	}
-	if got.DiscussionID != "" {
-		t.Errorf("DiscussionID: got %q, want empty", got.DiscussionID)
-	}
-	if got.ParentThreadID != "" {
-		t.Errorf("ParentThreadID: got %q, want empty", got.ParentThreadID)
-	}
-}
-
-func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-children", "/tmp/children")
-
-	parent := makeThread("parent-thread", "claude")
-	parent.ProjectID = proj.ID
-	if err := s.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent): %v", err)
-	}
-
-	childA := makeThread("child-a", "claude")
-	childA.ProjectID = proj.ID
-	childA.ParentThreadID = parent.ID
-	childA.CreatedAt = parent.CreatedAt + 1
-	childA.UpdatedAt = childA.CreatedAt
-	if err := s.CreateThread(childA); err != nil {
-		t.Fatalf("CreateThread(childA): %v", err)
-	}
-
-	childB := makeThread("child-b", "codex")
-	childB.ProjectID = proj.ID
-	childB.ParentThreadID = parent.ID
-	childB.CreatedAt = parent.CreatedAt + 2
-	childB.UpdatedAt = childB.CreatedAt
-	if err := s.CreateThread(childB); err != nil {
-		t.Fatalf("CreateThread(childB): %v", err)
-	}
-
-	other := makeThread("other-thread", "claude")
-	other.ProjectID = proj.ID
-	if err := s.CreateThread(other); err != nil {
-		t.Fatalf("CreateThread(other): %v", err)
-	}
-
-	children, err := s.ListChildThreads(parent.ID)
-	if err != nil {
-		t.Fatalf("ListChildThreads(): %v", err)
-	}
-	if len(children) != 2 {
-		t.Fatalf("len(children) = %d, want 2", len(children))
-	}
-	if children[0].ID != childA.ID || children[1].ID != childB.ID {
-		t.Fatalf("children order/IDs = %q, %q; want %q, %q", children[0].ID, children[1].ID, childA.ID, childB.ID)
-	}
-}
-
-// TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder guards the
-// rowid tiebreak in ListChildThreads' ORDER BY: discussion participant
-// threads are all stamped with one shared created_at millisecond
-// (BuildParticipantPlans), so without `rowid ASC` SQL semantics would
-// let ties come back in any order and destabilize the deliberation
-// roster's round-robin sequence across reads.
-func TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-tiebreak", "/tmp/tiebreak")
-
-	parent := makeThread("tiebreak-parent", "claude")
-	parent.ProjectID = proj.ID
-	if err := s.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent): %v", err)
-	}
-
-	sharedCreatedAt := parent.CreatedAt + 1
-	ids := []string{"tiebreak-child-1", "tiebreak-child-2", "tiebreak-child-3"}
-	for _, id := range ids {
-		child := makeThread(id, "claude")
-		child.ProjectID = proj.ID
-		child.ParentThreadID = parent.ID
-		child.CreatedAt = sharedCreatedAt
-		child.UpdatedAt = sharedCreatedAt
-		if err := s.CreateThread(child); err != nil {
-			t.Fatalf("CreateThread(%s): %v", id, err)
-		}
-	}
-
-	children, err := s.ListChildThreads(parent.ID)
-	if err != nil {
-		t.Fatalf("ListChildThreads(): %v", err)
-	}
-	if len(children) != len(ids) {
-		t.Fatalf("len(children) = %d, want %d", len(children), len(ids))
-	}
-	for i, id := range ids {
-		if children[i].ID != id {
-			t.Fatalf("children[%d].ID = %q, want %q (insertion order under identical created_at)", i, children[i].ID, id)
-		}
 	}
 }
 

@@ -173,10 +173,9 @@ describe('<ThreadGroupContextMenu>', () => {
       mkThread('t1'),
       mkThread('t2'),
       mkThread('t3'),
-      // Not members: another group, no group, and one that is only a child.
+      // Not members: another group and no group.
       mkThread('other', { groupId: 'group-2' }),
       mkThread('loose', { groupId: undefined }),
-      mkThread('kid', { parentThreadId: 't1' }),
       mkThread('gone', { archived: true }),
     ]);
     const { getByRole } = renderMenu();

@@ -73,8 +73,7 @@
   }: Props = $props();
 
   // sm=380, md=560, lg=800, xl=960 — xl covers the wider flows
-  // (DiscussionStartFlow, SessionImportModal) that previously inlined
-  // their own max-w strings.
+  // (SessionImportModal) that previously inlined their own max-w strings.
   const WIDTH_CLASS: Record<Width, string> = {
     sm: 'max-w-[380px]',
     md: 'max-w-[560px]',

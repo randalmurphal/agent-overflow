@@ -33,18 +33,6 @@ const (
 	DevServerList Channel = "devserver:list"
 )
 
-// discussion:* — multi-agent deliberation channels, plus the definitions
-// those deliberations are built from.
-//
-// DiscussionDefinitionsChanged is a payload-less refetch nudge for the
-// persisted discussion DEFINITIONS (create / update / delete), the same
-// shape workflow:definitions-changed carries for workflow definitions.
-const (
-	DiscussionDefinitionsChanged Channel = "discussion:definitions-changed"
-	DiscussionMessage            Channel = "discussion:message"
-	DiscussionState              Channel = "discussion:state"
-)
-
 // draft:* — one frame per persisted composer-draft write, naming the thread
 // and the screen that wrote it. Carries no draft TEXT: receivers re-read
 // through GetDraft, which takes `threads:operate` for the disclosure reason

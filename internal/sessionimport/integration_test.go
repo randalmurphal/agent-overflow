@@ -439,7 +439,7 @@ func TestImportCodexSessionEndToEnd(t *testing.T) {
 		t.Errorf("model profile = %q/%q, want the turn_context values",
 			thread.Model, thread.ReasoningEffort)
 	}
-	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, false)
 	if opts.Model != "gpt-5.6-sol" || opts.ReasoningEffort != provider.EffortHigh {
 		t.Fatalf("session start profile = %q/%q, want the imported rollout profile", opts.Model, opts.ReasoningEffort)
 	}

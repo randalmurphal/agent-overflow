@@ -56,8 +56,8 @@
   }
 
   // Seeded once from the loaded settings and re-seeded by the effect
-  // below when the STORED values move, the same shape DiscussionEditor
-  // uses; capturing the initial value here is the point.
+  // below when the STORED values move; capturing the initial value here is
+  // the point.
   // svelte-ignore state_referenced_locally
   let draft = $state<DomainDraft>(draftOf(settings));
   // What the backend last told us it stored. Re-seeding on THAT rather

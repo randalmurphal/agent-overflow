@@ -53,7 +53,6 @@ func TestMigrationFreshDB(t *testing.T) {
 
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads", "payload_chunks",
-		"channels", "channel_messages", "discussion_definitions",
 		"attachments", "thread_drafts", "message_anchors", "turns",
 		"proposed_plans", "proposed_plan_comments",
 		"chat_bar_favorites", "chat_model_profiles",
@@ -620,24 +619,6 @@ func TestProjectsPathUnique(t *testing.T) {
 	}
 }
 
-func TestChannelMessagesSequenceUnique(t *testing.T) {
-	s := newTestStore(t)
-
-	_, _ = s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t1', ?, 'T', 'claude', '/tmp', '', 1000, 1000)`, defaultTestProjectID)
-	_, _ = s.db.Exec(`INSERT INTO channels (id, thread_id, type, status, created_at, updated_at)
-		VALUES ('ch-1', 't1', 'deliberation', 'open', 1000, 1000)`)
-
-	if _, err := s.db.Exec(`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, content, created_at)
-		VALUES ('m1', 'ch-1', 1, 'agent', 'a1', 'first', 1000)`); err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, content, created_at)
-		VALUES ('m2', 'ch-1', 1, 'agent', 'a2', 'dupe', 1000)`); err == nil {
-		t.Error("expected UNIQUE violation for duplicate channel+sequence")
-	}
-}
-
 // TestV23CarriesCheckpointRowsIntoMessageAnchors pins the v23 slim-down:
 // provider correlation (turn index + Claude wire uuids) moves from
 // thread_checkpoints into message_anchors, the git-era tables drop, and
@@ -1136,7 +1117,7 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 func TestThreadsModeCheckAcceptsTerminal(t *testing.T) {
 	s := newTestStore(t)
 
-	for _, m := range []string{"chat", "plan", "discussion", "terminal"} {
+	for _, m := range []string{"chat", "plan", "terminal"} {
 		if _, err := s.db.Exec(`
 			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 				created_at, updated_at, archived, mode)
@@ -1151,6 +1132,13 @@ func TestThreadsModeCheckAcceptsTerminal(t *testing.T) {
 		VALUES ('t-mode-design', ?, 'B', 'claude', '/tmp', '', 1, 1, 0, 'design')
 	`, defaultTestProjectID); err == nil {
 		t.Fatal("INSERT with retired mode='design' must violate CHECK constraint")
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-mode-discussion', ?, 'B', 'claude', '/tmp', '', 1, 1, 0, 'discussion')
+	`, defaultTestProjectID); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		t.Fatalf("INSERT with removed mode='discussion' = %v, want a CHECK violation", err)
 	}
 
 	if _, err := s.db.Exec(`
@@ -1660,10 +1648,9 @@ func TestMigrationV33RemovesQueueFromWorkItems(t *testing.T) {
 }
 
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
-// migration that backs the restart-rebuild path
-// (deliberationForChannel): a pre-existing channel row must backfill
-// to DefaultMaxTurns (8), new rows can set an explicit value, and the
-// NOT NULL constraint is enforced.
+// migration: a pre-existing channel row must backfill to 8, new rows can
+// set an explicit value, and the NOT NULL constraint is enforced. v142
+// drops the table.
 func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 	db := migrateThrough(t, 11)
 

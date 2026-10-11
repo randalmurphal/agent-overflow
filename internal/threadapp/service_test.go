@@ -287,12 +287,12 @@ func TestModePolicyKeepsThreadTypeImmutable(t *testing.T) {
 	if err != nil || updated.Thread.Mode != "plan" {
 		t.Fatalf("UpdateMode = %+v, %v", updated, err)
 	}
-	thread.Mode = "discussion"
+	thread.Mode = "workflow"
 	if err := database.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread discussion: %v", err)
+		t.Fatalf("UpdateThread workflow: %v", err)
 	}
 	if _, err := service.UpdateMode(thread.ID, "chat"); err == nil {
-		t.Fatal("UpdateMode(discussion -> chat) error = nil")
+		t.Fatal("UpdateMode(workflow -> chat) error = nil")
 	}
 }
 
@@ -302,12 +302,12 @@ func TestModePolicyValidatesSetAndCreateModes(t *testing.T) {
 	if err != nil || thread.Mode != "plan" {
 		t.Fatalf("Create(plan) = %+v, %v", thread, err)
 	}
-	for _, mode := range []string{"", "nonsense", "PLAN", "design", "discussion", "workflow"} {
+	for _, mode := range []string{"", "nonsense", "PLAN", "design", "workflow"} {
 		if _, err := service.UpdateMode(thread.ID, mode); err == nil {
 			t.Errorf("UpdateMode(%q) error = nil", mode)
 		}
 	}
-	for _, mode := range []string{"design", "discussion", "DISCUSSION", "workflow", "bogus"} {
+	for _, mode := range []string{"design", "workflow", "bogus"} {
 		service.deps.NewID = func() string { return "bad-" + mode }
 		if _, err := service.Create(CreateOptions{ProjectID: "project", Mode: mode}); err == nil {
 			t.Errorf("Create(%q) error = nil", mode)

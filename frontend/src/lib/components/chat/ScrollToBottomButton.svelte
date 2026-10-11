@@ -13,7 +13,7 @@
 </script>
 
 {#if visible}
-  <!-- Chat publishes its overlay height; discussion has a sibling composer. -->
+  <!-- Chat publishes its overlay height. -->
   <div
     transition:fade={{ duration: 120 }}
     style="bottom: calc(var(--composer-height, 0px) + 0.5rem);"

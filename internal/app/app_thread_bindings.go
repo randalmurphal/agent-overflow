@@ -101,9 +101,9 @@ type ThreadTitleGenerationEvent struct {
 // struct carries every knob. Empty chat-bar fields are resolved from the
 // most recently used persisted chat model profile; if no profile exists yet,
 // built-in provider defaults seed the first draft. Mode defaults to chat so
-// every normal new thread starts as a chat thread. "discussion" is rejected
-// as mode values because discussion/workflow threads must come through their
-// owning coordination sagas, which wire channels or phase run records.
+// every normal new thread starts as a chat thread. Workflow modes are
+// rejected because those threads must come through their owning sagas,
+// which wire phase run records.
 //
 // The created row is broadcast as `listed` so a second attached client puts
 // it in its sidebar without a refresh, matching what the creating client does
@@ -238,8 +238,8 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 // ListThreads backs the frontend sidebar. It deliberately excludes
 // "draft" threads (newly created but never sent) so the sidebar stays
 // clean: a thread only becomes visible once its first item lands.
-// Internal callers that need every thread (tests, fork inspection,
-// discussion runtime) go through a.store.ListThreads directly: an answer
+// Internal callers that need every thread (tests, fork inspection) go
+// through a.store.ListThreads directly: an answer
 // here is a client's catalog read, which releases heavy post-boot work.
 //
 //ao:scope threads:read
@@ -581,7 +581,7 @@ func (a *App) DeleteThread(id string) error {
 	if err := a.threadApplication().CheckMutable(id); err != nil {
 		return err
 	}
-	return a.deleteThreadTreeLocked(id)
+	return a.deleteThreadLocked(id)
 }
 
 // UpdateThreadContextWindow persists the context window size and

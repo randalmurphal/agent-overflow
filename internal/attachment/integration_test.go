@@ -444,7 +444,7 @@ func TestIntegration_AttachmentCascadeOnThreadDelete(t *testing.T) {
 		t.Fatal("DB attachment row should be gone after thread delete")
 	}
 	// Disk file is intentionally NOT cleaned up by the internal attachment
-	// store. This is a documented gap; the higher-level App.deleteThreadTree
+	// store. This is a documented gap; the higher-level App.deleteThreadLocked
 	// should sweep orphans, but today it does not. Assert the orphan to lock
 	// the current behaviour in place so any future change is intentional.
 	if _, err := os.Stat(diskPath); errors.Is(err, os.ErrNotExist) {

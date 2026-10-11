@@ -14,12 +14,10 @@ import (
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/store"
 )
 
-// TestDeleteThreadSimpleThreadRemovesRowAndSession covers the runtime happy path for a
-// leaf thread with no children and no discussion state. The session must be
-// stopped and the thread row removed.
+// TestDeleteThreadSimpleThreadRemovesRowAndSession covers the runtime happy
+// path. The session must be stopped and the thread row removed.
 func TestDeleteThreadSimpleThreadRemovesRowAndSession(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -49,55 +47,6 @@ func TestDeleteThreadSimpleThreadRemovesRowAndSession(t *testing.T) {
 	}
 	if len(threads) != 0 {
 		t.Fatalf("len(threads) = %d, want 0 after delete", len(threads))
-	}
-}
-
-// TestDeleteThreadRecursivelyRemovesParentChildAndGrandchild exercises the
-// recursive descent: each thread in the chain is stopped and removed.
-func TestDeleteThreadRecursivelyRemovesParentChildAndGrandchild(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	parent := testThread("thread-delete-parent")
-	child := testThread("thread-delete-child")
-	child.ParentThreadID = parent.ID
-	grandchild := testThread("thread-delete-grandchild")
-	grandchild.ParentThreadID = child.ID
-
-	for _, th := range []store.Thread{parent, child, grandchild} {
-		if err := app.store.CreateThread(th); err != nil {
-			t.Fatalf("CreateThread(%s) error = %v", th.ID, err)
-		}
-	}
-
-	var stopCalls []string
-	app.stopSessionFn = func(threadID string) error {
-		stopCalls = append(stopCalls, threadID)
-		return nil
-	}
-
-	if err := app.DeleteThread(parent.ID); err != nil {
-		t.Fatalf("DeleteThread() error = %v", err)
-	}
-
-	// deleteThreadTree recurses children first, then stops own session.
-	// Expected order: grandchild, child, parent.
-	expected := []string{grandchild.ID, child.ID, parent.ID}
-	if len(stopCalls) != len(expected) {
-		t.Fatalf("stopSession calls = %v, want %v", stopCalls, expected)
-	}
-	for i, want := range expected {
-		if stopCalls[i] != want {
-			t.Fatalf("stopSession[%d] = %q, want %q (full %v)", i, stopCalls[i], want, stopCalls)
-		}
-	}
-
-	threads, err := app.store.ListThreads()
-	if err != nil {
-		t.Fatalf("ListThreads() error = %v", err)
-	}
-	if len(threads) != 0 {
-		t.Fatalf("len(threads) = %d, want 0 after recursive delete", len(threads))
 	}
 }
 
@@ -134,128 +83,9 @@ func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
 	}
 }
 
-// TestDeleteThreadClearsSystemPromptAndDeliberationForParent exercises the
-// discussion cleanup path: the parent carries DiscussionID with no
-// ParentThreadID, so removeDeliberation should drop the in-memory state.
-// Child threads keep DiscussionID but have ParentThreadID set, and must
-// NOT trigger deliberation removal themselves (so the parent still owns
-// cleanup authority).
-func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	// Threads + channels have a circular FK relationship (channel.thread_id
-	// → threads.id, threads.discussion_id → channels.id). Create threads
-	// first without discussion_id, then channel, then UPDATE the
-	// discussion_id — same pattern production uses in
-	// internal/discussionapp.
-	parent := testThread("thread-delete-discussion-parent")
-	if err := app.store.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent) error = %v", err)
-	}
-	child := testThread("thread-delete-discussion-child")
-	child.ParentThreadID = parent.ID
-	if err := app.store.CreateThread(child); err != nil {
-		t.Fatalf("CreateThread(child) error = %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateChannel(store.Channel{
-		ID: "channel-delete", ThreadID: parent.ID,
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateChannel() error = %v", err)
-	}
-	parent.DiscussionID = "channel-delete"
-	if err := app.store.UpdateThread(parent); err != nil {
-		t.Fatalf("UpdateThread(parent) error = %v", err)
-	}
-	child.DiscussionID = "channel-delete"
-	if err := app.store.UpdateThread(child); err != nil {
-		t.Fatalf("UpdateThread(child) error = %v", err)
-	}
-
-	app.setThreadSystemPrompt(parent.ID, "parent prompt")
-	app.setThreadSystemPrompt(child.ID, "child prompt")
-	app.installDeliberation("channel-delete", nil, 4)
-
-	app.stopSessionFn = func(string) error { return nil }
-
-	if err := app.DeleteThread(parent.ID); err != nil {
-		t.Fatalf("DeleteThread() error = %v", err)
-	}
-
-	if prompt := app.threadSystemPrompt(parent.ID); prompt != "" {
-		t.Fatalf("parent systemPrompt = %q, want empty", prompt)
-	}
-	if prompt := app.threadSystemPrompt(child.ID); prompt != "" {
-		t.Fatalf("child systemPrompt = %q, want empty", prompt)
-	}
-
-	_, stillTracked := app.deliberation("channel-delete")
-	if stillTracked {
-		t.Fatal("deliberations map still tracks channel after parent delete")
-	}
-}
-
-// TestDeleteThreadChildOnlyLeavesParentDeliberationIntact captures the
-// asymmetry in removeDeliberation: deleting a child (which has a
-// ParentThreadID set) must NOT remove the shared deliberation state —
-// that belongs to the parent thread.
-func TestDeleteThreadChildOnlyLeavesParentDeliberationIntact(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	// Threads + channels have a circular FK relationship — create both
-	// threads first, then the channel, then UPDATE discussion_id (same
-	// pattern as production internal/discussionapp).
-	parent := testThread("thread-delete-child-only-parent")
-	if err := app.store.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent) error = %v", err)
-	}
-	child := testThread("thread-delete-child-only-child")
-	child.ParentThreadID = parent.ID
-	if err := app.store.CreateThread(child); err != nil {
-		t.Fatalf("CreateThread(child) error = %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateChannel(store.Channel{
-		ID: "channel-child-only", ThreadID: parent.ID,
-		Type: "deliberation", Status: "open",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateChannel() error = %v", err)
-	}
-	parent.DiscussionID = "channel-child-only"
-	if err := app.store.UpdateThread(parent); err != nil {
-		t.Fatalf("UpdateThread(parent) error = %v", err)
-	}
-	child.DiscussionID = "channel-child-only"
-	if err := app.store.UpdateThread(child); err != nil {
-		t.Fatalf("UpdateThread(child) error = %v", err)
-	}
-
-	app.installDeliberation("channel-child-only", nil, 4)
-	app.stopSessionFn = func(string) error { return nil }
-
-	if err := app.DeleteThread(child.ID); err != nil {
-		t.Fatalf("DeleteThread(child) error = %v", err)
-	}
-
-	_, stillTracked := app.deliberation("channel-child-only")
-	if !stillTracked {
-		t.Fatal("deliberation dropped when deleting child only; parent still owns it")
-	}
-
-	// Parent still present in the store.
-	if _, err := app.store.GetThread(parent.ID); err != nil {
-		t.Fatalf("GetThread(parent) error = %v", err)
-	}
-}
-
 // TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact verifies
 // the error-path semantics: if stopping the session fails, the store row is
-// NOT deleted. This matches what deleteThreadTree actually guarantees —
+// NOT deleted. This matches what deleteThreadLocked actually guarantees —
 // it returns early on stopSession error, so DB cleanup doesn't proceed.
 func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testing.T) {
 	t.Parallel()
@@ -285,79 +115,25 @@ func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testin
 	}
 }
 
-// TestDeleteThreadChildStopFailureHaltsRecursionAndLeavesParent verifies that
-// when a child's stopSession fails mid-recursion, deleteThreadTree halts and
-// returns the error. The parent row (and still-living sibling children, if
-// any) remain in the store.
-func TestDeleteThreadChildStopFailureHaltsRecursionAndLeavesParent(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	parent := testThread("thread-delete-child-fails-parent")
-	if err := app.store.CreateThread(parent); err != nil {
-		t.Fatalf("CreateThread(parent) error = %v", err)
-	}
-	failingChild := testThread("thread-delete-child-fails-child")
-	failingChild.ParentThreadID = parent.ID
-	if err := app.store.CreateThread(failingChild); err != nil {
-		t.Fatalf("CreateThread(child) error = %v", err)
-	}
-
-	app.stopSessionFn = func(threadID string) error {
-		if threadID == failingChild.ID {
-			return errors.New("child stop failed")
-		}
-		return nil
-	}
-
-	err := app.DeleteThread(parent.ID)
-	if err == nil {
-		t.Fatal("DeleteThread() error = nil, want child stop failure")
-	}
-	if !strings.Contains(err.Error(), "child stop failed") {
-		t.Fatalf("DeleteThread() error = %v, want child stop failed", err)
-	}
-
-	// Parent row preserved (recursion exited before parent stop/delete).
-	if _, err := app.store.GetThread(parent.ID); err != nil {
-		t.Fatalf("parent removed despite child stop failure: GetThread() error = %v", err)
-	}
-	// Child row also preserved.
-	if _, err := app.store.GetThread(failingChild.ID); err != nil {
-		t.Fatalf("child removed despite stopSession failure: GetThread() error = %v", err)
-	}
-}
-
 // TestDeleteThreadAlreadyRemovedIsIdempotent covers the partial-failure
-// recovery path: GetThread returns sql.ErrNoRows, but children and runtime
-// state still need cleanup. The delete must not error and must skip the
-// (now-absent) store delete.
+// recovery path: GetThread returns sql.ErrNoRows, but runtime state still
+// needs cleanup. The delete must not error and must skip the (now-absent)
+// store delete.
 func TestDeleteThreadAlreadyRemovedIsIdempotent(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-
-	// Install a deliberation for a channel that a missing parent used to
-	// own. deleteThreadTree should still tear down associated runtime state.
-	app.installDeliberation("ghost-channel", nil, 2)
 
 	app.stopSessionFn = func(string) error { return nil }
 
 	if err := app.DeleteThread("nonexistent-thread"); err != nil {
 		t.Fatalf("DeleteThread(missing) error = %v, want nil (idempotent)", err)
 	}
-
-	// Sanity: the call did not touch deliberations for a different channel,
-	// because the ghost thread carried no DiscussionID to trigger cleanup.
-	_, stillTracked := app.deliberation("ghost-channel")
-	if !stillTracked {
-		t.Fatal("deliberation wrongly removed for missing thread with no DiscussionID")
-	}
 }
 
-// TestDeleteThreadTreePropagatesStoreErrors ensures that unexpected store
+// TestDeleteThreadPropagatesStoreErrors ensures that unexpected store
 // errors (anything other than sql.ErrNoRows on GetThread) are surfaced
 // to the caller — the delete must fail loudly, not silently succeed.
-func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
+func TestDeleteThreadPropagatesStoreErrors(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 
@@ -367,7 +143,7 @@ func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
 	}
 
 	// Close the underlying database so any subsequent store call fails with
-	// a non-sql.ErrNoRows error. deleteThreadTree should propagate the
+	// a non-sql.ErrNoRows error. deleteThreadLocked should propagate the
 	// failure instead of swallowing it.
 	if err := app.store.Close(); err != nil {
 		t.Fatalf("store.Close() error = %v", err)
@@ -376,87 +152,6 @@ func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
 	err := app.DeleteThread(thread.ID)
 	if err == nil {
 		t.Fatal("DeleteThread() error = nil, want store-level failure")
-	}
-}
-
-// TestDeleteThreadKeepsRowWhenChildFails covers A4's key invariant: if
-// ANY step of the cascade fails, the parent row must remain in the DB so
-// a subsequent DeleteThread call can retry idempotently. Before A4, the
-// recursive path halted early and the parent was preserved — but the
-// flat step-by-step path (stop → terminals → deliberation →
-// attachments) would still run even after a failure in one of them
-// and could race to partially clean state.
-func TestDeleteThreadKeepsRowWhenChildFails(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	parent := testThread("p-root")
-	if err := app.store.CreateThread(parent); err != nil {
-		t.Fatalf("parent: %v", err)
-	}
-	child := testThread("p-child")
-	child.ParentThreadID = parent.ID
-	if err := app.store.CreateThread(child); err != nil {
-		t.Fatalf("child: %v", err)
-	}
-
-	app.stopSessionFn = func(id string) error {
-		if id == child.ID {
-			return errors.New("child stop failed")
-		}
-		return nil
-	}
-
-	err := app.DeleteThread(parent.ID)
-	if err == nil {
-		t.Fatal("expected error when child cleanup fails")
-	}
-
-	// Both rows must still be present (no partial state).
-	if _, err := app.store.GetThread(parent.ID); err != nil {
-		t.Errorf("parent row should be preserved: %v", err)
-	}
-	if _, err := app.store.GetThread(child.ID); err != nil {
-		t.Errorf("child row should be preserved: %v", err)
-	}
-}
-
-// TestDeleteThreadThreeLevelsDeepChildFailureKeepsAncestors asserts that
-// a failure at the deepest level of a 3-level tree does not allow any
-// ancestor to be deleted. Tests the recursive error-join semantics.
-func TestDeleteThreadThreeLevelsDeepChildFailureKeepsAncestors(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	l0 := testThread("tree-l0")
-	l1 := testThread("tree-l1")
-	l1.ParentThreadID = l0.ID
-	l2 := testThread("tree-l2")
-	l2.ParentThreadID = l1.ID
-	l3 := testThread("tree-l3")
-	l3.ParentThreadID = l2.ID
-	for _, th := range []store.Thread{l0, l1, l2, l3} {
-		if err := app.store.CreateThread(th); err != nil {
-			t.Fatalf("create %s: %v", th.ID, err)
-		}
-	}
-
-	app.stopSessionFn = func(id string) error {
-		if id == l3.ID {
-			return errors.New("deepest fail")
-		}
-		return nil
-	}
-
-	if err := app.DeleteThread(l0.ID); err == nil {
-		t.Fatal("expected error when deepest descendant fails")
-	}
-
-	// All four rows must still exist.
-	for _, id := range []string{l0.ID, l1.ID, l2.ID, l3.ID} {
-		if _, err := app.store.GetThread(id); err != nil {
-			t.Errorf("%s should still be in DB: %v", id, err)
-		}
 	}
 }
 
@@ -569,23 +264,6 @@ func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
 	// Row preserved.
 	if _, err := app.store.GetThread(thread.ID); err != nil {
 		t.Errorf("row should be preserved: %v", err)
-	}
-}
-
-// TestInstallDeliberationTracksState confirms the helper used by discussion
-// start wiring, since several delete tests depend on it. Acts as a canary —
-// if this breaks, the other tests are suspect.
-func TestInstallDeliberationTracksState(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.installDeliberation("channel-canary", nil, 5)
-
-	delib, _ := app.deliberation("channel-canary")
-	if delib == nil {
-		t.Fatal("installDeliberation did not register channel-canary")
-	}
-	if got := delib.State().MaxTurns; got != 5 {
-		t.Fatalf("MaxTurns = %d, want 5", got)
 	}
 }
 

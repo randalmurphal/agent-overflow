@@ -175,14 +175,12 @@ type appBrowserState struct {
 // appTurnObserverState fans provider events out to internal App features after
 // triage handling has been attempted.
 type appTurnObserverState struct {
-	// Each registration lives until its returned unsubscribe function runs;
-	// the built-in discussion observer lives for the App lifetime. mu is
-	// deliberately independent of sessionruntime so callbacks can safely enter other
-	// App coordination paths.
-	mu             sync.RWMutex
-	byThread       map[string]map[uint64]turnObserver
-	nextID         uint64
-	discussionOnce sync.Once
+	// Each registration lives until its returned unsubscribe function runs.
+	// mu is deliberately independent of sessionruntime so callbacks can
+	// safely enter other App coordination paths.
+	mu       sync.RWMutex
+	byThread map[string]map[uint64]turnObserver
+	nextID   uint64
 }
 
 // appMarkThreadReadState joins the background thread read-state stamps

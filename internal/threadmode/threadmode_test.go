@@ -26,12 +26,6 @@ func TestValidateCreate_TrimsWhitespace(t *testing.T) {
 	}
 }
 
-func TestValidateCreate_RejectsDiscussion(t *testing.T) {
-	if _, err := ValidateCreate("discussion"); err == nil {
-		t.Fatal("expected ValidateCreate to reject discussion")
-	}
-}
-
 func TestValidateCreate_RejectsUnknown(t *testing.T) {
 	if _, err := ValidateCreate("bogus"); err == nil {
 		t.Fatal("expected ValidateCreate to reject unknown mode")
@@ -49,12 +43,6 @@ func TestValidateCreate_AcceptsLegal(t *testing.T) {
 func TestValidateCreate_RejectsRetiredDesign(t *testing.T) {
 	if _, err := ValidateCreate("design"); err == nil {
 		t.Fatal("expected ValidateCreate to reject retired design mode")
-	}
-}
-
-func TestValidateSet_RejectsDiscussion(t *testing.T) {
-	if _, err := ValidateSet("discussion"); err == nil {
-		t.Fatal("expected ValidateSet to reject discussion (immutable thread type)")
 	}
 }
 
@@ -76,13 +64,12 @@ func TestValidateSet_AcceptsChatAndPlan(t *testing.T) {
 
 func TestIsPostCreationMode(t *testing.T) {
 	cases := map[string]bool{
-		"chat":       true,
-		"plan":       true,
-		"  plan  ":   true,
-		"design":     false,
-		"discussion": false,
-		"":           false,
-		"bogus":      false,
+		"chat":     true,
+		"plan":     true,
+		"  plan  ": true,
+		"design":   false,
+		"":         false,
+		"bogus":    false,
 	}
 	for in, want := range cases {
 		if got := IsPostCreationMode(in); got != want {
@@ -164,9 +151,6 @@ func TestWorkflowModesAreLegalSagaOwnedAndHidden(t *testing.T) {
 		if _, err := ValidateSet(mode); err == nil {
 			t.Fatalf("ValidateSet(%q) succeeded", mode)
 		}
-	}
-	if IsHidden(ModeDiscussion) || !IsSagaOwned(ModeDiscussion) {
-		t.Fatalf("discussion hidden/saga-owned = %v/%v", IsHidden(ModeDiscussion), IsSagaOwned(ModeDiscussion))
 	}
 	if IsHidden(ModeTerminal) || !IsLegal(ModeTerminal) {
 		t.Fatalf("terminal hidden/legal = %v/%v", IsHidden(ModeTerminal), IsLegal(ModeTerminal))

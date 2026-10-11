@@ -101,9 +101,8 @@ one read per computer at a time; a pane additionally reads
 in flight wins over the snapshot.
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
-exists, including child threads with no pane, and for every subagent scope a
-surface reads. Watches never depend on focus, visibility, or `document.hidden`.
-Registering a consumer of an entity-filtered channel also requires contributing
+exists and for every subagent scope a surface reads. Watches never depend on
+focus, visibility, or `document.hidden`. Registering a consumer of an entity-filtered channel also requires contributing
 its thread IDs. A watched thread delivers only root rows on
 `provider:item_event`: a consumer of rows with `parentId` set contributes
 their scope while it exists, or reads anchor-level data instead. Push the

@@ -17,7 +17,7 @@ import (
 // retentionTestApp wraps newTestAppWithStore with a settings service
 // and configDir on a t.TempDir(). The retention sweep needs both: it
 // reads Retention.Days from settings and uses configDir to locate the
-// log + bookmark directories. deleteThreadTreeLocked is heavy and
+// log + bookmark directories. deleteThreadLocked is heavy and
 // touches `a.replay`, `a.terminals`, etc., so we install a no-op
 // stopSessionFn (Codex test threads with no live session don't need
 // any of the other subsystems either).
@@ -335,7 +335,7 @@ func TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown(t *testing.T) {
 		seedThread(t, app, fmt.Sprintf("mb-%03d", i), 0)
 	}
 
-	// Flip shuttingDown from inside deleteThreadTreeLocked (it calls
+	// Flip shuttingDown from inside deleteThreadLocked (it calls
 	// stopSessionFn for any tracked session; we hook the same path even
 	// though our test threads have no live session), so the flag is
 	// visible to the next iteration's check.

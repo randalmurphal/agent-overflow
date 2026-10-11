@@ -141,7 +141,7 @@ func (a *App) endTerminalThread(ctx context.Context, threadID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return thread.Title, a.deleteThreadTreeLocked(threadID)
+	return thread.Title, a.deleteThreadLocked(threadID)
 }
 
 // TerminalEndFailedEvent is the payload of `terminal:end_failed`.

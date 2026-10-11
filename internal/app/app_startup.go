@@ -39,7 +39,7 @@ import (
 // because every other subsystem either embeds the store or reads from it,
 // observability boots next because the triage router installs metrics
 // before it can accept events, and the remaining subsystems (triage,
-// discussion, terminals, attachments, workspace search) boot
+// terminals, attachments, workspace search) boot
 // last once their inputs are ready.
 //
 //wails:ignore
@@ -659,8 +659,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 }
 
 // initSubsystems wires the remaining services: triage (with metrics),
-// discussion registry/channels, terminals, attachments, and workspace
-// search. Called after initStores / initObservability so every subsystem
+// terminals, attachments, and workspace search. Called after initStores / initObservability so every subsystem
 // has its dependencies in place.
 //
 // An attachment init failure closes the store before returning — matching

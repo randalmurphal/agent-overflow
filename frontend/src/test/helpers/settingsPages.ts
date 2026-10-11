@@ -12,7 +12,6 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
-  setBindingMock('ListDiscussions', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);

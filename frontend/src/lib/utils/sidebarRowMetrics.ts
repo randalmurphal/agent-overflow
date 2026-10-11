@@ -67,8 +67,7 @@ export const GROUP_MEMBER_PIN_SLOT_LEFT_PX = Math.round(
 );
 
 /**
- * Member row padding-left: its title lines up with the group's name. A
- * member's own discussion children step in from there.
+ * Member row padding-left: its title lines up with the group's name.
  */
 export function sidebarGroupMemberPaddingLeftPx(indent: number): number {
   return GROUP_NAME_LEFT_PX - GROUP_MEMBER_ROW_LEFT_PX + indentStepPx(indent) - indentStepPx(2);

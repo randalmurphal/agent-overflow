@@ -29,7 +29,7 @@ export interface Thread {
   branch?: string;
   /**
    * Canonical mode column.
-   * "chat" | "plan" | "discussion" | "terminal" plus the
+   * "chat" | "plan" | "terminal" plus the
    * workflow-owned modes and "scratch", which listing surfaces exclude by
    * mode. Optional in the TS layer so older fixtures omit it cleanly; new UI
    * code defaults to "chat" when missing. A "terminal" thread is a
@@ -42,7 +42,6 @@ export interface Thread {
   mode?:
     | "chat"
     | "plan"
-    | "discussion"
     | "terminal"
     | "scratch"
     | "workflow"
@@ -67,8 +66,6 @@ export interface Thread {
   // thread stubs from external callers don't have to set it. Consumers
   // that branch on the value MUST fall back to "full-access" when absent.
   runtimeMode?: RuntimeMode;
-  discussionId?: string;
-  parentThreadId?: string;
   forkedFromThreadId?: string;
   lastTokenUsage?: string;
   model: string;
@@ -150,9 +147,7 @@ export interface Thread {
   /**
    * FK into thread_groups. Set means the thread renders inside that named
    * sidebar group instead of at the project's top level. A grouped thread
-   * pins inside its group; entering or leaving a group clears the pin. Only
-   * a top-level node's value is read by the sidebar tree — a discussion
-   * child follows its root.
+   * pins inside its group; entering or leaving a group clears the pin.
    */
   groupId?: string;
 }

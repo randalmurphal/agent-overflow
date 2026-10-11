@@ -736,10 +736,6 @@ Grantable first-party capabilities (phase-side):
   deliberately. Interactive sessions (a human-driven thread, where every
   invocation passes the provider's own approval UX) hold it implicitly.
 
-**Deferred (post-v1): agent-invoked inter-agent discussions**, an agent
-questioning another agent via AO's native discussions. Additive, not
-structural; human-initiated discussion flows are unaffected.
-
 **Side effects are idempotent across re-runs (surface-and-skip).** Loop-back
 (§4), take-over discard+re-run (§7), and crash-recovery re-runs (§12) all
 re-enter a phase, so a first-party side-effecting tool (start-run / schedule /
@@ -1544,8 +1540,6 @@ exitable**.
   tweaks is, if ever wanted, just a later §11 automation built on existing
   primitives, not a subsystem. Rationale and the research behind this call:
   `workflows-system-self-improvement-research.md`.
-- **Agent-invoked inter-agent discussions**: post-v1 (§5). Human-initiated
-  discussion flows are unaffected.
 - **A work queue.** Removed in rev 2 (was rev 1's core). If a future need
   genuinely wants admission control beyond resource capacity (§6), it returns
   as a *caller* of the one start path, never as a second execution model.

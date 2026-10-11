@@ -350,20 +350,6 @@ export {
   ProviderTerminalRefresh,
   ProviderTerminalSetControl,
 
-  // Discussion operations
-  ListDiscussions,
-  ListDiscussionsForThread,
-  GetDiscussion,
-  CreateDiscussion,
-  UpdateDiscussion,
-  DeleteDiscussion,
-  StartDiscussion,
-  StartDiscussionByID,
-  GetChannelMessages,
-  GetChannelState,
-  PostChannelMessage,
-  ConcludeDiscussion,
-
   // Composer enhancements.
   //
   // Attachment BYTES do not cross here: they ride HTTP, admitted by a
@@ -745,7 +731,7 @@ export interface CreateThreadOptions {
   title?: string;
   provider?: 'claude' | 'codex' | string;
   model?: string;
-  mode?: 'chat' | 'plan' | 'discussion' | string;
+  mode?: 'chat' | 'plan' | string;
   // `| string` keeps a slug this build does not know from failing to
   // compile; the union is the canonical set (see types/settings.ts).
   reasoningEffort?: ReasoningEffort | string;

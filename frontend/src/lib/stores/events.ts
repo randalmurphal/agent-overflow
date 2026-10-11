@@ -6,10 +6,7 @@ import { installComputerHydration } from './computerHydration';
 // into the domain modules that actually own the reaction:
 //
 //   - eventsThreadRows.ts    — cached Thread row projections (shared leaf)
-//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch,
-//                              incl. the discussion live-tail side-channel
-//                              feed (assistant_text from unmounted
-//                              participant threads → discussionLiveTail.ts)
+//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored, sends pending)
@@ -17,7 +14,6 @@ import { installComputerHydration } from './computerHydration';
 //   - eventsDraftRows.ts     — composer-draft convergence across clients
 //   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
-//   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
 //   - eventsHighlight.ts     — highlight:live / highlight:diff_seed span ingest
 //   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
@@ -92,7 +88,6 @@ import {
   type BackendSetChangeEvent,
 } from './systems.svelte';
 import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
-import { applyDiscussionDefinitionsChanged } from './discussionDefinitions.svelte';
 import { applyProviderAccountsChanged } from './providerAccounts.svelte';
 import { resyncKeybindings } from './keybindings.svelte';
 import { resyncEditorPreference } from './editors.svelte';
@@ -176,12 +171,6 @@ import {
   applyThreadTitleGeneration,
   type ThreadTitleGenerationEvent,
 } from './threadTitleGeneration.svelte';
-import {
-  applyDiscussionMessage,
-  applyDiscussionState,
-  type DiscussionMessageEvent,
-  type DiscussionStateEvent,
-} from './eventsDiscussion';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
@@ -189,7 +178,6 @@ import {
   setupHighlightLiveEvents,
   type HighlightDiffSeedEvent,
 } from './eventsHighlight';
-import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import {
   applyNotificationActivated,
@@ -403,14 +391,6 @@ export function setupEventListeners(): () => void {
     const backend = backendKeyForOrigin(origin.backendId);
     invalidateClaudeProbeCommands(backend);
     applyProviderAccountsChanged(backend);
-  });
-  // discussion:definitions-changed — a discussion definition was created,
-  // renamed, edited or deleted. Payload-less, the same shape
-  // workflow:definitions-changed carries: the list is read by SCOPE and a
-  // rename moves a definition between names, so only a re-read can say what
-  // any reader's list now holds.
-  const cancelDiscussionDefinitions = wailsEventOn('discussion:definitions-changed', () => {
-    applyDiscussionDefinitionsChanged();
   });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
@@ -736,19 +716,6 @@ export function setupEventListeners(): () => void {
     applyModeChanged,
   );
 
-  // discussion:message / discussion:state — push-driven replacement for
-  // ChannelView's old 2.5s poll. Routed to every pane whose threadId
-  // matches the event's PARENT thread id (a discussion channel hangs
-  // off the parent, not any one participant child thread). See
-  // eventsDiscussion.ts and docs/architecture/discussion-deliberation.md.
-  const cancelDiscussionMessage = wailsEventOn<DiscussionMessageEvent>(
-    'discussion:message',
-    applyDiscussionMessage,
-  );
-  const cancelDiscussionState = wailsEventOn<DiscussionStateEvent>(
-    'discussion:state',
-    applyDiscussionState,
-  );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
   // The PR pump's CI: pipeline frames under the PR's sequence, and log
   // deltas for the jobs this client follows.
@@ -821,7 +788,6 @@ export function setupEventListeners(): () => void {
     cancelKeybindingsUpdated();
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
-    cancelDiscussionDefinitions();
     cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();
@@ -857,8 +823,6 @@ export function setupEventListeners(): () => void {
     cancelTransportGap();
     cancelModeChanged();
     cancelRuntimeModeChanged();
-    cancelDiscussionMessage();
-    cancelDiscussionState();
     cancelPRUpdated();
     cancelPRCIUpdated();
     cancelPRCILog();
@@ -871,6 +835,5 @@ export function setupEventListeners(): () => void {
     cancelSessionImport();
     cancelHighlightLive();
     cancelHighlightDiffSeed();
-    clearAllDiscussionLiveTail();
   };
 }

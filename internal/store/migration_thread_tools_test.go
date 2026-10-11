@@ -70,8 +70,13 @@ func TestThreadToolsMigrationsPreservePopulatedDatabase(t *testing.T) {
 		if err := db.QueryRow(`SELECT mode FROM threads WHERE id = ?`, "t-"+mode).Scan(&stored); err != nil {
 			t.Fatalf("read thread mode %s: %v", mode, err)
 		}
-		if stored != mode {
-			t.Errorf("thread t-%s mode = %q, want %q", mode, stored, mode)
+		want := mode
+		if mode == "discussion" {
+			// v142 removed the mode and converted its threads to chat.
+			want = "chat"
+		}
+		if stored != want {
+			t.Errorf("thread t-%s mode = %q, want %q", mode, stored, want)
 		}
 	}
 

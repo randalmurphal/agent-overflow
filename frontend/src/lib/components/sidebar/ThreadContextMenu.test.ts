@@ -108,22 +108,11 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(labels).toContain('Delete');
   });
 
-  it('hides Delete for child (discussion) threads — the parent owns the lifecycle', () => {
-    const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1' }));
-    const labels = visibleLabels(baseElement);
-    expect(labels).not.toContain('Delete');
-    // Archive is still offered (a child hides on its own), so the trailing
-    // rule stays for it; a child terminal has neither and no rule.
-    expect(labels).toContain('Archive Thread');
-    expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(1);
-  });
-
-  it('omits Archive Thread and the trailing rule for a child terminal thread', () => {
-    const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1', mode: 'terminal' }));
+  it('omits Archive Thread but keeps Delete for a terminal thread', () => {
+    const { baseElement } = renderMenu(makeThread({ mode: 'terminal' }));
     const labels = visibleLabels(baseElement);
     expect(labels).not.toContain('Archive Thread');
-    expect(labels).not.toContain('Delete');
-    expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(0);
+    expect(labels).toContain('Delete');
   });
 
   it('shows move-to-back and unpin controls for a front-burner thread', () => {
@@ -559,10 +548,8 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
 
 // ── Thread groups ────────────────────────────────────────────────────────
 //
-// "Move to Group" is a TOP-LEVEL row's item: a discussion tree joins a group
-// as a unit, so offering it on a child would promise a move the backend does
-// not make. In bulk it needs one shared project, because a group belongs to
-// one. And a grouped row shows no pin items at all — the group carries the
+// "Move to Group" in bulk needs one shared project, because a group belongs
+// to one. And a grouped row shows no pin items at all — the group carries the
 // one pin the row is allowed.
 
 describe('<ThreadContextMenu> group items', () => {
@@ -616,16 +603,6 @@ describe('<ThreadContextMenu> group items', () => {
     // Placed after Mark Unread and before the pin items.
     expect(labels.indexOf('Move to Group')).toBe(labels.indexOf('Mark Unread') + 1);
     expect(labels.indexOf('Move to Group')).toBeLessThan(labels.indexOf('Pin Thread'));
-  });
-
-  it('hides both group items on a discussion child row', () => {
-    const { baseElement } = renderMenu(makeThread({
-      projectId: 'project-1',
-      parentThreadId: 'parent',
-    }));
-    const labels = groupMenuLabels(baseElement);
-    expect(labels).not.toContain('Move to Group');
-    expect(labels).not.toContain('Remove from Group');
   });
 
   it('hides both group items on a thread with no project', () => {
@@ -762,39 +739,6 @@ describe('<ThreadContextMenu> group items', () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
     expect(setGroup).toHaveBeenCalledWith(['a'], '');
-  });
-
-  it('leaves discussion children out of a bulk move — they follow their root', async () => {
-    replaceAllThreads([
-      makeThread({ id: 'root', projectId: 'project-1' }),
-      makeThread({ id: 'kid', projectId: 'project-1', parentThreadId: 'root' }),
-    ]);
-    setThreadSelection(['root', 'kid']);
-    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    const { baseElement } = renderMenu(makeThread({ id: 'root', projectId: 'project-1' }));
-    await openSubmenu(baseElement);
-
-    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
-    const zebra = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
-      .find((el) => el.textContent?.includes('Zebra')) as HTMLElement;
-    await fireEvent.click(zebra);
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-
-    expect(setGroup).toHaveBeenCalledWith(['root'], 'g-zebra');
-  });
-
-  it('hides the group items when a bulk selection is nothing but children', () => {
-    replaceAllThreads([
-      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-      makeThread({ id: 'k2', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-    ]);
-    setThreadSelection(['k1', 'k2']);
-    const { baseElement } = renderMenu(
-      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
-    );
-    const labels = groupMenuLabels(baseElement);
-    expect(labels).not.toContain('Move to Group');
-    expect(labels).not.toContain('Remove from Group');
   });
 
   it('expands the project before New Group…, so the new row can open its rename', async () => {

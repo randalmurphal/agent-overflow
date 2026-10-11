@@ -9,11 +9,7 @@ import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
 // rAF-scheduled flush, per-item upsert validation, the item-upsert
 // subscriber fan-out consumed by activityRailBackground and
-// proposedPlans, and the discussion live-tail side-channel feed
-// (assistant_text upserts/deltas from unmounted participant child
-// threads routed through discussionLiveTail.ts — see
-// feedDiscussionLiveTailUpserts). Fan-in target of events.ts's
-// setupEventListeners.
+// proposedPlans. Fan-in target of events.ts's setupEventListeners.
 import type { ItemDeltaEvent, ItemStreamEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { iterPanes } from './panes.svelte';
@@ -22,7 +18,6 @@ import { itemsRenderEqual } from './threadItems';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { isSmoothLiveContentKind } from './threadPaneShared';
-import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber, isStreamOffset } from './eventsGuards';
 import { utf8Length } from '../utils/utf8Offsets';
 import { compositeKey } from '../utils/compositeKey';
@@ -223,7 +218,7 @@ function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming:
   // for text-like kinds. Non-text appends still stamp — but at the
   // pane's arm site (`armLiveContentAppendSpring` in threadPaneScroll.svelte.ts),
   // which shares the structural arm's restore gates (loading /
-  // discussion / controller-attached); this ungated per-row predicate
+  // controller-attached); this ungated per-row predicate
   // must not duplicate that decision without them.
   //
   // `existing` comes from a snapshot taken BEFORE the batch applies, so a
@@ -242,33 +237,6 @@ function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming:
   // equality deliberately ignores `createdAt`/`updatedAt` — a bump with
   // no rendered field change must not hold the latch open.
   return !itemsRenderEqual(existing, incoming);
-}
-
-/**
- * Feed a discussion child thread's `assistant_text` upserts to any
- * registered live-tail handlers, keyed by the item's OWN threadId — not
- * the pane-matching loop below it. Discussion participant threads have
- * no mounted pane (only the parent thread gets a ChannelView), so
- * without this side-channel their streaming text never reaches anyone.
- * `lookupDiscussionLiveTail` returns `undefined` for every ordinary chat
- * thread, so this is a single Map miss per thread on the common path.
- *
- * Root rows only: the tail previews the participant's own reply, and the
- * participant thread is watched without scopes, so a subagent's text
- * (`parentId` set) reaches this client only when some other surface
- * watches that scope. Accepting it would make the tail depend on that.
- */
-function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void {
-  for (const [threadId, threadItems] of itemsByThread) {
-    const handlers = lookupDiscussionLiveTail(threadId);
-    if (!handlers || handlers.size === 0) continue;
-    for (const item of threadItems) {
-      if (item.kind !== 'assistant_text' || item.parentId) continue;
-      for (const handler of handlers) {
-        handler.applyTailUpsert(threadId, item.id, item.summary, item.streamEnd);
-      }
-    }
-  }
 }
 
 function applyItemUpserts(upserts: Item[]): void {
@@ -297,7 +265,6 @@ function applyItemUpserts(upserts: Item[]): void {
       else flushRowIdsByThread.set(item.threadId, [item.id]);
     }
   }
-  feedDiscussionLiveTailUpserts(itemsByThread);
   const changedThreadIds = new Set<string>();
   const activeThreadIds = new Set<string>();
   for (const pane of ingestPanes()) {
@@ -400,18 +367,6 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!isBoundedString(evt.threadId, 512) || !isBoundedString(evt.itemId, 512)) return;
   if (!isBoundedString(evt.kind, 128) || !isBoundedString(evt.delta)) return;
   if (!isFiniteNumber(evt.updatedAt)) return;
-
-  // Same discussion live-tail side-channel as feedDiscussionLiveTailUpserts
-  // above, for the delta half of the wire, root rows only for the same
-  // reason. A no-op Map lookup for every ordinary chat thread.
-  if (evt.kind === 'assistant_text' && !evt.parentId) {
-    const handlers = lookupDiscussionLiveTail(evt.threadId);
-    if (handlers) {
-      for (const handler of handlers) {
-        handler.applyTailDelta(evt.threadId, evt.itemId, evt.delta, evt.offset);
-      }
-    }
-  }
 
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;

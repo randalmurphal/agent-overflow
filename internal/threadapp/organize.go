@@ -93,11 +93,6 @@ type OrganizeResult struct {
 	// decides between the `listed` and `unlisted` sidebar frames and what
 	// tells root to release the thread's provider session.
 	ArchivedChanged bool
-	// Carried are the OTHER rows a group move wrote: the discussion
-	// children that travel with their root. They are not part of the
-	// patched thread's own frame, and a client that never re-reads them
-	// would render a stale group on each.
-	Carried []store.Thread
 	// CreatedGroup is the group this patch had to create, if any. A client
 	// holding no row for it has nowhere to render the moved thread, so
 	// root announces it exactly as the sidebar's own create does.
@@ -146,7 +141,6 @@ func (s *Service) ApplyOrganizePatch(threadID string, patch OrganizePatch) (Orga
 		Thread:          applied.Thread,
 		Changed:         applied.Changed,
 		ArchivedChanged: applied.ArchivedChanged,
-		Carried:         applied.Carried,
 		CreatedGroup:    applied.CreatedGroup,
 	}, nil
 }

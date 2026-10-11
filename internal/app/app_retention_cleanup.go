@@ -281,12 +281,12 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 			a.retentionPause()
 		}
 		unlock := a.threadLocks().Lock(id)
-		delErr := a.deleteThreadTreePacedLocked(id, a.retentionPause)
+		delErr := a.deleteThreadPacedLocked(id, a.retentionPause)
 		unlock()
 		if delErr != nil {
 			// errors.Is(delErr, sql.ErrNoRows) is normal (the user
 			// raced us and deleted the thread first), but
-			// deleteThreadTreeLocked already swallows ErrNoRows at its
+			// deleteThreadLocked already swallows ErrNoRows at its
 			// own boundary, so any error here is genuinely worth
 			// logging.
 			log.Printf("app: retention sweep: delete thread %s: %v", id, delErr)
@@ -298,10 +298,10 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	return deleted, failed
 }
 
-// deleteThreadTreePacedLocked is deleteThreadTreeLocked with the store's
+// deleteThreadPacedLocked is deleteThreadLocked with the store's
 // item-chunk pause wired to the sweep's yield.
-func (a *App) deleteThreadTreePacedLocked(threadID string, pause store.ChunkPause) error {
+func (a *App) deleteThreadPacedLocked(threadID string, pause store.ChunkPause) error {
 	ports := a.threadDeletePorts()
 	ports.ChunkPause = pause
-	return a.threadApplication().DeleteTree(threadID, false, ports)
+	return a.threadApplication().DeleteThread(threadID, ports)
 }

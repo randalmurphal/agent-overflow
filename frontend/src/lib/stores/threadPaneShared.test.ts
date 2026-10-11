@@ -23,9 +23,9 @@ describe('withViewportBottomHeld', () => {
   it('still applies the change on a surface that cannot hold it', () => {
     // The load-bearing case. `controller?.preserveViewportBottom?.(change)`
     // reads as equivalent and is not: on a pane whose controller has no
-    // virtualizer behind it — ChannelView's raw controller, or a pane whose
-    // timeline has not mounted yet — it silently does nothing, and the run the
-    // reader clicked simply never collapses.
+    // virtualizer behind it, or a pane whose timeline has not mounted yet, it
+    // silently does nothing, and the run the reader clicked simply never
+    // collapses.
     const change = vi.fn();
 
     withViewportBottomHeld(stubScrollController(), change);
@@ -38,17 +38,15 @@ describe('withViewportBottomHeld', () => {
     // Extracted through `const hold = controller.preserveViewportBottom` and
     // called bare, `this` would be undefined inside an implementation that
     // reads its own state.
-    let self: unknown = null;
-    const ctrl: PaneScrollController = stubScrollController({
-      preserveViewportBottom(this: unknown, run: () => void) {
-        self = this;
-        run();
-      },
+    const preserveViewportBottom = vi.fn(function (this: unknown, run: () => void) {
+      run();
     });
+    const ctrl: PaneScrollController = stubScrollController({ preserveViewportBottom });
 
     withViewportBottomHeld(ctrl, () => {});
 
-    expect(self).toBe(ctrl);
+    expect(preserveViewportBottom.mock.contexts).toHaveLength(1);
+    expect(preserveViewportBottom.mock.contexts[0]).toBe(ctrl);
   });
 });
 

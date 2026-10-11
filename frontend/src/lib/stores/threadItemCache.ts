@@ -10,8 +10,8 @@ import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
  * Snapshot of a thread's hydrated timeline state captured at the moment
  * the user navigated away. The cache holds the same shape `switchThread`
  * sets up: the windowed item list plus the pagination cursors and the
- * latest-settled-turn watermark. Streaming flags, approvals, design
- * artifacts, and channel messages deliberately stay out — they are
+ * latest-settled-turn watermark. Streaming flags, approvals and design
+ * artifacts deliberately stay out — they are
  * owned by the live ThreadPane and re-hydrated on the next switch.
  *
  * Items are treated as immutable by callers (the pane reassigns

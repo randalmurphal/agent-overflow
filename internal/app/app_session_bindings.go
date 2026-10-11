@@ -58,7 +58,7 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 		QueueIfActive: true,
 		// Wire entry: this text was typed into a composer (D31). The internal
 		// a.sendMessage helper deliberately does NOT set this — its other
-		// caller (discussion drive) sends app-composed prompts.
+		// callers send app-composed prompts.
 		ExpandComposerCommands: true,
 	})
 	return err

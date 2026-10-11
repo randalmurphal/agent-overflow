@@ -58,13 +58,8 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 // the spawn path and the live config reconciler (app_session_config.go) so
 // both see the exact same view of "what a session for this row looks like".
 //
-// Feature-owned prompt plumbing is caller-owned: the provider package
-// intentionally doesn't know about discussions. We compose the final system
-// prompt here, then hand a provider-agnostic SessionOptions bundle to each
-// provider's ConfigFromOptions translator.
-//
 // What this function does NOT do is stamp the settings-owned axes
-// (SystemPrompt when no feature owns it, DisabledTools). Those are read
+// (SystemPrompt, DisabledTools). Those are read
 // from Settings rather than projected from the thread row, so the two
 // callers need opposite treatment — the spawn path applies today's values
 // (applySettingsOwnedAxes), the reconcile path resolves against the live
@@ -75,8 +70,6 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 // git subprocesses under the per-thread config lock — on every model,
 // effort, and runtime-mode change.
 func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, error) {
-	systemPrompt := a.featureOwnedSystemPrompt(t)
-
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this
 	// flag. We consume it here (bool in scope) rather than mutating the
@@ -92,7 +85,6 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, erro
 			StandardPercent: standardDefault,
 			ExtendedPercent: extendedDefault,
 		},
-		systemPrompt,
 		forkSession,
 	)
 

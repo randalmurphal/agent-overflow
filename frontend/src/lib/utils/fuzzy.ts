@@ -7,7 +7,7 @@
 //   -1  per skipped character between matches
 //
 // Ties break on shorter target length so "new" matches "thread.new" before
-// "thread.new.discussion".
+// "thread.newPane".
 
 export interface FuzzyMatch {
   score: number;

@@ -60,12 +60,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1705768020: 'thread', // CloseThreadTerminals
 	4090329093: 'thread', // CompactCodexThread
 	2151872702: 'home', // ComputerPairingStatus
-	4019739936: 'selected', // ConcludeDiscussion
 	3813775159: 'home', // ConfirmDevicePairing
 	2052844871: 'home', // ConfirmSSHConnection
 	2617952423: 'thread', // CountRunningBackgroundTasks
 	565306783: 'thread', // CreateDiffReviewComment
-	757689265: 'selected', // CreateDiscussion
 	969543070: 'selected', // CreateProject
 	617214578: 'selected', // CreateProjectCheckout
 	4246792665: 'thread', // CreateProposedPlanComment
@@ -74,7 +72,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2485293844: 'selected', // CreateThreadTransferOffer
 	2428457759: 'thread', // DeleteAttachment
 	1303317790: 'thread', // DeleteDiffReviewComment
-	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
 	151243274: 'home', // DeletePasskey
 	3379369923: 'project', // DeleteProject
@@ -100,8 +97,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
 	3414107538: 'thread', // GetAttachmentThumbnail
-	3595031866: 'selected', // GetChannelMessages
-	3664812883: 'selected', // GetChannelState
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
 	1110466608: 'home', // GetCodexAccountUsage
@@ -112,7 +107,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	139818238: 'selected', // GetDevServers
 	1370118726: 'home', // GetDeviceName
 	1590634674: 'workspace', // GetDiffContextLines
-	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
 	949275134: 'thread', // GetEditDiffContextLines
 	1655853383: 'selected', // GetEditorSettings
@@ -206,8 +200,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	352990129: 'workspace', // ListBranchCommits
 	2114948965: 'home', // ListChatBarFavorites
 	3057473088: 'thread', // ListDiffReviewComments
-	942288562: 'selected', // ListDiscussions
-	2502562885: 'thread', // ListDiscussionsForThread
 	99668597: 'selected', // ListImportableSessions
 	2158085763: 'thread', // ListItems
 	2915892537: 'thread', // ListItemsAfterCursor
@@ -268,7 +260,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3558532873: 'workspace', // OpenWorkspaceDiff
 	3436727647: 'selected', // PairAgentComputer
 	1748405812: 'thread', // PinThread
-	1315440605: 'selected', // PostChannelMessage
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
 	1313986574: 'home', // ProbeClaudeAccount
@@ -374,8 +365,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
 	1913732562: 'thread', // StartCodexReview
-	3188309099: 'thread', // StartDiscussion
-	2336869067: 'thread', // StartDiscussionByID
 	1484798083: 'home', // StartProviderLogin
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
@@ -411,7 +400,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
-	1706395020: 'selected', // UpdateDiscussion
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
 	3717363955: 'home', // UpdateProjectSortPositions

@@ -94,7 +94,7 @@ func (a *App) completeThreadDeletes(ctx context.Context, walk string, list func(
 		if err != nil {
 			return
 		}
-		err = a.deleteThreadTreePacedLocked(id, pause)
+		err = a.deleteThreadPacedLocked(id, pause)
 		unlock()
 		if err != nil {
 			log.Printf("app: %s: delete thread %s: %v", walk, id, err)

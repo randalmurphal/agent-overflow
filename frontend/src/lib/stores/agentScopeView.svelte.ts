@@ -213,15 +213,6 @@ export function createAgentScopeView(
     get canAdoptOpenedTerminal() { return sourcePane.canAdoptOpenedTerminal; },
     get latestSettledTurn() { return sourcePane.latestSettledTurn; },
     get debugMemoryStats() { return sourcePane.debugMemoryStats; },
-    get channelMessages() { return sourcePane.channelMessages; },
-    get channelStatus() { return sourcePane.channelStatus; },
-    get channelTurnCount() { return sourcePane.channelTurnCount; },
-    get channelMaxTurns() { return sourcePane.channelMaxTurns; },
-    get channelAwaitingResponse() { return sourcePane.channelAwaitingResponse; },
-    get channelCurrentSpeakerRole() { return sourcePane.channelCurrentSpeakerRole; },
-    get channelParticipants() { return sourcePane.channelParticipants; },
-    get channelLiveTail() { return sourcePane.channelLiveTail; },
-    get channelLastLiveContentAt() { return sourcePane.channelLastLiveContentAt; },
     get showPlanSidebar() { return sourcePane.showPlanSidebar; },
     get showReviewPane() { return sourcePane.showReviewPane; },
     get showAgentPane() { return sourcePane.showAgentPane; },
@@ -294,10 +285,6 @@ export function createAgentScopeView(
     get toggleReviewPane() { return sourcePane.toggleReviewPane; },
     get setShowReviewPane() { return sourcePane.setShowReviewPane; },
     get closeAgentPane() { return sourcePane.closeAgentPane; },
-    get applyChannelMessage() { return sourcePane.applyChannelMessage; },
-    get applyChannelMessages() { return sourcePane.applyChannelMessages; },
-    get applyChannelState() { return sourcePane.applyChannelState; },
-    get clearChannel() { return sourcePane.clearChannel; },
   } satisfies Pick<ThreadPane, Exclude<keyof ThreadPane, keyof typeof overrides>>;
 
   // Own properties, getters intact. NOT a spread of the two literals — a

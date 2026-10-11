@@ -28,7 +28,6 @@ import { applyQueueStateChanged } from './eventsQueue';
 import { getQueueRevisionForThread } from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
-import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
@@ -472,33 +471,6 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // spinner; release every raised flag instead (re-clicking a run that
       // is still live just joins its backend claim).
       releaseThreadTitleGenerationPending();
-      return;
-    }
-    case 'discussion:message':
-    case 'discussion:state': {
-      // A discussion channel's state is owned by the channel, not by any
-      // one pane — so like the usage case above, fetch once per channelId
-      // and apply the identical result to every pane hanging off that
-      // channel's parent thread (split view of the same discussion),
-      // rather than one GetChannelState + GetChannelMessages round trip
-      // per pane. Full resync (afterSeq -1): a gap means we don't trust
-      // any pane's incremental cursor.
-      const seenChannelIds = new Set<string>();
-      for (const pane of ingestPanes()) {
-        const channelId = pane.thread?.discussionId;
-        if (!channelId || seenChannelIds.has(channelId)) continue;
-        seenChannelIds.add(channelId);
-        const refresh = fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
-          for (const p of ingestPanes()) {
-            if (p.thread?.discussionId !== channelId) continue;
-            p.applyChannelState(state);
-            p.applyChannelMessages(messages);
-          }
-        }).catch((err: unknown) => {
-          console.warn(`events: refresh discussion channel ${channelId} after transport gap: ${err}`);
-        });
-        if (pane.threadId) holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), refresh);
-      }
       return;
     }
     default:

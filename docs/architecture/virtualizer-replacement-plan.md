@@ -121,8 +121,8 @@ inside V2, not as a follow-up (§8 D4).
 - **The intent machine stays the classifier.** The engine gets
   user-vs-programmatic knowledge from the controller (which already
   has it) instead of sniffing scroll deltas.
-- **ChannelView is untouched.** It stays virtualizer-free on the same
-  scroll controller; nothing in this plan crosses that boundary.
+- **Non-virtualized surfaces are untouched.** They stay virtualizer-free on
+  the same scroll controller; nothing in this plan crosses that boundary.
 
 ### File layout (target)
 
@@ -352,7 +352,7 @@ moment it writes the container height, so it feeds the controller's
 content-observation seam directly: same observation shape, one frame
 earlier, no duplicate layout read on the streaming hot path. The
 controller's observation *source* becomes pluggable at the
-`observers.ts` attach seam; ChannelView (no virtualizer) keeps the
+`observers.ts` attach seam; a surface with no virtualizer keeps the
 RO-backed source unchanged. Width-reflow classification re-sources
 from the engine's viewport input. Warm gate: the content-quiet input
 re-sources from engine measurement traffic, and per-row settle

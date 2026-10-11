@@ -95,35 +95,6 @@ func TestDeleteEmptyDraftThreadKeepsDraftWithContent(t *testing.T) {
 	}
 }
 
-func TestDeleteEmptyDraftThreadKeepsThreadWithChildren(t *testing.T) {
-	s := newTestStore(t)
-	parent := createDraftCleanupThread(t, s, "draft-with-child", "chat")
-	child := makeThread("child-thread", "claude")
-	child.ProjectID = parent.ProjectID
-	child.ParentThreadID = parent.ID
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("CreateThread(child): %v", err)
-	}
-
-	empty, err := s.IsEmptyDraftThread(parent.ID)
-	if err != nil {
-		t.Fatalf("IsEmptyDraftThread: %v", err)
-	}
-	if empty {
-		t.Fatal("thread with child should not be classified as empty")
-	}
-	deleted, err := s.DeleteEmptyDraftThread(parent.ID)
-	if err != nil {
-		t.Fatalf("DeleteEmptyDraftThread: %v", err)
-	}
-	if deleted {
-		t.Fatal("thread with child should not be deleted")
-	}
-	if !threadRowExists(t, s, parent.ID) {
-		t.Fatal("parent thread row was deleted")
-	}
-}
-
 func TestDeleteEmptyDraftThreadKeepsThreadWithItems(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "draft-with-items", "chat")
@@ -200,22 +171,6 @@ func TestDeleteEmptyDraftThreadKeepsThreadWithWorktree(t *testing.T) {
 	}
 	if deleted {
 		t.Fatal("thread with a worktree should not be deleted")
-	}
-	if !threadRowExists(t, s, thread.ID) {
-		t.Fatal("thread row was deleted")
-	}
-}
-
-func TestDeleteEmptyDraftThreadKeepsDiscussionMode(t *testing.T) {
-	s := newTestStore(t)
-	thread := createDraftCleanupThread(t, s, "discussion-draft", "discussion")
-
-	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
-	if err != nil {
-		t.Fatalf("DeleteEmptyDraftThread: %v", err)
-	}
-	if deleted {
-		t.Fatal("discussion draft should not be deleted")
 	}
 	if !threadRowExists(t, s, thread.ID) {
 		t.Fatal("thread row was deleted")

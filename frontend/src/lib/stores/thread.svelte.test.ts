@@ -558,39 +558,6 @@ describe('createThreadPane', () => {
     expect(pane.isSubagentGroupExpanded('parent-x')).toBe(false);
   });
 
-  it('clears discussion channel state on switchThread', async () => {
-    const pane = createThreadPane();
-    await pane.switchThread(makeThread({ id: 'thread-a' }));
-    pane.applyChannelMessages([
-      {
-        id: 'channel-message-1',
-        channelId: 'channel-1',
-        sequence: 1,
-        fromType: 'agent',
-        fromId: 'agent-1',
-        fromRole: 'advocate',
-        content: 'channel text',
-        createdAt: 0,
-      },
-    ]);
-    pane.applyChannelState({
-      channelId: 'channel-1',
-      threadId: 'thread-a',
-      status: 'concluded',
-      turnCount: 8,
-      maxTurns: 8,
-      awaitingResponse: false,
-      currentSpeakerThreadId: '',
-      currentSpeakerRole: '',
-      participants: [],
-    });
-
-    await pane.switchThread(makeThread({ id: 'thread-b' }));
-
-    expect(pane.channelMessages).toEqual([]);
-    expect(pane.channelStatus).toBeNull();
-  });
-
   it('derives isTurnActive strictly from activeTurn (invariant 22)', async () => {
     // Post-refactor, isTurnActive comes solely from the wire-pushed
     // activeTurn slot. Item state (streaming text, running tool_calls,
@@ -1065,29 +1032,6 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
-    pane.applyChannelMessages([
-      {
-        id: 'channel-message-1',
-        channelId: 'channel-1',
-        sequence: 1,
-        fromType: 'agent',
-        fromId: 'agent-1',
-        fromRole: 'advocate',
-        content: 'channel text',
-        createdAt: 0,
-      },
-    ]);
-    pane.applyChannelState({
-      channelId: 'channel-1',
-      threadId: 'thread-1',
-      status: 'concluded',
-      turnCount: 8,
-      maxTurns: 8,
-      awaitingResponse: false,
-      currentSpeakerThreadId: '',
-      currentSpeakerRole: '',
-      participants: [],
-    });
     const expansion = pane.expansionStateFor(item);
     pane.toggleSubagentGroupExpanded('group-x');
     pane.attachmentCacheFor(item.id).set('attachment-x', {
@@ -1107,8 +1051,6 @@ describe('createThreadPane', () => {
     expect(pane.items).toEqual([]);
     expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeClear);
     expect(pane.pendingApprovals).toEqual([]);
-    expect(pane.channelMessages).toEqual([]);
-    expect(pane.channelStatus).toBeNull();
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
     expect(pane.expansionStateFor(item)).not.toBe(expansion);

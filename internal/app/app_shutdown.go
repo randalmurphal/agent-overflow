@@ -253,7 +253,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("stop idle session reaper", nil)
 
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
-	// SQLite (cascading thread deletes) and calls deleteThreadTreeLocked
+	// SQLite (cascading thread deletes) and calls deleteThreadLocked
 	// which mutates a.sessions via stopSession — running it concurrently
 	// with Step 4's snapshotAndClear would race the session map, and
 	// running it past Step 9's store close would write to a torn-down

@@ -109,7 +109,6 @@ export interface BuiltinCommandHooks {
   openThreadFormInNewPane?: () => void;
   // Opens the Commit or Create PR/MR dialog hosted by the pane's git control.
   openGitDialog: (paneId: string, dialog: GitDialogKind) => void;
-  requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
   requestThreadJump: (index: number) => void;
 }
@@ -217,7 +216,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     openThreadForm,
     openThreadFormInNewPane,
     openGitDialog,
-    requestDiscussion,
     focusThreadSearch,
     requestThreadJump,
   } = hooks;
@@ -366,21 +364,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
-    id: 'thread.new.discussion',
-    label: 'Thread: Start Discussion',
-    icon: '◆',
-    when: 'canStartDiscussion && threadsOperate',
-    run: (ctx) =>
-      withActiveThread(ctx, (t, pane) => {
-        if (!pane.threadId) {
-          addToast('warning', 'Start the thread before adding a discussion.');
-          return;
-        }
-        requestDiscussion(t);
-      }),
-  });
-
-  registerCommand({
     id: 'thread.rename',
     label: 'Thread: Rename',
     icon: 'A',
@@ -426,10 +409,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       withActiveThread(ctx, async (t, pane) => {
         if (!pane.threadId) {
           addToast('warning', 'Start the thread before deleting it.');
-          return;
-        }
-        if (t.parentThreadId) {
-          addToast('warning', 'Discussion child threads are deleted with their parent.');
           return;
         }
         const actionCtx = commandThreadActionCtx(t, pane);
@@ -535,7 +514,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'mode.cycle',
     label: 'Agent Mode: Toggle Chat ↔ Plan',
-    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on discussion threads and side chats.',
+    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on side chats.',
     icon: '⇆',
     when: 'hasActiveThread && threadsOperate && !paletteOpen && !anyModalOpen',
     editableReachable: true,
@@ -543,7 +522,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       withActiveThread(ctx, async (t, pane) => {
         // A side chat's mode is `scratch` until Keep restores the one
         // recorded at the fork, and UpdateThreadMode refuses to move it.
-        if (t.mode === 'discussion' || isScratchThreadMode(t.mode)) return;
+        if (isScratchThreadMode(t.mode)) return;
         const next = cycleMode(t.mode);
         if (pane.hasDraftPlaceholder) {
           pane.setDraftPlaceholderMode(next);
@@ -1156,8 +1135,6 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,
     canForkActiveThread: !!thread?.sessionRef && providerSupports(thread?.provider, 'fork'),
-    canStartDiscussion:
-      !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
     // A collapsed sidebar renders no rows, so a cursor left over from
     // before the collapse decorates nothing. Gating the flag (rather
     // than clearing the cursor on collapse) keeps the highlight where

@@ -24,7 +24,7 @@
    *                    retry — none should dominate like filled danger)
    *   danger-ghost   — ghost error: just error text + subtle error
    *                    hover. For destructive row-level actions
-   *                    (Remove Participant)
+   *                    (Cancel turn, passkey and device revoke)
    *
    * Sizes calibrated to the project's density: xs for thread-row
    * affordances, sm for toolbars, md for modal CTAs.

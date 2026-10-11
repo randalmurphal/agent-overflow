@@ -76,7 +76,6 @@
   import LazyOverlay from './lib/components/primitives/LazyOverlay.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
-  import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
@@ -86,7 +85,6 @@
   import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
 import BackgroundKillConfirmationHost from './lib/components/composer/BackgroundKillConfirmationHost.svelte';
-  import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
@@ -125,7 +123,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
   import { initDevServers } from './lib/stores/devServers.svelte';
 
-  let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
   let appReady = $state(false);
@@ -145,14 +142,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id)),
   );
 
-  function handleStartDiscussion(thread: Thread): void {
-    discussionStartFor = thread;
-  }
-
-  function closeDiscussionStart(): void {
-    discussionStartFor = null;
-  }
-
   function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
     const pickerOpen =
       isPaletteOpen() ||
@@ -168,7 +157,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       threadPickerOpen: isThreadPickerOpen(),
       anyPickerOpen: pickerOpen,
       anyModalOpen:
-        discussionStartFor !== null ||
         isSettingsOpen() ||
         isCheatSheetOpen() ||
         isMessageSearchOpen() ||
@@ -503,20 +491,21 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         }
         addErrorToast(userFacingError(err, 'Failed to restore pane layout.'), err);
       } finally {
-        if (disposed) return;
-        // Release the startup screen even when offline. Saved-pane restore
-        // can retry on connection; notification resolution independently
-        // fetches its thread and must not wait forever on this initial read.
-        // A starting computer is not offline: hold for it (above).
-        if (!heldForStartingBackend) {
-          paneLayoutRestored = true;
-          appReady = true;
-          void markNotificationHydrated();
+        if (!disposed) {
+          // Release the startup screen even when offline. Saved-pane restore
+          // can retry on connection; notification resolution independently
+          // fetches its thread and must not wait forever on this initial read.
+          // A starting computer is not offline: hold for it (above).
+          if (!heldForStartingBackend) {
+            paneLayoutRestored = true;
+            appReady = true;
+            void markNotificationHydrated();
+          }
+          restoringLayout = false;
+          const retry = retryLayout;
+          retryLayout = false;
+          if (retry && !layoutSettled) void restoreStartupLayout();
         }
-        restoringLayout = false;
-        const retry = retryLayout;
-        retryLayout = false;
-        if (retry && !layoutSettled) void restoreStartupLayout();
       }
     }
     // A cold offline catalog is unknown, not proof that saved panes vanished.
@@ -567,7 +556,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         const detail: OpenGitDialogDetail = { paneId, dialog };
         window.dispatchEvent(new CustomEvent(OPEN_GIT_DIALOG_EVENT, { detail }));
       },
-      requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),
       requestThreadJump,
     });
@@ -678,11 +666,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     />
   </div>
 </main>
-<DiscussionStartFlow
-  open={discussionStartFor !== null}
-  thread={discussionStartFor}
-  onClose={closeDiscussionStart}
-/>
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
 <ConversationTransferHost />

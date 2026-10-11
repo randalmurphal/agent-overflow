@@ -44,9 +44,8 @@ export interface CommandFlags {
    * pause windows).
    */
   hasPendingPrompt: boolean;
-  /** Thread metadata fields used by fork / discussion commands. */
+  /** Thread metadata field used by the fork command. */
   canForkActiveThread: boolean;
-  canStartDiscussion: boolean;
   /** True while the sidebar visual cursor is engaged (a thread is
    * highlighted). Gates the cursor.open chord so plain Enter inside
    * the composer keeps sending. */
@@ -110,7 +109,6 @@ export interface CommandContext {
   sendInFlight: boolean;
   hasPendingPrompt: boolean;
   canForkActiveThread: boolean;
-  canStartDiscussion: boolean;
   sidebarCursorActive: boolean;
   anyPickerOpen: boolean;
   [key: string]: unknown;

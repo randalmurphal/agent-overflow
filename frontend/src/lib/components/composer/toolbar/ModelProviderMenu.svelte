@@ -1,15 +1,8 @@
 <script lang="ts">
   import { threadMachine } from '../../../stores/attachedBackends.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { Thread } from '../../../types/models';
   import type { ModelInfo } from '../../../types/settings';
   import type { ChatBarFavorite } from '../../../stores/bindings';
-  import type { DiscussionDefinition } from '../../../types/discussion';
-  import {
-    ListDiscussionsForThread,
-    StartDiscussionByID,
-    GetThread,
-  } from '../../../stores/bindings';
   import {
     ensureChatBarFavorites,
     peekChatBarFavorites,
@@ -29,22 +22,17 @@
     getProviderModels,
   } from '../../../stores/providerModels.svelte';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
-  import { syncThread } from '../../../stores/panes.svelte';
   import { getSettings } from '../../../stores/settings.svelte';
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { hiddenModelSlugs } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
-  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
-  import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../../primitives/MenuSubmenuItem.svelte';
-  import Icon from '../../primitives/Icon.svelte';
   import ChatBarFavoritesSection from './ChatBarFavoritesSection.svelte';
   import ModelProviderTrigger from './ModelProviderTrigger.svelte';
   import ProviderModelsSubmenu from './ProviderModelsSubmenu.svelte';
-  import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
@@ -63,9 +51,6 @@
   // the one shared list, so a star set in one pane lands in all of them.
   let favorites = $derived(peekChatBarFavorites());
   let favoritesError = $derived(peekChatBarFavoritesError());
-  let discussionDefs: DiscussionDefinition[] = $state([]);
-  let discussionDefsError: string | null = $state(null);
-  let discussionsLoadGeneration = 0;
 
   async function ensureModels(provider: ProviderID): Promise<void> {
     try {
@@ -74,42 +59,6 @@
       const label = getProviderDefinition(provider).label;
       console.error('GetModelsForProvider failed:', err);
       addErrorToast(`Failed to load ${label} models`, err);
-    }
-  }
-
-  // Unlike the favorites store there is no shared cache: definitions can
-  // be created in Settings mid-session, and this is a cheap local query,
-  // so every menu open refetches. A draft placeholder can't start a
-  // discussion at all, so the entry is simply hidden for it without a
-  // round-trip. This must read pane.threadId (null until the draft
-  // materializes) — pane.thread.id is the synthetic `draft:…` id, which
-  // the backend rejects with a no-rows error, and that error would
-  // force the Discussions entry visible just to display it.
-  async function ensureDiscussions(): Promise<void> {
-    const threadID = pane.threadId ?? '';
-    if (threadID === '') {
-      discussionDefs = [];
-      discussionDefsError = null;
-      return;
-    }
-    const generation = ++discussionsLoadGeneration;
-    try {
-      const scoped = (await ListDiscussionsForThread(threadID)) as DiscussionDefinition[] | null;
-      if (generation !== discussionsLoadGeneration) return;
-      // Merge + dedupe by id — the backend may surface the same row in
-      // both scopes depending on how the user seeded it.
-      const merged: DiscussionDefinition[] = scoped ?? [];
-      const byId = new Map<string, DiscussionDefinition>();
-      for (const d of merged) {
-        if (!byId.has(d.id)) byId.set(d.id, d);
-      }
-      discussionDefs = Array.from(byId.values());
-      discussionDefsError = null;
-    } catch (err) {
-      if (generation !== discussionsLoadGeneration) return;
-      // Stale-while-revalidate: keep whatever defs were last loaded
-      // successfully rather than clearing them on a transient error.
-      discussionDefsError = err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -123,7 +72,6 @@
       const provider = asProviderID(pane.thread?.provider);
       if (provider) void ensureModels(provider);
       ensureChatBarFavorites();
-      void ensureDiscussions();
     }
   }
 
@@ -141,7 +89,6 @@
         const provider = asProviderID(pane.thread?.provider);
         if (provider) void ensureModels(provider);
         ensureChatBarFavorites();
-        void ensureDiscussions();
       },
       close: closeMenu,
     });
@@ -169,10 +116,6 @@
     return favorites.some((fav) => fav.kind === 'model' && fav.provider === provider && fav.value === slug);
   }
 
-  function isDiscussionFavorite(id: string): boolean {
-    return favorites.some((fav) => fav.kind === 'discussion' && fav.value === id);
-  }
-
   async function setFavorite(fav: ChatBarFavorite, starred: boolean): Promise<void> {
     try {
       await setChatBarFavorite(fav, starred);
@@ -193,40 +136,6 @@
     }, starred);
   }
 
-  function toggleDiscussionFavorite(def: { id: string; name: string }): void {
-    const starred = !isDiscussionFavorite(def.id);
-    void setFavorite({
-      kind: 'discussion',
-      provider: '',
-      value: def.id,
-      label: def.name,
-      createdAt: 0,
-    }, starred);
-  }
-
-  async function startFavoriteDiscussion(fav: ChatBarFavorite): Promise<void> {
-    if (!pane.thread) return;
-    closeMenu();
-    try {
-      const threadId = pane.threadId;
-      if (!threadId) {
-        addToast('info', 'Start the thread before adding a discussion.');
-        return;
-      }
-      await StartDiscussionByID(threadId, fav.value);
-      try {
-        const refreshed = (await GetThread(threadId)) as Thread;
-        syncThread(refreshed);
-      } catch (refreshErr) {
-        console.error('Failed to refresh thread after StartDiscussionByID:', refreshErr);
-      }
-      addToast('info', `Started discussion "${fav.label}"`);
-    } catch (err) {
-      console.error('StartDiscussionByID failed:', err);
-      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
-    }
-  }
-
   let modelLabel = $derived(
     pane.activeModel
       ? displayModelLabel(pane.thread?.provider ?? '', pane.activeModel)
@@ -235,21 +144,12 @@
 
   let settings = $derived(getSettings(backend));
   let isLocked = $derived(pane.isLocked);
-  let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(asProviderID(pane.thread?.provider));
-  // The error branch keeps the entry visible even with zero loaded defs
-  // so a failed fetch surfaces its error inside the submenu instead of
-  // silently hiding the feature — errors are user-facing state, never
-  // silent.
-  let showDiscussions = $derived(
-    !isDiscussion && !isLocked && (discussionDefs.length > 0 || discussionDefsError !== null),
-  );
   let visibleFavorites = $derived.by(() => {
     // Hidden sets built once per provider per recompute, not per
     // favorite (the list holds up to 30 entries).
     const hiddenByProvider = new Map<ProviderID, ReadonlySet<string>>();
     return favorites.filter((fav) => {
-      if (fav.kind === 'discussion') return showDiscussions;
       const provider = asProviderID(fav.provider);
       if (!provider) return false;
       // Favorites for hidden models are filtered, not deleted — the
@@ -273,7 +173,6 @@
   // must never strand a live thread without a model picker (an existing
   // claude-tui thread keeps every affordance it had).
   function showProviderSubmenu(provider: ProviderID): boolean {
-    if (isDiscussion) return false;
     if (activeProvider === provider) return true;
     return !isLocked && providerIsEnabled(settings, provider);
   }
@@ -302,7 +201,6 @@
       {activeProvider}
       currentModel={pane.activeModel}
       onSelectModel={(provider, model) => void handleSelectModel(provider, model)}
-      onSelectDiscussion={(favorite) => void startFavoriteDiscussion(favorite)}
     />
 
     {#each PROVIDER_MODEL_MENU_ORDER as provider (provider)}
@@ -326,24 +224,5 @@
         </MenuSubmenuItem>
       {/if}
     {/each}
-
-    {#if showDiscussions}
-      <MenuDivider />
-      <MenuSubmenuItem label="Discussions">
-        {#snippet icon()}
-          <Icon icon={MessagesSquare} size={13} strokeWidth={1.75} />
-        {/snippet}
-        {#snippet children()}
-          <DiscussionsSubmenu
-            {pane}
-            definitions={discussionDefs}
-            error={discussionDefsError}
-            onSelect={closeMenu}
-            isFavorite={isDiscussionFavorite}
-            onToggleFavorite={toggleDiscussionFavorite}
-          />
-        {/snippet}
-      </MenuSubmenuItem>
-    {/if}
   </Menu>
 </Popover>

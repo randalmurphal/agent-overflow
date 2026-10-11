@@ -63,7 +63,7 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
 export function canOfferConversationTransfer(thread: Thread): boolean {
   if (!remoteAccessAvailable()) return false;
   const source = threadMachine(thread.id, thread.projectId);
-  return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.parentThreadId && !thread.discussionId && !thread.mode?.startsWith('workflow') &&
+  return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.mode?.startsWith('workflow') &&
     supportsConversationTransfer(source) && getAttachedBackends().some((entry) => entry.id !== source && supportsConversationTransfer(entry.id));
 }
 export function closeConversationTransfer(): void {

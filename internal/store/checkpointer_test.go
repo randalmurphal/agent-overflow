@@ -217,12 +217,19 @@ func newCheckpointedStore(t *testing.T, interval time.Duration) *Store {
 // Commits on the writer wake the checkpointer, which copies them into the
 // database file. A commit signals before it writes its frames, so the
 // 4 MiB commit is followed by a small one whose round finds it written.
+// The commit reuses the pages the migration chain left on the freelist
+// before it extends the file, so those pages count toward the growth.
 func TestStoreCheckpointsCommitsInTheBackground(t *testing.T) {
 	s := newCheckpointedStore(t, 10*time.Millisecond)
 	before, err := fileSize(s.path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pageSize, _, freelist, err := s.freelistState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(4<<20) - pageSize*freelist
 	if err := s.SetUIState("client:checkpoint", map[string]string{"k": strings.Repeat("x", 4<<20)}); err != nil {
 		t.Fatal(err)
 	}
@@ -230,14 +237,14 @@ func TestStoreCheckpointsCommitsInTheBackground(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after int64
-	for deadline := time.Now().Add(10 * time.Second); after-before < 4<<20 && time.Now().Before(deadline); {
+	for deadline := time.Now().Add(10 * time.Second); after-before < want && time.Now().Before(deadline); {
 		time.Sleep(5 * time.Millisecond)
 		if after, err = fileSize(s.path); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if after-before < 4<<20 {
-		t.Fatalf("database file grew %d bytes, want the 4 MiB commit copied into it", after-before)
+	if after-before < want {
+		t.Fatalf("database file grew %d bytes with %d free pages to reuse, want the 4 MiB commit copied into it", after-before, freelist)
 	}
 }
 

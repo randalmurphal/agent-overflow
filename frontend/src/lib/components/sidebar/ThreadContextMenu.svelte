@@ -165,10 +165,6 @@
     Boolean(pendingUpdate?.restoresModelProfile) && (pendingUpdate?.newItems ?? 0) === 0,
   );
 
-  // Discussion children (threads with a parentThreadId) cannot be
-  // deleted in isolation — the parent thread owns the subtree's
-  // lifecycle.
-  let canDelete = $derived(!thread.parentThreadId);
   let canArchive = $derived(thread.mode !== 'terminal');
   let isPinned = $derived(thread.pinnedAt != null);
   let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
@@ -289,10 +285,6 @@
 
   // ── Groups ───────────────────────────────────────────────────────────────
   //
-  // Only a TOP-LEVEL row can move: a discussion tree joins a group as a unit
-  // (the backend moves children with their root), so offering the items on a
-  // child would promise a move it cannot make.
-  //
   // Bulk moves need one project, because a group belongs to one — the store
   // would refuse the cross-project half of the call and roll the rest back.
   let bulkProjectId = $derived.by(() => {
@@ -307,19 +299,13 @@
     return shared ?? '';
   });
   let groupProjectId = $derived(inBulkContext ? bulkProjectId : (thread.projectId ?? ''));
-  // Children are dropped from a bulk move rather than travelling with it:
-  // they already follow their root, and a selection of nothing but children
-  // has no move to offer.
-  let moveTargetIds = $derived.by(() => {
-    if (!inBulkContext) return thread.parentThreadId ? [] : [thread.id];
-    return selectedThreads.filter((t) => !t.parentThreadId).map((t) => t.id);
-  });
+  let moveTargetIds = $derived(inBulkContext ? selectedThreads.map((t) => t.id) : [thread.id]);
   // Ungroup writes only the rows that are IN a group; passing the rest would
   // spend a round trip per row to change nothing.
   let removeTargetIds = $derived.by(() => {
     if (!inBulkContext) return thread.groupId ? moveTargetIds : [];
     return selectedThreads
-      .filter((t) => !t.parentThreadId && t.groupId)
+      .filter((t) => t.groupId)
       .map((t) => t.id);
   });
   let canMoveToGroup = $derived(Boolean(groupProjectId) && moveTargetIds.length > 0);
@@ -552,9 +538,7 @@
               void copyThreadIdAction(ctx());
             }}
           />
-          {#if canArchive || canDelete}
-            <MenuDivider />
-          {/if}
+          <MenuDivider />
           <!-- The row's hover Archive is unreachable without a pointer, so
                the menu carries it too. Terminals are not archivable. -->
           {#if canArchive}
@@ -565,15 +549,13 @@
               onSelect={handleArchive}
             />
           {/if}
-          {#if canDelete}
-            <MenuItem
-              label="Delete"
-              variant="danger"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={handleDelete}
-            />
-          {/if}
+          <MenuItem
+            label="Delete"
+            variant="danger"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
+            onSelect={handleDelete}
+          />
         {/if}
       {/snippet}
     </Menu>

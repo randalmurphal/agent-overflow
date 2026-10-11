@@ -2,15 +2,15 @@
   import { pendingForks } from '../../stores/forkPreparation.svelte';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import { projectHasScope } from '../../transport/entityScopes';
-  // Nested thread list for a single project. Builds the discussion tree
-  // (depth ≤ 2) once per render so child status / activity bubbles into
-  // each parent row, then truncates to the project-specific visible
-  // limit (with the active thread always pinned in if it would otherwise
-  // sit below the fold), and finally flattens to a flat list honoring
-  // the per-thread expand/collapse state. Indent comes from the node's
-  // depth (rendered via ThreadRow's `indent` prop). We deliberately do
-  // NOT virtualize — at 50 threads the flat render is 60fps and the
-  // tree-level sort already pushes off-screen rows below the fold.
+  // Thread list for a single project. Builds the sorted rows once per
+  // render, with each group's member status / activity bubbled into the
+  // group row, then truncates to the project-specific visible limit (with
+  // open threads always floated in if they would otherwise sit below the
+  // fold), and finally flattens to one list honoring each group's
+  // collapse state. Every thread renders flat: at the top level, or as a
+  // group member (ThreadRow's `indent` comes from the node's depth). We
+  // deliberately do NOT virtualize — at 50 threads the flat render is
+  // 60fps and the sort already pushes off-screen rows below the fold.
 
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -21,13 +21,10 @@
   import {
     collapseThreadList,
     getCollapsedGroups,
-    getExpandedDiscussions,
     getThreadListVisibleLimit,
     isGroupExpanded,
     isThreadListExpanded,
     setThreadListVisibleLimit,
-    setExpandedDiscussions,
-    toggleDiscussion,
   } from '../../stores/sidebar.svelte';
   import {
     isThreadSelected,
@@ -55,7 +52,6 @@
     rollupDisplayStatus,
     sameSidebarVisibleNodes,
     sameThreadStatusPill,
-    pruneSidebarDiscussionExpansion,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
@@ -108,8 +104,8 @@
   let listExpanded = $derived(isThreadListExpanded(projectId));
   let visibleLimit = $derived(getThreadListVisibleLimit(projectId));
 
-  // Truncation operates on top-level nodes only — discussion children
-  // are nested under their parent and don't compete for preview slots.
+  // Truncation operates on top-level nodes only — group members sit under
+  // their group and don't compete for preview slots.
   let preview = $derived.by(() => {
     return previewSidebarThreads({
       nodes: tree,
@@ -138,13 +134,6 @@
     return next;
   });
 
-  $effect(() => {
-    setExpandedDiscussions(pruneSidebarDiscussionExpansion({
-      nodes: tree,
-      expandedThreadIds: getExpandedDiscussions(),
-    }));
-  });
-
   // Identity cutoff: return the PREVIOUS array when nothing the rows
   // render has changed, so svelte's derived cutoff stops the animated
   // each-block from reconciling. This is load-bearing for streaming
@@ -155,7 +144,6 @@
   let visibleNodes = $derived.by(() => {
     const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
-      expandedThreadIds: getExpandedDiscussions(),
       collapsedGroupIds: getCollapsedGroups(),
       activeThreadId: pane?.threadId ?? null,
     });
@@ -373,7 +361,7 @@
               group={node.group}
               {pane}
               expanded={isGroupExpanded(node.group.id)}
-              memberThreadIds={node.children.filter((child) => child.kind === 'thread').map((child) => child.thread.id)}
+              memberThreadIds={node.children.map((member) => member.thread.id)}
               dropActive={dropTargetGroupId === node.group.id && dropTargetAccepts}
               onDropTargetChange={(active, accepts) => setGroupDropTarget(node.group.id, active, accepts)}
             />
@@ -403,12 +391,6 @@
               {pane}
               indent={node.depth + 1}
               inGroup={node.ownerGroupId !== null}
-              pinnable={node.isPinTarget}
-              hasChildren={node.isExpandable}
-              expanded={node.isExpanded}
-              displayLiveStatus={node.displayLiveStatus}
-              displayStatus={node.displayStatus}
-              onToggleExpand={() => toggleDiscussion(node.thread.id)}
               selected={isThreadSelected(node.thread.id)}
               onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
             />

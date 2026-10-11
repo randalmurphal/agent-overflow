@@ -343,21 +343,12 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("re-selecting the model a thread already carries")
 	})
 
-	t.Run("delete announces every dropped row", func(t *testing.T) {
+	t.Run("delete announces the dropped row", func(t *testing.T) {
 		app := newTestAppWithStore(t)
-		parent := mustCreateBroadcastThread(t, app)
-		child := mustCreateBroadcastThread(t, app)
-		stored, err := app.store.GetThread(child.ID)
-		if err != nil {
-			t.Fatalf("GetThread: %v", err)
-		}
-		stored.ParentThreadID = parent.ID
-		if err := app.store.UpdateThread(stored); err != nil {
-			t.Fatalf("UpdateThread: %v", err)
-		}
+		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		if err := app.DeleteThread(parent.ID); err != nil {
+		if err := app.DeleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread: %v", err)
 		}
 		announced := map[string]bool{}
@@ -370,14 +361,12 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 			}
 			announced[evt.ID] = true
 		}
-		for _, id := range []string{parent.ID, child.ID} {
-			if !announced[id] {
-				t.Fatalf("no deleted frame for %s; got %+v", id, broadcasts.events)
-			}
+		if !announced[thread.ID] {
+			t.Fatalf("no deleted frame for %s; got %+v", thread.ID, broadcasts.events)
 		}
 
 		broadcasts.reset()
-		if err := app.DeleteThread(parent.ID); err != nil {
+		if err := app.DeleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread(repeat): %v", err)
 		}
 		broadcasts.expectSilence("deleting a thread that is already gone")

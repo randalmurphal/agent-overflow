@@ -29,7 +29,6 @@ var (
 	audienceAnyStateChannels = []eventchan.Channel{
 		eventchan.ChatBarFavorites,
 		eventchan.ChatBarNewThreadDefaults,
-		eventchan.DiscussionDefinitionsChanged,
 		eventchan.DraftUpdated,
 		eventchan.GitStatus,
 		eventchan.KeybindingsUpdated,

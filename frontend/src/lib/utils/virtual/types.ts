@@ -90,7 +90,7 @@ export interface ContentGeometrySample {
    * viewport holds still, the post-delta bottom target is pure
    * arithmetic. A change here signals that the content-box viewport
    * moved and cached scrollTop must be refreshed. Optional because RO-sourced
-   * pipelines (ChannelView's contentEl RO) have no scroller entry —
+   * pipelines (the controller's own contentEl RO) have no scroller entry —
    * absent means "unknown", which disables the arithmetic path, never
    * misclassifies.
    */

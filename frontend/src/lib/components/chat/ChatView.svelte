@@ -3,7 +3,6 @@
   import { threadHasScope } from '../../transport/entityScopes';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { threadUsesDiscussionSurface } from '../../stores/threadPaneShared';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
@@ -343,26 +342,25 @@
   });
 
   $effect(() => {
-    pane.threadId;
-    pane.loading;
-    pane.items.length;
-    pane.timelineRevision;
-    pane.pendingApprovals.length;
-    getActiveTurn(pane.threadId)?.turnId;
-    pane.latestSettledTurn?.turnId;
-    pane.showTerminal;
-    pane.showPlanSidebar;
-    pane.showReviewPane;
+    void pane.threadId;
+    void pane.loading;
+    void pane.items.length;
+    void pane.timelineRevision;
+    void pane.pendingApprovals.length;
+    void getActiveTurn(pane.threadId)?.turnId;
+    void pane.latestSettledTurn?.turnId;
+    void pane.showTerminal;
+    void pane.showPlanSidebar;
+    void pane.showReviewPane;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
     scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });
 
-  let inDiscussionMode = $derived(threadUsesDiscussionSurface(pane.thread));
   // Terminal threads render a full-pane terminal surface instead of the chat
-  // machinery (composer, timeline) — the same whole-surface swap
-  // discussion mode does. No provider session is ever started for these.
+  // machinery (composer, timeline). No provider session is ever started for
+  // these.
   let inTerminalMode = $derived(
     !!pane.thread && pane.thread.mode === 'terminal',
   );
@@ -514,20 +512,7 @@
   </div>
 {/snippet}
 
-{#if pane.thread && inDiscussionMode}
-  <!-- Lazy for the same reason as TerminalView below: the discussion
-       surface (ChannelView + editor) is mode-gated, so its chunk stays
-       out of the eager startup graph. -->
-  {#await import('../discussion/DiscussionView.svelte')}
-    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading discussion...</div>
-  {:then { default: DiscussionView }}
-    <DiscussionView {pane} />
-  {:catch err}
-    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="discussion-load-error">
-      Failed to load discussion: {err instanceof Error ? err.message : String(err)}
-    </div>
-  {/await}
-{:else if pane.thread && inTerminalMode}
+{#if pane.thread && inTerminalMode}
   <!-- Lazy: TerminalView pulls the xterm stack (terminal-vendor +
        TerminalSurface chunks, ~900KB). A static import here would put
        them back in the eager startup graph that LazyThreadTerminalDrawer

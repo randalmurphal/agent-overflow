@@ -49,11 +49,10 @@
    * Membership from the STORE, not from the rows on screen: under a search
    * filter the group renders only its matching members, and "Archive Threads
    * (n)" acting on that subset would silently do a fraction of what it says.
-   * Top-level only — a discussion child follows its root through the backend.
    */
   let memberThreadIds = $derived(
     getThreads()
-      .filter((t) => t.groupId === group.id && !t.archived && !t.parentThreadId)
+      .filter((t) => t.groupId === group.id && !t.archived)
       .map((t) => t.id),
   );
   let memberCount = $derived(memberThreadIds.length);

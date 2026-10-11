@@ -1,18 +1,16 @@
 # components/sidebar/
 
-The sidebar projects threads, discussions, groups, and repositories from their
+The sidebar projects threads, groups, and repositories from their
 entity stores. `Sidebar.svelte` owns the top-level render boundary;
 `ProjectThreadList.svelte` owns each project's visible tree.
 
 ## Rows and actions
 
-- Keep one row grammar for normal, grouped, and discussion entries. Shared
-  controls such as `ThreadRowPinButton` receive callbacks; they do
-  not own entities.
-- Nested discussion children do not expose independent pin actions; the parent
-  discussion is the pin target. Groups are not pinnable. A group's direct
-  members pin like top-level threads, but never as numbered jump targets.
-  `flattenSidebarThreadTree` decides pin targets (`isPinTarget`).
+- Every thread renders flat under its project or group. Keep one row grammar
+  for normal and grouped entries. Shared controls such as
+  `ThreadRowPinButton` receive callbacks; they do not own entities.
+- Groups are not pinnable. A group's members pin like top-level threads, but
+  never as numbered jump targets.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
@@ -36,8 +34,8 @@ their group and rejected group targets clear the background affordance.
 
 ## Persisted presentation
 
-Sidebar expansion and sorting live in `stores/sidebar.svelte.ts`. Discussion
-expansion stores opened IDs; group collapse stores explicitly closed IDs.
+Sidebar expansion and sorting live in `stores/sidebar.svelte.ts`. Group
+collapse stores explicitly closed IDs.
 Synchronizing one project's tree must not remove another project's state.
 
 ## Connected computers

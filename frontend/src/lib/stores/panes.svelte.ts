@@ -766,8 +766,8 @@ export function moveFocusedPane(direction: -1 | 1): void {
  *
  * Use anywhere a binding response or local mutation produces a fresh
  * Thread that should be visible everywhere — model change, agent-mode
- * toggle, plan-comments-sent, branch switch, env change, discussion
- * start, worktree remove, etc.
+ * toggle, plan-comments-sent, branch switch, env change, worktree
+ * remove, etc.
  *
  * Replaces the dual-write `pane.replaceThread(t); replaceThread(t);`
  * pattern that was scattered across ~13 call sites. Forgetting one

@@ -66,7 +66,7 @@ type sendMessageOptions struct {
 	// SendMessageWithOptions / SteerMessageWithOptions wire methods and the
 	// flush-queue dispatch of previously queued composer text. Every
 	// app-internal caller (workflow wake, seeded triage/PR turns,
-	// schema-driven phase sends, discussion drive) leaves it false by
+	// schema-driven phase sends) leaves it false by
 	// default, so a new internal send path can never expand a `/…` opener
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool

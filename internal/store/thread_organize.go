@@ -62,9 +62,6 @@ type ThreadOrganizeResult struct {
 	Changed bool
 	// ArchivedChanged says the archive flag itself moved.
 	ArchivedChanged bool
-	// Carried are the OTHER rows the group move wrote: the discussion
-	// children that travel with their root.
-	Carried []Thread
 	// CreatedGroup is the group this write inserted, if any. A destination
 	// that already existed is not announced: every client already has it.
 	CreatedGroup *ThreadGroup
@@ -116,14 +113,8 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		groupID = group.ID
 	}
 	if write.MoveGroup {
-		moved, err := setThreadGroupTx(tx, []string{threadID}, groupID)
-		if err != nil {
+		if _, err := setThreadGroupTx(tx, []string{threadID}, groupID); err != nil {
 			return ThreadOrganizeResult{}, err
-		}
-		for _, row := range moved {
-			if row.ID != threadID {
-				result.Carried = append(result.Carried, row)
-			}
 		}
 		if groupID != before.GroupID {
 			result.Changed = true

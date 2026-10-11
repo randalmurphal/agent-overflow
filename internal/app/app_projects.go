@@ -327,7 +327,7 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 			unlocks[i]()
 		}
 	}()
-	for _, threadID := range projectapp.ThreadLockOrder(threads) {
+	for _, threadID := range ids {
 		unlocks = append(unlocks, a.threadLocks().Lock(threadID))
 	}
 
@@ -371,11 +371,7 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	}
 
 	for _, threadID := range ids {
-		parentID := threads[threadID].ParentThreadID
-		if _, parentIsInProject := threads[parentID]; parentIsInProject {
-			continue
-		}
-		if err := a.deleteThreadTreeWithSubtreeLocksHeld(threadID); err != nil {
+		if err := a.deleteThreadLocked(threadID); err != nil {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: delete thread %s: %w", threadID, err)
 		}
 	}

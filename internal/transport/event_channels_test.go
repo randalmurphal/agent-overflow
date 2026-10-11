@@ -142,7 +142,6 @@ var (
 		// payload-less refetch nudge, so N retained frames would be N
 		// identical refetches — the same membership as spinner:changed.
 		"chatbar:favorites",
-		"discussion:definitions-changed",
 		"keybindings:updated",
 		"provider:accounts_changed",
 	}

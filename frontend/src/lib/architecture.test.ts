@@ -232,12 +232,11 @@ const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
 // there is no second paint position, the scroll offset IS the chokepoint's
 // value — and without it every offset change runs a full main-frame Layerize
 // (measured 2026-08-25, user-approved same day). Transform state is
-// additionally reviewed across the whole chat/discussion/virtual/scroll tree,
+// additionally reviewed across the whole chat/virtual/scroll tree,
 // not a list of today's plane files: adding a new row component must not
 // create an enforcement blind spot.
 const SCROLL_PRESENTATION_PREFIXES = [
   'lib/components/chat/',
-  'lib/components/discussion/',
   'lib/components/virtual/',
   'lib/utils/scroll/',
 ] as const;

@@ -676,9 +676,8 @@ describe('<ChatView>', () => {
   });
 
   it('renders TerminalView instead of the chat surface for terminal-mode threads', async () => {
-    // Terminal threads swap the WHOLE surface — same one-for-one branch as
-    // discussion mode. No chat header, composer, or timeline mounts; no
-    // provider session is started.
+    // Terminal threads swap the WHOLE surface. No chat header, composer, or
+    // timeline mounts; no provider session is started.
     setBindingMock('ListTerminals', async () => []);
     setBindingMock('OpenTerminal', async (threadID: string) => ({
       terminalID: 't1',

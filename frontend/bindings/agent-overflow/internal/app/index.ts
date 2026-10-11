@@ -22,8 +22,6 @@ export {
     BranchPruneSelection,
     BrowserCompanionAction,
     BusyThread,
-    ChannelParticipantState,
-    ChannelStatePayload,
     ClaudeSlashCommands,
     CodexAccountUsage,
     CodexAccountUsageBucket,

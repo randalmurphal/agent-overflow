@@ -20,12 +20,13 @@ func TestChatBarFavoritesRoundTripAndDedupe(t *testing.T) {
 		t.Fatalf("AddChatBarFavorite(model): %v", err)
 	}
 	if err := s.AddChatBarFavorite(ChatBarFavorite{
-		Kind:      "discussion",
-		Value:     "discussion-1",
-		Label:     "Architects",
+		Kind:      "model",
+		Provider:  "codex",
+		Value:     "gpt-5.4",
+		Label:     "GPT-5.4",
 		CreatedAt: 200,
 	}); err != nil {
-		t.Fatalf("AddChatBarFavorite(discussion): %v", err)
+		t.Fatalf("AddChatBarFavorite(codex model): %v", err)
 	}
 	if err := s.AddChatBarFavorite(ChatBarFavorite{
 		Kind:      "model",
@@ -44,8 +45,8 @@ func TestChatBarFavoritesRoundTripAndDedupe(t *testing.T) {
 	if len(favorites) != 2 {
 		t.Fatalf("favorites len = %d, want 2: %#v", len(favorites), favorites)
 	}
-	if favorites[0].Kind != "discussion" || favorites[0].Value != "discussion-1" {
-		t.Fatalf("first favorite = %#v, want newest discussion", favorites[0])
+	if favorites[0].Provider != "codex" || favorites[0].Value != "gpt-5.4" {
+		t.Fatalf("first favorite = %#v, want newest codex model", favorites[0])
 	}
 	if favorites[1].Label != "Opus" {
 		t.Fatalf("duplicate did not refresh label: %#v", favorites[1])
@@ -61,8 +62,8 @@ func TestChatBarFavoritesRoundTripAndDedupe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChatBarFavorites after remove: %v", err)
 	}
-	if len(favorites) != 1 || favorites[0].Kind != "discussion" {
-		t.Fatalf("favorites after remove = %#v, want only discussion", favorites)
+	if len(favorites) != 1 || favorites[0].Value != "gpt-5.4" {
+		t.Fatalf("favorites after remove = %#v, want only the codex model", favorites)
 	}
 }
 
@@ -76,11 +77,11 @@ func TestChatBarFavoritesValidationAndCap(t *testing.T) {
 		t.Fatalf("AddChatBarFavorite missing provider error = %v, want ErrInvalidProvider", err)
 	}
 	if err := s.AddChatBarFavorite(ChatBarFavorite{
-		Kind:     "discussion",
+		Kind:     "skill",
 		Provider: "claude",
-		Value:    "discussion-1",
-	}); err != nil {
-		t.Fatalf("AddChatBarFavorite discussion with provider should normalize: %v", err)
+		Value:    "skill-1",
+	}); err == nil {
+		t.Fatal("AddChatBarFavorite accepted a kind other than model")
 	}
 
 	for i := 0; i < maxChatBarFavorites+5; i++ {

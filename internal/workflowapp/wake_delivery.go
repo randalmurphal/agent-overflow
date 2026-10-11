@@ -350,8 +350,8 @@ func (s *Service) reportWakeFailure(item store.WorkItem, threadID string, cause 
 //
 // Workflow-owned threads (phase, unit, studio, triage) are excluded because
 // they are driven by the run machinery itself: waking one would inject a user
-// turn into a session the engine is steering. Terminal and discussion threads
-// are excluded because neither takes an ordinary user message.
+// turn into a session the engine is steering. Terminal threads are excluded
+// because they take no ordinary user message.
 func ValidateBindingThread(item store.WorkItem, thread store.Thread) error {
 	if thread.ProjectID != item.ProjectID {
 		return fmt.Errorf("thread %s belongs to project %s, not to this run's project %s",

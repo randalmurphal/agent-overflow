@@ -29,7 +29,8 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "You are the agent.", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
+	opts.SystemPrompt = "You are the agent."
 	cfg := claude.ConfigFromOptions(opts)
 
 	if cfg.SystemPrompt != "You are the agent." {
@@ -63,7 +64,8 @@ func TestSessionOptionsFromThreadToCodexConfigXHigh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "codex system prompt", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
+	opts.SystemPrompt = "codex system prompt"
 	cfg := codex.ConfigFromOptions(opts)
 
 	if cfg.ReasoningEffort != "xhigh" {
@@ -85,7 +87,7 @@ func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
 	thread.Model = "claude-sonnet-4-6"
 	thread.ReasoningEffort = string(provider.EffortXHigh)
 
-	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
 
 	if opts.ReasoningEffort != provider.EffortHigh {
@@ -103,7 +105,7 @@ func TestSessionOptionsPreservesStoredCodexEffort(t *testing.T) {
 	thread.Model = "gpt-5.5"
 	thread.ReasoningEffort = string(provider.EffortMax)
 
-	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, false)
 	cfg := codex.ConfigFromOptions(opts)
 
 	if opts.ReasoningEffort != provider.EffortMax {
@@ -129,7 +131,7 @@ func TestSessionOptionsFastModePreservesClaudeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
 	if cfg.Model != "claude-opus-4-6" {
 		t.Errorf("Model = %q, want claude-opus-4-6", cfg.Model)
@@ -153,7 +155,7 @@ func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := codex.ConfigFromOptions(opts)
 	if cfg.Model != "gpt-5.5" {
 		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
@@ -181,7 +183,7 @@ func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
 
 	foundMode := false

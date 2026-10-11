@@ -165,30 +165,6 @@ func TestReconcileSettingsOwnedAxesConvergesAnEnabledOverride(t *testing.T) {
 	}
 }
 
-// A feature-owned prompt (currently discussions) is untouched by any of
-// this: buildSessionOptions has already written it, and the settings override
-// stands down exactly as it does on the spawn path.
-func TestReconcileSettingsOwnedAxesLeavesFeatureOwnedPromptsAlone(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, _ := seedPromptOverrideThread(t, app, "thread-reconcile-feature", string(provider.Claude), "claude-opus-5")
-	app.setThreadSystemPrompt(id, "deliberation prompt")
-	launch := promptOverrideOptions(t, app, id)
-
-	// A settings override appears; a feature already owns the prompt, so it
-	// must stand down exactly as it does on the spawn path.
-	setClaudePromptOverride(t, app, "claude-opus-5", "settings override")
-	opts := reconcileOptionsFor(t, app, id, launch)
-
-	if opts.SystemPrompt != "deliberation prompt" {
-		t.Fatalf("SystemPrompt = %q, want the feature-owned prompt untouched", opts.SystemPrompt)
-	}
-	if opts.SystemPromptOverrideSource != "" {
-		t.Fatalf("SystemPromptOverrideSource = %q, want empty — no settings override is in play",
-			opts.SystemPromptOverrideSource)
-	}
-}
-
 // The render memo: the deferred-restart watcher re-runs the whole reconcile
 // once a second while a thread is busy, and a prompt change it cannot apply
 // live would otherwise re-render — up to two git subprocesses — on every

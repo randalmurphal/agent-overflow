@@ -324,7 +324,7 @@ export function updateThreadPinState(
 
 /**
  * Reconcile the rows SetThreadGroup returned — every thread the call
- * touched, discussion children included. Only the three fields that RPC
+ * touched. Only the three fields that RPC
  * owns are patched: a full row swap would drag lastReadAt /
  * latestTurnCompletedAt backwards past a local read-mark the debounced
  * persist has not landed yet (the reason mergeThreadRowWithLocal exists).

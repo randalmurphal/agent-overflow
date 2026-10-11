@@ -531,10 +531,10 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
- * Pane scroll surfaces: the chat timeline, the discussion channel, and
- * the activity-run clip (MessageTimeline.svelte, ChannelView.svelte,
- * ActivityRun.svelte — all three mount an <OverlayScrollbar> sibling as
- * their scrollbar). These are the surfaces the follow spring glides.
+ * Pane scroll surfaces: the chat timeline and the activity-run and
+ * subagent clips (MessageTimeline.svelte, ActivityRun.svelte,
+ * SubagentBodyClip.svelte — each mounts an <OverlayScrollbar> sibling as
+ * its scrollbar). These are the surfaces the follow spring glides.
  *
  * `will-change: scroll-position` gives the scroller a composited
  * scrolling layer. Without one, EVERY scroll offset change — the follow

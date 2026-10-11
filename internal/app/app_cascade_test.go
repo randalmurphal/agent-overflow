@@ -22,7 +22,7 @@ import (
 )
 
 // setupCascadeApp builds an App wired up with every subsystem a delete path
-// touches: attachments, drafts, terminals, message anchors, discussion registry.
+// touches: attachments, drafts, terminals, message anchors.
 // Unlike setupE2EApp, this flavour turns on every real component so that a
 // DeleteThread exercises the full cascade.
 func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
@@ -238,7 +238,7 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 		t.Fatalf("first DeleteThread: %v", err)
 	}
 
-	// Second delete: deleteThreadTree uses sql.ErrNoRows as idempotent-success.
+	// Second delete: deleteThreadLocked uses sql.ErrNoRows as idempotent-success.
 	err := app.DeleteThread(thread.ID)
 	if err != nil {
 		// If the production code ever transitions to returning an error here,

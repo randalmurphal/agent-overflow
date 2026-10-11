@@ -117,8 +117,8 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 		return true
 	}
 
-	// Resolve the settings-owned axes (SystemPrompt when no feature owns it,
-	// DisabledTools, DisableTodoReminders) against what this session
+	// Resolve the settings-owned axes (SystemPrompt, DisabledTools,
+	// DisableTodoReminders) against what this session
 	// launched with. The tool lists pin — they are spawn-only on every
 	// provider, so a diff could only queue a restart nobody asked for. A
 	// headless-Claude prompt override converges when (and only when) the
