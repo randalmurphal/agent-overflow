@@ -69,12 +69,20 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 		}
 
-		// A successful turn start is the wire-level proof that the new
-		// session is alive and serving. Reset the per-thread auto-
-		// reconnect attempt counter so a later (unrelated) death gets a
-		// fresh recovery attempt instead of falling straight through to
-		// the banner.
-		if evt.Kind == provider.EventTurnStart {
+		// A TOP-LEVEL turn boundary: a subagent's completion is not the
+		// thread's. The auto-reconnect rule and the post-turn hooks below
+		// key off it, so it is resolved once rather than spelled out per
+		// hook.
+		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
+			strings.TrimSpace(evt.ParentToolUseID) == ""
+
+		// Auto-reconnect makes one attempt per death and earns another only
+		// from wire-level proof that a session served: a turn start, or a
+		// top-level turn that completed without error. Codex reports both;
+		// Claude reports only the completion. Init is not proof: a process
+		// that reaches init and then dies would reconnect without bound. A
+		// replacement that never serves a turn gets no second attempt.
+		if evt.Kind == provider.EventTurnStart || (topLevelTurn && turnCompletedWithoutError(evt)) {
 			a.clearAutoReconnectAttempted(threadID)
 		}
 
@@ -111,12 +119,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// estimate in place. Nested/subagent completes are excluded for the
 		// same reason appendUsageLedger excludes them: they are not the
 		// thread's turn boundary. See internal/codexthread.
-		// A TOP-LEVEL turn boundary: a subagent's completion is not the
-		// thread's. Both post-turn hooks below key off it, so it is resolved
-		// once rather than spelled out per hook.
-		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
-			strings.TrimSpace(evt.ParentToolUseID) == ""
-
 		if topLevelTurn && providerType == string(provider.Codex) {
 			a.noteCodexThreadCost(threadID, sessionToken)
 		}
@@ -199,10 +201,10 @@ func (a *App) attributeSessionRateLimits(
 // unregistered, so there are no live background processes to disturb; the
 // orphaned tool_call rows in the store match exactly what manual Reconnect
 // would have left behind. We resume from the thread's stored SessionRef
-// when one exists and the death is the first since the last observed
-// turn_started; if reconnect itself fails or a second death lands before
-// the new session reaches turn_started, the session_died banner already
-// dispatched stays put for the user to act on.
+// when one exists and the death is the first since a session last served
+// a turn (see the clear in sessionEventHandler); if reconnect itself fails
+// or a second death lands before the new session serves a turn, the
+// session_died banner already dispatched stays put for the user to act on.
 func (a *App) attemptAutoReconnect(threadID string) {
 	if a.shuttingDown.Load() {
 		return
@@ -246,6 +248,14 @@ func (a *App) markAutoReconnectAttempted(threadID string) bool {
 
 func (a *App) clearAutoReconnectAttempted(threadID string) {
 	a.sessionManager().runtime.ClearAutoReconnect(threadID)
+}
+
+// turnCompletedWithoutError reports whether a turn-complete event is the
+// provider's own result for a turn that did not fail. Claude's soft round
+// close is not a result; the result that follows it is.
+func turnCompletedWithoutError(evt provider.ProviderEvent) bool {
+	wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
+	return ok && wire != nil && wire.ErrorMessage == "" && evt.Failure == nil
 }
 
 // recordSessionActivity is the single chokepoint that bumps a session's

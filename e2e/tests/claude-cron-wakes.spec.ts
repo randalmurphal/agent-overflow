@@ -9,7 +9,8 @@
 //     The same job never holds a service update.
 //   - A CLI that exits by itself takes its ScheduleWakeup timer and a
 //     one-shot job with it: neither holds a service update or a
-//     conversation transfer afterwards.
+//     conversation transfer afterwards. Each exit after a served turn is
+//     resumed automatically.
 //   - Each fire renders as a scheduled turn: the injected prompt as a user
 //     row badged "Scheduled", never as a message from another Claude
 //     session, including a fire the CLI held through a busy turn.
@@ -236,8 +237,9 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
 
 // One turn arming a ScheduleWakeup timer 30 minutes out and a one-shot
 // weekly CronCreate job (claude-wire.md §E11), both shaped like the
-// captured acks. `n` keeps each process's ids its own.
-function armScheduleTurn(n: number): ScenarioStep {
+// captured acks. `n` keeps each process's ids its own. Without its result
+// the turn is still running when the process exits.
+function armScheduleTurn(n: number, completes = true): ScenarioStep {
   const wake = `toolu_exit_wake_${n}`;
   const cron = `toolu_exit_cron_${n}`;
   const jobId = `0e5a1c2${n}`;
@@ -251,40 +253,52 @@ function armScheduleTurn(n: number): ScenarioStep {
       toolUseResult: { id: jobId, humanSchedule: '0 9 * * 1', recurring: false, durable: false },
     }),
     ...textLines(`msg-exit-armed-${n}`, `Armed schedule ${n}.`),
-    RESULT_LINE,
+    ...(completes ? [RESULT_LINE] : []),
   ]);
 }
 
 test('a CLI that exits by itself takes its scheduled wakeup and one-shot job with it', async ({ page }) => {
   test.setTimeout(90_000);
   await withHarness(page, HARNESS_TIMING, async (harness) => {
-    const scheduleFor = (n: number) =>
-      harness.rpc('HarnessSetScenario', { scenario: claudeTurnsScenario(`exit-schedule-${n}`, [[armScheduleTurn(n)]]) });
+    const scheduleFor = (n: number, completes = true) =>
+      harness.rpc('HarnessSetScenario', { scenario: claudeTurnsScenario(`exit-schedule-${n}`, [[armScheduleTurn(n, completes)]]) });
     const exitCleanly = (mockId: string) => harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 0 });
+    const nextMock = async () =>
+      (await harness.waitForEvent<{ mockId: string }>('harness:mock', (ev: any) => ev.report.kind === 'registered')).mockId;
     const registered = () =>
       harness.countEvents<{ report: { kind: string } }>('harness:mock', (ev) => ev.report.kind === 'registered');
     const held = 'Waiting for turns and queued work to finish…';
+    const armed = async (n: number) => {
+      await harness.rpc('SendMessage', threadId, `Schedule the checks (${n}).`, null);
+      await expect(replyRow(page, `Armed schedule ${n}.`)).toBeVisible();
+      await expect.poll(() => updateWorkReason(harness)).toBe(held);
+    };
 
     await scheduleFor(1);
     const threadId = await seedAgentThread(harness, 'exit-schedule', 'Exit schedule');
     await openThread(harness, page, 'Exit schedule');
     const first = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Schedule the checks.', null);
-    await expect(replyRow(page, 'Armed schedule 1.')).toBeVisible();
-    await expect.poll(() => updateWorkReason(harness)).toBe(held);
+    await armed(1);
 
-    // The first unrequested exit is resumed automatically, and that
-    // reconnect's stop sweeps the record on its own. Claude never reports
-    // the turn start that re-arms the reconnect, so the second exit
-    // leaves the thread with no session: the case this test covers.
+    // Auto-reconnect makes one attempt per death and earns another when a
+    // session serves a turn. The first exit is resumed; so is the second,
+    // because its process served the turn that armed schedule 2.
     await scheduleFor(2);
     await exitCleanly(first);
-    const second = await harness.waitForEvent<{ mockId: string }>('harness:mock', (ev: any) => ev.report.kind === 'registered');
-    await harness.rpc('SendMessage', threadId, 'Schedule the checks again.', null);
-    await expect(replyRow(page, 'Armed schedule 2.')).toBeVisible();
-    await expect.poll(() => updateWorkReason(harness)).toBe(held);
+    const second = await nextMock();
+    await armed(2);
+    await scheduleFor(3, false);
+    await exitCleanly(second);
+    const third = await nextMock();
+    expect(registered(), 'each exit after a served turn is resumed').toBe(3);
 
-    await exitCleanly(second.mockId);
+    // The third process arms its schedule and exits before its turn
+    // completes. It never served one, so it is not resumed
+    // (TestAutoReconnectRearmsOnlyAfterAServedTurn) and only the exit
+    // itself can drop what it armed.
+    await harness.rpc('SendMessage', threadId, 'Schedule the checks (3).', null);
+    await expect(replyRow(page, 'Armed schedule 3.')).toBeVisible();
+    await exitCleanly(third);
     // Soft, so a failure here still records what the transfer does.
     await expect.configure({ soft: true }).poll(() => updateWorkReason(harness), {
       message: 'the exited process\'s wakeup or job still holds a service update',
@@ -293,7 +307,6 @@ test('a CLI that exits by itself takes its scheduled wakeup and one-shot job wit
       .then((intent) => intent.operationId, (error: Error) => `refused: ${error.message}`);
     expect(admitted, 'the transfer was refused').not.toMatch(/^refused/);
     await harness.rpc('CancelThreadTransfer', threadId, admitted);
-    expect(registered(), 'a reconnect replaced the exited session').toBe(2);
   });
 });
 
