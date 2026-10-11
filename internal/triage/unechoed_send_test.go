@@ -239,6 +239,26 @@ func TestLifecycleTerminalWithoutStartReturnsTheSend(t *testing.T) {
 	}
 }
 
+// A send whose turn a system/init already claimed, then `discarded` unrun as
+// the session ends: the send returns to the app, and the session teardown
+// that follows leaves no turn open.
+func TestDiscardedSendThatOpenedATurnLeavesTheThreadIdle(t *testing.T) {
+	h := newUnechoedSendHarness(t)
+	var returned []UnconfirmedFlushItem
+	h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
+		returned = append(returned, item)
+	})
+	h.directSend(0, "u-0", "x")
+	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
+	h.lifecycle("u-0", provider.CommandQueued)
+	h.lifecycle("u-0", provider.CommandDiscarded)
+	if len(returned) != 1 || returned[0].UserItemID != "user:0" {
+		t.Fatalf("returned = %+v, want the direct send", returned)
+	}
+	h.router.CleanupThread("t1")
+	h.wantIdle()
+}
+
 // With no app to return it to, an unrun send stays for the session-death
 // drain rather than being dropped.
 func TestLifecycleTerminalWithoutStartAndNoHookKeepsTheSend(t *testing.T) {
