@@ -30,7 +30,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   setBindingMock('GetSettings', async () => merged);
   setBindingMock('UpdateSettings', async (patch: unknown) => ({
     ...merged,
-    ...((patch as Record<string, unknown>) ?? {}),
+    ...(patch as Record<string, unknown>),
   }));
   setBindingMock('GetModelsForProvider', async (provider: unknown) =>
     modelCatalog(provider === 'codex' ? CODEX_CATALOG : CLAUDE_CATALOG),

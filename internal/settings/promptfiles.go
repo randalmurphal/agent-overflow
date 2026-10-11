@@ -221,7 +221,16 @@ func readPromptFile(path string) (string, fileState, string) {
 	if err != nil {
 		return "", fileState{}, fmt.Sprintf("cannot open %s: %v", path, err)
 	}
-	defer f.Close()
+	text, state, problem := readOpenPromptFile(f, path)
+	if err := f.Close(); err != nil && problem == "" {
+		return "", state, fmt.Sprintf("cannot close %s: %v", path, err)
+	}
+	return text, state, problem
+}
+
+// readOpenPromptFile is readPromptFile over an open file; the caller closes
+// it and reports a close failure as the problem.
+func readOpenPromptFile(f *os.File, path string) (string, fileState, string) {
 	info, err := f.Stat()
 	if err != nil {
 		return "", fileState{}, fmt.Sprintf("cannot stat %s: %v", path, err)

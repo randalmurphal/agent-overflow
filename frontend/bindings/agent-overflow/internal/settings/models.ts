@@ -328,8 +328,19 @@ export class NetworkSettings {
  * PromptOverride replaces a provider's built-in system prompt for the
  * models it names. Zero value is inert: a disabled entry, or one with no
  * models, never matches.
+ * 
+ * The entry's text lives in its own file, <configDir>/prompts/<ID>.md, so
+ * the user or an agent can edit it directly (promptfiles.go). Once the tier
+ * store is attached the settings row holds ID, Enabled and Models only;
+ * Prompt stays populated in memory and on the wire, filled from the file.
  */
 export class PromptOverride {
+    /**
+     * ID names the entry's prompt file: a canonical lowercase UUID, minted
+     * by Service.mutate when empty. A client never chooses the filename.
+     */
+    "id": string;
+
     /**
      * Enabled gates the entry without the user having to delete it.
      */
@@ -343,20 +354,34 @@ export class PromptOverride {
     "models": string[];
 
     /**
-     * Prompt is the replacement text, placeholders unrendered.
+     * Prompt is the replacement text, placeholders unrendered. Persisted
+     * only in the prompt file; a row still carrying it predates the file
+     * (MigratePromptFiles).
      */
-    "prompt": string;
+    "prompt"?: string;
+
+    /**
+     * Path is the absolute prompt file path, for the UI to show and open.
+     * Computed on load, never persisted; a client value is ignored.
+     */
+    "path"?: string;
+
+    /**
+     * Problem says why the file's text is not applied (it is over a size
+     * limit). Computed on load, never persisted; a client value is ignored.
+     */
+    "problem"?: string;
 
     /** Creates a new PromptOverride instance. */
     constructor($$source: Partial<PromptOverride> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
         if (!("enabled" in $$source)) {
             this["enabled"] = false;
         }
         if (!("models" in $$source)) {
             this["models"] = [];
-        }
-        if (!("prompt" in $$source)) {
-            this["prompt"] = "";
         }
 
         Object.assign(this, $$source);
@@ -366,10 +391,10 @@ export class PromptOverride {
      * Creates a new PromptOverride instance from a string or object.
      */
     static createFrom($$source: any = {}): PromptOverride {
-        const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("models" in $$parsedSource) {
-            $$parsedSource["models"] = $$createField1_0($$parsedSource["models"]);
+            $$parsedSource["models"] = $$createField2_0($$parsedSource["models"]);
         }
         return new PromptOverride($$parsedSource as Partial<PromptOverride>);
     }
@@ -636,6 +661,8 @@ export class Settings {
      * Prompt text may carry `{{...}}` placeholders (workdir, git snapshot,
      * platform, model, Claude memory dir) rendered at spawn — see
      * internal/promptoverride, which owns both the match and the render.
+     * Each entry's text is stored in <configDir>/prompts/<id>.md, not in
+     * the row (promptfiles.go).
      */
     "claudePromptOverrides"?: PromptOverride[];
     "codexPromptOverrides"?: PromptOverride[];
