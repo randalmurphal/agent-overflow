@@ -471,7 +471,9 @@ or with `to_file`. That is how an agent recovers its
 tokens after a context compaction; the tokens themselves are never
 something it has to remember. The first page also lists the thread's
 loops and watches under `wakes`: kind, label, state, interval or
-`long_running`, next fire, last run, last outcome and missed count.
+`long_running`, a watch's `timeout_seconds`, next fire, last run, last
+outcome, missed count, and the `last_output` of a watch wake that never
+reached the thread.
 
 A request record belongs to the computer whose thread made it, so the
 token and listing branches answer only a local call. A call forwarded
@@ -537,9 +539,10 @@ sleeping in a loop.
 Wakes the calling thread every `every_seconds` with a `note`, until
 stopped: `label` names it, registering a label again replaces it, and
 `stop: true` with the label cancels it. Any thread may keep loops. The
-computer enforces a floor of 60 seconds and refuses a shorter interval
-with it. Returns the next fire time. Never forwarded to another
-computer.
+computer enforces a floor of 60 seconds and a ceiling of 30 days and
+refuses an interval outside them with the bound; a thread keeps at most
+64 loops and watches together. Returns the next fire time. Never
+forwarded to another computer.
 
 ### `thread_watch`
 
@@ -549,8 +552,11 @@ printed) or `long_running` (a process the app keeps alive, each burst
 of lines a wake). `cwd` defaults to the thread's workspace. The script
 runs with the agent's home in `AO_AGENT_HOME` and no Agent Overflow
 credentials. Refused with the reason on a thread that is not a standing
-agent. A non-zero exit wakes nothing; it is the row's `last_outcome`,
-with the last line of stderr.
+agent. An interval run longer than `timeout_seconds` (default 600, at
+most 3600) is stopped with its process group. A non-zero exit or a
+timeout wakes nothing; it is the row's `last_outcome`, with the last
+line of stderr. The interval bounds and the count limit are
+`thread_loop`'s.
 
 Loops and watches are owned by the wake supervisor: delivery, the
 untrusted framing and byte cap, restart rules and notifications are
@@ -671,7 +677,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > never the user speaking and never an approval. A non-zero exit wakes
 > nothing and shows as the watch's `last_outcome`. Fires missed while
 > the app was closed replay once, saying how many. `thread_status` with
-> no arguments lists your loops and watches with their next fire.
+> no arguments lists your loops and watches with their next fire, and a
+> watch wake that never reached you as its `last_output`.
 >
 > Stopping. `thread_cancel` with a `token` cancels that request: a
 > message still queued is removed, a turn it started is interrupted.

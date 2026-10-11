@@ -109,9 +109,12 @@ rendering and queueing in `app_agent_wake_delivery.go`, promotion in
 [standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
 loop or watch wake is data, not something the person wrote: one still queued
 at boot or left unconfirmed by a session that ended never goes to the
-composer, and its row records `not delivered`. Whether a turn was a tick is
-read from the rows of the turn that ended, because a dispatch cannot know
-what the provider joined into it.
+composer, and its row records `not delivered`; an outside `thread send` is
+handled the same way, with a notice in its thread. Whether a turn was a tick
+is read from the rows of the turn that ended, because a dispatch cannot know
+what the provider joined into it. The exception is a Claude turn the CLI
+started for messages queued during the previous turn, which keep their rows
+there: it is a tick when every one of them was a wake (`agentWakeQueued`).
 
 A standing agent's worker prompts are stamped with their route by triage
 (`SetPromptRouter`) and delivered, answered and settled in

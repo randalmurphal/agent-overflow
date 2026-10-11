@@ -1608,9 +1608,9 @@ echo "the report before the quit"
 });
 
 // A wake that joins a person's running turn leaves the turn theirs: Codex
-// steers it in, and the turn still notifies. (Claude's mock opens a turn of
-// its own for input that arrives mid-turn, where the real CLI takes it into
-// the running one, so only Codex can show this here.)
+// steers it in, and the turn still notifies. Claude's counterpart, a wake
+// the CLI takes in at its next model call, is the drain case of the Claude
+// mid-turn test below.
 test('codex: a wake steered into a person turn keeps its notification', async () => {
   test.setTimeout(120_000);
   const harness = await launchHarness();
