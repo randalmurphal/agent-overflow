@@ -85,12 +85,22 @@ export interface ForgeJob {
   allowFailure?: boolean;
   startedAt?: string;
   completedAt?: string;
-  /** The job log. GitHub serves it only once the job completed; GitLab serves it while running. */
+  /** The job log, served once the job started, running included. */
   log?: string;
-  /** The forge answers the log with a 404, as for a completed job whose log it has not published yet. */
+  /** The forge answers the log with a 404, as GitHub does until a job's log blob exists, running or completed. */
   logWithheld?: boolean;
   /** GitHub Actions steps. */
-  steps?: { name: string; status: ForgeJobStatus }[];
+  steps?: ForgeStep[];
+}
+
+export interface ForgeStep {
+  /** GitHub's step number; defaults to one past the previous step's. */
+  number?: number;
+  name: string;
+  status: ForgeJobStatus;
+  /** RFC 3339 times, answered as null when omitted. */
+  startedAt?: string;
+  completedAt?: string;
 }
 
 /** A GitHub attachment by `url`, or a GitLab upload by `secret` and `filename`. */

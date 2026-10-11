@@ -2,10 +2,11 @@
 // shipped UI, the real backend and the fake forge. Covered: the chips
 // and an open job log follow a running GitLab job without a click, the
 // polling stops once every job is terminal; a running GitHub job shows its
-// steps live (read only while its log is open) and says the log arrives on
-// completion, a completed job whose log the forge has not published yet
-// says so and keeps being asked for past the quick tries without showing
-// an error, and the log lands on its own once the forge serves it. The
+// steps live (read only while its log is open), waits without an error
+// while the forge answers 404 for its log, shows and follows the log while
+// the job runs once the forge serves it, waits again while a completed
+// job's final log is withheld past the quick tries, and the final log
+// lands on its own once the forge serves it. The
 // harness shortens the CI cadences to 250ms and the log wait to 500ms
 // (HARNESS_TIMING), so "stops polling" is a flat invocation count across
 // several cadences.
@@ -162,28 +163,24 @@ test('a running GitLab job follows its trace into the open log and the chips, th
   await expectEveryForgeCallHandled(harness);
 });
 
-test('a running GitHub job shows its steps live, says the log arrives on completion, waits out an unpublished log, and the log lands when it does', async ({
+test('a running GitHub job waits out a log the forge has not published, follows its log live once served, and lands the final log', async ({
   harness,
   page,
 }) => {
   const workspace = await seedProject(harness);
-  const repo = await publishPullRequest(harness, workspace, {
+  const steps = [
+    { name: 'Set up job', status: 'success' as const, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:01Z' },
+    { number: 3, name: 'Build', status: 'running' as const, startedAt: '2026-01-01T00:00:01Z' },
+  ];
+  const runningJob = { id: JOB_ID, name: 'build', status: 'running' as const, steps };
+  let repo = await publishPullRequest(harness, workspace, {
     forge: 'github',
     project: `ao-e2e/ci-${randomBytes(4).toString('hex')}`,
     pulls: [{
       number: 17,
-      title: 'Wait for the log',
-      ci: {
-        id: 9_200,
-        name: 'CI',
-        jobs: [{
-          id: JOB_ID,
-          name: 'build',
-          status: 'running',
-          log: 'build output\n',
-          steps: [{ name: 'Set up job', status: 'success' }, { name: 'Build', status: 'running' }],
-        }],
-      },
+      title: 'Follow the log',
+      // GitHub answers 404 for a running job until its log blob exists.
+      ci: { id: 9_200, name: 'CI', jobs: [{ ...runningJob, log: longLog(LONG_LOG_LINES, 1), logWithheld: true }] },
     }],
   });
   await harness.open(page);
@@ -195,11 +192,16 @@ test('a running GitHub job shows its steps live, says the log arrives on complet
 
   const log = await openJobLog(page, review, 'CI', 'build');
   const pending = log.getByTestId('review-ci-log-pending');
-  await expect(pending).toContainText('The log is available when the job completes.');
+  const scroll = log.getByTestId('review-ci-log-scroll');
+  await expect(pending).toBeVisible();
   await expect(log.getByTestId('review-ci-steps')).toContainText('Build');
-  await expect(log.getByTestId('review-ci-log-scroll')).toHaveCount(0);
-  // The Actions log endpoint 404s for a running job, so the app does not ask.
-  expect(countRoute(await forgeInvocations(harness), 'gh api job logs')).toBe(0);
+  await expect(scroll).toHaveCount(0);
+  // The 404 is a wait: asked again at the follow cadence while the job
+  // runs, past the quick tries a completed job gets, never an error.
+  const logFetches = async () => countRoute(await forgeInvocations(harness), 'gh api job logs');
+  await expect.poll(logFetches).toBeGreaterThan(8);
+  await expect(log.getByTestId('review-ci-log-error')).toHaveCount(0);
+  await expect(pending).toBeVisible();
   // The steps are polled while the job runs.
   await expect.poll(async () => countRoute(await forgeInvocations(harness), 'gh api run jobs')).toBeGreaterThan(1);
   // The CI cadence reads the rollup alone: its PRTick asks for the checks
@@ -215,22 +217,38 @@ test('a running GitHub job shows its steps live, says the log arrives on complet
     ).length;
   await expect.poll(ciOnlyTicks).toBeGreaterThan(0);
 
-  // The job completes, but the forge has not published its log yet: a
-  // wait, not an error.
+  // The blob exists: the log shows while the job still runs, at its tail.
+  repo = await moveCI(harness, repo, { jobs: [{ ...runningJob, log: longLog(LONG_LOG_LINES, 1) }] });
+  await expect(scroll).toContainText('step 1 done');
+  await expect(pending).toHaveCount(0);
+  await expect(log).toContainText('running');
+  await expect.poll(() => scroll.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
+  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
+
+  // It grows: the open log follows with no click, before the job completes.
+  repo = await moveCI(harness, repo, { jobs: [{ ...runningJob, log: longLog(LONG_LOG_LINES, 2) }] });
+  await expect(scroll).toContainText('step 2 done');
+  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
+  await expect(log).toContainText('running');
+  // An unchanged log is revalidated by its ETag, not read again.
+  await expect.poll(async () =>
+    (await forgeInvocations(harness)).filter((call) => call.via === 'http' && call.route === 'gh api job logs' && call.status === 304).length,
+  ).toBeGreaterThan(0);
+
+  // The job completes, and the forge holds the final log back for a
+  // while: a wait over the text already shown, not an error.
   const failedJob = {
     id: JOB_ID,
     name: 'build',
     status: 'failed' as const,
-    log: 'build output\nerror: tests failed\n',
-    steps: [{ name: 'Set up job', status: 'success' as const }, { name: 'Build', status: 'failed' as const }],
+    log: longLog(LONG_LOG_LINES, 2) + 'error: tests failed\n',
+    steps: [steps[0]!, { ...steps[1]!, status: 'failed' as const, completedAt: '2026-01-01T00:01:00Z' }],
   };
-  const logFetches = async () => countRoute(await forgeInvocations(harness), 'gh api job logs');
   const withheld = await moveCI(harness, repo, { jobs: [{ ...failedJob, logWithheld: true }] });
   await expect(pending).toContainText('The job finished; the forge has not published its log yet.');
   await expect(log.getByTestId('review-ci-log-error')).toHaveCount(0);
+  await expect(scroll).toContainText('step 2 done');
   let asked = await logFetches();
-  await expect.poll(logFetches).toBeGreaterThan(asked);
-  asked = await logFetches();
   await expect.poll(logFetches).toBeGreaterThan(asked);
   // Past the quick tries (six at 250ms) it keeps asking at the wait
   // cadence, still without an error.
@@ -238,12 +256,10 @@ test('a running GitHub job shows its steps live, says the log arrives on complet
   asked = await logFetches();
   await expect.poll(logFetches).toBeGreaterThan(asked);
   await expect(log.getByTestId('review-ci-log-error')).toHaveCount(0);
-  await expect(pending).toContainText('The job finished; the forge has not published its log yet.');
-  await expect(log.getByTestId('review-ci-log-scroll')).toHaveCount(0);
 
-  // The forge publishes the log: it lands on its own.
+  // The forge publishes the final log: it lands on its own.
   await moveCI(harness, withheld, { jobs: [failedJob] });
-  await expect(log.getByTestId('review-ci-log-scroll')).toContainText('error: tests failed');
+  await expect(scroll).toContainText('error: tests failed');
   await expect(pending).toHaveCount(0);
   await expect(log).toContainText('failed');
 

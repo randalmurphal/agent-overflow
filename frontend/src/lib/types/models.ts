@@ -548,9 +548,13 @@ export interface CIJob {
 }
 
 export interface CIStep {
+  /** GitHub's step number; numbers have gaps. */
   number: number;
   name: string;
   status: string;
+  /** RFC 3339, to the second; absent until the step starts or ends. */
+  startedAt?: string;
+  completedAt?: string;
 }
 
 /** One PR discussion: a file-anchored review thread (path set) or a

@@ -158,8 +158,15 @@ type Job struct {
 
 // Step is one GitHub Actions job step.
 type Step struct {
+	// Number is GitHub's step number. Defaults to one past the previous
+	// step's; give one to model the gaps real jobs have.
+	Number int    `json:"number,omitempty"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// StartedAt and CompletedAt are RFC 3339 times, answered as null when
+	// empty, as the API does for a step that has not started or ended.
+	StartedAt   string `json:"startedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
 }
 
 // Attachment is one forge-hosted file.
@@ -395,9 +402,19 @@ func (p *Pipeline) normalize(ids *idSource) error {
 		if job.Name == "" || !jobStatuses[job.Status] {
 			return fmt.Errorf("jobs[%d]: name and a status (success, failed, running, pending, skipped, canceled) are required", i)
 		}
-		for j, step := range job.Steps {
+		for j := range job.Steps {
+			step := &job.Steps[j]
 			if step.Name == "" || !jobStatuses[step.Status] {
 				return fmt.Errorf("jobs[%d].steps[%d]: name and a job status are required", i, j)
+			}
+			previous := 0
+			if j > 0 {
+				previous = job.Steps[j-1].Number
+			}
+			if step.Number == 0 {
+				step.Number = previous + 1
+			} else if step.Number <= previous {
+				return fmt.Errorf("jobs[%d].steps[%d]: number %d does not follow %d", i, j, step.Number, previous)
 			}
 		}
 		if job.ID == 0 {

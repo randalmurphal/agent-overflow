@@ -110,6 +110,7 @@ func TestSeedRejectsMalformedFixtures(t *testing.T) {
 		"gitlab verdict":     `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"author":"a","state":"CHANGES_REQUESTED"}]}]}]}`,
 		"name without login": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","comments":[{"authorName":"A","body":"b"}]}]}]}`,
 		"job status":         `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"green"}]}}]}]}`,
+		"step out of order":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"success","steps":[{"number":3,"name":"a","status":"success"},{"number":2,"name":"b","status":"success"}]}]}}]}]}`,
 		"gitlab upload key":  `{"repos":[{"forge":"gitlab","project":"g/r","attachments":[{"secret":"nothex","filename":"a.png","text":"x"}]}]}`,
 		"github upload key":  `{"repos":[{"forge":"github","project":"a/b","attachments":[{"secret":"0123456789abcdef0123456789abcdef","filename":"a","text":"x"}]}]}`,
 		"two contents":       `{"repos":[{"forge":"github","project":"a/b","attachments":[{"url":"https://github.com/x","text":"x","base64":"eA=="}]}]}`,
@@ -588,27 +589,53 @@ func TestOfflineAnswersEveryForgeCallAsUnreachableUntilBack(t *testing.T) {
 	}
 }
 
-// TestGitHubJobLogsAnswer404UntilTheJobCompletes: the Actions log endpoint
-// serves nothing for a running job, which is what makes the app wait for
-// completion on GitHub while it follows a GitLab trace live.
-func TestGitHubJobLogsAnswer404UntilTheJobCompletes(t *testing.T) {
+// TestGitHubJobLogsServeARunningJobOnceItsBlobExists: the Actions log
+// endpoint answers 404 for a running job until its log blob exists
+// (logWithheld), then serves the log so far, with an ETag that moves as it
+// grows, and the whole log once the job completed.
+func TestGitHubJobLogsServeARunningJobOnceItsBlobExists(t *testing.T) {
 	e := New(Options{APIToken: testAPIToken})
-	fixture, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"id":500,"name":"j","status":"running","log":"partial"}]}}]}]}`)
+	fixture, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[
+{"id":500,"name":"j","status":"running","log":"partial","logWithheld":true},
+{"id":501,"name":"queued","status":"pending"}]}}]}]}`)
 	if err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 	srv := testServer(t, e)
-	logs := func() httpAnswer {
-		return httpRequest(t, srv, "GET", "github.com", "/github/rest/repos/a/b/actions/jobs/500/logs", "", nil)
+	logs := func(job string, header http.Header) httpAnswer {
+		return httpRequest(t, srv, "GET", "github.com", "/github/rest/repos/a/b/actions/jobs/"+job+"/logs", "", header)
 	}
-	if got := logs(); got.status != 404 {
-		t.Fatalf("running job log = %+v, want 404", got)
+	if got := logs("500", nil); got.status != 404 || lastInvocation(t, e).Unhandled {
+		t.Fatalf("running job log before its blob exists = %+v, want a handled 404", got)
+	}
+	if got := logs("501", nil); got.status != 404 || lastInvocation(t, e).Unhandled {
+		t.Fatalf("queued job log = %+v, want a handled 404", got)
+	}
+	fixture.Repos[0].Pulls[0].CI.Jobs[0].LogWithheld = false
+	if _, err := e.Seed(fixture); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	partial := logs("500", nil)
+	if partial.status != 200 || partial.body != "\xef\xbb\xbfpartial" || partial.header.Get("ETag") == "" {
+		t.Fatalf("running job log = %+v", partial)
+	}
+	conditional := http.Header{"Authorization": {"Bearer " + testAPIToken}, "If-None-Match": {partial.header.Get("ETag")}}
+	if got := logs("500", conditional); got.status != 304 || got.body != "" {
+		t.Fatalf("unchanged running log revalidated = %+v, want 304", got)
+	}
+	fixture.Repos[0].Pulls[0].CI.Jobs[0].Log = "partial\nmore"
+	if _, err := e.Seed(fixture); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	grown := logs("500", conditional)
+	if grown.status != 200 || grown.body != "\xef\xbb\xbfpartial\nmore" || grown.header.Get("ETag") == partial.header.Get("ETag") {
+		t.Fatalf("grown running log = %+v, want the new text under a new ETag", grown)
 	}
 	fixture.Repos[0].Pulls[0].CI.Jobs[0].Status = "success"
 	if _, err := e.Seed(fixture); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
-	if got := logs(); got.status != 200 || got.body != "\xef\xbb\xbfpartial" {
+	if got := logs("500", nil); got.status != 200 || got.body != "\xef\xbb\xbfpartial\nmore" {
 		t.Fatalf("completed job log = %+v", got)
 	}
 	// A completed job whose log the forge has not published yet.
@@ -616,7 +643,7 @@ func TestGitHubJobLogsAnswer404UntilTheJobCompletes(t *testing.T) {
 	if _, err := e.Seed(fixture); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
-	if got := logs(); got.status != 404 || lastInvocation(t, e).Unhandled {
+	if got := logs("500", nil); got.status != 404 || lastInvocation(t, e).Unhandled {
 		t.Fatalf("withheld job log = %+v, want a handled 404", got)
 	}
 }
@@ -645,17 +672,19 @@ func TestGitLabTraceAnswers404WhileTheLogIsWithheld(t *testing.T) {
 func TestGitHubRunJobsAnswerTheRESTShape(t *testing.T) {
 	e := New(Options{APIToken: testAPIToken})
 	_, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"id":70,"name":"CI","jobs":[
-{"id":501,"name":"build","status":"running","steps":[{"name":"Set up job","status":"success"},{"name":"Build","status":"running"}]},
+{"id":501,"name":"build","status":"running","steps":[{"name":"Set up job","status":"success","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:00:01Z"},{"number":4,"name":"Build","status":"running","startedAt":"2026-01-01T00:00:01Z"},{"name":"Post Build","status":"pending"}]},
 {"id":502,"name":"lint","status":"failed","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z"}]}}]}]}`)
 	if err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 	srv := testServer(t, e)
 	type step struct {
-		Number     int     `json:"number"`
-		Name       string  `json:"name"`
-		Status     string  `json:"status"`
-		Conclusion *string `json:"conclusion"`
+		Number      int     `json:"number"`
+		Name        string  `json:"name"`
+		Status      string  `json:"status"`
+		Conclusion  *string `json:"conclusion"`
+		StartedAt   *string `json:"started_at"`
+		CompletedAt *string `json:"completed_at"`
 	}
 	type answer struct {
 		TotalCount int `json:"total_count"`
@@ -685,9 +714,15 @@ func TestGitHubRunJobsAnswerTheRESTShape(t *testing.T) {
 		build.HTMLURL != "https://github.com/a/b/actions/runs/70/job/501" {
 		t.Fatalf("build = %+v", build)
 	}
-	if len(build.Steps) != 2 || build.Steps[0].Number != 1 || build.Steps[0].Status != "completed" || *build.Steps[0].Conclusion != "success" ||
+	if len(build.Steps) != 3 || build.Steps[0].Number != 1 || build.Steps[0].Status != "completed" || *build.Steps[0].Conclusion != "success" ||
 		build.Steps[1].Status != "in_progress" || build.Steps[1].Conclusion != nil {
 		t.Fatalf("build steps = %+v", build.Steps)
+	}
+	// Steps number on from a given number, and an unset time is null.
+	if set, run, post := build.Steps[0], build.Steps[1], build.Steps[2]; set.StartedAt == nil || *set.StartedAt != "2026-01-01T00:00:00Z" ||
+		set.CompletedAt == nil || *set.CompletedAt != "2026-01-01T00:00:01Z" || run.Number != 4 || run.StartedAt == nil ||
+		*run.StartedAt != "2026-01-01T00:00:01Z" || run.CompletedAt != nil || post.Number != 5 || post.StartedAt != nil || post.CompletedAt != nil {
+		t.Fatalf("build step numbers and times = %+v", build.Steps)
 	}
 	if lint.Status != "completed" || lint.Conclusion == nil || *lint.Conclusion != "failure" || lint.CompletedAt == nil {
 		t.Fatalf("lint = %+v", lint)

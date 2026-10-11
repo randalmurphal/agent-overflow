@@ -76,9 +76,9 @@ type PRCIUpdatedEvent struct {
 // must be PrevLen units long) and append Append. A receiver holding
 // anything else missed a frame and asks for the whole text again through
 // SetPRCILogFollows. Available false means the forge cannot serve the log
-// yet: the job is live on a forge that serves logs only after completion,
-// or it completed and its log is not published yet; the text is
-// unchanged. Error is a fetch failure with its kind fields (see
+// yet: it answered 404 (the log is not published yet, which on GitHub can
+// last a running job's whole run), or the job is live on a forge that
+// serves no running logs; the text is unchanged. Error is a fetch failure with its kind fields (see
 // PRUpdatedEvent), text unchanged.
 type PRCILogEvent struct {
 	PRKey      string `json:"prKey"`
@@ -185,9 +185,9 @@ func prCIStamp(snapshot prUpdateSnapshot) string {
 // shortest cadence anything still changing asks for. retry is the loop's
 // doubling delay while the pipeline fetch fails, reset here once it
 // succeeds. A rate-limited pipeline or log waits for its failure's
-// release instead. A live followed job on a forge that serves logs only
-// after completion asks nothing of its own: the pipeline's live cadence
-// carries its steps.
+// release instead. A live followed job on a forge that serves no running
+// logs asks nothing of its own: the pipeline's live cadence carries its
+// steps.
 func (a *App) prCIInterval(pump *prUpdatePump, retry *time.Duration) time.Duration {
 	whileRunning := a.prCILogWhileRunning(pump.pr)
 	a.prUpdates.mu.Lock()
@@ -448,17 +448,21 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 			follow.seq = a.nextPRUpdateSeqLocked()
 			frame.PrevLen, frame.Base, frame.Append = prevLen, base, appended
 			frame.Available = true
-		case errors.Is(result.err, gitops.ErrCIJobLogNotFound) && !result.plan.live:
-			// The forge has not published the completed job's log yet. That
-			// is a wait, not a failure: the follow keeps asking at the pace
-			// prCIInterval sets, a forced fetch included, and shows the job
-			// as waiting for its log.
+		case errors.Is(result.err, gitops.ErrCIJobLogNotFound):
+			// The forge has not published the job's log yet: GitHub answers
+			// 404 until the log blob exists, for a running job too. That is
+			// a wait, not a failure: the follow keeps asking at the pace
+			// prCIInterval sets (the follow cadence while the job is live,
+			// the final tries and then the wait cadence once it completed),
+			// a forced fetch included, and shows the job as waiting.
 			shown := follow.fetched && !follow.available && !follow.fail.failing()
 			follow.fetched = true
 			follow.available = false
 			follow.fail = prForgeFailure{}
-			follow.pendingFinal = true
-			follow.finalAttempts++
+			if !result.plan.live {
+				follow.pendingFinal = true
+				follow.finalAttempts++
+			}
 			if shown {
 				continue
 			}

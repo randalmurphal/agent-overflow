@@ -62,8 +62,8 @@ type Forge interface {
 	// conditional on the request's ETag (see CIJobLog).
 	GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error)
 	// CILogWhileRunning reports whether GetCIJobLog answers for a job that
-	// is still running (GitLab serves the partial trace; GitHub serves a
-	// log only once the job completed).
+	// is still running: both forges serve the log so far, GitHub once the
+	// job's log blob exists (a 404 before that is ErrCIJobLogNotFound).
 	CILogWhileRunning() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
 	// ref's body or review comments, through the user's own forge login.

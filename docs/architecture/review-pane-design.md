@@ -137,7 +137,7 @@ polling.
 - **CI rides the same pump** (`internal/app/app_forge_ci.go`). The pump
   reads the head pipeline on start and re-reads it only while something
   can change: every 10s while a job is queued or running, every 5s while
-  a followed job is live on GitLab or its final log is still being
+  a followed job is live or its final log is still being
   fetched, never while every job is terminal (the 45s snapshot re-arms it
   when the head SHA or the check summary moves). Pipeline frames go out on
   `pr:ci_updated` only on change, under the PR's sequence, and the
@@ -147,12 +147,16 @@ polling.
   followed job whose steps can still change; GitLab reads the MR view and
   the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
   the pump fetches each now and streams UTF-16 prefix deltas on
-  `pr:ci_log` while a GitLab job runs (the trace endpoint serves partial
-  traces); GitHub serves a log only after completion, so a running job
-  reads as unavailable with its steps live, and the log lands once the job
-  completes. A completed job's log the forge still answers 404 for is a
-  wait, not an error: asked every 5s for six tries, then every 45s while
-  the job stays followed. The pause, dedup, caller-safe error and
+  `pr:ci_log` while the job runs, revalidating by ETag (both forges serve
+  a running job's log; GitHub once the job's log blob exists). A log the
+  forge answers 404 for is a wait, not an error: asked every 5s while the
+  job runs (GitHub can answer 404 for a running job's whole run), and
+  once it completed every 5s for six tries, then every 45s while the job
+  stays followed. The log keeps what the log view groups lines by: a
+  GitHub log's `##[group]` lines, beside the steps' `startedAt` and
+  `completedAt` from the jobs list (each log line starts with its own
+  RFC 3339 time), and a GitLab trace's section markers, each on a line
+  of its own (`cleanGitLabTrace`). The pause, dedup, caller-safe error and
   connection-cleanup rules of the
   snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the

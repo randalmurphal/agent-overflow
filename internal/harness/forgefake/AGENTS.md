@@ -120,7 +120,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head)` | open PR lookup (checkout origin) |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
 | GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run; `Link` rel="next" while more pages exist |
-| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (404 while the job is running or pending, as the real endpoint, and while the job sets `logWithheld`); answered directly where the real endpoint redirects to its log blob, with the blob's ETag behavior |
+| GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists); answered directly where the real endpoint redirects to its log blob, with the blob's ETag behavior |
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail |

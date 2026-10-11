@@ -403,6 +403,69 @@ func TestPRCILogFollowWaitsForCompletionWhereLogsNeedIt(t *testing.T) {
 	expectCountHolds(t, &f.logFetches, "fetched log kept being fetched")
 }
 
+// TestPRCILogLiveUnpublishedLogIsAWaitThenFollowsGrowth: a forge that
+// serves running logs can still answer 404 for a running job (GitHub
+// until the job's log blob exists). The follow shows it as not available,
+// never as an error, keeps asking at the follow cadence without a frame
+// per miss, and follows the log live once it is served.
+func TestPRCILogLiveUnpublishedLogIsAWaitThenFollowsGrowth(t *testing.T) {
+	t.Parallel()
+	f := newPRCIFixture(t, true)
+	running := pipelineWith(gitops.CIStatusRunning, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusRunning, LogsAvailable: true})
+	f.publish(running, nil)
+	f.setLog("7", "", fmt.Errorf("%w: forge GET repos/o/r/actions/jobs/7/logs: HTTP 404 Not Found", gitops.ErrCIJobLogNotFound))
+	sub := f.subscribe(t)
+	awaitCIEvent(t, f.ciEvents, "running pipeline frame")
+
+	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
+	if err != nil {
+		t.Fatalf("SetPRCILogFollows: %v", err)
+	}
+	if state := result.Logs["7"]; state.Available || state.Error != "" || state.Text != "" {
+		t.Fatalf("unpublished running log = %+v, want unavailable and no error", state)
+	}
+	if frame := awaitLogEvent(t, f.logEvents, "waiting frame"); frame.Available || frame.Error != "" {
+		t.Fatalf("frame = %+v", frame)
+	}
+	// Past the quick tries a completed job gets: a live job's misses are
+	// not final attempts, so they never turn into a shown failure.
+	deadline := time.Now().Add(2 * time.Second)
+	for f.logFetches.Load() < prCILogFinalAttempts+3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a live unpublished log stopped being asked for after %d fetches", f.logFetches.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	expectNoLogEvent(t, f.logEvents, "steady wait on a live job")
+
+	// The log appears while the job runs, then grows: each lands live.
+	f.setLog("7", "step 1\n", nil)
+	first := awaitLogEvent(t, f.logEvents, "first served text")
+	if !first.Available || first.Error != "" || first.PrevLen != 0 || first.Append != "step 1\n" {
+		t.Fatalf("first text frame = %+v", first)
+	}
+	f.setLog("7", "step 1\nstep 2\n", nil)
+	grown := awaitLogEvent(t, f.logEvents, "grown text")
+	if grown.PrevLen != len("step 1\n") || grown.Base != len("step 1\n") || grown.Append != "step 2\n" {
+		t.Fatalf("growth frame = %+v", grown)
+	}
+	// A followed live log revalidates with the ETag of the text it holds.
+	f.mu.Lock()
+	lastETag := f.logETags[len(f.logETags)-1]
+	f.mu.Unlock()
+	if lastETag == "" {
+		t.Fatal("a live log was re-fetched without its ETag")
+	}
+
+	f.setLog("7", "step 1\nstep 2\ndone\n", nil)
+	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
+	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
+	if final := awaitLogEvent(t, f.logEvents, "final text"); final.Append != "done\n" {
+		t.Fatalf("final frame = %+v", final)
+	}
+	expectCountHolds(t, &f.logFetches, "a completed job's fetched log kept being fetched")
+}
+
 func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	t.Parallel()
 	f := newPRCIFixture(t, true)

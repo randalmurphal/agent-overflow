@@ -221,9 +221,9 @@ export interface ReviewPaneState {
   readonly ciLogError: string | null;
   /** The kind of ciLogError; null for a local failure or none. */
   readonly ciLogFailure: ForgeFailure | null;
-  /** False while the forge cannot serve the log: the job is live on a
-   * forge that serves logs only after completion, or the forge has not
-   * published a completed job's log yet. */
+  /** False while the forge cannot serve the log: it has not published
+   * the log yet (GitHub until the job's log blob exists, running or
+   * completed). */
   readonly ciLogAvailable: boolean;
   readonly ciLogSavedPath: string | null;
   readonly submitTarget: 'agent' | 'pr';
