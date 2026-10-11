@@ -83,7 +83,11 @@ Validate repository identity and destination workspace before mutation. Preserve
 historical text; change only structured workspace/file references understood by
 the owning provider adapter. Snapshot at a quiescent boundary under the existing
 thread-operation lock. An idle provider process must relinquish the session
-before a move can change execution ownership.
+before a move can change execution ownership. Relinquishing ends the recurring
+jobs a Claude session holds (`CronCreate`, claude-wire.md §E11), so they never
+refuse a transfer; the dialog names them before the user commits. A pending
+ScheduleWakeup or one-shot job is a turn the session still owes and refuses the
+transfer until it fires.
 
 Archives stream with bounded buffers and explicit file/total limits. Extraction
 refuses absolute paths, traversal, duplicate members, and escaping links. A

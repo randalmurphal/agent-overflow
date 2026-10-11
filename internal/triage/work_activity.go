@@ -4,9 +4,10 @@ import "time"
 
 // AnyUnfinishedWork is the host-wide admission check. Queue, echo, turn and
 // streaming-settlement ownership are read together so a handoff cannot look
-// idle between two individually accurate queries. Wakeups and scheduled jobs
-// use the same grace as the session reaper; a stale scheduled timestamp cannot
-// block forever.
+// idle between two individually accurate queries. Wakeups and one-shot
+// scheduled jobs use the same grace as the session reaper; a stale scheduled
+// timestamp cannot block forever. Recurring jobs never count: the update
+// restarts the backend, which ends them either way.
 func (r *Router) AnyUnfinishedWork(wakeupGrace time.Duration) bool {
 	if r == nil {
 		return false
@@ -37,6 +38,6 @@ func (r *Router) AnyUnfinishedWork(wakeupGrace time.Duration) bool {
 }
 
 func wakePending(st *threadState, now int64, grace time.Duration) bool {
-	at, ok := st.wakeDeadline()
+	at, ok := st.wakeDeadline(false)
 	return ok && now < at+grace.Milliseconds()
 }

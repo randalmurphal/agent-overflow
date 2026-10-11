@@ -22,11 +22,9 @@ import (
 // Call-sequence coverage (not just value coverage): a schedule replaces
 // any prior pending fire time (the harness keeps one wakeup per loop —
 // re-scheduling supersedes), a `{stop:true}` ack arrives as
-// ScheduledForUnixMs <= 0 and deletes the entry, and both cleanupThread
-// and MarkThreadActive drop it because a wakeup timer never survives its
-// CLI process — neither a torn-down session nor a replacement process
-// retains it. Entries for wakeups that already fired read as elapsed at
-// the caller's comparison and are swept at session end.
+// ScheduledForUnixMs <= 0 and deletes the entry, and the entry ends with
+// its CLI process on every path (ClearProcessSchedule). Entries for
+// wakeups that already fired read as elapsed at the caller's comparison.
 func (r *Router) handleSessionWakeup(evt provider.ProviderEvent) error {
 	var meta provider.SessionWakeupMeta
 	if len(evt.Meta) > 0 {
@@ -55,8 +53,8 @@ func (r *Router) handleSessionWakeup(evt provider.ProviderEvent) error {
 // The provider sends the FULL list whenever it changes, each job with the
 // latest time it can next fire: a create, a delete, a CronList and every
 // fire (which moves a recurring job's deadline forward and releases a
-// fired one-shot). An empty list clears the record; the session sweeps
-// that clear pendingWakeupAt clear this too.
+// fired one-shot). An empty list clears the record, and the record ends
+// with its CLI process like pendingWakeupAt (ClearProcessSchedule).
 func (r *Router) handleScheduledJobs(evt provider.ProviderEvent) error {
 	var meta provider.ScheduledJobsMeta
 	if len(evt.Meta) > 0 {
@@ -76,12 +74,44 @@ func (r *Router) handleScheduledJobs(evt provider.ProviderEvent) error {
 	return nil
 }
 
+// ClearProcessSchedule drops the thread's wakeup and armed-job records.
+// Both live only in the CLI process, so they end with it on every path:
+// the host's own exit path calls this when the process exits by itself
+// (a clean exit, a crash or a signal), CleanupThread drops them with the
+// rest of the thread state on a host-initiated close, and
+// MarkThreadActive drops them for a replacement process. Without it a
+// one-shot job's deadline, up to a week away, would hold service updates
+// and transfers for a process that is gone.
+func (r *Router) ClearProcessSchedule(threadID string) {
+	threadID = strings.TrimSpace(threadID)
+	if r == nil || threadID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.clearProcessSchedule()
+	}
+}
+
+func (st *threadState) clearProcessSchedule() {
+	st.pendingWakeupAt, st.pendingWakeupSet = 0, false
+	st.scheduledJobs = nil
+}
+
 // wakeDeadline is the latest time the session is known to resume itself:
-// its ScheduleWakeup fire time or any armed job's next-fire deadline. A
-// past value is returned as-is; the caller applies its own clock and grace.
-func (st *threadState) wakeDeadline() (int64, bool) {
+// its ScheduleWakeup fire time or an armed job's next-fire deadline. With
+// includeRecurring false, recurring jobs are left out: they never count
+// as unfinished work for service updates or transfers, which end the
+// session and its jobs either way, while the idle reaper still keeps
+// the session alive for them. A past value is returned as-is; the caller
+// applies its own clock and grace.
+func (st *threadState) wakeDeadline(includeRecurring bool) (int64, bool) {
 	at, ok := st.pendingWakeupAt, st.pendingWakeupSet
 	for _, job := range st.scheduledJobs {
+		if job.Recurring && !includeRecurring {
+			continue
+		}
 		if !ok || job.FireByUnixMs > at {
 			at, ok = job.FireByUnixMs, true
 		}
@@ -90,13 +120,27 @@ func (st *threadState) wakeDeadline() (int64, bool) {
 }
 
 // PendingWakeupAt returns the latest time the thread's session is
-// scheduled to resume itself: a harness-wakeup fire time or an armed
-// scheduled job's next-fire deadline (wakeDeadline). It performs no clock
-// comparison: the caller decides what "still pending" means against its
-// own notion of now (the reaper uses its injectable clock plus a grace
-// window), so an already-elapsed time is returned as-is with ok=true.
-// Nil-safe like HasPendingWork (test fixtures, partial init).
+// scheduled to resume itself: a harness-wakeup fire time or any armed
+// scheduled job's next-fire deadline, recurring jobs included. The idle
+// reaper reads it. It performs no clock comparison: the caller decides
+// what "still pending" means against its own notion of now (the reaper
+// uses its injectable clock plus a grace window), so an already-elapsed
+// time is returned as-is with ok=true. Nil-safe like HasPendingWork (test
+// fixtures, partial init).
 func (r *Router) PendingWakeupAt(threadID string) (time.Time, bool) {
+	return r.scheduleDeadline(threadID, true)
+}
+
+// PendingScheduledWorkAt is PendingWakeupAt without recurring jobs: the
+// deadline a conversation transfer waits for. A ScheduleWakeup or a
+// one-shot job is a turn the session still owes; a recurring job is a
+// loop the transfer ends, so it never blocks (RecurringScheduledJobs
+// names it instead).
+func (r *Router) PendingScheduledWorkAt(threadID string) (time.Time, bool) {
+	return r.scheduleDeadline(threadID, false)
+}
+
+func (r *Router) scheduleDeadline(threadID string, includeRecurring bool) (time.Time, bool) {
 	threadID = strings.TrimSpace(threadID)
 	if r == nil || threadID == "" {
 		return time.Time{}, false
@@ -106,11 +150,34 @@ func (r *Router) PendingWakeupAt(threadID string) (time.Time, bool) {
 	var at int64
 	var ok bool
 	if st != nil {
-		at, ok = st.wakeDeadline()
+		at, ok = st.wakeDeadline(includeRecurring)
 	}
 	r.mu.Unlock()
 	if !ok {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(at), true
+}
+
+// RecurringScheduledJobs returns a copy of the thread's armed recurring
+// jobs, deadlines included, so a caller that ends the session can name
+// the jobs it ends.
+func (r *Router) RecurringScheduledJobs(threadID string) []provider.ScheduledJob {
+	threadID = strings.TrimSpace(threadID)
+	if r == nil || threadID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	var jobs []provider.ScheduledJob
+	for _, job := range st.scheduledJobs {
+		if job.Recurring {
+			jobs = append(jobs, job)
+		}
+	}
+	return jobs
 }

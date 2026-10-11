@@ -410,6 +410,12 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	}
 	if a.triage != nil {
 		a.triage.ClearEffectiveModel(threadID)
+		// A ScheduleWakeup timer and armed cron jobs died with the
+		// process. Every read loop ends with "disconnected" whether the
+		// process exited cleanly, crashed or was signalled, so this is
+		// the self-exit path's one place to drop them; the token guard
+		// above keeps a replacement session's record.
+		a.triage.ClearProcessSchedule(threadID)
 	}
 
 	// The provider read loop is gone, so no flush tick can re-register

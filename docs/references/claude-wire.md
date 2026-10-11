@@ -2485,8 +2485,10 @@ Operationally: triage records the fire time per thread
 (`internal/triage/session_wakeup.go`) and the idle-session reaper
 refuses to close a session whose wakeup is still in the future (plus a
 firing-latency grace), because closing the process would silently kill the
-timer. The record is swept on session teardown AND on
-replacement-session commit: the timer never survives its CLI process.
+timer. The update admission check and the conversation transfer guard
+wait for it the same way. The record ends with the CLI process on every
+path: the process's own exit (clean, crash or signal), host teardown and
+replacement-session commit.
 When the wakeup fires, the injected turn's own wire activity takes over
 protection; observed delays run 240–1800s, so a wakeup can legally
 exceed the idle-reap threshold on its own. The wake is a scheduled turn
@@ -2668,11 +2670,16 @@ session's job table (`parse_cron.go`): an ack it cannot prove (an error,
 a missing `id`, `recurring` or `jobs`) changes nothing. Every change
 emits `EventScheduledJobs`, the full list with each job's latest
 possible next fire. Triage keeps the list per thread beside the §E8
-wakeup, and the idle-session reaper, the update admission check and the
-conversation transfer guard treat a session as scheduled to resume
-until the latest deadline plus the wakeup grace. The table dies with the
-parser, which lives exactly as long as the CLI process; triage drops its
-copy on teardown and on replacement-session commit.
+wakeup. The idle-session reaper treats a session as scheduled to resume
+until the latest deadline of the wakeup and every job, plus the wakeup
+grace. The update admission check and the conversation transfer guard
+wait only for the wakeup and one-shot jobs: a recurring job never
+counts as unfinished work, because the update restarts the backend and
+the transfer stops the session, ending the job either way. The transfer
+dialog names the recurring jobs it ends (`ListThreadRecurringJobs`).
+The table dies with the parser, which lives exactly as long as the CLI
+process; triage drops its copy whenever the process ends, as for the
+wakeup.
 
 **Fire shape.** A fire is a `command_lifecycle` bracket with a
 CLI-minted uuid and no `queued` state: `started`, `system/status` (a

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtransfer"
@@ -21,6 +22,34 @@ func (a *App) GetThreadTransferStatus(threadID, operationID string) (store.Threa
 		return store.ThreadTransfer{}, errors.New("The transfer belongs to another thread.")
 	}
 	return row, nil
+}
+
+// ThreadRecurringJob is one recurring scheduled job armed in a thread's live
+// provider session (Claude CronCreate).
+type ThreadRecurringJob struct {
+	ID   string `json:"id"`
+	Cron string `json:"cron"`
+}
+
+// ListThreadRecurringJobs names the recurring jobs the thread's live session
+// still holds. A transfer stops that session and the jobs end with it, so
+// the transfer dialog names them instead of the transfer being refused. A
+// job whose deadline has passed without a fire is no longer counted, as the
+// idle reaper no longer counts it.
+//
+//ao:scope threads:read
+func (a *App) ListThreadRecurringJobs(threadID string) ([]ThreadRecurringJob, error) {
+	jobs := []ThreadRecurringJob{}
+	if a.triage == nil {
+		return jobs, nil
+	}
+	now := time.Now()
+	for _, job := range a.triage.RecurringScheduledJobs(threadID) {
+		if now.Before(time.UnixMilli(job.FireByUnixMs).Add(a.wakeupReapGrace())) {
+			jobs = append(jobs, ThreadRecurringJob{ID: job.ID, Cron: job.Cron})
+		}
+	}
+	return jobs, nil
 }
 
 // GetThreadTransfers returns a bounded recent status list on this computer.

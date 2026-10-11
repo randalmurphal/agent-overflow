@@ -48,7 +48,7 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 			s.pendingWakeupSet = true
 			s.pendingWakeupAt = time.Now().Add(time.Hour).UnixMilli()
 		},
-		"scheduled job": func(s *threadState) {
+		"one-shot scheduled job": func(s *threadState) {
 			s.scheduledJobs = []provider.ScheduledJob{{ID: "job", FireByUnixMs: time.Now().Add(time.Hour).UnixMilli()}}
 		},
 	}
@@ -72,6 +72,17 @@ func TestUnfinishedWorkUsesExistingOwners(t *testing.T) {
 		r.mu.Unlock()
 		if r.AnyUnfinishedWork(time.Minute) {
 			t.Fatal("stale wakeup blocked maintenance")
+		}
+	})
+	// The update restarts the backend, which ends a recurring job either
+	// way, so waiting for it would block the update forever.
+	t.Run("recurring scheduled job", func(t *testing.T) {
+		r, _, _ := newTestRouter(t)
+		r.mu.Lock()
+		r.state("thread").scheduledJobs = []provider.ScheduledJob{{ID: "job", Recurring: true, FireByUnixMs: time.Now().Add(time.Hour).UnixMilli()}}
+		r.mu.Unlock()
+		if r.AnyUnfinishedWork(time.Minute) {
+			t.Fatal("a recurring job blocked maintenance")
 		}
 	})
 	t.Run("expired scheduled job", func(t *testing.T) {

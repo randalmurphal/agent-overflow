@@ -379,7 +379,11 @@ hit:
   expression plus the existing grace, re-evaluated on each fire and
   cleared by `CronDelete` or a one-shot fire. Acks are classified by
   tool name (`CronCreate`, `CronList`, `CronDelete`) with the key shape
-  as a check; the spike capture is the fixture.
+  as a check; the spike capture is the fixture. A recurring job never
+  holds a service update or a conversation transfer: both end the
+  session and the job with it, and the durable loop is `thread_loop`.
+  The transfer dialog names the recurring jobs it ends. One-shot jobs
+  and ScheduleWakeup hold both until their deadline plus the grace.
 - A cron fire reaches the wire as a `command_lifecycle` bracket with a
   CLI-created uuid and no user envelope, so the parser stamps the
   bracket with the peer origin and the prompt never renders. Its

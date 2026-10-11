@@ -1968,14 +1968,11 @@ func (r *Router) MarkThreadActive(threadID string) {
 		st.settledTurns = nil
 		hadEffectiveModel = st.effectiveModelSet
 		st.effectiveModel, st.effectiveModelSet = "", false
-		// A pending harness wakeup is in-process state of the PREVIOUS
-		// CLI process; the replacement session this call commits to
-		// never inherits the timer. Without it a stale future fire time
-		// would shield the fresh session from the idle reaper for up to
-		// the wakeup clamp (60 min).
-		st.pendingWakeupAt, st.pendingWakeupSet = 0, false
-		// Cron jobs are the same kind of in-process CLI state.
-		st.scheduledJobs = nil
+		// A pending harness wakeup and armed cron jobs are in-process
+		// state of the PREVIOUS CLI process; the replacement session this
+		// call commits to never inherits them. Without this a stale
+		// deadline would shield the fresh session from the idle reaper.
+		st.clearProcessSchedule()
 		// The ticks belong to the provider PROCESS: a dead process will
 		// never deliver the terminal that would consume them.
 		st.subagentProgress = nil

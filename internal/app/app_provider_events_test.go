@@ -11,6 +11,25 @@ import (
 	"agent-overflow/internal/triage"
 )
 
+// armProcessSchedule gives the thread a ScheduleWakeup timer and a one-shot
+// cron job, both state of the live CLI process.
+func armProcessSchedule(t *testing.T, router *triage.Router, threadID string) {
+	t.Helper()
+	wakeup, _ := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: time.Now().Add(30 * time.Minute).UnixMilli()})
+	jobs, _ := json.Marshal(provider.ScheduledJobsMeta{Jobs: []provider.ScheduledJob{{ID: "once", Cron: "0 9 * * 1", FireByUnixMs: time.Now().Add(6 * 24 * time.Hour).UnixMilli()}}})
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventSessionWakeup, ThreadID: threadID, Meta: wakeup},
+		{Kind: provider.EventScheduledJobs, ThreadID: threadID, Meta: jobs},
+	} {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("arm %s: %v", evt.Kind, err)
+		}
+	}
+	if _, ok := router.PendingScheduledWorkAt(threadID); !ok {
+		t.Fatal("the armed schedule did not register")
+	}
+}
+
 // TestUnregisterSessionRemovesSessionForMatchingToken covers the normal
 // disconnect path: the session stored with the same token is dropped.
 func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
@@ -33,6 +52,7 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed model fallback: %v", err)
 	}
+	armProcessSchedule(t, app.triage, thread.ID)
 
 	app.unregisterSession(thread.ID, "token-live")
 
@@ -42,6 +62,13 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	}
 	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "" {
 		t.Fatalf("effective model after unregister = %q", got)
+	}
+	// The wakeup timer and the job died with the process.
+	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
+		t.Fatalf("schedule after the process exited = %v", at)
+	}
+	if app.triage.AnyUnfinishedWork(time.Minute) {
+		t.Fatal("an exited process's schedule still blocks updates")
 	}
 }
 
@@ -70,6 +97,7 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed model fallback: %v", err)
 	}
+	armProcessSchedule(t, app.triage, thread.ID)
 
 	app.unregisterSession(thread.ID, "token-previous")
 
@@ -82,6 +110,9 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}
 	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "claude-opus-4-8" {
 		t.Fatalf("effective model after stale unregister = %q", got)
+	}
+	if _, ok := app.triage.PendingScheduledWorkAt(thread.ID); !ok {
+		t.Fatal("a stale exit dropped the replacement session's schedule")
 	}
 }
 

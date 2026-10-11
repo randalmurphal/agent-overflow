@@ -50,6 +50,7 @@ export {
   GetThreadTransfers,
   GetThreadTransferStatus,
   GetThreadTransferIntent,
+  ListThreadRecurringJobs,
   RetryThreadTransfer,
   CancelThreadTransfer,
   DiscardUnpreparedThreadTransfer,
