@@ -93,8 +93,22 @@ const (
 	// in a file in the agent's home.
 	MaxWakeCommandBytes = 8 << 10
 	// MaxWakeIntervalSeconds bounds a loop or watch interval at thirty
-	// days. The floor is the App's, because a test boot lowers it.
+	// days.
 	MaxWakeIntervalSeconds = 30 * 24 * 60 * 60
+	// WakeFloorSeconds is the shortest interval a loop or watch may
+	// register: each fire is a turn. The App enforces it, because a test
+	// boot lowers it.
+	WakeFloorSeconds = 60
+	// MaxWakesPerThread bounds the live loops and watches of one thread;
+	// each long-running watch is a process. The store enforces it.
+	MaxWakesPerThread = 64
+	// DefaultWakeTimeoutSeconds and MaxWakeTimeoutSeconds bound one run of
+	// an interval watch.
+	DefaultWakeTimeoutSeconds = 600
+	MaxWakeTimeoutSeconds     = 3600
+	// MaxWakeOutputBytes is the most data one wake carries, and the most of
+	// an undelivered wake a watch keeps as last_output.
+	MaxWakeOutputBytes = 64 << 10
 	// MaxReplyAnswers bounds thread_reply's answers, one per question of a
 	// worker's prompt.
 	MaxReplyAnswers = 16

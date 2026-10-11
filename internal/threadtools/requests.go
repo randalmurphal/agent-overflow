@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -234,6 +235,29 @@ func clipAnswers(requests []RequestState, budget int, page cursor, tokens []stri
 	return clipped
 }
 
+// clipWakeOutputs keeps the listing's kept watch outputs inside the budget,
+// each clipped to an equal share of it. It reports whether any wake keeps an
+// output and whether one was clipped. The rows are the caller's own.
+func clipWakeOutputs(wakes []WakeState, budget int) (kept, clipped bool) {
+	count := 0
+	for _, wake := range wakes {
+		if wake.LastOutput != "" {
+			count++
+		}
+	}
+	if count == 0 {
+		return false, false
+	}
+	share := max(budget/count, MinShowBytes)
+	for index := range wakes {
+		if len(wakes[index].LastOutput) > share {
+			wakes[index].LastOutput = clipBytes(wakes[index].LastOutput, share)
+			clipped = true
+		}
+	}
+	return true, clipped
+}
+
 // statusThreads answers the thread_ids half of thread_status. A thread is
 // addressed by its id wherever it lives, so the ids are resolved first and
 // then grouped by the computer that holds them: this computer's run here,
@@ -437,6 +461,12 @@ func (c *session) listRequests(ctx context.Context, rawCursor string, budget int
 		}
 		if len(result.Wakes) > 0 {
 			result.Note = appendNote(result.Note, "wakes lists this thread's loops and watches with their next fire, last outcome and missed count; stop one with thread_cancel label.")
+		}
+		if kept, clipped := clipWakeOutputs(result.Wakes, budget); kept {
+			result.Note = appendNote(result.Note, "A watch's last_output is a wake of it that never reached you: read it for the event you missed.")
+			if clipped {
+				result.Note = appendNote(result.Note, fmt.Sprintf("A last_output was longer than its share of max_bytes and is clipped here; raise max_bytes, up to %d, to read more of it.", MaxShowBytes))
+			}
 		}
 	}
 	// A listing carries thirty answers, so each gets a share of the budget

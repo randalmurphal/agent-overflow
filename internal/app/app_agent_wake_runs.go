@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/appimage"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // The wake supervisor's clock and processes. The thread request sweep calls
@@ -28,10 +29,11 @@ import (
 // a race and writes nothing more.
 
 const (
-	// agentWakeScriptTimeout bounds one interval watch run. A run that
-	// outlives its interval holds the row `running`, and the fires it
-	// overtakes are counted missed when it finishes.
-	agentWakeScriptTimeout = 10 * time.Minute
+	// agentWakeDefaultScriptTimeout bounds one interval watch run when the
+	// watch names no timeout_seconds of its own. A run that outlives its
+	// interval holds the row `running`, and the fires it overtakes are
+	// counted missed when it finishes.
+	agentWakeDefaultScriptTimeout = threadtools.DefaultWakeTimeoutSeconds * time.Second
 	// agentWakeRunFanOut is how many interval runs execute at once, the
 	// bound the delivery fan-out uses for the same reason.
 	agentWakeRunFanOut = 4
@@ -66,6 +68,20 @@ const (
 	agentWakeOutcomeDropped      = agentWakeOutcomeNotDelivered + ": the queue was cleared"
 	agentWakeOutcomeCancelled    = "cancelled"
 )
+
+// agentWakeOutcomeLost reports whether an outcome is a wake that did not
+// reach the agent, whose body a watch's row keeps in last_output.
+func agentWakeOutcomeLost(outcome string) bool {
+	return strings.HasPrefix(outcome, agentWakeOutcomeNotDelivered) || outcome == agentWakeOutcomeSkipped
+}
+
+// agentWatchTimeout is how long one run of an interval watch may take.
+func agentWatchTimeout(row store.AgentWake) time.Duration {
+	if row.TimeoutSeconds > 0 {
+		return time.Duration(row.TimeoutSeconds) * time.Second
+	}
+	return agentWakeDefaultScriptTimeout
+}
 
 // agentWakeFire is one fire of an interval row.
 type agentWakeFire struct {
@@ -204,41 +220,43 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			// row stays `running` and the next boot reruns it.
 			return
 		}
-		if outcome, wakes := result.outcome(); !wakes {
-			a.finishAgentWakeFire(run, row, outcome, fire.missed)
+		if outcome, wakes := result.outcome(agentWatchTimeout(row)); !wakes {
+			a.finishAgentWakeFire(run, row, outcome, "", fire.missed)
 			return
 		}
 		body = renderAgentWatchWake(row, fire, result.stdout, result.stderr)
 	default:
-		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, fire.missed)
+		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed)
 		return
 	}
 	err := a.deliverAgentWake(ctx, row, fire.at, body)
+	// A watch's wake that did not reach the agent stays on its row.
+	kept := keptAgentWakeOutput(body)
 	switch {
 	case err == nil:
-		a.finishAgentWakeFire(run, row, agentWakeOutcomeDelivered, fire.missed)
+		a.finishAgentWakeFire(run, row, agentWakeOutcomeDelivered, "", fire.missed)
 	case errors.Is(err, store.ErrAgentWakeStillQueued):
 		// One wake per row waits at a time. This fire counts as missed and
 		// the next one that reaches the queue says so.
-		a.finishAgentWakeFire(run, row, agentWakeOutcomeSkipped, fire.missed+1)
+		a.finishAgentWakeFire(run, row, agentWakeOutcomeSkipped, kept, fire.missed+1)
 	case run.wasStopped():
 	case a.lifeCtx().Err() != nil:
 		// The output never reached the queue, so the run is treated as not
 		// run: due again at its own fire, which the next boot replays.
-		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, fire.at); err != nil {
+		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
 			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
 		}
 	default:
 		log.Printf("agent wakes: %s %q on %s: %v", row.Kind, row.Label, row.ThreadID, err)
-		a.finishAgentWakeFire(run, row, agentWakeOutcomeNotDelivered+": "+err.Error(), fire.missed)
+		a.finishAgentWakeFire(run, row, agentWakeOutcomeNotDelivered+": "+err.Error(), kept, fire.missed)
 	}
 }
 
-func (a *App) finishAgentWakeFire(run *agentWakeRun, row store.AgentWake, outcome string, missed int64) {
+func (a *App) finishAgentWakeFire(run *agentWakeRun, row store.AgentWake, outcome, output string, missed int64) {
 	if run.wasStopped() {
 		return
 	}
-	if _, err := a.store.FinishAgentWake(row.ID, outcome, missed); err != nil {
+	if _, err := a.store.FinishAgentWake(row.ID, outcome, output, missed); err != nil {
 		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
 	}
 	// The row is armed again with its next fire, which may be sooner than
@@ -254,13 +272,13 @@ type agentWatchResult struct {
 	timedOut bool
 }
 
-// outcome is the row's outcome for a run and whether the run wakes the
-// thread: only a clean exit with output does.
-func (r agentWatchResult) outcome() (string, bool) {
+// outcome is the row's outcome for a run that had timeout to finish, and
+// whether the run wakes the thread: only a clean exit with output does.
+func (r agentWatchResult) outcome(timeout time.Duration) (string, bool) {
 	var exit *exec.ExitError
 	switch {
 	case r.timedOut:
-		return fmt.Sprintf("error: timed out after %s", agentWakeScriptTimeout) + stderrSummary(r.stderr), false
+		return fmt.Sprintf("error: timed out after %s", timeout) + stderrSummary(r.stderr), false
 	case errors.As(r.err, &exit):
 		return fmt.Sprintf("error: exit status %d", exit.ExitCode()) + stderrSummary(r.stderr), false
 	case r.err != nil:
@@ -293,7 +311,7 @@ func (a *App) runAgentWatchScript(ctx context.Context, row store.AgentWake) agen
 	if err != nil {
 		return agentWatchResult{err: err}
 	}
-	runCtx, cancel := context.WithTimeout(ctx, agentWakeScriptTimeout)
+	runCtx, cancel := context.WithTimeout(ctx, agentWatchTimeout(row))
 	defer cancel()
 	stdout := newHeadOutput(agentWakeOutputCap)
 	stderr := newTailOutput(agentWakeStderrCap)
@@ -471,11 +489,21 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
+	// render reads the row as it stands, for what its previous wake came to.
+	render := func(stderrPart cappedOutput) string {
+		current := row
+		if fresh, found, err := a.store.GetAgentWake(row.ID); err != nil {
+			logThreadRequestSweep("read long-running watch "+row.ID, err)
+		} else if found {
+			current = fresh
+		}
+		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
+	}
 	deliver := func() bool {
 		// The stderr taken with a batch goes back if the batch has to wait,
 		// so a held wake still carries what the script said beside it.
 		taken := stderr.take()
-		body := renderAgentWatchWake(row, agentWakeFire{}, batch.peek(), taken)
+		body := render(taken)
 		err := a.deliverAgentWake(ctx, row, time.Now().UnixMilli(), body)
 		switch {
 		case err == nil:
@@ -488,7 +516,9 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		default:
 			log.Printf("agent wakes: watch %q on %s: %v", row.Label, row.ThreadID, err)
 			batch.take()
-			a.noteAgentWakeOutcome(run, row.ID, agentWakeOutcomeNotDelivered+": "+err.Error())
+			if !run.wasStopped() {
+				a.noteAgentWakeUndelivered(row.ID, agentWakeOutcomeNotDelivered+": "+err.Error(), body)
+			}
 			return true
 		}
 	}
@@ -496,9 +526,10 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		select {
 		case <-ctx.Done():
 			if batch.pending() && !run.wasStopped() {
-				// Output that never reached the queue is lost by design; the
-				// script's own cursor decides whether its next run repeats it.
-				a.noteAgentWakeOutcome(run, row.ID, agentWakeOutcomeNotDelivered)
+				// Output that never reached the queue is not replayed; the
+				// script's own cursor decides whether its next run repeats
+				// it. The row keeps it for the agent to read.
+				a.noteAgentWakeUndelivered(row.ID, agentWakeOutcomeNotDelivered, render(stderr.take()))
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach

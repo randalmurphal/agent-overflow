@@ -74,6 +74,15 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
+			name: "question waiting",
+			got: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: thread(), RequestID: "ask-3"})
+			},
+			kind: KindApprovalNeeded, id: "question:" + threadID + ":ask-3",
+			title: "Fix the parser", body: "Waiting for your answer",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
 			name: "approval needed with no tool name",
 			got: func() (Notification, bool) {
 				return MapApproval(ApprovalMoment{Thread: thread(), RequestID: "req-7"})
@@ -171,6 +180,15 @@ func TestEveryRetractionMomentWithdrawsItsOwnNotification(t *testing.T) {
 				return MapApproval(ApprovalMoment{
 					Thread: ThreadRef{ID: threadID}, RequestID: "req-7", Answered: true,
 				})
+			},
+		},
+		{
+			name: "answering a question withdraws its prompt",
+			presented: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: thread(), RequestID: "ask-3"})
+			},
+			retracted: func() (Notification, bool) {
+				return MapQuestion(QuestionMoment{Thread: ThreadRef{ID: threadID}, RequestID: "ask-3", Answered: true})
 			},
 		},
 		{
@@ -696,6 +714,9 @@ func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
 		{"provider exited", func() (Notification, bool) { return MapProviderExit(ProviderExit{Thread: hidden}) }},
 		{"approval needed", func() (Notification, bool) {
 			return MapApproval(ApprovalMoment{Thread: hidden, RequestID: "req-7", ToolName: "Bash"})
+		}},
+		{"question waiting", func() (Notification, bool) {
+			return MapQuestion(QuestionMoment{Thread: hidden, RequestID: "ask-3"})
 		}},
 	}
 	for _, tt := range sends {

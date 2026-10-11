@@ -93,14 +93,18 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		}
 		// The tick mark ends with the turn, here on the emitting goroutine so
 		// the next dispatch's mark is not the one cleared; whether this turn
-		// was a tick is read from its rows in the job.
+		// was a tick is read from its rows in the job, or, for a turn that
+		// holds none, from whether it took up Claude's queued wakes.
+		pickupTick := false
 		if event.CountsAsActivity {
-			a.endAgentWakeTickTurn(event.ThreadID)
+			pickupTick = a.endAgentWakeTickTurn(event.ThreadID, event.TurnIndex)
 		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
-			rest.QuietTick = rest.TopLevel && a.agentWakeTickTurnEnded(rest.Thread.ID, event.TurnIndex) &&
-				a.agentTicksAreQuiet(rest.Thread.ID)
+			if rest.TopLevel {
+				tick, empty := a.agentWakeTurnMessages(rest.Thread.ID, event.TurnIndex)
+				rest.QuietTick = (tick || empty && pickupTick) && a.agentTicksAreQuiet(rest.Thread.ID)
+			}
 			return notify.MapTurnRest(rest)
 		})
 
@@ -113,7 +117,7 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// retracts its rest notification. No title read: a retraction says
 		// nothing.
 		resumed := notify.ThreadResumed{ThreadID: event.ThreadID}
-		tick := a.agentWakeTickTurn(event.ThreadID)
+		tick := a.agentWakeTickTurn(event.ThreadID, event.TurnIndex)
 		a.queueNotification(func() (notify.Notification, bool) {
 			resumed.QuietTick = tick && a.agentTicksAreQuiet(resumed.ThreadID)
 			return notify.MapThreadResumed(resumed)
@@ -152,6 +156,28 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
 			}
 			return notify.MapApproval(moment)
+		})
+
+	case eventchan.ProviderUserInput:
+		event, ok := data.(provider.UserInputEvent)
+		if !ok {
+			return
+		}
+		moment := questionMoment(event)
+		if moment.RequestID == "" {
+			return
+		}
+		// A worker's question routed to its standing agent is not the
+		// user's to answer, so it does not call them (ruling 19); handed
+		// back, it is announced again without the route and does.
+		if event.Request != nil && event.Request.RoutedTo != nil {
+			return
+		}
+		a.queueNotification(func() (notify.Notification, bool) {
+			if !moment.Answered {
+				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
+			}
+			return notify.MapQuestion(moment)
 		})
 
 	case eventchan.ProviderStatus:
@@ -202,6 +228,25 @@ func approvalMoment(event provider.ApprovalEvent) notify.ApprovalMoment {
 			moment.Thread.ID = event.Request.ThreadID
 		}
 		moment.ToolName = event.Request.ToolName
+	}
+	return moment
+}
+
+// questionMoment projects a UserInputEvent onto the mapping's input, the way
+// approvalMoment does an ApprovalEvent.
+func questionMoment(event provider.UserInputEvent) notify.QuestionMoment {
+	moment := notify.QuestionMoment{
+		Thread:    notify.ThreadRef{ID: event.ThreadID},
+		RequestID: event.RequestID,
+		Answered:  event.Action != "request",
+	}
+	if event.Request != nil {
+		if moment.RequestID == "" {
+			moment.RequestID = event.Request.RequestID
+		}
+		if moment.Thread.ID == "" {
+			moment.Thread.ID = event.Request.ThreadID
+		}
 	}
 	return moment
 }

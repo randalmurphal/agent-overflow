@@ -90,6 +90,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushDispatcher(a.enqueueFlushDispatch)
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
 		a.recordMessageAnchor(item)
+		a.agentWakeQueuedConfirmed(threadID, item.ID)
 	})
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
 }
@@ -758,6 +759,8 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	leadEnqueuedAt := members[0].item.EnqueuedAt
 
 	if eagerPersist {
+		// Before the row is registered, so its echo always finds the note.
+		a.noteAgentWakeQueued(threadID, userItem.ID, persistTurnIndex, allWakes)
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
 		// (queued marker above the composer). Persist the row quietly —
 		// no provider:item_event — so the item reserves its timeline
@@ -765,6 +768,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// until the provider echo confirms it entered context.
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
 			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
+			a.forgetAgentWakeQueued(threadID, userItem.ID)
 			return nil, false, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
 		a.publishFlushDispatch(threadID, group, flushedItems)
@@ -856,6 +860,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
+		a.forgetAgentWakeQueued(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
 		return nil, eagerPersist, requeue, dispatchErr
 	}

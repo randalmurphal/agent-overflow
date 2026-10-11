@@ -87,6 +87,23 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 	return err
 }
 
+// SetStandingAgentNotifyOnTick turns a standing agent's tick notifications on
+// or off. Off, the default, a turn only its loops and watches started raises
+// no notification at rest; on, it notifies like any other turn. Refused for a
+// thread that is not a standing agent.
+//
+//ao:scope threads:operate
+func (a *App) SetStandingAgentNotifyOnTick(threadID string, on bool) (store.StandingAgent, error) {
+	row, _, found, err := a.store.SetStandingAgentNotifyOnTick(threadID, on)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	if !found {
+		return store.StandingAgent{}, fmt.Errorf("thread %s is not a standing agent", threadID)
+	}
+	return row, nil
+}
+
 // writeStandingAgentReadme writes the home's README unless one is there: a
 // home kept from an earlier promotion is the agent's, README included.
 func (a *App) writeStandingAgentReadme(home string, thread store.Thread) error {

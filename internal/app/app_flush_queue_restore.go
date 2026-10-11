@@ -60,6 +60,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 // for a reason other than the person's own Stop hands its queued messages
 // back to the composer the same way a death does.
 func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.UnconfirmedFlushItem {
+	a.forgetAgentWakeTurns(threadID)
 	if a.triage == nil {
 		return nil
 	}
@@ -148,7 +149,7 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
 	for _, item := range restorable {
-		if a.dropAgentWakeAtSessionEnd(item) {
+		if a.dropAgentWakeAtSessionEnd(threadID, item) {
 			settlements = append(settlements, item.Settlement)
 			continue
 		}
@@ -590,7 +591,7 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 		for _, row := range rows {
 			// Recorded on the row before the queue row goes, so a failed
 			// restore leaves both for the next boot to try again.
-			if a.discardAgentWakeAtBoot(row.SendID) {
+			if a.discardAgentWakeAtBoot(row) {
 				continue
 			}
 			part := draftPartFromQueueRow(row)

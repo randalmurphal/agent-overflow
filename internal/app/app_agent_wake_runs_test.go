@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -51,7 +52,7 @@ func TestTheLargestWakeFitsTheQueue(t *testing.T) {
 	t.Parallel()
 	worst := strings.Repeat("<", agentWakeOutputCap*2)
 	row := store.AgentWake{Kind: store.AgentWakeWatch, Label: strings.Repeat("<", threadtools.MaxWakeLabelRunes),
-		Note: strings.Repeat("<", threadtools.MaxNoteRunes)}
+		Note: strings.Repeat("<", threadtools.MaxNoteRunes), LastOutcome: agentWakeOutcomeSessionEnded, LastOutput: "kept"}
 	stdout := newHeadOutput(agentWakeOutputCap)
 	_, _ = stdout.Write([]byte(worst))
 	stderr := newTailOutput(agentWakeStderrCap)
@@ -100,5 +101,34 @@ func TestAgentWakeSendIDRoundTrips(t *testing.T) {
 		if _, _, ok := agentWakeFromSendID(bad); ok {
 			t.Errorf("agentWakeFromSendID(%q) accepted it", bad)
 		}
+	}
+}
+
+// The bounds the tools state are the ones the store and the supervisor
+// enforce.
+func TestAgentWakeBoundsMatchTheirTools(t *testing.T) {
+	t.Parallel()
+	if store.MaxAgentWakesPerThread != threadtools.MaxWakesPerThread {
+		t.Errorf("store keeps %d wakes per thread, the tools say %d", store.MaxAgentWakesPerThread, threadtools.MaxWakesPerThread)
+	}
+	if store.MaxAgentWakeOutputBytes != threadtools.MaxWakeOutputBytes {
+		t.Errorf("store keeps %d output bytes, the tools say %d", store.MaxAgentWakeOutputBytes, threadtools.MaxWakeOutputBytes)
+	}
+}
+
+// An undelivered wake's body is kept whole up to the cap, and past it cut on
+// a rune boundary with what was dropped stated, inside the cap.
+func TestKeptAgentWakeOutputStaysInsideTheCap(t *testing.T) {
+	t.Parallel()
+	if got := keptAgentWakeOutput("short"); got != "short" {
+		t.Fatalf("a short body = %q", got)
+	}
+	long := strings.Repeat("é", agentWakeOutputCap)
+	got := keptAgentWakeOutput(long)
+	if len(got) > agentWakeOutputCap || !strings.Contains(got, "bytes dropped: a kept wake is at most 64 KiB]") {
+		t.Fatalf("a long body kept %d bytes, ending %q", len(got), got[len(got)-80:])
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("the cut split a rune")
 	}
 }
