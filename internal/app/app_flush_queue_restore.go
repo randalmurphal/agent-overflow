@@ -185,11 +185,11 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
 	for _, item := range restorable {
-		if a.dropAgentWakeAtSessionEnd(threadID, item) {
+		part, restore := a.agentPartsAtSessionEnd(threadID, item, a.restoredFlushDraftPart(threadID, item))
+		if !restore {
 			settlements = append(settlements, item.Settlement)
 			continue
 		}
-		part := a.restoredFlushDraftPart(threadID, item)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
 			settlements = append(settlements, item.Settlement)

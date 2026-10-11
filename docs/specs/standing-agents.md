@@ -332,7 +332,12 @@ unconfirmed by a session that ended, is discarded and its row records
 recover the event at its next wake; a loop needs nothing beyond the
 row. An outside `thread send` message is handled the same way, with a
 `not delivered` row in the thread's timeline; so is one a Stop, an
-archive or a revert takes out of the queue.
+archive or a revert takes out of the queue. When Claude
+received a wake or an outside send joined with a person's queued
+message and the session ended before taking it in, the join is split:
+the person's own text goes back to the composer, and the wake and send
+parts are discarded with their `not delivered` records, the watch
+keeping only its own wake's data.
 
 Restart rules:
 
