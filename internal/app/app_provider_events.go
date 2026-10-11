@@ -26,6 +26,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// handle runs only on the thread's provider event worker, one event at
 	// a time (app_provider_event_queue.go).
 	var deathReported bool
+	// deathRestoreGuard is the death restore's guard, kept for the
+	// reconnect that follows the same death. Same worker-only access.
+	var deathRestoreGuard func() bool
 	// sawInit flips true on the session's first EventInit. An error
 	// turn-complete BEFORE init is the dead-on-arrival signature: the
 	// process failed during startup (Claude rejecting its
@@ -158,19 +161,28 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			// The token covers a registered replacement. The triage epoch covers
 			// a replacement that called MarkThreadActive but has not registered
 			// its provider session yet.
-			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, func() bool {
+			deathRestoreGuard = func() bool {
 				if current, ok := a.sessionManager().get(threadID); ok {
 					return current.Token == sessionToken
 				}
 				return a.triage != nil && a.triage.ThreadEpoch(threadID) == deathEpoch
-			})
+			}
+			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, deathRestoreGuard)
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 			a.unregisterSession(threadID, sessionToken)
 			a.workflowApplication().SessionDisconnected(threadID)
 			if deathReported {
-				go a.attemptAutoReconnect(threadID)
+				guard := deathRestoreGuard
+				go func() {
+					// The reconnect stops the dead thread first, and a stop
+					// drops its queue. Whichever goroutine reaches the lock
+					// first, the death's queue is restored before that; a
+					// second restore drains nothing.
+					a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, guard)
+					a.attemptAutoReconnect(threadID)
+				}()
 			}
 			// The provider emits nothing after "disconnected".
 			a.providerEvents.retireWhenIdle(threadID)

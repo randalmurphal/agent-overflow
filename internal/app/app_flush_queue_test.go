@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3707,6 +3708,53 @@ func TestSessionReplacementReturnsDiscardedSends(t *testing.T) {
 			if restored := emittedQueueRestored(rec); len(restored) != 1 || restored[0].Reason != queueRestoredReasonNotDelivered {
 				t.Fatalf("queue restored events = %+v, want one not_delivered", restored)
 			}
+		})
+	}
+}
+
+// TestAutoReconnectAfterDeathRestoresTheQueueFirst: a death hands queued
+// messages back to the composer, and the auto-reconnect that follows stops
+// the thread first, which drops its queue. Whichever goroutine reaches the
+// thread lock first, every thread's queued message ends in its draft.
+func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
+	t.Parallel()
+	app, _ := newAppForFlushQueueRPC(t)
+	var started atomic.Int32
+	app.startSessionFn = func(string) error {
+		started.Add(1)
+		return nil
+	}
+	const threads = 20
+	ids := make([]string, 0, threads)
+	for i := 0; i < threads; i++ {
+		thread := testThread(fmt.Sprintf("death-reconnect-%d", i))
+		thread.Provider = string(provider.Claude)
+		thread.WorkspacePath = t.TempDir()
+		thread.SessionRef = "sess-dead"
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now()}); err != nil {
+			t.Fatalf("turn start: %v", err)
+		}
+		app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+			ID: "queue:" + thread.ID, Message: "queued before the death", Payload: json.RawMessage(`{}`), EnqueuedAt: 10,
+		})
+		ids = append(ids, thread.ID)
+	}
+	for _, id := range ids {
+		handler := app.sessionEventHandler(id, "session-token", string(provider.Claude))
+		handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: id, Content: "error", Timestamp: time.Now()})
+		handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: id, Content: "disconnected", Timestamp: time.Now()})
+	}
+
+	waitForCondition(t, "every thread auto-reconnected", func() bool { return started.Load() == threads })
+	for _, id := range ids {
+		var draft store.ThreadDraft
+		waitForCondition(t, "queued message restored for "+id, func() bool {
+			var err error
+			draft, _, err = app.store.GetThreadDraft(id)
+			return err == nil && draft.Content == "queued before the death"
 		})
 	}
 }
