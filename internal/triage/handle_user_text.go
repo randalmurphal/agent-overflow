@@ -549,6 +549,11 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	}
 	if !found && pending.QuietItem == nil {
 		log.Printf("triage: handleUserText pending match for %s/%s but row absent — skipping stamp", threadID, pending.AOItemID)
+		// The send is consumed all the same: a later copy of this uuid (the
+		// echo after its transcript record) is a duplicate, not new content.
+		if providerItemID != "" {
+			r.markWireOnlyUserTextSeen(threadID, providerItemID)
+		}
 		return nil
 	}
 	if providerItemID == "" {

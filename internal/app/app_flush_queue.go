@@ -92,11 +92,11 @@ func (a *App) configureTriageQueueCallbacks() {
 		a.recordMessageAnchor(item)
 	})
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
-	a.triage.SetSendUndeliveredHook(func(threadID string, item triage.UnconfirmedFlushItem) {
+	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread
 		// action lock, which an interrupt holds while it waits on this
 		// worker for its ack.
-		go a.restoreUndeliveredSend(threadID, item)
+		go a.restoreUndeliveredSends(threadID)
 	})
 }
 

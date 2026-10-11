@@ -195,7 +195,7 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	// it. A user can quote a balanced injected wrapper or a peer wrapper in
 	// a real prompt; suppressing or relabelling that echo strands the
 	// send's pending entry exactly as the command-echo case above did.
-	ownSend := p.peerTurns != nil && p.peerTurns.commandUUIDIsIssued(readRawString(raw["uuid"]))
+	ownSend := p.replaysAreOwnSends || (p.peerTurns != nil && p.peerTurns.commandUUIDIsIssued(readRawString(raw["uuid"])))
 
 	// A peer delivery from another Claude session on this machine
 	// (2.1.224+ cross-session inbox). Checked BEFORE the injected-content

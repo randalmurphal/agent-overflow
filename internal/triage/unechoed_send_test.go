@@ -213,72 +213,125 @@ func TestLifecycleBracketConfirmsSendWithNoOtherConfirmation(t *testing.T) {
 	}
 }
 
-// A terminal state without `started` is a message the CLI never ran. It is
-// never confirmed: the send leaves the registry and goes to the app's
-// restore, so the thread is idle and nothing lands in the timeline.
-func TestLifecycleTerminalWithoutStartReturnsTheSend(t *testing.T) {
-	for _, terminal := range []provider.CommandLifecycleState{provider.CommandCancelled, provider.CommandDiscarded} {
-		t.Run(string(terminal), func(t *testing.T) {
-			h := newUnechoedSendHarness(t)
-			var returned []UnconfirmedFlushItem
-			h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
-				returned = append(returned, item)
-			})
-			h.queueWake(0, "user:flush:wake", "u-wake", "wake")
-			h.lifecycle("u-wake", provider.CommandQueued)
-			h.lifecycle("u-wake", terminal)
+// A `cancelled` without `started` is a message the CLI never ran while the
+// session lives on. It is never confirmed: it leaves the registry for the
+// undelivered list, the app is told once, and nothing lands in the timeline.
+func TestCancelledUnrunSendIsHandedToTheApp(t *testing.T) {
+	h := newUnechoedSendHarness(t)
+	signals := 0
+	h.router.SetSendUndeliveredHook(func(threadID string) { signals++ })
+	h.queueWake(0, "user:flush:wake", "u-wake", "wake")
+	h.lifecycle("u-wake", provider.CommandQueued)
+	h.lifecycle("u-wake", provider.CommandCancelled)
 
-			if len(returned) != 1 || returned[0].UserItemID != "user:flush:wake" || returned[0].DeferredItem == nil || returned[0].Message != "wake" {
-				t.Fatalf("returned = %+v, want the wake with its retained row", returned)
-			}
-			if rows := h.turn(0); len(rows) != 0 {
-				t.Fatalf("turn 0 rows = %q, want none", rows)
-			}
-			h.wantIdle()
-		})
+	if signals != 1 {
+		t.Fatalf("app signalled %d times, want 1", signals)
+	}
+	h.wantIdle()
+	returned := h.router.DrainUndeliveredSends("t1")
+	if len(returned) != 1 || returned[0].UserItemID != "user:flush:wake" || returned[0].DeferredItem == nil || returned[0].Message != "wake" {
+		t.Fatalf("returned = %+v, want the wake with its retained row", returned)
+	}
+	if again := h.router.DrainUndeliveredSends("t1"); len(again) != 0 {
+		t.Fatalf("second drain = %+v, want empty", again)
+	}
+	if rows := h.turn(0); len(rows) != 0 {
+		t.Fatalf("turn 0 rows = %q, want none", rows)
 	}
 }
 
-// A send whose turn a system/init already claimed, then `discarded` unrun as
-// the session ends: the send returns to the app, and the session teardown
-// that follows leaves no turn open.
-func TestDiscardedSendThatOpenedATurnLeavesTheThreadIdle(t *testing.T) {
+// A direct send retains no copy of its message, so its row is read when it
+// is retired: the restore needs it to delete the row and return the text.
+func TestCancelledUnrunDirectSendCarriesItsRow(t *testing.T) {
 	h := newUnechoedSendHarness(t)
-	var returned []UnconfirmedFlushItem
-	h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
-		returned = append(returned, item)
-	})
-	h.directSend(0, "u-0", "x")
-	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
+	h.directSend(0, "u-0", "typed")
 	h.lifecycle("u-0", provider.CommandQueued)
-	h.lifecycle("u-0", provider.CommandDiscarded)
-	if len(returned) != 1 || returned[0].UserItemID != "user:0" {
-		t.Fatalf("returned = %+v, want the direct send", returned)
+	h.lifecycle("u-0", provider.CommandCancelled)
+
+	returned := h.router.DrainUndeliveredSends("t1")
+	if len(returned) != 1 || returned[0].QuietItem == nil || returned[0].QuietItem.ID != "user:0" || returned[0].QuietItem.Summary != "typed" {
+		t.Fatalf("returned = %+v, want the direct send with its row", returned)
 	}
-	h.router.CleanupThread("t1")
+	if returned[0].EnqueuedAt == 0 {
+		t.Fatal("direct send has no enqueue time; a batched restore would order it last")
+	}
 	h.wantIdle()
 }
 
-// With no app to return it to, an unrun send stays for the session-death
-// drain rather than being dropped.
-func TestLifecycleTerminalWithoutStartAndNoHookKeepsTheSend(t *testing.T) {
+// `discarded` means the session is ending. The app is not told separately:
+// the session-end drain takes the unrun sends with the rest of the queue,
+// so one restore keeps queue order. A send whose turn a system/init already
+// claimed leaves no turn open once the session's death settles it.
+func TestDiscardedUnrunSendsJoinTheSessionEndDrain(t *testing.T) {
+	h := newUnechoedSendHarness(t)
+	signals := 0
+	h.router.SetSendUndeliveredHook(func(threadID string) { signals++ })
+	h.directSend(0, "u-0", "first")
+	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
+	h.queueWake(1, "user:flush:wake", "u-wake", "wake")
+	for _, uuid := range []string{"u-0", "u-wake"} {
+		h.lifecycle(uuid, provider.CommandQueued)
+	}
+	for _, uuid := range []string{"u-0", "u-wake"} {
+		h.lifecycle(uuid, provider.CommandDiscarded)
+	}
+	h.handle(provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
+
+	if signals != 0 {
+		t.Fatalf("app signalled %d times for discarded sends, want 0", signals)
+	}
+	drained := h.router.DrainUnconfirmedFlushItems("t1")
+	ids := make([]string, 0, len(drained))
+	for _, item := range drained {
+		ids = append(ids, item.UserItemID)
+	}
+	if strings.Join(ids, ",") != "user:0,user:flush:wake" {
+		t.Fatalf("session-end drain = %q, want both discarded sends", ids)
+	}
+	h.wantIdle()
+}
+
+// Stop drops queued messages; an unrun send waiting to be returned goes with
+// them.
+func TestCleanupDropsUnrunSends(t *testing.T) {
 	h := newUnechoedSendHarness(t)
 	h.queueWake(0, "user:flush:wake", "u-wake", "wake")
 	h.lifecycle("u-wake", provider.CommandQueued)
 	h.lifecycle("u-wake", provider.CommandCancelled)
-	if !h.router.HasPendingSendForThread("t1") {
-		t.Fatal("an unrun send was dropped with nowhere to return it")
+	h.router.CleanupThread("t1")
+	if returned := h.router.DrainUndeliveredSends("t1"); len(returned) != 0 {
+		t.Fatalf("returned after cleanup = %+v, want none", returned)
 	}
+}
+
+// A send whose row was never written (the send failed after registering) is
+// still consumed by its transcript record, and the echo that follows is a
+// duplicate rather than new provider content.
+func TestRecordedSendWithNoRowDedupesItsEcho(t *testing.T) {
+	h := newUnechoedSendHarness(t)
+	h.router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "u-0"})
+	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
+	h.transcriptRecord("u-0")
+	h.echo("u-0")
+	h.answer("answer")
+
+	items, err := h.st.ListItems("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Kind != "assistant_text" {
+			t.Fatalf("unexpected row %s kind=%s summary=%q", item.ID, item.Kind, item.Summary)
+		}
+	}
+	h.wantIdle()
 }
 
 // `started` is recorded on the send itself, so a full correlation map
 // cannot turn a delivered message into an unrun one.
 func TestStartedIsKeptWhenTheLifecycleMapIsFull(t *testing.T) {
 	h := newUnechoedSendHarness(t)
-	var returned []UnconfirmedFlushItem
-	h.router.SetSendUndeliveredHook(func(threadID string, item UnconfirmedFlushItem) {
-		returned = append(returned, item)
-	})
+	h.router.SetSendUndeliveredHook(func(threadID string) {})
 	for i := 0; i < maxCommandLifecycleEntriesPerThread; i++ {
 		h.lifecycle(fmt.Sprintf("other-%d", i), provider.CommandQueued)
 	}
@@ -289,7 +342,7 @@ func TestStartedIsKeptWhenTheLifecycleMapIsFull(t *testing.T) {
 	h.answer("answer to the wake")
 	h.lifecycle("u-wake", provider.CommandCancelled)
 
-	if len(returned) != 0 {
+	if returned := h.router.DrainUndeliveredSends("t1"); len(returned) != 0 {
 		t.Fatalf("a started send was returned to the composer: %+v", returned)
 	}
 	h.wantTurn(0, "user:flush:wake=wake", "text:0:0=answer to the wake")

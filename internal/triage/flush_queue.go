@@ -198,10 +198,11 @@ func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item sto
 	r.mu.Unlock()
 }
 
-// SetSendUndeliveredHook wires the app's restore for a send the provider
-// retired without running. With no hook the entry stays pending and the
-// session-death drain restores it.
-func (r *Router) SetSendUndeliveredHook(fn func(threadID string, item UnconfirmedFlushItem)) {
+// SetSendUndeliveredHook wires the app's signal that a thread has sends the
+// provider cancelled without running (DrainUndeliveredSends). Called under
+// the thread's flush anchor lock, so it must hand the work off. With no hook
+// they wait for the session-end drain.
+func (r *Router) SetSendUndeliveredHook(fn func(threadID string)) {
 	r.mu.Lock()
 	r.sendUndelivered = fn
 	r.mu.Unlock()
@@ -668,6 +669,8 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	for _, entry := range restorable {
 		drained = append(drained, unconfirmedFlushItemFromPending(entry))
 	}
+	drained = append(drained, drainState.undeliveredSends...)
+	drainState.undeliveredSends = nil
 	r.mu.Unlock()
 
 	// Still under the anchor lock: a re-delivered echo retrying one of

@@ -3567,3 +3567,93 @@ func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscardedSendsRestoreWithTheQueueInOrder: sends the CLI discards
+// unrun as its session ends come back with the rest of the queue in one
+// restore, oldest first, whatever order the frames arrived in.
+func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
+	t.Parallel()
+	app, rec := newAppForFlushQueueRPC(t)
+	thread := testThread("discarded-order")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	for i, text := range []string{"first", "second"} {
+		row := store.Item{ID: fmt.Sprintf("user:flush:%d", i), ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: text, CreatedAt: now, UpdatedAt: now}
+		app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, fmt.Sprintf("queue:%d", i), row, int64(10*(i+1)), triage.PendingSendExpectation{ProviderItemID: fmt.Sprintf("u-%d", i)})
+	}
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:third", Message: "third", Payload: json.RawMessage(`{}`), EnqueuedAt: 30})
+
+	handler := app.sessionEventHandler(thread.ID, "session-token", string(provider.Claude))
+	lifecycle := func(uuid string, state provider.CommandLifecycleState) {
+		meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: uuid, State: state})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ThreadID: thread.ID, ItemID: uuid, Meta: meta, Timestamp: time.Now()})
+	}
+	lifecycle("u-0", provider.CommandQueued)
+	lifecycle("u-1", provider.CommandQueued)
+	lifecycle("u-1", provider.CommandDiscarded)
+	lifecycle("u-0", provider.CommandDiscarded)
+	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error", Timestamp: time.Now()})
+
+	waitForCondition(t, "discarded sends restored with the queue", func() bool {
+		draft, _, err := app.store.GetThreadDraft(thread.ID)
+		return err == nil && draft.Content != ""
+	})
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Content != "first\n\nsecond\n\nthird" {
+		t.Fatalf("draft = %q, want queue order", draft.Content)
+	}
+	if restored := emittedQueueRestored(rec); len(restored) != 1 || restored[0].Reason != queueRestoredReasonSessionDied {
+		t.Fatalf("queue restored events = %+v, want one session_died batch", restored)
+	}
+}
+
+// TestStopDropsDiscardedSends: Stop throws queued messages away, and a send
+// the CLI discards as Stop closes it goes with them.
+func TestStopDropsDiscardedSends(t *testing.T) {
+	t.Parallel()
+	app, rec := newAppForFlushQueueRPC(t)
+	thread := testThread("discarded-stop")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	row := store.Item{ID: "user:flush:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "dropped", CreatedAt: now, UpdatedAt: now}
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:0", row, 10, triage.PendingSendExpectation{ProviderItemID: "u-0"})
+	for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandDiscarded} {
+		meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-0", State: state})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ThreadID: thread.ID, ItemID: "u-0", Meta: meta, Timestamp: time.Now()}); err != nil {
+			t.Fatalf("lifecycle %s: %v", state, err)
+		}
+	}
+
+	if err := app.StopSession(thread.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	app.restoreUndeliveredSends(thread.ID)
+
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Content != "" {
+		t.Fatalf("draft = %q, want the stopped thread's queue dropped", draft.Content)
+	}
+	if restored := emittedQueueRestored(rec); len(restored) != 0 {
+		t.Fatalf("queue restored events = %+v, want none", restored)
+	}
+}

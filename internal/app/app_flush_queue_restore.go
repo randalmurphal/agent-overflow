@@ -81,39 +81,39 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 		})
 	}
 	drained = dedupeUnconfirmedFlushItems(drained)
-	sort.SliceStable(drained, func(i, j int) bool {
-		left := drained[i].EnqueuedAt
-		right := drained[j].EnqueuedAt
-		if left == 0 || right == 0 {
-			return left != 0
-		}
-		return left < right
-	})
+	sortByEnqueuedAt(drained)
 	if len(drained) == 0 {
 		return nil
 	}
 	return a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
 }
 
-// restoreUndeliveredSend returns a send the provider retired without running
-// to the composer: Claude's command_lifecycle `cancelled` or `discarded` with
-// no `started` (triage settleTerminalSend). A direct send's row is already in
-// the timeline, so it is removed exactly as an unconsumed quiet row is.
-func (a *App) restoreUndeliveredSend(threadID string, item triage.UnconfirmedFlushItem) {
+// restoreUndeliveredSends returns the sends Claude cancelled without running
+// (command_lifecycle `cancelled` with no `started`, triage retireUnrunSend)
+// to the composer in one batch, oldest first. A row one already has in the
+// timeline is removed exactly as an unconsumed quiet row is.
+func (a *App) restoreUndeliveredSends(threadID string) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if item.DeferredItem == nil && item.QuietItem == nil && item.UserItemID != "" {
-		row, found, err := a.store.GetThreadItem(threadID, item.UserItemID)
-		if err != nil {
-			log.Printf("flush queue: read undelivered send %s/%s: %v", threadID, item.UserItemID, err)
-			a.emitWireErrorToThread(threadID, "Could not restore a message the provider did not run: "+err.Error())
-			return
-		}
-		if found {
-			item.QuietItem = &row
-		}
+	drained := a.triage.DrainUndeliveredSends(threadID)
+	if len(drained) == 0 {
+		return
 	}
-	a.restoreFlushItemsToDraftLocked(threadID, []triage.UnconfirmedFlushItem{item}, queueRestoredReasonNotDelivered)
+	sortByEnqueuedAt(drained)
+	a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonNotDelivered)
+}
+
+// sortByEnqueuedAt orders restored messages oldest first; an item with no
+// enqueue time goes last.
+func sortByEnqueuedAt(items []triage.UnconfirmedFlushItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i].EnqueuedAt
+		right := items[j].EnqueuedAt
+		if left == 0 || right == 0 {
+			return left != 0
+		}
+		return left < right
+	})
 }
 
 // restoreFlushItemsToDraftLocked returns unconsumed messages to the composer

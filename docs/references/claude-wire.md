@@ -1387,8 +1387,10 @@ question of what is happening to a message that is still pending. One
 exception: a terminal state settles a send that is still pending
 (`settleTerminalSend`). After `started` it proves consumption, so triage
 confirms the send and logs the drift. Without `started` the CLI retired the
-message unrun, so the app returns it to the composer
-(`provider:queue_restored`, reason `not_delivered`).
+message unrun, so it goes back to the composer: at once after `cancelled`
+(`provider:queue_restored`, reason `not_delivered`), and with the session-end
+queue restore after `discarded`
+([user-message-ordering.md](../architecture/user-message-ordering.md#confirmation)).
 
 ### Reading the delivery flavour off the ordering
 

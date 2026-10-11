@@ -163,11 +163,11 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
-	// sendUndelivered is the app-layer callback handed a pending send the
-	// provider retired without running (handleCommandLifecycle). The app
-	// returns its content to the composer. Called under the thread's flush
+	// sendUndelivered is the app-layer signal that a thread has sends the
+	// provider cancelled without running (retireUnrunSend). The app drains
+	// them and returns them to the composer. Called under the thread's flush
 	// anchor lock, so it must hand the work off rather than block.
-	sendUndelivered func(threadID string, item UnconfirmedFlushItem)
+	sendUndelivered func(threadID string)
 	// sendsPendingChanged is the app-layer observer told that a thread's
 	// SendsPending answer may have changed. Wired via
 	// SetSendsPendingObserver before the router serves events; called

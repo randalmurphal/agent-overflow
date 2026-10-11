@@ -128,9 +128,12 @@ Every source runs the same transaction (`confirmConsumedSend`):
   send both of the above missed. The row lands at the head of a turn the send
   opened; the backstop logs, because it means a confirmation drifted.
 
-A send Claude retires without `started` (`cancelled` or `discarded`) never
-reached the model. It leaves the registry, any eager row is deleted, and its
-text returns to the composer (`queue_restored`, reason `not_delivered`).
+A send Claude retires without `started` never reached the model. It leaves
+the registry for the thread's undelivered list, and its row is deleted when its
+text returns to the composer. After `cancelled` the session lives on, so it
+returns at once (`queue_restored`, reason `not_delivered`). After `discarded`
+the session is ending: it returns with the rest of the queue in the
+session-end restore, in queue order, or is dropped with the queue by a Stop.
 Otherwise a send stays pending until session teardown repairs or restores it.
 
 The first matched confirmation captures placement before fallible cache writes. A stable
