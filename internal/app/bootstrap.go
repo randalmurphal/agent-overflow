@@ -24,6 +24,11 @@ type IsolationConfig struct {
 	CredentialHome         string
 	UseFileKeychain        bool
 	DisableBackgroundFetch bool
+	// DisableRetentionSweep keeps the retention TTL sweep from starting.
+	// Fixture rows can carry fixed past timestamps, and a sweep firing once
+	// a long-lived harness passes its settle gate would delete them under a
+	// running test or its reset.
+	DisableRetentionSweep bool
 	// MockBrowserEngine pins the browser Manager to the fake engine. A mocked
 	// boot has no display and must never open a real one, yet its pane chrome
 	// and host rect still have to render (spec §10).
@@ -70,6 +75,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.credentialHomeOverride = config.CredentialHome
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
+	a.retentionSweepDisabled = config.DisableRetentionSweep
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
