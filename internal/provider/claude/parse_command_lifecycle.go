@@ -31,8 +31,10 @@ import (
 // queue, or consumed into a turn that aborted or hard-failed), or
 // `discarded` (2.1.224+: the session ended with the message still
 // queued). `discarded` is handled exactly like `cancelled` here — both
-// mean "never delivered, and the window it may have opened is over" —
-// and stays a distinct state only so the cause reaches the timeline.
+// mean "the window this command may have opened is over" — and stays a
+// distinct state only so the cause reaches the timeline. Whether the
+// message reached context is a separate question: after `started` it did
+// (triage's confirmStartedSend).
 // The wire carries no reason field for any of them (2.1.237 schema:
 // `{type, command_uuid, state, uuid, session_id}`).
 //

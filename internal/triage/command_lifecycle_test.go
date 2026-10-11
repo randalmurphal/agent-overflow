@@ -307,3 +307,14 @@ func openTestRound(t *testing.T, r *Router, threadID string, turnIndex int) {
 		StartedAt: time.Now().UnixMilli(),
 	})
 }
+
+func (r *Router) peekCommandLifecycle(threadID, commandUUID string) (commandLifecycleEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return commandLifecycleEntry{}, false
+	}
+	entry, ok := st.commandLifecycle[commandUUID]
+	return entry, ok
+}

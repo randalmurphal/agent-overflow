@@ -101,13 +101,14 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	// transcript and a forked skill's sidechain. isSidechain identifies the
 	// transcript scope; agent_metadata identifies its owner. Main-transcript
 	// rows already arrive on stdout and must never be projected beneath the
-	// provisional command row.
+	// provisional command row. The one main-transcript fact stdout can lack
+	// is the record of this app's own prompt; see recordedOwnPrompts.
 	if facts.scope == mirrorTranscriptMain {
 		state.clearPending(projectionKey)
 		if projection != nil {
 			return nil, fmt.Errorf("transcript_mirror %q changed from sidechain to main transcript", envelope.FilePath)
 		}
-		return nil, nil
+		return p.recordedOwnPrompts(threadID, envelope.Entries, facts.entries, now), nil
 	}
 	if projection == nil && p.activeCommandUUID != "" && state.commands[p.activeCommandUUID] != nil {
 		// Claude emits agent_metadata before the ordinary task_started event.
@@ -294,6 +295,68 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 // Failure here is logged and the boundary is dropped rather than failing
 // the parse: completion never reads the transcript, so nothing delivers
 // it later.
+// recordedOwnPrompts reports each main-transcript user entry written under a
+// uuid this app issued, as a confirm-only EventUserText.
+//
+// The stdout echo is not a reliable confirmation for a prompt that opens a
+// turn: the CLI echoes it only when its replay filter accepts the text, and
+// that filter rejects any prompt containing a tag such as
+// `<task-notification>` or `<bash-stdout>` (verified 2.1.284). The
+// transcript write is unconditional and lands before the turn's first
+// output, so it confirms the send whatever the message says. A prompt
+// drained into a running turn is recorded as a `queued_command` attachment,
+// not a user entry, and keeps its echo; it is confirmed there.
+//
+// The ledger gate keeps every other user entry, tool results and CLI
+// injections alike, off the event stream. With no session ledger nothing is
+// provably ours, so nothing is reported.
+func (p *Parser) recordedOwnPrompts(threadID string, entries []json.RawMessage, facts []mirrorEntryFact, now time.Time) []provider.ProviderEvent {
+	if p.peerTurns == nil {
+		return nil
+	}
+	var events []provider.ProviderEvent
+	for i, fact := range facts {
+		if !fact.user || !p.peerTurns.commandUUIDIsIssued(fact.uuid) {
+			continue
+		}
+		var entry struct {
+			ParentUUID string `json:"parentUuid"`
+			Message    struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(entries[i], &entry); err != nil {
+			log.Printf("claude: transcript_mirror prompt %s unreadable: %v", fact.uuid, err)
+			continue
+		}
+		fields := map[string]any{
+			"provider_item_id":                         fact.uuid,
+			provider.MetaUserTextTranscriptRecordedKey: true,
+		}
+		if entry.ParentUUID != "" {
+			fields["parent_uuid"] = entry.ParentUUID
+		}
+		// The same fingerprint the echo carries, so a queue-boundary merge
+		// is recognised from whichever confirmation arrives first.
+		if digest := EchoBlockDigest(entry.Message.Content); len(digest) > 0 {
+			fields[provider.MetaUserContentBlockDigestKey] = []string(digest)
+		}
+		meta, err := json.Marshal(fields)
+		if err != nil {
+			log.Printf("claude: encode transcript_mirror prompt %s: %v", fact.uuid, err)
+			continue
+		}
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventUserText,
+			ThreadID:  threadID,
+			Content:   extractToolResultText(entry.Message.Content),
+			Meta:      meta,
+			Timestamp: now,
+		})
+	}
+	return events
+}
+
 func (p *Parser) tapUnprojectedCompaction(
 	threadID string,
 	state *transcriptMirrorState,
@@ -542,6 +605,7 @@ type mirrorEntryFact struct {
 	compaction      bool
 	compactBoundary bool
 	attachment      bool
+	user            bool
 }
 
 func (i mirrorEntryInspection) timestampOr(fallback time.Time) time.Time {
@@ -643,6 +707,7 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			compaction:      boundary || raw.IsCompactSummary,
 			compactBoundary: boundary,
 			attachment:      raw.Type == "attachment",
+			user:            raw.Type == "user",
 		})
 		facts.agentID = firstNonEmpty(facts.agentID,
 			strings.TrimSpace(raw.AgentID), strings.TrimSpace(raw.LegacyAgentID))

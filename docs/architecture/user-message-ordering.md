@@ -111,7 +111,26 @@ registry owns the preview, so a retained row after session loss still follows
 normal history recovery.
 Rows anchored at an interrupt are revealed deliberately and carry no preview.
 
-The first matched echo captures placement before fallible cache writes. A stable
+## Confirmation
+
+A pending send is consumed by the first provider fact that names its identity.
+Every source runs the same transaction (`confirmConsumedSend`):
+
+- Claude's transcript record: the main-transcript `transcript_mirror` entry
+  written under the uuid AO issued. It confirms a prompt that opens a turn,
+  before the turn's first output, whatever the prompt says. The CLI withholds
+  the echo of such a prompt when its text names a filtered tag
+  ([claude-wire.md](../references/claude-wire.md#outbound-user-message--client-supplied-uuid---replay-user-messages)).
+- The provider echo. It confirms a Claude prompt drained into a running turn,
+  which has no transcript user entry, and every Codex send. An echo of a send
+  its record already confirmed is a duplicate.
+- Claude's `command_lifecycle` `started` followed by a terminal state, for a
+  send both of the above missed. The row lands at the head of a turn the send
+  opened; the backstop logs, because it means a confirmation drifted.
+
+Otherwise a send stays pending until session teardown repairs or restores it.
+
+The first matched confirmation captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.
 Otherwise output received after the failed write moves the retried prompt below
 its own response. Unconfirmed rows that may still move cannot act as predecessors.
@@ -137,7 +156,7 @@ message's consumption. The separate promotion boundary preserves the provider
 prefix used by fork/revert. Buffered output that had not yet been displayed can
 instead drain before the confirmed message group. See [revert-modes.md](revert-modes.md).
 
-An echo proves consumption even if SQLite fails. Advance the provider lifecycle
+A confirmation proves consumption even if SQLite fails. Advance the provider lifecycle
 before processing its next content event, retain the confirmation for cache repair,
 and never put consumed input back on the provider send queue.
 

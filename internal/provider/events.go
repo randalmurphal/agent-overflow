@@ -741,3 +741,12 @@ type SubagentBackgroundedMeta struct {
 // simply leaves the comparison unavailable, which is the pre-existing
 // behaviour.
 const MetaUserContentBlockDigestKey = "content_block_digest"
+
+// MetaUserTextTranscriptRecordedKey marks an `EventUserText` built from the
+// provider's own transcript write of a message this app sent, rather than
+// from its stdout echo. It confirms a pending send by identity and is never
+// content to show: a consumer that holds no send with that id drops it. The
+// Claude CLI's replay filter withholds the echo of some turn-opening prompts,
+// so this record is the confirmation that does not depend on the message
+// text (claude-wire.md §Outbound user message).
+const MetaUserTextTranscriptRecordedKey = "transcript_recorded"
