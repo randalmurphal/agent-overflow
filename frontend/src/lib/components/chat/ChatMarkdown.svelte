@@ -363,7 +363,7 @@
     ),
   );
   const processedSourceAppend = $derived.by(() => {
-    processedSource;
+    void processedSource;
     return markdownFenceUnwrapper.outputAppend;
   });
 

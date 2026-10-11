@@ -87,7 +87,7 @@ func TestStreamTail(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 			// No Content-Length: the limit is enforced while reading.
 			w.(http.Flusher).Flush()
-			fmt.Fprint(w, log)
+			_, _ = fmt.Fprint(w, log)
 		}))
 		defer srv.Close()
 		s := isolatedService(t, srv)

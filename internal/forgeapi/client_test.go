@@ -147,7 +147,7 @@ func TestETagRevalidation(t *testing.T) {
 			return
 		}
 		w.Header().Set("X-Next-Page", "2")
-		fmt.Fprint(w, `[1,2,3]`)
+		_, _ = fmt.Fprint(w, `[1,2,3]`)
 	}))
 	defer srv.Close()
 	s := isolatedService(t, srv)
@@ -192,7 +192,7 @@ func TestRateLimitedRequestsCloseTheGate(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		fmt.Fprint(w, `{}`)
+		_, _ = fmt.Fprint(w, `{}`)
 	}))
 	defer srv.Close()
 	s, clock := liveService(t, &testSource{tokens: []string{testSecret}}, srv)
@@ -249,7 +249,7 @@ func TestPages(t *testing.T) {
 				w.Header().Set("X-Next-Page", "")
 			}
 		}
-		fmt.Fprintf(w, "[%d]", page)
+		_, _ = fmt.Fprintf(w, "[%d]", page)
 	}))
 	defer srv.Close()
 	srvURL = srv.URL

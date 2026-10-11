@@ -17,11 +17,11 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	var got seen
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.record(r)
-		switch {
-		case r.URL.Path == "/github/graphql":
-			fmt.Fprint(w, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve"}]}`)
+		switch r.URL.Path {
+		case "/github/graphql":
+			_, _ = fmt.Fprint(w, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve"}]}`)
 		default:
-			fmt.Fprint(w, `{"ok":true}`)
+			_, _ = fmt.Fprint(w, `{"ok":true}`)
 		}
 	}))
 	defer srv.Close()

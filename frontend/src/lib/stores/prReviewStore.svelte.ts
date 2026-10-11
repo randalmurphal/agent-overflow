@@ -435,7 +435,7 @@ function reconcileResolveOverrides(key: string, threads: readonly ReviewThread[]
   const overrides = resolveOverridesByKey.get(key);
   if (!overrides || overrides.size === 0) return;
   const resolvedById = new Map(threads.map((thread) => [thread.id, thread.isResolved]));
-  for (const [threadId, want] of [...overrides]) {
+  for (const [threadId, want] of overrides) {
     const observed = resolvedById.get(threadId);
     if (observed === undefined || observed === want) overrides.delete(threadId);
   }
@@ -504,7 +504,7 @@ onBackendStatusChange((backend, status) => {
   for (const key of bufferedFrameByWireKey.keys()) {
     if (workspaceKeyBackend(key) === backend) bufferedFrameByWireKey.delete(key);
   }
-  for (const key of [...readyByKey.keys()]) {
+  for (const key of readyByKey.keys()) {
     if (workspaceKeyBackend(key) !== backend) continue;
     rejectReady(key, new Error('Disconnected from the backend.'));
   }
@@ -811,7 +811,7 @@ export function resyncPRReviewAfterGap(backend: BackendKey = HOME_BACKEND): void
 export function __resetPRReviewStoreForTest(): void {
   store.suspend();
   store.resetAll();
-  for (const key of [...readyByKey.keys()]) rejectReady(key, new Error('store reset'));
+  for (const key of readyByKey.keys()) rejectReady(key, new Error('store reset'));
   refByKey.clear();
   failureByKey.clear();
   __resetPRSubscriptionsForTest();

@@ -16,7 +16,7 @@ func TestRedirectDropsCredentialsAcrossHosts(t *testing.T) {
 	var blob seen
 	blobSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		blob.record(r)
-		fmt.Fprint(w, "log text")
+		_, _ = fmt.Fprint(w, "log text")
 	}))
 	defer blobSrv.Close()
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,7 @@ func TestTokenLifetime(t *testing.T) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		fmt.Fprint(w, `{"n":1}`)
+		_, _ = fmt.Fprint(w, `{"n":1}`)
 	}))
 	defer srv.Close()
 	src := &testSource{tokens: []string{testSecret}}

@@ -78,18 +78,6 @@ func handle(e *Engine, cli string, args ...string) control.ForgeResult {
 	return e.Handle(control.ForgeCall{CLI: cli, Args: args, Cwd: "/work"})
 }
 
-func decode[T any](t *testing.T, result control.ForgeResult) T {
-	t.Helper()
-	if result.ExitCode != 0 {
-		t.Fatalf("exit %d: %s", result.ExitCode, result.Stderr)
-	}
-	var out T
-	if err := json.Unmarshal(result.Stdout, &out); err != nil {
-		t.Fatalf("decode %q: %v", result.Stdout, err)
-	}
-	return out
-}
-
 func TestSeedFillsGeneratedIDsAndDefaults(t *testing.T) {
 	_, fixture := seeded(t, Options{})
 	gh, gl := fixture.Repos[0], fixture.Repos[1]
@@ -322,7 +310,7 @@ func TestParseFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flags["repo"][0] != "x/y" || !(len(flags["include"]) == 1) || strings.Join(flags["header"], ",") != "h1,h2" ||
+	if flags["repo"][0] != "x/y" || len(flags["include"]) != 1 || strings.Join(flags["header"], ",") != "h1,h2" ||
 		strings.Join(positional, ",") != "a,-z" {
 		t.Fatalf("flags %v positional %v", flags, positional)
 	}
@@ -829,7 +817,7 @@ func httpRequest(t *testing.T, srv *httptest.Server, method, host, path string, 
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -1196,7 +1184,7 @@ func TestHTTPOfflineDropsTheConnectionWithoutAReply(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+testAPIToken)
 	resp, err := srv.Client().Do(req)
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatalf("an offline forge replied %d", resp.StatusCode)
 	}
 	if inv := lastInvocation(t, e); inv.Route != "offline" || inv.Via != ViaHTTP {
@@ -1332,7 +1320,7 @@ func TestGraphQLPagesEveryConnection(t *testing.T) {
 		t.Helper()
 		var out map[string]any
 		decodeBody(t, graphQL(t, srv, "github.com", op, vars), &out)
-		var node any = out["data"]
+		node := out["data"]
 		for _, key := range path {
 			node = node.(map[string]any)[key]
 		}

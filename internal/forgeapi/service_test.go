@@ -37,7 +37,7 @@ func TestGitLabBaseFromGlabConfig(t *testing.T) {
 	var got seen
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.record(r)
-		fmt.Fprint(w, `{}`)
+		_, _ = fmt.Fprint(w, `{}`)
 	}))
 	defer srv.Close()
 	apiHost := strings.TrimPrefix(srv.URL, "http://")

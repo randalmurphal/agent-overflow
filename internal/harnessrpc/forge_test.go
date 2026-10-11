@@ -225,7 +225,7 @@ func TestForgeAPIOfflineDropsKeepAliveConnections(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 			return 0, err
 		}
