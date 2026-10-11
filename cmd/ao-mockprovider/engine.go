@@ -420,6 +420,20 @@ func (e *engine) finishTurn(n int) {
 	}
 }
 
+// turnLive reports whether a user turn has begun and not finished: from
+// turn/start's answer, through its wait for pickup, until its steps end.
+// Turn 0 is the onStart steps, which are no turn a steer can join.
+func (e *engine) turnLive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for n := range e.turns {
+		if n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // turnActive reports whether a scenario turn is running.
 func (e *engine) turnActive() bool {
 	e.mu.Lock()
