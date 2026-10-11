@@ -88,20 +88,24 @@ type ForgeAPIEndpoint struct {
 }
 
 // ForgeAPIServer is the fake forge's own loopback HTTP listener, apart
-// from the control server. Going offline closes it with http.Server.Close,
-// which drops every pooled keep-alive connection, and listens on the same
-// port again, so each request the app sends while offline arrives on a
-// fresh connection, is recorded, and gets no reply: the same
-// *TransientError a dead network gives, not a 5xx or a reply on a stale
-// connection.
+// from the control server. Going offline closes every open connection,
+// pooled keep-alive ones included, and keeps the listener, so each
+// request the app sends while offline arrives on a fresh connection, is
+// recorded, and gets no reply: the same *TransientError a dead network
+// gives, not a 5xx or a reply on a stale connection. The port stays
+// bound throughout, so nothing else on the machine can take it while
+// the forge is offline.
 type ForgeAPIServer struct {
-	handler http.Handler
-
 	mu      sync.Mutex
 	addr    string
 	server  *http.Server
 	offline bool
 	done    bool
+
+	// connsMu guards conns, the connections the server has accepted and
+	// not yet closed, kept by its ConnState hook.
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
 }
 
 // StartForgeAPI starts the fake forge's HTTP listener for h and returns
@@ -111,39 +115,40 @@ func StartForgeAPI(h *Harness) (*ForgeAPIServer, ForgeAPIEndpoint, error) {
 	if h == nil {
 		return nil, ForgeAPIEndpoint{}, fmt.Errorf("harness receiver unavailable")
 	}
-	s := &ForgeAPIServer{handler: h.forge, addr: loopback.EphemeralIPv6}
-	if err := s.listen(); err != nil {
-		return nil, ForgeAPIEndpoint{}, err
-	}
-	h.mu.Lock()
-	h.forgeAPI = s
-	h.mu.Unlock()
-	return s, ForgeAPIEndpoint{BaseURL: "http://" + s.addr, Token: h.forgeToken}, nil
-}
-
-// listen binds s.addr (an ephemeral port the first time, the same port
-// after) and serves on it. Callers hold mu or own s exclusively.
-func (s *ForgeAPIServer) listen() error {
-	ln, err := net.Listen("tcp6", s.addr)
+	ln, err := net.Listen("tcp6", loopback.EphemeralIPv6)
 	if err != nil {
-		return fmt.Errorf("forge API: listen on %s: %w", s.addr, err)
+		return nil, ForgeAPIEndpoint{}, fmt.Errorf("forge API: listen on %s: %w", loopback.EphemeralIPv6, err)
 	}
-	s.addr = ln.Addr().String()
-	server := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	s := &ForgeAPIServer{addr: ln.Addr().String(), conns: make(map[net.Conn]struct{})}
+	server := &http.Server{Handler: h.forge, ReadHeaderTimeout: 10 * time.Second, ConnState: s.trackConn}
 	s.server = server
 	go func() {
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("harness forge API: serve: %v", err)
 		}
 	}()
-	return nil
+	h.mu.Lock()
+	h.forgeAPI = s
+	h.mu.Unlock()
+	return s, ForgeAPIEndpoint{BaseURL: "http://" + s.addr, Token: h.forgeToken}, nil
 }
 
-// setOffline drops every open connection and listens again on the same
-// port (true); the engine, already offline, records and drops each
-// request that arrives. Coming back (false) keeps the listener, or
-// listens again if going offline could not. Repeating either state is a
-// no-op.
+// trackConn keeps the set of open connections setOffline closes. The
+// server reports StateNew before it reads the first request.
+func (s *ForgeAPIServer) trackConn(conn net.Conn, state http.ConnState) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	switch state {
+	case http.StateNew:
+		s.conns[conn] = struct{}{}
+	case http.StateHijacked, http.StateClosed:
+		delete(s.conns, conn)
+	}
+}
+
+// setOffline closes every open connection (true); the engine, already
+// offline, records and drops each request that arrives after. Coming back
+// (false) changes nothing here. Repeating either state is a no-op.
 func (s *ForgeAPIServer) setOffline(offline bool) error {
 	if s == nil {
 		return nil
@@ -155,18 +160,24 @@ func (s *ForgeAPIServer) setOffline(offline bool) error {
 	}
 	s.offline = offline
 	if !offline {
-		if s.server == nil {
-			// Going offline closed the listener but could not listen again.
-			return s.listen()
-		}
 		return nil
 	}
-	err := s.server.Close()
-	s.server = nil
-	if err != nil {
-		return fmt.Errorf("forge API: close: %w", err)
+	s.connsMu.Lock()
+	open := make([]net.Conn, 0, len(s.conns))
+	for conn := range s.conns {
+		open = append(open, conn)
 	}
-	return s.listen()
+	s.connsMu.Unlock()
+	var errs []error
+	for _, conn := range open {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("forge API: drop connections: %w", err)
+	}
+	return nil
 }
 
 // Shutdown closes the listener and every connection for good.

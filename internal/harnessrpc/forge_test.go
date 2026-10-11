@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
@@ -275,5 +276,57 @@ func TestForgeAPIOfflineDropsKeepAliveConnections(t *testing.T) {
 	// Back online with the fixture cleared: a reply, the forge's 404.
 	if status, err := get(); err != nil || status != 404 {
 		t.Fatalf("GET after HarnessReset = %d, %v", status, err)
+	}
+}
+
+// Going offline keeps the port bound: a listener trying for it the whole
+// time never gets it, so nothing else on the machine can take it while
+// the forge is offline and leave it unable to come back.
+func TestForgeAPIOfflineKeepsItsPort(t *testing.T) {
+	h, _ := newHarnessTestHost(t)
+	server, endpoint, err := StartForgeAPI(h)
+	if err != nil {
+		t.Fatalf("StartForgeAPI: %v", err)
+	}
+	t.Cleanup(server.Shutdown)
+	addr := strings.TrimPrefix(endpoint.BaseURL, "http://")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var took net.Listener
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if ln, err := net.Listen("tcp6", addr); err == nil {
+				took = ln
+				return
+			}
+		}
+	}()
+	toggleErr := func() error {
+		for i := range 500 {
+			if err := h.HarnessForgeOffline(true); err != nil {
+				return fmt.Errorf("offline %d: %w", i, err)
+			}
+			if err := h.HarnessForgeOffline(false); err != nil {
+				return fmt.Errorf("online %d: %w", i, err)
+			}
+		}
+		return nil
+	}()
+	close(stop)
+	wg.Wait()
+	if took != nil {
+		_ = took.Close()
+		t.Errorf("another listener took %s while the forge was offline", addr)
+	}
+	if toggleErr != nil {
+		t.Fatal(toggleErr)
 	}
 }

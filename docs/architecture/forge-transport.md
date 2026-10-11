@@ -418,9 +418,9 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
   base, which is what specs matched through `args[1]` before; `operation`
   and `variables` are a GraphQL request's, so a spec can assert which parts
   a read asked for.
-- `HarnessForgeOffline` runs `http.Server.Close` (not `Shutdown`), which
-  drops every pooled keep-alive connection, and listens on the same port
-  again. Each request sent while offline arrives on a fresh connection, is
+- `HarnessForgeOffline` closes every open connection, pooled keep-alive
+  ones included, and keeps the listener, so its port stays bound and
+  nothing else can take it. Each request sent while offline arrives on a fresh connection, is
   recorded as route `offline` and is dropped without a reply, so the app
   sees the same `*TransientError` a dead network gives, not a 5xx or a
   reply on a stale connection, and a spec can count its retries. The CLI fake
