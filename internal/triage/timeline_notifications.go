@@ -213,7 +213,13 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 	turnIndex := r.timelineNotificationTurnIndex(evt)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
-		itemID = NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
+		var err error
+		itemID, err = r.nextUnusedItemID(evt.ThreadID, func() string {
+			return NotificationItemID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
+		})
+		if err != nil {
+			return err
+		}
 	}
 	_, err := r.persistTimelineNotificationWithID(evt, itemID, notificationKind, summary)
 	return err
@@ -287,6 +293,21 @@ func decodeTimelineNotificationMeta(raw json.RawMessage) timelineNotificationMet
 
 func (r *Router) nextNotificationSequence(threadID string, turnIndex int) int {
 	return r.nextScopeSequence(threadID, turnIndex, "notification")
+}
+
+// nextUnusedItemID takes ids from a counter until one names no row of the
+// thread. A counter starts over when CleanupThread sweeps the thread at a
+// session's end, while the rows its earlier ids name stay in the store: a
+// reused id would overwrite one of them.
+func (r *Router) nextUnusedItemID(threadID string, next func() string) (string, error) {
+	for {
+		itemID := next()
+		if _, found, err := r.store.GetThreadItem(threadID, itemID); err != nil {
+			return "", fmt.Errorf("item id lookup %s: %w", itemID, err)
+		} else if !found {
+			return itemID, nil
+		}
+	}
 }
 
 // nextScopeSequence allocates the next id ordinal for one (thread, turn,

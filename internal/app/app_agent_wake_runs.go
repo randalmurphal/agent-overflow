@@ -207,6 +207,21 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	}()
 }
 
+// currentAgentWake reads a row as it stands now, for what its previous wake
+// came to: a run can outlive the wake before it. A failed read keeps the row
+// the run started with.
+func (a *App) currentAgentWake(row store.AgentWake) store.AgentWake {
+	fresh, found, err := a.store.GetAgentWake(row.ID)
+	if err != nil {
+		logThreadRequestSweep("read "+row.Kind+" "+row.ID, err)
+		return row
+	}
+	if !found {
+		return row
+	}
+	return fresh
+}
+
 // runAgentWakeFire runs one claimed fire to its outcome.
 func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store.AgentWake, fire agentWakeFire) {
 	var body string
@@ -224,7 +239,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			a.finishAgentWakeFire(run, row, outcome, "", fire.missed)
 			return
 		}
-		body = renderAgentWatchWake(row, fire, result.stdout, result.stderr)
+		body = renderAgentWatchWake(a.currentAgentWake(row), fire, result.stdout, result.stderr)
 	default:
 		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed)
 		return
@@ -489,15 +504,8 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
-	// render reads the row as it stands, for what its previous wake came to.
 	render := func(stderrPart cappedOutput) string {
-		current := row
-		if fresh, found, err := a.store.GetAgentWake(row.ID); err != nil {
-			logThreadRequestSweep("read long-running watch "+row.ID, err)
-		} else if found {
-			current = fresh
-		}
-		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
+		return renderAgentWatchWake(a.currentAgentWake(row), agentWakeFire{}, batch.peek(), stderrPart)
 	}
 	deliver := func() bool {
 		// The stderr taken with a batch goes back if the batch has to wait,
