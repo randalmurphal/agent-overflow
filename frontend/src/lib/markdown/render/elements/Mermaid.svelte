@@ -62,7 +62,7 @@
 			sanitized = sanitized.replace(/[\u200B-\u200F\u2028-\u202F\u205F-\u206F]/g, '');
 
 			// 4. Remove control characters (except tab, line feed, carriage return)
-			sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+			sanitized = sanitized.replace(/[^\P{Cc}\t\n\r]/gu, '');
 
 			// 5. Normalize line endings to LF
 			sanitized = sanitized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -123,7 +123,7 @@
 
 			// Ensure proper spacing in flowchart syntax
 			sanitized = sanitized.replace(
-				/([A-Za-z0-9_]+)(\-\-|\-\-\>|\-\.\-|\-\.\-\>|\=\=|\=\=\>|\=\.\=\>|\=\.\-\>)/g,
+				/([A-Za-z0-9_]+)(--|-->|-\.-|-\.->|==|==>|=\.=>|=\.->)/g,
 				'$1 $2'
 			);
 
