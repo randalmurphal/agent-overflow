@@ -170,7 +170,7 @@ describe('setupEventListeners', () => {
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setBindingMock('SetPRUpdatesActive', async () => undefined);
     setBindingMock('SetPRCILogFollows', async () => ({
-      logs: { 20: { text: 'a\n', truncated: false, totalBytes: 2, available: true, error: '', seq: 3 } },
+      logs: { 20: { version: 1, totalLines: 1, totalBytes: 2, stableLines: 0, sections: [], available: true, downloading: false, error: '', seq: 3 } },
     }));
     const pr = attachPR(key, { ref });
     try {
@@ -180,13 +180,13 @@ describe('setupEventListeners', () => {
 
       setPRCILogFollow(key, Symbol('pane'), '20');
       await vi.waitFor(() => {
-        expect(peekPRCI(key).logs.get('20')?.text).toBe('a\n');
+        expect(peekPRCI(key).logs.get('20')?.totalLines).toBe(1);
       });
       emitWailsEvent('pr:ci_log', {
-        prKey: key, jobId: '20', seq: 4, prevLen: 2, base: 2, append: 'b\n',
-        truncated: false, totalBytes: 4, available: true,
+        prKey: key, jobId: '20', seq: 4, version: 2, totalLines: 2, totalBytes: 4, stableLines: 1,
+        sections: [], available: true, downloading: false, error: '',
       });
-      expect(peekPRCI(key).logs.get('20')?.text).toBe('a\nb\n');
+      expect(peekPRCI(key).logs.get('20')).toMatchObject({ version: 2, totalLines: 2, stableLines: 1 });
     } finally {
       pr.release();
     }

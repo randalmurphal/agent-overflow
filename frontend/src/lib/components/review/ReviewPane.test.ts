@@ -1509,8 +1509,17 @@ describe('<ReviewPane> CI', () => {
 
   it('follows an opened job: the pending line while the log is unavailable, live steps, then the log in rows', async () => {
     const view = await renderPRScope(pipelineWith('running', 'running'));
+    const step = (status: string) => ({ key: 'step:1', name: 'build', status, start: 0, end: 0, lines: 0, bytes: 0 });
     const follows = setBindingMock('SetPRCILogFollows', async () => ({
-      logs: { 20: { text: '', truncated: false, totalBytes: 0, available: false, error: '', seq: 5 } },
+      logs: {
+        20: {
+          version: 0, totalLines: 0, totalBytes: 0, stableLines: 0, sections: [step('running')],
+          available: false, downloading: false, error: '', seq: 5,
+        },
+      },
+    }));
+    const reads = setBindingMock('GetPRCILogLines', async (_pr: unknown, _job: string, from: number) => ({
+      from, lines: ['error: boom'].slice(from), totalLines: 1, version: 1,
     }));
 
     await fireEvent.click(view.getByTestId('review-ci-chip'));
@@ -1523,30 +1532,39 @@ describe('<ReviewPane> CI', () => {
     const stepRow = () => view.getAllByTestId('review-ci-section').find((row) => row.dataset.key === 'step:1');
     expect(stepRow()?.dataset.status).toBe('running');
 
+    // The pump's next tick sends the rows its new pipeline gives.
     applyPRReviewCIUpdated({ prKey: PR, pipeline: pipelineWith('failed', 'failed'), seq: 6 });
+    applyPRReviewCILog({
+      prKey: PR, jobId: '20', seq: 7, version: 0, totalLines: 0, totalBytes: 0, stableLines: 0,
+      sections: [step('failed')], available: false, downloading: false, error: '',
+    });
     await waitFor(() => {
       expect(stepRow()?.dataset.status).toBe('failed');
     });
     // Completed, and the forge has not published the log yet.
     expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The job finished; the forge has not published its log yet.');
+    expect(reads).not.toHaveBeenCalled();
 
+    const jobRow = { key: 'job', name: 'unit', status: 'failed', start: 0, end: 1, lines: 1, bytes: 12 };
     applyPRReviewCILog({
-      prKey: PR, jobId: '20', seq: 7, prevLen: 0, base: 0, append: 'error: boom\n',
-      truncated: false, totalBytes: 12, available: true,
+      prKey: PR, jobId: '20', seq: 8, version: 1, totalLines: 1, totalBytes: 12, stableLines: 0,
+      sections: [jobRow, step('failed')], available: true, downloading: false, error: '',
     });
     // The step has no start time to split by: the lines are the job's
-    // row, collapsed until the reader opens it.
-    const jobRow = () => view.getAllByTestId('review-ci-section').find((row) => row.dataset.key === 'job');
+    // row, collapsed until the reader opens it, and nothing is read
+    // until then.
+    const jobSection = () => view.getAllByTestId('review-ci-section').find((row) => row.dataset.key === 'job');
     await waitFor(() => {
-      expect(jobRow()?.dataset.open).toBe('false');
+      expect(jobSection()?.dataset.open).toBe('false');
     });
     expect(view.queryByTestId('review-ci-log-pending')).toBeNull();
-    expect(view.getByTestId('review-ci-log-scroll')).not.toHaveTextContent('error: boom');
-    await fireEvent.click(within(jobRow()!).getByTestId('review-ci-section-toggle'));
+    expect(reads).not.toHaveBeenCalled();
+    await fireEvent.click(within(jobSection()!).getByTestId('review-ci-section-toggle'));
     await waitFor(() => {
       expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('error: boom');
     });
-    expect(jobRow()?.dataset.open).toBe('true');
+    expect(reads).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), '20', 0, 1);
+    expect(jobSection()?.dataset.open).toBe('true');
 
     await fireEvent.click(view.getByRole('button', { name: 'Back' }));
     await waitFor(() => {
@@ -1557,11 +1575,11 @@ describe('<ReviewPane> CI', () => {
     await fireEvent.click(view.getByTestId('review-ci-chip'));
     await fireEvent.click(await view.findByTestId('review-ci-job'));
     applyPRReviewCILog({
-      prKey: PR, jobId: '20', seq: 9, prevLen: 0, base: 0, append: 'error: boom\n',
-      truncated: false, totalBytes: 12, available: true,
+      prKey: PR, jobId: '20', seq: 9, version: 1, totalLines: 1, totalBytes: 12, stableLines: 0,
+      sections: [jobRow, step('failed')], available: true, downloading: false, error: '',
     });
     await waitFor(() => {
-      expect(jobRow()?.dataset.open).toBe('false');
+      expect(jobSection()?.dataset.open).toBe('false');
     });
   });
 });

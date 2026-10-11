@@ -557,6 +557,36 @@ export interface CIStep {
   completedAt?: string;
 }
 
+/** One row of a CI job log, as internal/cilog Section: a GitHub step, a
+ * GitLab top-level section, a run of GitLab lines outside every section,
+ * or the whole log when nothing splits it. Lines [start, end) of the log
+ * are its text; a step the log has not reached has none. */
+export interface CILogSection {
+  /** Stable for the job while its log grows. */
+  key: string;
+  name: string;
+  /** A CI status, or `done` for a closed GitLab section and `output` for
+   * lines outside every section. */
+  status: string;
+  durationSeconds?: number;
+  start: number;
+  end: number;
+  lines: number;
+  /** The size of the row's lines with their newlines. */
+  bytes: number;
+}
+
+/** A window of a cached CI log, as internal/cilog Lines. */
+export interface CILogLines {
+  from: number;
+  lines: string[];
+  /** Lines (by number) shown clipped: longer than the read's line bound. */
+  clipped?: number[] | null;
+  /** The size and version of the log the window was read from. */
+  totalLines: number;
+  version: number;
+}
+
 /** One PR discussion: a file-anchored review thread (path set) or a
  * PR-level conversation thread (path empty). */
 export interface ReviewThread {

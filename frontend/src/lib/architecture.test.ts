@@ -108,6 +108,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetMergeConflictFile: owned(PR_REVIEW_CONFLICTS, 'ensurePRConflictFile()'),
   RefreshPRCI: owned(PR_REVIEW_CI, 'refreshPRCI()'),
   SetPRCILogFollows: owned(PR_REVIEW_CI_FOLLOWS, 'setPRCILogFollow()'),
+  GetPRCILogLines: owned('lib/stores/ciLogBlocks.svelte.ts', 'ciLogFetch()'),
   ListThreadMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   ListWorkspaceMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   SetThreadMcpServerEnabled: owned(MCP_SERVERS_STORE, 'setMcpServerEnabled()'),

@@ -78,10 +78,12 @@ A PR's `pr:updated` and `pr:ci_updated` frames carry its pump's one
 sequence, so both rank against one watermark per PR key, seeded by the
 `SubscribePRUpdates` result, and a join replays buffered frames in sequence
 order. CI is sourced only by that subscription; the frontend never polls it.
-`pr:ci_log` frames are deltas against the UTF-16 length held for a followed
-job: a frame that does not fit re-sends `SetPRCILogFollows`, whose reply
-carries the full text. The follow set lives on the subscription handle, so
-it is restated after every subscribe.
+`pr:ci_log` frames carry a followed job's whole log state, its index and
+never its text, so the newest by sequence wins; the follow set lives on the
+subscription handle, so it is restated after every subscribe and after a
+gap on `pr:ci_log`. The log view reads lines through
+`ciLogBlocks.svelte.ts`, a bounded block cache that keeps a block's lines
+across a version only within the index's `stableLines`.
 
 Live turn, approval, user-input, compacting and sends-pending state is
 backend state, never derived from items or rows. Sends pending

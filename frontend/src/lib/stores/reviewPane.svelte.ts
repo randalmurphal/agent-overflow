@@ -46,6 +46,9 @@ import {
   type PRSnapshot,
 } from './prReviewStore.svelte';
 import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
+import { ciLogFetch, readCILogLines as readCILogRange } from './ciLogBlocks.svelte';
+import { addToast } from './toast.svelte';
+import { copyToClipboard } from '../utils/clipboard';
 import type { ForgeFailure } from '../utils/forgeFailure';
 import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import {
@@ -79,6 +82,8 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import type { BranchCommit, WorkspaceRef } from '../types/git';
 import type {
   CIJob,
+  CILogLines,
+  CILogSection,
   CIPipeline,
   DiffReviewComment,
   DiffReviewScope,
@@ -222,10 +227,6 @@ export interface ReviewPaneState {
   readonly ciLogError: string | null;
   /** The kind of ciLogError; null for a local failure or none. */
   readonly ciLogFailure: ForgeFailure | null;
-  /** False while the forge cannot serve the log: it has not published
-   * the log yet (GitHub until the job's log blob exists, running or
-   * completed). */
-  readonly ciLogAvailable: boolean;
   readonly ciLogSavedPath: string | null;
   /** The open log's expanded sections, as `<job id>/<section key>`.
    * Empty when a log opens. */
@@ -366,10 +367,16 @@ export interface ReviewPaneState {
   toggleCILogSection(sectionKey: string): void;
   /** Expands or collapses every listed section of the open log. */
   setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void;
+  /** Reads a window of the open job's cached log, for its view. */
+  readCILogLines(from: number, count: number): Promise<CILogLines>;
+  /** Copies one section of the open log: its text up to
+   * CI_SECTION_INLINE_MAX_BYTES, otherwise a file it is saved to, whose
+   * path is copied. Resolves true when something was copied. */
+  copyCILogSection(section: CILogSection): Promise<boolean>;
   /** Puts one section of the open log in the source chat's composer:
    * inline up to CI_SECTION_INLINE_MAX_BYTES, otherwise saved to a file
    * the message names. */
-  sendCILogSectionToChat(section: CILogSectionSend): Promise<void>;
+  sendCILogSectionToChat(section: CILogSection): Promise<void>;
   /** Fetches hidden hunk-gap context and merges it into the diff. */
   expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void>;
   toggleCollapsed(path: string): void;
@@ -388,19 +395,14 @@ export interface CILogView {
   job: CIJob;
 }
 
-/** One section of a job log, as sent to chat. */
-export interface CILogSectionSend {
-  name: string;
-  /** A CI status, or a section kind with no result (utils/ciLogSections). */
-  status: string;
-  text: string;
-  /** The shown log starts partway through this section. */
-  truncatedTop: boolean;
-}
-
-/** A section's text goes into the composer inline up to this size in
- * UTF-8 bytes; a longer one is saved to a file the message names. */
+/** A section's text goes into the composer or the clipboard inline up to
+ * this size in bytes; a longer one is saved to a file by the backend,
+ * from its cached log, and never read into the frontend. */
 export const CI_SECTION_INLINE_MAX_BYTES = 64 * 1024;
+
+// SGR and erase sequences (ESC is the one control character that opens
+// one): a section's text goes to the clipboard and the chat plain.
+const ANSI_SEQUENCE = /\p{Cc}\[[0-9;?]*[A-Za-z]/gu;
 
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
 
@@ -2078,7 +2080,60 @@ function createReviewPaneState(
     draft.setContent(existing ? `${existing}\n\n${message}` : message);
   }
 
-  async function sendCILogSectionToChat(section: CILogSectionSend): Promise<void> {
+  function readCILogLines(from: number, count: number): Promise<CILogLines> {
+    const open = ciLogOpen;
+    const ref = prRef;
+    if (!open || !ref) return Promise.reject(new Error('No CI job log is open.'));
+    return ciLogFetch(backend, prReferenceWire(ref), open.job.id)(from, count);
+  }
+
+  /** A section's lines as plain text, read from the backend's cache. */
+  async function ciSectionText(section: CILogSection): Promise<string> {
+    const lines = await readCILogRange(readCILogLines, section.start, section.end);
+    return lines.join('\n').replace(ANSI_SEQUENCE, '');
+  }
+
+  /** Saves a section server-side and returns its path, or null with the
+   * failure shown. */
+  async function saveCILogSection(open: NonNullable<typeof ciLogOpen>, ref: PRRef, section: CILogSection): Promise<string | null> {
+    try {
+      return String(await withBackendTarget(backend, () =>
+        SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, section.key)));
+    } catch (err) {
+      if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
+      return null;
+    }
+  }
+
+  async function copyCILogSection(section: CILogSection): Promise<boolean> {
+    const open = ciLogOpen;
+    const ref = prRef;
+    if (!ref || !open) return false;
+    let copied: string;
+    if (section.bytes <= CI_SECTION_INLINE_MAX_BYTES) {
+      try {
+        copied = await ciSectionText(section);
+      } catch (err) {
+        if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
+        return false;
+      }
+    } else {
+      const path = await saveCILogSection(open, ref, section);
+      if (!path) return false;
+      if (ciLogOpen === open) ciLogSavedPath = path;
+      copied = path;
+    }
+    if (!(await copyToClipboard(copied))) {
+      addToast('error', 'Failed to copy');
+      return false;
+    }
+    if (section.bytes > CI_SECTION_INLINE_MAX_BYTES) {
+      addToast('info', 'The section is over 64 KB: it was saved to a file, and the path is copied.');
+    }
+    return true;
+  }
+
+  async function sendCILogSectionToChat(section: CILogSection): Promise<void> {
     const open = ciLogOpen;
     const view = ciLogView;
     const ref = prRef;
@@ -2091,24 +2146,22 @@ function createReviewPaneState(
     const lines = [
       `Investigate \`${section.name}\`${result} in CI job \`${view.job.name}\` (${view.stageName}) on PR #${ref.number}, status: ${view.job.status}.`,
     ];
-    if (section.truncatedTop) {
-      lines.push('The text starts partway through this section: the log view holds the end of the job log.');
-    }
-    if (new TextEncoder().encode(section.text).length <= CI_SECTION_INLINE_MAX_BYTES) {
-      const fence = codeFence(section.text);
-      lines.push(fence, section.text, fence);
-    } else {
-      let path: string;
+    if (section.bytes <= CI_SECTION_INLINE_MAX_BYTES) {
+      let text: string;
       try {
-        path = String(await withBackendTarget(backend, () =>
-          SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, view.job.name, section.name, section.text)));
+        text = await ciSectionText(section);
       } catch (err) {
         if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
         return;
       }
+      const fence = codeFence(text);
+      lines.push(fence, text, fence);
+    } else {
+      const path = await saveCILogSection(open, ref, section);
+      if (!path) return;
       lines.push(`Section log saved at: ${path}`);
     }
-    // The draft as of now: the save may have outlived the pane.
+    // The draft as of now: the read or save may have outlived the pane.
     const draft = getComposerDraftForPane(sourcePaneId);
     if (!draft) {
       if (ciLogOpen === open) ciLogLocalError = 'The source chat pane is not available.';
@@ -2214,7 +2267,6 @@ function createReviewPaneState(
     get ciLogLoading() { return ciLogOpen !== null && prCILogFollowPending(ciLogOpen.key); },
     get ciLogError() { return ciLogLocalError ?? ciLog?.error ?? null; },
     get ciLogFailure() { return ciLogLocalError === null ? (ciLog?.failure ?? null) : null; },
-    get ciLogAvailable() { return ciLog?.available ?? true; },
     get ciLogSavedPath() { return ciLogSavedPath; },
     get ciLogOpenSections() { return ciLogOpenSections; },
     get submitTarget() { return submitTarget; },
@@ -2338,6 +2390,8 @@ function createReviewPaneState(
     sendCILogToChat,
     toggleCILogSection,
     setCILogSectionsOpen,
+    readCILogLines,
+    copyCILogSection,
     sendCILogSectionToChat,
     expandDiffContext,
     toggleCollapsed(path: string): void {

@@ -8,14 +8,18 @@ import ReviewCILogView from './ReviewCILogView.svelte';
 import { formatTimeOfDay } from '../../utils/format';
 import type { ForgeFailure } from '../../utils/forgeFailure';
 import type { CIJob } from '../../types/models';
-import { getToasts } from '../../stores/toast.svelte';
+import type { PRCILogState } from '../../stores/prReviewCI.svelte';
+import { CI_LOG_BLOCK_LINES } from '../../stores/ciLogBlocks.svelte';
+import { FakeCILog, numberedLines, section } from '../../../test/helpers/ciLog';
 
 // The follow itself needs real geometry (a grown chunk re-measures through
 // ResizeObserver, which happy-dom lacks): reviewCILogFollow.browser.test.ts
 // proves it in Chromium and e2e/tests/review-ci-live.spec.ts end to end.
 // These tests prove the intent wiring: a wheel away escapes the follow,
 // and the controller writes through whichever scroller the log mounts,
-// and the section rows: what they show, what their controls ask for.
+// and the section rows: what they show, what their controls ask for,
+// and the line rows: a block's lines, a placeholder until they load, the
+// load's failure in their place.
 
 // A job without steps or sections is one row, the job's; the follow
 // tests keep it open.
@@ -26,20 +30,15 @@ const JOB: CIJob = {
   logsAvailable: true,
 };
 
-function logOf(lines: number) {
-  const text = Array.from({ length: lines }, (_, index) => `line ${index + 1}`).join('\n') + '\n';
-  return { text, truncated: false, totalBytes: text.length };
-}
-
-function props(overrides: Record<string, unknown> = {}) {
+function props(fake: FakeCILog, overrides: Record<string, unknown> = {}) {
   return {
     view: { stageName: 'test', jobId: '20', job: JOB },
-    log: logOf(10) as ReturnType<typeof logOf> | null,
+    log: fake.state as PRCILogState | null,
+    fetchLines: fake.fetch,
     loading: false,
     error: null as string | null,
     failure: null as ForgeFailure | null,
     forge: 'github',
-    available: true,
     savedPath: null,
     openSections: new SvelteSet<string>(['20/job', '21/job']),
     onBack: () => {},
@@ -48,6 +47,7 @@ function props(overrides: Record<string, unknown> = {}) {
     onSend: () => {},
     onToggleSection: () => {},
     onSetSectionsOpen: () => {},
+    onCopySection: async () => true,
     onSendSection: () => {},
     ...overrides,
   };
@@ -101,13 +101,13 @@ afterEach(() => {
 
 // Each prop is its own signal, as ReviewPane passes them: a pipeline frame
 // changes `view` and leaves `log` the same object.
-function renderLogView(overrides: Record<string, unknown> = {}) {
+function renderLogView(overrides: Record<string, unknown> = {}, fake = new FakeCILog(numberedLines(10))) {
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const p = rawProps(props(overrides));
+  const p = rawProps(props(fake, overrides));
   const app = mount(ReviewCILogView, { target: host, props: p });
   mounted.push({ app, host });
-  return { p, view: within(host) };
+  return { p, view: within(host), fake, host };
 }
 
 async function update(apply: () => void): Promise<void> {
@@ -118,7 +118,7 @@ async function update(apply: () => void): Promise<void> {
 
 describe('<ReviewCILogView>', () => {
   it('leaves a reader who wheeled up where they are when the log grows', async () => {
-    const { p, view } = renderLogView();
+    const { p, view, fake } = renderLogView();
     await settle();
     const scroll = view.getByTestId('review-ci-log-scroll');
     const at = { top: BOTTOM };
@@ -126,7 +126,11 @@ describe('<ReviewCILogView>', () => {
     await wheelUp(scroll, at, 300);
     writes.length = 0;
 
-    await update(() => { p.log = logOf(20); });
+    await update(() => {
+      fake.grow(numberedLines(10, 11));
+      p.log = fake.state;
+    });
+    expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('line 20');
     expect(writes).toEqual([]);
     expect(at.top).toBe(300);
   });
@@ -141,9 +145,11 @@ describe('<ReviewCILogView>', () => {
     writes.length = 0;
 
     const other: CIJob = { ...JOB, id: '21', name: 'lint' };
+    const lint = new FakeCILog(numberedLines(12));
     await update(() => {
       p.view = { stageName: 'test', jobId: '21', job: other };
-      p.log = logOf(12);
+      p.fetchLines = lint.fetch;
+      p.log = lint.state;
     });
     // The placement is the virtualizer's jump, written by the controller.
     expect(writes.length).toBeGreaterThan(0);
@@ -176,11 +182,15 @@ describe('<ReviewCILogView>', () => {
         { number: 4, name: 'Post job', status: 'pending' },
       ],
     };
-    const { p, view } = renderLogView({
-      view: { stageName: 'test', jobId: '20', job },
-      log: { text: '', truncated: false, totalBytes: 0 },
-      available: false,
-    });
+    // The backend lists the steps before there is a log.
+    const fake = new FakeCILog([], [
+      section('step:1', 'Set up job', 'success', 0, 0),
+      section('step:3', 'build', 'running', 0, 0),
+      section('step:4', 'Post job', 'pending', 0, 0),
+    ]);
+    fake.version = 0;
+    fake.available = false;
+    const { p, view } = renderLogView({ view: { stageName: 'test', jobId: '20', job } }, fake);
     await settle();
     expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The log is available when the job completes.');
     expect(view.queryByTestId('review-ci-log-empty')).toBeNull();
@@ -203,7 +213,6 @@ describe('<ReviewCILogView>', () => {
   it('shows a rate-limited log as a pause until its resume time', async () => {
     const resumeAt = '2026-10-10T12:30:00Z';
     const { p, view } = renderLogView({
-      log: logOf(2),
       error: 'failed to refresh pull request (id: x)',
       failure: { kind: 'rate_limited', reserve: true, resumeAt },
       forge: 'gitlab',
@@ -222,8 +231,7 @@ describe('<ReviewCILogView>', () => {
   it('says the forge has not published the log of a job that finished', async () => {
     const { p, view } = renderLogView({
       view: { stageName: 'test', jobId: '20', job: { ...JOB, status: 'pending' } },
-      log: { text: '', truncated: false, totalBytes: 0 },
-      available: false,
+      log: { ...unpublished(), sections: [] },
     });
     await settle();
     // Queued is live too.
@@ -240,38 +248,76 @@ describe('<ReviewCILogView>', () => {
   });
 
   it('attaches the controller to each scroller the log mounts', async () => {
-    // The scroller leaves with the text and returns with it; the
+    // The scroller leaves with the rows and returns with them; the
     // controller writes through the second one.
-    const { p, view } = renderLogView({ log: null });
+    const { p, view, fake } = renderLogView({ log: null });
     await settle();
     expect(view.queryByTestId('review-ci-log-scroll')).toBeNull();
-    await update(() => { p.log = logOf(10); });
+    await update(() => { p.log = fake.state; });
     await update(() => { p.log = null; });
     expect(view.queryByTestId('review-ci-log-scroll')).toBeNull();
-    await update(() => { p.log = logOf(10); });
+    await update(() => { p.log = fake.state; });
     const at = { top: 0 };
     const writes = stubGeometry(view.getByTestId('review-ci-log-scroll'), at);
     const other: CIJob = { ...JOB, id: '21', name: 'lint' };
+    const lint = new FakeCILog(numberedLines(12));
     await update(() => {
       p.view = { stageName: 'test', jobId: '21', job: other };
-      p.log = logOf(12);
+      p.fetchLines = lint.fetch;
+      p.log = lint.state;
     });
     expect(writes.length).toBeGreaterThan(0);
   });
+
+  it('says a cut download resumes, over the lines it has', async () => {
+    const fake = new FakeCILog(numberedLines(3));
+    fake.downloading = true;
+    const { p, view } = renderLogView({}, fake);
+    await settle();
+    expect(view.getByTestId('review-ci-log-downloading')).toBeInTheDocument();
+    expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('line 3');
+    fake.downloading = false;
+    await update(() => { p.log = fake.state; });
+    expect(view.queryByTestId('review-ci-log-downloading')).toBeNull();
+  });
 });
 
-// A GitHub job's log as the forge serves it: every line has its time.
+function unpublished(): PRCILogState {
+  const fake = new FakeCILog([]);
+  fake.version = 0;
+  fake.available = false;
+  return fake.state;
+}
+
+describe('<ReviewCILogView> line blocks', () => {
+  it('shows a placeholder of the lines\' height until their block loads, then the lines', async () => {
+    let open = () => {};
+    const fake = new FakeCILog(numberedLines(CI_LOG_BLOCK_LINES + 50));
+    fake.gate = new Promise((resolve) => { open = resolve; });
+    const { view } = renderLogView({}, fake);
+    await settle();
+    // One row per block: the job's 250 lines are rows of 200 and 50.
+    const holders = view.getAllByTestId('review-ci-log-block-placeholder');
+    expect(holders.map((holder) => holder.style.height)).toEqual(['3600px', '900px']);
+    expect(fake.reads).toEqual([[0, CI_LOG_BLOCK_LINES], [CI_LOG_BLOCK_LINES, 50]]);
+
+    open();
+    await settle();
+    expect(view.queryByTestId('review-ci-log-block-placeholder')).toBeNull();
+    const scroll = view.getByTestId('review-ci-log-scroll');
+    expect(scroll).toHaveTextContent('line 1 ');
+    expect(scroll).toHaveTextContent(`line ${CI_LOG_BLOCK_LINES + 50}`);
+    expect(view.getByTestId('review-ci-log').dataset.cachedBlocks).toBe('2');
+  });
+});
+
+// A GitHub job's log as the forge serves it, every line with its time,
+// and the steps the backend reads out of it.
 const STEPPED: CIJob = {
   id: '20',
   name: 'unit',
   status: 'failed',
   logsAvailable: true,
-  steps: [
-    { number: 1, name: 'Set up job', status: 'success', startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:01Z' },
-    { number: 2, name: 'Run make test', status: 'failed', startedAt: '2026-01-01T00:00:01Z', completedAt: '2026-01-01T00:01:05Z' },
-    { number: 3, name: 'Run make lint', status: 'skipped', startedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:05Z' },
-    { number: 4, name: 'Complete job', status: 'success', startedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:05Z' },
-  ],
 };
 const STEPPED_LOG = [
   '2026-01-01T00:00:00.1000000Z Current runner version: 2.337.0',
@@ -279,18 +325,12 @@ const STEPPED_LOG = [
   '2026-01-01T00:00:02.0000000Z \x1b[31mFAIL\x1b[0m pkg/a',
   '2026-01-01T00:01:05.1000000Z ##[error]Process completed with exit code 2.',
   '2026-01-01T00:01:05.2000000Z Cleaning up orphan processes',
-  '',
-].join('\n');
-
-const GITLAB_LOG = [
-  'section_start:1700000000:prepare_executor',
-  'Preparing the docker executor',
-  'section_end:1700000004:prepare_executor',
-  'section_start:1700000004:step_script',
-  'Executing step_script',
-  '$ make test',
-  '',
-].join('\n');
+];
+const STEPS = [
+  section('step:1', 'Set up job', 'success', 0, 1, { durationSeconds: 1 }),
+  section('step:2', 'Run make test', 'failed', 1, 4, { durationSeconds: 64 }),
+  section('step:4', 'Complete job', 'success', 4, 5),
+];
 
 type Queries = ReturnType<typeof within>;
 
@@ -304,18 +344,17 @@ function sectionRow(view: Queries, key: string): HTMLElement {
   return row;
 }
 
-function renderStepped(overrides: Record<string, unknown> = {}) {
+function renderStepped(overrides: Record<string, unknown> = {}, steps = STEPS) {
   return renderLogView({
     view: { stageName: 'CI', jobId: '20', job: STEPPED },
-    log: { text: STEPPED_LOG, truncated: false, totalBytes: STEPPED_LOG.length },
     openSections: new SvelteSet<string>(),
     ...overrides,
-  });
+  }, new FakeCILog(STEPPED_LOG, steps));
 }
 
 describe('<ReviewCILogView> sections', () => {
-  it('lists the steps collapsed, with status and duration, and no skipped step', async () => {
-    const { view } = renderStepped();
+  it('lists the rows collapsed, with status and duration, and reads no lines', async () => {
+    const { view, fake } = renderStepped();
     await settle();
     expect(sectionRows(view).map((row) => [row.dataset.key, row.dataset.status, row.dataset.open])).toEqual([
       ['step:1', 'success', 'false'],
@@ -326,12 +365,13 @@ describe('<ReviewCILogView> sections', () => {
     expect(sectionRow(view, 'step:2')).toHaveTextContent('1m 4s');
     // Nothing expands on its own, not even the failed step.
     expect(view.getByTestId('review-ci-log-scroll')).not.toHaveTextContent('FAIL');
+    expect(fake.reads).toEqual([]);
   });
 
   it('asks to toggle a row and shows only an open row\'s lines', async () => {
     const onToggleSection = vi.fn();
     const openSections = new SvelteSet<string>();
-    const { view } = renderStepped({ onToggleSection, openSections });
+    const { view, fake } = renderStepped({ onToggleSection, openSections });
     await settle();
     await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-toggle'));
     await settle();
@@ -347,14 +387,15 @@ describe('<ReviewCILogView> sections', () => {
     expect(scroll).toHaveTextContent('##[error]Process completed with exit code 2.');
     expect(scroll).not.toHaveTextContent('Current runner version');
     expect(scroll).not.toHaveTextContent('Cleaning up orphan processes');
+    // The open row reads its own lines only.
+    expect(fake.reads).toEqual([[0, 5]]);
   });
 
   it('expands every row with lines, then collapses them, from one control', async () => {
     const onSetSectionsOpen = vi.fn();
     const openSections = new SvelteSet<string>();
     // A step not reached yet has nothing to expand.
-    const job: CIJob = { ...STEPPED, steps: [...STEPPED.steps!, { number: 5, name: 'Upload', status: 'pending' }] };
-    const { view } = renderStepped({ view: { stageName: 'CI', jobId: '20', job }, onSetSectionsOpen, openSections });
+    const { view } = renderStepped({ onSetSectionsOpen, openSections }, [...STEPS, section('step:5', 'Upload', 'pending', 5, 5)]);
     await settle();
     expect(sectionRow(view, 'step:5').dataset.status).toBe('pending');
     const control = view.getByTestId('review-ci-log-expand-all');
@@ -370,88 +411,52 @@ describe('<ReviewCILogView> sections', () => {
     expect(onSetSectionsOpen).toHaveBeenLastCalledWith(['step:1', 'step:2', 'step:4'], false);
   });
 
-  it('sends one section as plain text', async () => {
+  it('asks to send one section', async () => {
     const onSendSection = vi.fn();
     const { view } = renderStepped({ onSendSection });
     await settle();
     await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-send'));
-    expect(onSendSection).toHaveBeenCalledWith({
-      name: 'Run make test',
-      status: 'failed',
-      text: [
-        '2026-01-01T00:00:01.2000000Z ##[group]Run make test',
-        '2026-01-01T00:00:02.0000000Z FAIL pkg/a',
-        '2026-01-01T00:01:05.1000000Z ##[error]Process completed with exit code 2.',
-      ].join('\n'),
-      truncatedTop: false,
-    });
+    expect(onSendSection).toHaveBeenCalledWith(STEPS[1]);
   });
 
-  it('marks the row a cut log starts partway through', async () => {
-    const tail = STEPPED_LOG.split('\n').slice(2).join('\n');
-    const { view } = renderStepped({
-      log: { text: tail, truncated: true, totalBytes: 3 * 1024 * 1024 },
-      openSections: new SvelteSet<string>(['20/step:2']),
-    });
-    await settle();
-    expect(view.getByTestId('review-ci-log-truncated')).toHaveTextContent('Showing the tail of a 3.0 MB log. Save to file for the full log.');
-    expect(view.getAllByTestId('review-ci-section-cut')).toHaveLength(1);
-    expect(within(sectionRow(view, 'step:1')).getByTestId('review-ci-section-toggle')).toBeDisabled();
-  });
-
-  it('shows GitLab sections without their markers, and a running one with its line count', async () => {
+  it('shows a running GitLab section with its line count', async () => {
     const job: CIJob = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
+    const fake = new FakeCILog(['Preparing the docker executor', 'Executing step_script', '$ make test'], [
+      section('section:prepare_executor:1700000000', 'prepare_executor', 'done', 0, 1, { durationSeconds: 4 }),
+      section('section:step_script:1700000004', 'step_script', 'running', 1, 3),
+    ]);
     const { view } = renderLogView({
       view: { stageName: 'test', jobId: '20', job },
-      log: { text: GITLAB_LOG, truncated: false, totalBytes: GITLAB_LOG.length },
       forge: 'gitlab',
       openSections: new SvelteSet<string>(['20/section:prepare_executor:1700000000', '20/section:step_script:1700000004']),
-    });
+    }, fake);
     await settle();
     expect(sectionRows(view).map((row) => [row.dataset.status, row.textContent?.trim().replace(/\s+/g, ' ')])).toEqual([
-      ['done', 'Preparing the docker executor 4s'],
-      ['running', 'Executing step_script 2 lines'],
+      ['done', 'prepare_executor 4s'],
+      ['running', 'step_script 2 lines'],
     ]);
     const scroll = view.getByTestId('review-ci-log-scroll');
+    expect(scroll).toHaveTextContent('Preparing the docker executor');
     expect(scroll).toHaveTextContent('$ make test');
-    expect(scroll).not.toHaveTextContent('section_');
   });
 
   it('says a GitLab trace is loading while the forge has none for a running job', async () => {
-    const { view } = renderLogView({
-      log: { text: '', truncated: false, totalBytes: 0 },
-      available: false,
-      forge: 'gitlab',
-    });
+    const { view } = renderLogView({ log: unpublished(), forge: 'gitlab' });
     await settle();
     expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The trace is loading.');
   });
 });
 
-// happy-dom has no clipboard; the stub is an own property the shared-worker
-// guard expects gone (not present as undefined) when the file ends.
-const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-
-function stubClipboard(writeText: (text: string) => Promise<void>) {
-  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
-}
-
 describe('<ReviewCILogView> section copy', () => {
-  afterEach(() => {
-    delete (navigator as { clipboard?: unknown }).clipboard;
-    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
-  });
-
-  it('copies the section as plain text and shows Copied until the swap resets', async () => {
+  it('asks to copy a section and shows Copied once it is, until the swap resets', async () => {
     vi.useFakeTimers();
     try {
-      const writeText = vi.fn(async () => {});
-      stubClipboard(writeText);
-      const { view } = renderStepped();
+      const onCopySection = vi.fn(async () => true);
+      const { view } = renderStepped({ onCopySection });
       await vi.advanceTimersByTimeAsync(10);
       await fireEvent.click(within(sectionRow(view, 'step:4')).getByTestId('review-ci-section-copy'));
       await vi.advanceTimersByTimeAsync(0);
-      expect(writeText).toHaveBeenCalledWith('2026-01-01T00:01:05.2000000Z Cleaning up orphan processes');
+      expect(onCopySection).toHaveBeenCalledWith(STEPS[2]);
       expect(within(sectionRow(view, 'step:4')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copied');
       expect(within(sectionRow(view, 'step:1')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copy section');
       await vi.advanceTimersByTimeAsync(2000);
@@ -461,13 +466,13 @@ describe('<ReviewCILogView> section copy', () => {
     }
   });
 
-  it('raises a toast when the clipboard refuses', async () => {
-    const before = getToasts().length;
-    stubClipboard(async () => { throw new DOMException('denied', 'NotAllowedError'); });
-    const { view } = renderStepped();
+  it('does not show Copied when the copy failed', async () => {
+    const onCopySection = vi.fn(async () => false);
+    const { view } = renderStepped({ onCopySection });
     await settle();
     await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-copy'));
-    await vi.waitFor(() => expect(getToasts().length).toBe(before + 1));
-    expect(getToasts().at(-1)?.message).toBe('Failed to copy');
+    await settle();
+    expect(onCopySection).toHaveBeenCalledTimes(1);
+    expect(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copy section');
   });
 });
