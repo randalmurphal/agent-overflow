@@ -167,6 +167,9 @@ func unpackAppBundle(ctx context.Context, archive, root string) error {
 		}
 		seen[name] = true
 		dest := filepath.Join(root, filepath.FromSlash(name))
+		if !strings.HasPrefix(dest, root+string(filepath.Separator)) {
+			return fmt.Errorf("supervise: bundle entry %q leaves the extraction root", entry.Name)
+		}
 		mode := entry.Mode()
 		if mode.IsDir() {
 			if err := os.MkdirAll(dest, 0o700); err != nil {
