@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -295,8 +296,8 @@ func TestPRUpdateSetupFailureCarriesItsMessage(t *testing.T) {
 	}
 }
 
-// A re-sent follow revalidates the log with the ETag the last fetch
-// returned: the forge's 304 keeps the text and sends no frame.
+// A re-sent follow revalidates the cached log with the ETag the last
+// download returned: the forge's 304 keeps the version and sends no frame.
 func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {
 	t.Parallel()
 	f := newPRCIFixture(t, true)
@@ -312,14 +313,12 @@ func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-follow: %v", err)
 	}
-	if state := again.Logs["7"]; state.Text != "done\n" || !state.Available || state.Error != "" {
-		t.Fatalf("re-follow state = %+v, want the held text", state)
+	if state := again.Logs["7"]; state.Version != 1 || state.TotalLines != 1 || !state.Available || state.Error != "" {
+		t.Fatalf("re-follow state = %+v, want the held version", state)
 	}
-	f.mu.Lock()
-	etags := append([]string(nil), f.logETags...)
-	f.mu.Unlock()
-	if len(etags) != 2 || etags[0] != "" || etags[1] != strconv.Quote("done\n") {
-		t.Fatalf("log fetches carried If-None-Match %q, want none then the first answer's ETag", etags)
+	requests := f.requests()
+	if len(requests) != 2 || requests[0].ETag != "" || requests[1].ETag != strconv.Quote("done\n") {
+		t.Fatalf("log requests %+v, want none then the first answer's ETag", requests)
 	}
 	expectNoLogEvent(t, f.logEvents, "a 304 re-fetch")
 }
@@ -418,18 +417,18 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	}
 }
 
-// A followed GitLab trace over the read cap reaches the pane as its tail:
-// the transport re-requests the tail as a Range, the follow keeps the last
-// ciLogDisplayTailBytes from a line start, and its next fetch revalidates
-// with the trace's ETag.
-func TestPRCILogFollowOfAnOverCapTraceShowsItsTail(t *testing.T) {
+// A followed GitLab trace larger than any former read cap reaches the
+// cache whole through the shipped transport, without a Range, and is read
+// a window at a time from its first line to its last; the follow's next
+// fetch revalidates it with the trace's ETag.
+func TestPRCILogFollowOfALargeTraceIsCachedWhole(t *testing.T) {
 	t.Parallel()
 	var trace bytes.Buffer
-	for i := 0; trace.Len() <= 17*1024*1024; i++ {
-		fmt.Fprintf(&trace, "line %08d of the trace\n", i)
+	lines := 0
+	for ; trace.Len() <= 17*1024*1024; lines++ {
+		fmt.Fprintf(&trace, "line %08d of the trace\n", lines)
 	}
 	full := trace.Bytes()
-	lastLine := full[bytes.LastIndexByte(full[:len(full)-1], '\n')+1:]
 	const etag = `"trace-v1"`
 	var plain, ranges, notModified atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +450,7 @@ func TestPRCILogFollowOfAnOverCapTraceShowsItsTail(t *testing.T) {
 		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(full))
 	})
 	f := newPRCIFixture(t, true)
-	f.app.prUpdates.ciLogFetchFn = nil
+	f.app.prUpdates.ciLogStreamFn = nil
 	isolatedForgeCore(t, f.app, handler)
 	// ConfigureIsolation keeps the product cadences; this follow ticks
 	// every 20ms.
@@ -474,14 +473,19 @@ func TestPRCILogFollowOfAnOverCapTraceShowsItsTail(t *testing.T) {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
 	state := result.Logs["7"]
-	if state.Error != "" || !state.Truncated || len(state.Text) > ciLogDisplayTailBytes || len(state.Text) < ciLogDisplayTailBytes-1024 {
-		t.Fatalf("follow state: error %q truncated %t len %d", state.Error, state.Truncated, len(state.Text))
+	if state.Error != "" || !state.Available || state.TotalLines != lines || state.TotalBytes != int64(len(full)) {
+		t.Fatalf("follow state = %d lines, %d bytes, error %q; want %d lines, %d bytes", state.TotalLines, state.TotalBytes, state.Error, lines, len(full))
 	}
-	if !strings.HasPrefix(state.Text, "line ") || !strings.HasSuffix(state.Text, string(lastLine)) {
-		t.Fatalf("follow text is not the trace's tail from a line start: %q ... %q", state.Text[:40], state.Text[len(state.Text)-40:])
+	first, err := f.app.GetPRCILogLines(pr, "7", 0, 2)
+	if err != nil || !slices.Equal(first.Lines, []string{"line 00000000 of the trace", "line 00000001 of the trace"}) {
+		t.Fatalf("top of the trace = %q, %v", first.Lines, err)
 	}
-	if ranges.Load() != 1 {
-		t.Fatalf("Range requests = %d, want the one tail read", ranges.Load())
+	last, err := f.app.GetPRCILogLines(pr, "7", lines-1, 10)
+	if err != nil || !slices.Equal(last.Lines, []string{fmt.Sprintf("line %08d of the trace", lines-1)}) {
+		t.Fatalf("bottom of the trace = %q, %v", last.Lines, err)
+	}
+	if ranges.Load() != 0 {
+		t.Fatalf("Range requests = %d, want the whole trace in one read", ranges.Load())
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for notModified.Load() == 0 && time.Now().Before(deadline) {
@@ -490,8 +494,8 @@ func TestPRCILogFollowOfAnOverCapTraceShowsItsTail(t *testing.T) {
 	if notModified.Load() == 0 {
 		t.Fatal("the follow's next fetch did not revalidate with the trace's ETag")
 	}
-	if plain.Load() != 2 {
-		t.Fatalf("trace requests without If-None-Match = %d, want the tail read's two", plain.Load())
+	if plain.Load() != 1 {
+		t.Fatalf("trace requests without If-None-Match = %d, want the one download", plain.Load())
 	}
 	for len(f.logEvents) > 0 {
 		<-f.logEvents

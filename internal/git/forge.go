@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"agent-overflow/internal/forgeattach"
@@ -58,10 +59,10 @@ type Forge interface {
 	// threadID is the same id ReadPR reported: a GitHub review thread node
 	// id, a GitLab discussion id.
 	SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error
-	// GetCIJobLog fetches the log/trace of one CI job of ref's repository,
-	// conditional on the request's ETag (see CIJobLog).
-	GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error)
-	// CILogStreams reports whether GetCIJobLog serves a running job's log
+	// StreamCIJobLog reads the raw log/trace of one CI job of ref's
+	// repository (see Core.StreamCIJobLog).
+	StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// CILogStreams reports whether StreamCIJobLog serves a running job's log
 	// as it grows (GitLab's trace), so following it at a quick cadence
 	// shows progress. GitHub answers 404 until the job's log blob exists,
 	// in practice once the job completed (ErrCIJobLogNotFound).
@@ -375,8 +376,8 @@ func (nullForge) SetThreadResolved(context.Context, PRReference, string, bool) e
 
 func (nullForge) CILogStreams() bool { return false }
 
-func (nullForge) GetCIJobLog(context.Context, PRReference, CIJobLogRequest) (CIJobLog, error) {
-	return CIJobLog{}, ErrUnsupportedForge
+func (nullForge) StreamCIJobLog(context.Context, PRReference, CIJobLogRequest, func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+	return false, ErrUnsupportedForge
 }
 
 // SplitProjectForForge separates "namespace/repo" with per-forge
@@ -529,9 +530,14 @@ func (c *Core) CILogStreams(ref PRReference) bool {
 	return c.ForgeByID(ref.Forge).CILogStreams()
 }
 
-func (c *Core) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
+// StreamCIJobLog reads one CI job's raw log as the forge serves it, for
+// the CI log store to write to disk: once the answer's headers are in it
+// calls begin, and the body goes to the writer begin returns, of any size.
+// It reports a 304 to the request's ETag as notModified, begin never
+// called; a 404 is ErrCIJobLogNotFound.
+func (c *Core) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	if err := ref.Validate(); err != nil {
-		return CIJobLog{}, err
+		return false, err
 	}
-	return c.ForgeByID(ref.Forge).GetCIJobLog(ctx, ref, req)
+	return c.ForgeByID(ref.Forge).StreamCIJobLog(ctx, ref, req, begin)
 }

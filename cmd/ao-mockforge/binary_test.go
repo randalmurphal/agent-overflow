@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -239,17 +240,21 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Jobs[1].Steps != nil || pipeline.Stages[0].Jobs[2].LogsAvailable {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	log, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "902"})
-	if err != nil || log.Text != "lint failed" || log.ETag == "" {
-		t.Fatalf("GetCIJobLog = %+v, %v", log, err)
+	log, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902"})
+	if err != nil || log.text != "\xef\xbb\xbflint failed" || log.etag == "" || log.status != http.StatusOK {
+		t.Fatalf("StreamCIJobLog = %+v, %v", log, err)
 	}
-	if again, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "902", ETag: log.ETag}); err != nil || !again.NotModified || again.ETag != log.ETag {
-		t.Fatalf("revalidated GetCIJobLog = %+v, %v", again, err)
+	if again, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902", ETag: log.etag}); err != nil || !again.notModified {
+		t.Fatalf("revalidated StreamCIJobLog = %+v, %v", again, err)
 	}
-	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "903"}); err == nil {
+	// A resume reads the rest of the blob from its offset.
+	if rest, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "902", From: 8}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 8 || rest.text != "failed" || rest.etag != log.etag {
+		t.Fatalf("resumed StreamCIJobLog = %+v, %v", rest, err)
+	}
+	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "903"}); err == nil {
 		t.Fatal("a queued job served a log")
 	}
-	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "904"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "904"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld log error = %v, want ErrCIJobLogNotFound", err)
 	}
 
@@ -302,13 +307,27 @@ const gitlabSectionTrace = "2026-01-01T00:00:00.100000Z 00O \x1b[0Ksection_start
 	"2026-01-01T00:00:02.300000Z 00O \x1b[0Ksection_end:1767225602:prepare_executor\r\x1b[0K\x1b[0Ksection_start:1767225602:step_script[collapsed=true]\r\x1b[0K\x1b[0K\x1b[36;1mExecuting \"step_script\"\x1b[0;m\n" +
 	"2026-01-01T00:00:03.400000Z 00O $ make test\n"
 
-const gitlabSectionTraceCleaned = "section_start:1767225600:prepare_executor\n" +
-	"2026-01-01T00:00:00.100000Z \x1b[36;1mPreparing the \"docker\" executor\x1b[0;m\n" +
-	"2026-01-01T00:00:01.200000Z Using docker image alpine\n" +
-	"section_end:1767225602:prepare_executor\n" +
-	"section_start:1767225602:step_script[collapsed=true]\n" +
-	"2026-01-01T00:00:02.300000Z \x1b[36;1mExecuting \"step_script\"\x1b[0;m\n" +
-	"2026-01-01T00:00:03.400000Z $ make test\n"
+// streamedLog is one job log answer as the CI log cache receives it.
+type streamedLog struct {
+	text, etag  string
+	status      int
+	offset      int64
+	notModified bool
+}
+
+// streamLog reads a job log through the core the way the CI log cache
+// does.
+func streamLog(t *testing.T, core *gitops.Core, ref gitops.PRReference, req gitops.CIJobLogRequest) (streamedLog, error) {
+	t.Helper()
+	var out streamedLog
+	var body strings.Builder
+	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(st gitops.CIJobLogStart) (io.Writer, error) {
+		out.status, out.etag, out.offset = st.Status, st.ETag, st.Offset
+		return &body, nil
+	})
+	out.text, out.notModified = body.String(), notModified
+	return out, err
+}
 
 // TestGitHubRunningJobLogThroughTheAppsForgeCode: the app's GitHub CI code
 // against the fake's Actions endpoints while the jobs API reports a job
@@ -340,20 +359,22 @@ func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
 	if r.core.CILogStreams(ref) {
 		t.Fatal("GitHub reports that it streams running logs")
 	}
-	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("running log before its blob exists: %v, want ErrCIJobLogNotFound", err)
 	}
 	reseed(func(job *forgefake.Job) { job.LogWithheld = false })
-	first, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601"})
-	if err != nil || first.Text != "2026-01-01T00:00:00.1000000Z Current runner version: '2.337.0'\n" || first.ETag == "" {
+	// The blob starts with the byte order mark GitHub writes; the CI log
+	// cache drops it.
+	first, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601"})
+	if err != nil || first.text != "\xef\xbb\xbf2026-01-01T00:00:00.1000000Z Current runner version: '2.337.0'\n" || first.etag == "" {
 		t.Fatalf("running log = %+v, %v", first, err)
 	}
-	if same, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.ETag}); err != nil || !same.NotModified {
+	if same, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.etag}); err != nil || !same.notModified {
 		t.Fatalf("unchanged running log = %+v, %v; want NotModified", same, err)
 	}
 	reseed(func(job *forgefake.Job) { job.Log += "2026-01-01T00:00:01.2000000Z ##[group]Run make test\n" })
-	grown, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.ETag})
-	if err != nil || grown.NotModified || grown.ETag == first.ETag || !strings.HasSuffix(grown.Text, "##[group]Run make test\n") {
+	grown, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601", ETag: first.etag})
+	if err != nil || grown.notModified || grown.etag == first.etag || !strings.HasSuffix(grown.text, "##[group]Run make test\n") {
 		t.Fatalf("grown running log = %+v, %v", grown, err)
 	}
 
@@ -420,12 +441,16 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		pipeline.Stages[0].Name != "build" || pipeline.Stages[0].Jobs[0].DurationSeconds != 60 || pipeline.Stages[1].Jobs[0].ID != "12" {
 		t.Fatalf("ListPRCIJobs = %+v", pipeline)
 	}
-	log, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "11"})
-	if err != nil || log.Text != "built" || log.ETag == "" {
-		t.Fatalf("GetCIJobLog = %+v, %v", log, err)
+	log, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11"})
+	if err != nil || log.text != "built" || log.etag == "" {
+		t.Fatalf("StreamCIJobLog = %+v, %v", log, err)
 	}
-	if again, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "11", ETag: log.ETag}); err != nil || !again.NotModified {
-		t.Fatalf("revalidated GetCIJobLog = %+v, %v", again, err)
+	if again, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11", ETag: log.etag}); err != nil || !again.notModified {
+		t.Fatalf("revalidated StreamCIJobLog = %+v, %v", again, err)
+	}
+	// A completed trace answers a resume from its offset.
+	if rest, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "11", From: 2}); err != nil || rest.status != http.StatusPartialContent || rest.offset != 2 || rest.text != "ilt" {
+		t.Fatalf("resumed trace = %+v, %v", rest, err)
 	}
 	// The merge request read revalidates its ETag: a second read is a 304
 	// the transport answers from its store.
@@ -437,13 +462,17 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	}) {
 		t.Fatal("the second merge request read was not a 304")
 	}
-	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
+	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "13"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("withheld trace error = %v, want ErrCIJobLogNotFound", err)
 	}
-	// A running trace keeps its section markers, each on a line of its
-	// own, for the log view to group lines by.
-	if live, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "12"}); err != nil || live.Text != gitlabSectionTraceCleaned {
-		t.Fatalf("running trace = %q, %v; want %q", live.Text, err, gitlabSectionTraceCleaned)
+	// A running trace arrives as the runner wrote it, section markers
+	// and all, for the CI log cache to clean and index; it ignores a
+	// resume's Range and answers whole.
+	if live, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "12"}); err != nil || live.text != gitlabSectionTrace {
+		t.Fatalf("running trace = %q, %v; want %q", live.text, err, gitlabSectionTrace)
+	}
+	if live, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "12", From: 10}); err != nil || live.status != http.StatusOK || live.text != gitlabSectionTrace {
+		t.Fatalf("resumed running trace = %d %q, %v; want the whole trace", live.status, live.text, err)
 	}
 
 	// One pump tick reads the merge request once and derives every part

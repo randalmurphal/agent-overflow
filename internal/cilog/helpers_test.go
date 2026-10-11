@@ -133,7 +133,7 @@ func allLines(t *testing.T, s *Store, key Key) []string {
 	t.Helper()
 	var out []string
 	for {
-		window, err := s.Lines(key, len(out), 1000, 1<<20)
+		window, err := s.Lines(key, len(out), 1000, 1<<20, 1<<30)
 		if err != nil {
 			t.Fatalf("Lines(%d): %v", len(out), err)
 		}
@@ -149,7 +149,7 @@ func sectionText(t *testing.T, s *Store, key Key, section Section) []string {
 	if section.End <= section.Start {
 		return nil
 	}
-	window, err := s.Lines(key, section.Start, section.End-section.Start, 1<<30)
+	window, err := s.Lines(key, section.Start, section.End-section.Start, 1<<30, 1<<30)
 	if err != nil {
 		t.Fatalf("Lines: %v", err)
 	}

@@ -21,7 +21,7 @@ var interactiveForgeCalls = map[string]struct{ owner, call string }{
 	"SubmitPRReview":         {"gitCore", "SubmitReview"},
 	"ReplyToPRThread":        {"gitCore", "ReplyToThread"},
 	"SetPRThreadResolved":    {"gitCore", "SetThreadResolved"},
-	"SavePRCIJobLog":         {"gitCore", "GetCIJobLog"},
+	"SavePRCIJobLog":         {"", "downloadCILog"},
 	"resolveForgeAttachment": {"gitCore", "FetchAttachment"},
 	"GitCreatePR":            {"gitApplication", "CreatePR"},
 	"SubscribePRUpdates":     {"", "fetchPRUpdateSnapshot"},

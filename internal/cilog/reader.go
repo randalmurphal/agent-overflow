@@ -119,20 +119,21 @@ type Lines struct {
 	// From is the first line's number.
 	From  int      `json:"from"`
 	Lines []string `json:"lines"`
-	// Clipped lists the lines (by number) cut short at the read's byte
-	// budget: a single line longer than the whole budget.
+	// Clipped lists the lines (by number) cut short: longer than the
+	// read's line bound, or a first line longer than its whole budget.
 	Clipped []int `json:"clipped,omitempty"`
 	// TotalLines and Version describe the published version read.
 	TotalLines int    `json:"totalLines"`
 	Version    uint64 `json:"version"`
 }
 
-// lines reads up to count lines from from, keeping their text within
-// budget bytes: it stops before a line that would pass the budget, except
-// that the first line is always returned, clipped at the budget on a rune
-// boundary when longer.
-func (r lineReader) lines(from, count int, budget int) ([]string, []int, error) {
-	if from >= r.idx.lines || count <= 0 {
+// lines reads up to count lines from from, each clipped at lineMax bytes
+// on a rune boundary, keeping their text within budget bytes: it stops
+// before a line that would pass the budget, except that the first line is
+// always returned, clipped at the budget when longer. A line is never
+// held past what it returns.
+func (r lineReader) lines(from, count, budget, lineMax int) ([]string, []int, error) {
+	if from >= r.idx.lines || count <= 0 || budget <= 0 || lineMax <= 0 {
 		return nil, nil, nil
 	}
 	count = min(count, r.idx.lines-from)
@@ -146,40 +147,32 @@ func (r lineReader) lines(from, count int, budget int) ([]string, []int, error) 
 	var line []byte
 	for i := 0; i < count; i++ {
 		line = line[:0]
-		room := budget - used
-		over := false
+		length := 0
 		for {
 			chunk, err := br.ReadSlice('\n')
-			if errors.Is(err, bufio.ErrBufferFull) {
-				if len(line)+len(chunk) > room {
-					if i > 0 {
-						return out, clipped, nil
-					}
-					over = true
-					line = append(line, chunk[:max(0, room-len(line))]...)
-					if _, err := skipLine(br); err != nil {
-						return nil, nil, err
-					}
-					break
-				}
-				line = append(line, chunk...)
-				continue
-			}
-			if err != nil && !(errors.Is(err, io.EOF) && len(chunk) > 0) {
+			full := errors.Is(err, bufio.ErrBufferFull)
+			if !full && err != nil && !(errors.Is(err, io.EOF) && len(chunk) > 0) {
 				return nil, nil, unexpectedEnd(err)
 			}
-			chunk = chunk[:len(chunk)-btoi(len(chunk) > 0 && chunk[len(chunk)-1] == '\n')]
-			if len(line)+len(chunk) > room {
-				if i > 0 {
-					return out, clipped, nil
-				}
-				over = true
-				chunk = chunk[:max(0, room-len(line))]
+			if !full && len(chunk) > 0 && chunk[len(chunk)-1] == '\n' {
+				chunk = chunk[:len(chunk)-1]
 			}
-			line = append(line, chunk...)
-			break
+			length += len(chunk)
+			if room := lineMax - len(line); room > 0 {
+				line = append(line, chunk[:min(room, len(chunk))]...)
+			}
+			if !full {
+				break
+			}
 		}
-		if over {
+		clip := length > len(line)
+		if room := budget - used; len(line) > room {
+			if i > 0 {
+				return out, clipped, nil
+			}
+			line, clip = line[:room], true
+		}
+		if clip {
 			line = trimPartialRune(line)
 			clipped = append(clipped, from+i)
 		}
@@ -187,13 +180,6 @@ func (r lineReader) lines(from, count int, budget int) ([]string, []int, error) 
 		out = append(out, string(line))
 	}
 	return out, clipped, nil
-}
-
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // trimPartialRune drops a UTF-8 sequence a clip cut in two.

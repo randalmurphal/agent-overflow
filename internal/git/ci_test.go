@@ -186,96 +186,9 @@ func TestGitLabListPRCIJobs(t *testing.T) {
 	}
 }
 
-func TestStripCISectionMarkers(t *testing.T) {
+func TestStreamCIJobLogValidatesTheJobID(t *testing.T) {
 	t.Parallel()
-	cleaned := cleanGitLabTrace("Running with gitlab-runner\n" +
-		"section_start:1714557600:step_script\r\x1b[0K\x1b[36;1mExecuting\x1b[0;m\n" +
-		"$ make test\n" +
-		"\x1b[0Ksection_end:1714557605:step_script\r\x1b[0K\n" +
-		"section_start:1714557605:after[collapsed=true]\r\x1b[0Kdone\n" +
-		"section_end:1714557606:after\r\x1b[0K\n" +
-		"section_start without a time stays\n")
-	want := "Running with gitlab-runner\n" +
-		"\x1b[36;1mExecuting\x1b[0;m\n" +
-		"$ make test\n" +
-		"done\n" +
-		"section_start without a time stays\n"
-	if got := StripCISectionMarkers(cleaned); got != want {
-		t.Fatalf("StripCISectionMarkers = %q, want %q", got, want)
-	}
-	plain := "2026-10-11T00:04:31.5805438Z ##[group]Run make\n"
-	if got := StripCISectionMarkers(plain); got != plain {
-		t.Fatalf("a log without markers changed: %q", got)
-	}
-}
-
-func TestCleanGitLabTrace(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{
-			name: "timestamped stream prefix keeps timestamp, drops flags",
-			raw:  "2026-06-26T22:39:47.158568Z 00O echo hello",
-			want: "2026-06-26T22:39:47.158568Z echo hello",
-		},
-		{
-			name: "marker-only timestamped line keeps the bare marker",
-			raw: "2026-06-26T22:39:47.158568Z 00O+\x1b[0Ksection_start:1782513587:upload_artifacts_on_success\n" +
-				"2026-06-26T22:39:47.158568Z 00O \x1b[0;33mUploading artifacts\x1b[0;m",
-			want: "section_start:1782513587:upload_artifacts_on_success\n" +
-				"2026-06-26T22:39:47.158568Z \x1b[0;33mUploading artifacts\x1b[0;m",
-		},
-		{
-			name: "inline section marker puts its CR-erased header on the next line",
-			raw:  "section_start:1714557600:step_script\r\x1b[0K\x1b[36;1mRunning steps\x1b[0;m",
-			want: "section_start:1714557600:step_script\n\x1b[36;1mRunning steps\x1b[0;m",
-		},
-		{
-			name: "section marker keeps its options",
-			raw:  "section_start:1714557600:cleanup[collapsed=true]\r\x1b[0Kdone",
-			want: "section_start:1714557600:cleanup[collapsed=true]\ndone",
-		},
-		{
-			name: "an end and a start on one line keep their order",
-			raw:  "\x1b[0Ksection_end:1714557605:prepare\r\x1b[0K\x1b[0Ksection_start:1714557605:step_script\r\x1b[0K\x1b[0K\x1b[36;1mExecuting\x1b[0;m",
-			want: "section_end:1714557605:prepare\nsection_start:1714557605:step_script\n\x1b[36;1mExecuting\x1b[0;m",
-		},
-		{
-			name: "output without a final newline stays before the end marker",
-			raw:  "2026-06-26T22:39:47.158568Z 00O last words\x1b[0Ksection_end:1782513590:step_script\r\x1b[0K",
-			want: "2026-06-26T22:39:47.158568Z last words\nsection_end:1782513590:step_script",
-		},
-		{
-			name: "carriage-return progress overwrite keeps the final frame",
-			raw:  "Downloading  10%\rDownloading  60%\rDownloading 100%",
-			want: "Downloading 100%",
-		},
-		{
-			name: "blank lines and plain lines pass through",
-			raw:  "line one\n\nline two",
-			want: "line one\n\nline two",
-		},
-		{
-			name: "erase-in-line escapes are stripped",
-			raw:  "\x1b[0Kfoo \x1b[Kbar",
-			want: "foo bar",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cleanGitLabTrace(tt.raw); got != tt.want {
-				t.Fatalf("cleanGitLabTrace = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetCIJobLogValidatesTheJobID(t *testing.T) {
-	t.Parallel()
-	if _, err := NewCore().ForgeByID("gitlab").GetCIJobLog(t.Context(), testPRRef("g/r", 1), CIJobLogRequest{JobID: "abc"}); err == nil {
+	if _, err := NewCore().ForgeByID("gitlab").StreamCIJobLog(t.Context(), testPRRef("g/r", 1), CIJobLogRequest{JobID: "abc"}, nil); err == nil {
 		t.Fatal("expected error for non-numeric job id (gitlab)")
 	}
 }

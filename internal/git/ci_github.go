@@ -3,8 +3,8 @@ package git
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -254,40 +254,24 @@ func githubRunSteps(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 	return steps, nil
 }
 
-// GetCIJobLog reads a job's log, keeping its last maxCILogBytes: a longer
-// log is read from its tail and starts at the first whole line. A 404 (the
-// job's log blob does not exist yet, see CILogStreams) is
-// ErrCIJobLogNotFound. The logs endpoint redirects to a blob; the request's
-// If-None-Match goes with the hop, and the ETag is the blob's.
-func (f *githubForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
+// StreamCIJobLog reads a job's log into the writer begin returns (see
+// Core.StreamCIJobLog). The logs endpoint redirects to a blob; the
+// request's Range and If-None-Match go with the hop, and the ETag and
+// Content-Range are the blob's. A 404 (the job's log blob does not exist
+// yet, see CILogStreams) is ErrCIJobLogNotFound. The body starts with the
+// UTF-8 byte order mark the endpoint prepends.
+func (f *githubForge) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	if err := ValidateCIJobID(req.JobID); err != nil {
-		return CIJobLog{}, err
+		return false, err
 	}
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
-		return CIJobLog{}, err
+		return false, err
 	}
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
-		return CIJobLog{}, err
+		return false, err
 	}
-	tail := forgeapi.NewTailBuffer(maxCILogBytes)
-	resp, err := client.Stream(ctx, ciLogRequest(githubRepoPath(ref)+"/actions/jobs/"+req.JobID+"/logs", req.ETag), tail, ciLogReadLimit)
-	if err != nil {
-		if errors.Is(err, forgeapi.ErrNotFound) {
-			return CIJobLog{}, fmt.Errorf("%w: %w", ErrCIJobLogNotFound, err)
-		}
-		return CIJobLog{}, err
-	}
-	if resp.NotModified {
-		return CIJobLog{ETag: req.ETag, NotModified: true}, nil
-	}
-	etag := resp.Header.Get("ETag")
-	text, cut := ciLogText(resp, tail)
-	if cut {
-		return CIJobLog{Text: string(text), ETag: etag}, nil
-	}
-	// The log endpoint prepends a UTF-8 BOM.
-	return CIJobLog{Text: strings.TrimPrefix(string(text), "\ufeff"), ETag: etag}, nil
+	return streamCILog(ctx, client, ciLogRequest(githubRepoPath(ref)+"/actions/jobs/"+req.JobID+"/logs", req), begin)
 }
 
 // CILogStreams is false: the Actions log endpoint answers 404 until the

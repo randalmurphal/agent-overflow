@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -113,11 +115,15 @@ func stubPRCIFetch(app *App) {
 	app.prUpdates.ciFetchFn = func(context.Context, gitops.PRReference, *gitops.CIPipeline, []string) (gitops.CIPipeline, error) {
 		return gitops.CIPipeline{}, nil
 	}
-	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
-		return gitops.CIJobLog{}, nil
-	}
+	app.prUpdates.ciLogStreamFn = emptyCILogStream
 	streams := true
 	app.prUpdates.ciLogStreams = &streams
+}
+
+// emptyCILogStream answers every log request with an empty log.
+func emptyCILogStream(_ context.Context, _ gitops.PRReference, _ gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
+	_, err := begin(gitops.CIJobLogStart{Status: http.StatusOK, ETag: `"empty"`})
+	return false, err
 }
 
 func capturePRUpdates(t *testing.T, app *App) chan PRUpdatedEvent {

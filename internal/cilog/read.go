@@ -93,14 +93,15 @@ func jobStateKey(job Job) string {
 }
 
 // Lines reads up to count lines from line from of key's published log,
-// within budget bytes of text (see lineReader.lines).
-func (s *Store) Lines(key Key, from, count, budget int) (Lines, error) {
+// within budget bytes of text, each line clipped at lineMax bytes (see
+// lineReader.lines).
+func (s *Store) Lines(key Key, from, count, budget, lineMax int) (Lines, error) {
 	_, v, file, err := s.open(key)
 	if err != nil {
 		return Lines{}, err
 	}
 	defer s.closeRead(v, file)
-	lines, clipped, err := lineReader{file: file, idx: v.idx}.lines(from, count, budget)
+	lines, clipped, err := lineReader{file: file, idx: v.idx}.lines(from, count, budget, lineMax)
 	if err != nil {
 		return Lines{}, fmt.Errorf("read CI log: %w", err)
 	}
@@ -110,60 +111,78 @@ func (s *Store) Lines(key Key, from, count, budget int) (Lines, error) {
 	return Lines{From: from, Lines: lines, Clipped: clipped, TotalLines: v.idx.lines, Version: v.number}, nil
 }
 
-// Section answers the row named sectionKey as the last Index computed it.
-func (s *Store) Section(key Key, sectionKey string) (Section, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e := s.entries[key.id()]
-	if e == nil || e.cur == nil {
-		return Section{}, ErrNoLog
+// SectionsWithoutLog are a job's rows while the store holds no log for
+// it: a GitHub job's steps, without lines. A GitLab trace's sections come
+// from the trace, so there are none.
+func SectionsWithoutLog(key Key, job Job) []Section {
+	if !key.github() {
+		return nil
 	}
-	if e.sectionsFrom == e.cur.number {
-		for _, section := range e.sections {
-			if section.Key == sectionKey {
-				return section, nil
-			}
-		}
+	// With no lines the split reads nothing, so it cannot fail.
+	sections, err := githubSections(lineReader{}, nil, job)
+	if err != nil {
+		return nil
 	}
-	return Section{}, fmt.Errorf("the log has no section %q", sectionKey)
+	return sections
 }
 
-// Copy writes lines [from, to) of key's published log to w, the whole log
-// for 0 and its line count. It returns the bytes written.
-func (s *Store) Copy(key Key, from, to int, w io.Writer) (int64, error) {
+// CopyLog writes key's whole published log to w and returns the bytes
+// written.
+func (s *Store) CopyLog(key Key, w io.Writer) (int64, error) {
 	_, v, file, err := s.open(key)
 	if err != nil {
 		return 0, err
 	}
 	defer s.closeRead(v, file)
-	r := lineReader{file: file, idx: v.idx}
-	if to < 0 || to > v.idx.lines {
-		to = v.idx.lines
+	return copyLines(lineReader{file: file, idx: v.idx}, file, 0, v.idx.lines, w)
+}
+
+// CopySection writes the lines of the row named sectionKey to w, as the
+// last Index computed the rows of the version it reads, and returns the
+// row.
+func (s *Store) CopySection(key Key, sectionKey string, w io.Writer) (Section, error) {
+	e, v, file, err := s.open(key)
+	if err != nil {
+		return Section{}, err
 	}
-	if from < 0 || from > to {
-		return 0, fmt.Errorf("CI log lines %d to %d are outside the log's %d", from, to, v.idx.lines)
+	defer s.closeRead(v, file)
+	var section Section
+	found := false
+	s.mu.Lock()
+	if e.sectionsFrom == v.number && e.cur == v {
+		for _, row := range e.sections {
+			if row.Key == sectionKey {
+				section, found = row, true
+				break
+			}
+		}
 	}
+	s.mu.Unlock()
+	if !found {
+		return Section{}, fmt.Errorf("the log has no section %q", sectionKey)
+	}
+	if section.Lines == 0 {
+		return Section{}, fmt.Errorf("section %q has no lines", section.Name)
+	}
+	if _, err := copyLines(lineReader{file: file, idx: v.idx}, file, section.Start, section.End, w); err != nil {
+		return Section{}, err
+	}
+	return section, nil
+}
+
+// copyLines writes lines [from, to) of a version to w.
+func copyLines(r lineReader, file io.ReaderAt, from, to int, w io.Writer) (int64, error) {
 	start, err := r.offset(from)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read CI log: %w", err)
 	}
 	end, err := r.offset(to)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read CI log: %w", err)
 	}
 	n, err := io.Copy(w, io.NewSectionReader(file, start, end-start))
 	if err != nil {
 		return n, fmt.Errorf("copy CI log: %w", err)
 	}
 	return n, nil
-}
-
-// Total is key's published size, for a caller deciding how to copy it.
-func (s *Store) Total(key Key) (lines int, bytes int64, err error) {
-	_, v, err := s.acquire(key)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer s.release(v)
-	return v.idx.lines, v.idx.bytes, nil
 }

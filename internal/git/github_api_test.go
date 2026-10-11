@@ -493,8 +493,8 @@ func TestGitHubWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), githubTestRef(1), allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.GetCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "9"}); !errors.Is(err, ErrNoForgeAPI) {
-		t.Fatalf("GetCIJobLog = %v", err)
+	if _, err := core.StreamCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 }
 
@@ -750,8 +750,25 @@ func TestGitHubPipelinePagesToTheFollowedJob(t *testing.T) {
 	}
 }
 
-// A job log has its BOM stripped; a 404 is ErrCIJobLogNotFound carrying
-// the forge's error, and any other failure is not.
+// streamTestLog reads a job log through StreamCIJobLog into memory.
+func streamTestLog(t *testing.T, core *Core, ref PRReference, req CIJobLogRequest) (CIJobLogStart, string, bool, error) {
+	t.Helper()
+	var start CIJobLogStart
+	var body strings.Builder
+	begun := false
+	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(s CIJobLogStart) (io.Writer, error) {
+		start, begun = s, true
+		return &body, nil
+	})
+	if notModified && begun {
+		t.Fatal("a 304 asked for a writer")
+	}
+	return start, body.String(), notModified, err
+}
+
+// A job log is streamed as the endpoint serves it, BOM included; a 404 is
+// ErrCIJobLogNotFound carrying the forge's error, and any other failure is
+// not.
 func TestGitHubJobLog(t *testing.T) {
 	t.Parallel()
 	status := http.StatusOK
@@ -767,12 +784,11 @@ func TestGitHubJobLog(t *testing.T) {
 		}
 		return forgeAPIAnswer{Body: "\ufefflog line one\n", Header: http.Header{"Content-Type": {"text/plain"}}}
 	})
-	read, err := core.GetCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "901"})
-	log := read.Text
-	if err != nil || log != "log line one\n" {
-		t.Fatalf("GetCIJobLog = %q, %v; want the BOM stripped", log, err)
+	start, log, _, err := streamTestLog(t, core, githubTestRef(1), CIJobLogRequest{JobID: "901"})
+	if err != nil || log != "\ufefflog line one\n" || start.Status != http.StatusOK || start.Offset != 0 {
+		t.Fatalf("StreamCIJobLog = %+v %q, %v", start, log, err)
 	}
-	if _, err := core.GetCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "901/logs"}); err == nil {
+	if _, _, _, err := streamTestLog(t, core, githubTestRef(1), CIJobLogRequest{JobID: "901/logs"}); err == nil {
 		t.Fatal("a non-numeric job id was requested")
 	}
 	if n := len(calls.all()); n != 1 {
@@ -785,43 +801,11 @@ func TestGitHubJobLog(t *testing.T) {
 		mu.Lock()
 		status = tc.status
 		mu.Unlock()
-		_, err := core.GetCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "901"})
+		_, _, _, err := streamTestLog(t, core, githubTestRef(1), CIJobLogRequest{JobID: "901"})
 		var statusErr *forgeapi.StatusError
 		if errors.Is(err, ErrCIJobLogNotFound) != tc.notFound || !errors.As(err, &statusErr) || statusErr.Status != tc.status {
-			t.Fatalf("HTTP %d: GetCIJobLog = %v, want ErrCIJobLogNotFound %v over the *StatusError", tc.status, err, tc.notFound)
+			t.Fatalf("HTTP %d: StreamCIJobLog = %v, want ErrCIJobLogNotFound %v over the *StatusError", tc.status, err, tc.notFound)
 		}
-	}
-}
-
-// A log over maxCILogBytes is read from its tail and starts at a whole
-// line.
-func TestGitHubJobLogKeepsTheTail(t *testing.T) {
-	t.Parallel()
-	line := strings.Repeat("x", 99) + "\n"
-	body := strings.Repeat(line, maxCILogBytes/len(line)+50)
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if spec := call.Header.Get("Range"); spec != "" {
-			start, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(spec, "bytes="), "-"))
-			if err != nil {
-				t.Errorf("Range %q", spec)
-			}
-			return forgeAPIAnswer{Status: http.StatusPartialContent, Body: body[start:], Header: http.Header{
-				"Content-Range":  {fmt.Sprintf("bytes %d-%d/%d", start, len(body)-1, len(body))},
-				"Content-Length": {strconv.Itoa(len(body) - start)}, "Content-Type": {"text/plain"}}}
-		}
-		// The log blob declares its length, as GitHub's does.
-		return forgeAPIAnswer{Body: body, Header: http.Header{"Content-Type": {"text/plain"}, "Content-Length": {strconv.Itoa(len(body))}}}
-	})
-	read, err := core.GetCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "901"})
-	log := read.Text
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(log) > maxCILogBytes || len(log) < maxCILogBytes-len(line) || !strings.HasPrefix(log, "xxx") || !strings.HasSuffix(body, log) || len(log)%len(line) != 0 {
-		t.Fatalf("tail of %d bytes, want whole lines within %d", len(log), maxCILogBytes)
-	}
-	if n := len(calls.all()); n != 2 {
-		t.Fatalf("requests = %d, want the probe and the Range", n)
 	}
 }
 

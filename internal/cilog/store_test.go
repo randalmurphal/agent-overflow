@@ -35,7 +35,7 @@ func TestTheCacheEvictsTheLeastRecentlyUsedLog(t *testing.T) {
 		t.Fatalf("three logs charge %d in %d files", s.Bytes(), len(logFiles(t, dir)))
 	}
 	// a is read, so b is now the oldest.
-	if _, err := s.Lines(a, 0, 1, 100); err != nil {
+	if _, err := s.Lines(a, 0, 1, 100, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 	fetchText(t, s, d, fiveKB, `"d"`)
@@ -128,7 +128,7 @@ func TestADeletedCacheDirectoryIsRecreated(t *testing.T) {
 	if s.Has(a) {
 		t.Fatal("the index still holds a log whose file was deleted")
 	}
-	if _, err := s.Lines(a, 0, 1, 100); !errors.Is(err, ErrNoLog) {
+	if _, err := s.Lines(a, 0, 1, 100, 1<<30); !errors.Is(err, ErrNoLog) {
 		t.Fatalf("read of the deleted log = %v", err)
 	}
 	if files := logFiles(t, dir); len(files) != 1 || s.Bytes() != chargeFor(2) {
@@ -138,7 +138,7 @@ func TestADeletedCacheDirectoryIsRecreated(t *testing.T) {
 	if err := os.Remove(logFiles(t, dir)[0]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Lines(b, 0, 1, 100); !errors.Is(err, ErrLogGone) || s.Has(b) {
+	if _, err := s.Lines(b, 0, 1, 100, 1<<30); !errors.Is(err, ErrLogGone) || s.Has(b) {
 		t.Fatalf("read of a missing file = %v, still held %v", err, s.Has(b))
 	}
 	if lines := logs.snapshot(); len(lines) != 0 {
