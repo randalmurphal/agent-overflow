@@ -16,14 +16,14 @@ var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]*`)
 
 // resultVocabulary is the words the guide quotes that are values a RESULT
 // carries rather than parameters or enums of a schema: request states,
-// answer kinds, call outcomes, the two search result flags and a loop or
-// watch's last outcome. Every other
+// answer kinds, call outcomes, the two search result flags, a loop or
+// watch's last outcome and a watch's undelivered output. Every other
 // backticked word must be a tool name, a parameter or an enum value.
 var resultVocabulary = []string{
 	"errors", "indexing", "last_message", "self",
 	"reply", "final",
 	"backgrounded", "blocked", "unconfirmed",
-	"last_outcome",
+	"last_outcome", "last_output",
 }
 
 func schemaVocabulary(t *testing.T, shape Shape) (names, properties, enums []string) {
