@@ -8,7 +8,7 @@
   import { getUsagePeriod, periodFromMillis } from '../../stores/usagePeriod.svelte';
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
-  import { formatUsageCostOrNull, USAGE_COST_EXPLANATION } from '../../utils/usageDisplay';
+  import { formatUsageCostOrNull } from '../../utils/usageDisplay';
 
   interface Props {
     /** '' = all providers, else 'claude' | 'codex'. */
@@ -63,7 +63,7 @@
   data-testid="usage-totals-row"
 >
   {#each tiles as tile (tile.label)}
-    <div class="flex flex-col gap-0.5" title={tile.label === 'Est. Cost' ? USAGE_COST_EXPLANATION : undefined}>
+    <div class="flex flex-col gap-0.5">
       <span class="text-[0.625rem] uppercase tracking-[0.12em] text-fg-subtle whitespace-nowrap">{tile.label}</span>
       <span class="text-sm font-medium text-fg tabular-nums" data-testid="usage-totals-value">
         {tile.value}
