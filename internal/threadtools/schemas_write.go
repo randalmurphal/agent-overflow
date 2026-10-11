@@ -115,10 +115,22 @@ func askSchema(shape Shape) map[string]any {
 
 func replySchema() map[string]any {
 	properties := map[string]any{
-		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering. It resolves to one pending request on this computer; a token from anywhere else is refused."},
-		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained."},
+		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering, or from a worker's question or approval that woke you. It resolves to one pending request on this computer; a token from anywhere else is refused."},
+		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained. For a worker's question with one part this is the answer it receives; for a worker's approval it is your reason, kept with your decision."},
+		"decision": map[string]any{
+			"type":        "string",
+			"enum":        []string{DecisionAllow, DecisionDeny},
+			"description": "Only for a worker's approval: allow runs what it asked to run, deny refuses it.",
+		},
+		"answers": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string", "minLength": 1},
+			"minItems":    1,
+			"maxItems":    MaxReplyAnswers,
+			"description": "Only for a worker's question with several parts: one answer per part, in the order the wake lists them. text is then not sent to the worker.",
+		},
 	}
-	description := "Answer the agent in another thread that sent you a message. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now."
+	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
 	return tool("thread_reply", description, properties, "token", "text")
 }
 

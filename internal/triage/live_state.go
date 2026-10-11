@@ -169,10 +169,13 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 // provider:compacting. Ids and timestamps only; the requests' prose stays
 // on LiveStateSnapshotForThread, whose RPC carries the higher scope.
 type ThreadLiveActivity struct {
-	ThreadID              string
-	ActiveTurn            *ActiveTurnSnapshot
-	ApprovalRequestIDs    []string
-	UserInputRequestIDs   []string
+	ThreadID            string
+	ActiveTurn          *ActiveTurnSnapshot
+	ApprovalRequestIDs  []string
+	UserInputRequestIDs []string
+	// PromptRoutes names, by request id, the standing agent each routed
+	// prompt went to instead of the user. Nil when none was routed.
+	PromptRoutes          map[string]provider.PromptRoute
 	CompactingSinceUnixMs int64
 }
 
@@ -196,14 +199,25 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 			round := st.currentRound
 			entry.ActiveTurn = &round
 		}
+		route := func(requestID string, to *provider.PromptRoute) {
+			if to == nil {
+				return
+			}
+			if entry.PromptRoutes == nil {
+				entry.PromptRoutes = make(map[string]provider.PromptRoute)
+			}
+			entry.PromptRoutes[requestID] = *to
+		}
 		for _, requestID := range st.pendingApprovalOrder {
-			if _, ok := st.pendingApprovals[requestID]; ok {
+			if pending, ok := st.pendingApprovals[requestID]; ok {
 				entry.ApprovalRequestIDs = append(entry.ApprovalRequestIDs, requestID)
+				route(requestID, pending.Request.RoutedTo)
 			}
 		}
 		for _, requestID := range st.pendingUserInputOrder {
-			if _, ok := st.pendingUserInputs[requestID]; ok {
+			if request, ok := st.pendingUserInputs[requestID]; ok {
 				entry.UserInputRequestIDs = append(entry.UserInputRequestIDs, requestID)
+				route(requestID, request.RoutedTo)
 			}
 		}
 		if entry.ActiveTurn == nil && len(entry.ApprovalRequestIDs) == 0 &&

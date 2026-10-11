@@ -95,6 +95,9 @@ const (
 	// MaxWakeIntervalSeconds bounds a loop or watch interval at thirty
 	// days. The floor is the App's, because a test boot lowers it.
 	MaxWakeIntervalSeconds = 30 * 24 * 60 * 60
+	// MaxReplyAnswers bounds thread_reply's answers, one per question of a
+	// worker's prompt.
+	MaxReplyAnswers = 16
 )
 
 // dataNotice is the sentence every read tool's description ends with.

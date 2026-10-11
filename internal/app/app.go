@@ -102,6 +102,9 @@ type App struct {
 	// ordered queue its moments dispatch on, and the small edge state the
 	// pure mapping is handed. See app_notification_mapping.go.
 	notifications notificationDispatch
+	// workerPrompts routes the prompts of a standing agent's workers to it
+	// (app_worker_prompts.go).
+	workerPrompts workerPrompts
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its

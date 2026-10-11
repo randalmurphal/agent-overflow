@@ -32,6 +32,7 @@
   } from '../../stores/threadFilter.svelte';
   import {
     getEffectiveThreadStatus,
+    getThreadWaitingOn,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
@@ -93,6 +94,7 @@
       threads: threads.filter(thread => !thread.forkPreparing),
       groups,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
       activityOf: (thread) => getThreadLiveActivityAt(thread),
     }),

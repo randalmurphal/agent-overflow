@@ -99,7 +99,9 @@ export function resolveEffectiveThreadStatus(
  *   1. error            → "Failed"
  *   2. pending-approval → "Pending approval" (blocking tool permission)
  *   3. awaiting-input   → "Awaiting input" (agent asking a question)
- *   4. running          → mode-aware (Planning / Working)
+ *   4. running          → mode-aware (Planning / Working), or
+ *                         "Waiting on <agent>" for a worker whose prompts
+ *                         went to its standing agent (`waitingOn`)
  *   5. setup-failed     → "Setup Failed" (worktree setup recipe did not finish)
  *   6. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
  *   7. interrupted      → "Interrupted" (prior app closed mid-turn)
@@ -115,6 +117,7 @@ export function resolveEffectiveThreadStatus(
 export function resolveThreadStatusPill(
   thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
   liveStatus: ThreadLiveStatus,
+  waitingOn = '',
 ): ThreadStatusPill | null {
   if (liveStatus === 'error') {
     return {
@@ -140,6 +143,9 @@ export function resolveThreadStatusPill(
     };
   }
   if (liveStatus === 'running') {
+    // A worker whose question went to the standing agent that spawned it
+    // is working, not waiting on the user: no glow.
+    if (waitingOn) return { label: `Waiting on ${waitingOn}`, ...RUNNING_SUCCESS };
     return { label: thread.mode === 'plan' ? 'Planning' : 'Working', ...RUNNING_SUCCESS };
   }
   if (liveStatus === 'setup-failed') {

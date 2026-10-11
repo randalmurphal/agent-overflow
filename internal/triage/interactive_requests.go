@@ -2,7 +2,9 @@ package triage
 
 import (
 	"strings"
+	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -120,4 +122,66 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 	}
 
 	return snapshot
+}
+
+// UnroutePrompt hands a routed prompt back to the user: the agent it went to
+// could not take it. The prompt is announced again without RoutedTo, so every
+// client shows it as the user's and the approval notification is raised.
+// False when the prompt is no longer open or was not routed.
+func (r *Router) UnroutePrompt(threadID, requestID string) bool {
+	if r == nil || threadID == "" || requestID == "" {
+		return false
+	}
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		r.mu.Unlock()
+		return false
+	}
+	var approval *provider.ApprovalRequest
+	var question *provider.UserInputRequest
+	if pending, ok := st.pendingApprovals[requestID]; ok && pending.Request.RoutedTo != nil {
+		pending.Request.RoutedTo = nil
+		st.pendingApprovals[requestID] = pending
+		request := pending.Request
+		approval = &request
+	} else if request, ok := st.pendingUserInputs[requestID]; ok && request.RoutedTo != nil {
+		request.RoutedTo = nil
+		st.pendingUserInputs[requestID] = request
+		question = &request
+	}
+	r.mu.Unlock()
+
+	now := time.Now().UnixMilli()
+	switch {
+	case approval != nil:
+		r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
+			Action: "request", ThreadID: threadID, Request: approval, RequestedAt: now,
+		})
+	case question != nil:
+		r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
+			Action: "request", ThreadID: threadID, Request: question, RequestedAt: now,
+		})
+	default:
+		return false
+	}
+	return true
+}
+
+// PendingPromptOpen reports whether a prompt is still waiting for an answer.
+func (r *Router) PendingPromptOpen(threadID, requestID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
+	}
+	if _, ok := st.pendingApprovals[requestID]; ok {
+		return true
+	}
+	_, ok := st.pendingUserInputs[requestID]
+	return ok
 }

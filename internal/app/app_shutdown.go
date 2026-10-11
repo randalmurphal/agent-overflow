@@ -213,6 +213,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Notification jobs read the thread title out of SQLite, so they drain
 	// with the other reactors rather than after the database closes.
 	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))
+	// Worker prompt deliveries are fed by triage too, and read SQLite.
+	record("drain worker prompts", a.drainWorkerPrompts(ctx, notificationDrainTimeout))
 	// The push fan-out reads registrations out of the same database, so it
 	// drains here too — and after the notification queue, because that is
 	// what feeds it.

@@ -114,6 +114,7 @@ export function applyApprovalEvent(evt: ApprovalEvent): void {
       evt.request.threadId,
       evt.request.requestId,
       evt.request.kind,
+      evt.request.routedTo,
     );
     for (const pane of ingestPanes()) {
       if (pane.threadId === evt.request.threadId) {
@@ -146,7 +147,7 @@ export function applyUserInputEvent(evt: UserInputEvent): void {
   if (!evt) return;
 
   if (evt.action === 'request' && evt.request?.threadId) {
-    projectUserInputRequest(evt.request.threadId, evt.request.requestId);
+    projectUserInputRequest(evt.request.threadId, evt.request.requestId, evt.request.routedTo);
     for (const pane of ingestPanes()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addUserInput(evt.request);

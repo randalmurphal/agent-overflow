@@ -109,6 +109,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
 	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
 	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
+	r.SetPromptRouter(a.routeWorkerPrompt)
 	return r
 }
 

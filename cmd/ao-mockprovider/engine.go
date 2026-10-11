@@ -27,7 +27,7 @@ type protocolAdapter interface {
 	// adapter then tells the app the way its CLI does: Claude Code writes a
 	// control_cancel_request for the abandoned can_use_tool callback, Codex
 	// writes nothing and lets turn/interrupt settle the request.
-	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan bool, cancel func(abandoned bool), err error)
+	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan approvalAnswer, cancel func(abandoned bool), err error)
 	// sendInterruptedTurn writes the protocol-native terminal frame for an
 	// interrupted turn. The adapter has already acknowledged the inbound
 	// interrupt before this is called.
@@ -702,4 +702,12 @@ func gateMatches(gateName, advanceName string) bool {
 func (e *engine) terminate(code int) {
 	e.rep.report(control.Report{Kind: control.ReportExiting, Detail: strconv.Itoa(code)})
 	e.exitFn(code)
+}
+
+// approvalAnswer is the app's answer to one approval request: whether it
+// allows, and the response body as the app wrote it, which the
+// approval_decided report carries so a spec can read what was answered.
+type approvalAnswer struct {
+	allow    bool
+	response string
 }

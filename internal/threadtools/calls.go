@@ -71,7 +71,18 @@ type AskCall struct {
 type ReplyCall struct {
 	Token string `json:"token"`
 	Text  string `json:"text"`
+	// Decision and Answers answer a worker's prompt: allow or deny for an
+	// approval, one answer per question for a question with several parts.
+	// Both are empty for an ordinary request.
+	Decision string   `json:"decision,omitempty"`
+	Answers  []string `json:"answers,omitempty"`
 }
+
+// Reply decisions on a worker's approval.
+const (
+	DecisionAllow = "allow"
+	DecisionDeny  = "deny"
+)
 
 // StatusCall re-attaches to requests or watches threads.
 type StatusCall struct {
@@ -198,6 +209,9 @@ type ReplyAck struct {
 	// see where it went.
 	SourceThreadID string `json:"source_thread_id,omitempty"`
 	SourceComputer string `json:"source_computer,omitempty"`
+	// Prompt is set when the token was a worker's question or approval and
+	// the answer went to that worker's open prompt.
+	Prompt bool `json:"prompt,omitempty"`
 }
 
 // StatusReport answers thread_status.

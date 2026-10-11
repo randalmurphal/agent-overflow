@@ -155,6 +155,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// and it joins the other reactor drains because the events it
 		// reacts to stop arriving once triage has drained.
 		"drain notifications",
+		// "drain worker prompts" MUST appear before "close store" — triage
+		// feeds it the same way, and a delivery or settle reads and writes
+		// the agent's queue rows in SQLite.
+		"drain worker prompts",
 		// "drain push" MUST follow "drain notifications" and precede
 		// "close store" — the notification queue is what FEEDS it, and a
 		// fan-out job reads the live registrations out of SQLite.

@@ -113,6 +113,14 @@ composer, and its row records `not delivered`. Whether a turn was a tick is
 read from the rows of the turn that ended, because a dispatch cannot know
 what the provider joined into it.
 
+A standing agent's worker prompts are stamped with their route by triage
+(`SetPromptRouter`) and delivered, answered and settled in
+`app_worker_prompts.go`, off the emit path on one serial queue so a
+resolution never overtakes its delivery. A prompt whose wake cannot reach
+the agent (a failed delivery, a session that ended with it unconfirmed, a
+cleared queue) goes back to the user through `triage.UnroutePrompt`; it is
+never left routed to nobody.
+
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
 the initiating caller. Keep mutation-classification tests current when adding

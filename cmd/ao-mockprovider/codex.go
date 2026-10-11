@@ -31,7 +31,7 @@ type codexAdapter struct {
 	responses map[string]string // method → full response template
 
 	mu          sync.Mutex
-	waiters     map[int64]chan bool // approval rpc id → decision
+	waiters     map[int64]chan approvalAnswer // approval rpc id → decision
 	approvalSeq atomic.Int64
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
@@ -133,7 +133,7 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		e:         e,
 		w:         w,
 		responses: responses,
-		waiters:   make(map[int64]chan bool),
+		waiters:   make(map[int64]chan approvalAnswer),
 		forkTurns: make(map[string][]string),
 	}
 	a.approvalSeq.Store(codexApprovalIDBase)
@@ -541,28 +541,33 @@ func (a *codexAdapter) handleResponse(id json.RawMessage, result, errRaw json.Ra
 		log.Printf("codex: response for unknown id %d (ignored)", rpcID)
 		return
 	}
-	ch <- codexDecisionAllows(result, errRaw)
+	ch <- approvalAnswer{allow: codexDecisionAllows(result, errRaw), response: string(result)}
 }
 
 // codexDecisionAllows interprets the app's approval answer. The normal
 // shape is {"decision":"accept"|"acceptForSession"|"decline"|"cancel"}
 // (internal/provider/codex/approval.go); permission grants use
-// {scope, permissions}; MCP elicitation uses {action}; drains arrive
+// {scope, permissions}; MCP elicitation uses {action}; a requestUserInput
+// answer is {answers}, an allow when it answers anything; drains arrive
 // as a JSON-RPC error with data.reason "turnTransition" — a deny.
 func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 	if len(errRaw) > 0 && string(errRaw) != "null" {
 		return false
 	}
 	var body struct {
-		Decision string `json:"decision"`
-		Action   string `json:"action"`
-		Scope    string `json:"scope"`
+		Decision string          `json:"decision"`
+		Action   string          `json:"action"`
+		Scope    string          `json:"scope"`
+		Answers  json.RawMessage `json:"answers"`
 	}
 	if len(result) > 0 {
 		_ = json.Unmarshal(result, &body)
 	}
 	switch {
 	case strings.HasPrefix(body.Decision, "accept"):
+		return true
+	case len(body.Answers) > 0 && string(body.Answers) != "null" && string(body.Answers) != "{}":
+		// A requestUserInput answer: the question was answered.
 		return true
 	case body.Decision != "":
 		return false
@@ -577,9 +582,9 @@ func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 // sendApproval emits a command-approval server request (Codex approvals
 // are requests FROM the server carrying a JSON-RPC id; the app answers
 // with a response we correlate by that id).
-func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
+func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
 	rpcID := a.approvalSeq.Add(1)
-	ch := make(chan bool, 1)
+	ch := make(chan approvalAnswer, 1)
 	a.mu.Lock()
 	a.waiters[rpcID] = ch
 	a.mu.Unlock()
@@ -602,6 +607,25 @@ func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.V
 			"itemId":   fmt.Sprintf("approval-%d", rpcID),
 			"command":  approvalCommandString(step, vars),
 		},
+	}
+	// AskUserQuestion is Claude's question tool; on Codex the same step asks
+	// through requestUserInput with the step's questions, so one scenario
+	// raises a question on either provider.
+	if step.ToolName == "AskUserQuestion" {
+		var input struct {
+			Questions json.RawMessage `json:"questions"`
+		}
+		if err := json.Unmarshal([]byte(vars.Substitute(string(step.Input))), &input); err != nil || len(input.Questions) == 0 {
+			cancel(false)
+			return nil, nil, fmt.Errorf("AskUserQuestion step needs input.questions: %v", err)
+		}
+		msg["method"] = "item/tool/requestUserInput"
+		msg["params"] = map[string]any{
+			"threadId":  vars["THREAD_ID"],
+			"turnId":    vars["TURN_ID"],
+			"itemId":    fmt.Sprintf("question-%d", rpcID),
+			"questions": input.Questions,
+		}
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

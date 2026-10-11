@@ -483,6 +483,26 @@ func (s *Store) GetStandingAgent(threadID string) (StandingAgent, bool, error) {
 	return row, true, nil
 }
 
+// StandingAgentSpawnerOf names the standing agent that spawned a thread on
+// this computer: the caller of a local `spawn` request whose target is the
+// thread, while that caller is promoted and not archived. Found is false for
+// every other thread, a worker past the request ledger's retention included.
+func (s *Store) StandingAgentSpawnerOf(threadID string) (agentID, title string, found bool, err error) {
+	err = s.reader().QueryRow(`SELECT t.id, t.title FROM standing_agents a
+		JOIN thread_requests r ON r.caller_thread_id = a.thread_id
+		JOIN threads t ON t.id = a.thread_id
+		WHERE r.kind = '`+ThreadRequestSpawn+`' AND r.target_computer_id = '' AND r.target_thread_id = ?
+		  AND t.archived = 0
+		ORDER BY r.created_at DESC LIMIT 1`, threadID).Scan(&agentID, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("store: read the standing agent that spawned %s: %w", threadID, err)
+	}
+	return agentID, title, true, nil
+}
+
 // ThreadHasLiveWorkflowRun reports whether a workflow run that has not ended
 // is bound to the thread: as the thread it reports back to, or as the thread
 // one of its phases or fan-out units runs in.

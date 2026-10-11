@@ -12,8 +12,10 @@ import (
 // tools that work on requests rather than on threads.
 
 type replyArgs struct {
-	Token string `json:"token"`
-	Text  string `json:"text"`
+	Token    string   `json:"token"`
+	Text     string   `json:"text"`
+	Decision string   `json:"decision"`
+	Answers  []string `json:"answers"`
 }
 
 type replyResult struct {
@@ -24,7 +26,9 @@ type replyResult struct {
 	Late           bool   `json:"late,omitempty"`
 	SourceThreadID string `json:"source_thread_id,omitempty"`
 	SourceComputer string `json:"source_computer,omitempty"`
-	Note           string `json:"note,omitempty"`
+	// Prompt marks an answer to a worker's question or approval.
+	Prompt bool   `json:"prompt,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 func (c *session) reply(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -40,15 +44,37 @@ func (c *session) reply(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(text, "text"); err != nil {
 		return nil, err
 	}
-	ack, err := c.app.Reply(ctx, c.caller, ReplyCall{Token: token, Text: text})
+	decision := trim(args.Decision)
+	switch decision {
+	case "", DecisionAllow, DecisionDeny:
+	default:
+		return nil, invalidf("decision is allow or deny.")
+	}
+	if len(args.Answers) > MaxReplyAnswers {
+		return nil, invalidf("answers holds at most %d answers, one per question.", MaxReplyAnswers)
+	}
+	answers := make([]string, 0, len(args.Answers))
+	for _, answer := range args.Answers {
+		answer = trim(answer)
+		if err := checkText(answer, "each answer"); err != nil {
+			return nil, err
+		}
+		answers = append(answers, answer)
+	}
+	ack, err := c.app.Reply(ctx, c.caller, ReplyCall{Token: token, Text: text, Decision: decision, Answers: answers})
 	if err != nil {
 		return nil, err
 	}
 	result := replyResult{
 		Token: ack.Token, Accepted: ack.Accepted, State: ack.State, Revision: ack.Revision,
 		Late: ack.Late, SourceThreadID: ack.SourceThreadID, SourceComputer: ack.SourceComputer,
+		Prompt: ack.Prompt,
 	}
 	switch {
+	case ack.Prompt && !ack.Accepted:
+		result.Note = "You already answered that worker's prompt; the earlier answer stands."
+	case ack.Prompt:
+		result.Note = "Your answer reached the worker's open prompt, and it carries on from there."
 	case !ack.Accepted:
 		result.Note = "This token was already answered with the same text; the earlier reply stands. Reply once per token."
 	case ack.Late:
