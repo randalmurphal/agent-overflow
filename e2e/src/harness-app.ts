@@ -591,9 +591,18 @@ export class HarnessApp {
     if (this.removeDataDir && this.dataRootKept) {
       console.error(`harness data root kept at ${this.removeDataDir}`);
     } else if (this.removeDataDir) {
-      await boundedCleanup(`remove harness data dir ${this.removeDataDir}`, rm(this.removeDataDir, { recursive: true, force: true }));
+      for (const dir of this.ownedDirs(this.removeDataDir)) {
+        await boundedCleanup(`remove harness data dir ${dir}`, rm(dir, { recursive: true, force: true }));
+      }
     }
     HarnessApp.unclosedRoots.delete(this);
+  }
+
+  // ao-harness writes a managed run's outputs beside the root it runs
+  // against (internal/harnessrun.ArtifactRoot). A root the suite owns has
+  // no outputs that outlive it, so its artifact root goes with it.
+  private ownedDirs(root: string): string[] {
+    return [root, `${root}.artifacts`];
   }
 
   /** At process exit, the removal close() would have done, if it is safe. */
@@ -603,10 +612,12 @@ export class HarnessApp {
       console.error(`harness data root ${this.removeDataDir} left at exit: backend ${this.child.pid ?? 'unknown'} was never stopped`);
       return;
     }
-    try {
-      rmSync(this.removeDataDir, { recursive: true, force: true });
-    } catch (error) {
-      console.error(`harness data root ${this.removeDataDir} could not be removed at exit: ${(error as Error).message}`);
+    for (const dir of this.ownedDirs(this.removeDataDir)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (error) {
+        console.error(`harness data dir ${dir} could not be removed at exit: ${(error as Error).message}`);
+      }
     }
   }
 }

@@ -1418,8 +1418,9 @@ occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backe
 Playwright worker and resets between tests. The returned client also exposes
 `stop()` (graceful, preserving the data root), `crash()` (SIGKILL, also
 preserving it), and `close()` (stop plus owned-root cleanup, skipped after
-`keepDataRoot()`). An owned root that is stopped or crashed but never closed
-is removed when the process exits. `writeDiagnostics(dir)` copies the
+`keepDataRoot()`). Cleanup removes the owned root and its `<root>.artifacts`,
+where `ao-harness` writes a managed run's outputs. An owned root that is
+stopped or crashed but never closed is removed when the process exits. `writeDiagnostics(dir)` copies the
 backend's console, launch record and own logs for a failing test
 ([Running and evidence](../../e2e/AGENTS.md#running-and-evidence)). Restart specs can
 therefore launch a second backend over the first one's durable state and prove

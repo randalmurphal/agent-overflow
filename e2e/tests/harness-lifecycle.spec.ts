@@ -389,16 +389,45 @@ test('flush puts every written console line in the file', async () => {
   }
 });
 
-test('close leaves a kept data root and its console in place', async () => {
-  const kept = await launchHarness();
+// ao-harness writes a managed run's outputs to <root>.artifacts/<runId>
+// (internal/harnessrun.ArtifactRoot); harness-bench runs one against the
+// worker's root.
+async function writeRunArtifact(dataRoot: string): Promise<void> {
+  const run = path.join(`${dataRoot}.artifacts`, 'bench-1');
+  await mkdir(run, { recursive: true });
+  await writeFile(path.join(run, 'bench-report.json'), '{}');
+}
+
+test('close removes an owned root and its run artifacts', async () => {
+  const harness = await launchHarness();
+  const artifacts = `${harness.bootstrap.dataRoot}.artifacts`;
   try {
+    await writeRunArtifact(harness.bootstrap.dataRoot);
+  } finally {
+    await harness.close();
+  }
+  try {
+    await expect(access(harness.bootstrap.dataRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(artifacts)).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await rm(artifacts, { recursive: true, force: true });
+  }
+});
+
+test('close leaves a kept data root, its console and its run artifacts in place', async () => {
+  const kept = await launchHarness();
+  const artifacts = `${kept.bootstrap.dataRoot}.artifacts`;
+  try {
+    await writeRunArtifact(kept.bootstrap.dataRoot);
     kept.keepDataRoot();
     await kept.close();
     const consoleText = await readFile(consoleLogPath(kept.bootstrap.dataRoot), 'utf8');
     expect(consoleText).toContain(`"pid":${kept.bootstrap.pid}`);
     expect(consoleText).toContain('received terminated, shutting down');
+    await access(path.join(artifacts, 'bench-1', 'bench-report.json'));
   } finally {
     await rm(kept.bootstrap.dataRoot, { recursive: true, force: true });
+    await rm(artifacts, { recursive: true, force: true });
   }
 });
 
@@ -478,17 +507,21 @@ async function harnessScript(body: string): Promise<{ result: { root: string; pi
   }
 }
 
-test('an owned root a spec only stopped is removed when the process exits', async () => {
+test('an owned root a spec only stopped is removed with its run artifacts when the process exits', async () => {
   const { result } = await harnessScript(`
+    import { mkdirSync } from 'node:fs';
     const harness = await launchHarness();
+    mkdirSync(harness.bootstrap.dataRoot + '.artifacts/bench-1', { recursive: true });
     if (!(await harness.stop())) throw new Error('stop failed');
     console.log(JSON.stringify({ root: harness.bootstrap.dataRoot, pid: harness.bootstrap.pid }));
     process.exit(0);
   `);
   try {
     await expect(access(result.root)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(`${result.root}.artifacts`)).rejects.toMatchObject({ code: 'ENOENT' });
   } finally {
     await rm(result.root, { recursive: true, force: true });
+    await rm(`${result.root}.artifacts`, { recursive: true, force: true });
   }
 });
 

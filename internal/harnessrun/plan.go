@@ -102,7 +102,10 @@ func (a ArtifactPlan) validate(root, artifactRoot string) error {
 
 // ArtifactRoot returns the only directory a managed run may use for outputs
 // that outlive its data root. It is derived from both the selected root and
-// run id, so two worktrees cannot overwrite one another's reports.
+// run id, so two worktrees cannot overwrite one another's reports. The e2e
+// suite's own data roots are the exception: HarnessApp.close() removes an
+// owned root's <root>.artifacts with the root, so a run against one ends
+// with it.
 func ArtifactRoot(p RunPlan) string {
 	return filepath.Join(filepath.Clean(p.DataRoot)+".artifacts", p.RunID)
 }
