@@ -8,6 +8,7 @@ import {
 import { projectTurnStarted } from './threadStatuses.svelte';
 import {
   __resetReviewPaneStateForTest,
+  CI_SECTION_INLINE_MAX_BYTES,
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
@@ -1631,6 +1632,91 @@ describe('reviewPane store — PR scope', () => {
       expect(content).toContain('CI job `unit`');
       expect(content).toContain('status: failed');
       expect(content).toContain('/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('keeps the open log\'s expanded sections per job, and starts each open collapsed', async () => {
+    installCIMocks();
+    installLogFollows('x\n');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const job = state.ciPipeline!.stages[0]!.jobs[0]!;
+
+    state.openCIJobLog('test', job);
+    state.toggleCILogSection('step:1');
+    state.setCILogSectionsOpen(['step:2', 'step:3'], true);
+    expect([...state.ciLogOpenSections]).toEqual(['20/step:1', '20/step:2', '20/step:3']);
+    state.toggleCILogSection('step:1');
+    state.setCILogSectionsOpen(['step:3'], false);
+    expect([...state.ciLogOpenSections]).toEqual(['20/step:2']);
+
+    // The same job opened again, without closing first, starts collapsed.
+    state.openCIJobLog('test', job);
+    expect(state.ciLogOpenSections.size).toBe(0);
+
+    state.toggleCILogSection('step:1');
+    state.closeCILogView();
+    expect(state.ciLogOpenSections.size).toBe(0);
+    // No log open: nothing to expand.
+    state.toggleCILogSection('step:1');
+    expect(state.ciLogOpenSections.size).toBe(0);
+  });
+
+  it('sends a short section inline and a long one as a saved file', async () => {
+    installCIMocks();
+    installLogFollows('x\n');
+    const save = setBindingMock('SavePRCIJobLogSection', async () => '/data/ci-logs/section.log');
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    let content = 'Earlier draft';
+    const dispose = registerComposerDraft('pane-1', {
+      get content() { return content; },
+      setContent(next: string) { content = next; },
+    } as never);
+    try {
+      state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
+      await flushPane();
+
+      await state.sendCILogSectionToChat({ name: 'Run make test', status: 'failed', text: 'FAIL ```x```\nexit 2', truncatedTop: false });
+      expect(save).not.toHaveBeenCalled();
+      expect(content).toBe([
+        'Earlier draft',
+        '',
+        'Investigate `Run make test` (failed) in CI job `unit` (test) on PR #5, status: running.',
+        '````',
+        'FAIL ```x```\nexit 2',
+        '````',
+      ].join('\n'));
+
+      // Over the inline cap, counted in UTF-8 bytes: saved, and named.
+      content = '';
+      const long = 'é'.repeat(CI_SECTION_INLINE_MAX_BYTES / 2 + 1);
+      await state.sendCILogSectionToChat({ name: 'step_script', status: 'done', text: long, truncatedTop: true });
+      expect(save).toHaveBeenCalledWith(
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        '20',
+        'unit',
+        'step_script',
+        long,
+      );
+      expect(content).toBe([
+        'Investigate `step_script` in CI job `unit` (test) on PR #5, status: running.',
+        'The text starts partway through this section: the log view holds the end of the job log.',
+        'Section log saved at: /data/ci-logs/section.log',
+      ].join('\n'));
+
+      // A failed save reaches the log view and leaves the draft alone.
+      setBindingMock('SavePRCIJobLogSection', async () => {
+        throw new Error('disk full');
+      });
+      await state.sendCILogSectionToChat({ name: 'step_script', status: 'done', text: long, truncatedTop: false });
+      expect(state.ciLogError).toBe('disk full');
+      expect(content).toContain('Section log saved at: /data/ci-logs/section.log');
     } finally {
       dispose();
     }

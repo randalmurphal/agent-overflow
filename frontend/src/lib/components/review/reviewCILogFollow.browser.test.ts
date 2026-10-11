@@ -2,10 +2,12 @@
 // in its last chunk, which keeps its key and re-measures through
 // ResizeObserver after the data change. The view must land at the true
 // bottom after that re-measure, follow further growth for a reader at
-// the bottom, and leave a reader who wheeled away alone.
+// the bottom, and leave a reader who wheeled away alone. Expanding a
+// section holds its row where it was instead of following to the end.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteSet } from 'svelte/reactivity';
 import '../../../app.css';
 import ReviewCILogView from './ReviewCILogView.svelte';
 import type { CIJob } from '../../types/models';
@@ -38,21 +40,31 @@ afterEach(() => {
   resetScrollIntentModuleStateForTest();
 });
 
-function mountLog() {
+function mountLog(log = logOf(FIRST_LINES)) {
   const host = document.createElement('div');
   host.style.cssText = `position:fixed;top:0;left:0;width:800px;height:${VIEWPORT_PX}px;display:flex`;
   document.body.appendChild(host);
+  // A job without steps or sections is one row, the job's, kept open.
+  const openSections = new SvelteSet<string>(['20/job', '21/job']);
   const p = rawProps({
     view: { stageName: 'test', jobId: '20', job: JOB },
-    log: logOf(FIRST_LINES),
+    log,
     loading: false,
     error: null as string | null,
     available: true,
     savedPath: null as string | null,
+    openSections,
     onBack: () => {},
     onRefresh: () => {},
     onSave: () => {},
     onSend: () => {},
+    onToggleSection: (key: string) => {
+      const full = `20/${key}`;
+      if (openSections.has(full)) openSections.delete(full);
+      else openSections.add(full);
+    },
+    onSetSectionsOpen: () => {},
+    onSendSection: () => {},
   });
   const app = mount(ReviewCILogView, { target: host, props: p });
   mounted.push({ app, host });
@@ -110,5 +122,55 @@ describe('ReviewCILogView tail follow', () => {
     p.log = logOf(FIRST_LINES);
     flushSync();
     await settledAtBottom(scroll, 'the new job at its tail');
+  });
+
+  it('holds an expanded section at its row instead of following to the end', async () => {
+    // Three collapsed sections fit the viewport, so the reader is at the
+    // bottom; the first one opens onto more lines than the viewport holds.
+    let text = '';
+    for (const [index, name] of ['prepare', 'script', 'cleanup'].entries()) {
+      text += `section_start:${1700000000 + index * 10}:${name}\n${name} header\n`;
+      for (let line = 1; line <= 300; line += 1) text += `${name} line ${line}\n`;
+      text += `section_end:${1700000005 + index * 10}:${name}\n`;
+    }
+    const { scroll } = mountLog({ text, truncated: false, totalBytes: text.length });
+    await waitFor(() => scroll.querySelectorAll('[data-testid="review-ci-section"]').length === 3, 'the section rows');
+    expect(scroll.scrollHeight).toBeLessThanOrEqual(scroll.clientHeight);
+
+    const rowOf = () => scroll.querySelector<HTMLElement>('[data-key="section:prepare:1700000000"]');
+    const toggle = rowOf()?.querySelector<HTMLElement>('[data-testid="review-ci-section-toggle"]');
+    if (!toggle) throw new Error('no toggle');
+    const rowTop = rowOf()!.getBoundingClientRect().top;
+    toggle.click();
+    await waitFor(() => scroll.scrollHeight - scroll.clientHeight > 1000, 'the expanded section');
+    for (let i = 0; i < 12; i += 1) await raf();
+    expect(scroll.scrollTop).toBe(0);
+    // The row stays put, open, with its lines under it on screen.
+    const row = rowOf();
+    expect(row?.dataset.open).toBe('true');
+    expect(row?.getBoundingClientRect().top).toBe(rowTop);
+    expect(scroll.textContent).toContain('prepare line 1\n');
+  });
+
+  it('holds an expanded section of a list that opened scrolled to its end', async () => {
+    // More collapsed sections than the viewport holds: the open places
+    // the list at its end, and the reader expands a row on screen there.
+    let text = '';
+    for (let index = 0; index < 30; index += 1) {
+      text += `section_start:${1700000000 + index * 10}:s${index}\ns${index} header\n`;
+      for (let line = 1; line <= 300; line += 1) text += `s${index} line ${line}\n`;
+      text += `section_end:${1700000005 + index * 10}:s${index}\n`;
+    }
+    const { scroll } = mountLog({ text, truncated: false, totalBytes: text.length });
+    await settledAtBottom(scroll, 'the list at its end');
+
+    const rowOf = () => scroll.querySelector<HTMLElement>('[data-key="section:s27:1700000270"]');
+    const rowTop = rowOf()!.getBoundingClientRect().top;
+    rowOf()!.querySelector<HTMLElement>('[data-testid="review-ci-section-toggle"]')!.click();
+    await waitFor(() => rowOf()?.dataset.open === 'true', 'the expanded section');
+    for (let i = 0; i < 12; i += 1) await raf();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(rowOf()?.getBoundingClientRect().top).toBe(rowTop);
+    expect(scroll.textContent).toContain('s27 line 1\n');
   });
 });

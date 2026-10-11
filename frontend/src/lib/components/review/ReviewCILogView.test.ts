@@ -1,25 +1,29 @@
 import { fireEvent, within } from '@testing-library/dom';
 import { flushSync, mount, tick, unmount } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SvelteSet } from 'svelte/reactivity';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import ReviewCILogView from './ReviewCILogView.svelte';
 import { formatTimeOfDay } from '../../utils/format';
 import type { ForgeFailure } from '../../utils/forgeFailure';
 import type { CIJob } from '../../types/models';
+import { getToasts } from '../../stores/toast.svelte';
 
 // The follow itself needs real geometry (a grown chunk re-measures through
 // ResizeObserver, which happy-dom lacks): reviewCILogFollow.browser.test.ts
 // proves it in Chromium and e2e/tests/review-ci-live.spec.ts end to end.
 // These tests prove the intent wiring: a wheel away escapes the follow,
-// and the controller writes through whichever scroller the log mounts.
+// and the controller writes through whichever scroller the log mounts,
+// and the section rows: what they show, what their controls ask for.
 
+// A job without steps or sections is one row, the job's; the follow
+// tests keep it open.
 const JOB: CIJob = {
   id: '20',
   name: 'unit',
   status: 'running',
   logsAvailable: true,
-  steps: [{ number: 1, name: 'build', status: 'running' }],
 };
 
 function logOf(lines: number) {
@@ -37,10 +41,14 @@ function props(overrides: Record<string, unknown> = {}) {
     forge: 'github',
     available: true,
     savedPath: null,
+    openSections: new SvelteSet<string>(['20/job', '21/job']),
     onBack: () => {},
     onRefresh: () => {},
     onSave: () => {},
     onSend: () => {},
+    onToggleSection: () => {},
+    onSetSectionsOpen: () => {},
+    onSendSection: () => {},
     ...overrides,
   };
 }
@@ -159,13 +167,31 @@ describe('<ReviewCILogView>', () => {
     expect(view.getByText('failed')).toBeInTheDocument();
   });
 
-  it('says when the log is available while the job runs on a forge without live logs', async () => {
-    const { p, view } = renderLogView({ log: { text: '', truncated: false, totalBytes: 0 }, available: false });
+  it('says when the log is available while a GitHub job runs, over its step list', async () => {
+    const job: CIJob = {
+      ...JOB,
+      steps: [
+        { number: 1, name: 'Set up job', status: 'success', startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:02Z' },
+        { number: 3, name: 'build', status: 'running', startedAt: '2026-01-01T00:00:02Z' },
+        { number: 4, name: 'Post job', status: 'pending' },
+      ],
+    };
+    const { p, view } = renderLogView({
+      view: { stageName: 'test', jobId: '20', job },
+      log: { text: '', truncated: false, totalBytes: 0 },
+      available: false,
+    });
     await settle();
     expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The log is available when the job completes.');
     expect(view.queryByTestId('review-ci-log-empty')).toBeNull();
-    // The steps keep reporting the live job.
-    expect(view.getByTitle('build: running')).toBeInTheDocument();
+    // The steps keep reporting the live job, with nothing to expand yet.
+    const rows = view.getAllByTestId('review-ci-section');
+    expect(rows.map((row) => [row.dataset.key, row.dataset.status])).toEqual([
+      ['step:1', 'success'],
+      ['step:3', 'running'],
+      ['step:4', 'pending'],
+    ]);
+    for (const toggle of view.getAllByTestId('review-ci-section-toggle')) expect(toggle).toBeDisabled();
     expect(view.getByRole('button', { name: 'Refresh log' })).toBeInTheDocument();
 
     // A failed fetch is not "still running".
@@ -231,5 +257,217 @@ describe('<ReviewCILogView>', () => {
       p.log = logOf(12);
     });
     expect(writes.length).toBeGreaterThan(0);
+  });
+});
+
+// A GitHub job's log as the forge serves it: every line has its time.
+const STEPPED: CIJob = {
+  id: '20',
+  name: 'unit',
+  status: 'failed',
+  logsAvailable: true,
+  steps: [
+    { number: 1, name: 'Set up job', status: 'success', startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:01Z' },
+    { number: 2, name: 'Run make test', status: 'failed', startedAt: '2026-01-01T00:00:01Z', completedAt: '2026-01-01T00:01:05Z' },
+    { number: 3, name: 'Run make lint', status: 'skipped', startedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:05Z' },
+    { number: 4, name: 'Complete job', status: 'success', startedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:05Z' },
+  ],
+};
+const STEPPED_LOG = [
+  '2026-01-01T00:00:00.1000000Z Current runner version: 2.337.0',
+  '2026-01-01T00:00:01.2000000Z ##[group]Run make test',
+  '2026-01-01T00:00:02.0000000Z \x1b[31mFAIL\x1b[0m pkg/a',
+  '2026-01-01T00:01:05.1000000Z ##[error]Process completed with exit code 2.',
+  '2026-01-01T00:01:05.2000000Z Cleaning up orphan processes',
+  '',
+].join('\n');
+
+const GITLAB_LOG = [
+  'section_start:1700000000:prepare_executor',
+  'Preparing the docker executor',
+  'section_end:1700000004:prepare_executor',
+  'section_start:1700000004:step_script',
+  'Executing step_script',
+  '$ make test',
+  '',
+].join('\n');
+
+type Queries = ReturnType<typeof within>;
+
+function sectionRows(view: Queries): HTMLElement[] {
+  return view.getAllByTestId('review-ci-section');
+}
+
+function sectionRow(view: Queries, key: string): HTMLElement {
+  const row = sectionRows(view).find((candidate) => candidate.dataset.key === key);
+  if (!row) throw new Error(`no row ${key}`);
+  return row;
+}
+
+function renderStepped(overrides: Record<string, unknown> = {}) {
+  return renderLogView({
+    view: { stageName: 'CI', jobId: '20', job: STEPPED },
+    log: { text: STEPPED_LOG, truncated: false, totalBytes: STEPPED_LOG.length },
+    openSections: new SvelteSet<string>(),
+    ...overrides,
+  });
+}
+
+describe('<ReviewCILogView> sections', () => {
+  it('lists the steps collapsed, with status and duration, and no skipped step', async () => {
+    const { view } = renderStepped();
+    await settle();
+    expect(sectionRows(view).map((row) => [row.dataset.key, row.dataset.status, row.dataset.open])).toEqual([
+      ['step:1', 'success', 'false'],
+      ['step:2', 'failed', 'false'],
+      ['step:4', 'success', 'false'],
+    ]);
+    expect(sectionRow(view, 'step:2')).toHaveTextContent('Run make test');
+    expect(sectionRow(view, 'step:2')).toHaveTextContent('1m 4s');
+    // Nothing expands on its own, not even the failed step.
+    expect(view.getByTestId('review-ci-log-scroll')).not.toHaveTextContent('FAIL');
+  });
+
+  it('asks to toggle a row and shows only an open row\'s lines', async () => {
+    const onToggleSection = vi.fn();
+    const openSections = new SvelteSet<string>();
+    const { view } = renderStepped({ onToggleSection, openSections });
+    await settle();
+    await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-toggle'));
+    await settle();
+    expect(onToggleSection).toHaveBeenCalledWith('step:2');
+
+    openSections.add('20/step:2');
+    flushSync();
+    await settle();
+    const scroll = view.getByTestId('review-ci-log-scroll');
+    expect(sectionRow(view, 'step:2').dataset.open).toBe('true');
+    expect(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(scroll).toHaveTextContent('FAIL pkg/a');
+    expect(scroll).toHaveTextContent('##[error]Process completed with exit code 2.');
+    expect(scroll).not.toHaveTextContent('Current runner version');
+    expect(scroll).not.toHaveTextContent('Cleaning up orphan processes');
+  });
+
+  it('expands every row with lines, then collapses them, from one control', async () => {
+    const onSetSectionsOpen = vi.fn();
+    const openSections = new SvelteSet<string>();
+    // A step not reached yet has nothing to expand.
+    const job: CIJob = { ...STEPPED, steps: [...STEPPED.steps!, { number: 5, name: 'Upload', status: 'pending' }] };
+    const { view } = renderStepped({ view: { stageName: 'CI', jobId: '20', job }, onSetSectionsOpen, openSections });
+    await settle();
+    expect(sectionRow(view, 'step:5').dataset.status).toBe('pending');
+    const control = view.getByTestId('review-ci-log-expand-all');
+    expect(control).toHaveAttribute('aria-label', 'Expand all');
+    await fireEvent.click(control);
+    expect(onSetSectionsOpen).toHaveBeenLastCalledWith(['step:1', 'step:2', 'step:4'], true);
+
+    for (const key of ['step:1', 'step:2', 'step:4']) openSections.add(`20/${key}`);
+    flushSync();
+    await settle();
+    expect(control).toHaveAttribute('aria-label', 'Collapse all');
+    await fireEvent.click(control);
+    expect(onSetSectionsOpen).toHaveBeenLastCalledWith(['step:1', 'step:2', 'step:4'], false);
+  });
+
+  it('sends one section as plain text', async () => {
+    const onSendSection = vi.fn();
+    const { view } = renderStepped({ onSendSection });
+    await settle();
+    await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-send'));
+    expect(onSendSection).toHaveBeenCalledWith({
+      name: 'Run make test',
+      status: 'failed',
+      text: [
+        '2026-01-01T00:00:01.2000000Z ##[group]Run make test',
+        '2026-01-01T00:00:02.0000000Z FAIL pkg/a',
+        '2026-01-01T00:01:05.1000000Z ##[error]Process completed with exit code 2.',
+      ].join('\n'),
+      truncatedTop: false,
+    });
+  });
+
+  it('marks the row a cut log starts partway through', async () => {
+    const tail = STEPPED_LOG.split('\n').slice(2).join('\n');
+    const { view } = renderStepped({
+      log: { text: tail, truncated: true, totalBytes: 3 * 1024 * 1024 },
+      openSections: new SvelteSet<string>(['20/step:2']),
+    });
+    await settle();
+    expect(view.getByTestId('review-ci-log-truncated')).toHaveTextContent('Showing the tail of a 3.0 MB log. Save to file for the full log.');
+    expect(view.getAllByTestId('review-ci-section-cut')).toHaveLength(1);
+    expect(within(sectionRow(view, 'step:1')).getByTestId('review-ci-section-toggle')).toBeDisabled();
+  });
+
+  it('shows GitLab sections without their markers, and a running one with its line count', async () => {
+    const job: CIJob = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
+    const { view } = renderLogView({
+      view: { stageName: 'test', jobId: '20', job },
+      log: { text: GITLAB_LOG, truncated: false, totalBytes: GITLAB_LOG.length },
+      forge: 'gitlab',
+      openSections: new SvelteSet<string>(['20/section:prepare_executor:1700000000', '20/section:step_script:1700000004']),
+    });
+    await settle();
+    expect(sectionRows(view).map((row) => [row.dataset.status, row.textContent?.trim().replace(/\s+/g, ' ')])).toEqual([
+      ['done', 'Preparing the docker executor 4s'],
+      ['running', 'Executing step_script 2 lines'],
+    ]);
+    const scroll = view.getByTestId('review-ci-log-scroll');
+    expect(scroll).toHaveTextContent('$ make test');
+    expect(scroll).not.toHaveTextContent('section_');
+  });
+
+  it('says a GitLab trace is loading while the forge has none for a running job', async () => {
+    const { view } = renderLogView({
+      log: { text: '', truncated: false, totalBytes: 0 },
+      available: false,
+      forge: 'gitlab',
+    });
+    await settle();
+    expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The trace is loading.');
+  });
+});
+
+// happy-dom has no clipboard; the stub is an own property the shared-worker
+// guard expects gone (not present as undefined) when the file ends.
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
+function stubClipboard(writeText: (text: string) => Promise<void>) {
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
+}
+
+describe('<ReviewCILogView> section copy', () => {
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+  });
+
+  it('copies the section as plain text and shows Copied until the swap resets', async () => {
+    vi.useFakeTimers();
+    try {
+      const writeText = vi.fn(async () => {});
+      stubClipboard(writeText);
+      const { view } = renderStepped();
+      await vi.advanceTimersByTimeAsync(10);
+      await fireEvent.click(within(sectionRow(view, 'step:4')).getByTestId('review-ci-section-copy'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledWith('2026-01-01T00:01:05.2000000Z Cleaning up orphan processes');
+      expect(within(sectionRow(view, 'step:4')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copied');
+      expect(within(sectionRow(view, 'step:1')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copy section');
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(within(sectionRow(view, 'step:4')).getByTestId('review-ci-section-copy')).toHaveAttribute('aria-label', 'Copy section');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('raises a toast when the clipboard refuses', async () => {
+    const before = getToasts().length;
+    stubClipboard(async () => { throw new DOMException('denied', 'NotAllowedError'); });
+    const { view } = renderStepped();
+    await settle();
+    await fireEvent.click(within(sectionRow(view, 'step:2')).getByTestId('review-ci-section-copy'));
+    await vi.waitFor(() => expect(getToasts().length).toBe(before + 1));
+    expect(getToasts().at(-1)?.message).toBe('Failed to copy');
   });
 });

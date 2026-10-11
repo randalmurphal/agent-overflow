@@ -156,18 +156,36 @@ polling.
   the forge answers 404 for is a wait, not an error: asked at the job's
   cadence while it runs (every 10s on GitHub, which answers 404 for a
   running job's whole run), and once it completed every 5s for six tries,
-  then every 45s while the job stays followed. The log keeps what the log view groups lines by: a
-  GitHub log's `##[group]` lines, beside the steps' `startedAt` and
-  `completedAt` from the jobs list (each log line starts with its own
-  RFC 3339 time), and a GitLab trace's section markers, each on a line
-  of its own (`cleanGitLabTrace`). The pause, dedup, caller-safe error and
-  connection-cleanup rules of the
-  snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
+  then every 45s while the job stays followed. The log keeps what the
+  log view splits it by: each GitHub log line's own RFC 3339 time, beside
+  the steps' `startedAt` and `completedAt` from the jobs list, and a
+  GitLab trace's section markers, each on a line of its own
+  (`cleanGitLabTrace`). The pause, dedup, caller-safe error and
+  connection-cleanup rules of the snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the
   union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
-  The open log view opens at the tail and follows growth through the
-  shared stick-to-bottom controller, wired over `LongListVirtualizer` as
-  chat wires it; a reader who scrolls away keeps their place.
+- **The CI log view** (`ReviewCILogView.svelte`) shows a job's log as one
+  collapsible row per GitHub step or top-level GitLab section, split by
+  `utils/ciLogSections.ts`. A GitHub step's start time is floored to the
+  second and several steps often start in the same one, so the time
+  bounds where a step can begin and the line the runner writes when a
+  step begins (`##[group]Run ...`, `Post job cleanup.` and the like)
+  decides inside that second; skipped steps are not listed, and steps not
+  reached yet are listed as pending. GitLab sections nest; nested ones
+  stay inside their parent's row, lines outside every section form rows
+  of their own, and markers are never shown, saved or sent. Each row
+  shows its status, name and duration (a running one, its line count),
+  and has Copy and Send to chat for its text alone: inline in the
+  composer up to `CI_SECTION_INLINE_MAX_BYTES` (64 KB), otherwise saved
+  by `SavePRCIJobLogSection` and named by path. Nothing expands on its
+  own; the expanded set lives in the pane's review store, per job, and
+  each log open starts collapsed. When the 2 MB display tail starts
+  partway through a row, that row is marked cut at its top. Save to file
+  and Send to chat in the header cover the whole job. The list opens at
+  its end and follows growth through the shared stick-to-bottom
+  controller, wired over `LongListVirtualizer` as chat wires it; a reader
+  who scrolls away keeps their place, and expanding or collapsing a row
+  holds that row where it is.
 - **Persistence stays lean.** PR snapshots live in memory per PR key.
   Only comment drafts touch SQLite: the existing `diff_review_comments`
   table extended with target + PR anchors (`commit_sha`, `side`,

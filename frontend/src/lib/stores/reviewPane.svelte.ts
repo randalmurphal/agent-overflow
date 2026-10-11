@@ -10,6 +10,7 @@ import {
   GetEditDiffContextLines,
   GetPRDetail,
   SavePRCIJobLog,
+  SavePRCIJobLogSection,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -226,6 +227,9 @@ export interface ReviewPaneState {
    * completed). */
   readonly ciLogAvailable: boolean;
   readonly ciLogSavedPath: string | null;
+  /** The open log's expanded sections, as `<job id>/<section key>`.
+   * Empty when a log opens. */
+  readonly ciLogOpenSections: ReadonlySet<string>;
   readonly submitTarget: 'agent' | 'pr';
   /** submitTarget with single-commit view forced to 'agent': drafts on a
    * commit diff carry that diff's line numbers, which the forge would
@@ -359,6 +363,13 @@ export interface ReviewPaneState {
   refreshCILog(): void;
   saveCILog(): Promise<string | null>;
   sendCILogToChat(): Promise<void>;
+  toggleCILogSection(sectionKey: string): void;
+  /** Expands or collapses every listed section of the open log. */
+  setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void;
+  /** Puts one section of the open log in the source chat's composer:
+   * inline up to CI_SECTION_INLINE_MAX_BYTES, otherwise saved to a file
+   * the message names. */
+  sendCILogSectionToChat(section: CILogSectionSend): Promise<void>;
   /** Fetches hidden hunk-gap context and merges it into the diff. */
   expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void>;
   toggleCollapsed(path: string): void;
@@ -375,6 +386,28 @@ export interface CILogView {
   stageName: string;
   jobId: string;
   job: CIJob;
+}
+
+/** One section of a job log, as sent to chat. */
+export interface CILogSectionSend {
+  name: string;
+  /** A CI status, or a section kind with no result (utils/ciLogSections). */
+  status: string;
+  text: string;
+  /** The shown log starts partway through this section. */
+  truncatedTop: boolean;
+}
+
+/** A section's text goes into the composer inline up to this size in
+ * UTF-8 bytes; a longer one is saved to a file the message names. */
+export const CI_SECTION_INLINE_MAX_BYTES = 64 * 1024;
+
+const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
+
+/** A fence longer than any backtick run in `text`. */
+function codeFence(text: string): string {
+  const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  return '`'.repeat(Math.max(3, longest + 1));
 }
 
 const statesBySourcePane = new Map<string, ReviewPaneState>();
@@ -535,6 +568,9 @@ function createReviewPaneState(
   // Save and send failures; the log's own failures are on its state.
   let ciLogLocalError: string | null = $state(null);
   let ciLogSavedPath: string | null = $state(null);
+  // Expanded log sections, `<job id>/<section key>`. Nothing opens on its
+  // own, and each log open starts collapsed.
+  const ciLogOpenSections = new SvelteSet<string>();
   let submitTarget: 'agent' | 'pr' = $state('agent');
   let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
   let summaryBody = $state('');
@@ -1968,6 +2004,7 @@ function createReviewPaneState(
     ciLogOpen = { key, stageName, job: { ...job, id: jobId } };
     ciLogLocalError = null;
     ciLogSavedPath = null;
+    ciLogOpenSections.clear();
     setPRCILogFollow(key, ciFollowToken, jobId);
   }
 
@@ -1983,6 +2020,23 @@ function createReviewPaneState(
     ciLogOpen = null;
     ciLogLocalError = null;
     ciLogSavedPath = null;
+    ciLogOpenSections.clear();
+  }
+
+  function toggleCILogSection(sectionKey: string): void {
+    if (!ciLogOpen) return;
+    const key = `${ciLogOpen.job.id}/${sectionKey}`;
+    if (ciLogOpenSections.has(key)) ciLogOpenSections.delete(key);
+    else ciLogOpenSections.add(key);
+  }
+
+  function setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void {
+    if (!ciLogOpen) return;
+    for (const sectionKey of sectionKeys) {
+      const key = `${ciLogOpen.job.id}/${sectionKey}`;
+      if (open) ciLogOpenSections.add(key);
+      else ciLogOpenSections.delete(key);
+    }
   }
 
   async function saveCILog(): Promise<string | null> {
@@ -2017,9 +2071,50 @@ function createReviewPaneState(
       return;
     }
     const message = [
-      `Investigate CI job \`${view.job.name}\` (${view.stageName}) on PR #${prRef.number} — status: ${view.job.status}.`,
+      `Investigate CI job \`${view.job.name}\` (${view.stageName}) on PR #${prRef.number}, status: ${view.job.status}.`,
       `Full log saved at: ${path}`,
     ].join('\n');
+    const existing = draft.content.trim();
+    draft.setContent(existing ? `${existing}\n\n${message}` : message);
+  }
+
+  async function sendCILogSectionToChat(section: CILogSectionSend): Promise<void> {
+    const open = ciLogOpen;
+    const view = ciLogView;
+    const ref = prRef;
+    if (!ref || !open || !view) return;
+    if (!getComposerDraftForPane(sourcePaneId)) {
+      ciLogLocalError = 'The source chat pane is not available.';
+      return;
+    }
+    const result = CI_RESULT_STATUSES.has(section.status) ? ` (${section.status})` : '';
+    const lines = [
+      `Investigate \`${section.name}\`${result} in CI job \`${view.job.name}\` (${view.stageName}) on PR #${ref.number}, status: ${view.job.status}.`,
+    ];
+    if (section.truncatedTop) {
+      lines.push('The text starts partway through this section: the log view holds the end of the job log.');
+    }
+    if (new TextEncoder().encode(section.text).length <= CI_SECTION_INLINE_MAX_BYTES) {
+      const fence = codeFence(section.text);
+      lines.push(fence, section.text, fence);
+    } else {
+      let path: string;
+      try {
+        path = String(await withBackendTarget(backend, () =>
+          SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, view.job.name, section.name, section.text)));
+      } catch (err) {
+        if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
+        return;
+      }
+      lines.push(`Section log saved at: ${path}`);
+    }
+    // The draft as of now: the save may have outlived the pane.
+    const draft = getComposerDraftForPane(sourcePaneId);
+    if (!draft) {
+      if (ciLogOpen === open) ciLogLocalError = 'The source chat pane is not available.';
+      return;
+    }
+    const message = lines.join('\n');
     const existing = draft.content.trim();
     draft.setContent(existing ? `${existing}\n\n${message}` : message);
   }
@@ -2121,6 +2216,7 @@ function createReviewPaneState(
     get ciLogFailure() { return ciLogLocalError === null ? (ciLog?.failure ?? null) : null; },
     get ciLogAvailable() { return ciLog?.available ?? true; },
     get ciLogSavedPath() { return ciLogSavedPath; },
+    get ciLogOpenSections() { return ciLogOpenSections; },
     get submitTarget() { return submitTarget; },
     get effectiveSubmitTarget() { return effectiveSubmitTarget; },
     get verdict() { return verdict; },
@@ -2240,6 +2336,9 @@ function createReviewPaneState(
     refreshCILog,
     saveCILog,
     sendCILogToChat,
+    toggleCILogSection,
+    setCILogSectionsOpen,
+    sendCILogSectionToChat,
     expandDiffContext,
     toggleCollapsed(path: string): void {
       const collapsed = !collapsedPaths.has(path);

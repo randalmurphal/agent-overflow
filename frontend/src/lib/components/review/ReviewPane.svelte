@@ -600,10 +600,14 @@
         forge={review.prRef?.forge}
         available={review.ciLogAvailable}
         savedPath={review.ciLogSavedPath}
+        openSections={review.ciLogOpenSections}
         onBack={() => review?.closeCILogView()}
         onRefresh={() => review?.refreshCILog()}
         onSave={() => { void review?.saveCILog(); }}
         onSend={() => { void review?.sendCILogToChat(); }}
+        onToggleSection={(sectionKey) => review?.toggleCILogSection(sectionKey)}
+        onSetSectionsOpen={(sectionKeys, open) => review?.setCILogSectionsOpen(sectionKeys, open)}
+        onSendSection={(section) => { void review?.sendCILogSectionToChat(section); }}
       />
     {:else if review.conflictView}
       <div class="flex items-center justify-between gap-3 border-b border-border bg-surface-1 px-3 py-2 text-xs">

@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
@@ -1507,7 +1507,7 @@ describe('<ReviewPane> CI', () => {
     });
   });
 
-  it('follows an opened job: the pending line while the log is unavailable, live steps, then the log', async () => {
+  it('follows an opened job: the pending line while the log is unavailable, live steps, then the log in rows', async () => {
     const view = await renderPRScope(pipelineWith('running', 'running'));
     const follows = setBindingMock('SetPRCILogFollows', async () => ({
       logs: { 20: { text: '', truncated: false, totalBytes: 0, available: false, error: '', seq: 5 } },
@@ -1520,11 +1520,12 @@ describe('<ReviewPane> CI', () => {
     });
     expect(follows).toHaveBeenCalledWith('sub-1', ['20']);
     expect(view.queryByTestId('review-ci-log-empty')).toBeNull();
-    expect(view.getByTitle('build: running')).toBeInTheDocument();
+    const stepRow = () => view.getAllByTestId('review-ci-section').find((row) => row.dataset.key === 'step:1');
+    expect(stepRow()?.dataset.status).toBe('running');
 
     applyPRReviewCIUpdated({ prKey: PR, pipeline: pipelineWith('failed', 'failed'), seq: 6 });
     await waitFor(() => {
-      expect(view.getByTitle('build: failed')).toBeInTheDocument();
+      expect(stepRow()?.dataset.status).toBe('failed');
     });
     // Completed, and the forge has not published the log yet.
     expect(view.getByTestId('review-ci-log-pending')).toHaveTextContent('The job finished; the forge has not published its log yet.');
@@ -1533,14 +1534,34 @@ describe('<ReviewPane> CI', () => {
       prKey: PR, jobId: '20', seq: 7, prevLen: 0, base: 0, append: 'error: boom\n',
       truncated: false, totalBytes: 12, available: true,
     });
+    // The step has no start time to split by: the lines are the job's
+    // row, collapsed until the reader opens it.
+    const jobRow = () => view.getAllByTestId('review-ci-section').find((row) => row.dataset.key === 'job');
+    await waitFor(() => {
+      expect(jobRow()?.dataset.open).toBe('false');
+    });
+    expect(view.queryByTestId('review-ci-log-pending')).toBeNull();
+    expect(view.getByTestId('review-ci-log-scroll')).not.toHaveTextContent('error: boom');
+    await fireEvent.click(within(jobRow()!).getByTestId('review-ci-section-toggle'));
     await waitFor(() => {
       expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('error: boom');
     });
-    expect(view.queryByTestId('review-ci-log-pending')).toBeNull();
+    expect(jobRow()?.dataset.open).toBe('true');
 
     await fireEvent.click(view.getByRole('button', { name: 'Back' }));
     await waitFor(() => {
       expect(follows).toHaveBeenLastCalledWith('sub-1', []);
+    });
+
+    // Opening the log again starts collapsed.
+    await fireEvent.click(view.getByTestId('review-ci-chip'));
+    await fireEvent.click(await view.findByTestId('review-ci-job'));
+    applyPRReviewCILog({
+      prKey: PR, jobId: '20', seq: 9, prevLen: 0, base: 0, append: 'error: boom\n',
+      truncated: false, totalBytes: 12, available: true,
+    });
+    await waitFor(() => {
+      expect(jobRow()?.dataset.open).toBe('false');
     });
   });
 });

@@ -152,6 +152,14 @@ POST and discussion resolve PUT.
   wants the detail; a reseed changes it on the next read.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
+- A job's `log` is served as the forge would serve it, and the app's log
+  view splits it into rows from what it carries. A GitHub log splits by
+  its steps: give each line its own time prefix
+  (`2026-01-01T00:00:04.0000000Z text`) and each started step its
+  `startedAt`, or the lines stay in one row for the job. A GitLab log is
+  the raw trace: write section markers as the runner does
+  (`section_start:<unix>:<name>\r\x1b[0K<header>`), and the app's trace
+  cleaner turns them into sections.
 
 Run `go test ./internal/harness/forgefake ./cmd/ao-mockforge` after a
 change here, and the Playwright specs that seed a forge

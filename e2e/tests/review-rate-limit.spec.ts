@@ -121,6 +121,8 @@ test('a GitHub rate limit under the reserve pauses polling while the user\'s own
     await review.getByTestId('review-ci-chip').filter({ hasText: 'CI' }).click();
     await page.getByTestId('review-ci-job').filter({ hasText: 'build' }).click();
     const log = review.getByTestId('review-ci-log');
+    // The job has no steps: its log is one row, collapsed until opened.
+    await log.getByTestId('review-ci-section-toggle').click();
     await expect(log.getByTestId('review-ci-log-scroll')).toContainText('build output');
 
     // 100 of 5000 left: under the tenth the app keeps for the user. The
