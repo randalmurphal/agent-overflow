@@ -18,10 +18,9 @@
 
   interface Props {
     review: ReviewPaneState;
-    canSendToAgent: boolean;
   }
 
-  let { review, canSendToAgent }: Props = $props();
+  let { review }: Props = $props();
 
   let rootEl: HTMLElement | undefined = $state();
 
@@ -84,7 +83,6 @@
         <ReviewConversationThread
           {review}
           thread={entry.thread}
-          {canSendToAgent}
           inDiff={entry.thread.path !== '' && diffPaths.has(entry.thread.path)}
         />
       {:else if entry.kind === 'verdict'}

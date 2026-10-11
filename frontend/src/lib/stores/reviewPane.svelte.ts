@@ -13,7 +13,6 @@ import {
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
-  SendMessage,
   SetPRThreadResolved,
   SendDiffReviewComments,
   SubmitPRReview,
@@ -276,7 +275,6 @@ export interface ReviewPaneState {
   replyBodyFor(threadId: string): string;
   setReplyBody(threadId: string, body: string): void;
   sendPRThreadReply(thread: ReviewThread): Promise<void>;
-  sendPRThreadToAgent(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
   /** Optimistic resolve/unresolve: the thread flips at once (entity-level,
@@ -1746,23 +1744,6 @@ function createReviewPaneState(
     }
   }
 
-  async function sendPRThreadToAgent(thread: ReviewThread): Promise<void> {
-    if (isTurnActive) return;
-    const line = thread.line ? `:${thread.line}` : '';
-    const content = [
-      `Please address this PR review thread at ${thread.path}${line}.`,
-      '',
-      ...thread.comments.map((comment) => `${comment.authorLogin}: ${comment.body}`),
-    ].join('\n');
-    try {
-      await SendMessage(commentThreadId(), content, []);
-      error = null;
-    } catch (err) {
-      error = userFacingError(err);
-      throw err;
-    }
-  }
-
   async function setPRThreadResolved(thread: ReviewThread, resolved: boolean): Promise<void> {
     const key = prEntityKey;
     if (!prRef || !key || resolvingThreadIds.has(thread.id)) return;
@@ -2204,7 +2185,6 @@ function createReviewPaneState(
     },
     refreshPRThreads,
     sendPRThreadReply,
-    sendPRThreadToAgent,
     replyErrorFor(prThreadId: string): string | null {
       return replyErrors.get(prThreadId) ?? null;
     },

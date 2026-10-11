@@ -177,9 +177,10 @@ polling.
   hunk excerpts plus the diff source reference (PR number/URL or checkpoint
   range) so the agent can fetch the rest itself via `gh`/`git`.
 - **Replies send immediately.** They are conversational, not a review
-  pass; batching applies to fresh line comments only. Each incoming thread
-  gets a **"send to agent"** action handing the thread (file, line, bodies)
-  to the linked agent.
+  pass; batching applies to fresh line comments only. A thread's actions
+  sit at its foot as on the forges: a reply field that opens the composer,
+  **Copy** (the location and every comment as text, for pasting into an
+  agent composer) and **Resolve** / **Unresolve**.
 - **Transport classification.** Every new App method that reaches a forge
   or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
   session granted that scope reaches it.

@@ -1,13 +1,10 @@
 <script lang="ts">
-  import Bot from '@lucide/svelte/icons/bot';
-  import Check from '@lucide/svelte/icons/check';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import Reply from '@lucide/svelte/icons/reply';
-  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewThreadComments from './ReviewThreadComments.svelte';
+  import ReviewThreadFooter from './ReviewThreadFooter.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { commentSnippet, visibleBody } from '../../utils/reviewComments';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
@@ -23,7 +20,8 @@
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
 
   // A PR review thread on the diff surface: the same card as the
-  // Conversation feed (avatar, author, state edge and chip, actions), so
+  // Conversation feed (avatar, author, state edge and chip, the actions at
+  // the foot), so
   // a thread looks like itself wherever it is read. Collapsed, the
   // header carries the first comment's lead sentence and the reply
   // count; expanded, the body is the full first comment and its
@@ -39,16 +37,11 @@
     body: string;
     error: string | null;
     sending: boolean;
-    isTurnActive: boolean;
     resolving: boolean;
     resolveError: string | null;
     onToggle: () => void;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
-    /** Absent when the pane has no thread to steer (a draft placeholder
-     *  reviewing its workspace's PR): the button is not rendered rather
-     *  than rendered and inert. */
-    onSendToAgent?: () => Promise<void> | void;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
     /** Opens the overview's Conversation section at this thread; absent
@@ -64,13 +57,11 @@
     body,
     error,
     sending,
-    isTurnActive,
     resolving,
     resolveError,
     onToggle,
     onBodyChange,
     onSendReply,
-    onSendToAgent,
     onResolve,
     onJumpToConversation,
   }: Props = $props();
@@ -103,7 +94,7 @@
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={20} />
   </div>
   <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}">
-    <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
+    <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
       <button
         type="button"
         class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
@@ -135,45 +126,15 @@
           <span class="min-w-0 flex-1 basis-0"></span>
         {/if}
       </button>
-      <span class="flex shrink-0 items-center">
+      {#if onJumpToConversation}
+        {@const jump = onJumpToConversation}
         <ReviewIconButton
-          icon={Reply}
-          label={replying ? 'Hide reply box' : 'Reply'}
-          testid="review-pr-thread-reply"
-          onclick={() => { replying = !replying; }}
+          icon={MessagesSquare}
+          label="Open in conversation"
+          testid="review-pr-thread-jump-conversation"
+          onclick={() => jump()}
         />
-        {#if onResolve}
-          {@const resolve = onResolve}
-          <ReviewIconButton
-            icon={thread.isResolved ? RotateCcw : Check}
-            label={thread.isResolved ? 'Unresolve thread' : 'Resolve thread'}
-            spinning={resolving}
-            disabled={resolving}
-            testid="review-pr-thread-resolve"
-            onclick={() => resolve(!thread.isResolved)}
-          />
-        {/if}
-        {#if onSendToAgent}
-          {@const sendToAgent = onSendToAgent}
-          <ReviewIconButton
-            icon={Bot}
-            label="Send to agent"
-            disabled={isTurnActive}
-            disabledLabel="Agent turn is active"
-            testid="review-pr-thread-send-agent"
-            onclick={() => { void sendToAgent(); }}
-          />
-        {/if}
-        {#if onJumpToConversation}
-          {@const jump = onJumpToConversation}
-          <ReviewIconButton
-            icon={MessagesSquare}
-            label="Open in conversation"
-            testid="review-pr-thread-jump-conversation"
-            onclick={() => jump()}
-          />
-        {/if}
-      </span>
+      {/if}
     </div>
 
     <div class={threadBodyClass(threadState)}>
@@ -183,23 +144,24 @@
         </div>
       {/if}
 
-      {#if resolveError}
-        <div class="px-3 pb-2 text-[0.6875rem] text-error">{resolveError}</div>
+      {#if !collapsed && replyCount > 0}
+        <ReviewThreadComments {thread} skipFirst avatarSize={18} />
       {/if}
 
-      {#if (!collapsed && replyCount > 0) || replying}
-        <ReviewThreadComments
+      {#if !collapsed || replying}
+        <ReviewThreadFooter
           {thread}
-          skipFirst
-          avatarSize={18}
-          showComments={!collapsed && replyCount > 0}
           {body}
           {error}
           {sending}
           {replying}
+          {resolving}
+          {resolveError}
+          onOpenReply={() => { replying = true; }}
+          onCloseReply={() => { replying = false; }}
           {onBodyChange}
           {onSendReply}
-          onCloseReply={() => { replying = false; }}
+          {onResolve}
         />
       {/if}
     </div>

@@ -30,13 +30,11 @@ function setup() {
       body: 'reply text',
       error: null,
       sending: false,
-      isTurnActive: false,
       resolving: false,
       resolveError: null,
       onToggle: vi.fn(),
       onBodyChange: vi.fn(),
       onSendReply,
-      onSendToAgent: vi.fn(),
     },
   });
   const textarea = view.container.querySelector('textarea')!;
@@ -87,8 +85,7 @@ describe('<ReviewPRThreadRow> card', () => {
         body: '',
         error: null,
         sending: false,
-        isTurnActive: false,
-        resolving: false,
+          resolving: false,
         resolveError: null,
         onToggle: vi.fn(),
         onBodyChange: vi.fn(),
@@ -140,5 +137,24 @@ describe('<ReviewPRThreadRow> card', () => {
     const view = renderRow({ onJumpToConversation });
     await fireEvent.click(view.getByTestId('review-pr-thread-jump-conversation'));
     expect(onJumpToConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapsed, carries no footer; expanded, the footer opens the composer', async () => {
+    const collapsedView = renderRow({ collapsed: true });
+    expect(collapsedView.queryByTestId('review-thread-footer')).toBeNull();
+    collapsedView.unmount();
+    const view = renderRow({ collapsed: false });
+    expect(view.queryByTestId('review-thread-composer')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-thread-reply'));
+    expect(view.getByTestId('review-thread-composer')).toBeTruthy();
+  });
+
+  it('resolves from the footer only when the host offers it', async () => {
+    expect(renderRow({ collapsed: false }).queryByTestId('review-thread-resolve')).toBeNull();
+    const onResolve = vi.fn();
+    const view = renderRow({ collapsed: false, onResolve });
+    await fireEvent.click(view.getByTestId('review-thread-resolve'));
+    // withReplies is resolved, so the control unresolves.
+    expect(onResolve).toHaveBeenCalledWith(false);
   });
 });

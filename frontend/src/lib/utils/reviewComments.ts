@@ -121,3 +121,15 @@ export function countReviewComments(input: {
   for (const draft of input.drafts) add(draft.filePath, 'draft');
   return { byFile, tally };
 }
+
+/** The thread as plain text for the clipboard: its location, then every
+ * comment with a visible body as `@login: body`. The shape an agent
+ * composer wants pasted in, which is what the Copy action is for. */
+export function threadClipboardText(thread: ReviewThread): string {
+  const location = thread.path === '' ? '' : thread.line ? `${thread.path}:${thread.line}` : thread.path;
+  const comments = thread.comments
+    .map((comment) => ({ login: comment.authorLogin, body: visibleBody(comment.body) }))
+    .filter((comment) => comment.body !== '')
+    .map((comment) => `@${comment.login}: ${comment.body}`);
+  return [...(location === '' ? [] : [location]), ...comments].join('\n\n');
+}
