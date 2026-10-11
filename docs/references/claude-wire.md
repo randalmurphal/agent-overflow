@@ -4986,8 +4986,7 @@ snapshot of one (model, mode) variant.
   (§"Request shape"), the file's content].
   `internal/provider/claudetui/launch.go` passes
   `--system-prompt-file` on the PTY launch and shares the headless
-  writer; `claudetui.Session.Close` removes the file, which the
-  `NewSession` failure path also runs.
+  writer and directory.
 - `--disallowedTools <name>` removes the tool's schema from the
   request `tools` array entirely (verified: `Workflow`,
   `EnterPlanMode`, `ExitPlanMode` absent from the capture) and

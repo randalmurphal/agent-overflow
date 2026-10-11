@@ -312,6 +312,9 @@ Mechanism in
   known to be 2.1.267 or newer, guide or not, so a resume runs the current
   prompt; the default body is stable across resumes of one build, so the
   prompt cache is unaffected (same spec §Claude prompt snapshot).
+- System prompt overrides are files under `<configDir>/prompts` so the user or
+  an agent edits them directly; the settings row holds id, enabled and models
+  only (decided with the user 2026-10-11; same spec §Prompt files).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

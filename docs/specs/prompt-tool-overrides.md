@@ -12,7 +12,10 @@ A settings surface (Agents group) where the user can:
 1. **Replace the provider's default system prompt** per provider, scoped
    to selected models: Claude via `--system-prompt`, Codex via
    `baseInstructions`. Toggleable per entry; takes effect on the next
-   session started, never disturbing running sessions.
+   session started, and running sessions follow
+   [Reconcile semantics](#reconcile-semantics-what-a-settings-edit-does-to-a-live-session).
+   Each prompt is a file the user or an agent can edit directly
+   ([Prompt files](#prompt-files)).
 2. **Disable built-in tools** per provider so their schemas never reach
    the model context (e.g. Claude's `Workflow`, because the user runs
    AO's own workflow engine instead). Claude's tools payload is ~92KB of schemas,
@@ -103,11 +106,14 @@ fails with both sizes named; it is never silently truncated.
 ## Settings shape
 
 ```go
-// internal/settings/settings.go
+// internal/settings/promptoverrides.go
 type PromptOverride struct {
+    ID      string   `json:"id"`                // canonical UUID, names the prompt file
     Enabled bool     `json:"enabled"`
-    Models  []string `json:"models"`  // normalized slugs, no context-tier markers
-    Prompt  string   `json:"prompt"`
+    Models  []string `json:"models"`            // normalized slugs, no context-tier markers
+    Prompt  string   `json:"prompt,omitempty"`  // text of <configDir>/prompts/<id>.md
+    Path    string   `json:"path,omitempty"`    // computed, never persisted
+    Problem string   `json:"problem,omitempty"` // computed, never persisted
 }
 
 ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
@@ -131,6 +137,41 @@ Decisions (2026-08-17, with user):
 `ClaudeDisabledTools` holds raw tool names (unknown names are harmless
 to the CLI). `CodexDisabledTools` holds **curated toggle ids**. Codex
 has no flat disallow list; each id maps to config keys (see below).
+
+### Prompt files
+
+Decision 2026-10-11 (with user): each override's text is a file, so the
+user or an agent edits it directly. `internal/settings/promptfiles.go`
+owns the mechanism.
+
+- **Location.** `<configDir>/prompts/<id>.md` (directory 0700, file
+  0600, written atomically through `atomicfile`). The settings row in the
+  user tier holds `id`, `enabled` and `models` only. `Prompt` stays
+  populated in memory and on the wire, filled from the file on load.
+- **Ids.** `Service.mutate` mints a UUID for an entry without one; an id
+  that is not a UUID, or that repeats within or across the two provider
+  lists, is rejected on write and cleared on load. A client never chooses
+  the filename. A `.md` file in the directory with no entry is ignored.
+- **Writes.** A save rewrites only the files whose text changed and
+  removes the files of dropped entries. `Path` and `Problem` are computed
+  on load; a value sent by a client is ignored.
+- **External edits.** `Get` stats every prompt file and reloads when one
+  changed, so the next read sees an edit. `assetwatch.PromptWatcher`
+  watches the directory; on an edit the app calls `ReloadPromptFiles`,
+  which announces both override keys to attached clients, then
+  reconciles live Claude sessions, so an edited text reaches headless
+  Claude through `set_model.system_prompt`. The service reports its own
+  writes to the watcher's suppression first, so an in-app save does not
+  echo back as an edit.
+- **Limits.** A file over `MaxPromptOverrideLen`, or one that carries its
+  provider's list past `MaxPromptOverridesTotalLen`, loads as an empty
+  prompt with `Problem` naming the path and size. The entry stays in the
+  list, so a later save cannot drop it, and an empty prompt never matches.
+- **Migration.** `MigratePromptFiles` runs after `AttachTierStore` at
+  startup: a row that still carries inline text, or lacks an id, gets an
+  id and a file, and the row is persisted without the text. Before the
+  tier store is attached (the pre-database boot readers and a store-less
+  service) the text stays inline in the row.
 
 ## Prompt application
 
@@ -416,9 +457,9 @@ of override entries (enable toggle, model multi-select chips with the
 same interaction as `ProviderModelChips` but a selection set rather than
 a hide-list, and a prompt editor), plus the disabled-tools row (curated
 toggle set for Codex; known-tool chips + free-form add for Claude).
-Settings JSON needs no migration (sparse write + unknown-field
-preservation already handle new fields); frontend `types/settings.ts`
-and the section registry are the only wiring.
+A saved entry shows its prompt file path with an icon-only Open button
+(`openInEditor`, offered only where the page has host scope) and its
+`Problem` in place of the empty-prompt warning.
 
 ## Non-goals / later
 
