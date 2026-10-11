@@ -6,6 +6,10 @@
 //     idle-reap threshold, the job's fire still reaches it, and
 //     `CronDelete` releases it so the next sweep reaps it. The reaper runs
 //     on a shortened clock (HARNESS_TIMING idle-reap / idle-reap-sweep).
+//     The same job never holds a service update.
+//   - A CLI that exits by itself takes its ScheduleWakeup timer and a
+//     one-shot job with it: neither holds a service update or a
+//     conversation transfer afterwards.
 //   - Each fire renders as a scheduled turn: the injected prompt as a user
 //     row badged "Scheduled", never as a message from another Claude
 //     session, including a fire the CLI held through a busy turn.
@@ -13,6 +17,7 @@
 //     session render a badged row naming the task and its result at the
 //     start of the woken turn.
 
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -20,6 +25,7 @@ import type { Page, TestInfo } from '@playwright/test';
 import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import {
+  type ScenarioStep,
   RESULT_LINE,
   advance,
   claudeTurnsScenario,
@@ -91,6 +97,19 @@ async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void>
   await page.screenshot({ path: testInfo.outputPath(name) });
 }
 
+/** What a service update would wait for now; "" when nothing. */
+function updateWorkReason(harness: HarnessApp): Promise<string> {
+  return harness.rpc<string>('HarnessUpdateWorkReason');
+}
+
+/** Waits until `row` sits fully above the composer, which floats over the timeline's bottom. */
+async function expectClearOfComposer(page: Page, row: ReturnType<Page['locator']>): Promise<void> {
+  await expect.poll(async () => {
+    const [box, composer] = [await row.boundingBox(), await page.getByTestId('composer-root').boundingBox()];
+    return box !== null && composer !== null && box.y >= 0 && box.y + box.height <= composer.y;
+  }, { message: 'the row is in view above the composer' }).toBe(true);
+}
+
 async function expectAbove(upper: ReturnType<Page['locator']>, lower: ReturnType<Page['locator']>): Promise<void> {
   const [a, b] = [await upper.boundingBox(), await lower.boundingBox()];
   expect(a, 'upper row is laid out').not.toBeNull();
@@ -129,6 +148,11 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     await waitForGate(harness, 'fire');
+
+    // A recurring job never holds a service update: the update restarts
+    // the backend, which ends the job either way. Soft, so the reaper
+    // half below still runs when this fails.
+    await expect.configure({ soft: true }).poll(() => updateWorkReason(harness), { message: 'a recurring job held a service update' }).toBe('');
 
     // Several sweeps past the idle threshold with the job armed.
     await page.waitForTimeout(10_000);
@@ -199,7 +223,7 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
     await expect(pings).toHaveCount(1);
     await harness.rpc('SendMessage', threadId, 'Sleep for 80 seconds.', null);
     await expect(pings).toHaveCount(2);
-    await pings.last().scrollIntoViewIfNeeded();
+    await expectClearOfComposer(page, pings.last());
     await shot(page, testInfo, 'cron-held-fire.png');
 
     const fire = userRow(page, LOOP_PROMPT);
@@ -207,6 +231,69 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
     await expect(page.getByTestId('user-message-peer-origin')).toHaveCount(0);
     await expectAbove(replyRow(page, 'SLEPT'), fire);
     await expectAbove(fire, pings.last());
+  });
+});
+
+// One turn arming a ScheduleWakeup timer 30 minutes out and a one-shot
+// weekly CronCreate job (claude-wire.md §E11), both shaped like the
+// captured acks. `n` keeps each process's ids its own.
+function armScheduleTurn(n: number): ScenarioStep {
+  const wake = `toolu_exit_wake_${n}`;
+  const cron = `toolu_exit_cron_${n}`;
+  const jobId = `0e5a1c2${n}`;
+  return emit([
+    toolUseLine(`msg-exit-wake-${n}`, wake, 'ScheduleWakeup', { delaySeconds: 1800, prompt: 'Check the deploy again.', reason: 'deploy check' }),
+    toolResultLine(wake, 'Next wakeup scheduled in 1800s.', {
+      toolUseResult: { clampedDelaySeconds: 1800, scheduledFor: Date.now() + 30 * 60_000, wasClamped: false },
+    }),
+    toolUseLine(`msg-exit-cron-${n}`, cron, 'CronCreate', { cron: '0 9 * * 1', prompt: 'Post the weekly summary.', recurring: false }),
+    toolResultLine(cron, `Scheduled one-shot task ${jobId} (0 9 * * 1). Session-only (not written to disk, dies when Claude exits). It will fire once then auto-delete.`, {
+      toolUseResult: { id: jobId, humanSchedule: '0 9 * * 1', recurring: false, durable: false },
+    }),
+    ...textLines(`msg-exit-armed-${n}`, `Armed schedule ${n}.`),
+    RESULT_LINE,
+  ]);
+}
+
+test('a CLI that exits by itself takes its scheduled wakeup and one-shot job with it', async ({ page }) => {
+  test.setTimeout(90_000);
+  await withHarness(page, HARNESS_TIMING, async (harness) => {
+    const scheduleFor = (n: number) =>
+      harness.rpc('HarnessSetScenario', { scenario: claudeTurnsScenario(`exit-schedule-${n}`, [[armScheduleTurn(n)]]) });
+    const exitCleanly = (mockId: string) => harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 0 });
+    const registered = () =>
+      harness.countEvents<{ report: { kind: string } }>('harness:mock', (ev) => ev.report.kind === 'registered');
+    const held = 'Waiting for turns and queued work to finish…';
+
+    await scheduleFor(1);
+    const threadId = await seedAgentThread(harness, 'exit-schedule', 'Exit schedule');
+    await openThread(harness, page, 'Exit schedule');
+    const first = await startMock(harness, threadId);
+    await harness.rpc('SendMessage', threadId, 'Schedule the checks.', null);
+    await expect(replyRow(page, 'Armed schedule 1.')).toBeVisible();
+    await expect.poll(() => updateWorkReason(harness)).toBe(held);
+
+    // The first unrequested exit is resumed automatically, and that
+    // reconnect's stop sweeps the record on its own. Claude never reports
+    // the turn start that re-arms the reconnect, so the second exit
+    // leaves the thread with no session: the case this test covers.
+    await scheduleFor(2);
+    await exitCleanly(first);
+    const second = await harness.waitForEvent<{ mockId: string }>('harness:mock', (ev: any) => ev.report.kind === 'registered');
+    await harness.rpc('SendMessage', threadId, 'Schedule the checks again.', null);
+    await expect(replyRow(page, 'Armed schedule 2.')).toBeVisible();
+    await expect.poll(() => updateWorkReason(harness)).toBe(held);
+
+    await exitCleanly(second.mockId);
+    // Soft, so a failure here still records what the transfer does.
+    await expect.configure({ soft: true }).poll(() => updateWorkReason(harness), {
+      message: 'the exited process\'s wakeup or job still holds a service update',
+    }).toBe('');
+    const admitted = await harness.rpc<{ operationId: string }>('BeginThreadTransfer', threadId, randomUUID(), randomUUID(), 'copy', false)
+      .then((intent) => intent.operationId, (error: Error) => `refused: ${error.message}`);
+    expect(admitted, 'the transfer was refused').not.toMatch(/^refused/);
+    await harness.rpc('CancelThreadTransfer', threadId, admitted);
+    expect(registered(), 'a reconnect replaced the exited session').toBe(2);
   });
 });
 

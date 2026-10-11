@@ -10,6 +10,7 @@ import { startTogether } from './launch-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { RESULT_LINE, claudeTurnsScenario, emit, listItems, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface Thread { id: string; title: string; sessionRef: string; workspacePath: string; ownershipEpoch?: number }
@@ -147,5 +148,81 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
         }
       });
     }
+
+    // A transfer stops the source session, and a recurring CronCreate job
+    // (claude-wire.md §E11) ends with it instead of holding the transfer.
+    // The dialog names the job before the user commits; the move goes
+    // through.
+    test('names the recurring job a transfer ends, then moves the conversation', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      const title = 'Looping Claude conversation';
+      const reply = 'Checking the deploy every five minutes.';
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      const nativeID = randomUUID();
+      try {
+        const original = await source.rpc<Seed>('HarnessSeed', {
+          projects: [{ name: 'Looping source project', repo: { commits: [{ files: { 'README.md': 'Base commit' } }] }, threads: [{ provider: 'claude', title, sessionRef: nativeID, turns: [{ userText: 'Watch the deploy', items: [{ kind: 'assistant_text', summary: 'Watching.' }] }] }] }],
+        });
+        // The mock resumes this session and appends its rows to the same file.
+        await source.rpc('HarnessSeed', { providerHome: [{ path: `.claude/projects/mock/${nativeID}.jsonl`, content: JSON.stringify({ type: 'user', sessionId: nativeID, uuid: randomUUID(), parentUuid: null, message: { role: 'user', content: 'Watch the deploy' } }) + '\n' }] });
+        await source.rpc('HarnessSetScenario', {
+          sessionRef: nativeID,
+          scenario: claudeTurnsScenario('transfer-recurring-job', [[emit([
+            toolUseLine('msg-loop-cron', 'toolu_loop_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'Check the deploy log.' }),
+            toolResultLine('toolu_loop_cron', 'Scheduled recurring job 5f0c1a2b (Every 5 minutes). Session-only (not written to disk, dies when Claude exits). Auto-expires after 7 days. Use CronDelete to cancel sooner.', {
+              toolUseResult: { id: '5f0c1a2b', humanSchedule: 'Every 5 minutes', recurring: true, durable: false },
+            }),
+            ...textLines('msg-loop-armed', reply),
+            RESULT_LINE,
+          ])]]),
+        });
+        const target = await destination.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Looping destination project', repo: { commits: [{ files: { 'README.md': 'Other checkout' } }] } }] });
+        const sourceThread = original.projects[0].threadIds[0];
+        await source.rpc('SendMessage', sourceThread, 'Check the deploy every five minutes.', null);
+        await expect.poll(async () => (await listItems(source, sourceThread)).some((item) => item.summary === reply), { timeout: 20_000 }).toBe(true);
+        const mocks = await source.rpc<Array<{ mockId: string; registration: { resumeRef?: string } }>>('HarnessListMocks');
+        const mockId = mocks.find((mock) => mock.registration.resumeRef === nativeID)?.mockId;
+        expect(mockId, 'the session holding the job runs on a mock').toBeTruthy();
+        const exited = () => source.countEvents<{ mockId: string; report: { kind: string } }>('harness:mock', (ev) => ev.mockId === mockId && ev.report.kind === 'exiting');
+
+        // The screenshots below show the destination's name; keep the
+        // host's own name out of them.
+        await source.rpc('RenameBackend', remoteId, 'Laptop');
+        await source.open(page);
+        const row = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) }).first();
+        await expect(row).toBeVisible();
+        if (info.project.name === 'compact') await page.getByTestId('thread-row-shell').filter({ has: row }).getByTestId('thread-row-menu').click();
+        else await row.click({ button: 'right' });
+        await page.getByRole('menuitem', { name: 'Move or copy to computer…', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Move or copy conversation', exact: true });
+        await dialog.getByRole('radio', { name: 'Move', exact: true }).check();
+        await dialog.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(remoteId);
+        await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
+        const note = dialog.getByTestId('transfer-recurring-jobs');
+        // Soft, so a run without the note still records what the move does.
+        await expect.soft(note).toHaveText('The transfer stops this conversation’s running session, which ends its recurring job: */5 * * * * (5f0c1a2b).');
+        await page.screenshot({ path: info.outputPath('transfer-recurring-job.png') });
+
+        await dialog.getByRole('button', { name: 'Move conversation', exact: true }).click();
+        await expect(dialog.getByTestId('conversation-transfer-status').or(dialog.getByRole('alert'))).toBeVisible();
+        await page.screenshot({ path: info.outputPath('transfer-recurring-job-started.png') });
+        await expect(dialog.getByRole('alert')).toHaveCount(0);
+        let result: Transfer | undefined;
+        await expect.poll(async () => {
+          result = (await source.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.threadId === sourceThread);
+          if (result?.phase === 'complete') return 'complete';
+          const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.id === result?.id);
+          return result?.error || recipient?.error || result?.phase;
+        }, { timeout: 40_000, intervals: [250] }).toBe('complete');
+        // The session holding the job is gone; the conversation lives on.
+        expect(exited(), 'the source session holding the job still runs').toBe(1);
+        expect((await destination.rpc<Thread>('GetThread', sourceThread)).sessionRef).toBe(nativeID);
+        expect(errors).toEqual([]);
+      } finally {
+        await source.rpc('HarnessClearScenarios');
+        await page.close();
+      }
+    });
   });
 }
