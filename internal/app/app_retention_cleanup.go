@@ -64,6 +64,9 @@ const (
 // waits on the WaitGroup before the parallel session close runs in
 // Step 4, so the sweep can't fire mid-teardown.
 func (a *App) startRetentionCleanup() {
+	if a.retentionSweepDisabled {
+		return
+	}
 	stop, started := a.sessionManager().runtime.StartRetentionCleanup()
 	if !started {
 		return

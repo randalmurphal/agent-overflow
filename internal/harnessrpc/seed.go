@@ -572,9 +572,7 @@ func (h *Harness) HarnessReset() (err error) {
 	h.scenarioRules = nil
 	h.mu.Unlock()
 	h.forge.Reset()
-	if err := h.forgeAPIServer().setOffline(false); err != nil {
-		return fmt.Errorf("bring the fake forge back online: %w", err)
-	}
+	h.forgeAPIServer().setOffline(false)
 	if replayer != nil {
 		replayer.Stop()
 	}

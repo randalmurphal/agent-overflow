@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"time"
 
@@ -315,6 +317,11 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	threads := make(map[string]store.Thread, len(ids))
 	for _, threadID := range ids {
 		thread, err := a.store.GetThread(threadID)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Deleted since the list (the retention sweep, another client):
+			// nothing left to delete.
+			continue
+		}
 		if err != nil {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: load thread %s: %w", threadID, err)
 		}
@@ -337,9 +344,19 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	}
 	slices.Sort(lockedIDs)
 	lockedIDs = slices.Compact(lockedIDs)
-	if !slices.Equal(ids, lockedIDs) {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+	// A thread removed while these locks were awaited was removed whole by
+	// its deleter, which held the same lock. Only a thread added since the
+	// list escapes this deletion's locks.
+	for _, threadID := range lockedIDs {
+		if _, listed := threads[threadID]; !listed {
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+		}
 	}
+	maps.DeleteFunc(threads, func(threadID string, _ store.Thread) bool {
+		_, still := slices.BinarySearch(lockedIDs, threadID)
+		return !still
+	})
+	ids = lockedIDs
 	// The same guard for the workflow side: the cleanup above ran unlocked, and a
 	// cron automation firing in that window would start a run this deletion never
 	// described and never cleaned up after.

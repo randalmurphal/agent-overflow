@@ -33,10 +33,8 @@
 
   // Whether this backend can register one at all: it needs a canonical
   // domain to be a relying party under, and this page needs a secure
-  // context to hold a credential in. Read once at mount — the domain is a
-  // live setting, but changing it is itself a step-up-gated write from
-  // this same screen, which reloads the section that hosts this one.
-  const usable = passkeysUsable();
+  // context to hold a credential in.
+  const usable = $derived(passkeysUsable());
 
   let passkeys = $state<PasskeySummary[]>([]);
   let acting = $state(false);

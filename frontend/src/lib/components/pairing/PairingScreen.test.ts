@@ -3,6 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import PairingScreen from './PairingScreen.svelte';
 import type { PairingPayload } from '../../transport/deviceSession';
 import { __resetHomeEndpointForTest, storedBackendEndpoint } from '../../transport/homeEndpoint';
+import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
 
 // Driven through the REAL deviceSession module with a stubbed global
 // fetch, not a module mock: the screen's contract is the flow those two
@@ -197,5 +198,23 @@ describe('PairingScreen', () => {
     });
     getByText('This pairing link is damaged. Ask for a new one.');
     getByText('Ask for a new pairing link from the app on your computer.');
+  });
+  it('offers passkey sign-in once the manifest says this backend has passkeys', async () => {
+    Object.defineProperty(window, 'PublicKeyCredential', { configurable: true, value: function PublicKeyCredential() {} });
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: { create: () => Promise.resolve(null), get: () => Promise.resolve(null) },
+    });
+    try {
+      // The screen mounts before the manifest the page is fetching lands.
+      const { queryByRole, findByRole } = render(PairingScreen, { props: { payload: PAYLOAD, onDone: () => {} } });
+      expect(queryByRole('button', { name: 'Sign in with a passkey' })).toBeNull();
+      setPasskeysAvailableFromBootstrap(true);
+      await findByRole('button', { name: 'Sign in with a passkey' });
+    } finally {
+      setPasskeysAvailableFromBootstrap(false);
+      Reflect.deleteProperty(window, 'PublicKeyCredential');
+      Reflect.deleteProperty(navigator, 'credentials');
+    }
   });
 });

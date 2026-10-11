@@ -143,6 +143,88 @@ func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
 	}
 }
 
+// A deletion that waits on a thread's lock while that thread's own deleter (the
+// retention sweep, another client) removes it finishes the project; a thread
+// added in that window escapes its locks, so it asks for a retry.
+func TestAppDeleteProjectAcrossConcurrentThreadChanges(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		change  func(t *testing.T, app *App, projectID, heldID string)
+		wantErr bool
+	}{
+		{
+			name: "thread deleted",
+			change: func(t *testing.T, app *App, _, heldID string) {
+				if err := app.deleteThreadTreeWithSubtreeLocksHeld(heldID); err != nil {
+					t.Fatalf("delete held thread: %v", err)
+				}
+			},
+		},
+		{
+			name: "thread added",
+			change: func(t *testing.T, app *App, projectID, _ string) {
+				if _, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: projectID, Provider: "claude", Model: "claude-sonnet-4-6"}); err != nil {
+					t.Fatalf("CreateThread: %v", err)
+				}
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.stopSessionFn = func(string) error { return nil }
+			p, err := app.CreateProject(t.TempDir())
+			if err != nil {
+				t.Fatalf("CreateProject: %v", err)
+			}
+			var ids []string
+			for range 2 {
+				thread, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: p.ID, Provider: "claude", Model: "claude-sonnet-4-6"})
+				if err != nil {
+					t.Fatalf("CreateThread: %v", err)
+				}
+				ids = append(ids, thread.ID)
+			}
+			held, kept := ids[0], ids[1]
+			unlock := app.threadLocks().Lock(held)
+			type outcome struct {
+				result ProjectDeletionResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				result, err := app.DeleteProject(p.ID)
+				done <- outcome{result, err}
+			}()
+			waitForThreadLockRefs(t, app.threadLocks(), held, 2)
+			tc.change(t, app, p.ID, held)
+			unlock()
+			got := <-done
+
+			if tc.wantErr {
+				if got.err == nil || !strings.Contains(got.err.Error(), "contained threads changed during deletion") {
+					t.Fatalf("DeleteProject() error = %v, want a retry", got.err)
+				}
+				if _, err := app.store.GetProject(p.ID); err != nil {
+					t.Fatalf("project removed by a refused delete: %v", err)
+				}
+				return
+			}
+			if got.err != nil {
+				t.Fatalf("DeleteProject() error = %v", got.err)
+			}
+			if len(got.result.ThreadIDs) != 1 || got.result.ThreadIDs[0] != kept {
+				t.Fatalf("DeleteProject thread ids = %v, want [%s]", got.result.ThreadIDs, kept)
+			}
+			if _, err := app.store.GetProject(p.ID); err == nil {
+				t.Fatal("project survived DeleteProject")
+			}
+		})
+	}
+}
+
 func TestAppCreateThreadRequiresProjectID(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)

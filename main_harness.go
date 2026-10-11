@@ -368,6 +368,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		CredentialHome:         paths.CredentialHome,
 		UseFileKeychain:        true,
 		DisableBackgroundFetch: true,
+		DisableRetentionSweep:  true,
 		// Default-ON, and lifted only by the manual gate below. A mocked boot
 		// is normally headless and unattended, so the fake engine is what
 		// keeps the companion pane's chrome, tab strip and host rect

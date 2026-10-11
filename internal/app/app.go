@@ -686,6 +686,10 @@ type App struct {
 	// reach it — they build *App directly and never call Start. Set once
 	// before Start; never mutated afterwards.
 	backgroundFetchDisabled bool
+	// retentionSweepDisabled keeps the retention sweep from starting
+	// (IsolationConfig.DisableRetentionSweep). Set once before Start;
+	// never mutated afterwards.
+	retentionSweepDisabled bool
 	// isolatedWorkspaceRoot, when non-empty, bounds every project path and
 	// session working directory (app_isolated_workspace.go). Empty disables
 	// the check, which only unit tests do. Set once before Start; never
