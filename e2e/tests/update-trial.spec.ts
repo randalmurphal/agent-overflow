@@ -15,28 +15,21 @@
 // claude, codex, gh and glab first on PATH, which record each call: the
 // refused boot and the parked trial start no provider, and the live boot's
 // provider probes reach the fakes.
-import { execFile, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
-import { promisify } from 'node:util';
-import { spawnContained } from '../src/harness-process.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
+import { execProduct, productBinary, spawnProduct } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
 
-const run = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const backend = process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
+const backend = productBinary('agent-overflow');
 const UPDATE_PREFIX = '__AO_UPDATE__:';
 const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
 const FIXTURE_VERSION = 118;
-
-// Siblings of the backend binary, as history-repair-upgrade resolves them.
-function sibling(name: string): string {
-  return path.join(path.dirname(backend), name);
-}
 
 // The version `make harness-build` stamps into bin/agent-overflow.
 async function buildVersion(): Promise<string> {
@@ -50,12 +43,13 @@ interface Sandbox {
   root: string;
   dataDir: string;
   dbPath: string;
-  env: NodeJS.ProcessEnv;
+  env: Record<string, string>;
   calls: string;
 }
 
-// A data root, a home and fake provider and forge CLIs. The environment is
-// built from nothing, so no provider home override, WSL interop variable or
+// A data root, a home and fake provider and forge CLIs. The environment
+// replaces the launch environment's home, shell, temp and PATH (see
+// src/harness-env.ts), so no provider home override, WSL interop variable or
 // user PATH entry reaches the backend. The login-shell PATH probe runs a
 // stand-in shell that skips login files: a system profile (macOS path_helper,
 // Linux /etc/profile) puts directories such as /opt/homebrew/bin ahead of the
@@ -90,7 +84,7 @@ async function sandbox(): Promise<Sandbox> {
     ].join('\n'));
     await chmod(script, 0o755);
   }
-  const env: NodeJS.ProcessEnv = {
+  const env: Record<string, string> = {
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: home,
@@ -103,13 +97,13 @@ async function sandbox(): Promise<Sandbox> {
     LANG: 'C.UTF-8',
     TMPDIR: path.join(root, 'tmp'),
   };
-  await mkdir(env.TMPDIR!, { recursive: true });
+  await mkdir(env.TMPDIR, { recursive: true });
   return { root, dataDir, dbPath: path.join(dataDir, 'agent-overflow', 'agent-overflow.db'), env, calls };
 }
 
 async function writeFixture(dbPath: string): Promise<void> {
-  await run(sibling('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
-    env: { ...process.env, AO_TEST_HISTORY_REPAIR_FIXTURE: dbPath },
+  await execProduct(productBinary('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
+    env: { AO_TEST_HISTORY_REPAIR_FIXTURE: dbPath },
     timeout: 120_000,
   });
   // The test skips, and exits 0, when it is not handed a path.
@@ -138,7 +132,7 @@ async function schemaVersion(sb: Sandbox): Promise<number> {
       await copyFile(path.join(dir, name), path.join(copy, name));
     }
   }
-  const { stdout } = await run(sibling('ao-harness'), ['-o', 'json', 'db', '--file', path.join(copy, 'agent-overflow.db'),
+  const { stdout } = await execProduct(productBinary('ao-harness'), ['-o', 'json', 'db', '--file', path.join(copy, 'agent-overflow.db'),
     'SELECT MAX(version) AS v FROM migration_versions'], { timeout: 30_000 });
   await rm(copy, { recursive: true, force: true });
   return (JSON.parse(stdout) as Array<{ v: number }>)[0].v;
@@ -155,7 +149,7 @@ interface UpdateEvent {
 // runUpdateCommand runs one update command to its end, as
 // wsllauncher.UpdateCommandRunner does, and returns its reports.
 async function runUpdateCommand(sb: Sandbox, args: string[], timeoutMs = 120_000): Promise<{ events: UpdateEvent[]; stderr: string }> {
-  const child = spawnContained(backend, [...args, '--data-dir', sb.dataDir], {
+  const child = spawnProduct(backend, [...args, '--data-dir', sb.dataDir], {
     env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
@@ -221,7 +215,7 @@ interface HeadlessBackend {
 // startHeadless boots the backend the Windows launcher starts, with the
 // launcher's own flags plus a loopback-only listener.
 async function startHeadless(sb: Sandbox): Promise<HeadlessBackend> {
-  const child = spawnContained(backend, ['--print-url-fd', '0', '--data-dir', sb.dataDir, '--listen', '127.0.0.1:0',
+  const child = spawnProduct(backend, ['--print-url-fd', '0', '--data-dir', sb.dataDir, '--listen', '127.0.0.1:0',
     '--refuse-pending-migrations'], {
     env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],

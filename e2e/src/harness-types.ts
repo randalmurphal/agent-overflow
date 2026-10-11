@@ -46,7 +46,7 @@ export interface LaunchOptions {
   mockForge?: string;
   /** Data root. Default: a fresh temp dir, removed on close(). */
   dataDir?: string;
-  /** Extra environment (merged over process.env). */
+  /** Extra environment, over the allowlisted launch environment (harness-env.ts). */
   env?: Record<string, string>;
   /** Boot deadline in ms. Default 30s (first boot migrates the DB). */
   timeoutMs?: number;

@@ -1,4 +1,5 @@
 import { type ChildProcess } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -97,6 +98,17 @@ interface PendingRpc {
 
 /** A live harness-mode backend plus one WS connection to it. */
 export class HarnessApp {
+  // A root launchHarness created belongs to its app until close() removes
+  // it. One a spec leaves by ending on stop() or crash() is removed when
+  // this process exits. One whose backend was never seen to stop is left
+  // and reported: that backend may still be writing to it.
+  private static readonly unclosedRoots = new Set<HarnessApp>();
+  static {
+    process.once('exit', () => {
+      for (const app of HarnessApp.unclosedRoots) app.removeRootAtExit();
+    });
+  }
+
   readonly bootstrap: HarnessBootstrap;
   /**
    * The page URL the backend printed at boot. Its one-time ticket is
@@ -139,6 +151,7 @@ export class HarnessApp {
     this.consoleLog = consoleLog;
     this.launch = launch;
     this.removeDataDir = removeDataDir;
+    if (removeDataDir) HarnessApp.unclosedRoots.add(this);
     this.processGroupMemberProof = memberProof;
     this.processTreeProof = treeProof;
     this.processIdentity = identity;
@@ -579,6 +592,21 @@ export class HarnessApp {
       console.error(`harness data root kept at ${this.removeDataDir}`);
     } else if (this.removeDataDir) {
       await boundedCleanup(`remove harness data dir ${this.removeDataDir}`, rm(this.removeDataDir, { recursive: true, force: true }));
+    }
+    HarnessApp.unclosedRoots.delete(this);
+  }
+
+  /** At process exit, the removal close() would have done, if it is safe. */
+  private removeRootAtExit(): void {
+    if (!this.removeDataDir || this.dataRootKept) return;
+    if (!this.teardownComplete) {
+      console.error(`harness data root ${this.removeDataDir} left at exit: backend ${this.child.pid ?? 'unknown'} was never stopped`);
+      return;
+    }
+    try {
+      rmSync(this.removeDataDir, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`harness data root ${this.removeDataDir} could not be removed at exit: ${(error as Error).message}`);
     }
   }
 }

@@ -16,7 +16,6 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
-  spawnContained,
   captureProcessIdentity,
   captureProcessTreeProof,
   captureProcessGroupMemberProof,
@@ -33,6 +32,7 @@ import {
 import { boundedCleanup } from './harness-cleanup.ts';
 import { BackendConsoleLog } from './harness-console-log.ts';
 import { launchEnvironment } from './harness-env.ts';
+import { productBinary, spawnProduct } from './product-process.ts';
 import { terminateHarness } from './harness-teardown.ts';
 import type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 import { HarnessApp } from './harness-app.ts';
@@ -70,9 +70,7 @@ function normalizeSystemPath(value: string): string {
 
 /** Launch a harness-mode backend and connect to its event wire. */
 export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessApp> {
-  const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-  const binary =
-    opts.binary ?? process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
+  const binary = opts.binary ?? productBinary('agent-overflow');
   const mockProvider = opts.mockProvider ?? process.env.AO_MOCKPROVIDER;
   const mockForge = opts.mockForge ?? process.env.AO_MOCKFORGE;
   const ownsDataDir = !opts.dataDir;
@@ -100,12 +98,14 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     if (ownsDataDir) await removeOwnedRoot(dataDir, undefined, 'after console log error');
     throw new Error(`harness console log could not be opened under ${dataDir}: ${(error as Error).message}`);
   }
+  // Built once so the record is exactly what spawnProduct passes: a full
+  // launch environment given back to it as overrides comes out unchanged.
   const env = launchEnvironment({ AO_HARNESS_TIMING: HARNESS_TIMING, ...opts.env });
   const launch: HarnessLaunchRecord = { binary, args, harnessTiming: env.AO_HARNESS_TIMING ?? '', env };
 
   let child: ChildProcess;
   try {
-    child = spawnContained(binary, args, {
+    child = spawnProduct(binary, args, {
       memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],

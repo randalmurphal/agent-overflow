@@ -17,6 +17,10 @@ const INHERITED_NAMES = [
   'XDG_RUNTIME_DIR',
 ];
 const INHERITED_PREFIXES = ['LC_', 'AO_HARNESS_', 'AO_E2E_', 'AO_MOCK'];
+// Matched by a prefix above but never inherited: AO_HARNESS_KEEP_HOME makes
+// the backend keep the real HOME instead of its temp home (main_harness.go,
+// isolateHarnessHome).
+const EXCLUDED_NAMES = ['AO_HARNESS_KEEP_HOME'];
 // What a Windows process needs to start at all (Winsock fails without
 // SystemRoot) and where the runtime finds its temp, home and app data.
 const INHERITED_WINDOWS_NAMES = [
@@ -47,10 +51,12 @@ export function launchEnvironment(
   const fold = (name: string) => (windows ? name.toUpperCase() : name);
   const names = new Set([...INHERITED_NAMES, ...(windows ? INHERITED_WINDOWS_NAMES : [])].map(fold));
   const prefixes = INHERITED_PREFIXES.map(fold);
+  const excluded = new Set(EXCLUDED_NAMES.map(fold));
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(source)) {
     if (value === undefined) continue;
     const key = fold(name);
+    if (excluded.has(key)) continue;
     if (names.has(key) || prefixes.some((prefix) => key.startsWith(prefix))) env[name] = value;
   }
   for (const [name, value] of Object.entries(overrides)) {
