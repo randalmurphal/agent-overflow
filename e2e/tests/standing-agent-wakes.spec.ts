@@ -14,9 +14,17 @@
 // watch on the next boot; a wake whose session died before taking it in
 // recorded on its row and kept out of the composer; and a worker's question
 // and approval delivered to the standing agent that spawned it, answered
-// with thread_reply, and settled by the user answering in the worker; and a
-// worker's approval handed back to the user when its agent's session died
-// before taking it in.
+// with thread_reply, and settled by the user answering in the worker; a
+// worker's approval or question handed back to the user, and notified, when
+// its agent's session died before taking it in; archive, delete, demote and
+// a move stopping loops and watches with the watch's processes gone, and a
+// long-running watch started again at boot; a wake capped at 64 KiB and a
+// watch run stopped at its timeout; a failed tick notifying, and
+// notify_on_tick making a tick notify; wakes and outside sends queued at
+// quit recorded at boot, not put in the composer; a Claude wake flushed
+// mid-turn counted as a tick only when it runs as its own turn; and the
+// transfer dialog naming what a standing agent leaves behind.
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -27,6 +35,9 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { productBinary, spawnProduct } from '../src/product-process.js';
+import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { headlessPairing } from './headless-pairing-helpers.js';
+import { startTogether } from './launch-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -179,7 +190,8 @@ async function wakeBubble(page: Page, title: string, badge: string, contains: st
 /**
  * Captures the window once every target is painted whole: visible (the
  * timeline hides its rows while it warms up after a thread switch), inside
- * the window and above the composer. The last target is centered first.
+ * the window and above the composer, unless it is in a dialog, which sits
+ * over the composer. The last target is centered first.
  */
 async function shoot(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   await targets[targets.length - 1].evaluate((el) => el.scrollIntoView({ block: 'center' }));
@@ -187,6 +199,7 @@ async function shoot(page: Page, name: string, ...targets: Locator[]): Promise<v
   for (const target of targets) {
     await expect(target).toBeVisible();
     await expect(target).toBeInViewport({ ratio: 1 });
+    if (await target.evaluate((el) => el.closest('[role="dialog"]') !== null)) continue;
     const box = (await target.boundingBox())!;
     expect(box.y + box.height, `${name}: the target clears the composer`).toBeLessThanOrEqual(composerTop);
   }
@@ -1080,6 +1093,218 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     }
   });
 }
+
+// A standing agent's home and schedules belong to its computer. The
+// transfer dialog says so for either kind; a copy leaves the original an
+// agent with its loop armed and its watch running; a move ends both, stops
+// the watch's processes and retires the thread here without its agent row.
+// On the destination the conversation is an ordinary thread either way.
+const TRANSFER_NOTE = {
+  copy: 'This conversation is a standing agent. Its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.',
+  move: 'This conversation is a standing agent. Its home stays on this computer and the move ends its loops and watches, so it arrives as an ordinary conversation.',
+} as const;
+
+interface Transfer {
+  id: string;
+  threadId: string;
+  kind: string;
+  phase: string;
+  error?: string;
+  targetThreadId: string;
+}
+
+function standingAgentRows(root: string, threadID: string): number {
+  const db = new DatabaseSync(join(root, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return (db.prepare(`SELECT count(*) AS n FROM standing_agents WHERE thread_id = ?`).get(threadID) as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
+test.describe('a standing agent copied or moved to another computer', () => {
+  let source: HarnessApp;
+  let destination: HarnessApp;
+  let remoteId = '';
+  let fixtureDir = '';
+  let scenarioFile = '';
+
+  test.beforeAll(async ({ browser }) => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'ao-agent-transfer-'));
+    scenarioFile = join(fixtureDir, 'codex.json');
+    await writeFile(scenarioFile, JSON.stringify(codexTransferScenario()));
+    [source, destination] = await startTogether(
+      launchHarness({ env: { AO_MOCK_SCENARIO_FILE: scenarioFile } }),
+      launchHarness(),
+    );
+    // Named here so no capture shows the host's own name.
+    await source.rpc('SetDeviceName', 'Agent computer');
+    await destination.rpc('SetDeviceName', 'Other computer');
+    const context = await browser.newContext();
+    let pairing: Awaited<ReturnType<typeof headlessPairing>> | undefined;
+    try {
+      const page = await context.newPage();
+      await source.open(page);
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
+      pairing = await headlessPairing(destination);
+      await page
+        .getByRole('textbox', { name: /^(Computer address or pairing link|Pairing link)$/ })
+        .fill(pairing.invite.url);
+      await page.getByRole('button', { name: 'Connect', exact: true }).click();
+      const verification = page.getByLabel('Verification number');
+      await expect(verification).toBeVisible();
+      await pairing.confirm((await verification.textContent())!.trim());
+      await expect(page.getByTestId('attached-system')).toContainText('Connected');
+      remoteId = (await source.rpc<Array<{ id: string }>>('ListBackends'))[0].id;
+    } finally {
+      pairing?.close();
+      await context.close();
+    }
+  });
+
+  test.afterAll(async () => {
+    try {
+      await destination?.close();
+      await source?.close();
+    } finally {
+      if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+    test(`${provider}: the dialog says what stays, a copy keeps the agent and a move ends it`, async ({ page }) => {
+      test.setTimeout(180_000);
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      const title = `Release agent ${provider}`;
+      const nativeID = randomUUID();
+      const seed = await source.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `agent-transfer-${provider}`, repo: {}, threads: [{ provider, title, sessionRef: nativeID }] }],
+      });
+      const thread = seed.projects[0].threadIds[0];
+      const cwd = seed.projects[0].path;
+      // The transfer carries the provider's own session file; the mock writes
+      // none, so the test supplies an inert one.
+      const nativePath =
+        provider === 'claude'
+          ? `.claude/projects/agent-transfer/${nativeID}.jsonl`
+          : `.codex/sessions/2026/10/11/rollout-2026-10-11T12-00-00-${nativeID}.jsonl`;
+      const transcript =
+        provider === 'claude'
+          ? [{ type: 'user', sessionId: nativeID, uuid: randomUUID(), parentUuid: null, message: { role: 'user', content: 'keep watch' } }]
+          : [
+              { type: 'session_meta', payload: { id: nativeID, cwd, cli_version: '0.153.4', history_mode: 'legacy' } },
+              { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep watch' }] } },
+            ];
+      await source.rpc('HarnessSeed', {
+        providerHome: [{ path: nativePath, content: transcript.map((row) => JSON.stringify(row)).join('\n') + '\n' }],
+      });
+      const target = await destination.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `agent-transfer-target-${provider}`, repo: {} }],
+      });
+
+      const home = (await source.rpc<{ home: string }>('PromoteStandingAgent', thread)).home;
+      await writeFile(join(home, 'hold.sh'), HOLD_SCRIPT);
+      const scenario = threadToolsScenario({
+        name: `agent-transfer-${provider}`,
+        provider,
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [
+              { call: { tool: 'thread_loop', args: { label: 'beat', note: 'check in', every_seconds: 3600 } } },
+              { call: { tool: 'thread_watch', args: { label: 'hold', command: run('hold.sh'), long_running: true } } },
+            ],
+            text: 'Holding.',
+          },
+        ],
+        afterTurns: 'silent',
+      });
+      if (provider === 'codex') {
+        // The transfer reads the transcript through a Codex process of its
+        // own, outside the control channel; the scenario file answers it.
+        if (!source.bootstrap.homeDir) throw new Error('The transfer fixture requires an isolated provider home');
+        await writeFile(scenarioFile, JSON.stringify(codexTransferScenario(nativeID, join(source.bootstrap.homeDir, nativePath))));
+      }
+      await setScenario(source, cwd, scenario);
+      await source.rpc('StartSession', thread);
+      await source.rpc('SendMessage', thread, 'keep watch', null);
+      const ack = await awaitToolAnswer(source, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(source, thread);
+      const runs = await holdRun(home, 1);
+      const sourceDir = source.bootstrap.dataDir;
+      const live = [
+        { kind: 'loop', label: 'beat', state: 'armed', last_outcome: '' },
+        { kind: 'watch', label: 'hold', state: 'running', last_outcome: '' },
+      ];
+      expect(dbWakes(sourceDir, thread)).toEqual(live);
+
+      await source.open(page);
+      const transfer = async (kind: 'copy' | 'move'): Promise<Transfer> => {
+        const name = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) });
+        await expect(name).toHaveCount(1);
+        await name.click({ button: 'right' });
+        await page.getByRole('menuitem', { name: 'Move or copy to computer…', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Move or copy conversation', exact: true });
+        const note = dialog.getByTestId('transfer-standing-agent');
+        await dialog.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(remoteId);
+        await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
+        for (const shown of kind === 'copy' ? (['move', 'copy'] as const) : (['move'] as const)) {
+          await dialog.getByRole('radio', { name: shown === 'copy' ? 'Copy / fork' : 'Move', exact: true }).check();
+          await expect(note).toHaveText(TRANSFER_NOTE[shown]);
+          await shoot(page, `${provider}-transfer-${shown}-standing-agent.png`, note);
+        }
+        await dialog.getByRole('button', { name: kind === 'copy' ? 'Copy conversation' : 'Move conversation', exact: true }).click();
+        await expect(dialog.getByTestId('conversation-transfer-status')).toBeVisible();
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        let result: Transfer | undefined;
+        await expect
+          .poll(
+            async () => {
+              result = (await source.rpc<Transfer[]>('GetThreadTransfers')).find(
+                (row) => row.threadId === thread && row.kind === kind,
+              );
+              if (result?.phase === 'complete') return 'complete';
+              const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.id === result?.id);
+              return result?.error || recipient?.error || result?.phase;
+            },
+            { timeout: 40_000, intervals: [250] },
+          )
+          .toBe('complete');
+        return result!;
+      };
+
+      // ---- A copy leaves the original an agent, with its loop and watch.
+      const copy = await transfer('copy');
+      expect(await source.rpc('GetStandingAgent', thread)).not.toBeNull();
+      expect(await destination.rpc('GetStandingAgent', copy.targetThreadId)).toBeNull();
+      expect(dbWakes(destination.bootstrap.dataDir, copy.targetThreadId)).toEqual([]);
+      expect(dbWakes(sourceDir, thread)).toEqual(live);
+      for (const pid of runs) expect(alive(pid), `pid ${pid} runs after the copy`).toBe(true);
+      // Named apart so the next menu opens on the original.
+      await destination.rpc('RenameThread', copy.targetThreadId, `Copied agent ${provider}`);
+
+      // ---- A move ends both and stops the watch; the thread arrives
+      // ordinary and its retired row here is no agent.
+      const move = await transfer('move');
+      expect(move.targetThreadId).toBe(thread);
+      await expectGone(runs);
+      const moved = 'cancelled: the thread was moved to another computer';
+      expect(dbWakes(sourceDir, thread)).toEqual([
+        { kind: 'loop', label: 'beat', state: 'cancelled', last_outcome: moved },
+        { kind: 'watch', label: 'hold', state: 'cancelled', last_outcome: moved },
+      ]);
+      expect(standingAgentRows(sourceDir, thread)).toBe(0);
+      expect(await destination.rpc('GetStandingAgent', thread)).toBeNull();
+      expect(dbWakes(destination.bootstrap.dataDir, thread)).toEqual([]);
+      expect(existsSync(home), 'the home stays on this computer').toBe(true);
+      expect(pidsIn(join(home, 'hold.pids'))).toHaveLength(1);
+      expect(errors).toEqual([]);
+    });
+  }
+});
 
 // A wake carries at most 64 KiB and says what it dropped, in the timeline
 // too. A watch run longer than its timeout_seconds is stopped and recorded.

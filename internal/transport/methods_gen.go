@@ -172,6 +172,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                              // main.App.GetSettings
 	{Name: "GetSoundFiles", ID: 3138117849, Scope: "settings:read", Route: "home"},                                            // main.App.GetSoundFiles
 	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read", Route: "home"},                                          // main.App.GetSpinnerFiles
+	{Name: "GetStandingAgent", ID: 634025932, Scope: "threads:read", Route: "thread"},                                         // main.App.GetStandingAgent
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate", Route: "home"},                                     // main.App.GetTerminalReplay
 	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:read", Route: "home"},                                            // main.App.GetThemeFiles
 	{Name: "GetThread", ID: 1098302047, Scope: "threads:read", Route: "thread"},                                               // main.App.GetThread

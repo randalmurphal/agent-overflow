@@ -67,6 +67,18 @@ func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error)
 	return row, err
 }
 
+// GetStandingAgent returns a thread's standing agent row, or nil when the
+// thread is not a standing agent.
+//
+//ao:scope threads:read
+func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
+	row, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &row, nil
+}
+
 // DemoteStandingAgent removes a thread's standing agent row and cancels its
 // watches, which only a standing agent may keep. Its loops stay, since any
 // thread may keep one, and its home stays on disk. Demoting a thread that is
