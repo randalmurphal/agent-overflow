@@ -61,7 +61,6 @@ import {
   cliCalls,
   killGroup,
   newUpdateID,
-  prepareRig,
   runUpdateCommand,
   settledBootstrap,
   startHeadless,
@@ -69,8 +68,8 @@ import {
   updateResult,
   type Cadence,
   type HeadlessBackend,
-} from './upgrade-corpus-launcher.js';
-import { buildVersion, harnessTool, timed } from './upgrade-corpus-tools.js';
+} from './update-launcher-helpers.js';
+import { buildVersion, harnessTool, prepareRig, timed } from './upgrade-corpus-tools.js';
 import { topUp } from './upgrade-corpus-topup.js';
 
 const previousBinary = process.env.AO_RELEASE_UPGRADE_PREVIOUS_BIN;

@@ -1,20 +1,32 @@
-// The build's tools, as the upgrade corpus checks use them: the candidate
-// binary (`make harness-build`'s, or AO_HARNESS_BIN for a release's own
-// bytes), the harness tools beside the default, the stamped version, and a
-// read-only query of a database through `ao-harness db`.
+// The build's tools, as the upgrade corpus checks use them: the check's
+// sandbox at its fixed root, the harness tools `make harness-build` wrote
+// (the candidate itself is `backendBinary` in update-launcher-helpers.ts),
+// the stamped version, and a read-only query of a database through
+// `ao-harness db`.
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { buildSandbox, type Sandbox } from './update-launcher-helpers.js';
 
 const run = promisify(execFile);
 export const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-/** The candidate: the binary `make harness-build` wrote. */
-export const candidateBinary = process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
-const UPDATE_PREFIX = '__AO_UPDATE__:';
-const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
 
-/** A tool `make harness-build` wrote beside the default candidate (ao-harness, ao-mockprovider). */
+/** The rig root under its parent: fixed, because a corpus archive is relocatable only to the root it was made at. */
+export const RIG_NAME = 'ao-upgrade-corpus';
+
+/**
+ * prepareRig builds the check's sandbox at `<parent>/ao-upgrade-corpus`
+ * (parent defaults to /tmp), replacing what a previous run left there.
+ */
+export async function prepareRig(parent: string | undefined): Promise<Sandbox> {
+  const root = path.join(parent ?? '/tmp', RIG_NAME);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  return buildSandbox(root);
+}
+
+/** A tool `make harness-build` wrote beside the default candidate (ao-harness, ao-mockprovider, ao-store-test). */
 export function harnessTool(name: string): string {
   return path.join(repoRoot, 'bin', name);
 }

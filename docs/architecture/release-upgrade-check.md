@@ -8,8 +8,11 @@ on the pull requests that can break it; every pull request runs the coverage
 gate below, which keeps the corpus representative of the schema.
 
 The check is `e2e/tests/upgrade-corpus.manual.spec.ts` under the manual
-Playwright config, with its helpers and the corpus generator in
-`e2e/tests/upgrade-corpus-helpers.ts`. `scripts/release-upgrade-check.sh`
+Playwright config; the corpus generator, census, top-up, coverage and
+archive modules are the `e2e/tests/upgrade-corpus-*.ts` beside it, and the
+launcher's side of the update (sandbox, update commands, gated boot) is
+`e2e/tests/update-launcher-helpers.ts`, shared with `update-trial.spec.ts`.
+`scripts/release-upgrade-check.sh`
 resolves and downloads the previous release and starts the suite through
 `bin/ao-harness-e2e`, so every process runs inside the harness memory
 boundary and, on Linux, the isolated network namespace.

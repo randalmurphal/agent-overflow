@@ -1,25 +1,30 @@
 // The Windows launcher's side of an update, driven the way the launcher
-// drives it: a sandboxed environment every process runs in, the gated
-// headless boot (--refuse-pending-migrations) judged by the launcher's probe
-// deadline, and the update commands (__update-snapshot, __update-trial-run,
-// __update-discard) judged by the stall window and ceiling the launcher
-// holds them to.
+// drives it: a from-nothing sandbox every backend process runs in, the
+// update commands (__update-snapshot, __update-trial-run, __update-restore,
+// __update-discard) run as wsllauncher.UpdateCommandRunner runs them, and
+// the gated headless boot (--refuse-pending-migrations) probed as the
+// launcher probes it. update-trial.spec.ts drives the v118 fixture through
+// it; the release upgrade check drives the corpus through it and holds
+// every run to the launcher's stall window, ceiling and probe deadline.
 import { type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawnContained } from '../src/harness-process.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
-import { candidateBinary } from './upgrade-corpus-tools.js';
+
+/** The backend under test: bin/agent-overflow from `make harness-build`, or AO_HARNESS_BIN. */
+export const backendBinary = process.env.AO_HARNESS_BIN
+  ?? path.join(path.resolve(import.meta.dirname, '..', '..'), 'bin', 'agent-overflow');
 
 const UPDATE_PREFIX = '__AO_UPDATE__:';
 const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
 
-export interface Rig {
-  /** Everything the check writes lives under here. */
+export interface Sandbox {
+  /** Everything a run writes lives under here. */
   root: string;
-  /** The data root both releases boot on (`--data-dir`). */
+  /** The data root the backends boot on (`--data-dir`). */
   dataRoot: string;
   /** `<dataRoot>/agent-overflow/agent-overflow.db`. */
   dbPath: string;
@@ -29,22 +34,15 @@ export interface Rig {
   calls: string;
 }
 
-// A data root, a home and fake provider and forge CLIs, built from nothing
-// so no provider home override, WSL interop variable or user PATH entry
-// reaches a backend. The login-shell PATH probe runs a stand-in shell that
-// skips login files, where a system profile could put a real provider CLI
-// ahead of the fakes.
-/** The rig root under its parent: fixed, because a corpus archive is relocatable only to the root it was made at. */
-export const RIG_NAME = 'ao-upgrade-corpus';
-
 /**
- * prepareRig builds the sandbox at `<parent>/ao-upgrade-corpus` (parent
- * defaults to /tmp), replacing what a previous run left there.
+ * buildSandbox fills an existing, empty `root` with a data root, a home
+ * and fake claude, codex, gh and glab CLIs that record their calls. The
+ * environment is built from nothing, so no provider home override, WSL
+ * interop variable or user PATH entry reaches a backend. The login-shell
+ * PATH probe runs a stand-in shell that skips login files, where a system
+ * profile could put a real provider CLI ahead of the fakes.
  */
-export async function prepareRig(parent: string | undefined): Promise<Rig> {
-  const root = path.join(parent ?? '/tmp', RIG_NAME);
-  await rm(root, { recursive: true, force: true });
-  await mkdir(root, { recursive: true });
+export async function buildSandbox(root: string): Promise<Sandbox> {
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
   const dataRoot = path.join(root, 'data');
@@ -90,8 +88,8 @@ export async function prepareRig(parent: string | undefined): Promise<Rig> {
 }
 
 /** The calls the fake CLIs recorded, in order. */
-export async function cliCalls(rig: Rig): Promise<string[]> {
-  return (await readFile(rig.calls, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+export async function cliCalls(sb: Sandbox): Promise<string[]> {
+  return (await readFile(sb.calls, 'utf8').catch(() => '')).split('\n').filter(Boolean);
 }
 
 export function newUpdateID(): string {
@@ -143,12 +141,12 @@ export function assertCadence(label: string, events: UpdateEvent[], startedAt: n
  * as wsllauncher.UpdateCommandRunner does, and returns its reports.
  */
 export async function runUpdateCommand(
-  rig: Rig,
+  sb: Sandbox,
   args: string[],
   timeoutMs: number,
 ): Promise<{ events: UpdateEvent[]; stderr: string }> {
-  const child = spawnContained(candidateBinary, [...args, '--data-dir', rig.dataRoot], {
-    env: rig.env,
+  const child = spawnContained(backendBinary, [...args, '--data-dir', sb.dataRoot], {
+    env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
     detached: true,
@@ -211,14 +209,15 @@ export interface HeadlessBackend {
 }
 
 /**
- * startHeadless boots the candidate the way the Windows launcher starts a
- * backend after an update: the launcher's own flags, the migration gate,
- * a loopback-only listener.
+ * startHeadless boots the backend the way the Windows launcher starts it
+ * after an update: the launcher's own flags, the migration gate, a
+ * loopback-only listener. Fails when no bootstrap line arrives within
+ * `bootstrapTimeoutMs`.
  */
-export async function startHeadless(rig: Rig, bootstrapTimeoutMs: number): Promise<HeadlessBackend> {
-  const child = spawnContained(candidateBinary, ['--print-url-fd', '0', '--data-dir', rig.dataRoot, '--listen', '127.0.0.1:0',
+export async function startHeadless(sb: Sandbox, bootstrapTimeoutMs: number): Promise<HeadlessBackend> {
+  const child = spawnContained(backendBinary, ['--print-url-fd', '0', '--data-dir', sb.dataRoot, '--listen', '127.0.0.1:0',
     '--refuse-pending-migrations'], {
-    env: rig.env,
+    env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
     detached: true,
@@ -248,6 +247,7 @@ export async function startHeadless(rig: Rig, bootstrapTimeoutMs: number): Promi
 
 export interface SettledBootstrap {
   status: number;
+  cacheControl: string | null;
   body: string;
   /** The longest the starting report went unchanged, what the launcher's probe judges. */
   maxProgressGapMs: number;
@@ -277,7 +277,7 @@ export async function settledBootstrap(b: HeadlessBackend, timeoutMs: number, pr
       lastBody = body;
       lastChange = now;
     }
-    if (resp.status !== 503) return { status: resp.status, body, maxProgressGapMs };
+    if (resp.status !== 503) return { status: resp.status, cacheControl: resp.headers.get('cache-control'), body, maxProgressGapMs };
     if (now - lastChange > progressDeadlineMs) {
       throw new Error(`the boot reported no progress for ${now - lastChange}ms; the launcher gives up after ${progressDeadlineMs}ms: ${body}\n${b.stderr()}`);
     }
@@ -293,8 +293,3 @@ export async function stopHeadless(b: HeadlessBackend, timeoutMs = 120_000): Pro
   const code = await exited(b.child, timeoutMs);
   if (code === undefined) throw new Error(`the backend did not stop in ${timeoutMs}ms after SIGTERM\n${b.stderr()}`);
 }
-
-/**
- * One read-only query through `ao-harness db`, rows as objects. `attach`
- * puts a second file beside the main one as schema `snap`.
- */

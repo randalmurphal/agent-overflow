@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import type { Rig } from './upgrade-corpus-launcher.js';
+import type { Sandbox } from './update-launcher-helpers.js';
 import { dbQuery } from './upgrade-corpus-tools.js';
 
 const run = promisify(execFile);
@@ -45,7 +45,7 @@ export interface CorpusManifest {
 }
 
 /** archiveCorpus packs `rig.dataRoot` and the manifest into `out` (tar + zstd). */
-export async function archiveCorpus(rig: Rig, out: string, manifest: Omit<CorpusManifest, 'format' | 'root' | 'createdAt'>): Promise<CorpusManifest> {
+export async function archiveCorpus(rig: Sandbox, out: string, manifest: Omit<CorpusManifest, 'format' | 'root' | 'createdAt'>): Promise<CorpusManifest> {
   const full: CorpusManifest = { format: 1, root: rig.root, createdAt: new Date().toISOString(), ...manifest };
   await writeFile(path.join(rig.root, MANIFEST), JSON.stringify(full, null, 2) + '\n');
   await mkdir(path.dirname(out), { recursive: true });
@@ -63,7 +63,7 @@ export async function archiveCorpus(rig: Rig, out: string, manifest: Omit<Corpus
  * empty root prepareRig made, and returns the manifest. Fails when the
  * archive was made at another root.
  */
-export async function restoreCorpus(rig: Rig, archive: string): Promise<CorpusManifest> {
+export async function restoreCorpus(rig: Sandbox, archive: string): Promise<CorpusManifest> {
   await stat(archive);
   const staging = await mkdtemp(path.join(rig.root, 'restore-'));
   await run('tar', ['--zstd', '-xf', archive, '-C', staging], { maxBuffer: 16 * 1024 * 1024 });
@@ -85,7 +85,7 @@ export async function restoreCorpus(rig: Rig, archive: string): Promise<CorpusMa
  * project path is under its workspaces, so the candidate's git and
  * worktree operations find real repositories.
  */
-export async function assertRelocated(rig: Rig): Promise<void> {
+export async function assertRelocated(rig: Sandbox): Promise<void> {
   const rows = await dbQuery<{ path: string }>(rig.dbPath, 'SELECT DISTINCT path FROM projects ORDER BY path');
   const prefix = path.join(rig.dataRoot, 'workspaces') + path.sep;
   const elsewhere = rows.map((row) => row.path).filter((p) => !p.startsWith(prefix));
