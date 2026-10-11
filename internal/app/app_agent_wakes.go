@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 // thread_loop and thread_watch: a thread's own schedule
@@ -211,9 +212,11 @@ func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
 }
 
 // noteAgentWakeDispatch records whether the turn a flush dispatch starts is a
-// tick: one only loop and watch wakes started. Ruling 9 keeps such a turn
-// from notifying. A dispatch that joins a turn already running starts
-// nothing, but a person's message joining a tick makes the turn theirs.
+// tick: one only loop and watch wakes started. It decides only whether that
+// turn's start retracts a notification; whether its end raises one is read
+// from its rows (agentWakeTickTurnEnded). A dispatch into a running turn
+// starts nothing, but a person's message joining a tick makes the turn
+// theirs.
 func (a *App) noteAgentWakeDispatch(threadID string, allWakes, newTurn bool) {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
@@ -235,13 +238,48 @@ func (a *App) agentWakeTickTurn(threadID string) bool {
 	return a.agentWakes.ticks[threadID]
 }
 
-// endAgentWakeTickTurn reports whether the turn that just ended was a tick
-// and forgets it, so a turn the provider starts on its own is not one.
-func (a *App) endAgentWakeTickTurn(threadID string) bool {
+// endAgentWakeTickTurn forgets the thread's tick mark when its turn ends, so
+// a turn the provider starts on its own is not one.
+func (a *App) endAgentWakeTickTurn(threadID string) {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
-	tick := a.agentWakes.ticks[threadID]
 	delete(a.agentWakes.ticks, threadID)
+}
+
+// agentWakeTickTurnEnded reports whether a turn that ended was a tick: every
+// message it holds is a loop or watch wake. The turn's rows are what both
+// providers delivered into it, including a wake Codex steered into a
+// person's turn and a person's message joined to a tick, which the dispatch
+// cannot know. A turn holding no message is the provider's own and notifies
+// as before. A read error notifies: a person's turn going silent is the
+// worse mistake.
+func (a *App) agentWakeTickTurnEnded(threadID string, turnIndex int) bool {
+	rows, err := a.store.ListTurnItemsOfKind(threadID, turnIndex, "user_text")
+	if err != nil {
+		log.Printf("agent wakes: read the messages of %s turn %d: %v", threadID, turnIndex, err)
+		return false
+	}
+	tick := false
+	for _, row := range rows {
+		if row.ParentID != "" {
+			continue
+		}
+		meta, err := usermessage.FromItem(row)
+		if err != nil {
+			log.Printf("agent wakes: read the meta of %s: %v", row.ID, err)
+			return false
+		}
+		ids := meta.JoinedSendIDs
+		if len(ids) == 0 {
+			ids = []string{meta.SendID}
+		}
+		for _, id := range ids {
+			if !strings.HasPrefix(id, agentWakeSendIDRoot) {
+				return false
+			}
+		}
+		tick = true
+	}
 	return tick
 }
 

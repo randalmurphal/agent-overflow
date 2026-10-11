@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/usermessage"
 )
@@ -308,6 +310,84 @@ func (a *App) discardAgentWakeAtBoot(sendID string) bool {
 		logThreadRequestSweep("release the queued wake of "+wakeID, err)
 	}
 	return true
+}
+
+// dropAgentWakeAtSessionEnd handles a loop or watch wake the session ended
+// before taking in. Like a wake queued at quit it never goes to the composer;
+// unlike one it does not replay: the session that ended may end again, and a
+// replay would start it on every fire. The row records `not delivered` and
+// keeps its schedule. A message a person's text was joined to is theirs and
+// goes to the composer as before; its wakes are still recorded.
+func (a *App) dropAgentWakeAtSessionEnd(item triage.UnconfirmedFlushItem) bool {
+	ids := unconfirmedSendIDs(item)
+	onlyWakes := len(ids) > 0
+	for _, id := range ids {
+		wakeID, _, ok := agentWakeFromSendID(id)
+		if !ok {
+			onlyWakes = false
+			continue
+		}
+		if _, err := a.store.NoteAgentWakeOutcome(wakeID, agentWakeOutcomeSessionEnded); err != nil {
+			logThreadRequestSweep("record the dropped wake of "+wakeID, err)
+		}
+	}
+	if !onlyWakes {
+		return false
+	}
+	// The composer restore that would have retired the durable row does not
+	// take a wake.
+	if item.QueueItemID != "" {
+		if err := a.store.DeleteFlushQueueItem(item.QueueItemID); err != nil {
+			logThreadRequestSweep("delete the queued wake "+item.QueueItemID, err)
+		}
+	}
+	return true
+}
+
+// unconfirmedSendIDs names every message an unconfirmed item carries: from
+// the row it reserved or deferred, which a joined message lists them all on,
+// or from its queue payload when it never got that far.
+func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
+	for _, row := range []*store.Item{item.DeferredItem, item.QuietItem} {
+		if row == nil {
+			continue
+		}
+		meta, err := usermessage.FromItem(*row)
+		if err != nil {
+			return nil
+		}
+		if len(meta.JoinedSendIDs) > 0 {
+			return meta.JoinedSendIDs
+		}
+		if meta.SendID != "" {
+			return []string{meta.SendID}
+		}
+	}
+	var payload flushQueuePayload
+	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil && payload.SendID != "" {
+		return []string{payload.SendID}
+	}
+	return nil
+}
+
+// noteAgentWakesDropped records `not delivered` on the rows whose wakes a
+// wholesale queue drop (the person's Stop, a Codex rollback) throws away, so
+// thread_status does not report them delivered. They keep their schedule.
+func (a *App) noteAgentWakesDropped(threadID string) {
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		logThreadRequestSweep("list the queued wakes of "+threadID, err)
+		return
+	}
+	for _, row := range rows {
+		wakeID, _, ok := agentWakeFromSendID(row.SendID)
+		if !ok {
+			continue
+		}
+		if _, err := a.store.NoteAgentWakeOutcome(wakeID, agentWakeOutcomeDropped); err != nil {
+			logThreadRequestSweep("record the dropped wake of "+wakeID, err)
+		}
+	}
 }
 
 // agentSendIDRoot names the messages `agent-overflow thread send` queues. It

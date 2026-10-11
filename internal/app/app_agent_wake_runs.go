@@ -60,6 +60,10 @@ const (
 	agentWakeOutcomeSkipped      = "skipped: the previous wake is still queued"
 	agentWakeOutcomeCutByQuit    = "cancelled-by-quit"
 	agentWakeOutcomeNotDelivered = "not delivered"
+	// A wake the session ended before taking in, and one a Stop or a
+	// rollback threw out of the queue.
+	agentWakeOutcomeSessionEnded = agentWakeOutcomeNotDelivered + ": the session ended before it took the wake in"
+	agentWakeOutcomeDropped      = agentWakeOutcomeNotDelivered + ": the queue was cleared"
 	agentWakeOutcomeCancelled    = "cancelled"
 )
 

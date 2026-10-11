@@ -91,12 +91,16 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 			Failed:   event.ErrorMessage != "",
 			Aborted:  event.Aborted,
 		}
-		// Read here, on the emitting goroutine, so the next dispatch cannot
-		// overwrite it first; the agent row is read in the job.
-		tick := event.CountsAsActivity && a.endAgentWakeTickTurn(event.ThreadID)
+		// The tick mark ends with the turn, here on the emitting goroutine so
+		// the next dispatch's mark is not the one cleared; whether this turn
+		// was a tick is read from its rows in the job.
+		if event.CountsAsActivity {
+			a.endAgentWakeTickTurn(event.ThreadID)
+		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
-			rest.QuietTick = tick && a.agentTicksAreQuiet(rest.Thread.ID)
+			rest.QuietTick = rest.TopLevel && a.agentWakeTickTurnEnded(rest.Thread.ID, event.TurnIndex) &&
+				a.agentTicksAreQuiet(rest.Thread.ID)
 			return notify.MapTurnRest(rest)
 		})
 

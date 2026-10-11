@@ -54,6 +54,8 @@ export interface ScriptedTurn {
   steps?: TurnStep[];
   /** Final assistant text. Empty keeps the turn silent but complete. */
   text?: string;
+  /** Overrides the scenario's echoUserMessage for this turn. */
+  echo?: boolean;
 }
 
 /**
@@ -155,17 +157,28 @@ export function threadToolsScenario(opts: {
   provider: ProviderName;
   turns: ScriptedTurn[];
   afterTurns?: 'repeatLast' | 'silent' | 'exit';
+  /**
+   * Codex: echo the turn's `userMessage` item with the caller's client id,
+   * as a real app-server does for every turn. A queued message (a wake, a
+   * reply) persists its row only on that echo. Claude's mock echoes on its
+   * own.
+   */
+  echoUserMessage?: boolean;
 }): Record<string, unknown> {
   const turns = opts.turns.map((turn, index) => {
     const steps: Array<Record<string, unknown>> = [];
     if (opts.provider === 'codex') {
-      steps.push({
-        emit: {
-          lines: [
-            '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
-          ],
-        },
-      });
+      const lines = [
+        '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
+      ];
+      // The echo's text is a placeholder: the app keys a queued message's
+      // row on the client id and keeps its own text.
+      if (turn.echo ?? opts.echoUserMessage) {
+        lines.push(
+          '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"userMessage","id":"user-${TURN}","clientId":"${CLIENT_ID}","content":[{"type":"text","text":"echo"}]}}}',
+        );
+      }
+      steps.push({ emit: { lines } });
     }
     for (const step of turn.steps ?? []) steps.push(stepJSON(step));
     const text = turn.text ?? '';

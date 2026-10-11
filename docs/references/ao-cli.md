@@ -57,6 +57,12 @@ agent-overflow <command>
   memory list [--kind <kind>] [--run <id>] [--json]
   notes get|set <automation-id> [--file <path>] [--json]
   schedule <workflow-id> --cron <expr> [--name|--scope|--seed k=v|--json]
+  thread send <thread-id> <text> [--config-root|--wait <dur>]
+                                               messages a thread on this computer from a script
+                                               outside the app, through the owner's local control
+                                               file rather than a session credential; the message
+                                               is badged as sent by a script and quoted as data
+                                               (docs/specs/standing-agents.md#wake-supervisor)
 ```
 
 ## `--json` documents

@@ -643,7 +643,8 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	responseTurnIndex := placement.responseTurn
 	persistTurnIndex := placement.displayTurn
 	eagerPersist := placement.persistence == messagePersistQuiet
-	a.noteAgentWakeDispatch(threadID, flushGroupIsAgentWakes(members), !eagerPersist)
+	allWakes := flushGroupIsAgentWakes(members)
+	a.noteAgentWakeDispatch(threadID, allWakes, !placement.joinsActiveTurn)
 
 	// Mint the queued message's wire id for Claude-family sessions, like
 	// app_send.go does for direct sends: Claude honors a client-supplied
@@ -818,6 +819,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 				return nil, eagerPersist, requeue, allocErr
 			}
 			responseTurnIndex = fallback.responseTurn
+			a.noteAgentWakeDispatch(threadID, allWakes, true)
 			freshFlushItemID, allocErr := a.userMessageItemID(threadID, joined.sendID, responseTurnIndex, messageFlushFallback)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
@@ -1068,6 +1070,7 @@ func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triag
 // where a surviving row would resurrect at the next boot the very messages
 // the user's Stop or revert threw away.
 func (a *App) dropDurableFlushQueue(threadID string) {
+	a.noteAgentWakesDropped(threadID)
 	if err := a.store.DeleteFlushQueueItemsForThread(threadID); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
