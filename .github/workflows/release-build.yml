@@ -78,7 +78,7 @@ jobs:
         run: ./scripts/build-release.sh --version "$VERSION" --skip-macos
 
       - name: Upload raw Linux and WSL artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-wsl-raw
           path: |
@@ -155,7 +155,7 @@ jobs:
           ( cd bin && zip -qry "../dist/release/$VERSION/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 
       - name: Upload raw macOS artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-raw
           path: dist/release/${{ env.VERSION }}/agent-overflow-darwin-arm64.zip
@@ -213,7 +213,7 @@ jobs:
           fi
           mobile/scripts/build-apk.sh release
       - name: Upload Android APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-raw
           path: dist/release/${{ env.VERSION }}/agent-overflow-android.apk
@@ -284,7 +284,7 @@ jobs:
         run: ./scripts/package-release-assets.sh "dist/release/$VERSION"
 
       - name: Upload packaged release artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-overflow-release-${{ env.VERSION }}
           retention-days: 90
