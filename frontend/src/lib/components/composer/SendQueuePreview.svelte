@@ -10,6 +10,7 @@
     getQueueForThread,
     type FlushedLifecycle,
   } from '../../stores/sendQueue.svelte';
+  import { isWakeSendId, readableWakeText } from '../../utils/wakeText';
 
   interface Props {
     pane: ThreadPane;
@@ -47,12 +48,17 @@
     return '';
   }
 
+  // A wake reads decoded here as it does in the timeline.
+  function shown(message: string, sendId: string | undefined): string {
+    return isWakeSendId(sendId) ? readableWakeText(message) : message;
+  }
+
   let queued = $derived(getQueueForThread(pane.threadId ?? ''));
   let flushed = $derived(getFlushedForThread(pane.threadId ?? ''));
   let pending = $derived([
     ...flushed.map((item) => ({
       key: item.userItemId,
-      message: item.message,
+      message: shown(item.message, item.sendId),
       state: 'flushed' as const,
       userItemId: item.userItemId,
       queueId: null as string | null,
@@ -62,7 +68,7 @@
     })),
     ...queued.map((item) => ({
       key: item.id,
-      message: item.message,
+      message: shown(item.message, item.sendId),
       state: 'queued' as const,
       userItemId: null as string | null,
       queueId: item.id,
