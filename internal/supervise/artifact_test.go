@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type artifactEntry struct {
@@ -191,5 +192,66 @@ func TestArtifactExecutableIsWrittenWithForksHeldOff(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A bare executable release is preflighted from a copy written with forks
+// held off, not from the download that was open for writing while other
+// goroutines forked. The test holds ForkLock exclusively: a copy that takes
+// the lock cannot finish until it is released. Under starvation the copy
+// could still be unscheduled at the check, which passes a broken guard
+// falsely; it can never fail a sound one.
+func TestServiceArtifactCopiesABareBinaryWithForksHeldOff(t *testing.T) {
+	downloaded := filepath.Join(t.TempDir(), "download-1")
+	if err := os.WriteFile(downloaded, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		a   *Artifact
+		err error
+	}
+	done := make(chan result, 1)
+	syscall.ForkLock.Lock()
+	go func() {
+		a, err := PrepareArtifact(context.Background(), downloaded, "agent-overflow-linux-amd64", "")
+		done <- result{a, err}
+	}()
+	select {
+	case r := <-done:
+		syscall.ForkLock.Unlock()
+		t.Fatalf("the copy finished while a fork held ForkLock: %v, %v", r.a, r.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	syscall.ForkLock.Unlock()
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	a := r.a
+	if a.Binary == downloaded || filepath.Dir(filepath.Dir(a.Binary)) != filepath.Dir(downloaded) {
+		t.Fatalf("Binary = %s; want a copy in its own directory beside %s", a.Binary, downloaded)
+	}
+	got, err := os.ReadFile(a.Binary)
+	if err != nil || string(got) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("copy = %q, %v", got, err)
+	}
+	if info, err := os.Stat(a.Binary); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("copy mode = %v, %v; want 0700", info, err)
+	}
+	layout, _ := NewLayout(t.TempDir())
+	if err := a.Stage(layout, "2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	staged, _ := layout.VersionBinary("2.0.0")
+	if got, err := os.ReadFile(staged); err != nil || string(got) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("staged = %q, %v", got, err)
+	}
+	dir := filepath.Dir(a.Binary)
+	a.Close()
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Close left the copy's directory: %v", err)
+	}
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatalf("Close removed the download, which the caller owns: %v", err)
 	}
 }

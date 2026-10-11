@@ -38,7 +38,7 @@ type Artifact struct {
 // source verifies the digest BEFORE this call; extraction is not provenance.
 func PrepareArtifact(ctx context.Context, downloaded, assetName, digest string) (*Artifact, error) {
 	if !strings.HasSuffix(assetName, ".zip") {
-		return &Artifact{Binary: downloaded}, nil
+		return prepareBinaryArtifact(ctx, downloaded)
 	}
 	if assetName != "agent-overflow-darwin-arm64.zip" && assetName != "agent-overflow-darwin-amd64.zip" {
 		return nil, fmt.Errorf("supervise: unsupported release archive %q", assetName)
@@ -72,6 +72,31 @@ func PrepareArtifact(ctx context.Context, downloaded, assetName, digest string) 
 	if err := writeArtifactFile(filepath.Join(dir, artifactDigestName), []byte(digest), 0o600); err != nil {
 		a.Close()
 		return nil, err
+	}
+	return a, nil
+}
+
+// prepareBinaryArtifact copies a bare executable into its own directory
+// beside the download. The download was open for writing for as long as it
+// took, while other goroutines forked; the preflight runs the copy, which is
+// written with forks held off (writeArtifactFileWith).
+func prepareBinaryArtifact(ctx context.Context, downloaded string) (*Artifact, error) {
+	in, err := os.Open(downloaded)
+	if err != nil {
+		return nil, fmt.Errorf("supervise: open the downloaded release: %w", err)
+	}
+	dir, err := os.MkdirTemp(filepath.Dir(downloaded), "artifact-*")
+	if err != nil {
+		return nil, errors.Join(err, in.Close())
+	}
+	a := &Artifact{dir: dir, Binary: filepath.Join(dir, BinaryName)}
+	err = writeArtifactFileWith(a.Binary, 0o700, func(file *os.File) error {
+		_, err := io.Copy(file, &artifactReader{ctx: ctx, Reader: in})
+		return err
+	})
+	if err = errors.Join(err, in.Close()); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("supervise: copy the downloaded release: %w", err)
 	}
 	return a, nil
 }
@@ -266,7 +291,7 @@ func writeArtifactFile(name string, data []byte, mode fs.FileMode) error {
 // fork can start while it is open for writing. A child forked then would
 // hold the descriptor until its own exec closes it, and the kernel refuses
 // to run a file that has a writer (ETXTBSY): the preflight that runs the
-// unpacked binary would fail with "text file busy" whenever another
+// file right after would fail with "text file busy" whenever another
 // goroutine was starting a process. Forks wait for the write instead.
 func writeArtifactFileWith(name string, mode fs.FileMode, write func(*os.File) error) error {
 	if mode&0o111 != 0 {
