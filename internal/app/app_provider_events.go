@@ -393,7 +393,20 @@ func claudeMCPServerErrorText(e provider.MCPServerError) string {
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
 	current, exists := a.sessionManager().get(threadID)
-	if !exists || current.Token != sessionToken {
+	if exists && current.Token != sessionToken {
+		return
+	}
+	// A ScheduleWakeup timer and armed cron jobs end with the process.
+	// Every provider read loop ends with "disconnected" after the
+	// process's last event, however it ended: its own exit, a crash, a
+	// signal, or any stop the host made (closeProviderSession drains this
+	// event before it returns). So every process end passes through here,
+	// including a session a stop already took out of the registry; only a
+	// registered replacement, returned above, keeps its own record.
+	if a.triage != nil {
+		a.triage.ClearProcessSchedule(threadID)
+	}
+	if !exists {
 		return
 	}
 	removed, ok := a.sessionManager().unregister(threadID, sessionToken)
@@ -420,12 +433,6 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	}
 	if a.triage != nil {
 		a.triage.ClearEffectiveModel(threadID)
-		// A ScheduleWakeup timer and armed cron jobs died with the
-		// process. Every read loop ends with "disconnected" whether the
-		// process exited cleanly, crashed or was signalled, so this is
-		// the self-exit path's one place to drop them; the token guard
-		// above keeps a replacement session's record.
-		a.triage.ClearProcessSchedule(threadID)
 	}
 
 	// The provider read loop is gone, so no flush tick can re-register

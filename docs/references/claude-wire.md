@@ -2486,9 +2486,10 @@ Operationally: triage records the fire time per thread
 refuses to close a session whose wakeup is still in the future (plus a
 firing-latency grace), because closing the process would silently kill the
 timer. The update admission check and the conversation transfer guard
-wait for it the same way. The record ends with the CLI process on every
-path: the process's own exit (clean, crash or signal), host teardown and
-replacement-session commit.
+wait for it the same way. The record ends with the CLI process: the host
+drops it when the session's read loop reports `disconnected`, which
+follows the process's own exit (clean, crash or signal) and every host
+stop (idle reap, transfer, explicit stop, replacement start).
 When the wakeup fires, the injected turn's own wire activity takes over
 protection; observed delays run 240–1800s, so a wakeup can legally
 exceed the idle-reap threshold on its own. The wake is a scheduled turn

@@ -414,8 +414,9 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// The replacement session streams fresh items; the old stream's
 	// scanner states are dead weight (their final ticks will never
 	// arrive) and a reused item ID would inherit a stale watermark.
-	// unregisterSession can't purge for this path — the token was
-	// already taken above, so its callback no-ops. Unlike
+	// unregisterSession can't purge for this path: the token was
+	// already taken above, so its callback only drops the dead
+	// process's schedule and skips the registry half that purges. Unlike
 	// teardownAndCloseSession there is no CleanupThread here (the
 	// replacement path deliberately keeps triage live), so the stream
 	// persist buffers must be drained explicitly first: the close drained

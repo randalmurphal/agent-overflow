@@ -75,13 +75,14 @@ func (r *Router) handleScheduledJobs(evt provider.ProviderEvent) error {
 }
 
 // ClearProcessSchedule drops the thread's wakeup and armed-job records.
-// Both live only in the CLI process, so they end with it on every path:
-// the host's own exit path calls this when the process exits by itself
-// (a clean exit, a crash or a signal), CleanupThread drops them with the
-// rest of the thread state on a host-initiated close, and
-// MarkThreadActive drops them for a replacement process. Without it a
-// one-shot job's deadline, up to a week away, would hold service updates
-// and transfers for a process that is gone.
+// Both live only in the CLI process, so they end with it: the host calls
+// this when the session's read loop reports "disconnected", which follows
+// every process end, whether the process exited by itself (a clean exit,
+// a crash or a signal) or a stop closed it (an idle reap, a transfer, an
+// explicit stop, a replacement start). MarkThreadActive also drops them
+// for a replacement process, and CleanupThread with the rest of the thread
+// state. Without it a one-shot job's deadline, up to a week away, would
+// hold service updates and transfers for a process that is gone.
 func (r *Router) ClearProcessSchedule(threadID string) {
 	threadID = strings.TrimSpace(threadID)
 	if r == nil || threadID == "" {

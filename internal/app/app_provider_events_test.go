@@ -116,6 +116,38 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}
 }
 
+// TestUnregisterSessionEndsTheScheduleOfATakenSession covers every host
+// stop (a transfer, an idle reap, StopSession, a replacement start): the
+// stop takes the session out of the registry before closing it, so the
+// session's "disconnected" finds no entry, and its schedule still ends.
+func TestUnregisterSessionEndsTheScheduleOfATakenSession(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	thread := testThread("thread-unregister-taken")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "token-taken"})
+	armProcessSchedule(t, app.triage, thread.ID)
+	recurring, _ := json.Marshal(provider.ScheduledJobsMeta{Jobs: []provider.ScheduledJob{{ID: "loop", Cron: "*/5 * * * *", Recurring: true, FireByUnixMs: time.Now().Add(10 * time.Minute).UnixMilli()}}})
+	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventScheduledJobs, ThreadID: thread.ID, Meta: recurring}); err != nil {
+		t.Fatalf("arm recurring job: %v", err)
+	}
+	if _, ok := app.sessionManager().take(thread.ID); !ok {
+		t.Fatal("take() found no session")
+	}
+
+	app.unregisterSession(thread.ID, "token-taken")
+
+	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
+		t.Fatalf("schedule after a stop ended the process = %v", at)
+	}
+	if jobs, err := app.ListThreadRecurringJobs(thread.ID); err != nil || len(jobs) != 0 {
+		t.Fatalf("recurring jobs after a stop ended the process = %v, %v", jobs, err)
+	}
+}
+
 // TestUnregisterSessionWithNoEntryIsSafe confirms we can safely invoke the
 // unregister path even if the entry is already gone (e.g. due to an earlier
 // StopSession). It must not panic.
