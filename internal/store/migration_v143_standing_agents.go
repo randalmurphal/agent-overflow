@@ -8,7 +8,8 @@ package store
 // a thread registered. Both are authoritative: no provider history rebuilds
 // them, and the sweep rebuilds its schedule from these rows at every boot.
 // `last_output` keeps the body of a watch's most recent wake that never
-// reached the agent, so the agent can read the event it missed.
+// reached the agent, so the agent can read the event it missed, and
+// `undelivered` keeps that wake's outcome until a later wake tells the agent.
 // `session_start_failures` marks a thread whose session, started for a
 // message the app queued, failed to start and raised the start-failure
 // notification, so the first start that succeeds withdraws it even after a
@@ -38,6 +39,7 @@ CREATE TABLE agent_wakes (
     last_run_at      INTEGER,
     last_outcome     TEXT NOT NULL DEFAULT '',
     last_output      TEXT NOT NULL DEFAULT '',
+    undelivered      TEXT NOT NULL DEFAULT '',
     missed           INTEGER NOT NULL DEFAULT 0,
     state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
     created_at       INTEGER NOT NULL

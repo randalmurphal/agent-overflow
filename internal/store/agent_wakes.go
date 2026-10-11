@@ -74,9 +74,14 @@ type AgentWake struct {
 	// reach the agent, kept until another replaces it or the label is
 	// registered again.
 	LastOutput string `json:"lastOutput,omitempty"`
-	Missed     int64  `json:"missed,omitempty"`
-	State      string `json:"state"`
-	CreatedAt  int64  `json:"createdAt"`
+	// Undelivered is the outcome of the row's latest wake that did not
+	// reach the agent, until a later wake of the row carries the news: a
+	// run that sends no wake leaves it. Missed is what a skipped one left
+	// uncounted for as long as it stands.
+	Undelivered string `json:"undelivered,omitempty"`
+	Missed      int64  `json:"missed,omitempty"`
+	State       string `json:"state"`
+	CreatedAt   int64  `json:"createdAt"`
 }
 
 // StandingAgent is one row of standing_agents.
@@ -88,7 +93,7 @@ type StandingAgent struct {
 }
 
 const agentWakeColumns = `id, thread_id, kind, label, note, command, cwd, interval_seconds,
-	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, missed, state, created_at`
+	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at`
 
 func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	var row AgentWake
@@ -96,7 +101,7 @@ func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	var longRunning int
 	if err := scanner.Scan(&row.ID, &row.ThreadID, &row.Kind, &row.Label, &row.Note, &row.Command,
 		&row.Cwd, &interval, &timeout, &longRunning, &nextAt, &lastRunAt, &row.LastOutcome, &row.LastOutput,
-		&row.Missed, &row.State, &row.CreatedAt); err != nil {
+		&row.Undelivered, &row.Missed, &row.State, &row.CreatedAt); err != nil {
 		return AgentWake{}, err
 	}
 	row.IntervalSeconds, row.TimeoutSeconds = interval.Int64, timeout.Int64
@@ -198,7 +203,7 @@ func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 		}
 		if _, err := tx.Exec(`UPDATE agent_wakes
 			SET kind = ?, note = ?, command = ?, cwd = ?, interval_seconds = ?, timeout_seconds = ?,
-			    long_running = ?, next_at = ?, missed = 0, last_output = '', state = ?
+			    long_running = ?, next_at = ?, missed = 0, last_output = '', undelivered = '', state = ?
 			WHERE id = ?`,
 			w.Kind, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds), nullableMillis(w.TimeoutSeconds),
 			longRunning, nullableMillis(w.NextAt), state, existing.ID); err != nil {
@@ -316,23 +321,43 @@ func (s *Store) ClaimAgentWake(id string, now, nextAt, missed int64) (bool, erro
 		  WHERE id = ? AND state = 'armed'`, now, nullableMillis(nextAt), missed, id)
 }
 
+// AgentWakeCarry is what a run did with its row's `undelivered` outcome. The
+// values are the literals of undeliveredAfter.
+type AgentWakeCarry int
+
+const (
+	// AgentWakeNoWake leaves it: the run sent no wake, as a watch run with
+	// no output or a failed one does, so nothing told the agent.
+	AgentWakeNoWake AgentWakeCarry = 0
+	// AgentWakeCarried clears it: the run's wake reached the queue and said
+	// what the undelivered one left behind.
+	AgentWakeCarried AgentWakeCarry = 1
+	// AgentWakeLost makes the run's own outcome the undelivered one.
+	AgentWakeLost AgentWakeCarry = 2
+)
+
 // FinishAgentWake ends one interval run: running back to armed, with what it
-// came to and the fires it now stands for. A watch run whose wake did not
-// reach the agent passes its body, which the row keeps (see
-// NoteAgentWakeUndelivered); any other run passes none. A row re-registered
-// as a long-running watch while the run was in flight belongs to its process,
-// and the finish is a lost race.
-func (s *Store) FinishAgentWake(id, outcome, output string, missed int64) (bool, error) {
+// came to, the fires it now stands for, and what it did with an undelivered
+// wake. A watch run whose wake did not reach the agent passes its body, which
+// the row keeps (see NoteAgentWakeUndelivered); any other run passes none. A
+// row re-registered as a long-running watch while the run was in flight
+// belongs to its process, and the finish is a lost race.
+func (s *Store) FinishAgentWake(id, outcome, output string, missed int64, carry AgentWakeCarry) (bool, error) {
 	action := fmt.Sprintf("store: finish agent wake %s", id)
 	if err := checkAgentWakeOutput(output); err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changeAgentWake(action,
 		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, missed = ?,
-		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
+		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END,
+		        undelivered = `+undeliveredAfter+`
 		  WHERE id = ? AND state = 'running' AND long_running = 0`,
-		outcome, missed, output, output, id)
+		outcome, missed, output, output, carry, outcome, id)
 }
+
+// undeliveredAfter is the `undelivered` a write leaves, given its carry and
+// then its outcome as arguments.
+const undeliveredAfter = `CASE ? WHEN 1 THEN '' WHEN 2 THEN ? ELSE undelivered END`
 
 // ReleaseUndeliveredAgentWake ends an interval run whose output a shutdown
 // kept from the queue: armed, `not delivered`, and due again at the fire it
@@ -344,10 +369,10 @@ func (s *Store) ReleaseUndeliveredAgentWake(id, outcome, output string, fireAt i
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changeAgentWake(action,
-		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, next_at = ?,
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, undelivered = ?, next_at = ?,
 		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
 		  WHERE id = ? AND state = 'running' AND long_running = 0`,
-		outcome, fireAt, output, output, id)
+		outcome, outcome, fireAt, output, output, id)
 }
 
 // ReleaseQueuedAgentWake answers a wake the app quit with still queued: the
@@ -360,11 +385,11 @@ func (s *Store) ReleaseQueuedAgentWake(id, outcome, output string, fireAt int64)
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changeAgentWake(action,
-		`UPDATE agent_wakes SET last_outcome = ?,
+		`UPDATE agent_wakes SET last_outcome = ?, undelivered = ?,
 		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END,
 		        next_at = CASE WHEN long_running = 0 AND next_at > ? THEN ? ELSE next_at END
 		  WHERE id = ? AND state <> 'cancelled'`,
-		outcome, output, output, fireAt, fireAt, id)
+		outcome, outcome, output, output, fireAt, fireAt, id)
 }
 
 // RecoverAgentWake records what a quit did to a row it left `running` and
@@ -384,10 +409,12 @@ func (s *Store) StartAgentWakeProcess(id string, now int64) (bool, error) {
 }
 
 // NoteAgentWakeOutcome records what a live row last came to without changing
-// its state: a long-running watch's delivered batch or its process exit.
-func (s *Store) NoteAgentWakeOutcome(id, outcome string) (bool, error) {
+// its state, and what that did with an undelivered wake: a long-running
+// watch's delivered batch carries it, and its process exit leaves it.
+func (s *Store) NoteAgentWakeOutcome(id, outcome string, carry AgentWakeCarry) (bool, error) {
 	return s.changeAgentWake(fmt.Sprintf("store: note agent wake outcome %s", id),
-		`UPDATE agent_wakes SET last_outcome = ? WHERE id = ? AND state <> 'cancelled'`, outcome, id)
+		`UPDATE agent_wakes SET last_outcome = ?, undelivered = `+undeliveredAfter+`
+		  WHERE id = ? AND state <> 'cancelled'`, outcome, carry, outcome, id)
 }
 
 // NoteAgentWakeUndelivered records a wake that never reached the agent: the
@@ -401,9 +428,9 @@ func (s *Store) NoteAgentWakeUndelivered(id, outcome, output string) (bool, erro
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changeAgentWake(action,
-		`UPDATE agent_wakes SET last_outcome = ?,
+		`UPDATE agent_wakes SET last_outcome = ?, undelivered = ?,
 		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
-		  WHERE id = ? AND state <> 'cancelled'`, outcome, output, output, id)
+		  WHERE id = ? AND state <> 'cancelled'`, outcome, outcome, output, output, id)
 }
 
 // checkAgentWakeOutput refuses an output past MaxAgentWakeOutputBytes. The

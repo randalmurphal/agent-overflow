@@ -60,7 +60,10 @@ type WakeState struct {
 	// reach the thread, kept until another replaces it or the watch is
 	// registered again.
 	LastOutput string `json:"last_output,omitempty"`
-	Missed     int64  `json:"missed,omitempty"`
+	// Undelivered is the outcome of the latest wake that did not reach the
+	// thread, until a later wake says so; a run that wakes nothing leaves it.
+	Undelivered string `json:"undelivered,omitempty"`
+	Missed      int64  `json:"missed,omitempty"`
 }
 
 // stamped fills the RFC 3339 renderings of the two times.

@@ -28,6 +28,7 @@
 // mid-turn counted as a tick only when it runs as its own turn; a wake and
 // an outside send accepted while the Codex session they need is held at its
 // start, the send returning at once with its id, and both arriving after;
+// a skipped watch wake still reported by the next wake after quiet runs;
 // a start-failure notification raised before a restart withdrawn by the
 // first start after it; archiving a thread whose start failed withdrawing
 // its held wake and send;
@@ -2502,6 +2503,156 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Shelved starter', { exact: true }).click();
       await shoot(page, `${provider}-archive-withdraws-held-wake-and-send.png`, page.getByText(notice));
+    } finally {
+      await breaker?.cleanup();
+      await harness.close();
+    }
+  });
+}
+
+// A skipped fire's news outlives the runs after it that wake nothing: a
+// quiet run records its own `no output` and leaves the skip's outcome and
+// missed count on the row, so the next wake that reaches the thread still
+// says the previous one did not reach it and counts the fire it missed.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a quiet run leaves a skipped wake for the next wake to report`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const harness = await launchHarness();
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-quiet-skip-${provider}`, repo: {}, threads: [{ title: 'Quiet watcher', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
+      const { say, hold, release } = sayControls(home);
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-quiet-skip-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    tool: 'thread_watch',
+                    args: { label: 'tick', command: run('say.sh'), every_seconds: 1, cwd: home },
+                  },
+                },
+              ],
+              text: 'Watching tick.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(harness, thread);
+
+      interface TickRow {
+        last_outcome: string;
+        last_output: string;
+        undelivered: string;
+        missed: number;
+        last_run_at: number;
+      }
+      const tick = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return db
+            .prepare(
+              `SELECT last_outcome, last_output, undelivered, missed, last_run_at
+                 FROM agent_wakes WHERE thread_id = ? AND label = 'tick'`,
+            )
+            .get(thread) as unknown as TickRow;
+        } finally {
+          db.close();
+        }
+      };
+      const skipped = 'skipped: the previous wake is still queued';
+
+      // A start that fails holds report 1 in the queue, so the run that
+      // reads report 2 is skipped and its output stays on the row.
+      await harness.rpc('StopSession', thread);
+      await b.brk();
+      await say('report 1');
+      await harness.waitForEvent<NotificationSend>(
+        'notification:send',
+        (data) => data.id === `session-start:${thread}` && !data.retract,
+        60_000,
+      );
+      await say('report 2');
+      await expect
+        .poll(() => {
+          const row = tick();
+          return row.undelivered === skipped && row.last_output.includes('"report 2"');
+        }, { timeout: 30_000 })
+        .toBe(true);
+      const skip = tick();
+
+      // The runs after it print nothing: each records its own outcome.
+      await expect
+        .poll(() => {
+          const row = tick();
+          return row.last_outcome === 'no output' && row.last_run_at > skip.last_run_at;
+        }, { timeout: 30_000 })
+        .toBe(true);
+      const quiet = tick();
+      console.log(`${provider}: after a quiet run: ${JSON.stringify({ ...quiet, last_output: undefined })}`);
+
+      // Mended between two runs: the next run's start works and its wake
+      // reaches the thread behind the held one.
+      await hold();
+      await b.mend();
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-quiet-skip-mended-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [{ text: 'Noted.' }],
+          afterTurns: 'repeatLast',
+        }),
+      );
+      await say('report 3');
+      await release();
+      const event = await wakeInput(harness, cwd, '"report 3"');
+      const input = event.report.input ?? '';
+      // A Claude session may take both queued wakes as one message.
+      const own = input.split('Watch "tick" reported.').find((part) => part.includes('"report 3"')) ?? '';
+      console.log(`${provider}: the wake after the quiet run: ${JSON.stringify(own.split('\n').slice(0, 3))}`);
+      expect(own).toContain('The previous wake of this watch did not reach you');
+      const missed = /missed (\d+) since the previous wake/.exec(own);
+      expect(missed, 'the wake counts the fire it missed').not.toBeNull();
+      expect(Number(missed![1])).toBeGreaterThanOrEqual(1);
+      expect(countInputs(harness, cwd, '"report 2"')).toBe(0);
+
+      // What the quiet run left, read at the time.
+      expect(quiet.undelivered).toBe(skipped);
+      expect(quiet.missed).toBeGreaterThanOrEqual(1);
+      expect(quiet.last_output).toContain('"report 2"');
+      // Told now: the skip is no longer undelivered, and its output is
+      // still there for thread_status.
+      await expect.poll(() => tick().undelivered, { timeout: 30_000 }).toBe('');
+      expect(tick().last_output).toContain('"report 2"');
+
+      await harness.open(page);
+      const bubble = await wakeBubble(page, 'Quiet watcher', 'Watch · tick', 'report 3');
+      await expect(bubble).toContainText('The previous wake of this watch did not reach you');
+      await shoot(page, `${provider}-quiet-run-keeps-the-skip.png`, bubble);
     } finally {
       await breaker?.cleanup();
       await harness.close();

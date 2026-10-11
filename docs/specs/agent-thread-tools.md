@@ -472,8 +472,9 @@ tokens after a context compaction; the tokens themselves are never
 something it has to remember. The first page also lists the thread's
 loops and watches under `wakes`: kind, label, state, interval or
 `long_running`, a watch's `timeout_seconds`, next fire, last run, last
-outcome, missed count, and the `last_output` of a watch wake that never
-reached the thread.
+outcome, missed count, the `last_output` of a watch wake that never
+reached the thread, and `undelivered`, the outcome of the latest wake
+that did not reach it until a later wake says so.
 
 A request record belongs to the computer whose thread made it, so the
 token and listing branches answer only a local call. A call forwarded
