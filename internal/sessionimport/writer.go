@@ -442,7 +442,7 @@ func (b *builder) providerMeta(evt importir.Event) json.RawMessage {
 }
 
 func (b *builder) encodeProviderMetaObject(evt importir.Event, obj map[string]json.RawMessage, extra map[string]string) json.RawMessage {
-	shaped := make(map[string]json.RawMessage, len(obj)+len(extra))
+	shaped := make(map[string]json.RawMessage, len(obj))
 	for key, value := range obj {
 		shaped[key] = value
 	}
