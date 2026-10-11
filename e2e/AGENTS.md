@@ -57,6 +57,16 @@ Elsewhere, macOS included, instances stay on loopback and specs that need an
 off-host peer skip. See
 [network isolation](../docs/specs/testing-harness.md#network-isolation).
 
+A test that fails while holding the worker backend, including in the
+per-test reset, gets `backend.log` (the backend's stdout and stderr since
+launch), `backend-launch.json` (binary, args, roots, `AO_HARNESS_TIMING`,
+the launch's `env` and inherited `AO_HARNESS_*`, `AO_E2E_*` and `AO_MOCK*`
+values; other inherited variables by name only) and `backend-logs/` (the backend's own log files) beside its trace
+in `test-results`. The worker data root is still deleted at teardown unless
+`AO_E2E_KEEP_FAILED_ROOT=1`, which leaves it at the `dataRoot` the launch
+record names. A backend a spec launches itself keeps its console in
+`<root>/agent-overflow/logs/harness-console.log` and is not copied.
+
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See
 [mobile browser validation](../docs/references/mobile-browser-testing.md) for

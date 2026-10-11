@@ -22,6 +22,21 @@ export interface HarnessBootstrap {
   startupError?: string;
 }
 
+/** How a backend was started, as a failing test's `backend-launch.json` records it. */
+export interface HarnessLaunchRecord {
+  binary: string;
+  args: string[];
+  /** The effective AO_HARNESS_TIMING. */
+  harnessTiming: string;
+  /** The launch's `env` overrides and inherited AO_HARNESS_*, AO_E2E_* and AO_MOCK* values. */
+  env: Record<string, string>;
+  /**
+   * Names of the other inherited variables. Their values stay out of test
+   * results because the developer's environment can hold credentials.
+   */
+  otherEnvNames: string[];
+}
+
 export interface LaunchOptions {
   /** Backend binary. Default: $AO_HARNESS_BIN, else <repo>/bin/agent-overflow. */
   binary?: string;

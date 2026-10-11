@@ -1,5 +1,6 @@
 import { type ChildProcess } from 'node:child_process';
-import { rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import * as path from 'node:path';
 
 import type { Page } from '@playwright/test';
 
@@ -10,8 +11,9 @@ import {
 } from './harness-process.ts';
 import { HarnessWatchdog } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
+import { BackendConsoleLog } from './harness-console-log.ts';
 import { terminateHarness } from './harness-teardown.ts';
-import type { HarnessBootstrap } from './harness-types.ts';
+import type { HarnessBootstrap, HarnessLaunchRecord } from './harness-types.ts';
 
 // HarnessUIQuery may legitimately wait the backend's full 10s when this
 // client is connected but no frontend bridge is attached. Keep the client
@@ -105,7 +107,10 @@ export class HarnessApp {
   readonly url: string;
 
   private child: ChildProcess;
+  private consoleLog: BackendConsoleLog;
+  private launch: HarnessLaunchRecord;
   private removeDataDir?: string;
+  private dataRootKept = false;
   private ws?: WebSocket;
   private nextId = 1;
   private pending = new Map<string, PendingRpc>();
@@ -121,6 +126,8 @@ export class HarnessApp {
   constructor(
     child: ChildProcess,
     bootstrap: HarnessBootstrap,
+    consoleLog: BackendConsoleLog,
+    launch: HarnessLaunchRecord,
     removeDataDir?: string,
     memberProof?: ProcessGroupMemberProof,
     treeProof?: ProcessTreeProof,
@@ -129,6 +136,8 @@ export class HarnessApp {
     this.child = child;
     this.bootstrap = bootstrap;
     this.url = bootstrap.url;
+    this.consoleLog = consoleLog;
+    this.launch = launch;
     this.removeDataDir = removeDataDir;
     this.processGroupMemberProof = memberProof;
     this.processTreeProof = treeProof;
@@ -499,13 +508,76 @@ export class HarnessApp {
     return result;
   }
 
+  /**
+   * Write what a failing test needs to diagnose this backend into `dir`:
+   * `backend.log` (its console so far), `backend-launch.json` (binary,
+   * args, roots and recorded environment) and `backend-logs/` (the
+   * backend's own log files). Every part is attempted; the failures are
+   * thrown together at the end.
+   */
+  async writeDiagnostics(dir: string): Promise<void> {
+    await mkdir(dir, { recursive: true });
+    const failures: Error[] = [];
+    const attempt = async (label: string, step: () => Promise<void>) => {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(new Error(`${label}: ${(error as Error).message}`));
+      }
+    };
+    await attempt('backend.log', async () => {
+      await this.consoleLog.flush();
+      await copyFile(this.consoleLog.path, path.join(dir, 'backend.log'));
+    });
+    await attempt('backend-launch.json', async () => {
+      const record = {
+        pid: this.bootstrap.pid,
+        dataRoot: this.bootstrap.dataRoot,
+        dataDir: this.bootstrap.dataDir,
+        homeDir: this.bootstrap.homeDir,
+        ...this.launch,
+      };
+      await writeFile(path.join(dir, 'backend-launch.json'), `${JSON.stringify(record, null, 2)}\n`);
+    });
+    await attempt('backend-logs', async () => {
+      const logsDir = path.join(this.bootstrap.dataDir, 'logs');
+      const entries = await readdir(logsDir, { withFileTypes: true });
+      const target = path.join(dir, 'backend-logs');
+      await mkdir(target, { recursive: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || entry.name === BackendConsoleLog.fileName) continue;
+        await copyFile(path.join(logsDir, entry.name), path.join(target, entry.name));
+      }
+    });
+    if (failures.length > 0) {
+      throw new Error(`harness diagnostics into ${dir} are incomplete: ${failures.map((error) => error.message).join('; ')}`);
+    }
+  }
+
+  /** Leave the owned data root in place when close() stops the backend. */
+  keepDataRoot(): void {
+    this.dataRootKept = true;
+  }
+
   /** Terminate the backend and remove the temp data dir it owned. */
   async close(): Promise<void> {
     const stopped = await this.stop();
     if (!stopped) {
       throw new Error(`refusing to remove harness data root while process ${this.child.pid ?? 'unknown'} survives`);
     }
-    if (this.removeDataDir) {
+    // launchHarness closes the console log once the child's pipes drain,
+    // so the shutdown lines are in it before the root is removed or kept.
+    // A root holding an open file cannot be removed on Windows. Pipes that
+    // never drain are reported and the log is ended without them.
+    try {
+      await boundedCleanup(`drain harness console into ${this.consoleLog.path}`, this.consoleLog.closed());
+    } catch (error) {
+      console.error((error as Error).message);
+      await this.consoleLog.close();
+    }
+    if (this.removeDataDir && this.dataRootKept) {
+      console.error(`harness data root kept at ${this.removeDataDir}`);
+    } else if (this.removeDataDir) {
       await boundedCleanup(`remove harness data dir ${this.removeDataDir}`, rm(this.removeDataDir, { recursive: true, force: true }));
     }
   }
