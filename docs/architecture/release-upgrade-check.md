@@ -175,7 +175,7 @@ request's build (`bin/agent-overflow`) against the newest release's corpus
 when the change touches `internal/store/`, the check's own sources and
 script, or the version bump (`build/config.yml`, `frontend/package.json`),
 and on `workflow_dispatch`; otherwise its summary records the skip. The
-store coverage gate runs in every `make e2e` shard regardless.
+coverage gate runs in `make e2e` regardless.
 
 ## Running it
 
@@ -230,8 +230,9 @@ headless binary.
   thread; a shrunken table names the `countIgnoredTables` or
   `rowsMayShrink` entry that would cover it.
 - The config names a stale exception: its migration is already in the
-  corpus, so remove the entry. This surfaces on the pull request that bumps
-  the version, which runs the check against the newest release's corpus.
+  corpus, so remove the entry. This surfaces on the first pull request
+  after the release that runs `upgrade-lineage` (a store, check or version
+  change), which migrates the newest release's corpus.
 - The archive was made at another root: run with the same
   `AO_RELEASE_UPGRADE_ROOT`, or bootstrap a new corpus.
 - The deferred phase records a failure: `HarnessStoreStatus` reports the

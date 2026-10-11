@@ -322,8 +322,9 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The store, the check and its config, and the version bump: a
-          # stale migration exception surfaces on the bump, not on the tag.
+          # The store, the check and its config, and the version bump, so a
+          # stale migration exception surfaces on the first such pull
+          # request after a release, not on the tag.
           if gh pr diff "$PR" --name-only | grep -Eq '^(internal/store/|e2e/tests/upgrade-corpus|scripts/release-upgrade-check\.sh|build/config\.yml|frontend/package\.json)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else

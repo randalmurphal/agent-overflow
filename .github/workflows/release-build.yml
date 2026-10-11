@@ -263,6 +263,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve version
+        shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
@@ -298,6 +299,7 @@ jobs:
           cache-name: harness
 
       - name: Migrate the newest release's corpus with the candidate
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -308,7 +310,26 @@ jobs:
           AO_HARNESS_BIN="$candidate" make release-upgrade-check \
             RELEASE_UPGRADE_ARCHIVE_OUT="$PWD/dist/release/$VERSION/upgrade-corpus.tar.zst" \
             RELEASE_UPGRADE_REPORT="$RUNNER_TEMP/upgrade-report.json"
-          { echo '```json'; cat "$RUNNER_TEMP/upgrade-report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/upgrade-report.json" ]]; then
+            { echo '```json'; cat "$RUNNER_TEMP/upgrade-report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # A failed check's traces; never shipped bytes, which is why the
+      # packaging contract test skips failure-only uploads.
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-check-traces
+          path: e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload the corpus
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

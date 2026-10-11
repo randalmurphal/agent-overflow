@@ -126,6 +126,7 @@ func TestReleaseWorkflowCarriesEveryArtifactToPackaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	type step struct {
+		If   string
 		Uses string
 		With map[string]string
 	}
@@ -152,6 +153,10 @@ func TestReleaseWorkflowCarriesEveryArtifactToPackaging(t *testing.T) {
 		}
 		for _, s := range job.Steps {
 			if !strings.HasPrefix(s.Uses, "actions/upload-artifact@") {
+				continue
+			}
+			// A failure-only upload (traces of a failed gate) is never shipped.
+			if strings.Contains(s.If, "failure()") {
 				continue
 			}
 			if !consumed[s.With["name"]] {
