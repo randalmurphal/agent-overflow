@@ -34,6 +34,8 @@ import {
   FORK_CHILD_ANSWER,
   FORK_CHILD_PROMPT,
   FORK_SHARED_ANSWER,
+  SCHEDULED_ANSWER,
+  SCHEDULED_PROMPT,
   growLinearClaudeSession,
   seedImportFixtures,
   type FixtureSession,
@@ -239,6 +241,29 @@ test('importing a selection creates the threads and renders their history', asyn
   await threadRow(page, fx.codex.title).click();
   await expect(page.getByText(CODEX_PROMPT).first()).toBeVisible();
   await expect(page.getByText(CODEX_ANSWER)).toBeVisible();
+});
+
+test('a turn the CLI started from a cron job imports with its prompt badged as scheduled', async ({
+  harness,
+  page,
+}) => {
+  const fx = await seedImportFixtures(harness, { withScheduledSession: true });
+  const scheduled = fx.claudeScheduled!;
+  await harness.open(page);
+  await openImportModal(page);
+  const { done } = await importRows(page, harness, [scheduled]);
+  expect(done.completed).toBe(1);
+
+  await threadRow(page, scheduled.title).click();
+  const prompt = page.locator('[data-item-id][data-item-kind="user_text"]').filter({ hasText: SCHEDULED_PROMPT });
+  await expect(prompt).toHaveCount(1);
+  await expect(prompt.getByTestId('user-message-scheduled-origin')).toHaveText('Scheduled');
+  const answer = page.locator('[data-item-id][data-item-kind="assistant_text"]').filter({
+    has: page.getByText(SCHEDULED_ANSWER, { exact: true }),
+  });
+  await expect(answer).toBeVisible();
+  const [promptBox, answerBox] = [await prompt.boundingBox(), await answer.boundingBox()];
+  expect(promptBox!.y).toBeLessThan(answerBox!.y);
 });
 
 test('a multi-leaf Claude transcript imports one coherent active thread', async ({
