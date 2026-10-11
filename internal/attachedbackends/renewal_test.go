@@ -74,12 +74,15 @@ func TestCarrierRenewsBeforeItsWindowClosesAndReportsTheVerdict(t *testing.T) {
 	if _, err := manager.carrier("peer"); err != nil {
 		t.Fatal(err)
 	}
+	// The peer issues every credential with the same short window, so the
+	// rotations repeat about every 200ms: any successor proves the renewal
+	// ran, and the next one is what meets the revocation below.
 	waitFor(t, "the rotation", func() bool {
 		stored, err := deviceclient.LoadSession(dir, "peer")
-		return err == nil && stored.Credential == "credential-1"
+		return err == nil && stored.Credential != "credential-0"
 	})
-	if p.rotations.Load() != 1 {
-		t.Fatalf("rotations = %d, want one", p.rotations.Load())
+	if p.rotations.Load() == 0 {
+		t.Fatal("a successor was saved with no rotation")
 	}
 	if got := removed(); len(got) != 0 {
 		t.Fatalf("a renewal ended the session: %v", got)
