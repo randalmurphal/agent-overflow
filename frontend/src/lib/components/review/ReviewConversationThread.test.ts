@@ -53,7 +53,6 @@ function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> =
     toggleConversationThread: vi.fn(),
     jumpToDiffThread: vi.fn(),
     setPRThreadResolved: vi.fn(async () => {}),
-    sendPRThreadToAgent: vi.fn(async () => {}),
     setReplyBody: vi.fn(),
     sendPRThreadReply: vi.fn(async () => {}),
     ...overrides,
@@ -66,7 +65,6 @@ function renderCard(t: ReviewThread, options: { inDiff?: boolean; review?: Retur
   const view = render(ReviewConversationThread, {
     review: review as unknown as ReviewPaneState,
     thread: t,
-    canSendToAgent: false,
     inDiff: options.inDiff ?? false,
   });
   const card = view.getByTestId('review-conversation-thread');
@@ -88,12 +86,36 @@ describe('<ReviewConversationThread> state', () => {
     }
   });
 
-  it('offers a resolve control on a live thread', () => {
-    expect(renderCard(thread()).queryByTestId('review-conversation-resolve')).not.toBeNull();
+  it('resolves a live thread from the footer', async () => {
+    const t = thread();
+    const view = renderCard(t);
+    const resolve = view.getByTestId('review-thread-resolve');
+    expect(resolve.textContent?.trim()).toBe('Resolve');
+    await fireEvent.click(resolve);
+    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, true);
   });
 
-  it('omits the resolve control when the thread is outdated', () => {
-    expect(renderCard(thread({ isOutdated: true })).queryByTestId('review-conversation-resolve')).toBeNull();
+  it('unresolves a resolved thread', async () => {
+    const t = thread({ isResolved: true });
+    const view = renderCard(t);
+    const resolve = view.getByTestId('review-thread-resolve');
+    expect(resolve.textContent?.trim()).toBe('Unresolve');
+    await fireEvent.click(resolve);
+    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, false);
+  });
+
+  it('omits the resolve control when the thread is outdated or not resolvable', () => {
+    const outdated = renderCard(thread({ isOutdated: true }));
+    expect(outdated.queryByTestId('review-thread-resolve')).toBeNull();
+    outdated.unmount();
+    const flat = renderCard(thread({ isResolvable: false, path: '', line: null }));
+    expect(flat.queryByTestId('review-thread-resolve')).toBeNull();
+  });
+
+  it('shows the resolve failure under the footer', () => {
+    const review = fakeReview({ resolveErrorFor: vi.fn(() => 'forge said no') });
+    const view = renderCard(thread(), { review });
+    expect(view.getByTestId('review-thread-footer').textContent).toContain('forge said no');
   });
 });
 
@@ -176,17 +198,35 @@ describe('<ReviewConversationThread> replies', () => {
 });
 
 describe('<ReviewConversationThread> reply composer', () => {
-  it('opens the composer from the Reply icon button', async () => {
+  it('opens the composer from the reply field at the foot of the card', async () => {
     const view = renderCard(thread());
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
-    await fireEvent.click(view.getByLabelText('Reply'));
+    // No action lives in the header any more.
+    expect(view.queryByLabelText('Send to agent')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-thread-reply'));
     expect(view.getByTestId('review-thread-composer')).toBeTruthy();
-    expect(view.getByLabelText('Hide reply box')).toBeTruthy();
+    expect(view.queryByTestId('review-thread-reply')).toBeNull();
+  });
+
+  it('closes the composer from Cancel and from Escape', async () => {
+    const view = renderCard(thread());
+    await fireEvent.click(view.getByTestId('review-thread-reply'));
+    await fireEvent.click(view.getByText('Cancel'));
+    expect(view.queryByTestId('review-thread-composer')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-thread-reply'));
+    await fireEvent.keyDown(view.container.querySelector('textarea')!, { key: 'Escape' });
+    expect(view.queryByTestId('review-thread-composer')).toBeNull();
+  });
+
+  it('mounts with the composer open when a draft survived', () => {
+    const review = fakeReview({ replyBodyFor: vi.fn(() => 'half a reply') });
+    const view = renderCard(thread(), { review });
+    expect(view.container.querySelector('textarea')!.value).toBe('half a reply');
   });
 
   it('unfolds a folded thread when replying into it', async () => {
     const view = renderCard(thread({ isResolved: true, comments: withReplies(1) }));
-    await fireEvent.click(view.getByLabelText('Reply'));
+    await fireEvent.click(view.getByTestId('review-thread-reply'));
     expect(view.review.toggleConversationThread).toHaveBeenCalledWith('t1');
   });
 });

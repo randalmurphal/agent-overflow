@@ -688,7 +688,7 @@
         {:else}
         {#snippet overviewRow()}
           {#if review?.prDetail}
-            <ReviewOverview {review} detail={review.prDetail} canSendToAgent={ctx.threadId !== null} />
+            <ReviewOverview {review} detail={review.prDetail} />
           {/if}
         {/snippet}
         <ReviewDiffBody
@@ -746,13 +746,11 @@
               body={review?.replyBodyFor(thread.id) ?? ''}
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}
-              isTurnActive={review?.isTurnActive ?? false}
               resolving={review?.resolvingThread(thread.id) ?? false}
               resolveError={review?.resolveErrorFor(thread.id) ?? null}
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
               onSendReply={() => review?.sendPRThreadReply(thread)}
-              onSendToAgent={ctx.threadId ? () => review?.sendPRThreadToAgent(thread) : undefined}
               onResolve={thread.isResolvable
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
                 : undefined}

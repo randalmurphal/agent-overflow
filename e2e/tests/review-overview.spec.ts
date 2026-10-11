@@ -237,6 +237,16 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   await expect(botRow).toContainText('Guard against a null token');
   await page.screenshot({ path: testInfo.outputPath('diff-thread-row.png') });
 
+  // The actions sit at the foot of the card as on the forge: the reply
+  // field opens the composer in place, with Copy and Resolve beside it.
+  await botRow.getByTestId('review-thread-reply').click();
+  await expect(botRow.getByTestId('review-thread-composer')).toBeVisible();
+  await expect(botRow.getByTestId('review-thread-resolve')).toHaveText('Resolve');
+  await page.screenshot({ path: testInfo.outputPath('diff-thread-composer.png') });
+  await page.keyboard.press('Escape');
+  await expect(botRow.getByTestId('review-thread-composer')).toHaveCount(0);
+  await expect(botRow.getByTestId('review-thread-reply')).toBeVisible();
+
   // The diff row's "Open in conversation" brings the overview back at
   // the thread's card.
   await botRow.getByTestId('review-pr-thread-jump-conversation').click();

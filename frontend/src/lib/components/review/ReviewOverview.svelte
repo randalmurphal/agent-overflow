@@ -21,10 +21,9 @@
   interface Props {
     review: ReviewPaneState;
     detail: PRDetail;
-    canSendToAgent: boolean;
   }
 
-  let { review, detail, canSendToAgent }: Props = $props();
+  let { review, detail }: Props = $props();
 
   const unresolvedCount = $derived(review.unresolvedThreads.length);
   const conversationTotal = $derived(review.prThreads.length + detail.latestReviews.length);
@@ -101,7 +100,7 @@
         scrollTop={review.overviewSectionScrollTop('conversation')}
         onScrollTop={(px) => review.setOverviewSectionScrollTop('conversation', px)}
       >
-        <ReviewConversation {review} {canSendToAgent} />
+        <ReviewConversation {review} />
       </ReviewResizableBody>
     </ReviewCollapsibleSection>
   {/if}

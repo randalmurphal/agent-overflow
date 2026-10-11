@@ -1,15 +1,11 @@
 <script lang="ts">
-  import Bot from '@lucide/svelte/icons/bot';
-  import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import Reply from '@lucide/svelte/icons/reply';
-  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
-  import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewThreadComments from './ReviewThreadComments.svelte';
+  import ReviewThreadFooter from './ReviewThreadFooter.svelte';
   import ReviewThreadContext from './ReviewThreadContext.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { visibleBody } from '../../utils/reviewComments';
@@ -28,7 +24,8 @@
   // One thread's card in the Conversation feed: the author's avatar on
   // the rail, a bubble beside it. The header says who, where (the file
   // and line, a jump into the diff when that row exists), when, and the
-  // thread's state; the state also reads from the edge, so a scan down
+  // thread's state; the actions (reply, copy, resolve) sit at the foot
+  // of the card, the way the forges place them. The state also reads from the edge, so a scan down
   // the feed tells unresolved (warning edge) from resolved (success
   // edge) from outdated (dashed) without reading a word. The first
   // comment always renders IN FULL; only the REPLIES fold, and only on
@@ -38,12 +35,11 @@
   interface Props {
     review: ReviewPaneState;
     thread: ReviewThread;
-    canSendToAgent: boolean;
     /** The thread's file is in the rendered diff (the jump has a target). */
     inDiff: boolean;
   }
 
-  let { review, thread, canSendToAgent, inDiff }: Props = $props();
+  let { review, thread, inDiff }: Props = $props();
 
   // The composer's text is store-backed; only the open/closed flag is
   // local, seeded open when drafted text survives a row unmount.
@@ -73,14 +69,12 @@
   const contextFile = $derived(
     inDiff && thread.line ? (review.files.find((file) => file.path === thread.path) ?? null) : null,
   );
-  const resolveError = $derived(review.resolveErrorFor(thread.id));
   const isCurrent = $derived(review.unresolvedCursor === thread.id && unresolved);
 
-
   function openReply(): void {
-    replying = !replying;
+    replying = true;
     // Replying into a folded thread: unfold so the reply lands in view.
-    if (replying && replyCount > 0 && !repliesOpen) review.toggleConversationThread(thread.id);
+    if (replyCount > 0 && !repliesOpen) review.toggleConversationThread(thread.id);
   }
 </script>
 
@@ -96,7 +90,7 @@
   <div
     class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 transition-shadow {THREAD_CARD_CLASS[threadState]} {isCurrent ? 'shadow-[0_0_0_2px_var(--color-accent)]' : ''}"
   >
-    <div class="flex min-w-0 items-center gap-1.5 py-1.5 pl-3 pr-1.5 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
+    <div class="flex min-w-0 items-center gap-1.5 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
       <span class="shrink-0 font-semibold text-fg" title={first ? `@${first.authorLogin}` : ''}>{first ? authorDisplayName(first) : ''}</span>
       {#if first && isBotLogin(first.authorLogin)}
         <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
@@ -127,32 +121,6 @@
       {#if threadState !== 'none'}
         <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
       {/if}
-      <span class="flex shrink-0 items-center">
-        <ReviewIconButton
-          icon={Reply}
-          label={replying ? 'Hide reply box' : 'Reply'}
-          onclick={openReply}
-        />
-        {#if thread.isResolvable && !thread.isOutdated}
-          <ReviewIconButton
-            icon={thread.isResolved ? RotateCcw : Check}
-            label={thread.isResolved ? 'Unresolve thread' : 'Resolve thread'}
-            spinning={review.resolvingThread(thread.id)}
-            disabled={review.resolvingThread(thread.id)}
-            testid="review-conversation-resolve"
-            onclick={() => { void review.setPRThreadResolved(thread, !thread.isResolved); }}
-          />
-        {/if}
-        {#if canSendToAgent}
-          <ReviewIconButton
-            icon={Bot}
-            label="Send to agent"
-            disabled={review.isTurnActive}
-            disabledLabel="Agent turn is active"
-            onclick={() => { void review.sendPRThreadToAgent(thread); }}
-          />
-        {/if}
-      </span>
     </div>
 
     {#if contextFile}
@@ -164,10 +132,6 @@
         <div class="px-3.5 py-3">
           <ChatMarkdown source={firstBody} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
         </div>
-      {/if}
-
-      {#if resolveError}
-        <div class="px-3.5 pb-2 text-[0.6875rem] text-error">{resolveError}</div>
       {/if}
 
       {#if replyCount > 0 && settled}
@@ -183,20 +147,26 @@
         </button>
       {/if}
 
-      {#if (replyCount > 0 && (repliesOpen || !settled)) || replying}
-        <ReviewThreadComments
-          {thread}
-          skipFirst
-          showComments={replyCount > 0 && (repliesOpen || !settled)}
-          body={review.replyBodyFor(thread.id)}
-          error={review.replyErrorFor(thread.id)}
-          sending={review.sendingReply(thread.id)}
-          {replying}
-          onBodyChange={(body) => review.setReplyBody(thread.id, body)}
-          onSendReply={() => review.sendPRThreadReply(thread)}
-          onCloseReply={() => { replying = false; }}
-        />
+      {#if replyCount > 0 && (repliesOpen || !settled)}
+        <ReviewThreadComments {thread} skipFirst />
       {/if}
+
+      <ReviewThreadFooter
+        {thread}
+        body={review.replyBodyFor(thread.id)}
+        error={review.replyErrorFor(thread.id)}
+        sending={review.sendingReply(thread.id)}
+        {replying}
+        resolving={review.resolvingThread(thread.id)}
+        resolveError={review.resolveErrorFor(thread.id)}
+        onOpenReply={openReply}
+        onCloseReply={() => { replying = false; }}
+        onBodyChange={(body) => review.setReplyBody(thread.id, body)}
+        onSendReply={() => review.sendPRThreadReply(thread)}
+        onResolve={thread.isResolvable && !thread.isOutdated
+          ? (resolved) => { void review.setPRThreadResolved(thread, resolved); }
+          : undefined}
+      />
     </div>
   </div>
 </article>
