@@ -107,7 +107,7 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 		if a.triage.HasPendingWork(thread.ID) || a.pendingFlushWorkCount(thread.ID) > 0 {
 			return errors.New("Finish or remove queued work before transferring this conversation.")
 		}
-		if at, ok := a.triage.PendingWakeupAt(thread.ID); ok && time.Now().Before(at.Add(wakeupReapGrace)) {
+		if at, ok := a.triage.PendingWakeupAt(thread.ID); ok && time.Now().Before(at.Add(a.wakeupReapGrace())) {
 			return errors.New("Cancel the scheduled wakeup before transferring this conversation.")
 		}
 	}

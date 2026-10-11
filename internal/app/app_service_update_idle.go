@@ -11,7 +11,7 @@ import (
 func (a *App) updateWorkReason() (string, error) {
 	// Read triage before dispatch: a queue handoff retains its triage claim
 	// until the dispatcher has published its in-flight count.
-	if a.triage.AnyUnfinishedWork(wakeupReapGrace) {
+	if a.triage.AnyUnfinishedWork(a.wakeupReapGrace()) {
 		return "Waiting for turns and queued work to finish…", nil
 	}
 	a.flushDispatch.mu.Lock()

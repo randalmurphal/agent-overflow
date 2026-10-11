@@ -549,6 +549,9 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// idleReap holds an isolated test boot's idle-session reaper timing
+	// (IsolationConfig). Zero fields keep the product values.
+	idleReap idleReapTiming
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode

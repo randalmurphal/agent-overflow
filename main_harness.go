@@ -273,6 +273,13 @@ type harnessTiming struct {
 	// published is asked for once the quick retries ran out
 	// (app.IsolationConfig.PRCILogWaitInterval).
 	PRCILogWait time.Duration
+	// IdleReap, IdleReapSweep and WakeupGrace are the idle-session
+	// reaper's inactivity window, sweep cadence and scheduled-wakeup grace
+	// (app.IsolationConfig.IdleReapThreshold / IdleReapInterval /
+	// WakeupReapGrace).
+	IdleReap      time.Duration
+	IdleReapSweep time.Duration
+	WakeupGrace   time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -290,6 +297,9 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"pr-ci-live":      &timing.PRCILive,
 		"pr-ci-follow":    &timing.PRCIFollow,
 		"pr-ci-log-wait":  &timing.PRCILogWait,
+		"idle-reap":       &timing.IdleReap,
+		"idle-reap-sweep": &timing.IdleReapSweep,
+		"wakeup-grace":    &timing.WakeupGrace,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -387,6 +397,9 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		PRCILiveInterval:     opts.Timing.PRCILive,
 		PRCIFollowInterval:   opts.Timing.PRCIFollow,
 		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
+		IdleReapThreshold:    opts.Timing.IdleReap,
+		IdleReapInterval:     opts.Timing.IdleReapSweep,
+		WakeupReapGrace:      opts.Timing.WakeupGrace,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

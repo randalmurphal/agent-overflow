@@ -58,6 +58,13 @@ type IsolationConfig struct {
 	PRCILiveInterval     time.Duration
 	PRCIFollowInterval   time.Duration
 	PRCILogWaitInterval  time.Duration
+	// IdleReapThreshold, IdleReapInterval and WakeupReapGrace replace the
+	// idle-session reaper's inactivity window, sweep cadence and
+	// scheduled-wakeup grace (app_session_reaper.go). Zero keeps the
+	// product value.
+	IdleReapThreshold time.Duration
+	IdleReapInterval  time.Duration
+	WakeupReapGrace   time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -82,6 +89,11 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.prUpdates.ciLiveInterval = config.PRCILiveInterval
 	a.prUpdates.ciFollowInterval = config.PRCIFollowInterval
 	a.prUpdates.ciLogWaitInterval = config.PRCILogWaitInterval
+	a.idleReap = idleReapTiming{
+		threshold:   config.IdleReapThreshold,
+		interval:    config.IdleReapInterval,
+		wakeupGrace: config.WakeupReapGrace,
+	}
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.
