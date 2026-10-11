@@ -544,6 +544,7 @@ export interface MockSessionConfig {
   sandbox?: string;
   approvalPolicy?: string;
   mcpServers?: string[];
+  systemPrompt?: string;
   appendSystemPrompt?: string;
   systemPromptSnapshot?: string;
   developerInstructions?: string;

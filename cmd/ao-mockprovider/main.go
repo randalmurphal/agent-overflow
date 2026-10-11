@@ -190,13 +190,14 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 		PermissionMode:       flagValue(args, "--permission-mode"),
 		DisallowedTools:      flagValues(args, "--disallowedTools"),
 		MCPServers:           claudeMCPServerNames(flagValue(args, "--mcp-config")),
+		SystemPrompt:         promptFileContent(flagValue(args, "--system-prompt-file")),
 		AppendSystemPrompt:   promptFileContent(flagValue(args, "--append-system-prompt-file")),
 		SystemPromptSnapshot: flagValue(args, "--system-prompt-snapshot"),
 	}
 }
 
 // promptFileContent reads a prompt file the way the real CLI does, at launch.
-// The app removes the file when the session closes, so it is read here, not
+// The app rewrites the file at the thread's next spawn, so it is read here, not
 // when a test later asks for the config. An unreadable path is reported as
 // its error text so the assertion fails on the cause rather than on "".
 func promptFileContent(path string) string {
