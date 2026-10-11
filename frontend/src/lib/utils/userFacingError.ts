@@ -68,7 +68,13 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   raw = raw.replace(/\s*"?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"?/gi, '');
   raw = raw.trim();
   if (!raw) return fallback;
-  raw = raw.charAt(0).toUpperCase() + raw.slice(1);
-  if (!/[.!?]$/.test(raw)) raw += '.';
-  return raw;
+  return asSentence(raw);
+}
+
+// asSentence is how error text reads wherever it is shown: Go error strings
+// start lowercase and carry no closing punctuation, so the first letter is
+// capitalised and a period added unless the text already ends a sentence.
+export function asSentence(text: string): string {
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }

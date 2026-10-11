@@ -6,7 +6,7 @@ describe('isHiddenThreadMode', () => {
     expect(isHiddenThreadMode(mode)).toBe(true);
   });
 
-  it.each(['chat', 'plan', 'discussion', 'terminal', '', undefined])('keeps %s visible', (mode) => {
+  it.each(['chat', 'plan', 'terminal', '', undefined])('keeps %s visible', (mode) => {
     expect(isHiddenThreadMode(mode)).toBe(false);
   });
 });
@@ -26,7 +26,7 @@ describe('renderedThreadMode', () => {
     expect(renderedThreadMode('scratch')).toBe('chat');
   });
 
-  it.each(['chat', 'plan', 'discussion', 'terminal'])('leaves %s alone', (mode) => {
+  it.each(['chat', 'plan', 'terminal'])('leaves %s alone', (mode) => {
     expect(renderedThreadMode(mode)).toBe(mode);
   });
 

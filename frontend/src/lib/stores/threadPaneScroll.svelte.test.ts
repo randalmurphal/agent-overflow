@@ -54,7 +54,7 @@ describe('threadPaneScroll', () => {
     });
 
     it('ignores a stale teardown from the surface it already replaced', () => {
-      // MessageTimeline → ChannelView (or a fast thread switch): the outgoing
+      // A remount or a fast thread switch: the outgoing
       // surface's teardown can land after the incoming one has registered, and
       // must not disown a live controller. Then the incoming one's own teardown
       // still empties the slot — a guard that rejected everything would look
@@ -396,35 +396,6 @@ describe('threadPaneScroll', () => {
       } finally {
         __setSmoothingClockForTest(undefined);
       }
-    });
-
-    it('does not arm on discussion-mode panes, whose controller belongs to ChannelView', async () => {
-      const thread = makeThread({
-        id: 'thread-arm-disc',
-        mode: 'discussion',
-        discussionId: 'disc-1',
-      });
-      const pane = await buildPane(thread, [
-        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
-      ]);
-      const { markStructuralContentPending, observe } = attachMockScrollController(pane);
-
-      pane.applyProviderItemUpserts([
-        makeItem({ id: 'row-1', threadId: thread.id, turnIndex: 0, itemIndex: 1 }),
-      ]);
-
-      // The chat timeline is swapped out for ChannelView in discussion
-      // mode, so the registered controller watches channel messages —
-      // arming it would spring unrelated channel growth for 250ms. The
-      // append stamp shares the gate (the pane's timeline latch has no
-      // reader on this surface).
-      expect(markStructuralContentPending).not.toHaveBeenCalled();
-      expect(pane.lastLiveContentAt).toBe(0);
-      // Outwait the nudge's flush + frame (and its hidden-window timeout
-      // fallback) so a skipped mark that still scheduled the observe
-      // would be caught.
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(observe).not.toHaveBeenCalled();
     });
 
     it('cancels a scheduled nudge when the thread switches before it fires', async () => {

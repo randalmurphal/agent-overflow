@@ -55,8 +55,8 @@ var workspaceContentMethods = map[string]Scope{
 	"GetAttachmentThumbnail":       ScopeThreadsRead,
 }
 
-// bookkeepingMutations is the old override map's group 1: thread,
-// project and discussion bookkeeping that is execute-tier by any honest
+// bookkeepingMutations is the old override map's group 1: thread and
+// project bookkeeping that is execute-tier by any honest
 // reading and was wire-reachable before the scope table existed. The
 // overrides kept them reachable while "execute implies local-only" was
 // the rule; with that rule gone, `threads:operate` is what carries them.
@@ -65,7 +65,6 @@ var bookkeepingMutations = []string{
 	"UpdateProjectSortPositions", "ArchiveThread", "UnarchiveThread",
 	"DeleteThread", "RenameThread", "PinThread", "UnpinThread",
 	"SetThreadPinGroup", "MarkThreadRead", "MarkThreadUnread", "SwitchThread",
-	"CreateDiscussion", "UpdateDiscussion", "DeleteDiscussion",
 	"CreateProposedPlanComment", "UpdateProposedPlanComment",
 	"DeleteProposedPlanComment",
 }

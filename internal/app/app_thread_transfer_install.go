@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtransfer"
 	"agent-overflow/internal/transferfiles"
 	"github.com/google/uuid"
@@ -76,8 +77,9 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 		(manifest.Workspace != nil) != details.Intent.IncludeWorkspace {
 		return nil, errors.New("The uploaded conversation does not match the accepted transfer.")
 	}
-	if transferManagedMode(manifest.Thread.Mode) || manifest.Thread.DiscussionID != "" || manifest.Thread.ParentThreadID != "" {
-		return nil, errors.New("This conversation still belongs to another workflow or discussion.")
+	manifest.Thread.Mode = transferredThreadMode(manifest.Thread.Mode)
+	if transferManagedMode(manifest.Thread.Mode) {
+		return nil, errors.New("this conversation still belongs to another workflow")
 	}
 	project, err := a.store.GetProject(details.ProjectID)
 	if err != nil {
@@ -118,7 +120,7 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 	}
 	target.RuntimeMode = details.Intent.RuntimeMode
 	target.SessionRef, target.PendingForkRef, target.PendingForkResumeAt = manifest.SessionRef, "", ""
-	target.DiscussionID, target.ParentThreadID, target.GroupID, target.ForkedFromThreadID = "", "", "", ""
+	target.GroupID, target.ForkedFromThreadID = "", ""
 	target.WorktreeSetupState, target.ImportSource = "", ""
 	target.PinnedAt, target.PinGroup = nil, nil
 	target.HasIncompleteTurn, target.HasFailedTurn = false, false
@@ -195,6 +197,7 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 	if len(recipe) > transferManifestLimit || json.Unmarshal(recipe, &plan) != nil || plan.Version != transferManifestVersion || plan.Thread.ID != row.ThreadID {
 		return errors.New("The saved transfer installation plan is invalid.")
 	}
+	plan.Thread.Mode = transferredThreadMode(plan.Thread.Mode)
 	unlock, err := a.threadLocks().LockCtx(ctx, row.ThreadID)
 	if err != nil {
 		return err
@@ -249,6 +252,17 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 		a.broadcastThreadRowByID(row.ThreadID)
 	}
 	return err
+}
+
+// transferredThreadMode is the mode a received conversation installs with. A
+// peer from before migration v142 still sends a former discussion thread's
+// 'discussion' mode, and a recipe prepared before that update still holds
+// it; v142 made those threads ordinary chats.
+func transferredThreadMode(mode string) string {
+	if mode == "discussion" {
+		return threadmode.ModeChat
+	}
+	return mode
 }
 
 func (a *App) transferInstallRoots() (map[string]string, error) {

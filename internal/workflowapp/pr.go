@@ -69,7 +69,7 @@ func (s *Service) DiscussPR(ctx context.Context, itemID string) (store.Thread, e
 	if err != nil {
 		return store.Thread{}, err
 	}
-	message := PRDiscussionMessage(coordinates.Receipt.PRRef, coordinates.Ref, read.Detail, coordinates.Item.Goal, digest)
+	message := DiscussPRMessage(coordinates.Receipt.PRRef, coordinates.Ref, read.Detail, coordinates.Item.Goal, digest)
 	if err := s.sendThreadMessage(thread.ID, message); err != nil {
 		return store.Thread{}, fmt.Errorf("discuss workflow PR: send context: %w", err)
 	}
@@ -178,7 +178,7 @@ func prCommentAuthor(comment gitops.ReviewComment) string {
 	return untrustedtext.Field(comment.AuthorName) + " (" + untrustedtext.Field(comment.AuthorLogin) + ")"
 }
 
-func PRDiscussionMessage(prURL string, ref gitops.PRReference, detail gitops.PRDetail, goal string, digest Digest) string {
+func DiscussPRMessage(prURL string, ref gitops.PRReference, detail gitops.PRDetail, goal string, digest Digest) string {
 	var data strings.Builder
 	fmt.Fprintf(&data, "Title: %s\n", untrustedtext.Field(detail.Title))
 	fmt.Fprintf(&data, "Reference: %s\n", untrustedtext.Field(prURL))

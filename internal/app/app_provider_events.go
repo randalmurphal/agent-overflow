@@ -13,11 +13,6 @@ import (
 )
 
 func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
-	// NewApp installs built-in observers during App construction. Keep the
-	// once-guarded install here as well for tests and other internal callers
-	// that intentionally construct a bare App before starting a session.
-	a.installDiscussionTurnObserver()
-
 	// deathReported flips true if the read loop emits a session_status
 	// "error" — the wire-typed signal for an abnormal exit (signal, crash,
 	// clean exit-0 we didn't initiate). Captured in the closure so the

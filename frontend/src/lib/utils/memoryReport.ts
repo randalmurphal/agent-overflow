@@ -26,7 +26,7 @@ export interface MemoryReport {
   uaMemory: unknown;
   jsHeap: { usedMB: number; totalMB: number } | null;
   dom: { nodes: number; elements: number; texts: number; comments: number };
-  panes: Array<{ paneId: string; threadId: string | null; items: number; channelMessages: number }>;
+  panes: Array<{ paneId: string; threadId: string | null; items: number }>;
   caches: {
     threadItems: { threads: number; items: number; chars: number };
     codeSpans: { entries: number; approxKeyChars: number };
@@ -84,7 +84,6 @@ export async function collectMemoryReport(): Promise<MemoryReport> {
       paneId: pane.paneId,
       threadId: pane.threadId ?? null,
       items: pane.items.length,
-      channelMessages: pane.channelMessages.length,
     })),
     caches: {
       threadItems: threadItemCache.stats(),

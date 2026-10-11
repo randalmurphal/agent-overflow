@@ -10,16 +10,7 @@
 //
 // `pane` can be swapped at runtime (see options.getPane), so nothing
 // here may capture a `ThreadPane` reference at construction time.
-//
-// The discussion surface (components/discussion/ChannelView.svelte)
-// hand-mirrors a simplified form of this module's arm-restore-snap →
-// initial-load → forceStick({reason:'restore'}) choreography — no
-// snapshot save/restore or scroll-to-item, just the switch-edge consent
-// arming and the post-load restore stick. If that sequence's contract
-// changes here, check ChannelView's `beginInitialLoad` too (its ONE
-// entry: the channel edge and the error banner's Retry both go through
-// it, because a retry that armed nothing spent a consent the failed
-// attempt had already consumed).
+
 
 import { tick } from 'svelte';
 import type {

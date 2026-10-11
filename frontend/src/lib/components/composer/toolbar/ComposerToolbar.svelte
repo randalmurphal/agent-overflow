@@ -74,10 +74,6 @@
   }: Props = $props();
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
-  // Discussion has its own composer flow; ordinary threads expose the
-  // chat/plan agent-mode toggle here.
-  let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
-
   // Rate-limit rings appear once the thread is "locked in" — the
   // user has sent at least one message and the provider/model
   // selection is committed. The data itself lives in the global
@@ -123,7 +119,7 @@
   // `scratch` until Keep restores the one recorded at the fork, and
   // UpdateThreadMode refuses to move it.
   let showModeToggle = $derived(
-    !isDiscussionThread && supportsPlanMode && !isScratchThreadMode(pane.thread?.mode),
+    supportsPlanMode && !isScratchThreadMode(pane.thread?.mode),
   );
   let supportsRuntimeModes = $derived(providerSupports(providerID, 'runtimeModes'));
   let supportsMcp = $derived(providerSupports(providerID, 'mcp'));

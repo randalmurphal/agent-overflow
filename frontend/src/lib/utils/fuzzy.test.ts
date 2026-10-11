@@ -36,12 +36,12 @@ describe('fuzzyFilter', () => {
 
   it('ranks consecutive substring matches above spread-out subsequences', () => {
     const items = [
-      { item: 'disc', text: 'thread.new.discussion' },
+      { item: 'pane', text: 'thread.new.inNewPane' },
       { item: 'new', text: 'thread.new' },
       { item: 'arch', text: 'thread.archive' },
     ];
     const out = fuzzyFilter('new', items);
-    expect(out.map((o) => o.item).slice(0, 2)).toEqual(['new', 'disc']);
+    expect(out.map((o) => o.item).slice(0, 2)).toEqual(['new', 'pane']);
     // 'arch' does not contain all of "new".
     expect(out.map((o) => o.item)).not.toContain('arch');
   });

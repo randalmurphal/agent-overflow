@@ -395,27 +395,20 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if saved, err := a.store.GetRemoteWatch(watch.ComputerID, watch.RequestID); err != nil || saved.Notification != "dismissed" {
 		t.Fatalf("archive left the watch pending: %+v %v", saved, err)
 	}
-	// A recursive delete stops a child's job and removes both rows.
-	parent := remoteWatchThread(t, a, string(provider.Codex))
-	child := remoteWatchThread(t, a, string(provider.Codex))
-	child.ParentThreadID = parent.ID
-	if err := a.store.UpdateThread(child); err != nil {
+	// A delete stops the conversation's job and removes its row.
+	deleted := remoteWatchThread(t, a, string(provider.Codex))
+	deletedWatch := registeredRemoteWatch(t, a, deleted)
+	if err := a.store.ObserveRemoteWatch(deletedWatch.ComputerID, deletedWatch.RequestID, store.RemoteJob{ID: deletedWatch.RequestID, SourceThreadID: deleted.ID, State: "running"}, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	childWatch := registeredRemoteWatch(t, a, child)
-	if err := a.store.ObserveRemoteWatch(childWatch.ComputerID, childWatch.RequestID, store.RemoteJob{ID: childWatch.RequestID, SourceThreadID: child.ID, State: "running"}, "", 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.DeleteThread(parent.ID); err != nil {
+	if err := a.DeleteThread(deleted.ID); err != nil {
 		t.Fatalf("deletion refused remote job: %v", err)
 	}
-	for _, id := range []string{parent.ID, child.ID} {
-		if _, err := a.store.GetThread(id); err == nil {
-			t.Fatalf("thread %s survived deletion", id)
-		}
+	if _, err := a.store.GetThread(deleted.ID); err == nil {
+		t.Fatalf("thread %s survived deletion", deleted.ID)
 	}
-	if saved, err := a.store.GetRemoteWatch(childWatch.ComputerID, childWatch.RequestID); err != nil || saved.Notification != "dismissed" {
-		t.Fatalf("delete left the child's watch pending: %+v %v", saved, err)
+	if saved, err := a.store.GetRemoteWatch(deletedWatch.ComputerID, deletedWatch.RequestID); err != nil || saved.Notification != "dismissed" {
+		t.Fatalf("delete left the watch pending: %+v %v", saved, err)
 	}
 	// A finished job whose completion has not reached the conversation still
 	// blocks a copy until the ordinary queue owns the message.

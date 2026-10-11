@@ -166,7 +166,6 @@ var Defaults = []Keybinding{
 	{Key: "ctrl+shift+tab", Command: "terminal.prevTab", When: "terminalFocus", DefaultID: "terminal.prevTab"},
 	{Key: "mod+shift+l", Command: "terminal.clear", When: "terminalFocus", DefaultID: "terminal.clear"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
-	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus", DefaultID: "thread.new.discussion"},
 	{Key: "mod+w", Command: "pane.close", When: "!terminalFocus", DefaultID: "pane.close"},
 	{Key: "alt+h", Command: "pane.focusLeft", DefaultID: "pane.focusLeft.vim"},
 	{Key: "alt+l", Command: "pane.focusRight", DefaultID: "pane.focusRight.vim"},

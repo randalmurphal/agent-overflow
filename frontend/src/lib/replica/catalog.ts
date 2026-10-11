@@ -38,7 +38,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
     && (row.ownershipEpoch === undefined || validOwnershipEpoch(row.ownershipEpoch))
     && (row.provider === 'claude' || row.provider === 'codex')
     && optional(row, ['sessionRef', 'pendingForkRef', 'projectId', 'worktreePath', 'branch', 'prRef', 'mode',
-      'reasoningEffort', 'runtimeMode', 'discussionId', 'parentThreadId', 'forkedFromThreadId', 'lastTokenUsage',
+      'reasoningEffort', 'runtimeMode', 'forkedFromThreadId', 'lastTokenUsage',
       'worktreeSetupState', 'importSource', 'groupId'],
     ['contextWindow', 'autoCompactStandardPercent', 'autoCompactExtendedPercent', 'latestTurnCompletedAt',
       'lastReadAt', 'pinnedAt', 'pinGroup'],

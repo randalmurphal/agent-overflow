@@ -1,7 +1,6 @@
 // buildSidebarThreadTree: node shapes, status bubbling, the multi-key sort,
 // and the group nesting the builder does. The VIEW half's tests (flatten, the
-// preview cut, the rollup, the cutoffs, the expand sync) are in
-// `sidebarTreeView.test.ts`.
+// preview cut, the rollup, the cutoffs) are in `sidebarTreeView.test.ts`.
 
 import { describe, expect, it } from 'vitest';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
@@ -9,6 +8,7 @@ import type { Thread, ThreadGroup } from '../types/models';
 import {
   buildSidebarThreadTree,
   sidebarTreeNodeId,
+  type SidebarGroupTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
 
@@ -41,6 +41,11 @@ function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup 
 /** Node id of either kind — thread nodes and group nodes sort in one list. */
 const nodeId = (node: SidebarTreeNode): string => sidebarTreeNodeId(node);
 const nodeIds = (nodes: readonly SidebarTreeNode[]): string[] => nodes.map(sidebarTreeNodeId);
+
+function groupNode(node: SidebarTreeNode): SidebarGroupTreeNode {
+  if (node.kind !== 'group') throw new Error(`${sidebarTreeNodeId(node)} is not a group`);
+  return node;
+}
 
 function liveStatusMap(map: Record<string, ThreadLiveStatus>) {
   return (id: string): ThreadLiveStatus => map[id] ?? 'idle';
@@ -99,30 +104,28 @@ describe('buildSidebarThreadTree', () => {
   });
 
   it('uses the running tier for every running thread mode', () => {
-    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'discussion'];
+    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan'];
     const tree = buildSidebarThreadTree({
       threads: modes.map((mode, index) => mkThread(mode, { mode, updatedAt: index + 1 })),
       liveStatusOf: liveStatusMap({
         chat: 'running',
         plan: 'running',
-        discussion: 'running',
       }),
     });
 
-    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running']);
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running']);
   });
 
-  it('excludes workflow-owned modes before building parent-child relationships', () => {
+  it('excludes workflow-owned modes', () => {
     const tree = buildSidebarThreadTree({
       threads: [
         mkThread('chat', { mode: 'chat' }),
         mkThread('phase', { mode: 'workflow' }),
-        mkThread('studio', { mode: 'workflow-studio', parentThreadId: 'chat' }),
+        mkThread('studio', { mode: 'workflow-studio' }),
         mkThread('triage', { mode: 'workflow-triage' }),
       ],
     });
     expect(tree.map(nodeId)).toEqual(['chat']);
-    expect(tree[0].children).toEqual([]);
   });
 
   it('puts durable interrupted and plan-ready rows in the needs-attention tier', () => {
@@ -142,19 +145,16 @@ describe('buildSidebarThreadTree', () => {
   });
 
   it('does not bubble durable interrupted while authoritative live state is hydrating', () => {
-    const parent = mkThread('parent', { updatedAt: 1 });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      updatedAt: 2,
-      hasIncompleteTurn: true,
-    });
+    const member = mkThread('member', { groupId: 'g1', updatedAt: 2, hasIncompleteTurn: true });
     const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      statusOf: (thread) => thread.id === 'child' ? 'idle' : liveStatusMap({})(thread.id),
+      threads: [member],
+      groups: [mkGroup('g1')],
+      statusOf: () => 'idle',
     });
 
-    expect(tree[0].displayLiveStatus).toBe('idle');
-    expect(tree[0].children[0].ownLiveStatus).toBe('idle');
+    const group = groupNode(tree[0]);
+    expect(group.displayLiveStatus).toBe('idle');
+    expect(group.children[0].ownLiveStatus).toBe('idle');
   });
 
   it('puts pinned threads above needs-attention regardless of status', () => {
@@ -233,108 +233,37 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map(nodeId)).toEqual(['draft-b', 'draft-a']);
   });
 
-  it('bubbles a child error to the parent display status', () => {
-    const parent = mkThread('parent', { updatedAt: 9000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
-    const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({ child: 'error' }),
-    });
-    expect(tree).toHaveLength(1);
-    expect(nodeId(tree[0])).toBe('parent');
-    expect(tree[0].displayLiveStatus).toBe('error');
-    expect(tree[0].sortGroup).toBe('needs-attention');
-    expect(tree[0].ownLiveStatus).toBe('idle');
-  });
-
   it("shows an unreachable computer's status still, in its row and where it bubbles to", () => {
-    const parent = mkThread('parent', { updatedAt: 9000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
-    const build = (unreachable: boolean) => buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({ child: 'running' }),
-      unreachableMachineOf: (thread) => (unreachable && thread.id === 'child' ? 'gpu-box' : null),
-    });
-    const live = build(false)[0];
+    const member = mkThread('member', { groupId: 'g1', updatedAt: 5000 });
+    const build = (unreachable: boolean) => groupNode(buildSidebarThreadTree({
+      threads: [member],
+      groups: [mkGroup('g1')],
+      liveStatusOf: liveStatusMap({ member: 'running' }),
+      unreachableMachineOf: (thread) => (unreachable && thread.id === 'member' ? 'gpu-box' : null),
+    })[0]);
+    const live = build(false);
     expect(live.displayStatus).toMatchObject({ label: 'Working', pulse: true });
-    const lastKnown = build(true)[0];
+    const lastKnown = build(true);
     const label = 'Last known: Working. gpu-box is unreachable';
     expect(lastKnown.children[0].ownStatus).toMatchObject({ label, pulse: false, glowClass: undefined });
-    // The parent shows the child's status with the child's attribution.
+    // The group shows the member's status with the member's attribution.
     expect(lastKnown.displayLiveStatus).toBe('running');
     expect(lastKnown.displayStatus).toMatchObject({ label, pulse: false });
     // The last-known status keeps its place in the order.
     expect(lastKnown.sortGroup).toBe(live.sortGroup);
   });
 
-  it("does not bubble a child's lower-priority status when the parent has higher priority", () => {
-    const parent = mkThread('parent', { updatedAt: 9000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
-    const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({ parent: 'error', child: 'running' }),
-    });
-    expect(tree[0].displayLiveStatus).toBe('error');
-  });
-
-  it("bubbles up from a passive parent (idle) to a child's running status", () => {
-    const parent = mkThread('parent', { updatedAt: 9000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
-    const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({ parent: 'idle', child: 'running' }),
-    });
-    expect(tree[0].displayLiveStatus).toBe('running');
-    expect(tree[0].sortGroup).toBe('running');
-  });
-
-  it("sorts a parent with a running child above a newer plain idle/read sibling", () => {
-    const parent = mkThread('parent', { updatedAt: 1000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 1000 });
-    const plain = mkThread('plain', { updatedAt: 9000 });
-    const tree = buildSidebarThreadTree({
-      threads: [plain, parent, child],
-      liveStatusOf: liveStatusMap({ child: 'running' }),
-    });
-
-    expect(tree.map(nodeId)).toEqual(['parent', 'plain']);
-    expect(tree[0].displayLiveStatus).toBe('running');
-    expect(tree[0].sortGroup).toBe('running');
-  });
-
-  it("keeps a parent with an unread completed child above a plain idle/read sibling", () => {
-    const parent = mkThread('parent', { updatedAt: 1000 });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      updatedAt: 1000,
-      latestTurnCompletedAt: 1000,
-      lastReadAt: 0,
-    });
-    const plain = mkThread('plain', { updatedAt: 9000 });
-    const tree = buildSidebarThreadTree({
-      threads: [plain, parent, child],
-      liveStatusOf: liveStatusMap({}),
-    });
-
-    expect(tree.map(nodeId)).toEqual(['parent', 'plain']);
-    expect(tree[0].displayStatus?.label).toBe('Completed');
-    expect(tree[0].sortGroup).toBe('completed');
-  });
-
-  it("bubbles a needs-attention child above a running child", () => {
-    const parent = mkThread('parent', { updatedAt: 1000 });
-    const runningChild = mkThread('running-child', {
-      parentThreadId: 'parent',
-      updatedAt: 9000,
-    });
-    const interruptedChild = mkThread('interrupted-child', {
-      parentThreadId: 'parent',
+  it("bubbles a needs-attention member above a running member", () => {
+    const runningMember = mkThread('running-member', { groupId: 'g1', updatedAt: 9000 });
+    const interruptedMember = mkThread('interrupted-member', {
+      groupId: 'g1',
       updatedAt: 1000,
       hasIncompleteTurn: true,
     });
     const tree = buildSidebarThreadTree({
-      threads: [parent, runningChild, interruptedChild],
-      liveStatusOf: liveStatusMap({ 'running-child': 'running' }),
+      threads: [runningMember, interruptedMember],
+      groups: [mkGroup('g1')],
+      liveStatusOf: liveStatusMap({ 'running-member': 'running' }),
     });
 
     expect(tree[0].displayLiveStatus).toBe('interrupted');
@@ -342,74 +271,14 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[0].sortGroup).toBe('needs-attention');
   });
 
-  it("bubbles a child's durable interrupted status to a passive parent", () => {
-    const parent = mkThread('parent', { updatedAt: 9000 });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      updatedAt: 5000,
-      hasIncompleteTurn: true,
-    });
+  it("uses the member's pill when bubbling so mode-specific labels reach the group row", () => {
+    const member = mkThread('member', { groupId: 'g1', mode: 'plan', updatedAt: 5000 });
     const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({}),
+      threads: [member],
+      groups: [mkGroup('g1')],
+      liveStatusOf: liveStatusMap({ member: 'running' }),
     });
-
-    expect(tree[0].displayLiveStatus).toBe('interrupted');
-    expect(tree[0].displayStatus?.label).toBe('Interrupted');
-  });
-
-  it("uses the child's pill when bubbling so mode-specific labels reach the parent row", () => {
-    const parent = mkThread('parent', { mode: 'chat', updatedAt: 9000 });
-    const child = mkThread('child', {
-      parentThreadId: 'parent',
-      mode: 'discussion',
-      updatedAt: 5000,
-    });
-    const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      liveStatusOf: liveStatusMap({ parent: 'idle', child: 'running' }),
-    });
-    expect(tree[0].displayStatus?.label).toBe('Discussing');
-  });
-
-  it("rolls a child's later activity into the parent's sort timestamp", () => {
-    const stale = mkThread('stale', { updatedAt: 1000 });
-    const fresh = mkThread('fresh', { updatedAt: 5000 });
-    const child = mkThread('child', { parentThreadId: 'stale', updatedAt: 9000 });
-    const tree = buildSidebarThreadTree({
-      threads: [stale, fresh, child],
-      liveStatusOf: liveStatusMap({}),
-    });
-    expect(tree.map(nodeId)).toEqual(['stale', 'fresh']);
-    expect(tree[0].latestActivityAt).toBe(9000);
-  });
-
-  it('caps depth and drops grandchildren beyond maxDepth', () => {
-    const root = mkThread('root');
-    const child = mkThread('child', { parentThreadId: 'root' });
-    const grandchild = mkThread('grandchild', { parentThreadId: 'child' });
-    const great = mkThread('great', { parentThreadId: 'grandchild' });
-    const tree = buildSidebarThreadTree({
-      threads: [root, child, grandchild, great],
-      liveStatusOf: liveStatusMap({}),
-      maxDepth: 2,
-    });
-    expect(tree).toHaveLength(1);
-    expect(tree[0].children).toHaveLength(1);
-    expect(tree[0].children[0].children).toHaveLength(1);
-    expect(nodeId(tree[0].children[0].children[0])).toBe('grandchild');
-    expect(tree[0].children[0].children[0].children).toHaveLength(0);
-  });
-
-  it('promotes orphaned children to the top level when their parent is missing', () => {
-    const orphan = mkThread('orphan', { parentThreadId: 'ghost', updatedAt: 1000 });
-    const sibling = mkThread('sibling', { updatedAt: 2000 });
-    const tree = buildSidebarThreadTree({
-      threads: [orphan, sibling],
-      liveStatusOf: liveStatusMap({}),
-    });
-    expect(tree.map(nodeId).sort()).toEqual(['orphan', 'sibling']);
-    expect(tree.every((n) => n.depth === 0)).toBe(true);
+    expect(tree[0].displayStatus?.label).toBe('Planning');
   });
 
   it('produces a stable order by thread id when latestActivityAt ties', () => {
@@ -442,15 +311,15 @@ describe('activityOf', () => {
     expect(tree[0].latestActivityAt).toBe(20_000);
   });
 
-  it('bubbles a child activityOf value into the parent', () => {
-    const parent = mkThread('parent', { updatedAt: 1000 });
-    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 500 });
+  it('bubbles a member activityOf value into its group', () => {
+    const member = mkThread('member', { groupId: 'g1', updatedAt: 500 });
     const tree = buildSidebarThreadTree({
-      threads: [parent, child],
+      threads: [member],
+      groups: [mkGroup('g1')],
       liveStatusOf: () => 'idle',
-      activityOf: (t) => (t.id === 'child' ? 50_000 : (t.updatedAt ?? 0)),
+      activityOf: (t) => (t.id === 'member' ? 50_000 : (t.updatedAt ?? 0)),
     });
-    expect(nodeId(tree[0])).toBe('parent');
+    expect(nodeId(tree[0])).toBe('g1');
     expect(tree[0].latestActivityAt).toBe(50_000);
   });
 });
@@ -459,12 +328,11 @@ describe('activityOf', () => {
 //
 // Groups are a section of their own above the pin blocks and are never
 // pinned. Inside that section a group bubbles its members' status and
-// activity the way a discussion parent does, and its members pin like any
-// top-level thread. Its top row is not a thread, so every helper that used
+// activity, and its members pin like any top-level thread. Its top row is not a thread, so every helper that used
 // to read `node.thread` discriminates on `node.kind` instead.
 
 describe('buildSidebarThreadTree with groups', () => {
-  it('nests a top-level member under its group and leaves others alone', () => {
+  it('nests a member under its group and leaves others alone', () => {
     const member = mkThread('member', { groupId: 'g1' });
     const loose = mkThread('loose');
     const tree = buildSidebarThreadTree({
@@ -479,22 +347,6 @@ describe('buildSidebarThreadTree with groups', () => {
     expect(group!.children[0].depth).toBe(1);
     // The member is NOT also a top-level row.
     expect(nodeIds(tree).filter((id) => id === 'member')).toHaveLength(0);
-  });
-
-  it('carries a member discussion child to depth 2 inside the group', () => {
-    const parent = mkThread('parent', { groupId: 'g1' });
-    const child = mkThread('child', { parentThreadId: 'parent', groupId: 'g1' });
-    const tree = buildSidebarThreadTree({
-      threads: [parent, child],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({}),
-    });
-
-    const group = tree[0];
-    expect(group.kind).toBe('group');
-    expect(group.children[0].depth).toBe(1);
-    expect(nodeIds(group.children[0].children)).toEqual(['child']);
-    expect(group.children[0].children[0].depth).toBe(2);
   });
 
   it('leaves a thread top-level when its groupId names no input group', () => {
@@ -570,7 +422,7 @@ describe('buildSidebarThreadTree with groups', () => {
       groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({ 'loose-blocked': 'error' }),
     });
-    expect(nodeIds(tree[0].children)).toEqual(['front', 'back', 'loose-blocked', 'loose-idle']);
+    expect(nodeIds(groupNode(tree[0]).children)).toEqual(['front', 'back', 'loose-blocked', 'loose-idle']);
   });
 
   it('bubbles a running member past a pinned idle one', () => {

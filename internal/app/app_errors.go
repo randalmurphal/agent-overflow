@@ -38,8 +38,7 @@ func (a *App) emitErrorToThread(threadID, content string) {
 }
 
 // emitWireErrorToThread is emitErrorToThread for errors triggered by a
-// provider wire event (e.g. the discussion-sync failure in
-// sessionEventHandler). These must respect the stopped-thread gate
+// provider wire event. These must respect the stopped-thread gate
 // exactly like the frame that triggered them: a torn-down session's
 // events keep draining after CleanupThread runs, and bypassing the gate
 // would let its tail persist items under the stopped thread (Bug B5 /

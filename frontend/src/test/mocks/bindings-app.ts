@@ -572,19 +572,6 @@ export class WorktreeStatus {
   }
 }
 
-export const ListDiscussions = dispatch('ListDiscussions');
-export const ListDiscussionsForThread = dispatch('ListDiscussionsForThread');
-export const GetDiscussion = dispatch('GetDiscussion');
-export const CreateDiscussion = dispatch('CreateDiscussion');
-export const UpdateDiscussion = dispatch('UpdateDiscussion');
-export const DeleteDiscussion = dispatch('DeleteDiscussion');
-export const StartDiscussion = dispatch('StartDiscussion');
-export const StartDiscussionByID = dispatch('StartDiscussionByID');
-export const GetChannelMessages = dispatch('GetChannelMessages');
-export const GetChannelState = dispatch('GetChannelState');
-export const PostChannelMessage = dispatch('PostChannelMessage');
-export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
-
 
 // Composer enhancements
 export const MintAttachmentUploadTicket = dispatch('MintAttachmentUploadTicket');

@@ -14,7 +14,7 @@ workspace. A missing, relative, non-canonical, or unreadable workspace yields
 no references.
 
 `MarshalRefsJSON` is the shared `items.meta.pathRefs` projection used by
-triage and discussions. Keep `MetaKey`, `PathRef` JSON fields, candidate
+triage. Keep `MetaKey`, `PathRef` JSON fields, candidate
 bounds, and the frontend reader in
 `frontend/src/lib/utils/pathLinkify.ts` synchronized.
 

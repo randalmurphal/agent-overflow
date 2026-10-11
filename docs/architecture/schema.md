@@ -13,7 +13,7 @@ SQLite has three distinct responsibilities:
 | Class | Meaning |
 |---|---|
 | Provider-history cache | Conversation history and derived render data can be rebuilt from provider session files. Restore and retention may replace or remove it under their documented guards. |
-| Application records | Projects, settings, workflow records, automation state, drafts, discussions, and usage are durable application data. Their accessors define their lifecycle. They are not evidence that SQLite is an event store. |
+| Application records | Projects, settings, workflow records, automation state, drafts, and usage are durable application data. Their accessors define their lifecycle. They are not evidence that SQLite is an event store. |
 | Authoritative state | Identity, accepted-message queues, transfer ownership, remote command acceptance, and notification ownership have no provider-history replacement. Whole-store snapshot restore handles them deliberately; history retention and generic cleanup must not treat them as cache rows. |
 
 The phrase "SQLite is a history cache" applies to provider history. It does not
@@ -70,7 +70,6 @@ the kept history of a deleted one.
 | `projects` | User-defined repository grouping. `path` and immutable filesystem-safe `slug` are unique. `worktree_setup` is strict JSON owned by `internal/worktreesetup`. `repository_id` is the host-scoped forge identity; `identity_source` privately detects an origin change before reusing a verified ID; retired `remote_url` and `root_commit` remain empty; `identity_error` is the last failed read of it, kept beside the last good identity. Legacy workflow queue columns remain physically present but have no readers or writers. |
 | `thread_groups` | Named per-project sidebar groups. Membership is `threads.group_id`; deleting a group ungroups its threads and clears their pins. A group has no pin; a grouped thread carries its own, cleared whenever it joins or leaves a group. A name is unique per project, case-insensitively, so resolve-or-create by name has one answer. |
 | `thread_drafts`, `thread_tracked_files`, `new_thread_mcp_defaults` | Composer drafts, per-thread tracked-file state, and defaults applied to newly materialized threads. Each uses narrow accessors rather than the broad thread projection. |
-| `channels`, `channel_messages`, `discussion_definitions` | Multi-agent discussion channels, ordered messages, and reusable global or project templates. |
 | `attachments`, `attachment_owners` | Attachment metadata and thread ownership edges; bytes live under `internal/attachment`. The original `attachments.thread_id` names storage provenance and survives deletion of that thread while other owners remain. A pointer fork reads an ancestor's attachment while it shows a row referencing it and owns the ones on rows it copied. `kind` is the closed `image` or `file` vocabulary enforced by `InsertAttachment`. |
 | `proposed_plans`, `proposed_plan_comments` | Plan version and inline-review state projected into timeline item metadata. Their mutators bump the owning thread's history revision. |
 | `diff_review_comments` | Review comments keyed to diff scope and location. |

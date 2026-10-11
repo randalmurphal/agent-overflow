@@ -68,7 +68,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     replaceTimelineItems, installTimelineItems, commitUpsertResult } = itemWindow;
   const rows = createThreadRowUiState({ getItemById, loadedItems: getItems });
   const scroll = createThreadPaneScroll({
-    getThread: () => thread, getLoading: () => loading, getSwitchGeneration: () => generation,
+    getLoading: () => loading, getSwitchGeneration: () => generation,
     getItemCount: () => getItems().length, stampLiveContent: () => { lastLiveContentAt = nowForLiveContent(); },
   });
   const reveal = createThreadStreamingReveal({

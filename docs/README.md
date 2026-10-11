@@ -59,7 +59,6 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`claude-tui-provider.md`](architecture/claude-tui-provider.md) | The third provider: the real Claude Code TUI in a PTY, with the event stream reconstructed from outside the process. |
 | [`recovery.md`](architecture/recovery.md) | Session recovery on restart, thread switch, disconnect. |
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and Stop/Esc conversation rollback. |
-| [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`thread-replica-sync.md`](architecture/thread-replica-sync.md) | The `history_rev`/`history_epoch` stamp pair and the IndexedDB thread-window replica that paints before the sync RPC returns. |
 | [`browser-tools.md`](architecture/browser-tools.md) | Built-in browser MCP product contract, lifecycle, authority boundaries, and provider live-apply behavior. |
 | [`in-app-browser-spike.md`](architecture/in-app-browser-spike.md) | Measured Wails-webview versus shared-Chrome decision evidence behind the built-in browser. |
@@ -68,7 +67,7 @@ How the app works today. Under [`architecture/`](architecture/).
 
 | File | 1-line summary |
 |---|---|
-| [`frontend-scroll.md`](architecture/frontend-scroll.md) | The durable scroll contract for chat and discussion panes. Read before touching `ThreadPane`, `MessageTimeline`, or the virtualizer. |
+| [`frontend-scroll.md`](architecture/frontend-scroll.md) | The durable scroll contract for chat panes. Read before touching `ThreadPane`, `MessageTimeline`, or the virtualizer. |
 | [`scroll-contracts.md`](architecture/scroll-contracts.md) | C1–C27: the user-observable scroll behaviors, each with regression provenance and the test that pins it. |
 | [`activity-runs.md`](architecture/activity-runs.md) | One maximal stretch of activity rows as a single timeline row: the nested scroller, its expansion lease, and collapse. |
 | [`timeline-window-pages.md`](architecture/timeline-window-pages.md) | History pages as prose rows plus per-run stubs and the loaded member span; on-demand members, the composable held-window digest, and screen-height fill. |

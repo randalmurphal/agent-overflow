@@ -142,11 +142,6 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
 	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
-	// The discussion children a group move carried, as SetThreadGroup's own
-	// binding announces them.
-	for _, carried := range result.Carried {
-		a.broadcastThreadRow(triage.ThreadActionFull, carried)
-	}
 	if result.ArchivedChanged && result.Thread.Archived {
 		a.stopArchivedThreadSession(threadID, requestedAt)
 	}
@@ -286,9 +281,6 @@ func threadToolsOrganizeError(threadID string, err error) error {
 	case errors.Is(err, threadapp.ErrThreadHasNoProject):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"That thread belongs to no project, and a group belongs to one project, so it cannot join a group.", err)
-	case errors.Is(err, store.ErrThreadNotRoot):
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is a discussion reply and travels with its discussion. Group the top-level thread instead.", err)
 	case errors.Is(err, store.ErrThreadGroupGone):
 		return errorsx.Public(threadtools.CodeNotFound,
 			"That group is no longer in this project. Read the groups again with thread_options.", err)

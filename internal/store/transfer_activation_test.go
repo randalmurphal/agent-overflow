@@ -72,7 +72,7 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 	t.Cleanup(func() { s.Close() })
 	mustCreateThread(t, s, "returning")
 	child := makeThread("local-fork", "claude")
-	child.ForkedFromThreadID, child.ParentThreadID = "returning", "returning"
+	child.ForkedFromThreadID = "returning"
 	if err := s.CreateThread(child); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 		t.Fatalf("history not replaced: %+v %v", items, err)
 	}
 	got, err := s.GetThread(child.ID)
-	if err != nil || got.ParentThreadID != target.ID || got.ForkedFromThreadID != target.ID {
+	if err != nil || got.ForkedFromThreadID != target.ID {
 		t.Fatalf("local fork links lost: %+v %v", got, err)
 	}
 	returned, err := s.GetThread(target.ID)

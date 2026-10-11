@@ -156,8 +156,8 @@ export async function deleteThreadGroupAction(groupId: string): Promise<boolean>
 
 /**
  * Move threads into a group. The response carries every row the call
- * touched — discussion children follow their root, and a moved row comes
- * back unpinned: a thread starts unpinned in its new group.
+ * touched, and a moved row comes back unpinned: a thread starts unpinned in
+ * its new group.
  */
 export async function moveThreadsToGroupAction(
   threadIds: readonly string[],

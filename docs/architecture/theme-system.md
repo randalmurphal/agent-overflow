@@ -151,7 +151,7 @@ KaTeX: `currentColor`, nothing to do. Streamdown markdown theme
 > proposal below, the divergence is noted inline.
 
 Full details in the categories below; everything else swept clean
-(usage, accounts, git, palette, import, discussion, panes, run-map SVGs,
+(usage, accounts, git, palette, import, panes, run-map SVGs,
 primitives icons).
 
 ### 4.1 New token roles needed

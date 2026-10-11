@@ -99,7 +99,7 @@ export function resolveEffectiveThreadStatus(
  *   1. error            → "Failed"
  *   2. pending-approval → "Pending approval" (blocking tool permission)
  *   3. awaiting-input   → "Awaiting input" (agent asking a question)
- *   4. running          → mode-aware (Planning / Designing / Discussing / Working)
+ *   4. running          → mode-aware (Planning / Working)
  *   5. setup-failed     → "Setup Failed" (worktree setup recipe did not finish)
  *   6. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
  *   7. interrupted      → "Interrupted" (prior app closed mid-turn)
@@ -107,11 +107,10 @@ export function resolveEffectiveThreadStatus(
  *   9. idle + read      → null (no pill)
  *
  * Visual grammar, with no text to lean on: running / completed are
- * success green (pulsing while running); discussion is a hollow info ring;
- * awaiting-input is info blue and pending-approval amber, both pulsing with
- * a row glow; failed is red; setup-failed is a filled amber dot and
- * interrupted a hollow one; plan-ready is the accent. Completed and
- * plan-ready add the row ring.
+ * success green (pulsing while running); awaiting-input is info blue and
+ * pending-approval amber, both pulsing with a row glow; failed is red;
+ * setup-failed is a filled amber dot and interrupted a hollow one;
+ * plan-ready is the accent. Completed and plan-ready add the row ring.
  */
 export function resolveThreadStatusPill(
   thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
@@ -141,18 +140,7 @@ export function resolveThreadStatusPill(
     };
   }
   if (liveStatus === 'running') {
-    switch (thread.mode) {
-      case 'plan':
-        return { label: 'Planning', ...RUNNING_SUCCESS };
-      case 'discussion':
-        return {
-          label: 'Discussing',
-          dotClass: 'border border-info bg-transparent',
-          pulse: false,
-        };
-      default:
-        return { label: 'Working', ...RUNNING_SUCCESS };
-    }
+    return { label: thread.mode === 'plan' ? 'Planning' : 'Working', ...RUNNING_SUCCESS };
   }
   if (liveStatus === 'setup-failed') {
     // Warning, not error: the thread and its worktree are usable — the agent

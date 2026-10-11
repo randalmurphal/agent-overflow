@@ -240,7 +240,7 @@ export function createThreadItemStreamApply(
     // A wire append to the loaded tail arms the structural-append
     // spring, stamps the live-content latch, and schedules the
     // follow-up nudge (see `armLiveContentAppendSpring`;
-    // `armStructuralSpring` owns the loading/discussion gates).
+    // `armStructuralSpring` owns the loading gate).
     // Turn-state-independent, so appends after turn end (interrupt
     // echo, force-closed tool rows, background-task completion
     // siblings) arm too — an effect keyed on the active turn never saw

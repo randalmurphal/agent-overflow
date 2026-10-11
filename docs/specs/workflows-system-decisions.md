@@ -222,10 +222,6 @@ Accepted as v1 product behavior; each becomes spec text in the final fold-in:
    won't be amended mid-render for A/B).
 
 **Scope calls made by Claude (veto if wrong):**
-- **Agent-invoked inter-agent discussions (§5 tool) defer to post-v1.** Additive,
-  not structural; v1 already grew by the scheduler. Human-initiated discussion
-  flows and all other §5 tools (enqueue, report-back, schedule, query-source)
-  stay v1.
 - **Fan-out/fan-in ships v1** (multi-lens-review starter needs it);
   **sub-workflow phase shape defers to fast-follow** (nothing in v1 forecloses it).
 - Report-back/query-source bind to *profile-declared commands* (like check
@@ -287,13 +283,11 @@ Accepted as v1 product behavior; each becomes spec text in the final fold-in:
   teardown, watchdog, resource semaphores), `internal/workflow/wftools`
   (first-party toolset backend). Bare CRUD stays in `internal/store` per the
   project/store split precedent.
-- **Follows the discussion-FSM precedent:** in-memory scheduler state rebuilt from
-  SQLite at startup; a single engine goroutine owns state transitions; store
+- **In-memory scheduler state:** rebuilt from SQLite at startup; a single engine goroutine owns state transitions; store
   writes are short-lived calls (respects the single-connection DB).
 - **Refactor (committed):** a generic turn-observer registry on `App` replaces the
   bespoke per-feature `if evt.Kind == EventTurnComplete` branches in
-  `app_provider_events.go`; discussions migrate onto it; the engine and the
-  watchdog both consume it.
+  `app_provider_events.go`; the engine and the watchdog both consume it.
 - Phase threads get a new `threads.mode` value `workflow` (Rebuild migration) so
   their exclusion from normal lists is principled, not filtered by convention.
 - Transport: new bound methods annotated `//ao:scope threads:autonomy`
@@ -1106,8 +1100,8 @@ verdict it now is, with what the first attempt got wrong.
   explicit opt-in (`sendMessageOptions.ExpandComposerCommands`) set only
   where composer-typed text enters the app: the bound SendMessage /
   SendMessageWithOptions / SteerMessageWithOptions wire methods and the
-  flush-queue dispatch. A workflow wake, a seeded triage turn, a
-  discussion-drive prompt, and a schema-driven phase send never set it,
+  flush-queue dispatch. A workflow wake, a seeded triage turn, and a
+  schema-driven phase send never set it,
   and a future internal caller that forgets the flag gets the safe
   behaviour (byte-for-byte delivery), not an accidental expansion.
   Expanding a `/…` opener inside a prompt the app wrote would be the app

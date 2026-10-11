@@ -269,35 +269,6 @@ func TestUpdateNewThreadDefaultsAnnouncesTheSeed(t *testing.T) {
 	}
 }
 
-// Discussion definitions are created, renamed, edited and deleted with no
-// signal at all, so a definition written on one device never appeared on
-// another until that screen was reopened.
-func TestDiscussionDefinitionWritesAnnounceTheList(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, string(eventchan.DiscussionDefinitionsChanged))
-
-	def := store.DiscussionDefinition{
-		Name:        "Converge",
-		Description: "Argue the design",
-		Scope:       "global",
-		Participants: []store.DiscussionParticipant{
-			{Role: "proposer", System: "Drive the proposal"},
-			{Role: "reviewer", System: "Critique the proposal"},
-		},
-		Settings: store.DiscussionSettings{MaxTurns: 4},
-	}
-	if err := app.CreateDiscussion(def); err != nil {
-		t.Fatalf("CreateDiscussion() error = %v", err)
-	}
-	if err := app.DeleteDiscussion(def.Name, def.Scope); err != nil {
-		t.Fatalf("DeleteDiscussion() error = %v", err)
-	}
-	if got := len(snapshot()); got != 2 {
-		t.Fatalf("discussion:definitions-changed frames = %d, want 2 (create + delete)", got)
-	}
-}
-
 // A removal or a rename of an attached machine told nobody, so a second page
 // on this host kept a row for a profile that no longer exists — and a socket
 // to it.

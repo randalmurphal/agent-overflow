@@ -20,15 +20,11 @@ func normalizeChatBarFavorite(fav ChatBarFavorite) (ChatBarFavorite, error) {
 	if fav.Label == "" {
 		fav.Label = fav.Value
 	}
-	switch fav.Kind {
-	case "model":
-		if _, ok := legalProviders[fav.Provider]; !ok {
-			return ChatBarFavorite{}, fmt.Errorf("%w: %q", ErrInvalidProvider, fav.Provider)
-		}
-	case "discussion":
-		fav.Provider = ""
-	default:
+	if fav.Kind != "model" {
 		return ChatBarFavorite{}, fmt.Errorf("store: invalid chat bar favorite kind %q", fav.Kind)
+	}
+	if _, ok := legalProviders[fav.Provider]; !ok {
+		return ChatBarFavorite{}, fmt.Errorf("%w: %q", ErrInvalidProvider, fav.Provider)
 	}
 	return fav, nil
 }
@@ -56,7 +52,7 @@ func (s *Store) ListChatBarFavorites() ([]ChatBarFavorite, error) {
 	return favorites, rows.Err()
 }
 
-// AddChatBarFavorite stars a model or discussion. Re-adding an existing
+// AddChatBarFavorite stars a model. Re-adding an existing
 // favorite refreshes its label but preserves the original created_at so
 // accidental double-clicks do not reshuffle the list.
 func (s *Store) AddChatBarFavorite(fav ChatBarFavorite) error {
@@ -101,7 +97,7 @@ func (s *Store) AddChatBarFavorite(fav ChatBarFavorite) error {
 	return nil
 }
 
-// RemoveChatBarFavorite unstars a model or discussion. Missing rows are a
+// RemoveChatBarFavorite unstars a model. Missing rows are a
 // no-op so stale UI state can reconcile without surfacing an error.
 func (s *Store) RemoveChatBarFavorite(kind, provider, value string) error {
 	fav, err := normalizeChatBarFavorite(ChatBarFavorite{

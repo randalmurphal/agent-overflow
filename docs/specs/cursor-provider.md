@@ -23,7 +23,7 @@ remote-access work (Q4).
 
 **Phase A — seam tightening, zero behavior change.** The provider seam
 already has real shared primitives (`provider.Session`,
-`ApprovalRegistry`, provider-blind triage/store/transport/discussion,
+`ApprovalRegistry`, provider-blind triage/store/transport,
 the frontend `PROVIDER_DEFINITIONS` catalog). What remains is ~68
 backend and ~18 frontend switch sites. Phase A:
 

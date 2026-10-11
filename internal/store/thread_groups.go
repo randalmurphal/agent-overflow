@@ -21,24 +21,18 @@ var ErrEmptyThreadGroupName = errors.New("store: thread group name is required")
 // the user, so they share one message.
 var ErrThreadGroupGone = errors.New("store: that group no longer exists in this project")
 
-// ErrThreadGone is what a group move reports when a named root thread
+// ErrThreadGone is what a group move reports when a named thread
 // matched nothing (it was deleted under the caller), and what execution
 // reports for a deleted thread kept as a holder (CheckThreadExecutionAccess).
 var ErrThreadGone = errors.New("store: that thread no longer exists")
-
-// ErrThreadNotRoot is what a group move reports when a named id is a
-// discussion child. A child travels with its root and is never grouped on
-// its own: the sidebar reads group membership off top-level rows only, so
-// a child's own group_id would be state nothing renders.
-var ErrThreadNotRoot = errors.New("store: a discussion reply moves with its discussion")
 
 // ThreadGroup is a named, collapsible sidebar row gathering threads of ONE
 // project (migration v76; spec: docs/specs/sidebar-thread-groups.md).
 //
 // It is not a thread: it has a name and nothing else of its own. It is
 // not pinnable; its members pin as threads do (migration v139). Its status,
-// activity, and sort position are its members', the same bubbling a
-// discussion parent does, so nothing here is derived or cached.
+// activity, and sort position are bubbled from its members, so nothing
+// here is derived or cached.
 type ThreadGroup struct {
 	ID        string `json:"id"`
 	ProjectID string `json:"projectId"`
@@ -234,25 +228,20 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 }
 
 // SetThreadGroup is the ONE writer of threads.group_id. It moves each
-// named thread — and, by the parent_thread_id disjunct, the discussion
-// children that travel with it — into groupID, or out of any group when
-// groupID is "".
+// named thread into groupID, or out of any group when groupID is "".
 //
 // The rows it wrote are read back inside the same transaction and
 // returned, so the caller renders exactly what landed rather than a
-// second snapshot that a concurrent writer could have moved on from. That
-// is also the only way the caller learns the CHILD ids: it named roots.
+// second snapshot that a concurrent writer could have moved on from.
 //
 // Three properties are structural rather than prevalidated:
 //
 //   - The project subquery refuses a cross-project move. An unknown group
 //     resolves to no project and matches nothing, so it fails the same way
 //     (ErrThreadGroupGone).
-//   - The root id must have been updated, or the whole call fails and
+//   - Every named id must have been updated, or the whole call fails and
 //     rolls back. A partial multi-select move is not a state the sidebar
-//     could explain. Only a TOP-LEVEL row matches as a root (a child is
-//     refused with ErrThreadNotRoot); a child named beside its own root is
-//     still fine, because the root's disjunct carries it.
+//     could explain.
 //   - A row that changes group loses its pin in the same statement: a
 //     thread starts unpinned in a group it joins, and a thread leaving a
 //     group leaves its pin behind. A row whose group does not change keeps
@@ -285,28 +274,20 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 		return []Thread{}, nil
 	}
 
-	const rootOrChild = `((id = ? AND COALESCE(parent_thread_id, '') = '') OR parent_thread_id = ?)`
 	// Every right-hand side reads the row as it was before the UPDATE, so
 	// the pin CASEs compare against the old group_id.
 	const groupSQL = `UPDATE threads
    SET group_id = ?,
        pinned_at = CASE WHEN group_id IS ? THEN pinned_at END,
        pin_group = CASE WHEN group_id IS ? THEN pin_group END
- WHERE ` + rootOrChild + `
-   AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)
- RETURNING id`
+ WHERE id = ?
+   AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)`
 	const ungroupSQL = `UPDATE threads
    SET group_id = NULL,
        pinned_at = CASE WHEN group_id IS NULL THEN pinned_at END,
        pin_group = CASE WHEN group_id IS NULL THEN pin_group END
- WHERE ` + rootOrChild + `
- RETURNING id`
+ WHERE id = ?`
 
-	named := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		named[id] = true
-	}
-	touched := make([]string, 0, len(ids))
 	for _, id := range ids {
 		// Group membership is store-only metadata, so it needs no action
 		// lock. Check inside this writer transaction to serialize it with a
@@ -315,69 +296,46 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 			return nil, err
 		}
 		var (
-			rows *sql.Rows
-			err  error
+			result sql.Result
+			err    error
 		)
 		if groupID == "" {
-			rows, err = tx.Query(ungroupSQL, id, id)
+			result, err = tx.Exec(ungroupSQL, id)
 		} else {
-			rows, err = tx.Query(groupSQL, groupID, groupID, groupID, id, id, groupID)
+			result, err = tx.Exec(groupSQL, groupID, groupID, groupID, id, groupID)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
 		}
-		movedRoot := false
-		for rows.Next() {
-			var moved string
-			if err := rows.Scan(&moved); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("store: scan moved thread for %s: %w", id, err)
-			}
-			if moved == id {
-				movedRoot = true
-			}
-			touched = append(touched, moved)
-		}
-		err = rows.Err()
-		rows.Close()
+		affected, err := result.RowsAffected()
 		if err != nil {
 			return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
 		}
-		if !movedRoot {
-			if err := threadGroupMoveRefusal(tx, id, named); err != nil {
+		if affected == 0 {
+			if err := threadGroupMoveRefusal(tx, id); err != nil {
 				return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
 			}
 		}
 	}
 
-	// A child named beside its own root is carried by the root's disjunct,
-	// possibly twice over, so the read-back set is deduped before it
-	// becomes an IN list.
-	moved, err := listThreadsByIDTx(tx, uniqueNonEmptyStrings(touched))
+	moved, err := listThreadsByIDTx(tx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: read back moved threads: %w", err)
 	}
 	return moved, nil
 }
 
-// threadGroupMoveRefusal names why a named id matched nothing as a root,
-// inside the move's own transaction. It runs only on that path, so the
-// extra read costs nothing on a move that landed. A child whose root is
-// ALSO named is not a refusal: the root's disjunct carries it.
-func threadGroupMoveRefusal(tx *sql.Tx, threadID string, named map[string]bool) error {
-	var parent string
-	err := tx.QueryRow(
-		`SELECT COALESCE(parent_thread_id, '') FROM threads WHERE id = ?`, threadID,
-	).Scan(&parent)
+// threadGroupMoveRefusal names why a named id matched nothing, inside the
+// move's own transaction. It runs only on that path, so the extra read
+// costs nothing on a move that landed.
+func threadGroupMoveRefusal(tx *sql.Tx, threadID string) error {
+	var exists bool
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?)`, threadID).Scan(&exists)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return ErrThreadGone
 	case err != nil:
 		return fmt.Errorf("probe thread: %w", err)
-	case parent == "":
-		return ErrThreadGroupGone
-	case named[parent]:
-		return nil
+	case !exists:
+		return ErrThreadGone
 	}
-	return ErrThreadNotRoot
+	return ErrThreadGroupGone
 }

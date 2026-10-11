@@ -408,25 +408,6 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     }
   });
 
-  it('uses the shared sidebar pill presentation for running discussion threads', async () => {
-    await seedThreads([
-      makeThread({ id: 'discussion', title: 'Roundtable', mode: 'discussion' }),
-    ]);
-    markThreadRunning('discussion');
-    const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, {
-      open: true,
-      pane,
-      onClose: vi.fn(),
-    });
-
-    const dot = getByTestId('thread-picker-status-dot');
-    expect(dot.getAttribute('aria-label')).toBe('Discussing');
-    expect(dot.classList.contains('border-info')).toBe(true);
-    expect(dot.classList.contains('bg-transparent')).toBe(true);
-    expect(dot.classList.contains('animate-pulse')).toBe(false);
-  });
-
   it('renders durable Interrupted from the thread row without a live event', async () => {
     await seedThreads([
       makeThread({ id: 'interrupted', title: 'Stopped', hasIncompleteTurn: true }),

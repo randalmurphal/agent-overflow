@@ -1,7 +1,7 @@
 # components/virtual/
 
 This directory adapts the surface-agnostic windowing engine in `utils/virtual/`
-to the DOM. Chat, discussion channels, and review surfaces share it.
+to the DOM. Chat and review surfaces share it.
 
 `TimelineVirtualizer.svelte` owns scroller and row observation, spacer layout,
 absolute row positioning, scroll-event input, scroll-end synthesis, and the

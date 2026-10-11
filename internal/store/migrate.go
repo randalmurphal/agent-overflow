@@ -198,12 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// The DEFAULT 8 literal mirrors discussion.DefaultMaxTurns (and
-		// the frontend's DEFAULT_MAX_TURNS in
-		// frontend/src/lib/types/discussion.ts), but is frozen by
-		// migration semantics — shipped migrations never change. If the
-		// shared default ever moves, this SQL stays 8 and a new
-		// migration carries the new value.
+		// v142 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -1732,6 +1727,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: groupedThreadPinsMigrationVersion, Name: "grouped_thread_pins", SQL: groupedThreadPinsV139SQL, Rebuild: true},
 	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
+	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV142SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -69,7 +69,6 @@ function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
     sendInFlight: false,
     hasPendingPrompt: false,
     canForkActiveThread: false,
-    canStartDiscussion: false,
     ...extra,
   } as CommandContext;
 }
@@ -520,7 +519,7 @@ describe('keybindings store — loading', () => {
   // overwrites the file that failed to load. The clean-reload half is the
   // transition — a banner that outlives the file it described is its own bug.
   it('exposes a user-file load error, toasts it, and clears it on a clean reload', async () => {
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of Array.from(getToasts())) removeToast(t.id);
     const loadError = 'parse keybindings /cfg/keybindings.json: invalid character \'n\'';
     setBindingMock('GetKeybindings', async () => ({
       bindings: [{ key: 'mod+k', command: 'palette.open' }],
@@ -546,7 +545,7 @@ describe('keybindings store — loading', () => {
   // `loadError: ""` is the same wire state as an omitted field (the Go tag is
   // omitempty). It must not half-report: no toast, and nothing for the banner.
   it('treats an empty load error as no error at all', async () => {
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of Array.from(getToasts())) removeToast(t.id);
     setBindingMock('GetKeybindings', async () => ({
       bindings: [{ key: 'mod+k', command: 'palette.open' }],
       loadError: '',
@@ -557,7 +556,7 @@ describe('keybindings store — loading', () => {
   });
 
   it('drops a stale load error when the call itself fails', async () => {
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of Array.from(getToasts())) removeToast(t.id);
     setBindingMock('GetKeybindings', async () => ({ bindings: [], loadError: 'boom' }));
     await loadKeybindings();
     expect(getKeybindingLoadError()).toBe('boom');
@@ -982,7 +981,7 @@ describe('keybindings store — resync', () => {
   beforeEach(() => {
     clearCommandRegistry();
     resetKeybindingsStore();
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of Array.from(getToasts())) removeToast(t.id);
   });
 
   it('re-reads the file after another client rewrote it', async () => {

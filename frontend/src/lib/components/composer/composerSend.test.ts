@@ -254,19 +254,6 @@ describe('dispatchSend', () => {
     expect(pin).not.toHaveBeenCalled();
   });
 
-  it('does not auto-pin provider-spawned child drafts', async () => {
-    const draft = makeThread({ isDraft: true, parentThreadId: 'parent-thread' });
-    replaceAllThreads([draft]);
-    setBindingMock('SendMessageWithOptions', async () => makeThread({
-      isDraft: false,
-      parentThreadId: draft.parentThreadId,
-    }));
-    const pin = setBindingMock('PinThread', vi.fn());
-
-    expect(await dispatchSend(sendOptions())).toBe(true);
-    expect(pin).not.toHaveBeenCalled();
-  });
-
   it('does not auto-pin a later send on an already-started thread', async () => {
     const started = makeThread({ isDraft: false, sessionRef: 'session-1' });
     replaceAllThreads([started]);

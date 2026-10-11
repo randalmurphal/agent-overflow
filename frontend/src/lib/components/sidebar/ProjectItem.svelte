@@ -146,8 +146,8 @@
   // When collapsed, find the active-thread row (if any) so we render
   // it inline beneath the project row. We do a flat `find` rather than
   // walking the tree because we render the row at indent=1 regardless
-  // of where it sits in the discussion hierarchy — keeps the inline
-  // pin from looking like a "floating indented row".
+  // of whether it sits in a group — keeps the inline pin from looking
+  // like a "floating indented row".
   let activeWhenCollapsed = $derived.by<Thread | null>(() => {
     if (expanded) return null;
     const activeId = pane?.threadId;
@@ -511,7 +511,7 @@
       project, so expanding the project does not move the row.
     -->
     <div class="flex flex-col gap-px ml-4 border-l border-border-subtle/60" data-testid="project-item-active-pin">
-      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} pinnable={!activeWhenCollapsed.parentThreadId} />
+      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
     </div>
   {/if}
 

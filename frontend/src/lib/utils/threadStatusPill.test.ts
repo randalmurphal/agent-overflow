@@ -131,18 +131,11 @@ describe('resolveThreadStatusPill', () => {
   it.each([
     ['chat', 'Working'],
     ['plan', 'Planning'],
-    ['discussion', 'Discussing'],
   ] as const)(
     'running + mode=%s resolves to %s',
     (mode, expectedLabel) => {
       const pill = resolveThreadStatusPill(t({ mode }), 'running');
       expect(pill?.label).toBe(expectedLabel);
-      if (mode === 'discussion') {
-        expect(pill?.dotClass).toContain('border-info');
-        expect(pill?.dotClass).toContain('bg-transparent');
-        expect(pill?.pulse).toBe(false);
-        return;
-      }
       expect(pill?.dotClass).toContain('bg-success');
       expect(pill?.pulse).toBe(true);
     },

@@ -3,9 +3,8 @@
 // The canonical path-link pipeline runs in Go:
 // `internal/pathlinks.ExtractAndValidate` produces a workspace-validated
 // `PathRef[]` allowlist on every surface that renders agent prose
-// (assistant_text, channel messages, proposed plans, ask-user-question
-// rows, advisor rows). The allowlist rides on `item.meta` /
-// `msg.meta` under the `pathRefs` key (see
+// (assistant_text, proposed plans, ask-user-question rows, advisor
+// rows). The allowlist rides on `item.meta` under the `pathRefs` key (see
 // `internal/pathlinks.MetaKey`); the frontend reads it via
 // `getPathRefsFromMeta` and hands it to `pathLinkExtension.ts`, which
 // builds a marked inline extension that emits link tokens during the
@@ -218,7 +217,7 @@ export interface PathRange {
 // `:line:col` / `:line-endLine` variants so a future regex tweak to
 // one surface doesn't silently leave the other behind.
 const PATH_PATTERN =
-  /(?:^|(?<=[\s(\[{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?:-\d+|:(\d+))?)?/g;
+  /(?:^|(?<=[\s([{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?:-\d+|:(\d+))?)?/g;
 
 // At least one of these segment shapes must appear so we don't linkify
 // trivial-looking strings. The patterns above already require >=1 `/`,

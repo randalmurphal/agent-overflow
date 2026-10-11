@@ -32,19 +32,14 @@
     openThreadInPane,
   } from '../../stores/panes.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import {
-    getEffectiveThreadStatus,
-    type ThreadLiveStatus,
-  } from '../../stores/threadStatuses.svelte';
+  import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ThreadRowActions from './ThreadRowActions.svelte';
-  import ThreadRowBadges from './ThreadRowBadges.svelte';
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
@@ -70,7 +65,6 @@
     hasUnread,
     lastKnownThreadStatusPill,
     resolveThreadStatusPill,
-    type ThreadStatusPill,
   } from '../../utils/threadStatusPill';
   import { pathBasename } from '../../utils/pathDisplay';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -98,12 +92,6 @@
     onSelectClick,
     indent = 0,
     inGroup = false,
-    pinnable = true,
-    hasChildren = false,
-    expanded = false,
-    onToggleExpand,
-    displayLiveStatus,
-    displayStatus,
   }: {
     thread: Thread;
     pane: ThreadPane | null;
@@ -116,30 +104,10 @@
      * reserved for opening/focusing a pane.
      */
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
-    /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
+    /** Visual indent level. 0 = top, 1 = group member. */
     indent?: number;
     /** Rendered inside a group's rail. Such a row is never a jump target. */
     inGroup?: boolean;
-    /**
-     * The row is a pin target: a top-level thread or a group's direct
-     * member. A discussion child pins through its parent, so the owner of
-     * the tree decides; the row cannot tell from its indent alone. Both
-     * sidebar callers pass it; the default is a standalone top-level row.
-     */
-    pinnable?: boolean;
-    /** True when this row represents a parent with at least one child below it. */
-    hasChildren?: boolean;
-    /** Controls the chevron direction when hasChildren is true. */
-    expanded?: boolean;
-    /** Fires on chevron click; caller toggles the expansion store. */
-    onToggleExpand?: () => void;
-    /**
-     * Optional discussion-tree rollup status. When present, the row renders
-     * the most important child status while retaining the contributing
-     * child's pill label/color.
-     */
-    displayLiveStatus?: ThreadLiveStatus;
-    displayStatus?: ThreadStatusPill | null;
   } = $props();
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
@@ -155,13 +123,11 @@
   let isTerminal = $derived(thread.mode === 'terminal');
   let showProviderIcon = $derived(
     getShowProviderIcons() && !isTerminal
-      && (thread.mode !== 'discussion' || Boolean(thread.parentThreadId))
       && asProviderID(thread.provider) !== null,
   );
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
-  let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
-  let ownPill = $derived(resolveThreadStatusPill(thread, effectiveStatus));
+  let ownPill = $derived(resolveThreadStatusPill(thread, liveStatus));
   let unread = $derived(hasUnread(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {
@@ -212,11 +178,6 @@
   // Context menu anchor + state.
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
-
-  function handleChevronClick(e: MouseEvent): void {
-    e.stopPropagation();
-    onToggleExpand?.();
-  }
 
   function handleClick(e?: MouseEvent) {
     if (editing) return;
@@ -302,7 +263,7 @@
   // gives its rows.
   let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
   let isJumpTarget = $derived(
-    pinnable && !inGroup && sidebarPinGroup(thread) === 'front',
+    !inGroup && sidebarPinGroup(thread) === 'front',
   );
 
   // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
@@ -401,13 +362,10 @@
     return entry ? backendDisplayName(entry) : '';
   });
   // A status from an unreachable computer is its last report: shown, but
-  // still, and labelled as such. A tree's display status (possibly a
-  // child's) already carries its own source's attribution.
+  // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
   let pill = $derived(
-    displayStatus !== undefined
-      ? displayStatus
-      : unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
+    unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
   );
   // An agent on a machine with no browser tools cannot open a page at all.
   // Said on the chip that already names the machine rather than on a row of
@@ -486,48 +444,28 @@
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-sidebar-jump-target={isJumpTarget ? '' : undefined}
-    data-live-status={liveStatus}
-    data-effective-status={effectiveStatus}
+    data-effective-status={liveStatus}
     data-machine-unreachable={machineUnreachable || undefined}
   >
-  {#if pinnable}
-    <!--
-      Leading pin slot. Absolutely positioned inside the row's reserved
-      pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
-      gap between the project rail and the row content without
-      contributing a flex gap of its own. The wrapper is non-interactive;
-      the button inside opts back in to pointer events when visible.
-    -->
-    <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
-      <ThreadRowPinButton
-        {isPinned}
-        pinGroup={thread.pinGroup}
-        disabled={operateUngranted}
-        onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
-        onCycleBurner={() => void setThreadPinGroupAction(
-          ctx(),
-          thread.pinGroup === PIN_GROUP_BACK ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
-        )}
-      />
-    </div>
-  {/if}
-  {#if hasChildren}
-    <button
-      type="button"
-      onclick={handleChevronClick}
-      data-testid="thread-row-expand"
-      aria-label={expanded ? 'Collapse participants' : 'Expand participants'}
-      aria-expanded={expanded}
-      class="flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg hover:bg-surface-2/30 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-    >
-      <Icon
-        icon={ChevronRight}
-        size={11}
-        strokeWidth={2.5}
-        class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
-      />
-    </button>
-  {/if}
+  <!--
+    Leading pin slot. Absolutely positioned inside the row's reserved
+    pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
+    gap between the project rail and the row content without
+    contributing a flex gap of its own. The wrapper is non-interactive;
+    the button inside opts back in to pointer events when visible.
+  -->
+  <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
+    <ThreadRowPinButton
+      {isPinned}
+      pinGroup={thread.pinGroup}
+      disabled={operateUngranted}
+      onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
+      onCycleBurner={() => void setThreadPinGroupAction(
+        ctx(),
+        thread.pinGroup === PIN_GROUP_BACK ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+      )}
+    />
+  </div>
 
   {#if pill}
     <span
@@ -536,7 +474,7 @@
       aria-label={pill.label}
       title={pill.label}
       data-testid="thread-row-status-dot"
-      data-status={effectiveStatus}
+      data-status={liveStatus}
     ></span>
   {/if}
 
@@ -592,7 +530,6 @@
     >
       {thread.title || 'Untitled'}
     </span>
-    <ThreadRowBadges {thread} />
 
     <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
       {#if thread.forkedFromThreadId}

@@ -171,7 +171,7 @@ func interruptDelete(t *testing.T, app *App, id string) {
 		defer func() { stopped <- returned }()
 		unlock := app.threadLocks().Lock(id)
 		defer unlock()
-		_ = app.deleteThreadTreePacedLocked(id, func() { runtime.Goexit() })
+		_ = app.deleteThreadPacedLocked(id, func() { runtime.Goexit() })
 		returned = true
 	}()
 	if <-stopped {

@@ -9,8 +9,6 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
-	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -117,46 +115,6 @@ func TestTurnObserversDispatchAfterTriage(t *testing.T) {
 	if want := []string{"triage", "observer"}; !slices.Equal(order, want) {
 		t.Fatalf("dispatch order = %v, want %v", order, want)
 	}
-}
-
-func TestDiscussionTurnObserverPreservesWireErrorMessage(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-discussion-observer-error")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	emitted := collectErrorItemUpserts(t, app, 4)
-
-	closedStore, err := store.New(storetest.ClonePath(t))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	if err := closedStore.Close(); err != nil {
-		t.Fatalf("close failure store: %v", err)
-	}
-	_, lookupErr := closedStore.GetThread(thread.ID)
-	if lookupErr == nil {
-		t.Fatal("closed store GetThread error = nil")
-	}
-	app.store = closedStore
-
-	handler := app.sessionEventHandler(thread.ID, "session-token", "")
-	handler(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     thread.ID,
-		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
-	})
-	waitProviderEvents(t, app, thread.ID)
-
-	want := "discussion sync failed: " + lookupErr.Error()
-	for len(emitted) > 0 {
-		item := <-emitted
-		if item.ThreadID == thread.ID && item.Summary == want {
-			return
-		}
-	}
-	t.Fatalf("discussion observer did not emit exact wire error %q", want)
 }
 
 func TestTurnObserversConcurrentRegisterDispatchAndUnsubscribe(t *testing.T) {

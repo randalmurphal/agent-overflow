@@ -14,9 +14,6 @@ const emptyDraftThreadSQL = `SELECT EXISTS (SELECT 1
 		    AND mode IN ('chat', 'plan')
 		    AND COALESCE(worktree_path, '') = ''
 		    AND NOT EXISTS (
-		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
-		    )
-		    AND NOT EXISTS (
 		      SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
@@ -43,8 +40,8 @@ func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 }
 
 // DeleteEmptyDraftThread removes a materialized draft row that never gained
-// durable conversation state. It is intentionally narrow: terminal, design,
-// discussion, sent, and in-flight threads are outside this cleanup path.
+// durable conversation state. It is intentionally narrow: terminal, sent,
+// and in-flight threads are outside this cleanup path.
 // A thread whose history was reverted away can still be read by its forks,
 // through the rows it hides from its own ancestors; it becomes a holder
 // (retireToHolderTx) rather than going.

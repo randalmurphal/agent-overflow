@@ -21,7 +21,6 @@ function baseContext(extra: Partial<CommandContext> = {}): CommandContext {
     hasActiveThread: false,
     turnActive: false,
     canForkActiveThread: false,
-    canStartDiscussion: false,
     ...extra,
   } as CommandContext;
 }

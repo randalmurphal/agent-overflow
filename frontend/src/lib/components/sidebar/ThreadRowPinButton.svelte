@@ -11,10 +11,6 @@
   //
   // The WRITES are props: the row hands closures over threadRowActions.
   // This component owns the affordance, never the entity.
-  //
-  // Render-time guard: rows that can hold a pin only. A discussion child
-  // doesn't pin individually (the parent thread is the pin target for that
-  // whole subtree); ProjectThreadList decides which rows are pin targets.
 
   import Pin from '@lucide/svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';

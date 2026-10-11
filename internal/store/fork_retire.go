@@ -38,7 +38,6 @@ var holderKeptTables = []string{
 var holderClearedRows = []struct{ table, column string }{
 	{"agent_end_backfill", "thread_id"},
 	{"async_questions", "thread_id"},
-	{"channels", "thread_id"},
 	{"diff_review_comments", "thread_id"},
 	{"flush_queue_items", "thread_id"},
 	{"message_anchors", "thread_id"},
@@ -86,16 +85,14 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 	if err := deleteThreadSearchWhereTx(tx, "thread_id = ? AND item_id = ''", []any{id}); err != nil {
 		return false, err
 	}
-	for _, column := range []string{"forked_from_thread_id", "parent_thread_id"} {
-		if _, err := tx.Exec(`UPDATE threads SET `+column+` = NULL WHERE `+column+` = ?`, id); err != nil {
-			return false, fmt.Errorf("store: clear the %s links to retired thread %s: %w", column, id, err)
-		}
+	if _, err := tx.Exec(`UPDATE threads SET forked_from_thread_id = NULL WHERE forked_from_thread_id = ?`, id); err != nil {
+		return false, fmt.Errorf("store: clear the forked_from_thread_id links to retired thread %s: %w", id, err)
 	}
 	result, err := tx.Exec(`UPDATE threads
 		    SET mode = ?, deleting = 0, project_id = NULL, workspace_path = '', worktree_path = NULL,
 		        branch = NULL, session_ref = NULL, pending_fork_session_ref = NULL,
-		        pending_fork_resume_at = '', fork_preparing = 0, discussion_id = NULL,
-		        parent_thread_id = NULL, forked_from_thread_id = NULL, pinned_at = NULL,
+		        pending_fork_resume_at = '', fork_preparing = 0,
+		        forked_from_thread_id = NULL, pinned_at = NULL,
 		        pin_group = NULL, group_id = NULL, archived = 0, live_todo = '',
 		        worktree_setup_state = '', fork_source_thread_id = ''
 		  WHERE id = ?`, threadmode.ModeHolder, id)

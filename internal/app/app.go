@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
-	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitapp"
@@ -176,11 +175,6 @@ type App struct {
 	// onEvent callback to its handling, one FIFO per thread, so triage
 	// never runs on a provider read loop (app_provider_event_queue.go).
 	providerEvents providerEventQueues
-	// discussionApp owns definition/channel services and every process-local
-	// deliberation ward. Session lifecycle remains on App behind its narrow
-	// ParticipantRuntime adapter.
-	discussionAppOnce sync.Once
-	discussionApp     *discussionapp.Service
 	// browser owns the built-in provider-neutral browser and its MCP bridge.
 	browser appBrowserState
 	// backends is the set of OTHER machines this installation has
@@ -754,7 +748,6 @@ func NewAppWithVersion(buildVersion string) *App {
 		Emit:                 app.emit,
 		RestartWatchdogDelay: updateRestartWatchdogDelay,
 	})
-	app.installDiscussionTurnObserver()
 	return app
 }
 

@@ -35,7 +35,6 @@ var packagesThatCreateThreads = []string{
 	"internal/app",
 	"internal/store",
 	"internal/threadapp",
-	"internal/discussion",
 	"internal/sessionimport",
 }
 

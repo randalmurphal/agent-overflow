@@ -1,10 +1,10 @@
-// Sticky-bottom controller, shared by chat MessageTimeline, Discussion
-// ChannelView and the review pane's ReviewCILogView.
+// Sticky-bottom controller, shared by chat MessageTimeline, the activity-run
+// and subagent clips, and the review pane's ReviewCILogView.
 //
 // Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
 // the user's intent ("glued to bottom" or "free") and the content-
 // geometry pipeline, fed by one of two sources: a single ResizeObserver
-// on the content element (the default — ChannelView), or engine-sourced
+// on the content element (the default — ActivityRun's clip), or engine-sourced
 // samples via `deliverContentGeometry` when the consumer sets
 // `externalContentGeometry` (chat — see observers.ts).
 //
@@ -43,18 +43,16 @@
 // Unlike the previous controller, this owns the scroll element directly.
 // MessageTimeline pairs it with <TimelineVirtualizer scrollRef={scrollEl}>
 // so the windowing engine does its measurement work without owning the
-// scroll container. ChannelView has no virtualizer — the contentEl is
-// just a `<div>` wrapping the `{#each}` over channel messages — and the
-// same controller works because the algorithm is agnostic to what's
-// inside contentEl.
+// scroll container. An activity run's nested controller has no
+// virtualizer, and the same controller works because the algorithm is
+// agnostic to what's inside contentEl.
 //
 // External consumers (sidebar resizers, ChatView composer-height
 // publication, scrollLeaseDuringTransition helper) speak to this through
 // the PaneScrollController interface — pauseAutoScroll() returns a
 // depth-counted lease, observe(kind) reports geometry changes outside
-// the content element. Both ChatView and ChannelView observe
-// 'composer-geometry' from their composer ResizeObservers when
-// out-of-content height changes; the seam is identical on both surfaces.
+// the content element. ChatView observes 'composer-geometry' from its
+// composer ResizeObserver when out-of-content height changes.
 
 import { tick } from 'svelte';
 import { motionReduced } from '../reducedMotion';
@@ -245,8 +243,8 @@ export function createUseStickToBottomController(
   // rate. Sentinel clamp detection and write-refusal retries force the real
   // target read. A viewport change or width reflow still takes the read path
   // once so a browser clamp that raced the delivery cannot leave cached
-  // scrollTop stale. RO-sourced pipelines such as ChannelView have no
-  // viewport sample and always take the real-read path.
+  // scrollTop stale. RO-sourced pipelines have no viewport sample and
+  // always take the real-read path.
   //
   // A resync taken while FLOORED (scrollHeight clamped to clientHeight)
   // cannot prove whether a browser clamp raced it, so short threads keep
@@ -1210,25 +1208,25 @@ export function createUseStickToBottomController(
 
   return {
     get isSticky() {
-      escapeRevision;
+      void escapeRevision;
       return isAtBottomState && !escapedFromLockState && pauseDepth === 0;
     },
     get isAtBottom() {
-      escapeRevision;
+      void escapeRevision;
       return !escapedFromLockState && (isAtBottomState || isNearBottomState);
     },
     get restorePending() {
-      restoreConsentRevision;
+      void restoreConsentRevision;
       return restoreConsentArmedState;
     },
     get escapedFromLock() {
-      escapeRevision;
+      void escapeRevision;
       return escapedFromLockState;
     },
     // Scroll-event ATTRIBUTION, not follow gating — see the interface doc
     // for why this must not fold in pauseDepth the way isSticky does.
     get positionOwnerDriven() {
-      escapeRevision;
+      void escapeRevision;
       return !escapedFromLockState;
     },
     get isWarm() {

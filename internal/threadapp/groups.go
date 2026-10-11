@@ -60,7 +60,7 @@ func (s *Service) DeleteGroup(groupID string) (store.ThreadGroup, []store.Thread
 
 // SetGroup moves threads into groupID, or out of any group when it is "".
 // The rows come back from the store's own transaction, so they are exactly
-// the rows written — discussion children the caller never named included.
+// the rows written.
 func (s *Service) SetGroup(threadIDs []string, groupID string) ([]store.Thread, error) {
 	database, err := s.database("set thread group")
 	if err != nil {

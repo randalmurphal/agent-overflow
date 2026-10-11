@@ -44,14 +44,13 @@ import (
 )
 
 // MetaKey is the JSON object key under which a validated PathRef
-// allowlist lives on persisted item / channel-message meta. The
+// allowlist lives on persisted item meta. The
 // frontend's getPathRefsFromMeta reads the same key — keep them in
 // sync.
 const MetaKey = "pathRefs"
 
 // MarshalRefsJSON returns `{"pathRefs":[...]}` for the given refs.
-// Centralised so triage and discussion can't drift on the wire shape
-// — both call this, never re-emit the struct literal inline.
+// Callers use it rather than re-emitting the struct literal inline.
 func MarshalRefsJSON(refs []PathRef) (string, error) {
 	out, err := json.Marshal(struct {
 		PathRefs []PathRef `json:"pathRefs"`

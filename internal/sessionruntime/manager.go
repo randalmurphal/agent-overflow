@@ -100,7 +100,6 @@ type Manager struct {
 	reconcileSessionConfigFn            func(string)
 	readClaudeAppliedSettingsFn         func(string, string) (*claude.AppliedSettings, error)
 	promptRenders                       map[string]PromptRender
-	threadSystemPrompts                 map[string]string
 	idleReaperStop                      chan struct{}
 	idleReaperWG                        sync.WaitGroup
 	retentionCleanupStop                chan struct{}
@@ -119,7 +118,6 @@ func New() *Manager {
 		claudeLiveApplyDegraded:    make(map[liveApplyKey]struct{}),
 		claudeLiveApplyGenerations: make(map[liveApplyKey]uint64),
 		promptRenders:              make(map[string]PromptRender),
-		threadSystemPrompts:        make(map[string]string),
 	}
 }
 
@@ -695,39 +693,6 @@ func (m *Manager) HasActiveTurnOrRecent(cutoffNano int64) bool {
 		}
 	}
 	return false
-}
-
-func (m *Manager) ThreadSystemPrompt(threadID string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.threadSystemPrompts[threadID]
-}
-
-func (m *Manager) ThreadSystemPromptCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.threadSystemPrompts)
-}
-
-func (m *Manager) SetThreadSystemPrompt(threadID, prompt string) {
-	threadID = strings.TrimSpace(threadID)
-	prompt = strings.TrimSpace(prompt)
-	if threadID == "" || prompt == "" {
-		return
-	}
-	m.mu.Lock()
-	m.threadSystemPrompts[threadID] = prompt
-	m.mu.Unlock()
-}
-
-func (m *Manager) ClearThreadSystemPrompt(threadID string) {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return
-	}
-	m.mu.Lock()
-	delete(m.threadSystemPrompts, threadID)
-	m.mu.Unlock()
 }
 
 func (m *Manager) PromptRender(sessionToken string) (PromptRender, bool) {

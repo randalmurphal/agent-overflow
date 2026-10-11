@@ -9,8 +9,6 @@
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
-  import Icon from '../../primitives/Icon.svelte';
-  import MessagesSquare from '@lucide/svelte/icons/messages-square';
 
   interface Props {
     favorites: ChatBarFavorite[];
@@ -20,7 +18,6 @@
      * persists while the store's retry curve runs. */
     error?: string | null;
     onSelectModel: (provider: ProviderID, model: string) => void;
-    onSelectDiscussion: (favorite: ChatBarFavorite) => void;
   }
 
   let {
@@ -29,7 +26,6 @@
     currentModel,
     error = null,
     onSelectModel,
-    onSelectDiscussion,
   }: Props = $props();
 </script>
 
@@ -41,26 +37,17 @@
   <MenuDivider />
 {:else if favorites.length > 0}
   <MenuSectionHeader label="Favorites" />
-  {#each favorites as fav (`${fav.kind}:${fav.provider ?? ''}:${fav.value}`)}
+  {#each favorites as fav (`${fav.provider ?? ''}:${fav.value}`)}
     {@const providerID = asProviderID(fav.provider)}
-    {@const label = fav.kind === 'model' ? displayModelLabel(fav.provider ?? '', fav.value, fav.label) : fav.label}
     <MenuItem
-      {label}
-      checked={fav.kind === 'model' && providerID === activeProvider && fav.value === currentModel}
+      label={displayModelLabel(fav.provider ?? '', fav.value, fav.label)}
+      checked={providerID === activeProvider && fav.value === currentModel}
       onSelect={() => {
-        if (fav.kind === 'model' && providerID) {
-          onSelectModel(providerID, fav.value);
-        } else if (fav.kind === 'discussion') {
-          onSelectDiscussion(fav);
-        }
+        if (providerID) onSelectModel(providerID, fav.value);
       }}
     >
       {#snippet icon()}
-        {#if fav.kind === 'model'}
-          <ProviderIcon provider={fav.provider} size={13} />
-        {:else}
-          <Icon icon={MessagesSquare} size={13} strokeWidth={1.75} />
-        {/if}
+        <ProviderIcon provider={fav.provider} size={13} />
       {/snippet}
     </MenuItem>
   {/each}

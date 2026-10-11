@@ -332,8 +332,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
 
       // forceStick clears escape and snaps to target — this is what
-      // the scroll-to-bottom chip does (and what ChannelView does on
-      // initial poll completion).
+      // the scroll-to-bottom chip does.
       controller.forceStick();
       expect(geom.scrollTop).toBe(400);
       expect(controller.escapedFromLock).toBe(false);
@@ -1619,9 +1618,9 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('armRestoreSnap sets the defensive escape (suspends auto-follow until the restore commits)', () => {
-      // Both consumers (MessageTimeline's thread-switch $effect.pre,
-      // ChannelView's initial-poll setup) always paired a defensive
-      // markEscaped() with armRestoreSnap(), in that exact
+      // The consumer (MessageTimeline's thread-switch $effect.pre)
+      // always paired a defensive markEscaped() with armRestoreSnap(), in
+      // that exact
       // order — the escape clears any prior arm, so arming must come
       // second. The escape is folded into armRestoreSnap so the
       // ordering cannot be gotten wrong. Without it, content growth
@@ -3947,9 +3946,8 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it("observe('host-layout') sync-pins even in spring mode (raw-controller mapping)", async () => {
       // MessageTimeline's pane adapter intercepts 'host-layout' before
-      // it reaches the controller, but ChannelView registers the raw
-      // controller and PaneHost sends 'host-layout' to every pane —
-      // this pins that terminal mapping (instant path, not the spring).
+      // it reaches the controller; this pins the controller's own
+      // terminal mapping (instant path, not the spring).
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -7126,7 +7124,7 @@ describe('createUseStickToBottomController — external content-geometry source'
   let originalRO: typeof ResizeObserver | undefined;
   let liveContent = false;
   // Tri-state for the quiet-context signal: undefined models a consumer
-  // that passed no option (ChannelView-shaped); boolean models chat's
+  // that passed no option; boolean models chat's
   // markdown-settled signal.
   let signal: boolean | undefined;
 

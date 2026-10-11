@@ -44,19 +44,6 @@ func TestMode_CreateThreadWithExplicitDefault(t *testing.T) {
 	}
 }
 
-func TestMode_CreateThreadWithDiscussion(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	_, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-discussion", "claude-sonnet-4-6", "discussion")
-	if err == nil {
-		t.Fatal("CreateThread(discussion) error = nil, want rejection (discussion is reserved for StartDiscussion)")
-	}
-	if !strings.Contains(err.Error(), "invalid mode") {
-		t.Fatalf("CreateThread(discussion) error = %v, want invalid-mode message", err)
-	}
-}
-
 func TestMode_CreateThreadWithPlan(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -79,8 +66,7 @@ func TestMode_CreateThreadWithPlan(t *testing.T) {
 }
 
 // TestMode_CreateThreadRejectsInvalidMode: CreateThread must reject modes not
-// in the manual-selection set (including gibberish, and specifically the
-// "discussion" mode which is reserved for StartDiscussion).
+// in the manual-selection set.
 func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -88,7 +74,6 @@ func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 	cases := []string{
 		"gibberish",
 		"Default", // case-sensitive
-		"DISCUSSION",
 		"debug",
 		"ship",
 		"123",
@@ -145,7 +130,7 @@ func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	for _, bad := range []string{"gibberish", "Plan", "DEFAULT", "archive", "DiscussioN"} {
+	for _, bad := range []string{"gibberish", "Plan", "DEFAULT", "archive"} {
 		bad := bad
 		t.Run(fmt.Sprintf("mode=%q", bad), func(t *testing.T) {
 			_, err := app.UpdateThreadMode(thread.ID, bad)
@@ -253,32 +238,6 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	}
 	if stored.Mode != "plan" {
 		t.Fatalf("stored fork mode = %q, want plan", stored.Mode)
-	}
-}
-
-// TestMode_DiscussionModeCreatesOrPairsWithDiscussion: CreateThread refuses to
-// produce a free-standing "discussion" thread. A discussion-mode thread appears
-// only via StartDiscussion which wires a channel, the deliberation runtime, and
-// child participant threads. We also assert UpdateThreadMode rejects
-// "discussion" — thread type is immutable post-creation, mirroring the
-// discussion-thread immutability.
-func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	// CreateThread rejects the discussion mode directly.
-	if _, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "discussion"); err == nil {
-		t.Fatal("CreateThread(discussion) should fail (StartDiscussion owns that mode)")
-	}
-
-	// And UpdateThreadMode rejects promotion to discussion: thread type is
-	// determined at creation and is no longer mutable post-hoc.
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("CreateThread(default) error = %v", err)
-	}
-	if _, err := app.UpdateThreadMode(thread.ID, "discussion"); err == nil {
-		t.Fatal("UpdateThreadMode(discussion) error = nil, want rejection (immutable type)")
 	}
 }
 

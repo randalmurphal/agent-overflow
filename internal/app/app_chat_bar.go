@@ -214,11 +214,6 @@ func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]sto
 	return favorites, nil
 }
 
-//ao:scope threads:operate
-func (a *App) StartDiscussionByID(threadID, discussionID string) error {
-	return a.discussionService().StartByID(threadID, strings.TrimSpace(discussionID))
-}
-
 func (a *App) projectPathForThread(thread store.Thread) (string, error) {
 	if strings.TrimSpace(thread.ProjectID) == "" {
 		return "", fmt.Errorf("thread %s has no project", thread.ID)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scopeRefusalMessage } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
-import { userFacingError } from './userFacingError';
+import { asSentence, userFacingError } from './userFacingError';
 
 describe('userFacingError', () => {
   it('returns fallback for null/undefined', () => {
@@ -109,5 +109,17 @@ describe('userFacingError', () => {
       detail: { ref: 'rKVzmpRFjxI', method: 'InterruptAndRevertIfClean', at: 1 },
     });
     expect(userFacingError(err)).toBe('The backend could not complete this request.');
+  });
+});
+
+describe('asSentence', () => {
+  it('capitalises Go error text and closes it with a period', () => {
+    expect(asSentence('this conversation belongs to a workflow. Transfer an independent conversation'))
+      .toBe('This conversation belongs to a workflow. Transfer an independent conversation.');
+  });
+
+  it('leaves a finished sentence as written', () => {
+    expect(asSentence('Reconnect the destination computer to finish setup.')).toBe('Reconnect the destination computer to finish setup.');
+    expect(asSentence('Retry now?')).toBe('Retry now?');
   });
 });

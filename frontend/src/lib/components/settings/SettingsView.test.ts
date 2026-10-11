@@ -22,7 +22,6 @@ async function seed(): Promise<void> {
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
-  setBindingMock('ListDiscussions', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
@@ -56,7 +55,7 @@ describe('settings section map', () => {
     expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
-      ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'agent-guide', 'discussions'],
+      ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'agent-guide'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],

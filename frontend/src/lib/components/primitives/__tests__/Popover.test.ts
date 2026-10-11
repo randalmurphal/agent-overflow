@@ -611,8 +611,8 @@ describe('<Popover>', () => {
     });
   });
 
-  // Nested popovers — the composer-model-picker shape (Codex/Claude/
-  // Discussions submenus live inside the root popover). After
+  // Nested popovers — the composer-model-picker shape (Codex/Claude
+  // submenus live inside the root popover). After
   // portal-to-body both the outer and inner popovers are body
   // siblings, but the inner's anchor still lives inside the outer's
   // floating element. Popover reconstructs the parent/child

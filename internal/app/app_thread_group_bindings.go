@@ -93,8 +93,7 @@ func (a *App) DeleteThreadGroup(id string) error {
 }
 
 // SetThreadGroup moves threads into groupID, or out of any group when it
-// is empty. It returns every row the call touched — the discussion
-// children that travelled with a named root included — and emits one
+// is empty. It returns every row the call touched and emits one
 // thread:updated "full" frame per row, because a move rewrites the
 // group and clears the pin of a row that changes group.
 //

@@ -6,15 +6,12 @@ import '../../../app.css';
 import ProjectThreadList from './ProjectThreadList.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
-import { getCollapsedGroups, isDiscussionExpanded, resetSidebarForTest, toggleDiscussion } from '../../stores/sidebar.svelte';
+import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { touchThreadActivity } from '../../stores/threads.svelte';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
 import type { Thread, ThreadGroup } from '../../types/models';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { __setTransportStatusForTest, getTransportStatus } from '../../stores/transportStatus.svelte';
 
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -127,53 +124,12 @@ it.each([false, true])('keeps the focused member painted while collapsing and ch
   expect([...getCollapsedGroups()]).toEqual(['group']);
 });
 
-it.each([false, true])('keeps a focused discussion child visible without reopening its ancestors (grouped=%s)', async grouped => {
-  const groupId = grouped ? group.id : undefined;
-  const threads = [
-    thread('parent', { groupId }),
-    thread('child', { groupId, parentThreadId: 'parent' }),
-    thread('sibling', { groupId }),
-  ];
-  const pane = createThreadPane();
-  registerPaneForTest('main', pane);
-  pane.replaceThread(threads[1]);
-  toggleDiscussion('parent');
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: grouped ? [group] : [], pane });
-  await settled(view.container);
-  row(view.container, 'parent').querySelector<HTMLButtonElement>('[data-testid="thread-row-expand"]')!.click();
-  await tick();
-  await sampleFocusedRow(view.container, 'child', 350);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(row(view.container, 'child')).toBeTruthy();
-
-  pane.replaceThread(threads[2]);
-  await settled(view.container);
-  expect(view.container.querySelector('[data-sidebar-thread-id="child"]')).toBeNull();
-  pane.replaceThread(threads[1]);
-  await settled(view.container);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id="child"]')).toHaveLength(1);
-  if (!grouped) return;
-
-  view.getByTestId('thread-group-row-expand').click();
-  await tick();
-  await sampleFocusedRow(view.container, 'child', 350);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id]')).toHaveLength(1);
-  expect(row(view.container, 'child').querySelector('[data-testid="thread-row-pin"]')).toBeNull();
-  view.getByTestId('thread-group-row-expand').click();
-  await settled(view.container);
-  expect(isDiscussionExpanded('parent')).toBe(false);
-  expect(view.container.querySelectorAll('[data-sidebar-thread-id="child"]')).toHaveLength(1);
-});
-
 it('aligns the group chevron with top-level pins and member pins with the folder glyph', async () => {
   const threads = [
     thread('member', { groupId: group.id, pinnedAt: 1 }),
-    thread('member-child', { groupId: group.id, parentThreadId: 'member' }),
     thread('plain-member', { groupId: group.id }),
     thread('loose', { pinnedAt: 1 }),
   ];
-  toggleDiscussion('member');
   const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane: createThreadPane() });
   view.container.style.width = '360px';
   await settled(view.container);
@@ -190,64 +146,9 @@ it('aligns the group chevron with top-level pins and member pins with the folder
   // The member rail drops from the chevron's centre.
   const railX = view.container.querySelector<HTMLElement>('[data-group-member]')!.getBoundingClientRect().left;
   expect(Math.abs(railX - centre(chevron))).toBeLessThanOrEqual(1);
-  // A member's title (or its discussion chevron) lines up with the group
-  // name; its discussion child steps in from there.
+  // A member's title lines up with the group name.
   const titleLeft = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
   const groupName = view.getByTestId('thread-group-row-name').getBoundingClientRect();
   expect(Math.abs(titleLeft('plain-member') - groupName.left)).toBeLessThanOrEqual(1);
-  const memberChevron = row(view.container, 'member').querySelector('[data-testid="thread-row-expand"]')!.getBoundingClientRect();
-  expect(Math.abs(memberChevron.left - groupName.left)).toBeLessThanOrEqual(1);
-  expect(titleLeft('member-child')).toBeGreaterThan(titleLeft('plain-member'));
-});
-
-it("bubbles a child's last-known status up still while its computer is unreachable", async () => {
-  const parent = thread('parent', { updatedAt: 2 });
-  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
-  // The parent lives on this page's own computer, which is up.
-  const home = getTransportStatus();
-  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  const staged = stageBackend({ status: 'reconnecting' });
-  noteThread('child', 'laptop');
-  projectTurnStarted('child', 'turn-1', 0, 0);
-  try {
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
-    await settled(view.container);
-    const dot = () => row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
-    expect(dot()?.getAttribute('data-status')).toBe('running');
-    expect(dot()).not.toHaveClass('animate-pulse');
-    // Attributed to the child's computer, not the parent's.
-    expect(dot()?.getAttribute('title')).toMatch(/^Last known: Working\. .+ is unreachable$/);
-
-    staged.setStatus('connected');
-    await tick();
-    expect(dot()).toHaveClass('animate-pulse');
-    expect(dot()?.getAttribute('title')).toBe('Working');
-  } finally {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __setTransportStatusForTest(home);
-  }
-});
-
-it("keeps a reachable child's live status live on a parent whose computer is unreachable", async () => {
-  const parent = thread('parent', { updatedAt: 2 });
-  const child = thread('child', { parentThreadId: 'parent', updatedAt: 1 });
-  const home = getTransportStatus();
-  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  stageBackend({ status: 'reconnecting' });
-  noteThread('parent', 'laptop');
-  projectTurnStarted('child', 'turn-1', 0, 0);
-  try {
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [parent, child], groups: [], pane: createThreadPane() });
-    await settled(view.container);
-    expect(row(view.container, 'parent').getAttribute('data-machine-unreachable')).toBe('true');
-    const dot = row(view.container, 'parent').querySelector('[data-testid="thread-row-status-dot"]');
-    expect(dot?.getAttribute('data-status')).toBe('running');
-    expect(dot).toHaveClass('animate-pulse');
-    expect(dot?.getAttribute('title')).toBe('Working');
-  } finally {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __setTransportStatusForTest(home);
-  }
+  expect(Math.abs(titleLeft('member') - groupName.left)).toBeLessThanOrEqual(1);
 });

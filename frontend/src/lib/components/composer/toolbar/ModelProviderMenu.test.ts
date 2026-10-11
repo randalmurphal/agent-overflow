@@ -5,7 +5,6 @@ import ModelProviderMenu from './ModelProviderMenu.svelte';
 import { resetSettingsForTest } from '../../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import type { Item, Thread } from '../../../types/models';
-import type { DiscussionDefinition } from '../../../types/discussion';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -41,26 +40,10 @@ async function buildPane(thread: Thread, items: Item[] = []) {
   return buildRegisteredPane(thread, items);
 }
 
-// Minimal stub; only id/name/scope are read by the menu + submenu under
-// test. Mirrors the fixture in DiscussionsSubmenu.test.ts.
-const architects: DiscussionDefinition = {
-  id: 'architects',
-  name: 'Architects',
-  scope: 'global',
-  projectId: undefined,
-  description: 'Architecture review crew',
-  participants: [],
-  settings: {} as DiscussionDefinition['settings'],
-  createdAt: 0,
-  updatedAt: 0,
-};
-
 describe('<ModelProviderMenu>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetSettingsForTest();
-    setBindingMock('ListDiscussions', async () => []);
-    setBindingMock('ListDiscussionsForThread', async () => []);
     setBindingMock('ListChatBarFavorites', async () => []);
     setBindingMock('SetChatBarFavorite', async () => []);
   });
@@ -173,9 +156,6 @@ describe('<ModelProviderMenu>', () => {
   it('renders DB-backed favorites above provider sections with normalized provider icons', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    // A discussion favorite is only visible once at least one discussion
-    // definition exists — see ensureDiscussions/showDiscussions.
-    setBindingMock('ListDiscussionsForThread', async () => [architects]);
     setBindingMock('ListChatBarFavorites', async () => [
       {
         kind: 'model',
@@ -183,13 +163,6 @@ describe('<ModelProviderMenu>', () => {
         value: 'claude-opus-4-7',
         label: 'Claude Opus 4.7',
         createdAt: 1,
-      },
-      {
-        kind: 'discussion',
-        provider: '',
-        value: 'architects',
-        label: 'Architects',
-        createdAt: 2,
       },
     ]);
 
@@ -199,7 +172,6 @@ describe('<ModelProviderMenu>', () => {
     const favorite = await findByRole('menuitem', { name: /Opus 4.7/i });
     expect(favorite.querySelector('.lucide-claude')).not.toBeNull();
     expect(favorite.textContent ?? '').not.toMatch(/\bClaude\b/);
-    await findByRole('menuitem', { name: /Architects/i });
   });
 
   it('loads the favorites list once and updates EVERY mounted menu when it changes', async () => {
@@ -481,11 +453,9 @@ describe('<ModelProviderMenu>', () => {
 
   // Provider lock: once a thread has been used (any item persisted), the
   // thread has picked a lane. Locked chats expose only their own provider's
-  // models — never the other provider, and never the Discussions entry (a
-  // mid-conversation promotion to discussion would orphan the prior chat
-  // messages behind DiscussionView, which is why ensureDiscussionCanStart
-  // rejects it server-side). Unlocked (empty) threads still see all three.
-  it('on a locked chat, shows only the active provider — no other provider, no Discussions', async () => {
+  // models, never the other provider. Unlocked (empty) threads still see all
+  // three.
+  it('on a locked chat, shows only the active provider — no other provider', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
       [makeItem()],
@@ -500,19 +470,17 @@ describe('<ModelProviderMenu>', () => {
     // Active provider's submenu stays reachable so in-provider model swaps
     // (sonnet ↔ opus) still work.
     await findByRole('menuitem', { name: /Claude/i });
-    // Neither the other provider nor the discussion entry are offered.
+    // The other provider is not offered.
     expect(queryByRole('menuitem', { name: /Codex/i })).toBeNull();
-    expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
   });
 
-  it('on a fresh (empty) thread, shows every enabled provider AND Discussions', async () => {
+  it('on a fresh (empty) thread, shows every enabled provider', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
     setBindingMock('GetSettings', async () => makeSettings({ claudeTuiEnabled: true }));
     await loadSettings();
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListDiscussionsForThread', async () => [architects]);
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, {
       props: { pane },
@@ -520,12 +488,11 @@ describe('<ModelProviderMenu>', () => {
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
 
     // All three providers are offered on a fresh thread — Claude, the
-    // interactive Claude TUI, and Codex — plus Discussions. The Claude match is
-    // anchored so it doesn't also pick up "Claude TUI".
+    // interactive Claude TUI, and Codex. The Claude match is anchored so it
+    // doesn't also pick up "Claude TUI".
     await findByRole('menuitem', { name: /^Claude$/ });
     await findByRole('menuitem', { name: 'Claude TUI' });
     await findByRole('menuitem', { name: /Codex/i });
-    await findByRole('menuitem', { name: /Discussions/i });
   });
 
   // The claude-tui visibility toggle. Default-off, so the shipped default is
@@ -621,165 +588,5 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('GetSettings', async () => makeSettings({ claudeTuiEnabled: true }));
     await loadSettings();
     await findByRole('menuitem', { name: /Opus 4\.8/i });
-  });
-
-  // Headline regression: the Discussions entry must not render at all
-  // when zero discussion definitions exist — opening it just showed
-  // "No discussions defined" with no way to act on it. Before the fix,
-  // showDiscussions never considered definition existence, so this
-  // failed (the entry rendered unconditionally).
-  it('hides the Discussions entry when zero discussion definitions exist', async () => {
-    const pane = await buildPane(
-      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListDiscussionsForThread', async () => []);
-
-    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    // Wait for the menu to settle (Claude submenu row present) before
-    // asserting absence, so we're not just observing a not-yet-rendered menu.
-    await findByRole('menuitem', { name: /^Claude$/ });
-    await waitFor(() => {
-      expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
-    });
-  });
-
-  it('shows the Discussions entry when at least one discussion definition exists', async () => {
-    const pane = await buildPane(
-      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListDiscussionsForThread', async () => [architects]);
-
-    const { getByTestId, findByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    await findByRole('menuitem', { name: /Discussions/i });
-  });
-
-  it('a null ListDiscussionsForThread result also hides the entry', async () => {
-    const pane = await buildPane(
-      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListDiscussionsForThread', async () => null);
-
-    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    await findByRole('menuitem', { name: /^Claude$/ });
-    await waitFor(() => {
-      expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
-    });
-  });
-
-  it('keeps the Discussions entry visible on a fetch error, and surfaces the error inside the submenu', async () => {
-    const pane = await buildPane(
-      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListDiscussionsForThread', async () => {
-      throw new Error('db offline');
-    });
-
-    const { getByTestId, findByRole, findByTestId } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    const discussionsRow = await findByRole('menuitem', { name: /Discussions/i });
-    await fireEvent.click(discussionsRow);
-
-    const errorEl = await findByTestId('discussions-submenu-error');
-    expect(errorEl.textContent).toBe('db offline');
-  });
-
-  it('hides the Discussions entry for a draft/unstarted thread without calling the binding', async () => {
-    const pane = await buildPane(makeThread({ id: '', provider: 'claude', model: 'claude-sonnet-4-6' }));
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    const listDiscussions = setBindingMock('ListDiscussionsForThread', async () => [architects]);
-
-    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    await findByRole('menuitem', { name: /^Claude$/ });
-    expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
-    expect(listDiscussions).not.toHaveBeenCalled();
-  });
-
-  // Regression: a draft placeholder has a non-empty synthetic id
-  // (`draft:<paneId>:<projectId>:<mode>:<ts>`), so the old empty-id guard
-  // in ensureDiscussions let the fetch through. The backend's GetThread
-  // then failed with "sql: no rows in result set", and the error branch
-  // of showDiscussions forced the Discussions entry visible just to
-  // display that error. The guard must key on pane.threadId (null for
-  // placeholders), not pane.thread.id.
-  it('hides the Discussions entry for a draft placeholder without calling the binding', async () => {
-    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
-    pane.startDraftPlaceholder({
-      id: 'project-1',
-      path: '/tmp',
-      name: 'Project One',
-      sortPosition: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    });
-    expect(pane.thread?.id ?? '').toMatch(/^draft:/);
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    const listDiscussions = setBindingMock('ListDiscussionsForThread', async () => {
-      throw new Error('store: get thread draft:...: sql: no rows in result set');
-    });
-
-    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    await findByRole('menuitem', { name: /^Claude$/ });
-    await waitFor(() => {
-      expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
-    });
-    expect(listDiscussions).not.toHaveBeenCalled();
-  });
-
-  it('a discussion favorite is hidden when definitions are empty and visible once they exist', async () => {
-    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    setBindingMock('ListChatBarFavorites', async () => [
-      {
-        kind: 'discussion',
-        provider: '',
-        value: 'architects',
-        label: 'Architects',
-        createdAt: 2,
-      },
-    ]);
-    setBindingMock('ListDiscussionsForThread', async () => []);
-
-    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
-      props: { pane },
-    });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-    await findByRole('menuitem', { name: /^Claude$/ });
-    expect(queryByRole('menuitem', { name: /Architects/i })).toBeNull();
-
-    // Close, reopen with a definition now present — ensureDiscussions
-    // refetches on every open (no loaded-once flag), so the favorite
-    // should reappear without remounting the component.
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-    setBindingMock('ListDiscussionsForThread', async () => [architects]);
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-    await findByRole('menuitem', { name: /Architects/i });
   });
 });

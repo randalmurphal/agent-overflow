@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,13 +180,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if a.hasActiveSession(threadID) {
 		return false, nil
 	}
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("delete empty draft thread %s: load thread: %w", threadID, err)
-	}
 	empty, err := a.store.IsEmptyDraftThread(threadID)
 	if err != nil {
 		return false, err
@@ -208,8 +200,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err := a.closeThreadBrowserPages(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("close browser pages: %w", err))
 	}
-	a.clearThreadSystemPrompt(threadID)
-	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
 	unlockMutation, err := a.threadApplication().LockMutable(context.Background(), threadID)
 	if err != nil {
@@ -240,7 +230,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if !deleted {
 		return false, nil
 	}
-	// As in DeleteTree: a page a companion action opened after the close
+	// As in DeleteThread: a page a companion action opened after the close
 	// above is left to this one.
 	var closeErr error
 	if err := a.closeThreadBrowserPages(threadID); err != nil {

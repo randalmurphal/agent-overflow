@@ -206,19 +206,15 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 	return a.reconnectSessionLocked(context.Background(), threadID)
 }
 
-func (a *App) deleteThreadTreeLocked(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, false, a.threadDeletePorts())
-}
-
-func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, true, a.threadDeletePorts())
+func (a *App) deleteThreadLocked(threadID string) error {
+	return a.threadApplication().DeleteThread(threadID, a.threadDeletePorts())
 }
 
 func (a *App) threadDeletePorts() threadapp.DeletePorts {
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
-			// Runs twice for a thread with a subtree; both halves are
-			// conditional updates, so the second pass finds nothing to do.
+			// Runs twice per delete; both halves are conditional
+			// updates, so the second pass finds nothing to do.
 			if err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID); err != nil {
 				return err
 			}
@@ -234,8 +230,6 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			return a.terminals.CloseThread(threadID)
 		},
 		CloseBrowserPages:  a.closeThreadBrowserPages,
-		ClearSystemPrompt:  a.clearThreadSystemPrompt,
-		RemoveDiscussion:   a.removeDeliberation,
 		ClearAutoReconnect: a.clearAutoReconnectAttempted,
 		CleanupAttachments: a.cleanupThreadAttachmentFiles,
 		CleanupReplayLog: func(threadID string) error {
@@ -273,14 +267,6 @@ func (a *App) cleanupThreadAttachmentFiles(threadID string) error {
 		return fmt.Errorf("remove attachment files for %s: %w", threadID, err)
 	}
 	return nil
-}
-
-func (a *App) removeDeliberation(thread store.Thread) {
-	a.discussionService().RemoveForThread(thread)
-}
-
-func (a *App) removeDeliberationByID(channelID string) {
-	a.discussionService().Remove(channelID)
 }
 
 const applyActiveModeTimeout = 5 * time.Second

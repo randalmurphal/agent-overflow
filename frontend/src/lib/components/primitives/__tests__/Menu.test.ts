@@ -148,9 +148,9 @@ describe('<Menu>', () => {
     expect(menu.className).not.toContain('shadow-xl');
   });
 
-  // Regression: DiscussionsSubmenu and cold-cache ProviderModelsSubmenu
-  // render a loading placeholder first, then swap in the real
-  // MenuItems after an async binding round-trip. The old one-shot
+  // Regression: a cold-cache ProviderModelsSubmenu renders a loading
+  // placeholder first, then swaps in the real MenuItems after an async
+  // binding round-trip. The old one-shot
   // queueMicrotask inside Menu's focus effect fired before items
   // existed, bailed, and never re-attempted — so no row ever got
   // tabindex=0 and keyboard nav was broken until the user pressed an

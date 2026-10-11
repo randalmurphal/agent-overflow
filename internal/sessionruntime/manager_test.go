@@ -160,25 +160,6 @@ func TestMCPSnapshotsRespectProviderAndWorkspaceOwnership(t *testing.T) {
 	}
 }
 
-func TestThreadSystemPromptsNormalizeAndClear(t *testing.T) {
-	manager := New()
-	if got := manager.ThreadSystemPrompt("missing"); got != "" {
-		t.Fatalf("missing prompt = %q, want empty", got)
-	}
-	manager.SetThreadSystemPrompt(" thread ", " prompt ")
-	if got := manager.ThreadSystemPrompt("thread"); got != "prompt" {
-		t.Fatalf("stored prompt = %q, want trimmed prompt", got)
-	}
-	manager.SetThreadSystemPrompt("thread", " \t ")
-	if got := manager.ThreadSystemPrompt("thread"); got != "prompt" {
-		t.Fatalf("blank update replaced prompt with %q", got)
-	}
-	manager.ClearThreadSystemPrompt(" thread ")
-	if got := manager.ThreadSystemPrompt("thread"); got != "" {
-		t.Fatalf("cleared prompt = %q, want empty", got)
-	}
-}
-
 func TestRemovalPurgesClaudeApplyDegradationAndPromptMemo(t *testing.T) {
 	manager := New()
 	manager.Put("thread", Entry{Token: "session"})

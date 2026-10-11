@@ -1,7 +1,6 @@
 package threadapp
 
 import (
-	"errors"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -64,61 +63,6 @@ func TestApplyOrganizePatchLandsEveryFieldItPlanned(t *testing.T) {
 	}
 	if again.Thread.ID != thread.ID {
 		t.Errorf("a no-op patch returned %+v, want the current row", again.Thread)
-	}
-}
-
-// TestApplyOrganizePatchLeavesTheThreadUntouchedWhenAWriteFails is the
-// spec's rule through the service, on a refusal the plan cannot foresee: a
-// discussion child is refused by the group move, and the rename planned
-// beside it must not land on its own.
-func TestApplyOrganizePatchLeavesTheThreadUntouchedWhenAWriteFails(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	parent, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create parent: %v", err)
-	}
-	service.deps.NewID = func() string { return "child" }
-	child, err := service.Create(CreateOptions{ProjectID: "project"})
-	if err != nil {
-		t.Fatalf("Create child: %v", err)
-	}
-	child.ParentThreadID = parent.ID
-	if err := database.UpdateThread(child); err != nil {
-		t.Fatalf("UpdateThread child parent: %v", err)
-	}
-	before, err := database.GetThread(child.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-
-	_, err = service.ApplyOrganizePatch(child.ID, OrganizePatch{
-		Title:    patchString("Renamed"),
-		Group:    patchString("Release"),
-		Archived: patchBool(true),
-	})
-	if !errors.Is(err, store.ErrThreadNotRoot) {
-		t.Fatalf("error = %v, want store.ErrThreadNotRoot", err)
-	}
-
-	after, err := database.GetThread(child.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if after.Title != before.Title {
-		t.Errorf("title = %q, want the refused patch to leave %q", after.Title, before.Title)
-	}
-	if after.Archived != before.Archived {
-		t.Errorf("archived = %v, want %v", after.Archived, before.Archived)
-	}
-	if after.GroupID != "" {
-		t.Errorf("groupId = %q, want the refused move to leave it ungrouped", after.GroupID)
-	}
-	groups, err := database.ListThreadGroups()
-	if err != nil {
-		t.Fatalf("ListThreadGroups: %v", err)
-	}
-	if len(groups) != 0 {
-		t.Errorf("groups = %+v, want the refused patch to create none", groups)
 	}
 }
 

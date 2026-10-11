@@ -463,8 +463,6 @@ type Thread struct {
 	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
 	// authoritative normalizer at the binding boundary.
 	RuntimeMode        string `json:"runtimeMode"`
-	DiscussionID       string `json:"discussionId,omitempty"`
-	ParentThreadID     string `json:"parentThreadId,omitempty"`
 	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
 	LastTokenUsage     string `json:"lastTokenUsage,omitempty"`
 	CreatedAt          int64  `json:"createdAt"`
@@ -498,8 +496,6 @@ type Thread struct {
 	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
 	// the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
 	// members instead of deleting them.
-	// Discussion children follow their root, so the frontend reads it on
-	// top-level nodes only.
 	GroupID string `json:"groupId,omitempty"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
@@ -682,8 +678,7 @@ type PayloadMeta struct {
 }
 
 // ChatBarFavorite is one starred entry in the composer model menu.
-// Kind is "model" or "discussion". Provider is set only for model
-// favorites; Value is the model slug or discussion definition id.
+// Kind is always "model"; Value is the model slug.
 type ChatBarFavorite struct {
 	Kind      string `json:"kind"`
 	Provider  string `json:"provider,omitempty"`

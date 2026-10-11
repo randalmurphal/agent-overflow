@@ -3,7 +3,7 @@
 //
 // Persistence follows the kind of state:
 //   - Provider icons persist locally through frontendStorage.
-//   - View state (collapsed projects, expanded discussions, thread-list
+//   - View state (collapsed projects, collapsed groups, thread-list
 //     limits) persists per client through appStorage
 //     (ui_state table) — two machines looking at the same backend keep
 //     independent view state. appStorage serves module init from its
@@ -43,7 +43,6 @@ export type { ProjectSortMode };
 
 // appStorage (per-client) keys.
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
-const EXPANDED_DISCUSSIONS_KEY = 'sidebar:expandedDiscussions';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
@@ -54,7 +53,6 @@ const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
-const LEGACY_EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 const LEGACY_THREAD_LIST_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
 
@@ -190,9 +188,6 @@ function removeLocalStorageKey(key: string): void {
 }
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
-let expandedDiscussions: Set<string> = $state(
-  stringSetFromStorage(EXPANDED_DISCUSSIONS_KEY, LEGACY_EXPANDED_DISCUSSIONS_KEY),
-);
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
@@ -270,12 +265,6 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(collapsed, collapsedProjects)) {
     collapsedProjects = collapsed;
   }
-  const discussions = new Set(
-    parseStringArray(appStorageGet(EXPANDED_DISCUSSIONS_KEY) ?? '[]') ?? [],
-  );
-  if (!setsEqual(discussions, expandedDiscussions)) {
-    expandedDiscussions = discussions;
-  }
   const groups = new Set(
     parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
   );
@@ -295,43 +284,11 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 }
 
 /**
- * Discussion-tree expansion state — a flat set of thread ids whose
- * children should be visible. Persisted so reopening the app keeps the
- * user's reading context. Distinct from project expansion because a
- * collapsed project hides its discussions wholesale; this controls
- * which discussion *roots* show their participants when their parent
- * project is open.
- */
-export function isDiscussionExpanded(id: string): boolean {
-  return expandedDiscussions.has(id);
-}
-
-export function getExpandedDiscussions(): ReadonlySet<string> {
-  return expandedDiscussions;
-}
-
-export function toggleDiscussion(id: string): void {
-  const next = new Set(expandedDiscussions);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedDiscussions = next;
-  writeStringSet(EXPANDED_DISCUSSIONS_KEY, next);
-}
-
-/** Persist discussion expansion after pruning this project's leaf rows. */
-export function setExpandedDiscussions(next: ReadonlySet<string>): void {
-  if (setsEqual(next, expandedDiscussions)) return;
-  const copy = new Set(next);
-  expandedDiscussions = copy;
-  writeStringSet(EXPANDED_DISCUSSIONS_KEY, copy);
-}
-
-/**
- * Thread-group collapse state — the inverse of the discussion set above.
- * A group the user has never touched is EXPANDED, so only explicit
- * collapses persist and a newly created group shows its members. Global
- * across projects: a group id is unique, and a per-project map would
- * carry the same information with a project id nobody reads.
+ * Thread-group collapse state. A group the user has never touched is
+ * EXPANDED, so only explicit collapses persist and a newly created group
+ * shows its members. Global across projects: a group id is unique, and a
+ * per-project map would carry the same information with a project id
+ * nobody reads.
  */
 export function isGroupExpanded(id: string): boolean {
   return !collapsedGroups.has(id);
@@ -401,14 +358,12 @@ function visibleLimitsWith(id: string, limit: number): Record<string, number> {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
-  expandedDiscussions = new Set();
   collapsedGroups = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);
   removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  removeLocalStorageKey(LEGACY_EXPANDED_DISCUSSIONS_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
   removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
 }

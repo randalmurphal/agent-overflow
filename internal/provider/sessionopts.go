@@ -46,14 +46,12 @@ func NormalizeReasoningEffort(effort string) ReasoningEffort {
 }
 
 // InteractionMode identifies the shape of the agent's turn (chat vs.
-// plan-first vs. deliberation). Orthogonal to
-// RuntimeMode.
+// plan-first). Orthogonal to RuntimeMode.
 type InteractionMode string
 
 const (
-	ModeChat       InteractionMode = "chat"
-	ModePlan       InteractionMode = "plan"
-	ModeDiscussion InteractionMode = "discussion"
+	ModeChat InteractionMode = "chat"
+	ModePlan InteractionMode = "plan"
 )
 
 // AllInteractionModes is the canonical ordered list. Kept in sync with
@@ -61,7 +59,6 @@ const (
 var AllInteractionModes = []InteractionMode{
 	ModeChat,
 	ModePlan,
-	ModeDiscussion,
 }
 
 // DefaultInteractionMode is the seed value for new threads.
@@ -72,7 +69,7 @@ const DefaultInteractionMode = ModeChat
 // replicate the enum check.
 func NormalizeInteractionMode(mode string) InteractionMode {
 	switch InteractionMode(mode) {
-	case ModeChat, ModePlan, ModeDiscussion:
+	case ModeChat, ModePlan:
 		return InteractionMode(mode)
 	default:
 		return DefaultInteractionMode
@@ -157,8 +154,7 @@ type SessionOptions struct {
 
 	// SystemPromptOverrideSource is the STORED (unrendered) text of the
 	// settings-level prompt override that produced SystemPrompt, or "" when
-	// no settings override is in play (no match, or a feature owns the
-	// prompt). App-layer provenance: it is deliberately mapped into NO
+	// no settings override matched. App-layer provenance: it is deliberately mapped into NO
 	// provider Config, so it never participates in a live-vs-restart diff.
 	//
 	// It exists so the reconcile path can answer "did the user edit the
@@ -291,10 +287,9 @@ type AutoCompactDefaults struct {
 	ExtendedPercent int
 }
 
-// SessionOptionsFromThread assembles SessionOptions from a ThreadView +
-// the caller-composed system prompt (which itself may depend on mode —
-// that composition is the caller's job, because it reaches into design/
-// and discussion/ which the provider package doesn't see).
+// SessionOptionsFromThread assembles SessionOptions from a ThreadView.
+// The settings-owned axes (SystemPrompt, DisabledTools and the rest) are
+// stamped by the app layer afterwards.
 //
 // forkSession is an explicit arg instead of being read from the thread
 // because it's a per-start decision (the fork is consumed on the next
@@ -307,7 +302,6 @@ type AutoCompactDefaults struct {
 func SessionOptionsFromThread(
 	t ThreadView,
 	defaults AutoCompactDefaults,
-	systemPrompt string,
 	forkSession bool,
 ) SessionOptions {
 	resume := t.GetSessionRef()
@@ -346,7 +340,6 @@ func SessionOptionsFromThread(
 		AutoCompactExtendedPercent: extendedPercent,
 		Mode:                       NormalizeInteractionMode(t.GetMode()),
 		RuntimeMode:                NormalizeRuntimeMode(t.GetRuntimeMode()),
-		SystemPrompt:               systemPrompt,
 		Resume:                     resume,
 		ForkSession:                forkSession,
 	}

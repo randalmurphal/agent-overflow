@@ -466,67 +466,8 @@ export class Attachment {
 }
 
 /**
- * ChannelMessage is one ordered message within a channel.
- * 
- * Meta is JSON-shaped optional sidecar data persisted alongside the
- * raw message content. Today it carries the pathlinks allowlist
- * (`pathRefs`) stamped at PostMessage time so the frontend's markdown
- * linkifier knows which file references in the rendered text point
- * at real files in the thread's workspace. The column is nullable
- * (pre-v2 rows have no value); callers should treat absence as
- * "no allowlist".
- */
-export class ChannelMessage {
-    "id": string;
-    "channelId": string;
-    "sequence": number;
-    "fromType": string;
-    "fromId": string;
-    "fromRole"?: string;
-    "content": string;
-    "meta"?: string;
-    "createdAt": number;
-
-    /** Creates a new ChannelMessage instance. */
-    constructor($$source: Partial<ChannelMessage> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("channelId" in $$source)) {
-            this["channelId"] = "";
-        }
-        if (!("sequence" in $$source)) {
-            this["sequence"] = 0;
-        }
-        if (!("fromType" in $$source)) {
-            this["fromType"] = "";
-        }
-        if (!("fromId" in $$source)) {
-            this["fromId"] = "";
-        }
-        if (!("content" in $$source)) {
-            this["content"] = "";
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ChannelMessage instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ChannelMessage {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ChannelMessage($$parsedSource as Partial<ChannelMessage>);
-    }
-}
-
-/**
  * ChatBarFavorite is one starred entry in the composer model menu.
- * Kind is "model" or "discussion". Provider is set only for model
- * favorites; Value is the model slug or discussion definition id.
+ * Kind is always "model"; Value is the model slug.
  */
 export class ChatBarFavorite {
     "kind": string;
@@ -783,125 +724,6 @@ export class DiffReviewSourceRef {
 }
 
 /**
- * DiscussionDefinition is the persisted discussion registry record.
- */
-export class DiscussionDefinition {
-    "id": string;
-    "name": string;
-    "description": string;
-    "scope": string;
-    "projectId"?: string;
-    "participants": DiscussionParticipant[];
-    "settings": DiscussionSettings;
-    "createdAt": number;
-    "updatedAt": number;
-
-    /** Creates a new DiscussionDefinition instance. */
-    constructor($$source: Partial<DiscussionDefinition> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("description" in $$source)) {
-            this["description"] = "";
-        }
-        if (!("scope" in $$source)) {
-            this["scope"] = "";
-        }
-        if (!("participants" in $$source)) {
-            this["participants"] = [];
-        }
-        if (!("settings" in $$source)) {
-            this["settings"] = (new DiscussionSettings());
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-        if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionDefinition instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType13;
-        const $$createField6_0 = $$createType14;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("participants" in $$parsedSource) {
-            $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
-        }
-        if ("settings" in $$parsedSource) {
-            $$parsedSource["settings"] = $$createField6_0($$parsedSource["settings"]);
-        }
-        return new DiscussionDefinition($$parsedSource as Partial<DiscussionDefinition>);
-    }
-}
-
-/**
- * DiscussionParticipant defines a single participant in a discussion.
- */
-export class DiscussionParticipant {
-    "role": string;
-    "description": string;
-    "system": string;
-    "provider"?: string;
-    "model"?: string;
-
-    /** Creates a new DiscussionParticipant instance. */
-    constructor($$source: Partial<DiscussionParticipant> = {}) {
-        if (!("role" in $$source)) {
-            this["role"] = "";
-        }
-        if (!("description" in $$source)) {
-            this["description"] = "";
-        }
-        if (!("system" in $$source)) {
-            this["system"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionParticipant instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionParticipant {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DiscussionParticipant($$parsedSource as Partial<DiscussionParticipant>);
-    }
-}
-
-/**
- * DiscussionSettings contains runtime discussion configuration.
- */
-export class DiscussionSettings {
-    "maxTurns": number;
-
-    /** Creates a new DiscussionSettings instance. */
-    constructor($$source: Partial<DiscussionSettings> = {}) {
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionSettings instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionSettings {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DiscussionSettings($$parsedSource as Partial<DiscussionSettings>);
-    }
-}
-
-/**
  * HeldWindow is the caller's description of the rows it already holds for
  * a thread (docs/architecture/thread-replica-sync.md §5). It is the
  * evidence behind the second route to a page-less `fresh`: the stamps did
@@ -1087,7 +909,7 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
-        const $$createField0_0 = $$createType15;
+        const $$createField0_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("completionLaunch" in $$parsedSource) {
             $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
@@ -1176,11 +998,11 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType17;
+        const $$createField0_0 = $$createType14;
         const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType18;
-        const $$createField3_0 = $$createType19;
-        const $$createField4_0 = $$createType19;
+        const $$createField2_0 = $$createType15;
+        const $$createField3_0 = $$createType16;
+        const $$createField4_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("scope" in $$parsedSource) {
             $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
@@ -1316,7 +1138,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType20;
+        const $$createField0_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1597,8 +1419,6 @@ export class Thread {
      * authoritative normalizer at the binding boundary.
      */
     "runtimeMode": string;
-    "discussionId"?: string;
-    "parentThreadId"?: string;
     "forkedFromThreadId"?: string;
     "lastTokenUsage"?: string;
     "createdAt": number;
@@ -1646,8 +1466,6 @@ export class Thread {
      * leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
      * the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
      * members instead of deleting them.
-     * Discussion children follow their root, so the frontend reads it on
-     * top-level nodes only.
      */
     "groupId"?: string;
 
@@ -1817,10 +1635,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType21;
+        const $$createField34_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField34_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }
@@ -1832,8 +1650,8 @@ export class Thread {
  * 
  * It is not a thread: it has a name and nothing else of its own. It is
  * not pinnable; its members pin as threads do (migration v139). Its status,
- * activity, and sort position are its members', the same bubbling a
- * discussion parent does, so nothing here is derived or cached.
+ * activity, and sort position are bubbled from its members, so nothing
+ * here is derived or cached.
  */
 export class ThreadGroup {
     "id": string;
@@ -2105,8 +1923,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType22;
-        const $$createField1_0 = $$createType22;
+        const $$createField0_0 = $$createType19;
+        const $$createField1_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2147,8 +1965,8 @@ export class TimelineScopeContext {
     static createFrom($$source: any = {}): TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
-        const $$createField2_0 = $$createType15;
-        const $$createField3_0 = $$createType24;
+        const $$createField2_0 = $$createType12;
+        const $$createField3_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2708,16 +2526,13 @@ const $$createType8 = DiffReviewPRContextEntry.createFrom;
 const $$createType9 = $Create.Array($$createType8);
 const $$createType10 = DiffReviewPRContext.createFrom;
 const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = DiscussionParticipant.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = DiscussionSettings.createFrom;
-const $$createType15 = $Create.Nullable($$createType0);
-const $$createType16 = TimelineScopeContext.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $Create.Array($$createType2);
-const $$createType19 = TimelineCursor.createFrom;
-const $$createType20 = Project.createFrom;
-const $$createType21 = ThreadOrigin.createFrom;
-const $$createType22 = $Create.Nullable($$createType19);
-const $$createType23 = TimelineDigestContext.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
+const $$createType12 = $Create.Nullable($$createType0);
+const $$createType13 = TimelineScopeContext.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $Create.Array($$createType2);
+const $$createType16 = TimelineCursor.createFrom;
+const $$createType17 = Project.createFrom;
+const $$createType18 = ThreadOrigin.createFrom;
+const $$createType19 = $Create.Nullable($$createType16);
+const $$createType20 = TimelineDigestContext.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);

@@ -4,7 +4,7 @@
 // `PaneScrollController` slot, the scroll-to-item INTENT the timeline reads,
 // and every decision about arming the structural-append spring and the
 // warm-up gate — including the gates each arm shares (restore-in-progress,
-// discussion surface, empty pane) and the superseded-nudge token.
+// empty pane) and the superseded-nudge token.
 //
 // MUST NOT write scroll offsets. Nothing here touches `scrollTop`, the DOM,
 // or the virtualizer: it talks only to the minimal `PaneScrollController`
@@ -14,15 +14,9 @@
 // stamp stays on the pane because it is read imperatively by the controller.
 
 import { tick, untrack } from 'svelte';
-import type { Thread } from '../types/models';
-import {
-  threadUsesDiscussionSurface,
-  type PaneScrollController,
-  type ScrollToItemRequest,
-} from './threadPaneShared';
+import type { PaneScrollController, ScrollToItemRequest } from './threadPaneShared';
 
 export interface ThreadPaneScrollOptions {
-  getThread(): Thread | null;
   /** The pane's `loading` flag — a switch+load settle is a restore, not an append. */
   getLoading(): boolean;
   /** Bumped by switch/clear; captured across the nudge's awaits. */
@@ -124,7 +118,6 @@ export function createThreadPaneScroll(
         cancelNudge();
         if (generation !== options.getSwitchGeneration()) return;
         if (scrollController !== expectedController || options.getLoading()) return;
-        if (threadUsesDiscussionSurface(options.getThread())) return;
         expectedController.observe('live-content');
       };
       // Hidden WebViews suspend rAF while wire batches keep arriving.
@@ -167,21 +160,16 @@ export function createThreadPaneScroll(
    * 'live-content' honors spring mode / the just-armed structural window
    * and is escape-aware, so a user scrolled away is never yanked.
    *
-   * Gates, shared by every caller:
-   * - `loading`: the whole switch+load settle is a restore, not an
-   *   in-turn append (bug-report-20260622T041049Z class); the warm gate
-   *   independently pins the post-restore settle.
-   * - discussion surface: those panes swap the chat timeline for
-   *   ChannelView, which attaches ITS OWN controller here; timeline item
-   *   changes render nothing, and arming would open a 250ms spring
-   *   window on unrelated channel-message growth.
+   * Gate, shared by every caller: `loading`. The whole switch+load
+   * settle is a restore, not an in-turn append
+   * (bug-report-20260622T041049Z class); the warm gate independently pins
+   * the post-restore settle.
    */
   function armStructuralSpring(): boolean {
     cancelNudge();
     const controller = scrollController;
     if (!controller) return false;
     if (options.getLoading()) return false;
-    if (threadUsesDiscussionSurface(options.getThread())) return false;
     controller.markStructuralContentPending();
     scheduleNudge(controller);
     return true;
@@ -198,20 +186,15 @@ export function createThreadPaneScroll(
    * it — a fetch that mounted rows without re-arming is this defect
    * regressing).
    *
-   * Two gates:
-   * - Nothing mounted (`items` still empty — a genuinely empty thread):
-   *   there is no cascade to hide, and holding the gate closed would
-   *   sync-pin the first streamed tokens instead of gliding them and
-   *   leave the pane behind an empty 2.5s failsafe. Empty panes stay
-   *   visible, exactly as the placeholder→materialized path already
-   *   treats them.
-   * - Discussion surface: those panes register ChannelView's controller,
-   *   which owns an unrelated scroll surface — the same reason
-   *   `armStructuralSpring` stands down.
+   * Gate: nothing mounted (`items` still empty — a genuinely empty
+   * thread). There is no cascade to hide, and holding the gate closed
+   * would sync-pin the first streamed tokens instead of gliding them and
+   * leave the pane behind an empty 2.5s failsafe. Empty panes stay
+   * visible, exactly as the placeholder→materialized path already treats
+   * them.
    */
   function armInitialSliceWarmup(): boolean {
     if (options.getItemCount() === 0) return false;
-    if (threadUsesDiscussionSurface(options.getThread())) return false;
     const controller = scrollController;
     if (!controller) return false;
     controller.armWarmup();

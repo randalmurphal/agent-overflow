@@ -8,7 +8,7 @@ import (
 
 // ThreadIDsOlderThan returns thread IDs whose updated_at strictly
 // precedes cutoffMs (Unix milliseconds), oldest first. SELECT only —
-// deletion routes through app_thread_delete.go::deleteThreadTreeLocked,
+// deletion routes through app_thread_runtime.go::deleteThreadLocked,
 // which owns side effects (attachment dirs, replay
 // logs, checkpoint git refs in the user's repos) that a row-level
 // DELETE in this package would silently skip.

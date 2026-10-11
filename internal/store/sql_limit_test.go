@@ -240,33 +240,6 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 	}
 }
 
-// TestChannelMessageLimit pins that ListChannelMessages reads every
-// message, with no LIMIT clause, for a non-positive limit, and renders a
-// positive limit into the text.
-func TestChannelMessageLimit(t *testing.T) {
-	s, counts := openObservedStore(t)
-	for _, tc := range []struct {
-		limit int
-		want  string
-	}{{0, ""}, {-1, ""}, {5, "LIMIT 5"}} {
-		before := counts.snapshot()
-		if _, err := s.ListChannelMessages("ch", -1, tc.limit); err != nil {
-			t.Fatal(err)
-		}
-		ran := statementsSince(counts, before)
-		if len(ran) != 1 {
-			t.Fatalf("limit %d ran %d statements, want 1:\n%s", tc.limit, len(ran), strings.Join(ran, "\n"))
-		}
-		query := ran[0]
-		if tc.want == "" && strings.Contains(query, "LIMIT") {
-			t.Errorf("limit %d rendered a LIMIT clause:\n%s", tc.limit, query)
-		}
-		if tc.want != "" && !strings.HasSuffix(query, tc.want) {
-			t.Errorf("limit %d does not end in %q:\n%s", tc.limit, tc.want, query)
-		}
-	}
-}
-
 // TestTimelineSelectionLimit pins how timelineArms renders Limit: a
 // negative one is an error before the lineage read, zero renders no LIMIT
 // clause, and a positive one is a literal that binds nothing.

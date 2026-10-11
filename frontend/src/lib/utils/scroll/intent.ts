@@ -632,7 +632,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       // $fixScrollJump scrollTop writes; the engine's compensations are
       // controller-routed and token-tagged, so layout clamps are the
       // remaining producer.) For non-virtualized consumers
-      // (Discussion's ChannelView) this gate is a 1ms suppression window
+      // (ActivityRun's clip) this gate is a 1ms suppression window
       // after each content-RO fire — vanishingly unlikely to swallow a
       // real user gesture, since the window only opens immediately after
       // a layout change.

@@ -62,8 +62,8 @@ describe('threadGroupActions', () => {
     resetBindingMocks();
     __resetEntityIndexForTest();
     resetThreadGroupsForTest();
-    for (const t of [...getThreads()]) removeThread(t.id);
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const t of Array.from(getThreads())) removeThread(t.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
   });
 
   describe('createThreadGroupAction', () => {
@@ -181,9 +181,7 @@ describe('threadGroupActions', () => {
       // The row comes back unpinned: a thread starts unpinned in its group.
       const mock = setBindingMock('SetThreadGroup', async () => [
         mkThread('root', { groupId: 'g1' }),
-        mkThread('child', { groupId: 'g1', parentThreadId: 'root' }),
       ]);
-      prependThread(mkThread('child', { parentThreadId: 'root' }));
       prependThread(mkThread('root', { pinnedAt: 900, pinGroup: 1 }));
 
       expect(await moveThreadsToGroupAction(['root'], 'g1')).toBe(true);
@@ -191,8 +189,6 @@ describe('threadGroupActions', () => {
       expect(getThreadById('root')?.groupId).toBe('g1');
       expect(getThreadById('root')?.pinnedAt).toBeUndefined();
       expect(getThreadById('root')?.pinGroup).toBeUndefined();
-      // Children follow the root, and the response is what says so.
-      expect(getThreadById('child')?.groupId).toBe('g1');
     });
 
     it('keeps read state a local write moved ahead of the backend snapshot', async () => {

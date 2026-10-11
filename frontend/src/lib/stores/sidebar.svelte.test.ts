@@ -8,7 +8,6 @@ import {
   getShowProviderIcons,
   setShowProviderIcons,
   getThreadListVisibleLimit,
-  isDiscussionExpanded,
   isGroupExpanded,
   isProjectExpanded,
   isThreadListExpanded,
@@ -226,7 +225,6 @@ describe('sidebar store', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
         'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:expandedDiscussions': JSON.stringify(['disc-1']),
         'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
@@ -239,8 +237,6 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('proj-1')).toBe(false);
       expect(isProjectExpanded('proj-2')).toBe(false);
       expect(isProjectExpanded('proj-3')).toBe(true);
-      expect(isDiscussionExpanded('disc-1')).toBe(true);
-      expect(isDiscussionExpanded('disc-2')).toBe(false);
       expect(getThreadListVisibleLimit('proj-1')).toBe(40);
       expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
     });

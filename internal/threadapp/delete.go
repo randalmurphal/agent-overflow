@@ -30,22 +30,19 @@ type DeletePorts struct {
 	// opened meanwhile (the action leaves it to the delete while the row
 	// is present).
 	CloseBrowserPages  func(threadID string) error
-	ClearSystemPrompt  func(threadID string)
-	RemoveDiscussion   func(store.Thread)
 	ClearAutoReconnect func(threadID string)
 	CleanupAttachments func(threadID string) error
 	CleanupReplayLog   func(threadID string) error
 	// Forget drops the conversation's in-memory settings after its row is
 	// gone, so a delete that fails earlier keeps them.
 	Forget func(threadID string)
-	// Deleted fires once per row whose delete mark committed
-	// (store.BeginThreadDelete), children included, as DeleteTree returns.
-	// From the mark on the row is gone to every read, so a delete that
-	// fails after it still reports the row, and the next boot finishes it
+	// Deleted fires once the row's delete mark committed
+	// (store.BeginThreadDelete), as DeleteThread returns. From the mark on
+	// the row is gone to every read, so a delete that fails after it still
+	// reports the row, and the next boot finishes it
 	// (store.ListPendingThreadDeletes). Root broadcasts it on
-	// `thread:updated` so every attached client drops the same rows
-	// without a refresh; a tree deletion is several rows, and the child
-	// ids are only knowable here.
+	// `thread:updated` so every attached client drops the row without a
+	// refresh.
 	Deleted func(store.Thread)
 	Logf    func(format string, args ...any)
 	// ChunkPause, when set, runs between the bounded item-delete chunks
@@ -55,7 +52,9 @@ type DeletePorts struct {
 	ChunkPause store.ChunkPause
 }
 
-func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports DeletePorts) error {
+// DeleteThread stops everything the thread owns and drops its row. Call it
+// under the thread's action lock.
+func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	retired, err := s.CheckCleanup(threadID)
 	if err != nil {
 		return err
@@ -79,24 +78,6 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		}
 	}
 	var errs []error
-	children, err := database.ListChildThreads(threadID)
-	if err != nil {
-		return fmt.Errorf("delete thread %s: list children: %w", threadID, err)
-	}
-	for _, child := range children {
-		var unlockChild func()
-		if !subtreeLocksHeld {
-			unlockChild = s.Lock(child.ID)
-		}
-		err := s.DeleteTree(child.ID, subtreeLocksHeld, ports)
-		if unlockChild != nil {
-			unlockChild()
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("delete child %s: %w", child.ID, err))
-		}
-	}
-
 	if threadFound && !retired && ports.CleanProviderBackground != nil {
 		if err := ports.CleanProviderBackground(thread); err != nil {
 			ports.Logf("delete thread %s: clean provider background terminals: %v", threadID, err)
@@ -119,12 +100,6 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		if err := ports.CloseBrowserPages(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("close browser pages: %w", err))
 		}
-	}
-	if ports.ClearSystemPrompt != nil {
-		ports.ClearSystemPrompt(threadID)
-	}
-	if threadFound && ports.RemoveDiscussion != nil {
-		ports.RemoveDiscussion(thread)
 	}
 	if ports.ClearAutoReconnect != nil {
 		ports.ClearAutoReconnect(threadID)

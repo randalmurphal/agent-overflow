@@ -22,10 +22,10 @@ export type ReasoningEffort =
 export type ContextWindow = number;
 
 /**
- * ThreadMode mirrors the canonical mode column on thread rows. Discussion
- * is included for symmetry even though it's reached via a separate flow.
+ * ThreadMode is the user-selectable subset of the canonical mode column on
+ * thread rows.
  */
-export type ThreadMode = "chat" | "plan" | "discussion";
+export type ThreadMode = "chat" | "plan";
 
 export type RuntimeMode =
   | "read-only"

@@ -520,7 +520,6 @@ function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
   return {
     openThreadForm: () => {},
     openGitDialog: () => {},
-    requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
     ...overrides,
@@ -630,17 +629,6 @@ describe('thread archive/delete command safety', () => {
 
     expect(getPendingThreadActionConfirmation()).toBeNull();
     await vi.waitFor(() => expect(deleteMock).toHaveBeenCalledWith('thread-1'));
-  });
-
-  it('does not offer direct deletion for discussion child threads', () => {
-    const pane = readyPane({ parentThreadId: 'parent-1' });
-    const deleteMock = setBindingMock('DeleteThread', async () => {});
-    registerFixtureCommands(pane);
-
-    runCommand('thread.delete', makeCommandContext(pane, {}));
-
-    expect(getPendingThreadActionConfirmation()).toBeNull();
-    expect(deleteMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1072,7 +1060,7 @@ describe('provider.switchAccount command', () => {
 // --- mode.cycle wiring ---
 //
 // Shift+Tab toggles the active chat thread between chat and plan modes
-// (design and discussion are immutable thread types — no-op on those).
+// (a side chat is a no-op).
 // The command reads the current mode from the pane's thread and calls
 // UpdateThreadMode. Disabled while any modal or the palette is open
 // because Shift+Tab is the native "focus previous" chord inside those
@@ -1123,33 +1111,6 @@ describe('mode.cycle command', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(calls[0]).toEqual(['thread-1', 'chat']);
-  });
-
-  it('is a no-op on discussion threads (immutable thread type)', async () => {
-    const pane = readyPane({ mode: 'discussion' });
-    const calls: Array<[string, string]> = [];
-    setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
-      calls.push([id as string, mode as string]);
-      return {
-        id: id as string,
-        title: 'Discussion thread',
-        provider: 'claude',
-        workspacePath: '/tmp',
-        projectPath: '/tmp',
-        mode: mode as string,
-        model: 'claude-sonnet-4-6',
-        createdAt: 0,
-        updatedAt: 0,
-        archived: false,
-      };
-    });
-    registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, {}) as CommandContext;
-    runCommand('mode.cycle', ctx);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(calls.length).toBe(0);
   });
 
   it('is a no-op on a side chat: only Keep moves a scratch thread', async () => {

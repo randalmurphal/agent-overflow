@@ -2,7 +2,7 @@
 //
 // `ThreadPane` (thread.svelte.ts) is the pane's whole API — 172 members
 // covering the timeline, the scroll host, per-row UI state, streaming
-// reveal, the error banner, discussion, terminal placement,
+// reveal, the error banner, terminal placement,
 // companions and the draft-thread lifecycle. No consumer uses more than
 // a slice of it, but every consumer that types a prop or a parameter as
 // `ThreadPane` takes a dependency on all of it: a signature says nothing
@@ -60,7 +60,6 @@ import type {
   TodoStep,
   UserInputRequest,
 } from '../types/events';
-import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import type { AttachmentPreviewCache } from '../utils/attachmentPreview.svelte';
 import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
@@ -194,7 +193,7 @@ export interface TimelineWindow {
 /**
  * Scroll-controller registration and scroll intent. The pane is the
  * rendezvous point between whoever owns the scroller (MessageTimeline,
- * ChannelView, ActivityRun) and everyone who needs to reach it.
+ * ActivityRun) and everyone who needs to reach it.
  *
  * Consumers: `chat/MessageTimeline.svelte`, `chat/ChatView.svelte`,
  * `chat/ActivityRun.svelte`, `chat/preserveScrollAnchor.ts` — and
@@ -202,7 +201,7 @@ export interface TimelineWindow {
  * change, which is most of them —
  * `chat/editResendFlow.svelte.ts`, `chat/timelinePaging.ts`,
  * `chat/timelineRestore.svelte.ts`, `chat/timelineSizePriors.svelte.ts`,
- * `discussion/ChannelView.svelte`, `panes/PaneHost.svelte`,
+ * `panes/PaneHost.svelte`,
  * `sidebar/SidebarResizer.svelte`,
  * `terminal/ThreadTerminalPlacement.svelte`,
  * `composer/ActivityRailBackgroundBody.svelte`,
@@ -365,14 +364,13 @@ export interface PaneDoors {
 
 /**
  * The write surface the backend-event fan-out lands on: item stream,
- * approvals, turn lifecycle, context window, and channel pushes.
- * Reads are limited to what those handlers need to address or dedupe
- * against (`paneId`/`threadId`/`thread`, the pending queues, `items`,
- * `channelMessages` for the discussion refresh diff).
+ * approvals, turn lifecycle and context window. Reads are limited to
+ * what those handlers need to address or dedupe against
+ * (`paneId`/`threadId`/`thread`, the pending queues, `items`).
  *
  * Consumers: `stores/eventsItemStream.ts`, `stores/eventsProvider.ts`
  * (intersected with a `Pick` of `ErrorSurface`'s writers),
- * `stores/eventsQueue.ts`, `stores/eventsDiscussion.ts`,
+ * `stores/eventsQueue.ts`,
  * `stores/eventsMessageRevert.ts`, `stores/eventsDraftRows.ts`,
  * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
  * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
@@ -390,7 +388,6 @@ export interface ThreadPaneIngest {
   readonly threadId: string | null;
   readonly thread: Thread | null;
   readonly items: Item[];
-  readonly channelMessages: ChannelMessage[];
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly pendingApprovals: ApprovalRequest[];
   readonly pendingUserInputs: UserInputRequest[];
@@ -418,9 +415,6 @@ export interface ThreadPaneIngest {
   readonly applyEffectiveModel: (model: string, revision: number) => void;
   readonly replaceThread: (nextThread: Thread) => void;
   readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
-  readonly applyChannelMessage: (message: ChannelMessage) => void;
-  readonly applyChannelMessages: (messages: ChannelMessage[]) => void;
-  readonly applyChannelState: (payload: ChannelStatePayload) => void;
 }
 
 /**
