@@ -36,6 +36,15 @@ func runDB(e *env, args []string) error {
 	dbPath := flags.String("file", "", "database file to open (default: the instance's own)")
 	limit := flags.Int("limit", maxDBRows, "stop after this many rows")
 	colWidth := flags.Int("max-col-width", defaultDBColWidth, "truncate text cells at this many runes (0 = print them whole)")
+	var attachments []dbAttachment
+	flags.Func("attach", "NAME=PATH: attach another database file read-only as schema NAME (repeatable)", func(value string) error {
+		attachment, err := parseDBAttachment(value)
+		if err != nil {
+			return err
+		}
+		attachments = append(attachments, attachment)
+		return nil
+	})
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -60,12 +69,22 @@ func runDB(e *env, args []string) error {
 	} else if err := refuseRealAppDatabase(path); err != nil {
 		return err
 	}
+	for _, attachment := range attachments {
+		if err := refuseRealAppDatabase(attachment.path); err != nil {
+			return err
+		}
+	}
 
 	db, err := openReadOnly(path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	for _, attachment := range attachments {
+		if err := attachReadOnly(db, attachment); err != nil {
+			return err
+		}
+	}
 
 	rows, err := db.Query(statement)
 	if err != nil {
@@ -159,6 +178,47 @@ func underDir(path, dir string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// dbAttachment is one --attach NAME=PATH: a second database the statement
+// reads as schema NAME, so a query can compare two files (the release
+// upgrade check sets a migrated store beside the launcher's snapshot of
+// it) in one EXCEPT instead of two dumps.
+type dbAttachment struct {
+	name string
+	path string
+}
+
+func parseDBAttachment(value string) (dbAttachment, error) {
+	name, path, ok := strings.Cut(value, "=")
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+	if !ok || name == "" || path == "" {
+		return dbAttachment{}, usagef("--attach wants NAME=PATH, got %q", value)
+	}
+	for i, r := range name {
+		letter := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if !letter && !(i > 0 && r >= '0' && r <= '9') {
+			return dbAttachment{}, usagef("--attach schema name %q must be an identifier (letters, digits, underscores)", name)
+		}
+	}
+	if strings.EqualFold(name, "main") || strings.EqualFold(name, "temp") {
+		return dbAttachment{}, usagef("--attach schema name %q is reserved by SQLite", name)
+	}
+	return dbAttachment{name: name, path: path}, nil
+}
+
+// attachReadOnly attaches the file under the same terms as the main
+// database: mode=ro at the file layer. The URI form is honoured because
+// the main database was opened as one. The schema name is validated as an
+// identifier above, so it can be spliced into the statement, where SQLite
+// does not accept a bound parameter.
+func attachReadOnly(db *sql.DB, attachment dbAttachment) error {
+	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(attachment.path)
+	if _, err := db.Exec(`ATTACH DATABASE ? AS "`+attachment.name+`"`, "file:"+escaped+"?mode=ro&immutable=0"); err != nil {
+		return fmt.Errorf("attach %s as %s: %w", attachment.path, attachment.name, err)
+	}
+	return nil
 }
 
 // openReadOnly opens the store as a reader that cannot write.

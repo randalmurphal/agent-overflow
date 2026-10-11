@@ -71,4 +71,4 @@ fi
 [ -n "$sandbox_root" ] && export AO_RELEASE_UPGRADE_ROOT="$sandbox_root"
 
 cd "$ROOT_DIR"
-exec bin/ao-harness-e2e --config=playwright.manual.config.ts tests/release-upgrade.manual.spec.ts
+exec bin/ao-harness-e2e --config=playwright.manual.config.ts tests/upgrade-corpus.manual.spec.ts

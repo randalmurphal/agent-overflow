@@ -7,7 +7,7 @@
 // Modes, chosen by environment:
 //   AO_RELEASE_UPGRADE_PREVIOUS_BIN=<headless binary of the previous release>
 //     The previous release boots in harness mode on a fresh data root and
-//     seeds a synthetic corpus (release-upgrade-helpers.ts) at
+//     seeds a synthetic corpus (upgrade-corpus-helpers.ts) at
 //     AO_RELEASE_UPGRADE_SCALE times the reference shape (1 is a year of
 //     real use, about 2 GB), so the database is at that release's schema
 //     by construction. Needs a release with the `repeat` and `padBefore`
@@ -35,6 +35,15 @@ import * as path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
+  BOOT_PROBE_DEADLINE_MS,
+  TRIAL_CEILING_MS,
+  TRIAL_STALL_WINDOW_MS,
+  UPDATE_COMMAND_CEILING_MS,
+  UPDATE_COMMAND_STALL_WINDOW_MS,
+} from './upgrade-corpus-config.js';
+import {
+  assertCadence,
+  assertExceptionsCurrent,
   awaitDeferredSettled,
   buildVersion,
   candidateSibling,
@@ -42,6 +51,7 @@ import {
   cliCalls,
   compareCensus,
   corpusPlan,
+  fingerprint,
   killGroup,
   largestThread,
   newUpdateID,
@@ -54,10 +64,12 @@ import {
   stopHeadless,
   timed,
   updateResult,
+  type Cadence,
   type Census,
+  type Fingerprint,
   type HeadlessBackend,
   type StoreStatus,
-} from './release-upgrade-helpers.js';
+} from './upgrade-corpus-helpers.js';
 
 const previousBinary = process.env.AO_RELEASE_UPGRADE_PREVIOUS_BIN;
 const corpusRoot = process.env.AO_RELEASE_UPGRADE_CORPUS;
@@ -89,7 +101,11 @@ interface Report {
   deferredAtBoot: StoreStatus;
   /** The store status once the deferred phases settled. */
   deferred: StoreStatus;
-  /** Every census count after the migration minus before it. */
+  /** Report cadence of the launcher's commands against their stall rules. */
+  cadence: { snapshot: Cadence; trial?: Cadence };
+  /** The migration's effect on the snapshot's rows, table by table. */
+  fingerprint: Fingerprint;
+  /** Every census count after the run minus before it, tables included. */
   censusDeltas: Record<string, number>;
   emptyTables: string[];
   cliCalls: string[];
@@ -153,11 +169,14 @@ test('the candidate migrates a large previous-release database and boots on it',
     const largest = await largestThread(rig.dbPath);
     const candidateVersion = await buildVersion();
 
+    assertExceptionsCurrent(before.schemaVersion);
+
     // 2. The launcher's gate: a headless boot with --refuse-pending-migrations.
     const gated = await startHeadless(rig, 10 * MINUTE);
     headless.push(gated);
-    const gate = await timed(() => settledBootstrap(gated, 30 * MINUTE));
+    const gate = await timed(() => settledBootstrap(gated, 30 * MINUTE, BOOT_PROBE_DEADLINE_MS));
     durations.gatedBootMs = gate.ms;
+    durations.gatedBootMaxProgressGapMs = gate.value.maxProgressGapMs;
     await stopHeadless(gated);
     report.gate = { status: gate.value.status };
     const updateID = newUpdateID();
@@ -169,23 +188,43 @@ test('the candidate migrates a large previous-release database and boots on it',
       // Provider probes are unattended work: none ran before the refusal.
       expect(await cliCalls(rig)).toEqual([]);
 
-      // 3. The launcher's migration: snapshot, then the real App trial boot.
-      const snapshot = await timed(() => runUpdateCommand(rig, ['__update-snapshot', '--id', updateID], 30 * MINUTE));
+      // 3. The launcher's migration: snapshot, then the real App trial boot,
+      // each held to the stall rule its launcher judge applies.
+      const snapshotStarted = Date.now();
+      const snapshot = await timed(() => runUpdateCommand(rig, ['__update-snapshot', '--id', updateID], UPDATE_COMMAND_CEILING_MS));
       durations.snapshotMs = snapshot.ms;
       expect(updateResult(snapshot.value.events), snapshot.value.stderr)
         .toMatchObject({ type: 'result', outcome: 'ok', schema: before.schemaVersion });
+      report.cadence = {
+        snapshot: assertCadence('__update-snapshot', snapshot.value.events, snapshotStarted, Date.now(),
+          UPDATE_COMMAND_STALL_WINDOW_MS, UPDATE_COMMAND_CEILING_MS),
+      };
+      const trialStarted = Date.now();
       const trial = await timed(() => runUpdateCommand(rig,
-        ['__update-trial-run', '--id', updateID, '--to', candidateVersion, '--attempt', '1'], 60 * MINUTE));
+        ['__update-trial-run', '--id', updateID, '--to', candidateVersion, '--attempt', '1'], UPDATE_COMMAND_CEILING_MS));
       durations.trialMs = trial.ms;
       expect(updateResult(trial.value.events), trial.value.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
       expect(trial.value.events.some((event) => event.progress?.phase === 'store.migrate'), trial.value.stderr).toBe(true);
+      report.cadence.trial = assertCadence('__update-trial-run', trial.value.events, trialStarted, Date.now(),
+        TRIAL_STALL_WINDOW_MS, TRIAL_CEILING_MS);
       expect(await cliCalls(rig)).toEqual([]);
+
+      // The migration's own effect on the rows it was handed: every row of
+      // the launcher's snapshot must still be in the migrated store, byte
+      // for byte on the columns both schemas share, before any boot
+      // serves it.
+      const snapshotDB = path.join(rig.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot', 'agent-overflow.db');
+      await stat(snapshotDB);
+      const compared = await timed(() => fingerprint(rig.dbPath, snapshotDB, before.schemaVersion, pending.build));
+      durations.fingerprintMs = compared.ms;
+      report.fingerprint = compared.value;
 
       // 4. The next gated boot finds nothing pending.
       const ready = await startHeadless(rig, 10 * MINUTE);
       headless.push(ready);
-      const readiness = await timed(() => settledBootstrap(ready, 30 * MINUTE));
+      const readiness = await timed(() => settledBootstrap(ready, 30 * MINUTE, BOOT_PROBE_DEADLINE_MS));
       durations.readyBootMs = readiness.ms;
+      durations.readyBootMaxProgressGapMs = readiness.value.maxProgressGapMs;
       expect(readiness.value.status, readiness.value.body).toBe(200);
       await stopHeadless(ready);
     } else {
@@ -274,7 +313,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     // 8. Nothing the previous release wrote is gone.
     const after = await census(rig.dbPath);
     expect(after.schemaVersion).toBe(atBoot.schemaVersion);
-    report.censusDeltas = compareCensus(before, after);
+    report.censusDeltas = compareCensus(before, after, before.schemaVersion, after.schemaVersion);
     report.emptyTables = Object.entries(after.tables).filter(([, n]) => n === 0).map(([name]) => name);
 
     // 9. The launcher commits by discarding the snapshot.

@@ -6,9 +6,9 @@ update path, boots on it, and serves its sidebar and threads. It is a release
 gate and an operator tool; it never runs per pull request, because the corpus
 is gigabytes and a run takes minutes.
 
-The check is `e2e/tests/release-upgrade.manual.spec.ts` under the manual
+The check is `e2e/tests/upgrade-corpus.manual.spec.ts` under the manual
 Playwright config, with its helpers and the corpus generator in
-`e2e/tests/release-upgrade-helpers.ts`. `scripts/release-upgrade-check.sh`
+`e2e/tests/upgrade-corpus-helpers.ts`. `scripts/release-upgrade-check.sh`
 resolves and downloads the previous release and starts the suite through
 `bin/ao-harness-e2e`, so every process runs inside the harness memory
 boundary and, on Linux, the isolated network namespace.
@@ -58,29 +58,55 @@ made it: never commit it, attach it to a run, or publish it.
    answers ready instead and the migration steps are skipped.
 3. `__update-snapshot` reports the refused version; `__update-trial-run`
    reaches `prepared` through the real App trial boot; the next gated boot
-   answers ready.
-4. A candidate harness boot on the same root reports the build's schema
+   answers ready. Each command's progress reports are held to the rule the
+   Windows launcher applies to them: the gap between reports stays under
+   the stall window and the whole command under its ceiling
+   (`UPDATE_COMMAND_STALL_WINDOW_MS`, `TRIAL_STALL_WINDOW_MS` and their
+   ceilings in `upgrade-corpus-config.ts`, pinned to the Go constants by
+   `internal/wsllauncher/release_upgrade_mirror_test.go`). The gated boots
+   are held to the launcher's probe deadline the same way.
+4. The migrated store is compared with the launcher's snapshot, table by
+   table, on the columns both schemas share: every pre-migration row must
+   still be present unchanged (`EXCEPT` over the snapshot attached
+   read-only), every table must still exist, and no table may shrink. A
+   migration that intentionally rewrites, moves or drops old rows declares
+   it in `migrationExceptions` with the migration version and the reason;
+   the entry applies only while its version lies in the span a run
+   migrates, and an entry at or below the corpus's version fails the run
+   as stale, so the list empties itself as releases pass. Progress tables
+   that delete their rows as a boot finishes their work are listed in
+   `countIgnoredTables`.
+5. A candidate harness boot on the same root reports the build's schema
    through `HarnessStoreStatus`, and `ListProjects`,
    `HarnessListThreadRows`, `ListArchivedThreads` and `ListThreadGroups`
    return the counts the previous release wrote.
-5. A real browser page shows every project, shows thread rows, and opens the
+6. A real browser page shows every project, shows thread rows, and opens the
    largest thread through the sidebar search until its first timeline row
-   paints. The frontend error log stays empty.
-6. The deferred migration phases, which start once a client has read the
+   paints. No uncaught page error, and the frontend error log stays empty;
+   `console.error` lines are reported, not asserted, because a real
+   database's project paths do not exist on the checking machine.
+7. The deferred migration phases, which start once a client has read the
    catalog, finish without a recorded failure.
-7. After the candidate stops, the census is compared with the one before
+8. After the candidate stops, the census is compared with the one before
    the migration: projects, threads, archived, pinned and groups are
    exactly what the previous release wrote; turns, items, payloads and
-   payload bytes never shrink, in total or in any thread, and no thread
-   loses its rows. A repair migration may add rows (a carrier, a fork's
-   own copy of shown history); the report carries every count's delta so
-   an addition is visible.
-8. `__update-discard` commits the update, as the launcher does.
+   payload bytes never shrink, in total or in any thread; every table
+   still exists and none shrank, with the same exceptions as step 4. A
+   repair may add rows (a carrier, a fork's own copy of shown history);
+   the report carries every count's delta, tables included, so an
+   addition is visible.
+9. `__update-discard` commits the update, as the launcher does.
 
 Every phase's duration lands in the JSON report (`durations`), beside the
-versions, the corpus figures, the gate's answer, the reads, the UI timings,
-the final deferred status and the empty tables. The report is attached to
-the Playwright result; `RELEASE_UPGRADE_REPORT=<file>` writes it elsewhere.
+versions, the corpus figures, the gate's answer, the command cadences, the
+fingerprint, the reads, the UI timings, the final deferred status, the
+census deltas and the empty tables. The report is attached to the
+Playwright result; `RELEASE_UPGRADE_REPORT=<file>` writes it elsewhere.
+
+`e2e/tests/upgrade-corpus-config.ts` is the one file a migration author
+touches: the mirrored launcher limits, `migrationExceptions`,
+`fingerprintIgnoredTables` and `countIgnoredTables`. Every failure message
+names the entry to add.
 
 ## Running it
 
@@ -92,11 +118,11 @@ make release-upgrade-check RELEASE_UPGRADE_CORPUS=/clone     # a real data root
 ```
 
 At scale 1 from v0.0.16 (474 threads, 649k items, a 2.7 GB database) a
-run takes under three minutes on a developer laptop: about 140 s to seed,
-7 s for the launcher's snapshot, under a second for the trial boot's
-migrations from v139 to v141, 1.5 s for the candidate boot, and under a
-second until the 130k-row thread paints its first row. The smoke slice
-takes about eight seconds.
+run takes about two minutes on a developer laptop: about 105 s to seed,
+4 s for the launcher's snapshot, under a second for the trial boot's
+migrations from v139 to v141, 11 s for the fingerprint, under a second for
+the candidate boot, and under a second until the 130k-row thread paints
+its first row. The smoke slice takes about ten seconds.
 
 The previous release's `agent-overflow-headless-linux-amd64` is downloaded
 once to `bin/releases/<tag>/` and verified against the release's
@@ -118,9 +144,20 @@ path.
 - `__update-trial-run` fails: the migration itself failed on this data.
   The command's stderr is in the test output. Fix the migration; never the
   corpus.
+- A command's reports stall or the command outruns its ceiling: the
+  launcher would have killed this migration on a user's machine. Report
+  progress more often or make the migration cheaper; the limit is the
+  product's, not the check's.
+- The fingerprint names a table with missing or changed pre-migration
+  rows: a migration in the span altered old data. If that is the
+  migration's intent, declare it in `migrationExceptions`; otherwise the
+  migration lost or altered user data.
 - A count differs after the migration: a migration dropped or duplicated
   rows. The census compares per thread, so the failing diff names the
-  thread.
+  thread; a shrunken table names the `countIgnoredTables` or
+  `rowsMayShrink` entry that would cover it.
+- The config names a stale exception: its migration is already in the
+  corpus, so remove the entry.
 - The deferred phase records a failure: `HarnessStoreStatus` reports the
   version, title and first error. The phase skips a failing item and the
   next boot retries it, so this is a defect even when the boot looked fine.

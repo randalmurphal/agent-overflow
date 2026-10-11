@@ -1,4 +1,4 @@
-// Helpers for the release upgrade check (release-upgrade.manual.spec.ts):
+// Helpers for the release upgrade check (upgrade-corpus.manual.spec.ts):
 // the sandboxed environment every process runs in, the launcher's update
 // commands and gated headless boot driven as the Windows launcher drives
 // them, a read-only census of the database the check compares before and
@@ -16,6 +16,14 @@ import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { spawnContained } from '../src/harness-process.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
+import {
+  countIgnoredTables,
+  fingerprintIgnoredTables,
+  migrationExceptions,
+  type MigrationException,
+} from './upgrade-corpus-config.js';
+
+const CONFIG_FILE = 'e2e/tests/upgrade-corpus-config.ts';
 
 const run = promisify(execFile);
 export const repoRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -124,6 +132,38 @@ export interface UpdateEvent {
   reason?: string;
   schema?: number;
   progress?: { phase: string; detail: string };
+  /** When the check read the report, for the stall-rule mirror. */
+  at: number;
+}
+
+export interface Cadence {
+  /** The longest gap between two consecutive reports. */
+  maxGapMs: number;
+  totalMs: number;
+}
+
+/**
+ * assertCadence holds a run to the stall rule its production judge
+ * applies: no gap between reports longer than the window, and the whole
+ * run under the ceiling. A migration that passes here would also pass the
+ * launcher; one that fails here would have been killed as stalled on a
+ * user's machine.
+ */
+export function assertCadence(label: string, events: UpdateEvent[], startedAt: number, endedAt: number, windowMs: number, ceilingMs: number): Cadence {
+  let last = startedAt;
+  let maxGapMs = 0;
+  for (const event of [...events, { at: endedAt } as UpdateEvent]) {
+    maxGapMs = Math.max(maxGapMs, event.at - last);
+    last = event.at;
+  }
+  const totalMs = endedAt - startedAt;
+  if (maxGapMs > windowMs) {
+    throw new Error(`${label} went ${maxGapMs}ms without a progress report; the launcher judges a run stalled after ${windowMs}ms`);
+  }
+  if (totalMs > ceilingMs) {
+    throw new Error(`${label} took ${totalMs}ms; the launcher's ceiling is ${ceilingMs}ms`);
+  }
+  return { maxGapMs, totalMs };
 }
 
 /**
@@ -145,7 +185,7 @@ export async function runUpdateCommand(
   let stderr = '';
   createInterface({ input: child.stdout! }).on('line', (line) => {
     const at = line.indexOf(UPDATE_PREFIX);
-    if (at >= 0) events.push(JSON.parse(line.slice(at + UPDATE_PREFIX.length)) as UpdateEvent);
+    if (at >= 0) events.push({ ...(JSON.parse(line.slice(at + UPDATE_PREFIX.length)) as Omit<UpdateEvent, 'at'>), at: Date.now() });
   });
   child.stderr!.on('data', (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-64 * 1024);
@@ -237,23 +277,39 @@ export async function startHeadless(rig: Rig, bootstrapTimeoutMs: number): Promi
 export interface SettledBootstrap {
   status: number;
   body: string;
+  /** The longest the starting report went unchanged, what the launcher's probe judges. */
+  maxProgressGapMs: number;
 }
 
 /**
  * settledBootstrap polls /bootstrap.json until the boot stops reporting
- * progress, as ProbeBootstrap does, and returns that answer. A boot on a
- * large database spends its starting phase in the boot-time checkpoint
- * and sweeps, so the deadline is the caller's.
+ * progress, as ProbeBootstrap does, and returns that answer. The launcher
+ * gives up when the starting report stops changing for its deadline, so
+ * a gap longer than `progressDeadlineMs` fails here as it would there. A
+ * boot on a large database spends its starting phase in the boot-time
+ * checkpoint and sweeps, so the overall deadline is the caller's.
  */
-export async function settledBootstrap(b: HeadlessBackend, timeoutMs: number): Promise<SettledBootstrap> {
+export async function settledBootstrap(b: HeadlessBackend, timeoutMs: number, progressDeadlineMs: number): Promise<SettledBootstrap> {
   const deadline = Date.now() + timeoutMs;
+  let lastBody = '';
+  let lastChange = Date.now();
+  let maxProgressGapMs = 0;
   for (;;) {
     const resp = await fetch(`http://127.0.0.1:${b.port}/bootstrap.json`, {
       headers: { authorization: `Bearer ${b.token}` },
     });
     const body = await resp.text();
-    if (resp.status !== 503) return { status: resp.status, body };
-    if (Date.now() > deadline) throw new Error(`the boot was still starting after ${timeoutMs}ms: ${body}\n${b.stderr()}`);
+    const now = Date.now();
+    if (body !== lastBody) {
+      maxProgressGapMs = Math.max(maxProgressGapMs, now - lastChange);
+      lastBody = body;
+      lastChange = now;
+    }
+    if (resp.status !== 503) return { status: resp.status, body, maxProgressGapMs };
+    if (now - lastChange > progressDeadlineMs) {
+      throw new Error(`the boot reported no progress for ${now - lastChange}ms; the launcher gives up after ${progressDeadlineMs}ms: ${body}\n${b.stderr()}`);
+    }
+    if (now > deadline) throw new Error(`the boot was still starting after ${timeoutMs}ms: ${body}\n${b.stderr()}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
@@ -266,13 +322,106 @@ export async function stopHeadless(b: HeadlessBackend, timeoutMs = 120_000): Pro
   if (code === undefined) throw new Error(`the backend did not stop in ${timeoutMs}ms after SIGTERM\n${b.stderr()}`);
 }
 
-/** One read-only query through `ao-harness db`, rows as objects. */
-export async function dbQuery<T>(dbPath: string, sql: string): Promise<T[]> {
-  const { stdout } = await run(candidateSibling('ao-harness'), ['-o', 'json', 'db', '--file', dbPath, sql], {
+/**
+ * One read-only query through `ao-harness db`, rows as objects. `attach`
+ * puts a second file beside the main one as schema `snap`.
+ */
+export async function dbQuery<T>(dbPath: string, sql: string, attach?: string): Promise<T[]> {
+  const args = ['-o', 'json', 'db', '--file', dbPath];
+  if (attach) args.push('--attach', `snap=${attach}`);
+  const { stdout } = await run(candidateSibling('ao-harness'), [...args, sql], {
     timeout: 10 * 60_000,
     maxBuffer: 256 * 1024 * 1024,
   });
   return JSON.parse(stdout) as T[];
+}
+
+/** The exceptions that apply to a run migrating from one version to another. */
+function exceptionsFor(from: number, to: number): MigrationException[] {
+  return migrationExceptions.filter((entry) => entry.version > from && entry.version <= to);
+}
+
+/**
+ * assertExceptionsCurrent fails on an entry the lineage has already
+ * passed, so the list cannot accumulate: an entry below the corpus's
+ * version describes a migration no run will apply again.
+ */
+export function assertExceptionsCurrent(corpusVersion: number): void {
+  const stale = migrationExceptions.filter((entry) => entry.version <= corpusVersion);
+  if (stale.length > 0) {
+    throw new Error(`${CONFIG_FILE} migrationExceptions has entries for v${stale.map((e) => e.version).join(', v')}, ` +
+      `which the corpus (v${corpusVersion}) has already crossed; remove them`);
+  }
+}
+
+/** Every table of a schema, with the FTS shadow tables folded under their virtual table. */
+async function tableNames(dbPath: string, schema: 'main' | 'snap', attach?: string): Promise<string[]> {
+  const rows = await dbQuery<{ name: string; sql: string }>(dbPath,
+    `SELECT name, sql FROM ${schema}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`, attach);
+  const virtual = rows.filter((row) => /^CREATE VIRTUAL TABLE/i.test(row.sql)).map((row) => row.name);
+  return rows
+    .map((row) => row.name)
+    .filter((name) => !virtual.some((v) => name.startsWith(`${v}_`)));
+}
+
+export interface Fingerprint {
+  /** Table to the number of its pre-migration rows now missing or changed. */
+  changedRows: Record<string, number>;
+  /** Tables of the snapshot the migrated store no longer has. */
+  droppedTables: string[];
+  /** Tables whose comparison an exception narrowed or skipped. */
+  excepted: string[];
+}
+
+/**
+ * fingerprint compares every table of the pre-migration snapshot with the
+ * migrated store, row by row over the columns both schemas share (BLOBs by
+ * length), and fails on the first old row that is missing or changed, or
+ * table that is gone, unless a migrationExceptions entry for a migration in
+ * (from, to] covers it. Rows a migration adds are not its concern; a row a
+ * migration took away or altered is user data, and the failure names the
+ * entry an intentional change must declare.
+ */
+export async function fingerprint(dbPath: string, snapshotPath: string, from: number, to: number): Promise<Fingerprint> {
+  const exceptions = exceptionsFor(from, to);
+  const span = from + 1 === to ? `migration v${to}` : `the migrations v${from + 1}..v${to}`;
+  const instruction = (table: string, what: string) =>
+    `${span} ${what} in ${table}. If that is the migration's intent, add a migrationExceptions entry ` +
+    `{ version, table: '${table}', ... reason } to ${CONFIG_FILE}; otherwise the migration lost or altered user data.`;
+  const before = await tableNames(dbPath, 'snap', snapshotPath);
+  const after = new Set(await tableNames(dbPath, 'main', snapshotPath));
+  const out: Fingerprint = { changedRows: {}, droppedTables: [], excepted: [] };
+  for (const table of before) {
+    const forTable = exceptions.filter((entry) => entry.table === table);
+    if (!after.has(table)) {
+      out.droppedTables.push(table);
+      if (!forTable.some((entry) => entry.dropped)) throw new Error(instruction(table, 'dropped the table'));
+      out.excepted.push(table);
+      continue;
+    }
+    if (table in fingerprintIgnoredTables) continue;
+    const virtual = await dbQuery<{ n: number }>(dbPath,
+      `SELECT COUNT(*) AS n FROM snap.sqlite_master WHERE name = '${table}' AND sql LIKE 'CREATE VIRTUAL TABLE%'`, snapshotPath);
+    if (virtual[0].n > 0) continue;
+    const skipColumns = new Set(forTable.flatMap((entry) => entry.columns ?? []));
+    const shrink = forTable.some((entry) => entry.rowsMayShrink);
+    if (skipColumns.size > 0 || shrink) out.excepted.push(table);
+    if (shrink) continue;
+    const snapColumns = await dbQuery<{ name: string; type: string }>(dbPath,
+      `SELECT name, type FROM pragma_table_info('${table}', 'snap')`, snapshotPath);
+    const mainColumns = new Set((await dbQuery<{ name: string }>(dbPath,
+      `SELECT name FROM pragma_table_info('${table}')`, snapshotPath)).map((column) => column.name));
+    const projection = snapColumns
+      .filter((column) => mainColumns.has(column.name) && !skipColumns.has(column.name))
+      .map((column) => (/BLOB/i.test(column.type) ? `length("${column.name}")` : `"${column.name}"`))
+      .join(', ');
+    if (!projection) continue;
+    const [{ n }] = await dbQuery<{ n: number }>(dbPath,
+      `SELECT COUNT(*) AS n FROM (SELECT ${projection} FROM snap."${table}" EXCEPT SELECT ${projection} FROM main."${table}")`, snapshotPath);
+    out.changedRows[table] = n;
+    if (n > 0) throw new Error(instruction(table, `left ${n} pre-migration row(s) missing or changed`));
+  }
+  return out;
 }
 
 /**
@@ -335,30 +484,42 @@ export async function census(dbPath: string): Promise<Census> {
 }
 
 /**
- * compareCensus is the rule a migration must keep: the entities a user
- * sees (projects, threads, archived, pinned, groups) are exactly what the
- * previous release wrote; rows (turns, items, payloads and their bytes)
- * never shrink, in total or in any thread, and no thread loses its rows,
- * since a repair migration may add rows (a carrier, a fork's own copy of
- * shown history) but nothing may take one away. Returns every count's
- * delta for the report; throws naming the first violation.
+ * compareCensus is the rule a run must keep from the previous release's
+ * database to the candidate's after it booted and served: the entities a
+ * user sees (projects, threads, archived, pinned, groups) are exactly what
+ * the previous release wrote; no table shrinks or disappears; no thread
+ * loses rows. Rows may be added, by a repair migration, by boot recovery
+ * of in-flight turns, by the top-up. Returns every count's delta for the
+ * report; throws naming the first violation and the exception entry an
+ * intentional change must declare.
  */
-export function compareCensus(before: Census, after: Census): Record<string, number> {
+export function compareCensus(before: Census, after: Census, from: number, to: number): Record<string, number> {
+  const exceptions = exceptionsFor(from, to);
   const exact = ['projects', 'archivedProjects', 'threads', 'archived', 'pinned', 'groups'] as const;
-  const monotone = ['turns', 'items', 'childItems', 'payloads'] as const;
   const deltas: Record<string, number> = {};
-  for (const key of [...exact, ...monotone, 'payloadBytes', 'chunks', 'chunkBytes'] as const) {
+  for (const key of [...exact, 'turns', 'items', 'childItems', 'payloads', 'payloadBytes', 'chunks', 'chunkBytes'] as const) {
     deltas[key] = after[key] - before[key];
   }
   for (const key of exact) {
     if (after[key] !== before[key]) throw new Error(`${key}: ${before[key]} before the migration, ${after[key]} after`);
   }
-  for (const key of monotone) {
-    if (after[key] < before[key]) throw new Error(`${key} shrank: ${before[key]} before the migration, ${after[key]} after`);
-  }
   const bytesBefore = before.payloadBytes + before.chunkBytes;
   const bytesAfter = after.payloadBytes + after.chunkBytes;
   if (bytesAfter < bytesBefore) throw new Error(`payload bytes shrank: ${bytesBefore} before the migration, ${bytesAfter} after`);
+  for (const [table, n] of Object.entries(before.tables)) {
+    const forTable = exceptions.filter((entry) => entry.table === table);
+    const now = after.tables[table];
+    if (now === undefined) {
+      if (forTable.some((entry) => entry.dropped)) continue;
+      throw new Error(`table ${table} (${n} rows) is gone after the migration; a migration that drops it declares ` +
+        `{ version, table: '${table}', dropped: true, reason } in ${CONFIG_FILE}`);
+    }
+    deltas[`table:${table}`] = now - n;
+    if (now < n && !(table in countIgnoredTables) && !forTable.some((entry) => entry.rowsMayShrink)) {
+      throw new Error(`table ${table} shrank from ${n} to ${now} rows; a migration that removes or moves its rows declares ` +
+        `{ version, table: '${table}', rowsMayShrink: true, reason } in ${CONFIG_FILE}`);
+    }
+  }
   for (const [threadID, n] of Object.entries(before.threadItems)) {
     const now = after.threadItems[threadID];
     if (now === undefined) throw new Error(`thread ${threadID} had ${n} rows before the migration and none after`);
