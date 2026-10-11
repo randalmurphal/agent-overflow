@@ -616,6 +616,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// would have had if the thread had been idle.
 			origin:       payload.Origin,
 			originThread: payload.OriginThread,
+			originWake:   payload.OriginWake,
 		})
 		if err != nil {
 			return nil, false, requeue, err
@@ -648,6 +649,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	responseTurnIndex := placement.responseTurn
 	persistTurnIndex := placement.displayTurn
 	eagerPersist := placement.persistence == messagePersistQuiet
+	a.noteAgentWakeDispatch(threadID, flushGroupIsAgentWakes(members), !eagerPersist)
 
 	// Mint the queued message's wire id for Claude-family sessions, like
 	// app_send.go does for direct sends: Claude honors a client-supplied
@@ -1048,6 +1050,7 @@ type injectedQueueOptions struct {
 	// send would have.
 	origin       string
 	originThread *usermessage.OriginThread
+	originWake   *usermessage.OriginWake
 }
 
 // flushQueueSettlement runs injector bookkeeping once after dispatch or draft
@@ -1200,6 +1203,7 @@ func (a *App) registerQueueItem(
 		SendID:                       opts.SendID,
 		Origin:                       injected.origin,
 		OriginThread:                 injected.originThread,
+		OriginWake:                   injected.originWake,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

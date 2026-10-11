@@ -76,6 +76,7 @@ type Payload struct {
 	// must carry the same attribution the immediate send would have.
 	Origin       string                    `json:"origin,omitempty"`
 	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *usermessage.OriginWake   `json:"originWake,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the

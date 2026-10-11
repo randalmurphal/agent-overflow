@@ -48,13 +48,13 @@ func schemaProperties(t *testing.T, tool map[string]any) map[string]any {
 	return properties
 }
 
-// TestToolsAreTheThirteenInBothShapes: no tool is pairing-only, so the set
+// TestToolsAreTheFifteenInBothShapes: no tool is pairing-only, so the set
 // never changes with the pairing set. Only the computer parameters do.
-func TestToolsAreTheThirteenInBothShapes(t *testing.T) {
+func TestToolsAreTheFifteenInBothShapes(t *testing.T) {
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		byName := toolsByName(t, shape)
-		if len(byName) != 13 {
-			t.Fatalf("paired=%v: %d tools, want 13", shape.Paired(), len(byName))
+		if len(byName) != 15 {
+			t.Fatalf("paired=%v: %d tools, want 15", shape.Paired(), len(byName))
 		}
 		for _, name := range ToolNames {
 			if _, ok := byName[name]; !ok {

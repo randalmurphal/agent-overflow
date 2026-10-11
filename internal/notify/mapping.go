@@ -186,6 +186,10 @@ type TurnRest struct {
 	// an abort carries no error and a failure is not something anyone asked
 	// for.
 	Aborted bool
+	// QuietTick is a turn only a loop or watch started, on a thread whose
+	// standing agent row does not ask for tick notifications. A routine
+	// tick finishing is not news; one that failed still is.
+	QuietTick bool
 }
 
 // ProviderExit is the provider process dying under a thread — the
@@ -202,6 +206,10 @@ type ProviderExit struct {
 // asks retraction to cover.
 type ThreadResumed struct {
 	ThreadID string
+	// QuietTick is a quiet tick's turn starting (see TurnRest.QuietTick). It
+	// retracts nothing: a routine tick neither raises a notification nor
+	// takes away one the user has not read.
+	QuietTick bool
 }
 
 // ApprovalMoment is an approval request or its answer — the two actions of
@@ -267,6 +275,9 @@ func MapTurnRest(rest TurnRest) (Notification, bool) {
 	if rest.Thread.ID == "" || !rest.TopLevel || rest.Aborted {
 		return Notification{}, false
 	}
+	if rest.QuietTick && !rest.Failed {
+		return Notification{}, false
+	}
 	kind, body := KindTurnComplete, "Completed"
 	if rest.Failed {
 		kind, body = KindError, "Failed. Open the thread to see why."
@@ -291,7 +302,7 @@ func MapProviderExit(exit ProviderExit) (Notification, bool) {
 // turn completions has no rest notification of this shape to withdraw, and a
 // user who silenced errors keeps the gate they asked for either way.
 func MapThreadResumed(resumed ThreadResumed) (Notification, bool) {
-	if resumed.ThreadID == "" {
+	if resumed.ThreadID == "" || resumed.QuietTick {
 		return Notification{}, false
 	}
 	return Notification{Send: Send{

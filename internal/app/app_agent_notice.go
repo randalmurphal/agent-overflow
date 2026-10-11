@@ -27,6 +27,7 @@ type agentNotice struct {
 	// for a notice the app writes in its own voice.
 	origin       string
 	originThread *usermessage.OriginThread
+	originWake   *usermessage.OriginWake
 	// prepare runs under the thread lock and returns the message body. A
 	// false result abandons the notice without an error: the reason for it
 	// went away while the lock was being taken.
@@ -62,6 +63,7 @@ func (a *App) queueAgentNotice(ctx context.Context, notice agentNotice) error {
 			preserveDraft: true,
 			origin:        notice.origin,
 			originThread:  notice.originThread,
+			originWake:    notice.originWake,
 			persist:       notice.persist,
 		}); err != nil {
 		return err

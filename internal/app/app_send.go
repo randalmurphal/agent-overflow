@@ -118,6 +118,7 @@ type userMessageInputs struct {
 	// is what keeps the chip off ordinary rows.
 	origin       string
 	originThread *usermessage.OriginThread
+	originWake   *usermessage.OriginWake
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -262,6 +263,7 @@ func (a *App) resolveUserMessageEnvelope(
 		SendID:                 inputs.sendID,
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
+		OriginWake:             inputs.originWake,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)

@@ -280,6 +280,9 @@ type harnessTiming struct {
 	IdleReap      time.Duration
 	IdleReapSweep time.Duration
 	WakeupGrace   time.Duration
+	// WakeFloor is the shortest interval a loop or watch may register
+	// (app.IsolationConfig.AgentWakeFloor).
+	WakeFloor time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -300,6 +303,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"idle-reap":       &timing.IdleReap,
 		"idle-reap-sweep": &timing.IdleReapSweep,
 		"wakeup-grace":    &timing.WakeupGrace,
+		"wake-floor":      &timing.WakeFloor,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -401,6 +405,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		IdleReapThreshold:    opts.Timing.IdleReap,
 		IdleReapInterval:     opts.Timing.IdleReapSweep,
 		WakeupReapGrace:      opts.Timing.WakeupGrace,
+		AgentWakeFloor:       opts.Timing.WakeFloor,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

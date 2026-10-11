@@ -374,7 +374,7 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
   thread_status: { label: 'status', what: (input) => threadListRef(input) || 'requests' },
   thread_cancel: {
     label: 'cancel',
-    what: (input) => threadRef(input) || (str(input, 'token') ? 'request' : ''),
+    what: (input) => threadRef(input) || (str(input, 'token') ? 'request' : str(input, 'label')),
   },
   thread_update: { label: 'update', what: (input) => threadListRef(input) },
   thread_group: {
@@ -393,7 +393,24 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
     },
   },
   thread_remind: { label: 'remind', what: (input) => firstLine(input, 'note') },
+  thread_loop: { label: 'loop', what: (input) => wakeWhat(input) },
+  thread_watch: { label: 'watch', what: (input) => wakeWhat(input) },
 };
+
+/** A loop or watch registration: its label and cadence, or the label it stops. */
+function wakeWhat(input: Input): string {
+  const label = str(input, 'label');
+  if (input.stop === true) return `stop ${label}`.trim();
+  const every = num(input, 'every_seconds');
+  const cadence = input.long_running === true ? 'long-running' : every ? `every ${wakeInterval(every)}` : '';
+  return [label, cadence].filter(Boolean).join(' · ');
+}
+
+function wakeInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
 
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
   [REMOTE_TOOLS_SERVER]: {

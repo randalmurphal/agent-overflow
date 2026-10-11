@@ -64,6 +64,9 @@ func (a *App) ArchiveThread(id string) error {
 // then, so nothing can admit another remote command; both cancellations run
 // outside the locks because reaching the other computer may take a while.
 func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
+	// Loops and watches are cancelled outright: nothing re-arms them, and
+	// an archived thread's schedule is over.
+	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}

@@ -1363,6 +1363,42 @@ export class RemoteJob {
 }
 
 /**
+ * StandingAgent is one row of standing_agents.
+ */
+export class StandingAgent {
+    "threadId": string;
+    "home": string;
+    "notifyOnTick": boolean;
+    "promotedAt": number;
+
+    /** Creates a new StandingAgent instance. */
+    constructor($$source: Partial<StandingAgent> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("home" in $$source)) {
+            this["home"] = "";
+        }
+        if (!("notifyOnTick" in $$source)) {
+            this["notifyOnTick"] = false;
+        }
+        if (!("promotedAt" in $$source)) {
+            this["promotedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StandingAgent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StandingAgent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StandingAgent($$parsedSource as Partial<StandingAgent>);
+    }
+}
+
+/**
  * Thread represents a conversation thread.
  * 
  * ID is minted by internal/entityid and is unique across BACKENDS, not

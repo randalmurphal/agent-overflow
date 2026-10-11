@@ -111,6 +111,7 @@ func (in Input) Projection() Meta {
 		JoinedSendIDs:                in.JoinedSendIDs,
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
+		OriginWake:                   in.OriginWake,
 	}
 }
 
@@ -162,7 +163,7 @@ func JoinMetas(members []Meta) Meta {
 		// one message with one author, and a merge that mixed two senders
 		// would label the row with whichever happened to sort first.
 		if joined.Origin == "" {
-			joined.Origin, joined.OriginThread = member.Origin, member.OriginThread
+			joined.Origin, joined.OriginThread, joined.OriginWake = member.Origin, member.OriginThread, member.OriginWake
 		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
@@ -217,6 +218,7 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		m.OriginWake == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -241,6 +243,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"originWake",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

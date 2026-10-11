@@ -70,6 +70,10 @@ type IsolationConfig struct {
 	IdleReapThreshold time.Duration
 	IdleReapInterval  time.Duration
 	WakeupReapGrace   time.Duration
+	// AgentWakeFloor replaces the shortest interval a loop or watch may
+	// register (agentWakeFloor), so a test can watch fires without waiting
+	// out a minute each. Zero keeps the product floor.
+	AgentWakeFloor time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -100,6 +104,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 		interval:    config.IdleReapInterval,
 		wakeupGrace: config.WakeupReapGrace,
 	}
+	a.agentWakes.floorOverride = config.AgentWakeFloor
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

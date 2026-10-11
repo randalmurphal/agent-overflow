@@ -171,6 +171,12 @@ func joinFlushMeta(members []flushMember) (string, string, error) {
 			ExpandComposerCommands: member.payload.ExpandComposerCommands,
 			SendID:                 member.payload.SendID,
 			JoinedSendIDs:          member.payload.JoinedSendIDs,
+			// Attribution joins with the rest: JoinMetas keeps the first
+			// member's, so a wake or an agent's message that waited on the
+			// queue keeps its chip when it is joined with others.
+			Origin:       member.payload.Origin,
+			OriginThread: member.payload.OriginThread,
+			OriginWake:   member.payload.OriginWake,
 		}.Projection())
 	}
 	joined := usermessage.JoinMetas(metas)

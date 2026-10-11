@@ -91,8 +91,12 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 			Failed:   event.ErrorMessage != "",
 			Aborted:  event.Aborted,
 		}
+		// Read here, on the emitting goroutine, so the next dispatch cannot
+		// overwrite it first; the agent row is read in the job.
+		tick := event.CountsAsActivity && a.endAgentWakeTickTurn(event.ThreadID)
 		a.queueNotification(func() (notify.Notification, bool) {
 			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
+			rest.QuietTick = tick && a.agentTicksAreQuiet(rest.Thread.ID)
 			return notify.MapTurnRest(rest)
 		})
 
@@ -105,7 +109,9 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// retracts its rest notification. No title read: a retraction says
 		// nothing.
 		resumed := notify.ThreadResumed{ThreadID: event.ThreadID}
+		tick := a.agentWakeTickTurn(event.ThreadID)
 		a.queueNotification(func() (notify.Notification, bool) {
+			resumed.QuietTick = tick && a.agentTicksAreQuiet(resumed.ThreadID)
 			return notify.MapThreadResumed(resumed)
 		})
 

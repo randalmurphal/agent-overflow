@@ -16,12 +16,14 @@ var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]*`)
 
 // resultVocabulary is the words the guide quotes that are values a RESULT
 // carries rather than parameters or enums of a schema: request states,
-// answer kinds, call outcomes and the two search result flags. Every other
+// answer kinds, call outcomes, the two search result flags and a loop or
+// watch's last outcome. Every other
 // backticked word must be a tool name, a parameter or an enum value.
 var resultVocabulary = []string{
 	"errors", "indexing", "last_message", "self",
 	"reply", "final",
 	"backgrounded", "blocked", "unconfirmed",
+	"last_outcome",
 }
 
 func schemaVocabulary(t *testing.T, shape Shape) (names, properties, enums []string) {
@@ -129,8 +131,8 @@ func TestInstructionsKeepTheDefaultsParagraphVerbatim(t *testing.T) {
 func TestInstructionsAreParagraphs(t *testing.T) {
 	solo := strings.Split(instructionsFor(soloShape()), "\n\n")
 	paired := strings.Split(instructionsFor(pairedShape()), "\n\n")
-	if len(solo) != 9 {
-		t.Errorf("single-computer instructions have %d paragraphs, want 9", len(solo))
+	if len(solo) != 10 {
+		t.Errorf("single-computer instructions have %d paragraphs, want 10", len(solo))
 	}
 	if len(paired) != len(solo)+1 {
 		t.Errorf("paired instructions have %d paragraphs, want one more than %d", len(paired), len(solo))

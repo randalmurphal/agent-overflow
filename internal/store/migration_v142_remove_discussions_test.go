@@ -95,7 +95,7 @@ func TestMigrationV142RemoveDiscussions(t *testing.T) {
 		shapesBefore[table] = readTableShape(t, db, table)
 	}
 
-	migrateFrom(t, db, removeDiscussionsMigrationVersion-1)
+	migrateFromThrough(t, db, removeDiscussionsMigrationVersion-1, removeDiscussionsMigrationVersion)
 
 	if got := renderThreadRows(t, db, kept, nil); !slices.Equal(got, wantRows) {
 		t.Errorf("thread rows after v142:\n got %q\nwant %q", got, wantRows)

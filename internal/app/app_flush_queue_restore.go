@@ -622,6 +622,11 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 		}
 		parts := make([]composerdraft.Part, 0, len(rows))
 		for _, row := range rows {
+			// Recorded on the row before the queue row goes, so a failed
+			// restore leaves both for the next boot to try again.
+			if a.discardAgentWakeAtBoot(row.SendID) {
+				continue
+			}
 			part := draftPartFromQueueRow(row)
 			if strings.TrimSpace(part.Content) == "" && len(part.AttachmentIDs) == 0 && part.SourceProposedPlan == nil {
 				continue

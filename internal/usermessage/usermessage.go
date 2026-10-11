@@ -81,11 +81,28 @@ type Meta struct {
 	// OriginThread names the thread that wrote this row, on an
 	// `agent-thread` row. Absent on every other origin.
 	OriginThread *OriginThread `json:"originThread,omitempty"`
+	// OriginWake names the loop, watch or outside send that wrote this row,
+	// on an `agent-wake` row. Absent on every other origin.
+	OriginWake *OriginWake `json:"originWake,omitempty"`
 }
 
 // OriginAgentThread is the Origin value of a row one thread's agent wrote
 // into another thread through the thread tools.
 const OriginAgentThread = "agent-thread"
+
+// OriginAgentWake is the Origin value of a row the wake supervisor wrote: a
+// loop's fire, a watch's output, or an outside `agent-overflow thread send`.
+// The row is data delivered to the thread, never the user speaking.
+const OriginAgentWake = "agent-wake"
+
+// OriginWake identifies what wrote an `agent-wake` row: what its badge
+// renders.
+type OriginWake struct {
+	// Kind is `loop`, `watch` or `send`.
+	Kind string `json:"kind"`
+	// Label is the loop or watch label; empty for an outside send.
+	Label string `json:"label,omitempty"`
+}
 
 // OriginThread identifies the sending thread of an `agent-thread` row: what
 // the chip renders, and the request token that keeps three requests from one
@@ -115,6 +132,7 @@ type Input struct {
 	JoinedSendIDs          []string
 	Origin                 string
 	OriginThread           *OriginThread
+	OriginWake             *OriginWake
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side

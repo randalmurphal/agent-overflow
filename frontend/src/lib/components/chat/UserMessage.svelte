@@ -25,9 +25,11 @@
     parseUserMessageMeta,
     stripAttachmentImages,
     userMessageCommandRanges,
+    agentWakeOriginLabel,
     peerSessionOriginLabel,
     userMessageOrigin,
     userMessageOriginThread,
+    userMessageOriginWake,
   } from '../../utils/userMessageMeta';
   import { agentThreadOriginChip } from './agentThreadOrigin';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
@@ -93,6 +95,14 @@
         if (!origin) return null;
         const chip = agentThreadOriginChip(origin, threadMachine(item.threadId, null));
         return { testid: 'user-message-thread-origin', label: chip.label, open: chip.open };
+      }
+      case 'agent-wake': {
+        // The wake supervisor wrote this row: a loop's fire, a watch's
+        // output, or a script's outside send. The badge says which, so the
+        // body reads as the data it is rather than as the user.
+        const wake = userMessageOriginWake(userMeta);
+        if (!wake) return null;
+        return { testid: 'user-message-wake-origin', label: agentWakeOriginLabel(wake) };
       }
       default:
         return null;

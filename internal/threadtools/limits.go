@@ -85,8 +85,16 @@ const (
 	MaxPromptBytes = 1 << 20
 	// MaxTitleRunes bounds a title or a group name.
 	MaxTitleRunes = 200
-	// MaxNoteRunes bounds a reminder note.
+	// MaxNoteRunes bounds a reminder note and a loop note.
 	MaxNoteRunes = 2000
+	// MaxWakeLabelRunes bounds a loop or watch label.
+	MaxWakeLabelRunes = 80
+	// MaxWakeCommandBytes bounds a watch command; a longer script belongs
+	// in a file in the agent's home.
+	MaxWakeCommandBytes = 8 << 10
+	// MaxWakeIntervalSeconds bounds a loop or watch interval at thirty
+	// days. The floor is the App's, because a test boot lowers it.
+	MaxWakeIntervalSeconds = 30 * 24 * 60 * 60
 )
 
 // dataNotice is the sentence every read tool's description ends with.

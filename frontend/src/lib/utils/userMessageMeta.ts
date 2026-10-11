@@ -45,12 +45,19 @@ export interface UserMessageMeta {
    *   schedule: a Claude cron job's fire or ScheduleWakeup wake. The model
    *   stored it earlier; nobody typed it now.
    *   (`internal/provider/claude/parse_turn_origin.go#ScheduledTurnOrigin`)
+   * - `agent-wake` — the wake supervisor wrote this row: a loop's fire, a
+   *   watch's output, or a script's `agent-overflow thread send`. Data
+   *   delivered to the thread, never the user speaking. `originWake` names
+   *   the loop or watch.
+   *   (`docs/specs/standing-agents.md`, Wake supervisor)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */
   origin?: unknown;
   /** The source thread of an `agent-thread` row. See userMessageOriginThread. */
   originThread?: unknown;
+  /** What wrote an `agent-wake` row. See userMessageOriginWake. */
+  originWake?: unknown;
   /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
@@ -108,6 +115,31 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     title: stringField(record.title),
     token: stringField(record.token),
   };
+}
+
+/**
+ * What wrote an `agent-wake` row: `loop` or `watch` with its label, or `send`
+ * for a script's outside message. A row without a known kind is not
+ * attribution and is refused.
+ */
+export interface UserMessageOriginWake {
+  kind: 'loop' | 'watch' | 'send';
+  label: string;
+}
+
+export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
+  const record = objectRecord(meta.originWake);
+  if (!record) return null;
+  const kind = stringField(record.kind);
+  if (kind !== 'loop' && kind !== 'watch' && kind !== 'send') return null;
+  return { kind, label: stringField(record.label) };
+}
+
+/** The badge a wake row carries: which loop or watch, or that a script sent it. */
+export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
+  if (wake.kind === 'send') return 'Sent by a script';
+  const kind = wake.kind === 'loop' ? 'Loop' : 'Watch';
+  return wake.label ? `${kind} · ${wake.label}` : kind;
 }
 
 function stringField(value: unknown): string {

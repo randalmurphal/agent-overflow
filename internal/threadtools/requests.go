@@ -71,13 +71,16 @@ type statusArgs struct {
 
 type statusResult struct {
 	Requests []RequestState `json:"requests,omitempty"`
-	Threads  []ThreadState  `json:"threads,omitempty"`
-	WokeOn   string         `json:"woke_on,omitempty"`
-	TimedOut bool           `json:"timed_out,omitempty"`
-	More     bool           `json:"more,omitempty"`
-	Cursor   string         `json:"cursor,omitempty"`
-	File     *ExportFile    `json:"file,omitempty"`
-	Note     string         `json:"note,omitempty"`
+	// Wakes is the caller's loops and watches, on the first page of a
+	// listing only.
+	Wakes    []WakeState   `json:"wakes,omitempty"`
+	Threads  []ThreadState `json:"threads,omitempty"`
+	WokeOn   string        `json:"woke_on,omitempty"`
+	TimedOut bool          `json:"timed_out,omitempty"`
+	More     bool          `json:"more,omitempty"`
+	Cursor   string        `json:"cursor,omitempty"`
+	File     *ExportFile   `json:"file,omitempty"`
+	Note     string        `json:"note,omitempty"`
 }
 
 func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -398,6 +401,18 @@ func (c *session) listRequests(ctx context.Context, rawCursor string, budget int
 		result.Requests = []RequestState{}
 	}
 	result.Note = "Open requests first, then newest first. These are every request this thread has made; you never have to remember a token."
+	if page.Offset == 0 {
+		wakes, err := c.app.ListWakes(ctx, c.caller)
+		if err != nil {
+			return nil, err
+		}
+		for _, wake := range wakes {
+			result.Wakes = append(result.Wakes, wake.stamped())
+		}
+		if len(result.Wakes) > 0 {
+			result.Note = appendNote(result.Note, "wakes lists this thread's loops and watches with their next fire, last outcome and missed count; stop one with thread_cancel label.")
+		}
+	}
 	// A listing carries thirty answers, so each gets a share of the budget
 	// the same way a multi-token read does. Without this one long answer
 	// would spend the whole reply.
@@ -424,11 +439,14 @@ func (c *session) stampRequests(requests []RequestState) {
 type cancelArgs struct {
 	Token      string `json:"token"`
 	ThreadID   string `json:"thread_id"`
+	Label      string `json:"label"`
 	ComputerID string `json:"computer_id"`
 }
 
 type cancelResult struct {
 	Token      string `json:"token,omitempty"`
+	Label      string `json:"label,omitempty"`
+	Kind       string `json:"kind,omitempty"`
 	ThreadID   string `json:"thread_id,omitempty"`
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
@@ -445,9 +463,18 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := c.checkComputerArg(args.ComputerID); err != nil {
 		return nil, err
 	}
-	token, ref := trim(args.Token), trim(args.ThreadID)
-	if count := countSet(token != "", ref != ""); count != 1 {
-		return nil, invalidf("Pass exactly one of token, to cancel a request you made, or thread_id, to interrupt a thread you started. This call passed %d.", count)
+	token, ref, label := trim(args.Token), trim(args.ThreadID), trim(args.Label)
+	if count := countSet(token != "", ref != "", label != ""); count != 1 {
+		return nil, invalidf("Pass exactly one of token, to cancel a request you made, thread_id, to interrupt a thread you started, or label, to stop one of your loops or watches. This call passed %d.", count)
+	}
+	if label != "" {
+		if Forwarded(ctx) {
+			return nil, invalidf("A loop or watch belongs to the calling thread on its own computer; cancel it there.")
+		}
+		if args.ComputerID != "" {
+			return nil, invalidf("label stops a loop or watch of this thread and takes no computer_id.")
+		}
+		return c.stopWake(ctx, label, "")
 	}
 	call := CancelCall{Token: token}
 	if ref != "" {
@@ -524,6 +551,8 @@ func cancelNote(effect string) string {
 		return "Nothing was running or queued for this, so nothing was stopped. The request is settled as reported."
 	case EffectReminderDropped:
 		return "The reminder was dropped; it will not fire."
+	case EffectWakeCancelled:
+		return "It will not fire or run again. A wake it already queued still arrives."
 	case EffectQueuedRemoved:
 		return "The queued message was removed before it ran; nothing was interrupted."
 	default:
