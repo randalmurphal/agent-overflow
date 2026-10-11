@@ -392,6 +392,8 @@ export interface ScenarioStep {
   drainQueuedInput?: true;
   /** Retires the input held under `holdQueuedInput` unrun (`cancelled`, no `started`). */
   cancelQueuedInput?: true;
+  /** Ends the mock process: non-zero models a crash. */
+  exit?: { code: number; flushDelayMs?: number };
 }
 
 export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {
