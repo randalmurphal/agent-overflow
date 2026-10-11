@@ -299,6 +299,7 @@ describe('<ReviewCILogView> line blocks', () => {
     // One row per block: the job's 250 lines are rows of 200 and 50.
     const holders = view.getAllByTestId('review-ci-log-block-placeholder');
     expect(holders.map((holder) => holder.style.height)).toEqual(['3600px', '900px']);
+    expect(holders.map((holder) => holder.textContent?.trim())).toEqual(['Loading lines 1 to 200…', 'Loading lines 201 to 250…']);
     expect(fake.reads).toEqual([[0, CI_LOG_BLOCK_LINES], [CI_LOG_BLOCK_LINES, 50]]);
 
     open();

@@ -56,10 +56,11 @@
     </div>
   {:else}
     <div
-      class="mx-3 rounded-[var(--radius-control)] bg-surface-1/60"
+      class="mx-3 rounded-[var(--radius-control)] bg-surface-2/50 px-2 py-1 text-xs text-fg-subtle"
       style:height="{missing * linePx}px"
-      aria-hidden="true"
       data-testid="review-ci-log-block-placeholder"
-    ></div>
+    >
+      Loading lines {from + (shown?.length ?? 0) + 1} to {to}…
+    </div>
   {/if}
 {/if}

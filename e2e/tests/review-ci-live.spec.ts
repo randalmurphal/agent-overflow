@@ -1,8 +1,9 @@
 // A pull request's CI keeps itself current in the review pane, through the
 // shipped UI, the real backend and the fake forge. Covered: the open log
-// shows one collapsed row per GitLab section or GitHub step, nothing
-// expanded on its own; an expanded row holds its place, and a reader who
-// moves to the end follows its growth while one who scrolled up keeps
+// shows one collapsed row per GitLab section or GitHub step, as the
+// backend's index lists them, nothing expanded on its own and no line
+// read until a row opens; an expanded row holds its place, and a reader
+// who moves to the end follows its growth while one who scrolled up keeps
 // their place; the chips and an open job log follow a running GitLab job
 // without a click, and the polling stops once every job is terminal; the
 // saved log and a section sent to chat carry no section markers; a
@@ -11,7 +12,8 @@
 // shows and follows the log while the jobs API still calls the job
 // running once the forge serves it, waits again while a completed job's
 // final log is withheld past the quick tries, and the final log lands on
-// its own once the forge serves it. The harness shortens the CI cadences
+// its own once the forge serves it. Logs too big to hold are
+// review-ci-large-log.spec.ts. The harness shortens the CI cadences
 // to 250ms and the log wait to 500ms (HARNESS_TIMING), so "stops polling"
 // is a flat invocation count across several cadences.
 
@@ -25,6 +27,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
   forgeInvocations,
+  interceptCILogReads,
   openPullRequestReview,
   publishPullRequest,
   seedForge,
@@ -127,6 +130,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   harness,
   page,
 }, testInfo) => {
+  const reads = await interceptCILogReads(page);
   const workspace = await seedProject(harness);
   let repo = await publishPullRequest(harness, workspace, {
     forge: 'gitlab',
@@ -161,6 +165,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(log.getByTestId('review-ci-log-pending')).toHaveCount(0);
   await expect(scroll).not.toContainText('step 1 done');
   await expect(scroll).not.toContainText('section_');
+  expect(reads.reads).toBe(0);
 
   // Expanding the running section shows it from its header: the row
   // holds its place rather than following to the end.
@@ -180,6 +185,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
+  await page.screenshot({ path: testInfo.outputPath('ci-log-store-gitlab-following.png') });
   expect(countRoute(await forgeInvocations(harness), 'glab api job trace')).toBeGreaterThan(1);
 
   // A reader who scrolled up keeps their place when more arrives. The
