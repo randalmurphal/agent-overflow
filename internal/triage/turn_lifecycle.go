@@ -83,13 +83,14 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 //  1. evt.TurnIndex when the wire carries it directly (Codex
 //     turn/started, recovery replays).
 //
-//  2. The pending-send FIFO head when the wire carries no index but
-//     an AO send is awaiting echo. The dispatcher
-//     (RegisterPendingSend / RegisterPendingFlushSend) stamps the
-//     AO-decided turn index BEFORE the provider write, so the FIFO
-//     head carries the authoritative answer for the new turn. The
-//     peek is non-destructive — the pop is owned by handleUserText
-//     when the matching user_text echo arrives.
+//  2. The first pending send that has not opened a turn yet, when the
+//     wire carries no index but an AO send is awaiting confirmation.
+//     The dispatcher (RegisterPendingSend / RegisterPendingFlushSend)
+//     stamps the AO-decided turn index BEFORE the provider write, so
+//     that entry carries the authoritative answer for the new turn.
+//     The claim marks the entry OpenedTurn and leaves it queued; the
+//     pop is owned by its confirmation. A send whose confirmation never
+//     arrives therefore costs one turn, never every later one.
 //
 //  3. store.LastTurnIndex as the no-pending-send fallback (idle
 //     session attach via EventInit; tests that exercise this handler
@@ -121,8 +122,8 @@ func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
 	if r.turnStartIsForeign(evt) {
 		return r.nextTurnIndexAfterKnown(evt.ThreadID)
 	}
-	if pending, ok := r.peekPendingSendHead(evt.ThreadID); ok {
-		return pending.TurnIndex
+	if turnIndex, ok := r.claimTurnOpeningPendingSend(evt.ThreadID); ok {
+		return turnIndex
 	}
 	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
 	if err != nil {
@@ -458,16 +459,17 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// (currentTurnIndex fallback) — keeps the legitimate late-fold case
 	// flowing past this branch: a trailing result{is_error} after a soft
 	// close settled the turn must reach persistLateTurnPayload below, not
-	// mint an error item. The attributed turn prefers the pending-send
-	// head when one exists (the dispatcher-stamped index for the send
-	// that provoked the failing start; deferred flush items are not in
-	// SQLite yet, so LastTurnIndex would point one turn early). The head
-	// is NOT consumed — CleanupThread or the wire user echo owns the pop.
+	// mint an error item. The attributed turn prefers the pending send
+	// that has not opened a turn yet when one exists (the
+	// dispatcher-stamped index for the send that provoked the failing
+	// start; deferred flush items are not in SQLite yet, so LastTurnIndex
+	// would point one turn early). The entry is NOT consumed —
+	// CleanupThread or its confirmation owns the pop.
 	if err == nil && meta.Error != "" && !hasRound && !r.isTurnSettled(evt.ThreadID, turnIndex) {
 		if _, open := r.openTurnIndex(evt.ThreadID); !open {
 			attributedTurn := turnIndex
-			if head, ok := r.peekPendingSendHead(evt.ThreadID); ok {
-				attributedTurn = head.TurnIndex
+			if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+				attributedTurn = pending.TurnIndex
 			}
 			// A session that just reported a hard failure cannot serve
 			// queued sends — leave the flush queue for the next session.

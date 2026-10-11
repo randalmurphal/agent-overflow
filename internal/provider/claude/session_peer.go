@@ -163,6 +163,13 @@ func (s *Session) commandUUIDIsPeerOriginated(uuid string) bool {
 	return !s.issuedCommands.overflowed()
 }
 
+// commandUUIDIsIssued reports whether AO stamped this uuid on a message it
+// wrote and the message's bracket has not terminated yet: positive proof
+// that an envelope carrying it is AO's own send, whatever its text says.
+func (s *Session) commandUUIDIsIssued(uuid string) bool {
+	return s.issuedCommands.issued(uuid)
+}
+
 // releaseIssuedCommandUUID drops a uuid whose bracket has terminated.
 func (s *Session) releaseIssuedCommandUUID(uuid string) {
 	s.issuedCommands.release(uuid)
@@ -176,6 +183,7 @@ func (s *Session) releaseIssuedCommandUUID(uuid string) {
 // uuid can be PROVEN unissued.
 type peerTurnClassifier interface {
 	commandUUIDIsPeerOriginated(commandUUID string) bool
+	commandUUIDIsIssued(commandUUID string) bool
 	directSlashCommand(commandUUID string) (directSlashCommand, bool)
 	releaseDirectSlashCommand(commandUUID string)
 	releaseIssuedCommandUUID(commandUUID string)

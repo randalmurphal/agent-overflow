@@ -567,6 +567,9 @@ envelope up into its own turn at once. On, it holds the envelope:
   new turn, and a `queued_command` attachment carrying the client uuid as
   `source_uuid` in the transcript. This is the CLI's mid-loop consumption.
   Validation rejects the step in a scenario that holds no input.
+- A `cancelQueuedInput` step retires every held envelope unrun: a
+  `cancelled` ack with no `started`, no echo and no transcript entry, the
+  CLI's answer to a cancel of a queued message. The same validation applies.
 - Input the turn never drains is picked up when the turn ends, so the
   replay echo that confirms a queued message lands after every row that
   turn still wrote. This is the CLI's turn-pickup consumption, and the case
@@ -677,9 +680,13 @@ lifecycle:
 1. **`system/init` is emitted per user turn** (after the user message
    arrives), never by scenarios. The app opens a logical turn only
    when init lands with a pending send registered.
-2. **User envelopes echo back** with `isReplay: true`
-   (`--replay-user-messages`), which resolves the pending send and
-   stamps the item's provider id.
+2. **A turn-opening user envelope is recorded, then echoed.** The
+   transcript entry goes out as a `transcript_mirror` frame
+   (`--session-mirror`), which confirms the pending send, then the
+   `isReplay: true` echo (`--replay-user-messages`), which the adapter
+   withholds for the text the 2.1.284 replay filter rejects
+   (`claudeReplayEchoFiltered`). An envelope drained into a running turn
+   is echoed and never mirrored as a user entry, like the CLI.
 3. **Each accepted user envelope appends a minimal provider transcript** under
    the harness's redirected `.claude` home. This is durable mock context, not
    app state: restarting the backend against the same data root exercises the

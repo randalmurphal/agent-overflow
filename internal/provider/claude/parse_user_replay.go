@@ -190,6 +190,13 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	// raw XML as an injected-context row.
 	commandEcho := isCommandInputEcho(content)
 
+	// A uuid this app issued proves the envelope is this app's own send,
+	// so its text is the user's and no content rule below may reclassify
+	// it. A user can quote a balanced injected wrapper or a peer wrapper in
+	// a real prompt; suppressing or relabelling that echo strands the
+	// send's pending entry exactly as the command-echo case above did.
+	ownSend := p.replaysAreOwnSends || (p.peerTurns != nil && p.peerTurns.commandUUIDIsIssued(readRawString(raw["uuid"])))
+
 	// A peer delivery from another Claude session on this machine
 	// (2.1.224+ cross-session inbox). Checked BEFORE the injected-content
 	// suppression for the same reason the command echo is: the wrapper IS
@@ -205,18 +212,22 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	// `notification` row: no pending-send entry can match a CLI-minted
 	// uuid, so it can never be mistaken for something the user typed. The
 	// meta flags are the handle a dedicated peer-message row is built on.
-	peer, isPeerMessage := ExtractCrossSessionMessage(content)
-	// The structured `origin` object is the BETTER source when present
-	// (2.1.237): it carries the peer's display name and the raw body as
-	// fields rather than as XML the prompt wrapper happens to embed. The
-	// wrapper parse stays as the fallback for CLIs that predate it and
-	// because `origin` is absent on every non-peer envelope.
-	if structured, ok := peerOriginFromEnvelope(raw); ok {
-		peer = structured.merge(peer)
-		isPeerMessage = true
+	var peer CrossSessionMessage
+	isPeerMessage := false
+	if !ownSend {
+		peer, isPeerMessage = ExtractCrossSessionMessage(content)
+		// The structured `origin` object is the BETTER source when present
+		// (2.1.237): it carries the peer's display name and the raw body as
+		// fields rather than as XML the prompt wrapper happens to embed. The
+		// wrapper parse stays as the fallback for CLIs that predate it and
+		// because `origin` is absent on every non-peer envelope.
+		if structured, ok := peerOriginFromEnvelope(raw); ok {
+			peer = structured.merge(peer)
+			isPeerMessage = true
+		}
 	}
 
-	if !commandEcho && !isPeerMessage && isClaudeInjectedReplayContent(content) {
+	if !commandEcho && !isPeerMessage && !ownSend && isClaudeInjectedReplayContent(content) {
 		// Replay every `<task-notification>` in the body, not just the
 		// first. The coalesced multi-notification flush is confirmed on
 		// the claude-tui /v1/messages wire (sibling completions during a

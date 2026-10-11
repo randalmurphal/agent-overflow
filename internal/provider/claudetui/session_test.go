@@ -58,7 +58,7 @@ func newWiredSession(t *testing.T) (*Session, *eventRecorder) {
 	rec := &eventRecorder{}
 	s := &Session{
 		threadID: testThread,
-		parser:   claude.NewParser(),
+		parser:   newSessionParser(),
 		feed:     make(chan json.RawMessage, 256),
 		done:     make(chan struct{}),
 		logf:     func(string, ...any) {},
@@ -68,6 +68,32 @@ func newWiredSession(t *testing.T) (*Session, *eventRecorder) {
 	go s.feedLoop()
 	t.Cleanup(func() { _ = s.Close() })
 	return s, rec
+}
+
+// A prompt that quotes an injected wrapper is still the user's: the session's
+// echo of its own send reaches triage as user text, so the send is confirmed
+// rather than suppressed as provider-injected content.
+func TestOwnSendQuotingAnInjectedWrapperIsEchoedAsUserText(t *testing.T) {
+	s, rec := newWiredSession(t)
+	s.onSessionInfo("sess-tui-own", "/work", "2.1.200")
+	text := "<task-notification><task-id>t1</task-id><status>completed</status></task-notification> what does this mean?"
+	s.queueUserEcho(text, "u-own")
+
+	_, req := classifyRequest([]byte(agentReqBody))
+	ar := s.beginAgentTurn(req)
+	for _, line := range []string{
+		`{"type":"message_start","message":{"id":"msg_o","model":"claude-haiku","role":"assistant","usage":{"input_tokens":5,"output_tokens":1}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":1}}`,
+	} {
+		ar.onSSE(json.RawMessage(line))
+	}
+	s.endAgentTurn(ar)
+	rec.waitForKind(t, provider.EventTurnComplete)
+
+	users := findKind(rec.snapshot(), provider.EventUserText)
+	if len(users) != 1 || users[0].Content != text {
+		t.Fatalf("user text events = %+v, want the send's own echo", users)
+	}
 }
 
 // TestSessionEmitsTurnThroughParser proves the centerpiece wiring: the

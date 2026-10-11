@@ -163,6 +163,11 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
+	// sendUndelivered is the app-layer signal that a thread has sends the
+	// provider cancelled without running (retireUnrunSend). The app drains
+	// them and returns them to the composer. Called under the thread's flush
+	// anchor lock, so it must hand the work off rather than block.
+	sendUndelivered func(threadID string)
 	// sendsPendingChanged is the app-layer observer told that a thread's
 	// SendsPending answer may have changed. Wired via
 	// SetSendsPendingObserver before the router serves events; called
@@ -676,9 +681,9 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 //     to open round 1 of the logical turn, fire plan/comment acceptance,
 //     and emit `provider:turn_started`. This is the wire-driven
 //     replacement for the synthetic EventTurnStart that app_send.go used
-//     to emit after a successful stdin write. The pending-send marker is
-//     NOT consumed here — handleUserText pops it when the matching
-//     replay envelope arrives.
+//     to emit after a successful stdin write. Only a pending send that
+//     has not opened a turn yet qualifies; the start claims it
+//     (OpenedTurn) without consuming it, and its confirmation pops it.
 //
 //  2. **Cascade re-round** — Claude's CLI synthesizes a `type:"user"`
 //     envelope from a task_notification and follows it with a fresh
@@ -725,7 +730,7 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 		}
 	}
 
-	if r.HasPendingSendForThread(evt.ThreadID) {
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
 		return r.handleTurnStart(evt)
 	}
 
