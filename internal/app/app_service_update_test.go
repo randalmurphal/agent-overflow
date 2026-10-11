@@ -846,17 +846,29 @@ func TestTheDownloadLandsBesideTheVersionsItBecomes(t *testing.T) {
 	}
 	rig.settled()
 
-	var downloaded string
+	// The preflight runs the artifact's copy of the download, which lives in
+	// its own directory beside the download in the layout root.
+	var preflighted string
 	select {
-	case downloaded = <-seen:
+	case preflighted = <-seen:
 	default:
 		t.Fatal("the preflight never saw a downloaded file")
 	}
-	if dir := filepath.Dir(downloaded); dir != rig.layout.Root() {
-		t.Fatalf("the download landed in %s, want the layout root %s", dir, rig.layout.Root())
+	artifactDir := filepath.Dir(preflighted)
+	if filepath.Dir(artifactDir) != rig.layout.Root() {
+		t.Fatalf("the preflighted copy landed in %s, want a directory in the layout root %s", artifactDir, rig.layout.Root())
 	}
-	if _, err := os.Stat(downloaded); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the temp download at %s survived the flow (%v)", downloaded, err)
+	if _, err := os.Stat(artifactDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the artifact copy at %s survived the flow (%v)", artifactDir, err)
+	}
+	entries, err := os.ReadDir(rig.layout.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "download-") {
+			t.Errorf("the temp download %s survived the flow", entry.Name())
+		}
 	}
 }
 

@@ -1986,6 +1986,7 @@ test('forgetting a computer with open requests refuses once, then abandons them'
   interface StatusAnswer {
     requests?: Array<{ token: string; state: string; answer?: string; notify: boolean }>;
   }
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'what happened to that request?', null);
   const status = await awaitToolAnswer<StatusAnswer>(home, {
     tool: 'thread_status',

@@ -1,6 +1,7 @@
 // Compact group collapse keeps the focused thread beneath the closed group
 // across thread-screen navigation, project collapse, and reload.
 import { test, expect, type SeedResult } from './fixtures.js';
+import { reloadAtRoot } from './compact-history-helpers.js';
 
 test('a collapsed group retains its focused member through compact navigation', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -55,7 +56,7 @@ test('a collapsed group retains its focused member through compact navigation', 
   await groupRow.getByTestId('thread-group-row-expand').click();
   await expect(members).toHaveCount(1);
   await expect(beta).toBeVisible();
-  await page.reload();
+  await reloadAtRoot(page);
   // Restore may reveal the focused thread screen; either way, the stored
   // collapse choice must survive returning to the list.
   await expect(page.getByTestId('chat-header-title')).toHaveText('Beta');

@@ -60,9 +60,19 @@ func TestSetPRCILogFollowsFetchesNowAndEmitsIndexesUntilTerminal(t *testing.T) {
 	f.setLog("7", "step 1\nprogress 60%\nstep 2\ndone\n", nil)
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
+	// A tick between the two writes above fetches the finished log while
+	// the pipeline still says running; the job's terminal status then
+	// arrives as a frame of its own. Either way the last frame shows the
+	// finished job over the final log.
 	final := awaitLogEvent(t, f.logEvents, "final log frame")
-	if final.Version != 3 || final.TotalLines != 4 || final.StableLines != 3 {
-		t.Fatalf("final = %+v", final)
+	for {
+		if final.Version != 3 || final.TotalLines != 4 || final.StableLines != 3 || len(final.Sections) != 1 {
+			t.Fatalf("final = %+v", final)
+		}
+		if final.Sections[0].Status == gitops.CIStatusSuccess {
+			break
+		}
+		final = awaitLogEvent(t, f.logEvents, "terminal job frame")
 	}
 	expectCountHolds(t, &f.logFetches, "terminal job kept being fetched")
 	expectCountHolds(t, &f.ciFetches, "terminal pipeline kept polling")
