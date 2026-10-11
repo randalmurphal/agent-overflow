@@ -411,7 +411,7 @@ func TestGitLabJobLog(t *testing.T) {
 	})
 	read, err := core.GetCIJobLog(t.Context(), gitlabTestRef(1), CIJobLogRequest{JobID: "901"})
 	log := read.Text
-	if err != nil || log != "line one\n" {
+	if err != nil || log != "section_start:1:x\nline one\n" {
 		t.Fatalf("GetCIJobLog = %q, %v", log, err)
 	}
 	if accept := calls.all()[0].Header.Get("Accept"); accept != "*/*" {

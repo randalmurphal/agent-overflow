@@ -142,26 +142,32 @@ func (f *gitlabForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJo
 }
 
 var (
-	// Timestamped trace prefix (GitLab 17+): "<RFC3339 ts> 00O+ " —
+	// Timestamped trace prefix (GitLab 17+): "<RFC3339 ts> 00O+ ":
 	// two-digit stream number, O/E stream type, optional continuation
 	// marker. The timestamp is kept; the stream flags are noise.
 	gitlabTraceStreamPrefix = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z) \d{2}[OE][+ ]?`)
 	// Collapsible-section protocol markers: section_start:<unix>:<name>
-	// optionally followed by [key=value,...] options and a \r that
-	// erases the marker in a real terminal.
-	gitlabSectionMarker = regexp.MustCompile(`section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\]]*\])?\r?`)
+	// optionally followed by [key=value,...] options, then a \r that
+	// erases the marker in a real terminal. The group is the marker
+	// without the \r.
+	gitlabSectionMarker = regexp.MustCompile(`(section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\]]*\])?)\r?`)
 	// CSI erase-in-line (ESC[K / ESC[0K / ESC[1K / ESC[2K); the ANSI
 	// renderer handles colors but not erase controls, so they'd leak
 	// through as visible "[0K" artifacts.
 	ansiEraseInLine = regexp.MustCompile("\x1b\\[[0-2]?K")
 )
 
-// cleanGitLabTrace normalizes a raw job trace for plain-text display:
-// stream flags are stripped from timestamped lines (timestamp kept),
-// section_start/section_end markers and erase-line escapes are removed
-// (they only mean something to GitLab's log viewer), and carriage-return
-// overwrites are resolved terminal-style — the final rewrite of a
-// progress line wins.
+// cleanGitLabTrace normalizes a raw job trace for display. Stream flags
+// are stripped from timestamped lines (the timestamp is kept), erase-line
+// escapes are removed, and carriage-return overwrites are resolved
+// terminal-style: the final rewrite of a progress line wins.
+//
+// Section markers stay, each on a line of its own holding exactly the
+// marker as GitLab wrote it, section_start:<unix>:<name>[options] or
+// section_end:<unix>:<name>, with no timestamp prefix (<unix> is seconds).
+// They keep their order within the line: text before a marker comes
+// before it, text after it after it. The line after a section_start is
+// the section's header, the text GitLab shows on the collapsed section.
 func cleanGitLabTrace(raw string) string {
 	lines := strings.Split(raw, "\n")
 	cleaned := make([]string, 0, len(lines))
@@ -171,26 +177,40 @@ func cleanGitLabTrace(raw string) string {
 			timestamp = m[1]
 			line = line[len(m[0]):]
 		}
-		hadMarker := gitlabSectionMarker.MatchString(line)
-		line = gitlabSectionMarker.ReplaceAllString(line, "")
-		if i := strings.LastIndexByte(line, '\r'); i >= 0 {
-			line = line[i+1:]
-		}
-		line = ansiEraseInLine.ReplaceAllString(line, "")
-		if line == "" {
-			// Marker-only lines vanish entirely; genuinely blank lines
-			// stay blank (a bare timestamp would read as an artifact).
-			if !hadMarker {
-				cleaned = append(cleaned, "")
-			}
+		markers := gitlabSectionMarker.FindAllStringSubmatchIndex(line, -1)
+		if markers == nil {
+			// A genuinely blank line stays blank (a bare timestamp would
+			// read as an artifact).
+			cleaned = append(cleaned, cleanGitLabTraceText(line, timestamp))
 			continue
 		}
-		if timestamp != "" {
-			line = timestamp + " " + line
+		at := 0
+		for _, m := range markers {
+			if text := cleanGitLabTraceText(line[at:m[0]], timestamp); text != "" {
+				cleaned = append(cleaned, text)
+			}
+			cleaned = append(cleaned, line[m[2]:m[3]])
+			at = m[1]
 		}
-		cleaned = append(cleaned, line)
+		if text := cleanGitLabTraceText(line[at:], timestamp); text != "" {
+			cleaned = append(cleaned, text)
+		}
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+// cleanGitLabTraceText is one run of trace text with its overwrites
+// resolved and erase escapes removed, under the line's timestamp; empty
+// when nothing visible is left.
+func cleanGitLabTraceText(text, timestamp string) string {
+	if i := strings.LastIndexByte(text, '\r'); i >= 0 {
+		text = text[i+1:]
+	}
+	text = ansiEraseInLine.ReplaceAllString(text, "")
+	if text == "" || timestamp == "" {
+		return text
+	}
+	return timestamp + " " + text
 }
 
 // CILogWhileRunning is true: the trace endpoint returns what the runner
