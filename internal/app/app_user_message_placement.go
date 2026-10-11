@@ -37,6 +37,9 @@ type userMessagePlacement struct {
 	responseTurn int
 	persistence  userMessagePersistence
 	queue        bool
+	// joinsActiveTurn is a flush delivered while a turn runs: Codex steers it
+	// into that turn and Claude takes it in at its next model call.
+	joinsActiveTurn bool
 }
 
 // resolveUserMessagePlacement is the sole App-side owner of turn placement.
@@ -76,7 +79,7 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex}, nil
 	}
 	if intent == messageFlush && found && thread.Provider == string(provider.Codex) {
-		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex, persistence: messageDeferUntilEcho}, nil
+		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex, persistence: messageDeferUntilEcho, joinsActiveTurn: true}, nil
 	}
 	next, err := a.nextSendTurnIndex(thread.ID)
 	if err != nil {
@@ -88,6 +91,7 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 		if intent == messageFlush && found {
 			placement.displayTurn = active.TurnIndex
 			placement.persistence = messagePersistQuiet
+			placement.joinsActiveTurn = true
 		}
 	}
 	return placement, nil

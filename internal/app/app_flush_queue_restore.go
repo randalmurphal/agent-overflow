@@ -184,6 +184,10 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
 	for _, item := range restorable {
+		if a.dropAgentWakeAtSessionEnd(item) {
+			settlements = append(settlements, item.Settlement)
+			continue
+		}
 		part := a.restoredFlushDraftPart(threadID, item)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
@@ -647,7 +651,9 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 			noteThreadWakeRestoredToDraft(a, row.SendID)
 		}
 		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
-		log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(rows), threadID)
+		if len(parts) > 0 {
+			log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(parts), threadID)
+		}
 	}
 }
 

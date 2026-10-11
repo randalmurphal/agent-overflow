@@ -102,6 +102,17 @@ delivery mark in one store transaction. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
 worker's queue.
 
+Loops and watches run on the same sweep: registration and lifecycle in
+`app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
+rendering and queueing in `app_agent_wake_delivery.go`, promotion in
+`app_standing_agents.go`. The contract is
+[standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
+loop or watch wake is data, not something the person wrote: one still queued
+at boot or left unconfirmed by a session that ended never goes to the
+composer, and its row records `not delivered`. Whether a turn was a tick is
+read from the rows of the turn that ended, because a dispatch cannot know
+what the provider joined into it.
+
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
 the initiating caller. Keep mutation-classification tests current when adding
