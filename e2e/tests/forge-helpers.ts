@@ -89,8 +89,23 @@ export interface ForgeJob {
   log?: string;
   /** The forge answers the log with a 404, as GitHub does until a job's log blob exists, running or completed. */
   logWithheld?: boolean;
+  /** A log generated on each request instead of `log`, for a log of many
+   * megabytes (forgefake SyntheticLog). */
+  synthetic?: ForgeSyntheticLog;
   /** GitHub Actions steps. */
   steps?: ForgeStep[];
+}
+
+export interface ForgeSyntheticLog {
+  /** Each a GitHub step (matched to the job's started steps in order) or a
+   * GitLab section of `lines` body lines. */
+  sections: { name: string; lines: number }[];
+  /** Bytes per body line with its newline; defaults to 80. */
+  lineBytes?: number;
+  /** A running GitLab trace serves this many lines on its first request
+   * and `growLines` more on each later one. */
+  runningLines?: number;
+  growLines?: number;
 }
 
 export interface ForgeStep {

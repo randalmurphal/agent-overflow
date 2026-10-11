@@ -159,8 +159,15 @@ func ghJobLogs(e *Engine, c *call, m []string) response {
 	if job == nil || job.StartedAt == "" || job.Status == "pending" || job.LogWithheld {
 		return ghHTTPNotFound()
 	}
+	resp := response{header: http.Header{"Content-Type": {"text/plain; charset=utf-8"}}, ranges: rangeBlob}
+	if job.Synthetic != nil {
+		resp.body = newSyntheticBody("github", job, -1)
+		resp.etag = syntheticETag("github", job, -1)
+		return resp
+	}
 	// The real endpoint prepends a UTF-8 byte order mark.
-	return response{stdout: append([]byte("\xef\xbb\xbf"), job.Log...), header: http.Header{"Content-Type": {"text/plain; charset=utf-8"}}}
+	resp.body = bytesBody(append([]byte("\xef\xbb\xbf"), job.Log...))
+	return resp
 }
 
 // ghAttachment serves a GitHub attachment by its request URL. The URL is

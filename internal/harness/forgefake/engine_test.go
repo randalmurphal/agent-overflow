@@ -1012,8 +1012,8 @@ func TestHTTPRefusals(t *testing.T) {
 			t.Errorf("%s %s = %d, want an unhandled 404", write[0], write[1], got.status)
 		}
 	}
-	// Range has no handler; If-None-Match only on the routes that list it.
-	for name, want := range map[string]string{"Range": "Range", "If-None-Match": "if-none-match"} {
+	// Range and If-None-Match only on the routes that list them.
+	for name, want := range map[string]string{"Range": "range", "If-None-Match": "if-none-match"} {
 		header := http.Header{"Authorization": {"Bearer " + testAPIToken}, name: {`"x"`}}
 		if got := httpRequest(t, srv, "GET", "github.com", "/github/rest/repos/acme/widgets", "", header); got.status != 404 || !strings.Contains(lastInvocation(t, e).Detail, want) {
 			t.Errorf("%s: status %d, want unhandled", name, got.status)
