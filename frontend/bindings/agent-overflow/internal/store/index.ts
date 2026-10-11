@@ -27,6 +27,7 @@ export {
     ProposedPlanCommentUpdate,
     ProposedPlanSourceRef,
     RemoteJob,
+    StandingAgent,
     Thread,
     ThreadGroup,
     ThreadMessageHit,

@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns three utilities:
+This package owns four utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -10,6 +10,9 @@ This package owns three utilities:
   `Exited` reports a process that has exited but is not yet reaped, which
   signal 0 still finds. On macOS, `RunningGroupMembers` and `RunningInGroup`
   read group membership without counting exited members.
+- `KillWithParent` has the kernel kill a supervised command when this process
+  dies (Linux `Pdeathsig`); it reaches the command, not its descendants, and
+  is a no-op elsewhere.
 - `TailBuffer` retains the last bounded bytes written to it and reports
   whether older bytes were discarded.
 - `RunDrained` runs a command whose output must arrive whole. Use it instead

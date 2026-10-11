@@ -200,6 +200,10 @@ type App struct {
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup
+	// agentWakes is the wake supervisor's in-process state: the runs and
+	// long-running watch processes in flight. Zero value ready. See
+	// app_agent_wakes.go.
+	agentWakes agentWakeState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup

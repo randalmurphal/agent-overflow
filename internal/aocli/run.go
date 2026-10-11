@@ -50,6 +50,9 @@ var topLevelCommands = []topLevelCommand{
 	{name: "pair", run: func(args []string, root string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		return pairCommand(args, root, os.Stdin, stdout, stderr)
 	}, remote: true},
+	{name: "thread", run: func(args []string, root string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
+		return threadCommand(args, root, stdout, stderr)
+	}},
 	{name: "help", run: func(_ []string, _ string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		if err := writeOutput(stdout, rootUsage); err != nil {
 			return operationalError(stderr, err)

@@ -14,7 +14,8 @@ import (
 )
 
 // The unattended half of the request ledger: what runs with no tool call in
-// flight. One ticker fires due reminders, ages out collected answers and
+// flight. One ticker fires due reminders and the loops and watches of the
+// wake supervisor (app_agent_wake_runs.go), ages out collected answers and
 // deletes rows past the retention floor; one boot sweep settles what a
 // restart interrupted.
 //
@@ -78,6 +79,11 @@ func (a *App) startThreadRequestSweeps() {
 	a.threadRequestsWG.Add(1)
 	go func() {
 		defer a.threadRequestsWG.Done()
+		// Before the first pass, so a fire missed while the app was closed
+		// replays once with its count rather than as an ordinary due fire,
+		// and a row a quit left running is recorded before anything claims
+		// it.
+		a.recoverAgentWakesAtBoot()
 		a.runThreadRequestSweeps(nudge)
 	}()
 }
@@ -114,6 +120,7 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		}
 		now := time.Now()
 		a.fireDueThreadReminders(now)
+		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
 		a.retryUndeliveredThreadWakes(now)
 		if now.Sub(lastExpiry) >= threadRequestExpiryInterval {
@@ -155,6 +162,11 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 		due := []store.ScheduledMoment{schedule.Reminder, schedule.Wake}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)
+		}
+		if loops, err := a.store.NextAgentWakeDue(); err != nil {
+			logThreadRequestSweep("read the next loop or watch fire", err)
+		} else {
+			due = append(due, loops)
 		}
 		for _, moment := range due {
 			if !moment.Set {

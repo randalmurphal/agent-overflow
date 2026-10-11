@@ -1,4 +1,4 @@
-// Package threadtools owns the ao-thread-tools contract: the thirteen tool
+// Package threadtools owns the ao-thread-tools contract: the fifteen tool
 // schemas, the server instructions, argument validation, thread id
 // resolution, transcript rendering and paging, item range reads, the
 // message footers and wake headers, and the thread state derivation.

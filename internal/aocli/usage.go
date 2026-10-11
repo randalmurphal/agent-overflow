@@ -43,6 +43,7 @@ func rootUsageFor(remoteAccess bool) string {
 	if remoteAccess {
 		b.WriteString(rootUsageHostCommands)
 	}
+	b.WriteString(rootUsageLocalCommands)
 	b.WriteString(rootUsageOfflineCommands)
 	b.WriteString(rootUsageSessionCommands)
 	if remoteAccess {
@@ -65,6 +66,11 @@ const rootUsageHostCommands = `Host commands (run on the machine the backend liv
   pair --lan         Connect a device to the running backend
   service uninstall  Stop it and remove the service
   service status     Report what the service manager says about it
+
+`
+
+const rootUsageLocalCommands = `Local commands (run on the computer the thread is on, beside its running app):
+  thread send        Message a thread from a script, as data rather than as you
 
 `
 
@@ -572,6 +578,15 @@ Options:
   --name <text>       name shown in the automations list
   --scope <scope>     resolve the workflow in this scope (shared|project)
   --seed <key=value>  seed one declared input (repeatable; JSON values parsed)
+`
+
+const threadUsage = `Usage: agent-overflow thread send [--wait 30s] <thread-id> <text>
+
+Queue a message to a thread on this computer, for a script that is not an
+Agent Overflow session. The thread reads it as data, never as you speaking,
+badged as an outside send and capped at 64 KiB with the dropped bytes stated;
+a thread with no running session starts one. The app must be running here.
+--wait waits for a starting backend (at most 2m).
 `
 
 const pairUsage = `Usage: agent-overflow pair [--lan] [--class browser|android|desktop] [--json] [--wait 30s]

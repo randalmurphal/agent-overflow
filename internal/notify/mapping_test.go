@@ -45,6 +45,15 @@ func TestEveryKindMapsFromItsMoment(t *testing.T) {
 			route: Target{Kind: "thread", ThreadID: threadID},
 		},
 		{
+			name: "a routine tick that failed still reports the failure",
+			got: func() (Notification, bool) {
+				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, Failed: true, QuietTick: true})
+			},
+			kind: KindError, id: "thread:" + threadID,
+			title: "Fix the parser", body: "Failed. Open the thread to see why.",
+			route: Target{Kind: "thread", ThreadID: threadID},
+		},
+		{
 			name: "provider exited",
 			got: func() (Notification, bool) {
 				return MapProviderExit(ProviderExit{Thread: thread()})
@@ -265,6 +274,18 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 			name: "a failed turn the user aborted is still their own doing",
 			got: func() (Notification, bool) {
 				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, Aborted: true, Failed: true})
+			},
+		},
+		{
+			name: "a routine loop or watch tick finishing is not news",
+			got: func() (Notification, bool) {
+				return MapTurnRest(TurnRest{Thread: thread(), TopLevel: true, QuietTick: true})
+			},
+		},
+		{
+			name: "a routine tick starting takes away nothing the user has not read",
+			got: func() (Notification, bool) {
+				return MapThreadResumed(ThreadResumed{ThreadID: threadID, QuietTick: true})
 			},
 		},
 		{

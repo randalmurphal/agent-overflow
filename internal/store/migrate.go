@@ -1728,6 +1728,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
 	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV142SQL, Rebuild: true},
+	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV143SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

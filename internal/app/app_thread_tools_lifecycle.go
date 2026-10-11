@@ -221,6 +221,7 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 // half: the thread is about to stop existing, so it is both a caller whose
 // requests must be cancelled and a target whose receipts must be settled.
 func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID string) error {
+	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted")
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptErrored, "The thread was deleted before it answered.")
 	return a.cancelThreadRequests(ctx, threadID)
 }
@@ -234,6 +235,9 @@ func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, de
 	if destination != "" {
 		reason = "The thread was moved to " + destination + " before it answered."
 	}
+	// Loops and watches are this computer's clock and processes; they do
+	// not travel with the conversation.
+	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer")
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
 	return a.cancelThreadRequests(ctx, threadID)
 }

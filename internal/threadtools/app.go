@@ -106,6 +106,21 @@ type App interface {
 	// Remind arms a clock-settled request that wakes the caller later.
 	Remind(ctx context.Context, caller Caller, call RemindCall) (RequestAck, error)
 
+	// Loop registers or replaces one loop of the caller's own thread and
+	// returns it as thread_status lists it, next fire included.
+	Loop(ctx context.Context, caller Caller, call LoopCall) (WakeState, error)
+
+	// Watch registers or replaces one watch of the caller's own thread. A
+	// thread that is not a standing agent is refused with the reason.
+	Watch(ctx context.Context, caller Caller, call WatchCall) (WakeState, error)
+
+	// ListWakes lists the caller's own loops and watches, live ones first.
+	ListWakes(ctx context.Context, caller Caller) ([]WakeState, error)
+
+	// CancelWake cancels the caller's live loop or watch with this label; an
+	// empty kind matches either. Cancelled false means there was none.
+	CancelWake(ctx context.Context, caller Caller, label, kind string) (WakeState, bool, error)
+
 	// UpdateThreads applies one organize patch to threads on this
 	// computer. The whole patch is validated per thread before any thread
 	// is touched, and a refusal names the thread and the reason without

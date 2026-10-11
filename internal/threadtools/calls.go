@@ -175,6 +175,7 @@ const (
 	EffectQueuedRemoved   = "queued_message_removed"
 	EffectInterrupted     = "turn_interrupted"
 	EffectReminderDropped = "reminder_dropped"
+	EffectWakeCancelled   = "loop_or_watch_cancelled"
 )
 
 // RequestAck is what a spawn, send, ask or remind returns: the request's
