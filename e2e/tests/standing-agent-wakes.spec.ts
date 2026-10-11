@@ -941,14 +941,18 @@ echo "the only report"
       );
       await harness.rpc('StartSession', thread);
       await harness.rpc('SendMessage', thread, 'what did you miss?', null);
-      const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string })[] }>(harness, {
-        tool: 'thread_status',
-        cwd,
-        timeoutMs: 60_000,
-      });
+      const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string; undelivered?: string })[] }>(
+        harness,
+        {
+          tool: 'thread_status',
+          cwd,
+          timeoutMs: 60_000,
+        },
+      );
       expect(status.isError, status.text).toBe(false);
       const once = (status.value!.wakes ?? []).find((row) => row.label === 'once')!;
       expect(once.last_outcome).toBe('not delivered: the session ended before it took the wake in');
+      expect(once.undelivered).toBe('not delivered: the session ended before it took the wake in');
       expect(once.last_output).toContain('"the only report"');
       await awaitTurnCompleted(harness, thread);
       await writeFile(join(agent.home, 'again.release'), '');
