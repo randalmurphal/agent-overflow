@@ -13,7 +13,7 @@
 // its reload is in flight, so a followed log never flashes placeholders
 // over text the reader is looking at. A block that failed to load holds
 // its error, which its row shows in place, and loads again the next time
-// a row acquires it.
+// a row acquires it or the log moves to another version.
 //
 // Blocks a mounted row holds are never evicted: the cache holds at most
 // CI_LOG_BLOCK_CACHE_MAX blocks and CI_LOG_CACHE_CHARS_MAX of text, or
@@ -131,7 +131,8 @@ export class CILogBlockCache {
    * the version before it that this one keeps. */
   setIndex(version: number, totalLines: number, stableLines: number): void {
     untrack(() => {
-      if (version !== this.#version) {
+      const moved = version !== this.#version;
+      if (moved) {
         const next = version === this.#version + 1;
         for (const [index, block] of this.#blocks) {
           const kept = block.lines !== null && block.version === this.#version
@@ -143,9 +144,11 @@ export class CILogBlockCache {
       this.#totalLines = totalLines;
       for (const [index, block] of this.#blocks) {
         if (index * CI_LOG_BLOCK_LINES >= totalLines && block.uses === 0) this.#drop(index, block);
-        // A failed block reads again only when a row acquires it, so a
-        // failure that persists is not read again at the follow cadence.
-        else if (block.uses > 0 && block.error === null) this.#refresh(index, block);
+        // A failed block reads again on a new version (the backend
+        // downloaded the log again, or a refresh did) or when a row
+        // acquires it, so a failure that persists is not read again at
+        // the follow cadence.
+        else if (block.uses > 0 && (moved || block.error === null)) this.#refresh(index, block);
       }
     });
   }

@@ -175,9 +175,8 @@ describe('CILogBlockCache', () => {
     expect(cache.block(0)?.error).toBe('the downloaded log is gone');
     expect(cache.block(0)?.loading).toBe(false);
     expect(cache.block(0)?.lines).toBeNull();
-    // An index frame does not retry a failed block on its own.
-    backend.set(2, lines(B + 10));
-    cache.setIndex(2, B + 10, B);
+    // A frame of the same version does not read a failed block again.
+    cache.setIndex(1, B, 0);
     expect(backend.reads).toHaveLength(1);
 
     release();
@@ -186,6 +185,22 @@ describe('CILogBlockCache', () => {
     expect(cache.block(0)?.error).toBeNull();
     await backend.answer();
     expect(cache.block(0)?.lines).toHaveLength(B);
+  });
+
+  it('reads a failed block again once the log moves to another version', async () => {
+    const { backend, cache } = open(B);
+    backend.auto = false;
+    cache.acquire(0);
+    await backend.fail('the downloaded log is gone; refresh to download it again');
+    cache.setIndex(1, B, 0);
+    expect(backend.reads).toHaveLength(1);
+    // The backend downloaded the log again: a new version.
+    backend.set(2, lines(B, 'v2'));
+    cache.setIndex(2, B, 0);
+    expect(backend.reads).toHaveLength(2);
+    expect(cache.block(0)?.error).toBeNull();
+    await backend.answer();
+    expect(cache.block(0)?.lines?.[0]).toBe('v2 0');
   });
 
   it('holds at most its block bound of blocks no row holds, dropping the least recently used', async () => {
