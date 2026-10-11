@@ -36,7 +36,7 @@
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
+  import { indicatorStateForItem, rowErrorWithFallback, type RowErrorData } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
@@ -48,6 +48,13 @@
   // collapsed-row affix caps further so the preview line fits
   // alongside the model affix and gutter chip without wrapping.
   const PREVIEW_MAX_CHARS = 80;
+
+  // Copy for the `advisor_error_code` values Claude has reported. Any
+  // other code shows the generic failure with the code beside it.
+  const ADVISOR_ERROR_MESSAGES: Record<string, string> = {
+    overloaded: 'Advisor overloaded',
+    too_many_requests: 'Advisor rate limited',
+  };
 
   let {
     pane,
@@ -115,9 +122,19 @@
 let hasExpandableBody = $derived(Boolean(item.payloadId));
 
   let indicatorState = $derived(indicatorStateForItem(item, { payloadMeta: summaryMeta }));
-  let rowError = $derived(
-    rowErrorWithFallback(item, { meta: summaryMeta, fallback: 'Advisor call failed' }),
+  let errorCode = $derived(
+    typeof itemMeta?.advisor_error_code === 'string' ? itemMeta.advisor_error_code : '',
   );
+  // `declined` is a call the API never ran: it shared its message with a
+  // client tool call (docs/references/claude-wire.md, orphaned server-side
+  // tool calls). An advisor call has no approval, so nothing else declines it.
+  let rowError = $derived.by<RowErrorData | null>(() => {
+    if (item.status === 'declined') return { tone: 'declined', msg: 'Not run' };
+    const failed = rowErrorWithFallback(item, { meta: summaryMeta, fallback: 'Advisor call failed' });
+    if (!failed || item.status !== 'errored' || !errorCode) return failed;
+    const known = ADVISOR_ERROR_MESSAGES[errorCode];
+    return known ? { tone: 'error', msg: known } : { tone: 'error', msg: 'Advisor call failed', code: errorCode };
+  });
 
   keepExpandedPayloadFresh(() => expansion, () => Boolean(item.payloadId));
 
@@ -162,7 +179,7 @@ let hasExpandableBody = $derived(Boolean(item.payloadId));
 
   {#if rowError}
     <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
-      <RowError tone={rowError.tone} msg={rowError.msg} />
+      <RowError tone={rowError.tone} msg={rowError.msg} code={rowError.code} />
     </div>
   {/if}
 

@@ -128,4 +128,64 @@ describe('<AdvisorRow>', () => {
     expect(previewText).toContain('…');
     expect(previewText).toContain('This is a very long advisor response');
   });
+
+  it('shows a call the API never ran as Not run, settled and without a failure', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'declined',
+      toolName: 'advisor',
+      summary: 'advisor (declined)',
+      meta: JSON.stringify({ toolName: 'advisor', item_status: 'declined' }),
+    });
+    const { getByTestId, queryByText } = render(AdvisorRow, { props: { item } });
+    expect(getByTestId('advisor-row').textContent).toContain('Not run');
+    expect(queryByText('Advisor call failed')).toBeNull();
+    expect(queryByText('Tool call declined')).toBeNull();
+    // It never ran, so it shows no elapsed time.
+    expect(getByTestId('advisor-row-duration').textContent?.trim() ?? '').toBe('');
+    const indicator = getByTestId('advisor-row-status').querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute('data-state')).not.toBe('running');
+  });
+
+  it.each([
+    ['overloaded', 'Advisor overloaded'],
+    ['too_many_requests', 'Advisor rate limited'],
+  ])('names a failed call by its %s error code', (code, message) => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'errored',
+      toolName: 'advisor',
+      summary: 'advisor (error)',
+      meta: JSON.stringify({ toolName: 'advisor', is_error: true, advisor_error_code: code }),
+    });
+    const { getByTestId, queryByText, queryByTestId } = render(AdvisorRow, { props: { item } });
+    expect(getByTestId('advisor-row').textContent).toContain(message);
+    expect(queryByText('Advisor call failed')).toBeNull();
+    expect(queryByTestId('row-error-code')).toBeNull();
+  });
+
+  it('shows an unrecognised error code beside the generic failure', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'errored',
+      toolName: 'advisor',
+      summary: 'advisor (error)',
+      meta: JSON.stringify({ toolName: 'advisor', is_error: true, advisor_error_code: 'unavailable' }),
+    });
+    const { getByTestId } = render(AdvisorRow, { props: { item } });
+    expect(getByTestId('advisor-row').textContent).toContain('Advisor call failed');
+    expect(getByTestId('row-error-code').textContent).toBe('unavailable');
+  });
+
+  it('keeps the generic failure for a row that ended unresolved', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'errored',
+      toolName: 'advisor',
+      summary: 'advisor — turn ended with tool unresolved',
+      meta: JSON.stringify({ toolName: 'advisor' }),
+    });
+    const { getByTestId } = render(AdvisorRow, { props: { item } });
+    expect(getByTestId('advisor-row').textContent).toContain('Advisor call failed');
+  });
 });

@@ -561,7 +561,7 @@ func TestParseAssistant_AdvisorResultDropsEmptyToolUseID(t *testing.T) {
 }
 
 // TestParseAssistant_AdvisorResultDropsBadInnerType covers
-// extractAdvisorResultText's discriminator check. A wire-drift
+// decodeAdvisorResult's discriminator check. A wire-drift
 // inner shape (e.g. a future `advisor_error` envelope) must NOT
 // surface its text as if it were a normal advisor response — the
 // completion still fires so the running row settles, but with
@@ -592,7 +592,7 @@ func TestParseAssistant_AdvisorResultDropsBadInnerType(t *testing.T) {
 }
 
 // TestParseAssistant_AdvisorResultDropsMalformedContent covers the
-// json.Unmarshal failure branch in extractAdvisorResultText. The
+// json.Unmarshal failure branch in decodeAdvisorResult. The
 // completion still fires (so the running row settles) with empty
 // Content.
 func TestParseAssistant_AdvisorResultDropsMalformedContent(t *testing.T) {

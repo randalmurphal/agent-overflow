@@ -174,7 +174,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 		}
 	}
 
-	for _, block := range msg.Content {
+	for i, block := range msg.Content {
 		switch block.Type {
 		case "text":
 			// Drop already-streamed text — re-emitting the coalesced
@@ -190,6 +190,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, now)
 			}
 		case "tool_use":
+			events = p.appendAdvisorCallsNotRun(events, threadID, parentToolUseID, msg.ID, now)
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same contract as text, including the error-envelope skip. The
@@ -206,7 +207,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			// matching result arrives on a SECOND assistant envelope
 			// carrying an `advisor_tool_result` content block — see
 			// docs/references/claude-wire.md §server_tool_use.
-			events = p.appendServerToolUseEvent(events, threadID, parentToolUseID, msg.ID, advisorIterationModels(msg.Usage), now, block)
+			events = p.appendServerToolUseEvent(events, threadID, parentToolUseID, msg.ID, advisorIterationModels(msg.Usage), msg.Content[i+1:], now, block)
 		case "advisor_tool_result":
 			// Result of a prior `server_tool_use` advisor call. Closes
 			// the tool lifecycle for the matching `srvtoolu_*` id.
@@ -964,7 +965,7 @@ func extractExitPlanModePlan(input json.RawMessage) string {
 //
 // The advisor can run on a different model than the parent, and the
 // only per-call record of it is usage.iterations[type=advisor_message].model
-// (see advisorModelState). advisorModels is that list from this
+// (see advisorMessageState). advisorModels is that list from this
 // envelope's usage, empty when the envelope carries no iterations. The
 // launch carries `advisor_model` only when the model is already known;
 // otherwise stampAdvisorModels adds it when the message's usage arrives.
@@ -973,10 +974,14 @@ func extractExitPlanModePlan(input json.RawMessage) string {
 // block can identify which completion is an advisor result vs a
 // regular tool_result (the latter never reaches this path — those are
 // user-role envelopes handled in parse_user.go).
+//
+// A call the API will never run emits nothing (advisorCallDropped).
+// later is the rest of this envelope's content after the block.
 func (p *Parser) appendServerToolUseEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID, assistantMessageID string,
 	advisorModels []string,
+	later []assistantContentBlock,
 	now time.Time,
 	block assistantContentBlock,
 ) []provider.ProviderEvent {
@@ -993,6 +998,9 @@ func (p *Parser) appendServerToolUseEvent(
 	// them; a parser refresh is the right place to recognise the new
 	// shape when it lands.
 	if block.Name != "advisor" {
+		return events
+	}
+	if p.advisorCallDropped(parentToolUseID, assistantMessageID, block.ID, later) {
 		return events
 	}
 	p.markAdvisor(block.ID)
@@ -1016,10 +1024,11 @@ func (p *Parser) appendServerToolUseEvent(
 //
 // The result body is `block.content.text` (nested) where the outer
 // `content` is the assistant message's content array element and the
-// inner `content` is `{type:"advisor_result", text:"..."}`. Meta is
-// minimal — no exit_code, no is_background path; the advisor runs
-// inline (not backgrounded) and Anthropic does not surface an error
-// channel on this block today.
+// inner `content` is `{type:"advisor_result", text:"..."}`. A failed
+// call answers `{type:"advisor_tool_result_error", error_code:"..."}`
+// (observed codes: `overloaded`, `too_many_requests`); the completion
+// is an error carrying `advisor_error_code`. Meta is otherwise minimal:
+// no exit_code, no is_background path; the advisor runs inline.
 func (p *Parser) appendAdvisorResultEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
@@ -1041,15 +1050,17 @@ func (p *Parser) appendAdvisorResultEvent(
 	}
 	p.clearAdvisor(block.ToolUseID)
 
-	text := extractAdvisorResultText(block.Content)
-	meta, _ := json.Marshal(map[string]any{
-		"is_error": false,
-	})
+	result := decodeAdvisorResult(block.Content)
+	fields := map[string]any{"is_error": result.isError}
+	if result.errorCode != "" {
+		fields["advisor_error_code"] = result.errorCode
+	}
+	meta, _ := json.Marshal(fields)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolComplete,
 		ThreadID:        threadID,
 		ItemID:          block.ToolUseID,
-		Content:         text,
+		Content:         result.text,
 		Meta:            meta,
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
@@ -1057,35 +1068,45 @@ func (p *Parser) appendAdvisorResultEvent(
 	})
 }
 
-// extractAdvisorResultText reads the text field out of the nested
-// `content` object on an `advisor_tool_result` block. The wire shape
-// is `{type:"advisor_result", text:"..."}` — distinct from the
-// user-side tool_result `content` (which is string-or-array). Returns
-// "" on malformed input rather than failing; the empty content still
-// produces a completion event so the running row settles.
-func extractAdvisorResultText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var payload struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(content, &payload) != nil {
-		return ""
-	}
-	// Pin the inner discriminator so a wire-drift shape (e.g. a future
-	// `advisor_error`) doesn't silently slip through as a normal
-	// response body. The completion event still fires with empty
-	// Content so the running row settles; the parser-refresh that
-	// recognises the new shape is the right place to handle it.
-	if payload.Type != "advisor_result" {
-		return ""
-	}
-	return payload.Text
+// advisorResult is the decoded inner `content` of an
+// `advisor_tool_result` block.
+type advisorResult struct {
+	text      string
+	isError   bool
+	errorCode string
 }
 
-// advisorModelState pairs the advisor calls of one API message with the
+// decodeAdvisorResult reads the nested `content` object on an
+// `advisor_tool_result` block. The wire shape is
+// `{type:"advisor_result", text:"..."}` on success (distinct from the
+// user-side tool_result `content`, which is string-or-array) and
+// `{type:"advisor_tool_result_error", error_code:"..."}` on failure.
+// Any other shape (including `advisor_redacted_result`, whose body is
+// encrypted) yields an empty success: the completion still settles the
+// running row, and a parser refresh that recognises the new shape is
+// the right place to handle it.
+func decodeAdvisorResult(content json.RawMessage) advisorResult {
+	if len(content) == 0 {
+		return advisorResult{}
+	}
+	var payload struct {
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		ErrorCode string `json:"error_code"`
+	}
+	if json.Unmarshal(content, &payload) != nil {
+		return advisorResult{}
+	}
+	switch payload.Type {
+	case "advisor_result":
+		return advisorResult{text: payload.Text}
+	case "advisor_tool_result_error":
+		return advisorResult{isError: true, errorCode: strings.TrimSpace(payload.ErrorCode)}
+	}
+	return advisorResult{}
+}
+
+// advisorMessageState pairs the advisor calls of one API message with the
 // models that ran them. The API reports an advisor's model only as
 // usage.iterations[type=advisor_message].model, one entry per advisor
 // call in call order, and all of a message's advisor calls share that
@@ -1094,8 +1115,17 @@ func extractAdvisorResultText(content json.RawMessage) string {
 // TUI reconstructor puts them on the assembled assistant envelope. The
 // parent's `message.model` is never the advisor's model source: the
 // advisor is configured separately and routinely differs.
-type advisorModelState struct {
+//
+// It also records whether the message holds a client tool_use. The API
+// runs a server tool only in a response with no client tool_use, so an
+// advisor call sharing its message with one never runs and never gets a
+// result (claude-wire.md §Orphaned server-side tool calls). A real
+// call's result is always the block right after the call, before any
+// client tool_use of its message.
+type advisorMessageState struct {
 	messageID string
+	// clientToolUse is set once the message carried a client tool_use.
+	clientToolUse bool
 	// calls are the message's advisor tool ids in call order.
 	calls []string
 	// models are the advisor iteration models in call order.
@@ -1121,16 +1151,16 @@ func advisorIterationModels(u *assistantUsage) []string {
 
 // advisorState returns the scope's state for messageID, starting fresh
 // when the scope has moved on to another message.
-func (p *Parser) advisorState(scope, messageID string) *advisorModelState {
-	st := p.advisorModelScopes[scope]
+func (p *Parser) advisorState(scope, messageID string) *advisorMessageState {
+	st := p.advisorMessages[scope]
 	if st != nil && st.messageID == messageID {
 		return st
 	}
-	if p.advisorModelScopes == nil || (st == nil && len(p.advisorModelScopes) >= parserTaskMapCap) {
-		p.advisorModelScopes = make(map[string]*advisorModelState)
+	if p.advisorMessages == nil || (st == nil && len(p.advisorMessages) >= parserTaskMapCap) {
+		p.advisorMessages = make(map[string]*advisorMessageState)
 	}
-	st = &advisorModelState{messageID: messageID}
-	p.advisorModelScopes[scope] = st
+	st = &advisorMessageState{messageID: messageID}
+	p.advisorMessages[scope] = st
 	return st
 }
 
@@ -1150,13 +1180,73 @@ func (p *Parser) recordAdvisorCall(scope, messageID, toolUseID string, models []
 	return st.models[idx]
 }
 
+// advisorCallDropped reports whether an advisor call is one the API
+// will not run: its message already carried a client tool_use, or a
+// client tool_use follows it in this envelope before its result
+// (claudetui assembles a whole message into one envelope). Such a call
+// gets no row. Across envelopes only a message with an id is judged
+// (appendAdvisorCallsNotRun).
+func (p *Parser) advisorCallDropped(scope, messageID, toolUseID string, later []assistantContentBlock) bool {
+	if st := p.advisorMessages[scope]; st != nil && st.messageID == messageID && st.clientToolUse {
+		return true
+	}
+	for _, block := range later {
+		if block.Type == "advisor_tool_result" && block.ToolUseID == toolUseID {
+			return false
+		}
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
+// appendAdvisorCallsNotRun handles a client tool_use: it records that
+// the scope's current message holds one and settles each advisor call
+// of that message still waiting for its result as declined, since the
+// API will not run it. A settled call leaves the model pairing so a
+// late `message_delta` model can only land on a call that ran. A
+// message without an id is never judged.
+func (p *Parser) appendAdvisorCallsNotRun(
+	events []provider.ProviderEvent,
+	threadID, scope, messageID string,
+	now time.Time,
+) []provider.ProviderEvent {
+	if messageID == "" {
+		return events
+	}
+	st := p.advisorState(scope, messageID)
+	st.clientToolUse = true
+	kept := st.calls[:0]
+	for _, id := range st.calls {
+		if !p.isAdvisor(id) {
+			kept = append(kept, id)
+			continue
+		}
+		p.clearAdvisor(id)
+		events = append(events, provider.ProviderEvent{
+			Kind:            provider.EventToolComplete,
+			ThreadID:        threadID,
+			ItemID:          id,
+			Meta:            advisorNotRunMeta,
+			ParentToolUseID: scope,
+			Timestamp:       now,
+		})
+	}
+	st.calls = kept
+	return events
+}
+
+// advisorNotRunMeta settles an advisor call the API did not run.
+var advisorNotRunMeta = json.RawMessage(`{"is_error":false,"item_status":"declined"}`)
+
 // startAdvisorMessage drops the scope's advisor state when a new API
 // message begins; calls of an interrupted message never get a model.
 func (p *Parser) startAdvisorMessage(scope string) {
 	if p == nil {
 		return
 	}
-	delete(p.advisorModelScopes, scope)
+	delete(p.advisorMessages, scope)
 }
 
 // stampAdvisorModels handles the closing `message_delta` usage of the
@@ -1167,7 +1257,7 @@ func (p *Parser) stampAdvisorModels(events []provider.ProviderEvent, threadID, s
 	if p == nil {
 		return events
 	}
-	st := p.advisorModelScopes[scope]
+	st := p.advisorMessages[scope]
 	if st == nil {
 		return events
 	}
@@ -1175,7 +1265,7 @@ func (p *Parser) stampAdvisorModels(events []provider.ProviderEvent, threadID, s
 	if len(models) == 0 {
 		return events
 	}
-	delete(p.advisorModelScopes, scope)
+	delete(p.advisorMessages, scope)
 	for i := st.stamped; i < len(st.calls) && i < len(models); i++ {
 		if models[i] == "" {
 			continue

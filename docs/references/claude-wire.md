@@ -383,7 +383,7 @@ Other captured usage-adjacent signals worth preserving for future UI:
 | `result.usage` (flat) | Per-turn, PARENT-ONLY API-call accounting that excludes Task-subagent (sidechain) tokens (verified: `subagent_usage_inclusion_20260703.ndjson`, flat in=42/cc=22168 vs modelUsage in=52/cc=35397). Accounting fallback only, when `modelUsage` is absent (claudetui synthesized results). | Same shape as message_delta top-level, and both correlate with `compactMetadata.preTokens`. We drive the meter from the live stream, not the closing envelope. |
 | `result.modelUsage` | THE turn-accounting source: per-model tokens + CLI-computed `costUSD`, subagent-inclusive. ⚠ SESSION-CUMULATIVE across turns within one process, like `total_cost_usd` (verified: `multiturn_cost_cumulative_20260703.ndjson`, in=10→20→30, cost monotonic). Per-turn truth is the delta between consecutive snapshots; `parse_result.go`/`usage_accounting.go` own that subtraction. `contextWindow` is a useful max-window hint. | Token totals are spend/accounting; meter is driven from the live stream. |
 | `result.modelUsage[advisor_model]` | Advisor's own per-call usage (separate model run, separate context window). | Subagent-style private accounting; never updates the parent meter. |
-| `usage.iterations[type=advisor_message].model` | The model that ran each advisor call, one entry per call in call order. It is the only per-call advisor model record: the advisor is configured separately (`advisorModel`) and routinely differs from the parent's `message.model`. Headless carries it on the closing `message_delta`, after the `server_tool_use` envelopes (verified 2.1.284: `testdata/advisor_redacted_2_1_284.ndjson`); claudetui's assembled envelope carries it too. `advisorModelState` (`parse_assistant.go`) pairs calls with models and stamps `advisor_model`. | Informational; never feeds the meter. |
+| `usage.iterations[type=advisor_message].model` | The model that ran each advisor call, one entry per call in call order. It is the only per-call advisor model record: the advisor is configured separately (`advisorModel`) and routinely differs from the parent's `message.model`. Headless carries it on the closing `message_delta`, after the `server_tool_use` envelopes (verified 2.1.284: `testdata/advisor_redacted_2_1_284.ndjson`); claudetui's assembled envelope carries it too. `advisorMessageState` (`parse_assistant.go`) pairs calls with models and stamps `advisor_model`. | Informational; never feeds the meter. |
 | `system.task_notification.usage` | Subagent/background-task progress or row-level token display. | Subagent-private accounting; do not update parent meter. |
 | `user.tool_use_result.usage` and `tool_use_result.totalTokens` | Completed Agent/Task details and subagent cost display. | Subagent-private accounting; do not update parent meter. |
 | `control_response` for `get_context_usage` | Canonical `/context` parity: exact `totalTokens`, `maxTokens`, category breakdown, and `apiUsage`. SHIPPED as the meter popover's "Show exact breakdown" expansion (`GetThreadContextUsage` → `ContextBreakdown.svelte`). It is user-initiated, live-session-only, never cached or polled. | Use `totalTokens` directly when actively requested. It does NOT drive the always-on meter: that stays on the passive `message_delta.usage` top-level, which costs nothing and updates every delta. |
@@ -4503,10 +4503,25 @@ The CLI repairs this itself. `ensureToolResultPairing`
 (`services/api/claude.ts`) strips every `server_tool_use` or
 `mcp_tool_use` block without a matching result from each API request,
 live or resumed, so the next request and a later live user send both
-succeed. AO only keeps these rows out of resume and fork cursors
+succeed. AO keeps these rows out of resume and fork cursors
 (`UnresolvedServerToolUUIDs`); a live session needs no restart. An
 interrupt cannot split an advisor call from its result in practice:
 both reach stdout within milliseconds of each other.
+
+A call that runs always has its `advisor_tool_result` as the next block
+of its message, before any client `tool_use` (665 of 665 distinct calls
+in local transcripts, 2.1.284). The parser (`advisorMessageState`) applies the
+rule per `parent_tool_use_id` scope and message id:
+
+| Block order in the message | Advisor row |
+|---|---|
+| client `tool_use` before the advisor block, or after it in the same envelope (claudetui) | none |
+| advisor block, then a client `tool_use` in a later envelope | settles `declined` when the `tool_use` arrives; `AdvisorRow` shows "Not run" |
+| advisor block, `advisor_tool_result`, then client `tool_use` blocks | normal |
+
+A failed call answers `{type:"advisor_tool_result_error",
+error_code:"overloaded"|"too_many_requests"}`; the completion is an
+error carrying `advisor_error_code`.
 
 The `isReplay` echo of a sent user message carries no `parentUuid` on
 2.1.284, so the echo cannot confirm where the CLI attached the message.
