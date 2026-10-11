@@ -192,9 +192,12 @@ func TestStopIsNotHeldByAProcessThatLeftTheGroup(t *testing.T) {
 	}
 	escapee := readPIDFile(t, escapeeFile)
 	t.Cleanup(func() { killTestProcess(t, escapee, "sleep\x00300\x00") })
-	eventually(t, "the escapee to leave the group", func() bool {
+	// setsid leaves the group before it execs sleep; until then the cleanup
+	// would not recognize the escapee by its command line.
+	eventually(t, "the escapee to leave the group and run sleep", func() bool {
 		group, _, ok := readProcess(escapee)
-		return ok && group == escapee
+		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(escapee) + "/cmdline")
+		return ok && group == escapee && err == nil && strings.HasPrefix(string(cmdline), "sleep\x00300\x00")
 	})
 
 	if err := stopWithin(t, process, headlessTestDeadline); err != nil {
