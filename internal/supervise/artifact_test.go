@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -171,5 +172,24 @@ func TestServiceArtifactBoundsExpansionAndHonorsCancellation(t *testing.T) {
 	}
 	if _, err := PrepareArtifact(context.Background(), file, "agent-overflow-darwin-arm64.zip", digest); err == nil || !strings.Contains(err.Error(), "size limit") {
 		t.Fatal("ignored declared expansion budget", err)
+	}
+}
+
+// An unpacked executable is written with forks held off. A child forked while
+// it is open for writing would keep a writer on it until the child's own
+// exec, and the preflight that runs it would fail with "text file busy".
+func TestArtifactExecutableIsWrittenWithForksHeldOff(t *testing.T) {
+	t.Parallel()
+	name := filepath.Join(t.TempDir(), BinaryName)
+	err := writeArtifactFileWith(name, 0o700, func(file *os.File) error {
+		if syscall.ForkLock.TryLock() {
+			syscall.ForkLock.Unlock()
+			return errors.New("a fork could start while the executable was open for writing")
+		}
+		_, err := file.WriteString("#!/bin/sh\n")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

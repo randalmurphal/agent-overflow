@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -174,19 +175,13 @@ func unpackAppBundle(ctx context.Context, archive, root string) error {
 			r.Close()
 			return err
 		}
-		file, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600|mode.Perm()&0o111)
-		if err != nil {
-			r.Close()
+		var n int64
+		copyErr := writeArtifactFileWith(dest, 0o600|mode.Perm()&0o111, func(file *os.File) error {
+			var err error
+			n, err = io.Copy(file, io.LimitReader(&artifactReader{ctx: ctx, Reader: r}, remaining+1))
 			return err
-		}
-		n, copyErr := io.Copy(file, io.LimitReader(&artifactReader{ctx: ctx, Reader: r}, remaining+1))
+		})
 		r.Close()
-		if syncErr := file.Sync(); copyErr == nil {
-			copyErr = syncErr
-		}
-		if closeErr := file.Close(); copyErr == nil {
-			copyErr = closeErr
-		}
 		remaining -= n
 		if copyErr != nil {
 			return copyErr
@@ -260,13 +255,34 @@ func (r *artifactReader) Read(data []byte) (int, error) {
 }
 
 func writeArtifactFile(name string, data []byte, mode fs.FileMode) error {
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	return writeArtifactFileWith(name, mode, func(file *os.File) error {
+		_, err := file.Write(data)
+		return err
+	})
+}
+
+// writeArtifactFileWith creates name, fills it with write, syncs and closes
+// it. An executable is written with syscall.ForkLock held for reading, so no
+// fork can start while it is open for writing. A child forked then would
+// hold the descriptor until its own exec closes it, and the kernel refuses
+// to run a file that has a writer (ETXTBSY): the preflight that runs the
+// unpacked binary would fail with "text file busy" whenever another
+// goroutine was starting a process. Forks wait for the write instead.
+func writeArtifactFileWith(name string, mode fs.FileMode, write func(*os.File) error) error {
+	if mode&0o111 != 0 {
+		syscall.ForkLock.RLock()
+		defer syscall.ForkLock.RUnlock()
+	}
+	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
+	err = write(file)
+	if syncErr := file.Sync(); err == nil {
+		err = syncErr
 	}
-	return f.Sync()
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
