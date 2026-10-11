@@ -83,8 +83,8 @@ type CIStep struct {
 
 // ErrCIJobLogNotFound is a job log request the forge answered with HTTP
 // 404: the job has not started, or the forge has not published its log.
-// GitHub answers it until the job's log blob exists, which can be all of
-// a running job's run and a while after it completed.
+// GitHub answers it until the job's log blob exists, which is a running
+// job's whole run and can be a while after it completed.
 var ErrCIJobLogNotFound = errors.New("ci job log not found")
 
 // CIJobLogRequest names one job's log for GetCIJobLog. ETag is the

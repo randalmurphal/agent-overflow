@@ -137,8 +137,9 @@ polling.
 - **CI rides the same pump** (`internal/app/app_forge_ci.go`). The pump
   reads the head pipeline on start and re-reads it only while something
   can change: every 10s while a job is queued or running, every 5s while
-  a followed job is live or its final log is still being
-  fetched, never while every job is terminal (the 45s snapshot re-arms it
+  a followed job is live on a forge that streams its log (GitLab) or a
+  followed job's final log is still being fetched, never while every job
+  is terminal (the 45s snapshot re-arms it
   when the head SHA or the check summary moves). Pipeline frames go out on
   `pr:ci_updated` only on change, under the PR's sequence, and the
   subscribe result carries the current pipeline for a joiner. GitHub reads
@@ -147,12 +148,15 @@ polling.
   followed job whose steps can still change; GitLab reads the MR view and
   the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
   the pump fetches each now and streams UTF-16 prefix deltas on
-  `pr:ci_log` while the job runs, revalidating by ETag (both forges serve
-  a running job's log; GitHub once the job's log blob exists). A log the
-  forge answers 404 for is a wait, not an error: asked every 5s while the
-  job runs (GitHub can answer 404 for a running job's whole run), and
-  once it completed every 5s for six tries, then every 45s while the job
-  stays followed. The log keeps what the log view groups lines by: a
+  `pr:ci_log` while the job runs, revalidating by ETag. GitLab serves a
+  running job's trace; GitHub serves a log once its blob exists, in
+  practice once the job completed, though the jobs API can still call the
+  job running then
+  ([measurements](../references/forge-api-measurements.md#logs)). A log
+  the forge answers 404 for is a wait, not an error: asked at the job's
+  cadence while it runs (every 10s on GitHub, which answers 404 for a
+  running job's whole run), and once it completed every 5s for six tries,
+  then every 45s while the job stays followed. The log keeps what the log view groups lines by: a
   GitHub log's `##[group]` lines, beside the steps' `startedAt` and
   `completedAt` from the jobs list (each log line starts with its own
   RFC 3339 time), and a GitLab trace's section markers, each on a line

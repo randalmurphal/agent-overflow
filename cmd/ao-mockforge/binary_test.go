@@ -311,9 +311,10 @@ const gitlabSectionTraceCleaned = "section_start:1767225600:prepare_executor\n" 
 	"2026-01-01T00:00:03.400000Z $ make test\n"
 
 // TestGitHubRunningJobLogThroughTheAppsForgeCode: the app's GitHub CI code
-// against the fake's Actions endpoints while a job runs. The log answers
-// 404 until its blob exists, then the log so far, revalidated by its ETag
-// and re-read when it grows; steps carry GitHub's numbers and times.
+// against the fake's Actions endpoints while the jobs API reports a job
+// running. The log answers 404 until its blob exists, then the log,
+// revalidated by its ETag and re-read when it moves; steps carry GitHub's
+// numbers and times.
 func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
 	steps := []forgefake.Step{
 		{Name: "Set up job", Status: "success", StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:00:01Z"},
@@ -336,8 +337,8 @@ func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 
-	if !r.core.CILogWhileRunning(ref) {
-		t.Fatal("GitHub does not report that it serves running logs")
+	if r.core.CILogStreams(ref) {
+		t.Fatal("GitHub reports that it streams running logs")
 	}
 	if _, err := r.core.GetCIJobLog(t.Context(), ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
 		t.Fatalf("running log before its blob exists: %v, want ErrCIJobLogNotFound", err)

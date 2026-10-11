@@ -256,10 +256,9 @@ func githubRunSteps(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 
 // GetCIJobLog reads a job's log, keeping its last maxCILogBytes: a longer
 // log is read from its tail and starts at the first whole line. A 404 (the
-// job's log blob does not exist yet, running or completed) is
+// job's log blob does not exist yet, see CILogStreams) is
 // ErrCIJobLogNotFound. The logs endpoint redirects to a blob; the request's
-// If-None-Match goes with the hop, and the ETag is the blob's, which moves
-// as a running job's log grows.
+// If-None-Match goes with the hop, and the ETag is the blob's.
 func (f *githubForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {
 	if err := ValidateCIJobID(req.JobID); err != nil {
 		return CIJobLog{}, err
@@ -291,13 +290,13 @@ func (f *githubForge) GetCIJobLog(ctx context.Context, ref PRReference, req CIJo
 	return CIJobLog{Text: strings.TrimPrefix(string(text), "\ufeff"), ETag: etag}, nil
 }
 
-// CILogWhileRunning is true: the Actions log endpoint serves a running
-// job's log once its blob exists, and the blob grows with the job (an
-// append blob whose ETag moves, measured 2026-10-11). Until the blob
-// exists the endpoint answers 404, which for a job of a few minutes was
-// its whole run (also measured 2026-10-11); see
-// docs/references/forge-api-measurements.md.
-func (f *githubForge) CILogWhileRunning() bool { return true }
+// CILogStreams is false: the Actions log endpoint answers 404 until the
+// job's log blob exists, which every running job measured on 2026-10-11
+// reached only once it completed, while the jobs API could still report
+// it running (docs/references/forge-api-measurements.md). A followed
+// running job's log is still asked for, at the pipeline's live cadence,
+// so that window shows the log as soon as it is served.
+func (f *githubForge) CILogStreams() bool { return false }
 
 // githubRepoPath is the REST path of ref's repository, each segment
 // escaped.

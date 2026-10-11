@@ -187,7 +187,7 @@ job's log on request (`Stream` into a `TailBuffer`, 404 is
 | Pump, a PR within one page per connection | 1 (`PRTick`) |
 | CI phase, no followed job | 1 (`PRTick`) |
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
-| Log follow, a followed running job | 1 logs request (a 302 to the blob, then the blob: 304 while unchanged, 404 until the blob exists) |
+| CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
@@ -202,7 +202,7 @@ request (`Stream` into a `TailBuffer`, 404 is `ErrCIJobLogNotFound`).
 | Pump (`Detail`, `Threads`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
 | CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
 | CI phase, no head pipeline | 1 merge request |
-| Log follow, a followed running job | 1 trace (304 while unchanged) |
+| Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
 `internal/git/status_pr_cache.go`). A branch with no

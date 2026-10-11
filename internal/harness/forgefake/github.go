@@ -152,9 +152,10 @@ func ghJobLogs(e *Engine, c *call, m []string) response {
 	if r != nil {
 		job = r.job(id)
 	}
-	// The real endpoint serves a started job's log once its blob exists,
-	// running or completed, and grows it with the job; before the blob
-	// exists it answers 404 (LogWithheld), as it does for a queued job.
+	// The real endpoint answers 404 until the job's log blob exists, in
+	// practice once the job completed (LogWithheld), and for a queued job.
+	// A running job with a log is the window where the jobs API still
+	// reports a completed job running.
 	if job == nil || job.StartedAt == "" || job.Status == "pending" || job.LogWithheld {
 		return ghHTTPNotFound()
 	}

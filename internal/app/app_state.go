@@ -112,10 +112,10 @@ type appPRUpdateState struct {
 	ciLogWaitInterval time.Duration
 	fetchFn           func(context.Context, gitops.PRReference) (prUpdateSnapshot, error)
 	// ciFetchFn and ciLogFetchFn stand in for the forge in tests, like
-	// fetchFn; ciLogWhileRunning overrides the forge's answer when set.
-	ciFetchFn         func(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
-	ciLogFetchFn      func(ctx context.Context, pr gitops.PRReference, req gitops.CIJobLogRequest) (gitops.CIJobLog, error)
-	ciLogWhileRunning *bool
+	// fetchFn; ciLogStreams overrides the forge's answer when set.
+	ciFetchFn    func(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+	ciLogFetchFn func(ctx context.Context, pr gitops.PRReference, req gitops.CIJobLogRequest) (gitops.CIJobLog, error)
+	ciLogStreams *bool
 	// staggerFn replaces the random delay added to a rate limit's resume
 	// time (prUpdateStagger), for tests.
 	staggerFn func() time.Duration

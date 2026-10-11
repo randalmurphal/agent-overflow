@@ -41,7 +41,7 @@ type prCIFixture struct {
 	logEvents    chan PRCILogEvent
 }
 
-func newPRCIFixture(t *testing.T, whileRunning bool) *prCIFixture {
+func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 	t.Helper()
 	f := &prCIFixture{
 		app:       NewApp(),
@@ -55,7 +55,7 @@ func newPRCIFixture(t *testing.T, whileRunning bool) *prCIFixture {
 	f.app.prUpdates.interval = time.Hour
 	f.app.prUpdates.ciLiveInterval = 5 * time.Millisecond
 	f.app.prUpdates.ciFollowInterval = 5 * time.Millisecond
-	f.app.prUpdates.ciLogWhileRunning = &whileRunning
+	f.app.prUpdates.ciLogStreams = &streams
 	f.app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: *f.snapshotHead.Load()}}, nil
 	}
@@ -354,7 +354,12 @@ func TestSetPRCILogFollowsFetchesNowAndStreamsDeltasUntilTerminal(t *testing.T) 
 	expectNoLogEvent(t, f.logEvents, "re-follow with unchanged text")
 }
 
-func TestPRCILogFollowWaitsForCompletionWhereLogsNeedIt(t *testing.T) {
+// TestPRCILogFollowOnANonStreamingForgeWaitsForCompletion: GitHub answers
+// 404 for a running job's log until it completed. The follow keeps asking
+// while the job runs (the jobs API can report a completed job running for
+// a while) and shows the wait, not an error; the completed job's lagging
+// log is a wait past the quick tries until it lands.
+func TestPRCILogFollowOnANonStreamingForgeWaitsForCompletion(t *testing.T) {
 	t.Parallel()
 	f := newPRCIFixture(t, false)
 	f.app.prUpdates.ciLogWaitInterval = 5 * time.Millisecond
@@ -370,11 +375,16 @@ func TestPRCILogFollowWaitsForCompletionWhereLogsNeedIt(t *testing.T) {
 	if state := result.Logs["7"]; state.Available || state.Error != "" || state.Text != "" {
 		t.Fatalf("running GitHub job state = %+v, want unavailable and no error", state)
 	}
-	if f.logFetches.Load() != 0 {
-		t.Fatalf("a running job's log was fetched where the forge cannot serve it")
-	}
 	if frame := awaitLogEvent(t, f.logEvents, "unavailable frame"); frame.Available || frame.Error != "" {
 		t.Fatalf("frame = %+v", frame)
+	}
+	before := f.logFetches.Load()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.logFetches.Load() < before+3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a running job's log stopped being asked for after %d fetches", f.logFetches.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
 	expectNoLogEvent(t, f.logEvents, "steady unavailable state")
 
@@ -383,7 +393,8 @@ func TestPRCILogFollowWaitsForCompletionWhereLogsNeedIt(t *testing.T) {
 	// arrives.
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
-	deadline := time.Now().Add(2 * time.Second)
+	f.logFetches.Store(0)
+	deadline = time.Now().Add(2 * time.Second)
 	for f.logFetches.Load() < prCILogFinalAttempts+2 {
 		if time.Now().After(deadline) {
 			t.Fatalf("final log was not retried: %d fetches", f.logFetches.Load())
@@ -547,8 +558,8 @@ func TestPRCILogUnpublishedFinalLogIsAWaitNotAFailure(t *testing.T) {
 
 // TestPRCIIntervalPacesEachFollow: a completed job's log is asked for at
 // the follow cadence for the quick tries, then at the wait cadence; a live
-// followed job asks for the follow cadence only where the forge serves
-// running logs, and the pipeline's live cadence otherwise.
+// followed job is asked for at the follow cadence where the forge streams
+// running logs, and at the live cadence otherwise.
 func TestPRCIIntervalPacesEachFollow(t *testing.T) {
 	t.Parallel()
 	const (
@@ -562,9 +573,9 @@ func TestPRCIIntervalPacesEachFollow(t *testing.T) {
 	app.prUpdates.ciFollowInterval = follow
 	app.prUpdates.ciLiveInterval = live
 	running := pipelineWith(gitops.CIStatusRunning, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusRunning})
-	interval := func(whileRunning bool, ci *gitops.CIPipeline, state prCILogFollow) time.Duration {
+	interval := func(streams bool, ci *gitops.CIPipeline, state prCILogFollow) time.Duration {
 		t.Helper()
-		app.prUpdates.ciLogWhileRunning = &whileRunning
+		app.prUpdates.ciLogStreams = &streams
 		pump := &prUpdatePump{pr: testPR, follows: map[string]*prCILogFollow{"7": &state}}
 		if ci != nil {
 			pump.ci, pump.ciKnown = *ci, true
@@ -588,6 +599,10 @@ func TestPRCIIntervalPacesEachFollow(t *testing.T) {
 	}
 	if got := interval(false, &running, prCILogFollow{wasLive: true}); got != live {
 		t.Fatalf("live follow without running logs = %v, want the live cadence %v", got, live)
+	}
+	// The follow asks for itself, whatever the pipeline the pump holds.
+	if got := interval(false, nil, prCILogFollow{wasLive: true}); got != live {
+		t.Fatalf("live follow on a non-streaming forge, no pipeline known = %v, want the live cadence %v", got, live)
 	}
 	if got := interval(true, &running, prCILogFollow{wasLive: true}); got != follow {
 		t.Fatalf("live follow with running logs = %v, want %v", got, follow)
@@ -816,8 +831,8 @@ func TestPRPumpCancelsItsForgeCallWhenTheLastSubscriberLeaves(t *testing.T) {
 	app.prUpdates.ciLogFetchFn = func(context.Context, gitops.PRReference, gitops.CIJobLogRequest) (gitops.CIJobLog, error) {
 		return gitops.CIJobLog{}, nil
 	}
-	whileRunning := true
-	app.prUpdates.ciLogWhileRunning = &whileRunning
+	streams := true
+	app.prUpdates.ciLogStreams = &streams
 
 	sub, err := app.SubscribePRUpdates(t.Context(), testPR)
 	if err != nil {

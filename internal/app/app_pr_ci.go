@@ -20,9 +20,8 @@ const ciLogDisplayTailBytes = 2 * 1024 * 1024
 // PRCILogState is one followed job's log as the pump currently holds it.
 // Text is the cleaned, tail-capped trace. Available is false while the
 // forge cannot serve the log: it has not published the log yet (GitHub
-// answers 404 until the job's log blob exists, running or completed), or
-// the job is live on a forge that serves no running logs. Text is then
-// unchanged and the frontend says why. Error is the caller-safe summary of the last fetch
+// answers 404 until the job's log blob exists, in practice once the job
+// completed). Text is then unchanged and the frontend says why. Error is the caller-safe summary of the last fetch
 // failure, with its kind fields (see PRUpdatedEvent).
 type PRCILogState struct {
 	Text       string `json:"text"`

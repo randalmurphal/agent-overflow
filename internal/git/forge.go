@@ -61,10 +61,11 @@ type Forge interface {
 	// GetCIJobLog fetches the log/trace of one CI job of ref's repository,
 	// conditional on the request's ETag (see CIJobLog).
 	GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error)
-	// CILogWhileRunning reports whether GetCIJobLog answers for a job that
-	// is still running: both forges serve the log so far, GitHub once the
-	// job's log blob exists (a 404 before that is ErrCIJobLogNotFound).
-	CILogWhileRunning() bool
+	// CILogStreams reports whether GetCIJobLog serves a running job's log
+	// as it grows (GitLab's trace), so following it at a quick cadence
+	// shows progress. GitHub answers 404 until the job's log blob exists,
+	// in practice once the job completed (ErrCIJobLogNotFound).
+	CILogStreams() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
 	// ref's body or review comments, through the user's own forge login.
 	// A body larger than maxBytes is an error, not a truncation. See
@@ -372,7 +373,7 @@ func (nullForge) SetThreadResolved(context.Context, PRReference, string, bool) e
 	return ErrUnsupportedForge
 }
 
-func (nullForge) CILogWhileRunning() bool { return false }
+func (nullForge) CILogStreams() bool { return false }
 
 func (nullForge) GetCIJobLog(context.Context, PRReference, CIJobLogRequest) (CIJobLog, error) {
 	return CIJobLog{}, ErrUnsupportedForge
@@ -522,10 +523,10 @@ func (c *Core) ListPRCIJobs(ctx context.Context, ref PRReference, prev *CIPipeli
 	return read.CI, err
 }
 
-// CILogWhileRunning reports whether ref's forge serves a running job's
-// log (see Forge.CILogWhileRunning).
-func (c *Core) CILogWhileRunning(ref PRReference) bool {
-	return c.ForgeByID(ref.Forge).CILogWhileRunning()
+// CILogStreams reports whether ref's forge streams a running job's
+// log (see Forge.CILogStreams).
+func (c *Core) CILogStreams(ref PRReference) bool {
+	return c.ForgeByID(ref.Forge).CILogStreams()
 }
 
 func (c *Core) GetCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest) (CIJobLog, error) {

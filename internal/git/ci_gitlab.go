@@ -213,6 +213,6 @@ func cleanGitLabTraceText(text, timestamp string) string {
 	return timestamp + " " + text
 }
 
-// CILogWhileRunning is true: the trace endpoint returns what the runner
+// CILogStreams is true: the trace endpoint returns what the runner
 // has uploaded so far for a running job.
-func (f *gitlabForge) CILogWhileRunning() bool { return true }
+func (f *gitlabForge) CILogStreams() bool { return true }
