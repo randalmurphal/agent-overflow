@@ -49,6 +49,17 @@ type ApprovalRequest struct {
 	// PermissionUpdate objects; the shape is provider-specific so it flows
 	// through the pipeline as opaque JSON for the frontend to interpret.
 	PermissionSuggestions json.RawMessage `json:"permissionSuggestions,omitempty"`
+	// RoutedTo is set when the prompt goes to the standing agent that
+	// spawned this thread instead of to the user. Triage stamps it; a
+	// provider never does.
+	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
+}
+
+// PromptRoute names the standing agent a worker's prompt was delivered to.
+// The prompt stays open in the worker, where the user can still answer it.
+type PromptRoute struct {
+	ThreadID string `json:"threadId"`
+	Title    string `json:"title"`
 }
 
 // ApprovalEvent is the frontend-facing channel payload for approval overlay
@@ -104,6 +115,8 @@ type UserInputRequest struct {
 	ToolName        string              `json:"toolName"`
 	Title           string              `json:"title"`
 	Questions       []UserInputQuestion `json:"questions"`
+	// RoutedTo is ApprovalRequest.RoutedTo's twin.
+	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
 }
 
 // UserInputEvent is the frontend-facing channel payload for structured

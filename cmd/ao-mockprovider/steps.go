@@ -321,12 +321,12 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		return
 	}
 
-	allow := false
+	var answer approvalAnswer
 	detail := "deny"
 	if ap.TimeoutMs > 0 {
 		timer := time.NewTimer(time.Duration(ap.TimeoutMs) * time.Millisecond)
 		select {
-		case allow = <-decisionCh:
+		case answer = <-decisionCh:
 			timer.Stop()
 		case <-e.turnAbortSignal(turn):
 			timer.Stop()
@@ -339,19 +339,19 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		}
 	} else {
 		select {
-		case allow = <-decisionCh:
+		case answer = <-decisionCh:
 		case <-e.turnAbortSignal(turn):
 			cancel(true)
 			return
 		}
 	}
-	if allow {
+	if answer.allow {
 		detail = "allow"
 	}
-	e.rep.report(control.Report{Kind: control.ReportApprovalDecided, Turn: turn, Detail: detail})
+	e.rep.report(control.Report{Kind: control.ReportApprovalDecided, Turn: turn, Detail: detail, Result: answer.response})
 
 	branch := ap.OnDeny
-	if allow {
+	if answer.allow {
 		branch = ap.OnAllow
 	}
 	e.runSteps(vars, turn, branch, false)

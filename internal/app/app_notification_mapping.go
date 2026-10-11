@@ -142,6 +142,11 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		if moment.RequestID == "" {
 			return
 		}
+		// A worker's approval routed to its standing agent is not the
+		// user's to answer, so it does not call them (ruling 19).
+		if event.Request != nil && event.Request.RoutedTo != nil {
+			return
+		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			if !moment.Answered {
 				moment.Thread = a.notificationThreadRef(moment.Thread.ID)
@@ -314,12 +319,17 @@ func (a *App) logNotificationFailure(err error) {
 
 // drainNotifications lets queued moments finish before SQLite closes.
 func (a *App) drainNotifications(ctx context.Context, timeout time.Duration) error {
+	return drainSerialQueue(ctx, &a.notifications.queue, timeout)
+}
+
+// drainSerialQueue waits for a queue to empty, up to timeout.
+func drainSerialQueue(ctx context.Context, queue *serialqueue.Queue, timeout time.Duration) error {
 	drainCtx, cancel := contextWithTimeout(ctx, timeout)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		a.notifications.queue.Wait()
+		queue.Wait()
 		close(done)
 	}()
 	select {

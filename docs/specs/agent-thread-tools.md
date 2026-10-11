@@ -416,6 +416,24 @@ returns to the switch's state once the request settles. A scratch ask
 is created with it on. The switch governs what this computer's agents
 start on their own, not whether they can answer.
 
+A standing agent also answers its workers with it
+([ruling 19](standing-agents.md#decisions)). A thread a standing agent
+spawned on this computer never puts an approval or a question to the
+user: each prompt is delivered to the agent as a wake badged with the
+worker, the worker's text quoted as data, carrying a token for this
+tool. The worker's status reads `waiting on <agent>` and raises no
+approval notification. The reply answers the prompt in the worker at
+once: `text` for a question with one part, `answers` with one entry per
+part for several, and `decision` `allow` or `deny` for an approval,
+whose `text` is the agent's reason. A form-style MCP elicitation can
+only be denied this way. The prompt stays open in the worker, so the
+user can still answer it there; that withdraws a wake still queued and
+refuses the agent's later reply. A wake the agent's session never took
+in, or that its Stop cleared, hands the prompt back to the user. The
+token lives as long as the prompt, in memory: a restart ends the
+worker's session and its prompts with it. `decision` and `answers` on
+any other token are refused.
+
 ### `thread_status`
 
 Re-attaches to requests this thread made, or watches any thread:
@@ -610,8 +628,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > its turn without replying and this is its last message, which may
 > not be the answer you asked for. If the wait ends first, the reply
 > says `backgrounded` (still working) or `blocked` (waiting on the user
-> for an approval or a question: leave that to the user or cancel it),
-> and the answer will arrive in this thread as a message at your next
+> for an approval or a question: leave that to the user or cancel it; a
+> thread you spawned as a standing agent puts its question to you
+> instead), and the answer will arrive in this thread as a message at your next
 > turn boundary, badged with the thread and token it came from. You do
 > not need to poll. `thread_status` with up to eight `tokens` waits
 > again or checks state; with `thread_ids` it waits for any thread to
@@ -633,7 +652,14 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > without replying, the sender receives your final text marked as not
 > a reply, and a later `thread_reply` still reaches it as a follow-up.
 > Use `thread_send` to the sender only to start a separate exchange,
-> never to answer a token.
+> never to answer a token. If you are a standing agent, a thread you
+> spawned does not wait on the user: its question or approval wakes you
+> as a message badged with that thread, with a token. Answer it with
+> `thread_reply` on that token: your answer in `text`, one per part in
+> `answers` for a question with several parts, or `decision` allow or
+> deny for an approval. If it is not yours to decide, ask the user
+> yourself, as one question with the context. The user can still answer
+> in that thread, and then your reply is refused.
 >
 > Scheduling. `thread_loop` wakes you every `every_seconds` with a
 > `note` until stopped, one loop per `label`. `thread_watch` runs a
@@ -1085,7 +1111,9 @@ collects that settlement like any other.
 
 - A CLI or `/ao-tools` composer command for these tools.
 - Launch cards, tray rows, or subagent treatment for spawned threads.
-- Relaying approval requests to the calling agent.
+- Relaying approval requests to the calling agent, except a standing
+  agent's own workers
+  ([ruling 19](standing-agents.md#decisions)).
 - Spawn or wake-loop caps. A notify ping-pong in bypass mode runs until
   the human stops it from the sidebar; accepted.
 - Deleting or editing provider session files.

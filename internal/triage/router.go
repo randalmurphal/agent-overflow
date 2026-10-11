@@ -58,8 +58,13 @@ type Router struct {
 	// app-layer resolution); nil until then. Leaf lock.
 	generatedImageMu       sync.Mutex
 	generatedImageImporter GeneratedImageImporter
-	tracer                 trace.Tracer
-	metrics                TurnMetrics
+	// promptRouter names the standing agent a thread's approval and
+	// user-input prompts go to instead of the user, or nil. Installed by
+	// the app (SetPromptRouter); nil until then. Leaf lock.
+	promptRouterMu sync.Mutex
+	promptRouter   func(threadID string) *provider.PromptRoute
+	tracer         trace.Tracer
+	metrics        TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window
@@ -251,6 +256,27 @@ func (r *Router) SetUsageWorkItemResolver(resolve func(threadID string) string) 
 	r.usageResolverMu.Lock()
 	r.usageWorkItemResolver = resolve
 	r.usageResolverMu.Unlock()
+}
+
+// SetPromptRouter installs the lookup that stamps a prompt's RoutedTo. It
+// runs on the provider event worker once per prompt and must not block on
+// anything but a store read.
+func (r *Router) SetPromptRouter(route func(threadID string) *provider.PromptRoute) {
+	r.promptRouterMu.Lock()
+	r.promptRouter = route
+	r.promptRouterMu.Unlock()
+}
+
+// routePrompt answers where a new prompt of threadID goes. Whatever the
+// provider's meta carried is replaced, so only the app can route a prompt.
+func (r *Router) routePrompt(threadID string) *provider.PromptRoute {
+	r.promptRouterMu.Lock()
+	route := r.promptRouter
+	r.promptRouterMu.Unlock()
+	if route == nil {
+		return nil
+	}
+	return route(threadID)
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a

@@ -28,6 +28,7 @@
   } from '../../stores/sidebar.svelte';
   import {
     getEffectiveThreadStatus,
+    getThreadWaitingOn,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -138,6 +139,7 @@
     const tree = buildSidebarThreadTree({
       threads,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
     });
     return rollupDisplayStatus(tree);

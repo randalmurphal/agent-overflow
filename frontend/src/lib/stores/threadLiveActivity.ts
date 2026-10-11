@@ -69,8 +69,14 @@ function applyRow(row: ThreadLiveActivity, guard: ActivityGuard, sendsPendingCha
   applyActiveTurn(row.threadId, row.activeTurn, guard.turn);
   if (interactiveRequestsRevision(row.threadId) === guard.interactive) {
     replaceInteractiveRequestsForThread(row.threadId, {
-      approvals: (row.approvalRequestIds ?? []).map((requestId) => ({ requestId })),
-      userInputs: (row.userInputRequestIds ?? []).map((requestId) => ({ requestId })),
+      approvals: (row.approvalRequestIds ?? []).map((requestId) => ({
+        requestId,
+        routedTo: row.promptRoutes?.[requestId],
+      })),
+      userInputs: (row.userInputRequestIds ?? []).map((requestId) => ({
+        requestId,
+        routedTo: row.promptRoutes?.[requestId],
+      })),
     });
   }
   hydrateCompactingState(row.threadId, row.compactingSinceUnixMs ?? 0, guard.compacting);

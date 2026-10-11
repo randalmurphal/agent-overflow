@@ -165,6 +165,10 @@ describe('userMessageOriginWake', () => {
     expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
     const send = userMessageOriginWake({ originWake: { kind: 'send' } });
     expect(agentWakeOriginLabel(send!)).toBe('Sent by a script');
+    const question = userMessageOriginWake({ originWake: { kind: 'question', label: 'Deploy worker', threadId: 't1' } });
+    expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
+    const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
+    expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
   });
 
   it('refuses a kind it does not know, which is not attribution', () => {

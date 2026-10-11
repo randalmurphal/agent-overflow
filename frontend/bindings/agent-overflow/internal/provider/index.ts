@@ -16,6 +16,7 @@ export {
     NetworkPermissions,
     PendingInteractiveRequests,
     PermissionProfile,
+    PromptRoute,
     ProviderStatus,
     RateLimitEntry,
     RateLimitsSnapshot,

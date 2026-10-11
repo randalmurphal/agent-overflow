@@ -40,10 +40,10 @@ type stubAdapter struct {
 	allow   bool
 }
 
-func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-chan bool, func(bool), error) {
-	ch := make(chan bool, 1)
+func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
+	ch := make(chan approvalAnswer, 1)
 	if s.respond {
-		ch <- s.allow
+		ch <- approvalAnswer{allow: s.allow}
 	}
 	return ch, func(bool) {}, nil
 }

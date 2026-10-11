@@ -301,7 +301,13 @@ func clipUTF8(text string, limit int) string {
 // message is: it is data, not something the user wrote, and its row replays
 // it. The row records `not delivered` and an interval row is made due at the
 // fire the wake was for, so the boot pass runs it again with what it missed.
+//
+// A worker's prompt still queued is discarded too: the prompt it carried
+// died with the worker's session when the app quit.
 func (a *App) discardAgentWakeAtBoot(sendID string) bool {
+	if strings.HasPrefix(sendID, workerPromptSendIDRoot) {
+		return true
+	}
 	wakeID, fireAt, ok := agentWakeFromSendID(sendID)
 	if !ok {
 		return false
@@ -317,11 +323,15 @@ func (a *App) discardAgentWakeAtBoot(sendID string) bool {
 // unlike one it does not replay: the session that ended may end again, and a
 // replay would start it on every fire. The row records `not delivered` and
 // keeps its schedule. A message a person's text was joined to is theirs and
-// goes to the composer as before; its wakes are still recorded.
+// goes to the composer as before; its wakes are still recorded. A worker's
+// prompt the session did not take in goes back to the user in the worker.
 func (a *App) dropAgentWakeAtSessionEnd(item triage.UnconfirmedFlushItem) bool {
 	ids := unconfirmedSendIDs(item)
 	onlyWakes := len(ids) > 0
 	for _, id := range ids {
+		if a.handBackWorkerPromptWake(id) {
+			continue
+		}
 		wakeID, _, ok := agentWakeFromSendID(id)
 		if !ok {
 			onlyWakes = false
@@ -373,6 +383,7 @@ func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
 // noteAgentWakesDropped records `not delivered` on the rows whose wakes a
 // wholesale queue drop (the person's Stop, a Codex rollback) throws away, so
 // thread_status does not report them delivered. They keep their schedule.
+// A worker's prompt among them goes back to the user in the worker.
 func (a *App) noteAgentWakesDropped(threadID string) {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -380,6 +391,9 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 		return
 	}
 	for _, row := range rows {
+		if a.handBackWorkerPromptWake(row.SendID) {
+			continue
+		}
 		wakeID, _, ok := agentWakeFromSendID(row.SendID)
 		if !ok {
 			continue

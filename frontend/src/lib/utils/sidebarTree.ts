@@ -141,6 +141,8 @@ export interface BuildSidebarThreadTreeInput {
   groups?: readonly ThreadGroup[];
   statusOf?: (thread: Thread) => ThreadLiveStatus;
   liveStatusOf?: (threadId: string) => ThreadLiveStatus;
+  /** The standing agent a thread's prompts went to, or ''. */
+  waitingOnOf?: (threadId: string) => string;
   /**
    * Newest activity timestamp for a thread. Callers pass the threads
    * store's getThreadLiveActivityAt so streaming bumps (which live in a
@@ -322,7 +324,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     const ownLiveStatus = input.statusOf
       ? input.statusOf(thread)
       : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
-    const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus);
+    const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus, input.waitingOnOf?.(thread.id));
     const unreachableMachine = input.unreachableMachineOf?.(thread) ?? null;
     const ownPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill;
     return {

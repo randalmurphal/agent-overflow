@@ -118,27 +118,37 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
 }
 
 /**
- * What wrote an `agent-wake` row: `loop` or `watch` with its label, or `send`
- * for a script's outside message. A row without a known kind is not
- * attribution and is refused.
+ * What wrote an `agent-wake` row: `loop` or `watch` with its label, `send`
+ * for a script's outside message, or `question` or `approval` for a worker's
+ * prompt put to the standing agent that spawned it, labelled with the
+ * worker's title. A row without a known kind is not attribution and is
+ * refused.
  */
 export interface UserMessageOriginWake {
-  kind: 'loop' | 'watch' | 'send';
+  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval';
   label: string;
 }
+
+const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval']);
+const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, string> = {
+  loop: 'Loop',
+  watch: 'Watch',
+  question: 'Question',
+  approval: 'Approval',
+};
 
 export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
   const record = objectRecord(meta.originWake);
   if (!record) return null;
   const kind = stringField(record.kind);
-  if (kind !== 'loop' && kind !== 'watch' && kind !== 'send') return null;
-  return { kind, label: stringField(record.label) };
+  if (!WAKE_KINDS.has(kind)) return null;
+  return { kind: kind as UserMessageOriginWake['kind'], label: stringField(record.label) };
 }
 
-/** The badge a wake row carries: which loop or watch, or that a script sent it. */
+/** The badge a wake row carries: which loop, watch or worker, or that a script sent it. */
 export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
   if (wake.kind === 'send') return 'Sent by a script';
-  const kind = wake.kind === 'loop' ? 'Loop' : 'Watch';
+  const kind = WAKE_KIND_LABELS[wake.kind];
   return wake.label ? `${kind} · ${wake.label}` : kind;
 }
 
